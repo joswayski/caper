@@ -58,21 +58,30 @@ class DraftAttachmentsTest {
         assertNull(draftSpoilerSource(DraftAttachmentUi("f", "c.pdf", "file", pickedUri = "content://picked/c", spoiler = true)))
     }
 
-    @Test fun `the preview offers the spoiler toggle, Crop, Draw and Text, then Remove, until the files lock`() {
-        assertEquals(EditTool.DRAW, OpenEditor("a").tool)
+    @Test fun `a staged file opens the editor viewing, whose one row holds the spoiler toggle, Crop, Draw and Text, then Remove`() {
+        assertNull("a tap or the pencil opens it viewing, with no tool chosen", OpenEditor("a").tool)
         assertEquals(EditTool.TEXT, OpenEditor("a", EditTool.TEXT).tool)
-        assertEquals(listOf(EditTool.CROP, EditTool.DRAW, EditTool.TEXT), draftPreviewTools(enabled = true))
-        assertEquals(listOf("Crop", "Draw", "Text"), draftPreviewTools(enabled = true).map { it.label })
-        assertTrue(draftPreviewTools(enabled = false).isEmpty())
-        assertEquals(
-            listOf(DraftPreviewControl.Spoiler) + EditTool.entries.map { DraftPreviewControl.Tool(it) } + DraftPreviewControl.Remove,
-            draftPreviewControls(spoiler = true, tools = draftPreviewTools(enabled = true), enabled = true),
-        )
-        assertEquals(
-            EditTool.entries.map { DraftPreviewControl.Tool(it) } + DraftPreviewControl.Remove,
-            draftPreviewControls(spoiler = false, tools = draftPreviewTools(enabled = true), enabled = true),
-        )
-        assertTrue(draftPreviewControls(spoiler = true, tools = draftPreviewTools(enabled = false), enabled = false).isEmpty())
+        assertEquals(listOf("Crop", "Draw", "Text"), EditTool.entries.map { it.label })
+        val tools = EditTool.entries.map { EditorControl.Tool(it) }
+        assertEquals(listOf(EditorControl.Spoiler) + tools + EditorControl.Remove, editorControls(spoiler = true, removable = true))
+        assertEquals(tools + EditorControl.Remove, editorControls(spoiler = false, removable = true))
+        assertEquals("a profile picture offers only the tools", tools, editorControls(spoiler = false, removable = false))
+    }
+
+    @Test fun `tapping a tool chooses it in place, and tapping it again returns to viewing`() {
+        assertEquals(EditTool.CROP, nextEditTool(null, EditTool.CROP))
+        assertEquals(EditTool.DRAW, nextEditTool(EditTool.CROP, EditTool.DRAW))
+        assertNull(nextEditTool(EditTool.DRAW, EditTool.DRAW))
+        assertEquals("a profile picture stays on its tool", EditTool.CROP, nextEditTool(EditTool.CROP, EditTool.CROP, viewing = false))
+    }
+
+    @Test fun `viewing plays a ready video until a tool is chosen or there are unsaved edits`() {
+        val video = DraftPreviewMedia("file:///b/source", video = true)
+        assertTrue(editorPlaysVideo(null, video, unsaved = false))
+        assertFalse("a tool shows the editor's frame", editorPlaysVideo(EditTool.CROP, video, unsaved = false))
+        assertFalse("only the frame shows unsaved edits", editorPlaysVideo(null, video, unsaved = true))
+        assertFalse("an edited video's still render until it is prepared", editorPlaysVideo(null, video.copy(video = false), unsaved = false))
+        assertFalse(editorPlaysVideo(null, null, unsaved = false))
     }
 
     @Test fun `a draft preview shows the original until edited, then what will be sent, never the original`() {

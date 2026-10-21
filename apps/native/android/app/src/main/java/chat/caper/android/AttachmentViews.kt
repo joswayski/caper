@@ -18,13 +18,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -32,17 +30,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -51,14 +45,11 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -495,15 +486,15 @@ internal fun replyAttachmentPreviewUrl(attachment: ChatAttachment): String? = wh
     }
 }
 
-/** A staged file's editor, opened on [tool]: Draw from the pencil, or a tool chosen in its preview. */
-internal data class OpenEditor(val key: String, val tool: EditTool = EditTool.DRAW)
+/** A staged file's open editor, on [tool], or viewing (its preview) when that is null, as a tap or the pencil opens it. */
+internal data class OpenEditor(val key: String, val tool: EditTool? = null)
 
 /** What a staged file offers from its menus (the long press, and the pencil of a file the app can't preview). */
 internal enum class DraftAction { EDIT, SPOILER, REMOVE }
 
 /**
  * A staged file's menu, top to bottom: Edit when the app can preview the file ([previewable]; it
- * opens [DraftPreview]), the spoiler toggle where the composer offers it ([spoiler]), then Remove;
+ * opens [AttachmentEditor], viewing), the spoiler toggle where the composer offers it ([spoiler]), then Remove;
  * nothing while the files are locked (sending). The pencil of a file without a preview opens
  * this menu with [previewable] false.
  */
@@ -542,21 +533,6 @@ internal fun draftStatusLabel(draft: DraftAttachmentUi, busy: Boolean): String? 
  */
 internal fun draftRingProgress(draft: DraftAttachmentUi): Float? = draft.progress.takeIf { it > 0f }?.coerceAtMost(1f)
 
-/** A control in a draft preview's bottom row, left to right. */
-internal sealed interface DraftPreviewControl {
-    data object Spoiler : DraftPreviewControl
-    data class Tool(val tool: EditTool) : DraftPreviewControl
-    data object Remove : DraftPreviewControl
-}
-
-/**
- * A draft preview's bottom row: the spoiler toggle where the composer offers it ([spoiler]), the
- * editor's [tools], then Remove; nothing while the files are locked (sending).
- */
-internal fun draftPreviewControls(spoiler: Boolean, tools: List<EditTool>, enabled: Boolean): List<DraftPreviewControl> =
-    if (!enabled) emptyList()
-    else listOfNotNull(DraftPreviewControl.Spoiler.takeIf { spoiler }) + tools.map { DraftPreviewControl.Tool(it) } + DraftPreviewControl.Remove
-
 /**
  * The picture a spoilered staged file blurs: its thumbnail (an edited file's render), else a
  * picked image itself; an edited one never falls back to its unedited original. Null shows the
@@ -571,10 +547,7 @@ internal fun draftSpoilerSource(draft: DraftAttachmentUi): String? {
     }
 }
 
-/** The editor's tools a draft preview offers: all of them while the file can be edited, none while it is locked (sending). */
-internal fun draftPreviewTools(enabled: Boolean): List<EditTool> = if (enabled) EditTool.entries else emptyList()
-
-/** What a draft preview shows: [uri] played as a video, or as a still. */
+/** What a staged file's editor shows while viewing: [uri] played as a video, or as a still. */
 internal data class DraftPreviewMedia(val uri: String, val video: Boolean)
 
 /**
@@ -595,9 +568,10 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
  * tile has two round corner buttons, diagonal from each other so a mis-tap can't remove: Remove
  * (top right; a ring around it shows preparing and upload progress) and the pencil (bottom left).
  * With [edit], images and videos the editor can open preview in the app: the pencil or a tap opens
- * [DraftPreview] (covered as recipients see it while a spoiler), which toggles the spoiler ([toggleSpoiler]),
- * opens [AttachmentEditor] on the original with Crop, Draw or Text, and removes the file; a saved
- * change arrives as the draft key, the edit (null for the original) and its render. Other files
+ * [AttachmentEditor] on the original, viewing with no tool chosen (covered as recipients see it while
+ * a spoiler), one screen that also crops, draws and adds text, toggles the spoiler ([toggleSpoiler])
+ * and removes the file; a saved change arrives as the draft key, the edit (null for the original)
+ * and its render. Other files
  * preview in the system viewer, and their pencil opens a menu with the spoiler toggle and Remove.
  * A long press offers the same choices. Files that upload on Send ([uploadOnSend]) offer Retry
  * only when preparing them failed.
@@ -610,29 +584,26 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
     toggleSpoiler: ((String) -> Unit)? = null,
 ) {
     var editing by remember { mutableStateOf<OpenEditor?>(null) }
-    var previewing by remember { mutableStateOf<String?>(null) }
     editing?.let { open ->
         val draft = drafts.find { it.key == open.key }
         val source = draft?.original ?: draft?.pickedUri
         val kind = draft?.editKind
-        if (draft != null && source != null && kind != null && edit != null && enabled) AttachmentEditor(
-            source, kind, draft.name, draft.edit, cancel = { editing = null },
-            save = { change, preview -> editing = null; edit(open.key, change, preview) },
-            initialTool = open.tool,
-        ) else SideEffect { editing = null }
-    }
-    previewing?.let { key ->
-        val draft = drafts.find { it.key == key }
-        // Closing and opening the editor happen together, so the hand-off is instant.
-        if (draft != null && draft.editKind != null && edit != null) DraftPreview(
-            draft, draftPreviewControls(spoiler = toggleSpoiler != null, tools = draftPreviewTools(enabled), enabled = enabled),
-            close = { previewing = null },
-            toggleSpoiler = { toggleSpoiler?.invoke(key) },
-            remove = { previewing = null; remove(key) },
-        ) { tool ->
-            previewing = null
-            editing = OpenEditor(key, tool)
-        } else SideEffect { previewing = null }
+        // One screen for viewing and editing; the spoiler reads live from the draft, so the toggle shows at once.
+        if (draft != null && source != null && kind != null && edit != null) {
+            val cover = draftSpoilerSource(draft)
+            AttachmentEditor(
+                source, kind, draft.name, draft.edit, cancel = { editing = null },
+                save = { change, preview -> editing = null; edit(open.key, change, preview) },
+                initialTool = open.tool,
+                editable = enabled,
+                media = draftPreviewMedia(draft),
+                spoiler = draft.spoiler,
+                spoilerSource = cover,
+                coverKey = "draft:${draft.key}:$cover:spoiler",
+                toggleSpoiler = toggleSpoiler?.let { toggle -> { toggle(open.key) } },
+                remove = { editing = null; remove(open.key) },
+            )
+        } else SideEffect { editing = null }
     }
     if (drafts.isEmpty()) return
     val context = LocalContext.current
@@ -686,7 +657,7 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
                             val spoilerAvailable = toggleSpoiler != null
                             Box(Modifier.fillMaxSize().combinedClickable(
                                 enabled = previewable || url != null || enabled, role = Role.Button, onClickLabel = "Preview $accessibleName",
-                                onClick = { if (previewable) previewing = draft.key else url?.let(open) },
+                                onClick = { if (previewable) editing = OpenEditor(draft.key) else url?.let(open) },
                                 onLongClickLabel = "Attachment options",
                                 onLongClick = if (enabled) ({ menu = draftMenuActions(previewable, spoilerAvailable, enabled) }) else null,
                             ).semantics {
@@ -718,7 +689,7 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
                                 if (previewable || spoilerAvailable) DraftTileButton(
                                     R.drawable.lucide_pencil, draftActionLabel(DraftAction.EDIT, accessibleName, draft.spoiler), Alignment.BottomStart,
                                     Modifier.align(Alignment.BottomStart),
-                                ) { if (previewable) previewing = draft.key else menu = draftMenuActions(previewable = false, spoiler = spoilerAvailable, enabled = enabled) }
+                                ) { if (previewable) editing = OpenEditor(draft.key) else menu = draftMenuActions(previewable = false, spoiler = spoilerAvailable, enabled = enabled) }
                                 DraftTileButton(
                                     R.drawable.lucide_x, draftActionLabel(DraftAction.REMOVE, accessibleName, draft.spoiler), Alignment.TopEnd,
                                     Modifier.align(Alignment.TopEnd), ring = busy, ringProgress = draftRingProgress(draft),
@@ -745,7 +716,7 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
                                                 menu = emptyList()
                                                 if (enabled) {
                                                     when (action) {
-                                                        DraftAction.EDIT -> { previewing = draft.key }
+                                                        DraftAction.EDIT -> { editing = OpenEditor(draft.key) }
                                                         DraftAction.SPOILER -> { toggleSpoiler?.invoke(draft.key) }
                                                         DraftAction.REMOVE -> { remove(draft.key) }
                                                     }
@@ -828,148 +799,9 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
     }
 }
 
-/**
- * A button on a solid backing that never fades: hovering lightens it to [hover] white, pressing
- * to [press], and keyboard focus rings it in terracotta just inside its edge.
- */
-@Composable private fun Modifier.solidButton(shape: Shape, hover: Float, press: Float, onClick: () -> Unit): Modifier {
-    val interaction = remember { MutableInteractionSource() }
-    val hovered by interaction.collectIsHoveredAsState()
-    val pressed by interaction.collectIsPressedAsState()
-    val focused by interaction.collectIsFocusedAsState()
-    return clip(shape)
-        .background(Color.White.copy(alpha = if (pressed) press else if (hovered) hover else 0f))
-        .drawWithContent {
-            drawContent()
-            if (focused) {
-                val inset = 3.dp.toPx()
-                drawRoundRect(Terracotta, Offset(inset, inset), Size(size.width - inset * 2, size.height - inset * 2), CornerRadius(6.dp.toPx()), style = Stroke(2.dp.toPx()))
-            }
-        }
-        .clickable(interaction, indication = null, role = Role.Button, onClick = onClick)
-}
-
-/**
- * The app's own full-screen preview of a staged file the editor can open (the system viewer
- * can't host the editor's tools): the picture or video fitted on black, a close control, and
- * [controls] at the bottom: the spoiler toggle ([toggleSpoiler], which changes the tile in place),
- * the editor's tools (each hands the file to the editor on that tool through [edit]), and Remove
- * ([remove], which also closes the preview). Pictures zoom as in the media viewer; closing resets them.
- * While the spoiler is on, the media sits under the cover recipients see (the blurred, dimmed
- * poster and a centred Spoiler label), which fades in and out with the toggle and blocks zoom
- * and the video's controls; a covered video pauses. The preview arrives with a short fade and
- * slight scale, and a picture fades in over its loading state; closing is instant.
- */
-@Composable private fun DraftPreview(
-    draft: DraftAttachmentUi, controls: List<DraftPreviewControl>, close: () -> Unit,
-    toggleSpoiler: () -> Unit, remove: () -> Unit, edit: (EditTool) -> Unit,
-) {
-    val context = LocalContext.current
-    val media = draftPreviewMedia(draft)
-    val video = draft.editKind == "video"
-    val still = reducedMotion()
-    val cover by animateFloatAsState(if (draft.spoiler) 1f else 0f, if (still) snap() else tween(MOTION_BASE, easing = EaseOut), label = "draftPreviewSpoiler")
-    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        // Filled before the insets, so the bar areas aren't left showing the dimmed scrim.
-        Column(
-            Modifier.fillMaxSize().swipeCancelsPresses().entrance(MOTION_BASE, scale = 0.98f).background(Blackout).systemBarsPadding()
-                .semantics { paneTitle = if (video) "Video preview" else "Image preview" },
-        ) {
-            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(draft.name, Modifier.weight(1f).semantics { heading() }, color = Text, fontSize = 14.sp, fontWeight = FontWeight.Bold,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis)
-                IconButton(close, Modifier.semantics { contentDescription = "Close preview" }) { Icon(painterResource(R.drawable.lucide_x), null, tint = Text) }
-            }
-            // Clipped, so a zoomed picture stays between the title and the tools.
-            Box(Modifier.weight(1f).fillMaxWidth().clipToBounds(), contentAlignment = Alignment.Center) {
-                when {
-                    media == null -> Spinner(null, Modifier.size(28.dp))
-                    media.video -> DraftPreviewVideo(media.uri, paused = draft.spoiler)
-                    else -> {
-                        var failed by remember(media.uri) { mutableStateOf(false) }
-                        var loaded by remember(media.uri) { mutableStateOf<IntSize?>(null) }
-                        // The decoded picture fades in over the loading state instead of popping in.
-                        val shown by animateFloatAsState(if (loaded != null) 1f else 0f, if (still) snap() else tween(MOTION_BASE, easing = EaseOut), label = "draftPreviewLoaded")
-                        // The spinner waits a moment, so a quick decode never flashes it.
-                        var slow by remember(media.uri) { mutableStateOf(false) }
-                        LaunchedEffect(media.uri) { kotlinx.coroutines.delay(300); slow = true }
-                        if (!failed && loaded == null && slow) Spinner(null, Modifier.size(28.dp))
-                        if (failed) Text(if (video) "This video can’t be shown here." else "This image can’t be shown here.", Modifier.padding(24.dp),
-                            color = TextMuted, fontSize = 14.sp)
-                        // Zooms like the media viewer, so it decodes at full resolution (Coil caps it at 4096 px a side).
-                        else ZoomableImage(active = true, loaded, Modifier, inset = 16.dp) {
-                            AsyncImage(
-                                model = remember(media.uri) {
-                                    AttachmentImages.request(context, media.uri, "draft-preview:${draft.key}:${media.uri}").newBuilder().size(coil3.size.Size.ORIGINAL).build()
-                                },
-                                contentDescription = draft.name, imageLoader = AttachmentImages.loader(context),
-                                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = shown }, contentScale = ContentScale.Fit,
-                                onSuccess = { loaded = IntSize(it.result.image.width, it.result.image.height) },
-                                onError = { failed = true },
-                            )
-                        }
-                    }
-                }
-                // The cover recipients see, over the whole media area so a zoomed picture can't show
-                // past it; it takes every touch, so the covered media can't be zoomed or played.
-                if (cover > 0f) Box(
-                    Modifier.matchParentSize().graphicsLayer { alpha = cover }.background(Surface)
-                        .then(if (draft.spoiler) Modifier.pointerInput(Unit) {
-                            awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } }
-                        } else Modifier),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    val source = draftSpoilerSource(draft)
-                    SpoilerThumbnail(source, "draft:${draft.key}:$source:spoiler")
-                    SpoilerBadge(revealHint = false)
-                }
-            }
-            if (controls.isNotEmpty()) Row(
-                // Scrolls sideways only if a narrow screen can't fit every control.
-                Modifier.align(Alignment.CenterHorizontally).padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 16.dp)
-                    .clip(MaterialTheme.shapes.small).background(Surface).border(1.dp, Border, MaterialTheme.shapes.small)
-                    .horizontalScroll(rememberScrollState()).padding(4.dp)
-                    .semantics { contentDescription = "Edit ${draft.name}" },
-                horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically,
-            ) {
-                controls.forEachIndexed { index, control ->
-                    // A rule sets the spoiler toggle and Remove apart from the editor's tools.
-                    val previous = controls.getOrNull(index - 1)
-                    if (previous != null && (previous is DraftPreviewControl.Spoiler || control is DraftPreviewControl.Remove)) {
-                        Box(Modifier.width(1.dp).height(28.dp).background(Border))
-                    }
-                    when (control) {
-                        DraftPreviewControl.Spoiler -> DraftPreviewButton(
-                            R.drawable.lucide_eye_off, "Spoiler", if (draft.spoiler) TerracottaLight else Text,
-                            Modifier.background(if (draft.spoiler) TerracottaWash else Color.Transparent, RoundedCornerShape(6.dp))
-                                .border(1.dp, if (draft.spoiler) TerracottaBorder else Color.Transparent, RoundedCornerShape(6.dp))
-                                .semantics { stateDescription = if (draft.spoiler) "On" else "Off" },
-                            toggleSpoiler,
-                        )
-                        is DraftPreviewControl.Tool -> DraftPreviewButton(control.tool.icon, control.tool.label, Text, Modifier) { edit(control.tool) }
-                        DraftPreviewControl.Remove -> DraftPreviewButton(R.drawable.lucide_trash_2, "Remove", ErrorText, Modifier, remove)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** One of a draft preview's bottom controls: [icon] over [label], both in [tint], at least 44dp tall and 60dp wide. */
-@Composable private fun DraftPreviewButton(icon: Int, label: String, tint: Color, modifier: Modifier, onClick: () -> Unit) {
-    Column(
-        modifier.heightIn(min = 52.dp).widthIn(min = 60.dp).solidButton(RoundedCornerShape(6.dp), hover = 0.10f, press = 0.16f, onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
-    ) {
-        Icon(painterResource(icon), null, Modifier.size(18.dp), tint = tint)
-        Text(label, color = tint, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
-    }
-}
-
 /** A staged video with playback controls; it plays while the app is visible and not [paused], and pauses when it is stopped. */
 @OptIn(UnstableApi::class)
-@Composable private fun DraftPreviewVideo(uri: String, paused: Boolean) {
+@Composable internal fun DraftPreviewVideo(uri: String, paused: Boolean) {
     val context = LocalContext.current
     var failed by remember(uri) { mutableStateOf(false) }
     val player = remember(uri) {

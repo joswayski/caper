@@ -2,10 +2,14 @@ package chat.caper.android
 
 import android.graphics.Bitmap
 import android.net.Uri
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -37,6 +41,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.key.Key
@@ -78,6 +83,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -103,6 +109,41 @@ import kotlinx.coroutines.withContext
 internal enum class EditTool(val label: String, val icon: Int) {
     CROP("Crop", R.drawable.lucide_crop), DRAW("Draw", R.drawable.lucide_brush), TEXT("Text", R.drawable.lucide_type),
 }
+
+/** A control in the editor's bottom row, left to right. */
+internal sealed interface EditorControl {
+    data object Spoiler : EditorControl
+    data class Tool(val tool: EditTool) : EditorControl
+    data object Remove : EditorControl
+}
+
+/**
+ * The editor's bottom row, the same with or without a tool chosen: the spoiler toggle where the
+ * composer offers it ([spoiler]), Crop, Draw and Text, then Remove where the file can be removed ([removable]).
+ */
+internal fun editorControls(spoiler: Boolean, removable: Boolean): List<EditorControl> =
+    listOfNotNull(EditorControl.Spoiler.takeIf { spoiler }) + EditTool.entries.map { EditorControl.Tool(it) } +
+        listOfNotNull(EditorControl.Remove.takeIf { removable })
+
+/**
+ * The tool after tapping [tapped] while [current] is chosen: tapping the chosen tool again returns
+ * to viewing (null) where [viewing] is offered (a staged file; a profile picture stays on its tool).
+ */
+internal fun nextEditTool(current: EditTool?, tapped: EditTool, viewing: Boolean = true): EditTool? =
+    if (current == tapped && viewing) null else tapped
+
+/**
+ * Whether viewing shows [media] playing instead of the editor's frame: only with no tool chosen, for
+ * a video that is ready to play ([DraftPreviewMedia.video]), and with no unsaved edits ([unsaved]),
+ * which only the frame can show.
+ */
+internal fun editorPlaysVideo(tool: EditTool?, media: DraftPreviewMedia?, unsaved: Boolean): Boolean =
+    tool == null && media?.video == true && !unsaved
+
+/** The tool options strip's height, reserved with or without a tool so the picture never resizes: Draw's swatches and size row. */
+private val OPTIONS_HEIGHT = 96.dp
+/** Space around the picture in every state: what the crop frame's handles need. */
+private val STAGE_PADDING = 28.dp
 
 /** The text field open over the picture: a new mark at [x], [y], or mark [index] being changed. [points] is its size on screen. */
 private data class OpenText(val index: Int?, val x: Double, val y: Double, val value: TextFieldValue, val color: String, val points: Float)
@@ -146,17 +187,36 @@ private const val PREVIEW_EDGE = 1280
 internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max(6f, strokePoints) * density
 
 /**
- * Full-screen editor for a file waiting to be sent: crop and turn it, draw on it and add text. It
- * edits a description of the changes, never the file; the composer prepares the original again
- * with them (docs/media.md "Editing attachments before sending"). [save] is called only for a
- * change, with null when it returns to the original, and the editor's render of the result. It
- * opens on [initialTool]: Draw from the pencil, or the tool chosen in the draft preview.
+ * Full-screen preview and editor for a file waiting to be sent, one screen in every state: crop and
+ * turn it, draw on it and add text. It edits a description of the changes, never the file; the
+ * composer prepares the original again with them (docs/media.md "Editing attachments before
+ * sending"). [save] is called only for a change, with null when it returns to the original, and the
+ * editor's render of the result; Done with nothing changed just closes ([cancel]).
+ *
+ * It opens on [initialTool], or viewing when that is null: the picture (with any edits) zooms like
+ * the media viewer, and a video ([media], what will be sent) plays until a tool is chosen or there
+ * are unsaved edits. Tapping a tool chooses it in place; tapping it again returns to viewing. The
+ * bar (close, the name, Undo, Redo, Reset, Done), the picture's place and the tool options strip's
+ * height are the same in every state, and the picture is decoded once, so nothing moves or reloads
+ * when the tool changes. The bottom row adds the spoiler toggle ([toggleSpoiler], which changes the
+ * tile live; [spoiler] is the draft's current state) and Remove ([remove], which also closes and
+ * discards unsaved edits). While viewing a spoiler, the media sits under the cover recipients see
+ * ([spoilerSource] blurred, cached under [coverKey]), fading with the toggle; a covered video
+ * pauses. A tool shows the picture plainly. With [editable] false (the files locked while sending)
+ * it only views, and Done closes.
  */
 @Composable internal fun AttachmentEditor(
     source: String, kind: String, name: String, initial: AttachmentEdit?,
     cancel: () -> Unit, save: (AttachmentEdit?, Bitmap?) -> Unit,
-    initialTool: EditTool = EditTool.DRAW,
+    initialTool: EditTool? = null,
     pictureMode: Boolean = false,
+    editable: Boolean = true,
+    media: DraftPreviewMedia? = null,
+    spoiler: Boolean = false,
+    spoilerSource: String? = null,
+    coverKey: String = "editor:$source:$spoilerSource:spoiler",
+    toggleSpoiler: (() -> Unit)? = null,
+    remove: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -175,7 +235,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
         onDispose { owned?.recycle() }
     }
     var history by remember { mutableStateOf(EditHistory(initial ?: AttachmentEdit.NONE)) }
-    var tool by remember { mutableStateOf(initialTool) }
+    var tool by remember { mutableStateOf<EditTool?>(initialTool) }
     var color by remember { mutableStateOf(AttachmentEdits.COLORS.first()) }
     var strokePoints by remember { mutableFloatStateOf(AttachmentEdits.STROKE_INITIAL) }
     var textPoints by remember { mutableFloatStateOf(AttachmentEdits.TEXT_INITIAL) }
@@ -196,6 +256,12 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     val hiddenPointer = remember { PointerIcon(android.view.PointerIcon.getSystemIcon(context, android.view.PointerIcon.TYPE_NULL)) }
     val current = history.current
     val ready = picture != null
+    val canEdit = ready && editable
+    val still = reducedMotion()
+    // Viewing a spoiler covers the media; it fades with the toggle, and choosing a tool lifts it at once.
+    val covered = spoiler && tool == null
+    val cover by animateFloatAsState(if (covered) 1f else 0f, if (still || tool != null) snap() else tween(MOTION_BASE, easing = EaseOut), label = "editorSpoiler")
+    val playing = editorPlaysVideo(tool, media, unsaved = !AttachmentEdits.same(current, initial))
 
     fun square(edit: AttachmentEdit): AttachmentEdit {
         val bitmap = picture ?: return edit
@@ -219,7 +285,9 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     }
     fun undo() { field = null; history = history.undo() }
     fun redo() { field = null; history = history.redo() }
-    fun chooseTool(next: EditTool) { commitField(); tool = next; erasing = false }
+    fun chooseTool(next: EditTool?) { commitField(); tool = next; erasing = false }
+    // Locked while sending: back to viewing, with nothing left open.
+    LaunchedEffect(editable) { if (!editable) { field = null; liveCrop = null; liveStroke = null; liveText = null; tool = null; erasing = false } }
     fun chooseColor(next: String) {
         color = next
         erasing = false
@@ -227,6 +295,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     }
     fun done() {
         if (saving) return
+        if (!editable || !ready) return cancel()
         val final = withField(history.current, field)
         if (!pictureMode && AttachmentEdits.same(final, initial)) return cancel()
         val result = final.takeIf { AttachmentEdits.isEdited(it) }
@@ -265,9 +334,9 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                     }
                     when {
                         event.key == Key.Escape -> { if (field != null) field = null else cancel(); true }
-                        command && field == null && event.key == Key.Z -> { if (event.isShiftPressed) redo() else undo(); true }
-                        command && field == null && event.key == Key.Y -> { redo(); true }
-                        nudge != null && keyboardFocus && ready && tool == EditTool.CROP -> {
+                        command && field == null && editable && event.key == Key.Z -> { if (event.isShiftPressed) redo() else undo(); true }
+                        command && field == null && editable && event.key == Key.Y -> { redo(); true }
+                        nudge != null && keyboardFocus && canEdit && tool == EditTool.CROP -> {
                             val edit = history.current
                             val handle = if (event.isShiftPressed) CropHandle.SE else CropHandle.MOVE
                             commit(edit.copy(crop = AttachmentEdits.dragCrop(edit.crop, handle, nudge.first, nudge.second, AttachmentEdits.MIN_CROP, AttachmentEdits.MIN_CROP)))
@@ -278,34 +347,39 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                 }
                 .focusRequester(focus).onFocusChanged { keyboardFocus = it.isFocused }.focusable(),
         ) {
+            // The same bar with or without a tool chosen.
             Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(cancel, Modifier.semantics { contentDescription = "Cancel editing" }) {
+                IconButton(cancel, Modifier.semantics { contentDescription = "Close" }) {
                     Icon(painterResource(R.drawable.lucide_x), null, tint = Text)
                 }
-                Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                    Text(if (kind == "video") "Edit video" else "Edit image", Modifier.semantics { heading() }, color = Text, fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(name, color = TextMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                BarIcon(R.drawable.lucide_undo_2, "Undo", ready && history.canUndo, ::undo)
-                BarIcon(R.drawable.lucide_redo_2, "Redo", ready && history.canRedo, ::redo)
-                TextButton({ field = null; commit(AttachmentEdit.NONE) }, enabled = ready && AttachmentEdits.isEdited(current),
+                Text(name, Modifier.weight(1f).padding(horizontal = 4.dp).semantics { heading() }, color = Text, fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                BarIcon(R.drawable.lucide_undo_2, "Undo", canEdit && history.canUndo, ::undo)
+                BarIcon(R.drawable.lucide_redo_2, "Redo", canEdit && history.canRedo, ::redo)
+                TextButton({ field = null; commit(AttachmentEdit.NONE) }, enabled = canEdit && AttachmentEdits.isEdited(current),
                     shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors(), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Reset") }
-                Button(::done, enabled = ready && !saving, shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
+                Button(::done, enabled = !saving && (ready || !pictureMode), shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
                     contentPadding = PaddingValues(horizontal = 14.dp)) { Text("Done", fontWeight = FontWeight.Bold) }
             }
             if (pictureMode) Text("The square is what will be saved. Drag inside to reposition; drag its corners to resize.",
                 Modifier.padding(horizontal = 16.dp, vertical = 4.dp), color = TextMuted, fontSize = 12.sp)
+            // Clipped, so a zoomed picture stays between the bar and the tools.
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().clipToBounds(), contentAlignment = Alignment.Center) {
                 val bitmap = picture
+                val active = tool
                 when {
+                    // The same place as the frame: the player fits the video inside the stage's padding.
+                    playing && media != null -> Box(Modifier.fillMaxSize().padding(STAGE_PADDING)) {
+                        DraftPreviewVideo(media.uri, paused = spoiler)
+                    }
                     failed -> Text("This file can’t be edited here.", Modifier.padding(24.dp).semantics { liveRegion = LiveRegionMode.Polite },
                         color = TextMuted, fontSize = 14.sp, textAlign = TextAlign.Center)
                     bitmap == null -> Spinner(null, Modifier.size(28.dp))
                     else -> {
                         val (turnedWidth, turnedHeight) = AttachmentEdits.rotatedSize(bitmap.width, bitmap.height, current.rotation)
-                        val region = if (tool == EditTool.CROP) EditRect.FULL else current.crop
-                        val padding = with(density) { (if (tool == EditTool.CROP) 28.dp else 16.dp).toPx() }
+                        val region = if (active == EditTool.CROP) EditRect.FULL else current.crop
+                        // One padding in every state, so choosing a tool never moves or rescales the picture.
+                        val padding = with(density) { STAGE_PADDING.toPx() }
                         val boxWidth = constraints.maxWidth.toFloat()
                         val boxHeight = constraints.maxHeight.toFloat()
                         val regionWidth = (region.width * turnedWidth).toFloat()
@@ -316,251 +390,282 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                             regionWidth * scale, regionHeight * scale, scale * max(turnedWidth, turnedHeight),
                         )
                         SideEffect { stage = layout }
-                        val latest by rememberUpdatedState(layout)
-                        // Read while drawing, so the ring follows the pointer without recomposing the editor.
-                        val ringShown by remember(layout) { derivedStateOf { tool == EditTool.DRAW && hover?.let(layout::contains) == true } }
-                        // What is on screen: the committed edit plus any drag in progress.
-                        val moved = liveText
-                        val open = field
-                        val shown = current.copy(
-                            crop = liveCrop ?: current.crop,
-                            marks = current.marks.mapIndexedNotNull { index, mark ->
-                                when {
-                                    index in erased -> null
-                                    open?.index == index -> null
-                                    moved?.index == index && mark is EditMark.Text -> mark.copy(x = moved.x, y = moved.y)
-                                    else -> mark
+                        if (active == null) {
+                            // Viewing: the same picture in the same place, zooming like the media viewer. Its canvas
+                            // is the stage less the padding, which the zoom insets by, so the fit is identical.
+                            ZoomableImage(active = true, IntSize(max(1, regionWidth.roundToInt()), max(1, regionHeight.roundToInt())),
+                                Modifier.semantics { contentDescription = name }, inset = STAGE_PADDING) {
+                                Canvas(Modifier.fillMaxSize()) {
+                                    val fit = min(size.width / regionWidth, size.height / regionHeight)
+                                    val width = regionWidth * fit
+                                    val height = regionHeight * fit
+                                    paintPicture(bitmap, current, region, turnedWidth, turnedHeight, (size.width - width) / 2f, (size.height - height) / 2f, width, height, typeface)
                                 }
-                            } + listOfNotNull(liveStroke),
-                        )
-                        Canvas(
-                            Modifier.fillMaxSize()
-                                .semantics { contentDescription = if (kind == "video") "Video frame being edited" else "Image being edited" }
-                                // The ring replaces the system pointer over the picture.
-                                .pointerHoverIcon(if (ringShown) hiddenPointer else PointerIcon.Default)
-                                .pointerInput(Unit) {
-                                    // Watches without consuming, so it sees hovering and drawing alike.
-                                    awaitPointerEventScope {
-                                        while (true) {
-                                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                                            val pointer = event.changes.firstOrNull() ?: continue
-                                            hover = pointer.position.takeIf {
-                                                event.type != PointerEventType.Exit && pointer.type != PointerType.Touch && pointer.type != PointerType.Unknown
-                                            }
-                                        }
-                                    }
-                                }
-                                .pointerInput(tool) {
-                                    val sample = 1.5.dp.toPx()
-                                    val slop = 4.dp.toPx()
-                                    val margin = 8.dp.toPx()
-                                    awaitEachGesture {
-                                        val down = awaitFirstDown()
-                                        val start = latest
-                                        val inside = start.contains(down.position)
-                                        when (tool) {
-                                            EditTool.CROP -> {
-                                                val crop = history.current.crop
-                                                val handle = cropHandle(down.position, crop, start, 24.dp.toPx()) ?: return@awaitEachGesture
-                                                down.consume()
-                                                val minWidth = min(1.0, max(AttachmentEdits.MIN_CROP, 32.dp.toPx() / start.width.toDouble()))
-                                                val minHeight = min(1.0, max(AttachmentEdits.MIN_CROP, 32.dp.toPx() / start.height.toDouble()))
-                                                val resize = if (pictureMode) AttachmentEdits::dragSquareCrop else AttachmentEdits::dragCrop
-                                                drag(down.id) { change ->
-                                                    liveCrop = resize(crop, handle, ((change.position.x - down.position.x) / start.width).toDouble(),
-                                                        ((change.position.y - down.position.y) / start.height).toDouble(), minWidth, minHeight)
-                                                    change.consume()
-                                                }
-                                                liveCrop?.let { commit(history.current.copy(crop = AttachmentEdits.clampCrop(it))) }
-                                                liveCrop = null
-                                            }
-                                            EditTool.DRAW -> {
-                                                if (!inside) return@awaitEachGesture
-                                                down.consume()
-                                                // A press outside the open field commits it, then draws.
-                                                commitField()
-                                                if (erasing) {
-                                                    val edit = history.current
-                                                    val radius = brushRingDiameter(strokePoints, density.density) / 2.0
-                                                    val fullWidth = start.width / start.region.width
-                                                    val fullHeight = start.height / start.region.height
-                                                    // Sampled closely enough along the way that a fast swipe skips no line.
-                                                    fun eraseAlong(from: Offset, to: Offset) {
-                                                        val steps = max(1, ceil((to - from).getDistance() / max(1.0, radius / 2)).toInt())
-                                                        var touched = erased
-                                                        for (step in 1..steps) {
-                                                            val (px, py) = start.point(from + (to - from) * (step.toFloat() / steps))
-                                                            touched = touched + AttachmentEdits.strokesTouched(edit.marks, px, py, radius, fullWidth, fullHeight)
-                                                        }
-                                                        if (touched != erased) erased = touched
-                                                    }
-                                                    var last = down.position
-                                                    eraseAlong(last, last)
-                                                    drag(down.id) { change ->
-                                                        eraseAlong(last, change.position)
-                                                        last = change.position
-                                                        change.consume()
-                                                    }
-                                                    val gone = erased
-                                                    if (gone.isNotEmpty()) commit(edit.copy(marks = edit.marks.filterIndexed { index, _ -> index !in gone }))
-                                                    erased = emptySet()
-                                                    return@awaitEachGesture
-                                                }
-                                                val (x, y) = start.point(down.position)
-                                                var last = down.position
-                                                liveStroke = EditMark.Stroke(color, strokePoints * density.density / start.edge.toDouble(), listOf(x, y))
-                                                drag(down.id) { change ->
-                                                    if ((change.position - last).getDistance() >= sample) {
-                                                        val (px, py) = start.point(change.position)
-                                                        liveStroke = liveStroke?.let { it.copy(points = it.points + px + py) }
-                                                        last = change.position
-                                                    }
-                                                    change.consume()
-                                                }
-                                                liveStroke?.let { stroke -> commit(history.current.let { it.copy(marks = it.marks + stroke) }) }
-                                                liveStroke = null
-                                            }
-                                            EditTool.TEXT -> {
-                                                if (!inside && field == null) return@awaitEachGesture
-                                                down.consume()
-                                                if (field != null) {
-                                                    // A press outside the open field commits it, like losing focus.
-                                                    commitField()
-                                                    waitForUpOrCancellation()
-                                                    return@awaitEachGesture
-                                                }
-                                                val edit = history.current
-                                                val (x, y) = start.point(down.position)
-                                                val index = textAt(edit, start, down.position, typeface, margin)
-                                                val mark = index?.let { edit.marks[it] as? EditMark.Text }
-                                                var dragged = false
-                                                drag(down.id) { change ->
-                                                    if (mark == null) return@drag
-                                                    if (!dragged && (change.position - down.position).getDistance() > slop) dragged = true
-                                                    if (dragged) {
-                                                        val (px, py) = start.point(change.position)
-                                                        liveText = MovedText(index, (mark.x + px - x).coerceIn(0.0, 1.0), (mark.y + py - y).coerceIn(0.0, 1.0))
-                                                        change.consume()
-                                                    }
-                                                }
-                                                val text = liveText
-                                                when {
-                                                    mark == null -> field = OpenText(null, x, y, TextFieldValue(""), color, textPoints)
-                                                    dragged && text != null -> commit(edit.copy(marks = edit.marks.mapIndexed { i, it ->
-                                                        if (i == text.index && it is EditMark.Text) it.copy(x = text.x, y = text.y) else it
-                                                    }))
-                                                    !dragged -> {
-                                                        val points = (mark.size * start.edge / density.density).toFloat()
-                                                        color = mark.color
-                                                        textPoints = points.coerceIn(AttachmentEdits.TEXT_MIN, AttachmentEdits.TEXT_MAX)
-                                                        field = OpenText(index, mark.x, mark.y, TextFieldValue(mark.text, TextRange(mark.text.length)), mark.color, points)
-                                                    }
-                                                }
-                                                liveText = null
-                                            }
-                                        }
-                                    }
-                                },
-                        ) {
-                            drawIntoCanvas { canvas ->
-                                val native = canvas.nativeCanvas
-                                native.save()
-                                native.clipRect(layout.left, layout.top, layout.left + layout.width, layout.top + layout.height)
-                                native.translate(layout.left, layout.top)
-                                native.scale(layout.width / regionWidth, layout.height / regionHeight)
-                                native.translate((-region.x * turnedWidth).toFloat(), (-region.y * turnedHeight).toFloat())
-                                EditPainter.drawTurned(native, bitmap, bitmap.width.toFloat(), bitmap.height.toFloat(), shown.rotation)
-                                EditPainter.paintMarks(native, shown.marks, turnedWidth.toFloat(), turnedHeight.toFloat(), typeface)
-                                native.restore()
                             }
-                            if (tool == EditTool.CROP) drawCropFrame(shown.crop, layout)
-                            if (ringShown) hover?.let {
-                                drawBrushRing(it, brushRingDiameter(strokePoints, density.density) / 2f, if (erasing) Color.White.copy(alpha = 0.4f) else Color(AttachmentEdits.argb(color)))
-                            }
-                        }
-                        if (open != null) {
-                            val anchor = layout.offset(open.x, open.y)
-                            val textFocus = remember { FocusRequester() }
-                            var focused by remember { mutableStateOf(false) }
-                            LaunchedEffect(open.index, open.x, open.y) { runCatching { textFocus.requestFocus() } }
-                            BasicTextField(
-                                open.value,
-                                { value -> field = field?.copy(value = if (value.text.length <= AttachmentEdits.MAX_TEXT) value else value.copy(text = value.text.take(AttachmentEdits.MAX_TEXT))) },
-                                Modifier.align(Alignment.TopStart)
-                                    .layout { measurable, constraints ->
-                                        val placeable = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
-                                        layout(placeable.width, placeable.height) {
-                                            placeable.place((anchor.x - placeable.width / 2f).roundToInt(), (anchor.y - placeable.height / 2f).roundToInt())
-                                        }
+                        } else {
+                            val latest by rememberUpdatedState(layout)
+                            // Read while drawing, so the ring follows the pointer without recomposing the editor.
+                            val ringShown by remember(layout) { derivedStateOf { active == EditTool.DRAW && hover?.let(layout::contains) == true } }
+                            // What is on screen: the committed edit plus any drag in progress.
+                            val moved = liveText
+                            val open = field
+                            val shown = current.copy(
+                                crop = liveCrop ?: current.crop,
+                                marks = current.marks.mapIndexedNotNull { index, mark ->
+                                    when {
+                                        index in erased -> null
+                                        open?.index == index -> null
+                                        moved?.index == index && mark is EditMark.Text -> mark.copy(x = moved.x, y = moved.y)
+                                        else -> mark
                                     }
-                                    .widthIn(min = 48.dp)
-                                    .border(1.dp, Text.copy(alpha = 0.7f), MaterialTheme.shapes.small)
-                                    .padding(horizontal = 6.dp)
-                                    .focusRequester(textFocus)
-                                    .onFocusChanged { state ->
-                                        // Losing focus commits, as Return does.
-                                        if (focused && !state.isFocused) commitField()
-                                        focused = state.isFocused
-                                    }
-                                    .semantics { contentDescription = if (open.index == null) "New text" else "Edit text" },
-                                textStyle = TextStyle(
-                                    color = Color(AttachmentEdits.argb(open.color)), fontFamily = EditFont, fontWeight = FontWeight.Bold,
-                                    fontSize = with(density) { open.points.dp.toSp() }, textAlign = TextAlign.Center,
-                                ),
-                                singleLine = true,
-                                cursorBrush = SolidColor(Text),
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                                keyboardActions = KeyboardActions(onDone = { commitField() }),
+                                } + listOfNotNull(liveStroke),
                             )
+                            Canvas(
+                                Modifier.fillMaxSize()
+                                    .semantics { contentDescription = if (kind == "video") "Video frame being edited" else "Image being edited" }
+                                    // The ring replaces the system pointer over the picture.
+                                    .pointerHoverIcon(if (ringShown) hiddenPointer else PointerIcon.Default)
+                                    .pointerInput(Unit) {
+                                        // Watches without consuming, so it sees hovering and drawing alike.
+                                        awaitPointerEventScope {
+                                            while (true) {
+                                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                val pointer = event.changes.firstOrNull() ?: continue
+                                                hover = pointer.position.takeIf {
+                                                    event.type != PointerEventType.Exit && pointer.type != PointerType.Touch && pointer.type != PointerType.Unknown
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .pointerInput(active) {
+                                        val sample = 1.5.dp.toPx()
+                                        val slop = 4.dp.toPx()
+                                        val margin = 8.dp.toPx()
+                                        awaitEachGesture {
+                                            val down = awaitFirstDown()
+                                            val start = latest
+                                            val inside = start.contains(down.position)
+                                            when (active) {
+                                                EditTool.CROP -> {
+                                                    val crop = history.current.crop
+                                                    val handle = cropHandle(down.position, crop, start, 24.dp.toPx()) ?: return@awaitEachGesture
+                                                    down.consume()
+                                                    val minWidth = min(1.0, max(AttachmentEdits.MIN_CROP, 32.dp.toPx() / start.width.toDouble()))
+                                                    val minHeight = min(1.0, max(AttachmentEdits.MIN_CROP, 32.dp.toPx() / start.height.toDouble()))
+                                                    val resize = if (pictureMode) AttachmentEdits::dragSquareCrop else AttachmentEdits::dragCrop
+                                                    drag(down.id) { change ->
+                                                        liveCrop = resize(crop, handle, ((change.position.x - down.position.x) / start.width).toDouble(),
+                                                            ((change.position.y - down.position.y) / start.height).toDouble(), minWidth, minHeight)
+                                                        change.consume()
+                                                    }
+                                                    liveCrop?.let { commit(history.current.copy(crop = AttachmentEdits.clampCrop(it))) }
+                                                    liveCrop = null
+                                                }
+                                                EditTool.DRAW -> {
+                                                    if (!inside) return@awaitEachGesture
+                                                    down.consume()
+                                                    // A press outside the open field commits it, then draws.
+                                                    commitField()
+                                                    if (erasing) {
+                                                        val edit = history.current
+                                                        val radius = brushRingDiameter(strokePoints, density.density) / 2.0
+                                                        val fullWidth = start.width / start.region.width
+                                                        val fullHeight = start.height / start.region.height
+                                                        // Sampled closely enough along the way that a fast swipe skips no line.
+                                                        fun eraseAlong(from: Offset, to: Offset) {
+                                                            val steps = max(1, ceil((to - from).getDistance() / max(1.0, radius / 2)).toInt())
+                                                            var touched = erased
+                                                            for (step in 1..steps) {
+                                                                val (px, py) = start.point(from + (to - from) * (step.toFloat() / steps))
+                                                                touched = touched + AttachmentEdits.strokesTouched(edit.marks, px, py, radius, fullWidth, fullHeight)
+                                                            }
+                                                            if (touched != erased) erased = touched
+                                                        }
+                                                        var last = down.position
+                                                        eraseAlong(last, last)
+                                                        drag(down.id) { change ->
+                                                            eraseAlong(last, change.position)
+                                                            last = change.position
+                                                            change.consume()
+                                                        }
+                                                        val gone = erased
+                                                        if (gone.isNotEmpty()) commit(edit.copy(marks = edit.marks.filterIndexed { index, _ -> index !in gone }))
+                                                        erased = emptySet()
+                                                        return@awaitEachGesture
+                                                    }
+                                                    val (x, y) = start.point(down.position)
+                                                    var last = down.position
+                                                    liveStroke = EditMark.Stroke(color, strokePoints * density.density / start.edge.toDouble(), listOf(x, y))
+                                                    drag(down.id) { change ->
+                                                        if ((change.position - last).getDistance() >= sample) {
+                                                            val (px, py) = start.point(change.position)
+                                                            liveStroke = liveStroke?.let { it.copy(points = it.points + px + py) }
+                                                            last = change.position
+                                                        }
+                                                        change.consume()
+                                                    }
+                                                    liveStroke?.let { stroke -> commit(history.current.let { it.copy(marks = it.marks + stroke) }) }
+                                                    liveStroke = null
+                                                }
+                                                EditTool.TEXT -> {
+                                                    if (!inside && field == null) return@awaitEachGesture
+                                                    down.consume()
+                                                    if (field != null) {
+                                                        // A press outside the open field commits it, like losing focus.
+                                                        commitField()
+                                                        waitForUpOrCancellation()
+                                                        return@awaitEachGesture
+                                                    }
+                                                    val edit = history.current
+                                                    val (x, y) = start.point(down.position)
+                                                    val index = textAt(edit, start, down.position, typeface, margin)
+                                                    val mark = index?.let { edit.marks[it] as? EditMark.Text }
+                                                    var dragged = false
+                                                    drag(down.id) { change ->
+                                                        if (mark == null) return@drag
+                                                        if (!dragged && (change.position - down.position).getDistance() > slop) dragged = true
+                                                        if (dragged) {
+                                                            val (px, py) = start.point(change.position)
+                                                            liveText = MovedText(index, (mark.x + px - x).coerceIn(0.0, 1.0), (mark.y + py - y).coerceIn(0.0, 1.0))
+                                                            change.consume()
+                                                        }
+                                                    }
+                                                    val text = liveText
+                                                    when {
+                                                        mark == null -> field = OpenText(null, x, y, TextFieldValue(""), color, textPoints)
+                                                        dragged && text != null -> commit(edit.copy(marks = edit.marks.mapIndexed { i, it ->
+                                                            if (i == text.index && it is EditMark.Text) it.copy(x = text.x, y = text.y) else it
+                                                        }))
+                                                        !dragged -> {
+                                                            val points = (mark.size * start.edge / density.density).toFloat()
+                                                            color = mark.color
+                                                            textPoints = points.coerceIn(AttachmentEdits.TEXT_MIN, AttachmentEdits.TEXT_MAX)
+                                                            field = OpenText(index, mark.x, mark.y, TextFieldValue(mark.text, TextRange(mark.text.length)), mark.color, points)
+                                                        }
+                                                    }
+                                                    liveText = null
+                                                }
+                                            }
+                                        }
+                                    },
+                            ) {
+                                paintPicture(bitmap, shown, region, turnedWidth, turnedHeight, layout.left, layout.top, layout.width, layout.height, typeface)
+                                if (active == EditTool.CROP) drawCropFrame(shown.crop, layout)
+                                if (ringShown) hover?.let {
+                                    drawBrushRing(it, brushRingDiameter(strokePoints, density.density) / 2f, if (erasing) Color.White.copy(alpha = 0.4f) else Color(AttachmentEdits.argb(color)))
+                                }
+                            }
+                            if (open != null) {
+                                val anchor = layout.offset(open.x, open.y)
+                                val textFocus = remember { FocusRequester() }
+                                var focused by remember { mutableStateOf(false) }
+                                LaunchedEffect(open.index, open.x, open.y) { runCatching { textFocus.requestFocus() } }
+                                BasicTextField(
+                                    open.value,
+                                    { value -> field = field?.copy(value = if (value.text.length <= AttachmentEdits.MAX_TEXT) value else value.copy(text = value.text.take(AttachmentEdits.MAX_TEXT))) },
+                                    Modifier.align(Alignment.TopStart)
+                                        .layout { measurable, constraints ->
+                                            val placeable = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
+                                            layout(placeable.width, placeable.height) {
+                                                placeable.place((anchor.x - placeable.width / 2f).roundToInt(), (anchor.y - placeable.height / 2f).roundToInt())
+                                            }
+                                        }
+                                        .widthIn(min = 48.dp)
+                                        .border(1.dp, Text.copy(alpha = 0.7f), MaterialTheme.shapes.small)
+                                        .padding(horizontal = 6.dp)
+                                        .focusRequester(textFocus)
+                                        .onFocusChanged { state ->
+                                            // Losing focus commits, as Return does.
+                                            if (focused && !state.isFocused) commitField()
+                                            focused = state.isFocused
+                                        }
+                                        .semantics { contentDescription = if (open.index == null) "New text" else "Edit text" },
+                                    textStyle = TextStyle(
+                                        color = Color(AttachmentEdits.argb(open.color)), fontFamily = EditFont, fontWeight = FontWeight.Bold,
+                                        fontSize = with(density) { open.points.dp.toSp() }, textAlign = TextAlign.Center,
+                                    ),
+                                    singleLine = true,
+                                    cursorBrush = SolidColor(Text),
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                    keyboardActions = KeyboardActions(onDone = { commitField() }),
+                                )
+                            }
                         }
                     }
+                }
+                // While viewing a spoiler, the cover recipients see, over the whole stage so a zoomed picture
+                // can't show past it; it takes every touch, so the covered media can't be zoomed or played.
+                if (cover > 0f) Box(
+                    Modifier.matchParentSize().graphicsLayer { alpha = cover }.background(Surface)
+                        .then(if (covered) Modifier.pointerInput(Unit) {
+                            awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } }
+                        } else Modifier),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    SpoilerThumbnail(spoilerSource, coverKey)
+                    SpoilerBadge(revealHint = false)
                 }
             }
-            if (kind == "video" && ready) Text("Drawings and text stay on screen for the whole video.", Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            // Shown from the start, so the stage never resizes once the frame is ready.
+            if (kind == "video") Text("Drawings and text stay on screen for the whole video.", Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                 color = TextMuted, fontSize = 12.sp, textAlign = TextAlign.Center)
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (tool == EditTool.CROP) {
-                    OutlinedButton({ commit(AttachmentEdits.rotateLeft(history.current)) }, Modifier.align(Alignment.CenterHorizontally), enabled = ready,
-                        shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors(), border = BorderStroke(1.dp, Border)) {
-                        Icon(painterResource(R.drawable.lucide_rotate_ccw), null, Modifier.size(18.dp), tint = Text)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Rotate left")
-                    }
-                } else {
-                    val custom = color !in AttachmentEdits.COLORS
-                    Row(Modifier.fillMaxWidth().selectableGroup().semantics { contentDescription = "Colour" }, horizontalArrangement = Arrangement.SpaceBetween) {
-                        AttachmentEdits.COLORS.forEach { preset ->
-                            Swatch(!erasing && color == preset, AttachmentEdits.COLOR_NAMES[preset] ?: preset, SolidColor(Color(AttachmentEdits.argb(preset)))) {
-                                chooseColor(preset)
+                // The chosen tool's options, in a strip whose height is kept while viewing too; a new tool's fade in.
+                Box(Modifier.fillMaxWidth().height(OPTIONS_HEIGHT), contentAlignment = Alignment.Center) {
+                    val options = tool
+                    if (options != null) key(options) {
+                        Column(Modifier.fillMaxWidth().entrance(MOTION_FAST), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (options == EditTool.CROP) {
+                                OutlinedButton({ commit(AttachmentEdits.rotateLeft(history.current)) }, Modifier.align(Alignment.CenterHorizontally), enabled = canEdit,
+                                    shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors(), border = BorderStroke(1.dp, Border)) {
+                                    Icon(painterResource(R.drawable.lucide_rotate_ccw), null, Modifier.size(18.dp), tint = Text)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Rotate left")
+                                }
+                            } else {
+                                val custom = color !in AttachmentEdits.COLORS
+                                Row(Modifier.fillMaxWidth().selectableGroup().semantics { contentDescription = "Colour" }, horizontalArrangement = Arrangement.SpaceBetween) {
+                                    AttachmentEdits.COLORS.forEach { preset ->
+                                        Swatch(!erasing && color == preset, AttachmentEdits.COLOR_NAMES[preset] ?: preset, SolidColor(Color(AttachmentEdits.argb(preset)))) {
+                                            chooseColor(preset)
+                                        }
+                                    }
+                                    val spectrum = Brush.sweepGradient(listOf(0f, 60f, 120f, 180f, 240f, 300f, 360f).map { Color.hsv(it, 0.85f, 0.95f) })
+                                    Swatch(custom && !erasing, "Custom colour", if (custom) SolidColor(Color(AttachmentEdits.argb(color))) else spectrum) {
+                                        picking = true
+                                    }
+                                }
+                                val draw = options == EditTool.DRAW
+                                // The size is read inside the row, so dragging its slider recomposes the row, not the picture.
+                                SizeRow(
+                                    draw, erasing, color, canEdit,
+                                    points = { if (draw) strokePoints else textPoints },
+                                    change = { value -> if (draw) strokePoints = value else { textPoints = value; field = field?.copy(points = value) } },
+                                ) { if (draw) EraserButton(erasing, canEdit) { erasing = !erasing } }
                             }
                         }
-                        val spectrum = Brush.sweepGradient(listOf(0f, 60f, 120f, 180f, 240f, 300f, 360f).map { Color.hsv(it, 0.85f, 0.95f) })
-                        Swatch(custom && !erasing, "Custom colour", if (custom) SolidColor(Color(AttachmentEdits.argb(color))) else spectrum) {
-                            picking = true
-                        }
                     }
-                    val draw = tool == EditTool.DRAW
-                    // The size is read inside the row, so dragging its slider recomposes the row, not the picture.
-                    SizeRow(
-                        draw, erasing, color, ready,
-                        points = { if (draw) strokePoints else textPoints },
-                        change = { value -> if (draw) strokePoints = value else { textPoints = value; field = field?.copy(points = value) } },
-                    ) { if (draw) EraserButton(erasing, ready) { erasing = !erasing } }
                 }
+                // The same row in every state: the spoiler toggle, the tools, then Remove.
                 Row(Modifier.fillMaxWidth().selectableGroup().semantics { contentDescription = "Editing tools" }, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    EditTool.entries.forEach { option ->
-                        val selected = tool == option
-                        Column(
-                            Modifier.weight(1f).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
-                                .background(if (selected) TerracottaWash else Color.Transparent)
-                                .border(1.dp, if (selected) Terracotta else Border, MaterialTheme.shapes.small)
-                                .selectable(selected, enabled = ready, role = Role.Tab) { chooseTool(option) }
-                                .padding(vertical = 6.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
-                        ) {
-                            val tint = if (selected) Text else TextMuted
-                            Icon(painterResource(option.icon), null, Modifier.size(18.dp), tint = tint)
-                            Text(option.label, color = tint, fontSize = 12.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+                    editorControls(spoiler = toggleSpoiler != null, removable = remove != null).forEach { control ->
+                        when (control) {
+                            EditorControl.Spoiler -> EditorButton(
+                                R.drawable.lucide_eye_off, "Spoiler", spoiler, editable, Text,
+                                Modifier.toggleable(spoiler, enabled = editable, role = Role.Switch) { toggleSpoiler?.invoke() },
+                            )
+                            is EditorControl.Tool -> {
+                                val option = control.tool
+                                val selected = tool == option
+                                EditorButton(
+                                    option.icon, option.label, selected, canEdit, Text,
+                                    Modifier.selectable(selected, enabled = canEdit, role = Role.Tab) { chooseTool(nextEditTool(tool, option, viewing = !pictureMode)) },
+                                )
+                            }
+                            EditorControl.Remove -> EditorButton(
+                                R.drawable.lucide_trash_2, "Remove", false, editable, ErrorText,
+                                Modifier.clickable(enabled = editable, role = Role.Button) { remove?.invoke() },
+                            )
                         }
                     }
                 }
@@ -618,6 +723,30 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     }
 }
 
+/**
+ * One of the editor's bottom controls: [icon] over [label], [modifier] (a selectable, toggle or
+ * button) on the whole tile, with the terracotta wash while [selected]; dimmed while not [enabled].
+ */
+@Composable private fun RowScope.EditorButton(icon: Int, label: String, selected: Boolean, enabled: Boolean, color: Color, modifier: Modifier) {
+    Column(
+        Modifier.weight(1f).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
+            .background(if (selected) TerracottaWash else Color.Transparent)
+            .border(1.dp, if (selected) Terracotta else Border, MaterialTheme.shapes.small)
+            .then(modifier)
+            .padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+    ) {
+        val tint = when {
+            !enabled -> TextMuted.copy(alpha = 0.4f)
+            selected -> Text
+            color == Text -> TextMuted
+            else -> color
+        }
+        Icon(painterResource(icon), null, Modifier.size(18.dp), tint = tint)
+        Text(label, color = tint, fontSize = 12.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal, maxLines = 1)
+    }
+}
+
 @Composable private fun BarIcon(icon: Int, label: String, enabled: Boolean, onClick: () -> Unit) {
     IconButton(onClick, Modifier.semantics { contentDescription = label }, enabled = enabled) {
         Icon(painterResource(icon), null, Modifier.size(20.dp), tint = if (enabled) Text else TextMuted.copy(alpha = 0.4f))
@@ -631,6 +760,27 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
         contentAlignment = Alignment.Center,
     ) {
         Box(Modifier.size(32.dp).border(if (selected) 2.dp else 1.dp, if (selected) Terracotta else Border, CircleShape).padding(3.dp).background(fill, CircleShape))
+    }
+}
+
+/**
+ * The turned picture's [region] (fractions) with [edit]'s marks, drawn [width] × [height] at [left], [top].
+ * The editing stage and viewing draw through it alike.
+ */
+private fun DrawScope.paintPicture(
+    bitmap: Bitmap, edit: AttachmentEdit, region: EditRect, turnedWidth: Int, turnedHeight: Int,
+    left: Float, top: Float, width: Float, height: Float, typeface: android.graphics.Typeface,
+) {
+    drawIntoCanvas { canvas ->
+        val native = canvas.nativeCanvas
+        native.save()
+        native.clipRect(left, top, left + width, top + height)
+        native.translate(left, top)
+        native.scale(width / (region.width * turnedWidth).toFloat(), height / (region.height * turnedHeight).toFloat())
+        native.translate((-region.x * turnedWidth).toFloat(), (-region.y * turnedHeight).toFloat())
+        EditPainter.drawTurned(native, bitmap, bitmap.width.toFloat(), bitmap.height.toFloat(), edit.rotation)
+        EditPainter.paintMarks(native, edit.marks, turnedWidth.toFloat(), turnedHeight.toFloat(), typeface)
+        native.restore()
     }
 }
 

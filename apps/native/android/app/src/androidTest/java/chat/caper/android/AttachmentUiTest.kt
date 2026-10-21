@@ -24,6 +24,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.hasAnyAncestor
@@ -220,5 +221,45 @@ class AttachmentUiTest {
         compose.runOnIdle { enabled.value = false }
         compose.onNodeWithContentDescription("Remove spoiler attachment").assertDoesNotExist()
         compose.onNodeWithContentDescription("Edit spoiler attachment").assertDoesNotExist()
+    }
+
+    @Test fun aStagedImageOpensOneEditorThatViewsEditsTogglesTheSpoilerAndRemoves() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val local = File(context.cacheDir, "editor-test.png")
+        local.outputStream().use { Bitmap.createBitmap(40, 30, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.RED) }.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        try {
+            val removed = mutableListOf<String>()
+            val files = mutableStateOf(listOf(chat.caper.android.model.DraftAttachmentUi(
+                "img", "a.png", "image", compressing = false, original = Uri.fromFile(local).toString(), editKind = "image", storedSize = 10,
+            )))
+            compose.setContent {
+                CaperTheme {
+                    DraftAttachmentStrip(files.value, { key -> removed += key; files.value = files.value.filter { it.key != key } },
+                        edit = { _, _, _ -> }, toggleSpoiler = { key -> files.value = files.value.map { if (it.key == key) it.copy(spoiler = !it.spoiler) else it } })
+                }
+            }
+            compose.onNodeWithContentDescription("Edit a.png").performClick()
+            // Viewing: the full bar and row, no tool's options.
+            compose.waitUntil(5_000) { runCatching { compose.onNodeWithText("Crop").assertIsEnabled(); true }.getOrDefault(false) }
+            compose.onNodeWithText("Done").assertExists()
+            compose.onNodeWithText("Reset").assertExists()
+            compose.onNodeWithText("Remove").assertExists()
+            compose.onNodeWithText("Rotate left").assertDoesNotExist()
+            // A tool opens in place; tapping it again returns to viewing.
+            compose.onNodeWithText("Crop").performClick()
+            compose.onNodeWithText("Rotate left").assertExists()
+            compose.onNodeWithText("Spoiler").assertExists()
+            compose.onNodeWithText("Crop").performClick()
+            compose.onNodeWithText("Rotate left").assertDoesNotExist()
+            // The spoiler toggles live on the draft, and the editor stays open.
+            compose.onNodeWithText("Spoiler").performClick()
+            compose.runOnIdle { assertEquals(true, files.value.single().spoiler) }
+            compose.onNodeWithText("Done").assertExists()
+            compose.onNodeWithText("Remove").performClick()
+            compose.runOnIdle { assertEquals(listOf("img"), removed) }
+            compose.onNodeWithText("Done").assertDoesNotExist()
+        } finally {
+            local.delete()
+        }
     }
 }
