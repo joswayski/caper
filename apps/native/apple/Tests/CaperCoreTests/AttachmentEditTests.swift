@@ -235,15 +235,22 @@ final class AttachmentEditTests: XCTestCase {
         XCTAssertEqual(history.current, turned)
     }
 
-    func testEditorOpensOnDrawUnlessThePreviewPicksATool() {
-        XCTAssertEqual(AttachmentEditTool.allCases, [.crop, .draw, .text], "the switcher's and the preview's order")
+    func testEditorOpensViewingUnlessAToolIsPicked() {
+        XCTAssertEqual(AttachmentEditTool.allCases, [.crop, .draw, .text], "the bottom row's order")
         XCTAssertEqual(AttachmentEditTool.allCases.map(\.title), ["Crop", "Draw", "Text"])
         XCTAssertEqual(AttachmentEditTool.allCases.map(\.icon), ["crop", "brush", "type"])
         let file = URL(fileURLWithPath: "/tmp/photo.png")
         let pencil = AttachmentEditRequest(name: "photo.png", kind: .image, original: file, edit: .original) { _, _ in }
-        XCTAssertEqual(pencil.tool, .draw)
+        XCTAssertNil(pencil.tool, "the tile and the pencil open it viewing")
         let cropping = AttachmentEditRequest(name: "photo.png", kind: .image, original: file, edit: .original, tool: .crop) { _, _ in }
         XCTAssertEqual(cropping.tool, .crop)
+    }
+
+    func testPickingTheSelectedToolReturnsToViewing() {
+        XCTAssertEqual(AttachmentEditTool.picking(.crop, from: nil), .crop)
+        XCTAssertEqual(AttachmentEditTool.picking(.draw, from: .crop), .draw, "another tool switches in place")
+        XCTAssertNil(AttachmentEditTool.picking(.text, from: .text))
+        XCTAssertEqual(AttachmentEditTool.picking(.crop, from: .crop, pictureMode: true), .crop, "a profile picture stays on its crop")
     }
 
     func testStagedTileMenusOfferEditThenSpoilerThenRemove() {
@@ -257,24 +264,25 @@ final class AttachmentEditTests: XCTestCase {
                                "nothing while sending")
             }
         }
-        XCTAssertEqual(StagedFileChip.pencilMenu(spoilerToggle: true), [.spoiler, .remove], "files the preview can't show")
+        XCTAssertEqual(StagedFileChip.pencilMenu(spoilerToggle: true), [.spoiler, .remove], "files the editor can't open")
         XCTAssertEqual(StagedFileChip.pencilMenu(spoilerToggle: false), [.remove])
     }
 
-    func testStagedPreviewToolsLeadWithSpoilerAndEndWithRemove() {
-        XCTAssertEqual(AttachmentDraftPreviewTool.row(spoiler: true, remove: true),
-                       [.spoiler, .edit(.crop), .edit(.draw), .edit(.text), .remove])
-        XCTAssertEqual(AttachmentDraftPreviewTool.row(spoiler: false, remove: false), [.edit(.crop), .edit(.draw), .edit(.text)])
+    func testEditorRowLeadsWithSpoilerAndEndsWithRemove() {
+        XCTAssertEqual(AttachmentEditorRowItem.row(spoiler: true, remove: true),
+                       [.spoiler, .tool(.crop), .tool(.draw), .tool(.text), .remove])
+        XCTAssertEqual(AttachmentEditorRowItem.row(spoiler: false, remove: false), [.tool(.crop), .tool(.draw), .tool(.text)])
         let file = URL(fileURLWithPath: "/tmp/photo.png")
-        let bare = AttachmentDraftPreviewRequest(name: "photo.png", kind: .image, url: file) { _ in nil }
-        XCTAssertEqual(bare.tools, [.edit(.crop), .edit(.draw), .edit(.text)])
+        let bare = AttachmentEditRequest(name: "photo.png", kind: .image, original: file, edit: .original) { _, _ in }
+        XCTAssertEqual(bare.row, [.tool(.crop), .tool(.draw), .tool(.text)], "a profile picture has no Spoiler or Remove")
         var marked = false
         var removed = false
-        let full = AttachmentDraftPreviewRequest(name: "photo.png", kind: .image, url: file,
-                                                 spoiler: AttachmentDraftSpoiler(isOn: { marked }, toggle: { marked.toggle() }),
-                                                 remove: { removed = true }) { _ in nil }
-        XCTAssertEqual(full.tools.first, .spoiler)
-        XCTAssertEqual(full.tools.last, .remove)
+        let full = AttachmentEditRequest(name: "photo.png", kind: .image, original: file, edit: .original,
+                                         spoiler: AttachmentDraftSpoiler(isOn: { marked }, toggle: { marked.toggle() }),
+                                         remove: { removed = true }) { _, _ in }
+        XCTAssertNil(full.tool)
+        XCTAssertEqual(full.row.first, .spoiler)
+        XCTAssertEqual(full.row.last, .remove)
         full.spoiler?.toggle()
         XCTAssertTrue(full.spoiler?.isOn() == true, "toggles in place")
         full.remove?()

@@ -711,8 +711,8 @@ private struct SpoilerThumbnail: View {
     }
 }
 
-/// Compact badge on sent spoiler covers.
-private struct SpoilerLabel: View {
+/// Compact badge on sent spoiler covers (and a spoiler in the attachment editor).
+struct SpoilerLabel: View {
     var revealHint = false
     var emphasized = false
 
@@ -1881,12 +1881,14 @@ private struct MediaViewerImage: View {
 }
 
 /// Fits a `width`×`height` picture to `container` and zooms it, in the
-/// viewer and the draft preview: a pinch (touch screen or trackpad) zooms
+/// viewer and the attachment editor's viewing state: a pinch (touch screen or trackpad) zooms
 /// between fit and `MediaViewerPolicy.maxZoom`, double-click or double-tap
 /// toggles fit and 2× at that point, and a drag pans while zoomed, until an
 /// edge meets the container's. The owner keeps `scale` and `offset`, so it
-/// can reset them.
-private struct MediaZoom: ViewModifier {
+/// can reset them. While not `enabled` (an editor tool is picked) its
+/// gestures stand aside for the picture's own, without changing the view's
+/// identity, so the picture is never rebuilt.
+struct MediaZoom: ViewModifier {
     let width: Int
     let height: Int
     let container: CGSize
@@ -1894,19 +1896,23 @@ private struct MediaZoom: ViewModifier {
     @Binding var offset: CGSize
     /// A single tap or click on the picture.
     var tap: () -> Void = {}
+    var enabled = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @GestureState private var pinch: CGFloat = 1
     @GestureState private var drag: CGSize = .zero
 
     func body(content: Content) -> some View {
         let fitted = MediaViewerPolicy.fittedSize(width: Double(width), height: Double(height), in: container)
+        let own: GestureMask = enabled ? .all : .subviews
         content
             .frame(width: fitted.width, height: fitted.height)
-            .contentShape(Rectangle())
-            .onTapGesture(count: 2) { point in toggleZoom(at: point, fitted: fitted) }
-            .onTapGesture(perform: tap)
-            .gesture(magnify(fitted: fitted))
-            .gesture(pan(fitted: fitted), including: scale > 1 ? .all : .subviews)
+            // Standing aside, it reaches past the picture, so an editor's crop handles there still take presses.
+            .contentShape(Rectangle().inset(by: enabled ? 0 : -44))
+            // The double tap before the single one, so a single tap waits for it (as `onTapGesture` does).
+            .gesture(SpatialTapGesture(count: 2).onEnded { value in toggleZoom(at: value.location, fitted: fitted) }, including: own)
+            .gesture(TapGesture().onEnded { tap() }, including: own)
+            .gesture(magnify(fitted: fitted), including: own)
+            .gesture(pan(fitted: fitted), including: enabled && scale > 1 ? .all : .subviews)
             .scaleEffect(scale * pinch)
             .offset(x: offset.width + drag.width, y: offset.height + drag.height)
     }
@@ -2131,284 +2137,6 @@ private struct MediaViewerAspect: ViewModifier {
     }
 }
 
-// MARK: Draft preview
-
-/// A staged file the editor can open, previewed with its tools. QuickLook
-/// can't host them, so it keeps every other staged file.
-struct AttachmentDraftPreviewRequest: Identifiable {
-    let id = UUID()
-    let name: String
-    /// What `url` holds: `.image` or `.video`.
-    let kind: AttachmentKind
-    let url: URL
-    /// The file's spoiler mark as it is now, and its toggle; nil where it can't be marked.
-    let spoiler: AttachmentDraftSpoiler?
-    /// Removes the file (the preview then closes); nil where it can't be removed.
-    let remove: (() -> Void)?
-    /// The editor on a tool, for the file as it is then; nil when it can no longer be edited.
-    let edit: (AttachmentEditTool) -> AttachmentEditRequest?
-
-    init(name: String, kind: AttachmentKind, url: URL, spoiler: AttachmentDraftSpoiler? = nil, remove: (() -> Void)? = nil,
-         edit: @escaping (AttachmentEditTool) -> AttachmentEditRequest?) {
-        self.name = name
-        self.kind = kind
-        self.url = url
-        self.spoiler = spoiler
-        self.remove = remove
-        self.edit = edit
-    }
-
-    /// The preview's tool row, left to right.
-    var tools: [AttachmentDraftPreviewTool] { AttachmentDraftPreviewTool.row(spoiler: spoiler != nil, remove: remove != nil) }
-}
-
-/// A staged file's spoiler mark, read live from its composer (the preview's
-/// toggle and the tile both reflect it).
-struct AttachmentDraftSpoiler {
-    let isOn: () -> Bool
-    let toggle: () -> Void
-}
-
-/// A button in the staged preview's tool row.
-enum AttachmentDraftPreviewTool: Hashable {
-    case spoiler
-    /// Closes the preview and opens the editor on that tool.
-    case edit(AttachmentEditTool)
-    case remove
-
-    /// Spoiler where the composer offers it, the editor's tools, then Remove where it can.
-    static func row(spoiler: Bool, remove: Bool) -> [AttachmentDraftPreviewTool] {
-        var row: [AttachmentDraftPreviewTool] = []
-        if spoiler { row.append(.spoiler) }
-        row.append(contentsOf: AttachmentEditTool.allCases.map { AttachmentDraftPreviewTool.edit($0) })
-        if remove { row.append(.remove) }
-        return row
-    }
-}
-
-/// Opens the draft preview from composers below an `AttachmentEditorHost`.
-struct AttachmentDraftPreviewAction {
-    let perform: (AttachmentDraftPreviewRequest) -> Void
-    func callAsFunction(_ request: AttachmentDraftPreviewRequest) { perform(request) }
-}
-
-private struct AttachmentDraftPreviewKey: EnvironmentKey {
-    static var defaultValue: AttachmentDraftPreviewAction? { nil }
-}
-
-extension EnvironmentValues {
-    /// Nil where nothing presents it; staged files then preview in QuickLook.
-    var attachmentDraftPreview: AttachmentDraftPreviewAction? {
-        get { self[AttachmentDraftPreviewKey.self] }
-        set { self[AttachmentDraftPreviewKey.self] = newValue }
-    }
-}
-
-/// A staged file the editor can open, fitted on the viewer's dark backdrop
-/// with Spoiler, Crop, Draw, Text and Remove along the bottom. Spoiler
-/// toggles in place; each editing tool closes the preview and opens the
-/// editor on that tool; Remove removes the file and closes the preview. An image zooms as in the viewer
-/// (`MediaZoom`). Close, Escape or (on the Mac) a click outside the file
-/// closes it.
-struct AttachmentDraftPreview: View {
-    let request: AttachmentDraftPreviewRequest
-    let close: () -> Void
-    let edit: (AttachmentEditTool) -> Void
-    @State private var picture: AttachmentEditorPicture?
-    @State private var failed = false
-    @State private var player: AVPlayer?
-    /// The image's zoom; each preview opens fitted.
-    @State private var scale: CGFloat = 1
-    @State private var offset: CGSize = .zero
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    #if os(macOS)
-    @FocusState private var focused: Bool
-    #endif
-
-    /// Read live, so marking the file shows here at once, as people will see it.
-    private var spoilered: Bool { request.spoiler?.isOn() ?? false }
-
-    var body: some View {
-        ZStack {
-            #if os(iOS)
-            Color.black.ignoresSafeArea().accessibilityHidden(true)
-            #else
-            Color.black.opacity(0.92).ignoresSafeArea()
-                .onTapGesture(perform: close)
-                .accessibilityHidden(true)
-            #endif
-            VStack(spacing: 0) {
-                topBar
-                media
-                    // A spoiler shows covered, as the message will; the editor still shows it plainly.
-                    .blur(radius: spoilered ? 36 : 0)
-                    .overlay { if spoilered { SpoilerLabel().allowsHitTesting(false).transition(.opacity) } }
-                    .animation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.base), value: spoilered)
-                    .padding(.horizontal, 16)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    // Under both bars: a zoomed image spreads beneath them, and
-                    // their buttons stay on top.
-                    .zIndex(-1)
-                tools
-            }
-        }
-        // Arrives with a short fade, as the editor does; closing is instant.
-        .modifier(Entrance(animation: CaperMotion.easeOut(CaperMotion.base)))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(request.kind == .video ? "Video preview" : "Image preview")
-        .accessibilityAddTraits(.isModal)
-        .accessibilityIdentifier("attachment-draft-preview")
-        #if os(macOS)
-        // Takes the keyboard from the composer underneath.
-        .focusable()
-        .focusEffectDisabled()
-        .focused($focused)
-        .onAppear { focused = true }
-        .onExitCommand(perform: close)
-        #endif
-    }
-
-    private var topBar: some View {
-        HStack(spacing: 8) {
-            Text(request.name).font(CaperTheme.font(14, weight: .bold)).foregroundStyle(CaperTheme.text)
-                .lineLimit(1).truncationMode(.middle)
-                .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: 8)
-            Button(action: close) { CaperIcon(name: "x", size: 20) }
-                .buttonStyle(MediaViewerButton())
-                .keyboardShortcut(.cancelAction)
-                .help("Close")
-                .accessibilityLabel("Close preview")
-                .accessibilityIdentifier("attachment-draft-preview-close")
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background {
-            // The viewer's shade, for the name over a zoomed image. Clicks
-            // pass through it, to the backdrop on the Mac.
-            LinearGradient(gradient: Gradient(colors: [Color.black.opacity(0.7), Color.black.opacity(0)]), startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-        }
-    }
-
-    @ViewBuilder private var media: some View {
-        if request.kind == .video {
-            // The platform player with its controls, playing as the viewer's videos do.
-            ZStack {
-                if let player { VideoPlayer(player: player) } else { ProgressView() }
-            }
-            .onAppear {
-                guard player == nil else { return }
-                let created = AVPlayer(url: request.url)
-                player = created
-                created.play()
-            }
-            .onDisappear { player?.pause() }
-        } else if let picture {
-            GeometryReader { geometry in
-                Image(decorative: picture.image, scale: 1)
-                    .resizable()
-                    .modifier(MediaZoom(width: picture.image.width, height: picture.image.height, container: geometry.size, scale: $scale, offset: $offset))
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(request.name)
-                    .accessibilityAddTraits(.isImage)
-                    .accessibilityIdentifier("attachment-draft-preview-image")
-            }
-            // The decoded picture fades in over the spinner instead of popping.
-            .transition(.opacity)
-        } else if failed {
-            VStack(spacing: 6) {
-                Image(systemName: "photo").font(.system(size: 22))
-                Text("Preview unavailable").font(CaperTheme.font(13))
-            }
-            .foregroundStyle(CaperTheme.muted)
-            .accessibilityElement(children: .combine)
-        } else {
-            ProgressView()
-                .accessibilityLabel("Loading")
-                .task {
-                    if let loaded = await AttachmentEditorPicture.load(request.url, kind: .image, maxEdge: 4096) {
-                        withAnimation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.base)) { picture = loaded }
-                    } else { failed = true }
-                }
-        }
-    }
-
-    private var tools: some View {
-        HStack(spacing: 4) {
-            ForEach(request.tools, id: \.self) { item in
-                switch item {
-                case .spoiler:
-                    spoilerToggle
-                case .edit(let tool):
-                    AttachmentEditToolButton(tool: tool) { edit(tool) }
-                        .help("\(tool.title) in the editor")
-                        .accessibilityHint("Opens the editor")
-                        .accessibilityIdentifier("attachment-draft-preview-\(tool.rawValue)")
-                case .remove:
-                    AttachmentDraftPreviewButton(systemImage: "trash", title: "Remove", destructive: true) {
-                        request.remove?()
-                        close()
-                    }
-                    .help("Remove attachment")
-                    .accessibilityLabel("Remove")
-                    .accessibilityHint("Removes the attachment and closes the preview")
-                    .accessibilityIdentifier("attachment-draft-preview-remove")
-                }
-            }
-        }
-        .padding(4)
-        .background(CaperTheme.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(CaperTheme.border))
-        .padding(.top, 12)
-        .padding(.bottom, 16)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Editing tools")
-    }
-
-    /// Marks or unmarks the file in place; the tile behind reflects it.
-    private var spoilerToggle: some View {
-        let on = request.spoiler?.isOn() ?? false
-        return AttachmentDraftPreviewButton(systemImage: "eye.slash", title: "Spoiler", selected: on) { request.spoiler?.toggle() }
-            .help(on ? "Remove spoiler" : "Mark as spoiler")
-            .accessibilityLabel("Spoiler")
-            .accessibilityValue(on ? "On" : "Off")
-            .accessibilityAddTraits(on ? .isSelected : [])
-            .accessibilityIdentifier("attachment-draft-preview-spoiler")
-    }
-}
-
-/// Spoiler and Remove in the staged preview's tool row, beside the editor's
-/// tools (`AttachmentEditToolButton`): selected is terracotta over a subtle
-/// wash; Remove is in the error colour.
-private struct AttachmentDraftPreviewButton: View {
-    let systemImage: String
-    let title: String
-    var selected = false
-    var destructive = false
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 16, weight: .medium))
-                    .frame(width: 18, height: 18)
-                    .accessibilityHidden(true)
-                Text(title).font(CaperTheme.font(11, weight: .bold))
-            }
-            .foregroundStyle(destructive ? CaperTheme.error : selected ? CaperTheme.terracottaBright : CaperTheme.muted)
-            .frame(minWidth: 64, minHeight: 48)
-            .background(selected ? CaperTheme.terracotta.opacity(0.16) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? CaperTheme.terracotta : Color.clear, lineWidth: 1))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .modifier(ControlPointer())
-    }
-}
-
 // MARK: Composer
 
 /// Compact, wrapping draft previews shared by channel and thread composers.
@@ -2417,7 +2145,6 @@ struct AttachmentDraftsView: View {
     var inThread = false
     @State private var previewID: String?
     @Environment(\.attachmentEditor) private var editor
-    @Environment(\.attachmentDraftPreview) private var draftPreview
     private var files: [AttachmentDraft] { chat.attachmentFiles(inThread: inThread) }
 
     var body: some View {
@@ -2448,7 +2175,7 @@ struct AttachmentDraftsView: View {
                            retry: draft.error == nil ? nil : { chat.retryAttachmentDraft(id: draft.id) },
                            remove: { chat.removeAttachmentDraft(id: draft.id) })
         } else {
-            AttachmentDraftChip(draft: draft, previewable: canPreview(draft), preview: { preview(draft) },
+            AttachmentDraftChip(draft: draft, previewable: canEdit(draft), preview: { preview(draft) },
                                 retry: { chat.retryAttachmentDraft(id: draft.id) },
                                 toggleSpoiler: { chat.toggleAttachmentSpoiler(id: draft.id) },
                                 remove: { chat.removeAttachmentDraft(id: draft.id) })
@@ -2460,34 +2187,31 @@ struct AttachmentDraftsView: View {
         draft.preparing ? (draft.editPreviewURL ?? draft.localURL) : draft.localURL
     }
 
-    /// Files the editor can open show in the app's preview with Spoiler,
-    /// the editor's tools and Remove (the pencil opens it too); QuickLook
-    /// shows the rest.
+    /// Files the editor can open show in it, viewing with no tool picked,
+    /// with Spoiler and Remove beside its tools (the pencil opens it too);
+    /// QuickLook shows the rest.
     private func preview(_ draft: AttachmentDraft) {
-        guard let draftPreview, canEdit(draft) else { previewID = draft.id; return }
-        let url = Self.shownURL(draft)
-        let id = draft.id
-        let chat = chat, inThread = inThread
-        let spoiler = AttachmentDraftSpoiler(
-            isOn: { chat.attachmentFiles(inThread: inThread).first(where: { $0.id == id })?.spoiler ?? false },
-            toggle: { chat.toggleAttachmentSpoiler(id: id) })
-        draftPreview(AttachmentDraftPreviewRequest(name: draft.name, kind: url == draft.editPreviewURL ? .image : draft.kind, url: url,
-                                                   spoiler: spoiler, remove: { chat.removeAttachmentDraft(id: id) }) { tool in
-            files.first(where: { $0.id == id }).flatMap { editRequest($0, tool: tool) }
-        })
+        guard let editor, canEdit(draft), let request = editRequest(draft) else { previewID = draft.id; return }
+        editor(request)
     }
 
     /// Files the editor can open, below an `AttachmentEditorHost`.
     private func canEdit(_ draft: AttachmentDraft) -> Bool { editor != nil && draft.editable && draft.original != nil }
 
-    /// Files `preview` opens in the app's preview rather than QuickLook.
-    private func canPreview(_ draft: AttachmentDraft) -> Bool { draftPreview != nil && canEdit(draft) }
-
-    private func editRequest(_ draft: AttachmentDraft, tool: AttachmentEditTool) -> AttachmentEditRequest? {
+    private func editRequest(_ draft: AttachmentDraft) -> AttachmentEditRequest? {
         guard canEdit(draft), let original = draft.original else { return nil }
+        let id = draft.id
+        let chat = chat, inThread = inThread
+        let shown = Self.shownURL(draft)
+        let spoiler = AttachmentDraftSpoiler(
+            isOn: { chat.attachmentFiles(inThread: inThread).first(where: { $0.id == id })?.spoiler ?? false },
+            toggle: { chat.toggleAttachmentSpoiler(id: id) })
         return AttachmentEditRequest(name: draft.name, kind: AttachmentKind.local(contentType: original.contentType),
-                                     original: original.url, edit: draft.edit, tool: tool) { edit, preview in
-            chat.editAttachmentDraft(id: draft.id, edit: edit, preview: preview)
+                                     original: original.url, edit: draft.edit,
+                                     // The staged video as it will be sent; not its still render while it prepares.
+                                     playback: draft.kind == .video && shown != draft.editPreviewURL ? shown : nil,
+                                     spoiler: spoiler, remove: { chat.removeAttachmentDraft(id: id) }) { edit, preview in
+            chat.editAttachmentDraft(id: id, edit: edit, preview: preview)
         }
     }
 }
@@ -2566,12 +2290,12 @@ struct StagedFileChip: View {
     /// Marked as a spoiler: the thumbnail is blurred and labels leave the name unsaid.
     var spoiler = false
     /// Marks or unmarks it, from the pencil's menu, the context menu or the
-    /// preview; unavailable while it can't be removed (sending).
+    /// editor; unavailable while it can't be removed (sending).
     var toggleSpoiler: (() -> Void)?
     /// Offered for a failed upload.
     var retry: (() -> Void)?
-    /// `preview` opens the staged preview with its Spoiler, editing and Remove
-    /// tools (stills and videos the editor can open), so the pencil opens it
+    /// `preview` opens the editor, viewing, with its Spoiler, editing and
+    /// Remove tools (stills and videos it can open), so the pencil opens it
     /// too. Other files' pencil opens a menu instead.
     var previewable = false
     let preview: () -> Void
@@ -2644,7 +2368,7 @@ struct StagedFileChip: View {
         }
     }
 
-    /// The context menu, top to bottom: Edit (opens the preview) for files it
+    /// The context menu, top to bottom: Edit (opens the editor) for files it
     /// can show, the spoiler toggle where offered, then Remove. Nothing while
     /// the file can't be removed (sending).
     static func menuActions(spoilerToggle: Bool, removable: Bool, previewable: Bool) -> [StagedFileAction] {
@@ -2656,7 +2380,7 @@ struct StagedFileChip: View {
         return actions
     }
 
-    /// The pencil's menu on files the preview can't show (PDFs, audio, others).
+    /// The pencil's menu on files the editor can't open (PDFs, audio, others).
     static func pencilMenu(spoilerToggle: Bool) -> [StagedFileAction] {
         spoilerToggle ? [.spoiler, .remove] : [.remove]
     }
@@ -2730,15 +2454,15 @@ struct StagedFileChip: View {
         .accessibilityIdentifier("staged-file-remove")
     }
 
-    /// The pencil in the bottom-left corner: the preview with its tools, or a
-    /// menu for files it can't show.
+    /// The pencil in the bottom-left corner: the editor, viewing, or a menu
+    /// for files it can't open.
     @ViewBuilder private var editButton: some View {
         if previewable {
             Button(action: preview) { pencil }
                 .buttonStyle(StagedFileCornerStyle(corner: .bottomLeading))
                 .help("Edit")
                 .accessibilityLabel(spoiler ? "Edit spoiler attachment" : "Edit \(name)")
-                .accessibilityHint("Opens the preview with spoiler, editing and remove tools")
+                .accessibilityHint("Opens the editor with spoiler, editing and remove tools")
                 .accessibilityIdentifier("staged-file-edit")
         } else {
             Menu {
@@ -2790,8 +2514,8 @@ struct StagedFileChip: View {
     }
 }
 
-/// A staged tile's menu items (the pencil's menu on files the preview can't
-/// show, and the context menu).
+/// A staged tile's menu items (the pencil's menu on files the editor can't
+/// open, and the context menu).
 enum StagedFileAction: Hashable { case edit, spoiler, remove }
 
 /// Remove's progress ring on a staged tile.

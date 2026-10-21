@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import ImageIO
 import SwiftUI
 #if os(iOS)
@@ -10,7 +11,8 @@ import AppKit
 // MARK: Presentation
 
 /// A staged file opened in the editor (docs/media.md, "Editing attachments
-/// before sending").
+/// before sending"). Tapping a staged file the editor can open, or its
+/// pencil, opens it here viewing, with no tool picked.
 struct AttachmentEditRequest: Identifiable {
     let id = UUID()
     let name: String
@@ -20,13 +22,70 @@ struct AttachmentEditRequest: Identifiable {
     let original: URL
     /// What the draft has now.
     let edit: AttachmentEdit
-    /// The tool it opens on: any from the staged preview, Draw otherwise.
-    var tool = AttachmentEditTool.initial
+    /// The tool it opens on; nil opens it viewing, with no tool picked.
+    var tool: AttachmentEditTool?
     /// Profile pictures use a square crop and always save on Done.
     var pictureMode = false
+    /// A staged video as it will be sent, played while viewing with no
+    /// unsaved change; nil shows the editor's frame.
+    var playback: URL?
+    /// The file's spoiler mark and its toggle; nil where it can't be marked.
+    var spoiler: AttachmentDraftSpoiler?
+    /// Removes the file (the editor then closes, dropping unsaved edits);
+    /// nil where it can't be removed.
+    var remove: (() -> Void)?
     /// Called only for a change: the new edit (the original after Reset) and
     /// a staged render of it for the chip (nil for the original).
     let save: (AttachmentEdit, URL?) -> Void
+
+    init(name: String, kind: AttachmentKind, original: URL, edit: AttachmentEdit, tool: AttachmentEditTool? = nil,
+         pictureMode: Bool = false, playback: URL? = nil, spoiler: AttachmentDraftSpoiler? = nil, remove: (() -> Void)? = nil,
+         save: @escaping (AttachmentEdit, URL?) -> Void) {
+        self.name = name
+        self.kind = kind
+        self.original = original
+        self.edit = edit
+        self.tool = tool
+        self.pictureMode = pictureMode
+        self.playback = playback
+        self.spoiler = spoiler
+        self.remove = remove
+        self.save = save
+    }
+
+    /// The bottom row, left to right.
+    var row: [AttachmentEditorRowItem] { AttachmentEditorRowItem.row(spoiler: spoiler != nil, remove: remove != nil) }
+}
+
+/// A staged file's spoiler mark, read live from its composer (the editor's
+/// toggle and the tile both reflect it).
+struct AttachmentDraftSpoiler {
+    let isOn: () -> Bool
+    let toggle: () -> Void
+}
+
+/// A button in the editor's bottom row.
+enum AttachmentEditorRowItem: Hashable {
+    case spoiler
+    case tool(AttachmentEditTool)
+    case remove
+
+    /// Spoiler where the composer offers it, the tools, then Remove where it can.
+    static func row(spoiler: Bool, remove: Bool) -> [AttachmentEditorRowItem] {
+        var row: [AttachmentEditorRowItem] = []
+        if spoiler { row.append(.spoiler) }
+        row.append(contentsOf: AttachmentEditTool.allCases.map { AttachmentEditorRowItem.tool($0) })
+        if remove { row.append(.remove) }
+        return row
+    }
+}
+
+extension AttachmentEditTool {
+    /// The tool picked after tapping `tapped`: tapping the selected tool
+    /// returns to viewing (nil), except for a profile picture, which stays on it.
+    static func picking(_ tapped: AttachmentEditTool, from current: AttachmentEditTool?, pictureMode: Bool = false) -> AttachmentEditTool? {
+        current == tapped && !pictureMode ? nil : tapped
+    }
 }
 
 /// Opens the editor from composers below an `AttachmentEditorHost`.
@@ -47,24 +106,18 @@ extension EnvironmentValues {
     }
 }
 
-/// Presents the attachment editor, and the preview of staged files it can
-/// open (`AttachmentDraftPreview`), for composers below it, like
+/// Presents the attachment editor for composers below it, like
 /// `MediaViewerHost`: full screen on iPhone and iPad, and over the whole
 /// window on the Mac, where what it covers is disabled. Only the frontmost
 /// presentation can present, so the iPhone thread cover adds its own.
 struct AttachmentEditorHost: ViewModifier {
     @State private var request: AttachmentEditRequest?
-    @State private var preview: AttachmentDraftPreviewRequest?
-
-    private var presenting: Bool { request != nil || preview != nil }
 
     @ViewBuilder func body(content: Content) -> some View {
         #if os(iOS)
         content
             .environment(\.attachmentEditor, AttachmentEditorAction { shown in withoutPresentationAnimation { request = shown } })
-            .environment(\.attachmentDraftPreview, AttachmentDraftPreviewAction { shown in withoutPresentationAnimation { preview = shown } })
-            // One cover for both, so a tool in the preview swaps it for the editor in place.
-            .fullScreenCover(isPresented: Binding(get: { presenting }, set: { if !$0 { request = nil; preview = nil } })) {
+            .fullScreenCover(isPresented: Binding(get: { request != nil }, set: { if !$0 { request = nil } })) {
                 presented
                     .presentationBackground(.clear)
                     .preferredColorScheme(.dark)
@@ -73,9 +126,8 @@ struct AttachmentEditorHost: ViewModifier {
         ZStack {
             content
                 .environment(\.attachmentEditor, AttachmentEditorAction { request = $0 })
-                .environment(\.attachmentDraftPreview, AttachmentDraftPreviewAction { preview = $0 })
-                .disabled(presenting)
-                .accessibilityHidden(presenting)
+                .disabled(request != nil)
+                .accessibilityHidden(request != nil)
             presented
         }
         #endif
@@ -84,13 +136,6 @@ struct AttachmentEditorHost: ViewModifier {
     @ViewBuilder private var presented: some View {
         if let shown = request {
             AttachmentEditor(request: shown) { withoutPresentationAnimation { request = nil } }.id(shown.id)
-        } else if let shown = preview {
-            AttachmentDraftPreview(request: shown) { withoutPresentationAnimation { preview = nil } } edit: { tool in
-                // Closing the preview is instant; the editor brings its own entrance.
-                let next = shown.edit(tool)
-                withoutPresentationAnimation { preview = nil; request = next }
-            }
-            .id(shown.id)
         }
     }
 }
@@ -136,11 +181,15 @@ private func editColor(_ hex: String) -> Color {
 
 // MARK: Editor
 
-/// Full-screen editor for a file waiting to be sent: crop and turn it, draw
-/// on it and add text. It edits a description of the changes, never the file;
-/// the composer prepares the original again with them. The stage paints with
-/// the upload's own rules (`AttachmentEditRenderer`), so what you see is what
-/// is sent.
+/// Full-screen editor for a file waiting to be sent, and its preview: it
+/// opens viewing (no tool picked, the picture zooms as in the viewer, a
+/// staged video plays, a spoiler shows covered), and Crop, Draw and Text
+/// pick a tool in place, between Spoiler and Remove along the bottom. The
+/// top bar, the picture's box and the options strip keep their places in
+/// every state, so picking a tool never moves the screen. It edits a
+/// description of the changes, never the file; the composer prepares the
+/// original again with them. The stage paints with the upload's own rules
+/// (`AttachmentEditRenderer`), so what you see is what is sent.
 struct AttachmentEditor: View {
     let request: AttachmentEditRequest
     let close: () -> Void
@@ -159,6 +208,9 @@ struct AttachmentEditor: View {
     private static let cropHandles: [AttachmentEdit.CropHandle] = [.nw, .n, .ne, .e, .se, .s, .sw, .w]
     /// Handles keep a crop at least this many points on screen.
     private static let minimumCropPoints = 32.0
+    /// Room around the picture in every state: enough for Crop's handles, so
+    /// picking or leaving a tool never rescales the picture.
+    private static let stagePadding = 28.0
     #if os(iOS)
     private static let textButtonHeight: CGFloat = 44
     #else
@@ -168,7 +220,8 @@ struct AttachmentEditor: View {
     @State private var picture: AttachmentEditorPicture?
     @State private var failed = false
     @State private var history: AttachmentEditHistory
-    @State private var tool: AttachmentEditTool
+    /// Nil while viewing.
+    @State private var tool: AttachmentEditTool?
     @State private var color = AttachmentEdit.colors[0]
     @State private var strokePoints = AttachmentEdit.initialStrokeSize
     @State private var textPoints = AttachmentEdit.initialTextSize
@@ -186,6 +239,11 @@ struct AttachmentEditor: View {
     @State private var fieldEdge = 1.0
     @State private var saving = false
     @State private var brush = BrushTracker()
+    /// Viewing: the staged video's player, and the picture's zoom (reset when a tool is picked).
+    @State private var player: AVPlayer?
+    @State private var scale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var fieldFocused: Bool
     #if os(macOS)
     @FocusState private var editorFocused: Bool
@@ -208,8 +266,8 @@ struct AttachmentEditor: View {
         .background(CaperTheme.blackout.ignoresSafeArea())
         .background(alignment: .topLeading) { escapeKey }
         .foregroundStyle(CaperTheme.text)
-        // Arrives with a short fade and rise; closing is instant.
-        .modifier(Entrance(offset: CGSize(width: 0, height: 8), animation: CaperMotion.easeOut(CaperMotion.base)))
+        // Arrives with a short fade; closing is instant.
+        .modifier(Entrance(animation: CaperMotion.easeOut(CaperMotion.base)))
         .task { await load() }
         #if os(iOS)
         // Leaving the field (the keyboard's dismiss key) commits it, as Return does.
@@ -221,7 +279,9 @@ struct AttachmentEditor: View {
         .focused($editorFocused)
         .onAppear { editorFocused = true }
         #endif
+        .onDisappear { player?.pause() }
         .accessibilityElement(children: .contain)
+        .accessibilityLabel(request.name)
         .accessibilityAddTraits(.isModal)
         .accessibilityIdentifier("attachment-editor")
     }
@@ -248,9 +308,27 @@ struct AttachmentEditor: View {
 
     private var pictureLabel: String { request.kind == .video ? "Video frame being edited" : "Image being edited" }
 
+    /// Read live, so marking the file shows at once, as people will see it.
+    private var spoilered: Bool { request.spoiler?.isOn() ?? false }
+
+    /// Viewing a spoiler shows it covered, as the message will; a tool shows it plainly to edit.
+    private var covered: Bool { tool == nil && spoilered }
+
+    /// Viewing a staged video with nothing unsaved plays it; otherwise (and
+    /// under a spoiler's cover) the frame shows the edit.
+    private var playing: URL? {
+        guard tool == nil, !spoilered, field == nil, history.current == request.edit else { return nil }
+        return request.playback
+    }
+
     private func load() async {
         guard picture == nil, !failed else { return }
-        if let loaded = await AttachmentEditorPicture.load(request.original, kind: request.kind, maxEdge: request.pictureMode ? 4096 : 2048) { picture = loaded } else { failed = true }
+        guard let loaded = await AttachmentEditorPicture.load(request.original, kind: request.kind, maxEdge: request.pictureMode ? 4096 : 2048) else {
+            failed = true
+            return
+        }
+        // Fades in over the spinner instead of popping; decoded once and kept for every tool.
+        withAnimation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.base)) { picture = loaded }
     }
 
     private func undo() { closeField(); history.undo() }
@@ -288,11 +366,26 @@ struct AttachmentEditor: View {
         if field != nil { closeField() } else { close() }
     }
 
-    private func chooseTool(_ next: AttachmentEditTool) {
+    /// Picks a tool in place; the selected one again returns to viewing.
+    private func chooseTool(_ tapped: AttachmentEditTool) {
         if field != nil { commitField() }
+        let next = AttachmentEditTool.picking(tapped, from: tool, pictureMode: request.pictureMode)
         if next != .draw { brush.pointer = AttachmentEditBrushPointer() }
+        if next != nil {
+            // The tools work on the fitted picture.
+            scale = 1
+            offset = .zero
+        }
+        // Only the options strip crossfades (its own animation); the picture stays put.
         tool = next
         erasing = false
+    }
+
+    /// Removes the file and closes, dropping unsaved edits.
+    private func removeFile() {
+        guard let remove = request.remove else { return }
+        remove()
+        close()
     }
 
     private func chooseColor(_ hex: String) {
@@ -301,8 +394,8 @@ struct AttachmentEditor: View {
         field?.color = hex
     }
 
-    private func chooseSize(_ points: Double) {
-        if tool == .draw {
+    private func chooseSize(_ points: Double, drawing: Bool) {
+        if drawing {
             strokePoints = points
         } else {
             textPoints = points
@@ -312,9 +405,10 @@ struct AttachmentEditor: View {
 
     /// Done with no change from what the draft had just closes.
     private func done() {
-        guard !saving, let picture else { return }
+        guard !saving else { return }
         let result = field.map { $0.applied(to: history.current, edge: fieldEdge) } ?? history.current
         guard request.pictureMode || result != request.edit else { close(); return }
+        guard let picture else { return }
         saving = true
         request.save(result, !request.pictureMode && result.isEdited ? AttachmentEditRenderer.stagePreview(picture.image, edit: result) : nil)
         close()
@@ -338,18 +432,14 @@ struct AttachmentEditor: View {
         HStack(spacing: 6) {
             Button(action: close) { CaperIcon(name: "x", size: 20) }
                 .buttonStyle(EditorIconButton())
-                .help("Cancel")
-                .accessibilityLabel("Cancel editing")
-            VStack(alignment: .leading, spacing: 2) {
-                Text(request.kind == .video ? "Edit video" : "Edit image")
-                    .font(CaperTheme.font(14, weight: .bold)).foregroundStyle(CaperTheme.text)
-                    .lineLimit(1)
-                Text(request.name)
-                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    .lineLimit(1).truncationMode(.middle)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isHeader)
+                .help("Close")
+                .accessibilityLabel("Close")
+                .accessibilityIdentifier("attachment-editor-close")
+            // The same in every state, so picking a tool never moves the bar.
+            Text(request.name)
+                .font(CaperTheme.font(14, weight: .bold)).foregroundStyle(CaperTheme.text)
+                .lineLimit(1).truncationMode(.middle)
+                .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 6)
             Button(action: undo) { CaperIcon(name: "undo-2", size: 18) }
                 .buttonStyle(EditorIconButton())
@@ -371,7 +461,8 @@ struct AttachmentEditor: View {
             Button(action: done) { Text("Done").padding(.horizontal, 16) }
                 .buttonStyle(CaperPrimaryButton())
                 .fixedSize()
-                .disabled(picture == nil || saving)
+                // With no change it only closes, so it works before (or without) the picture.
+                .disabled(saving || (request.pictureMode && picture == nil))
                 .accessibilityIdentifier("attachment-editor-done")
         }
         .padding(.horizontal, 10)
@@ -396,13 +487,14 @@ struct AttachmentEditor: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if request.kind == .video, picture != nil {
+            // In every state, so the bar's height never changes.
+            if request.kind == .video {
                 Text("Drawings and text stay on screen for the whole video.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            options.frame(minHeight: 44)
+            optionsStrip.disabled(picture == nil)
             tools
         }
         .padding(.horizontal, 16)
@@ -411,50 +503,75 @@ struct AttachmentEditor: View {
         .frame(maxWidth: .infinity)
         .background(CaperTheme.surface)
         .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
-        .disabled(picture == nil)
     }
 
-    @ViewBuilder private var options: some View {
-        if tool == .crop {
-            if request.pictureMode, let picture {
-                let size = AttachmentEdit.rotatedSize(width: Double(picture.image.width), height: Double(picture.image.height), rotation: history.current.rotation)
-                Slider(value: Binding(get: {
-                    history.current.crop.width * size.width / min(size.width, size.height)
-                }, set: { fraction in
-                    let crop = history.current.crop
-                    let side = fraction * min(size.width, size.height)
-                    commitCrop(AttachmentEdit.clampCrop(EditRect(x: crop.x + crop.width / 2 - side / size.width / 2,
-                                                               y: crop.y + crop.height / 2 - side / size.height / 2,
-                                                               width: side / size.width, height: side / size.height), min: 0))
-                }), in: 0.1...1)
-                .accessibilityLabel("Crop size")
+    /// Every tool's options stacked, only the picked one's showing: the strip
+    /// keeps the tallest one's height in every state (empty while viewing),
+    /// so the picture never resizes, and switching crossfades it.
+    private var optionsStrip: some View {
+        ZStack {
+            ForEach(AttachmentEditTool.allCases, id: \.self) { value in
+                let active = tool == value
+                options(for: value)
+                    .opacity(active ? 1 : 0)
+                    .allowsHitTesting(active)
+                    .disabled(!active)
+                    .accessibilityHidden(!active)
             }
-            Button(action: rotateLeft) {
-                HStack(spacing: 6) {
-                    CaperIcon(name: "rotate-ccw", size: 16)
-                    Text("Rotate left")
+        }
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .animation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.fast), value: tool)
+    }
+
+    @ViewBuilder private func options(for value: AttachmentEditTool) -> some View {
+        if value == .crop {
+            VStack(spacing: 10) {
+                if request.pictureMode { pictureCropSize }
+                Button(action: rotateLeft) {
+                    HStack(spacing: 6) {
+                        CaperIcon(name: "rotate-ccw", size: 16)
+                        Text("Rotate left")
+                    }
                 }
+                .buttonStyle(CaperSecondaryButton(minHeight: Self.textButtonHeight))
             }
-            .buttonStyle(CaperSecondaryButton(minHeight: Self.textButtonHeight))
         } else {
+            let drawing = value == .draw
             #if os(iOS)
             // A phone's row of colours has no room left, so the eraser leads the size's row.
             VStack(spacing: 6) {
                 colorChoices
                 HStack(spacing: 8) {
-                    if tool == .draw { eraserButton }
-                    sizeControl
+                    if drawing { eraserButton }
+                    sizeControl(drawing: drawing)
                 }
             }
             #else
             HStack(spacing: 20) {
                 HStack(spacing: 6) {
                     colorChoices
-                    if tool == .draw { eraserButton }
+                    if drawing { eraserButton }
                 }
-                sizeControl
+                sizeControl(drawing: drawing)
             }
             #endif
+        }
+    }
+
+    /// A profile picture's crop size, as a fraction of the shorter side.
+    @ViewBuilder private var pictureCropSize: some View {
+        if let picture {
+            let size = AttachmentEdit.rotatedSize(width: Double(picture.image.width), height: Double(picture.image.height), rotation: history.current.rotation)
+            Slider(value: Binding(get: {
+                history.current.crop.width * size.width / min(size.width, size.height)
+            }, set: { fraction in
+                let crop = history.current.crop
+                let side = fraction * min(size.width, size.height)
+                commitCrop(AttachmentEdit.clampCrop(EditRect(x: crop.x + crop.width / 2 - side / size.width / 2,
+                                                           y: crop.y + crop.height / 2 - side / size.height / 2,
+                                                           width: side / size.width, height: side / size.height), min: 0))
+            }), in: 0.1...1)
+            .accessibilityLabel("Crop size")
         }
     }
 
@@ -514,14 +631,13 @@ struct AttachmentEditor: View {
         #endif
     }
 
-    private var sizeControl: some View {
-        let drawing = tool == .draw
+    private func sizeControl(drawing: Bool) -> some View {
         let range = drawing ? AttachmentEdit.strokeSizes : AttachmentEdit.textSizes
         let value = drawing ? strokePoints : textPoints
         return HStack(spacing: 10) {
             Text("Size").font(CaperTheme.font(12, weight: .medium)).foregroundStyle(CaperTheme.muted)
                 .accessibilityHidden(true)
-            DefaultSlider(value: Binding(get: { value }, set: { chooseSize($0) }), in: range, step: 1,
+            DefaultSlider(value: Binding(get: { value }, set: { chooseSize($0, drawing: drawing) }), in: range, step: 1,
                           defaultValue: drawing ? AttachmentEdit.initialStrokeSize : AttachmentEdit.initialTextSize)
                 .frame(minWidth: 120, maxWidth: 240)
                 .accessibilityLabel(drawing ? (erasing ? "Eraser size" : "Line size") : "Text size")
@@ -551,14 +667,40 @@ struct AttachmentEditor: View {
         }
     }
 
+    /// Spoiler, Crop, Draw, Text and Remove, in every state. Tools pick in
+    /// place; Spoiler and Remove work before (or without) the picture.
     private var tools: some View {
-        HStack(spacing: 8) {
-            ForEach(AttachmentEditTool.allCases, id: \.self) { value in
-                AttachmentEditToolButton(tool: value, selected: tool == value) { chooseTool(value) }
+        HStack(spacing: 4) {
+            ForEach(request.row, id: \.self) { item in
+                switch item {
+                case .spoiler:
+                    spoilerToggle
+                case .tool(let value):
+                    AttachmentEditToolButton(tool: value, selected: tool == value) { chooseTool(value) }
+                        .disabled(picture == nil)
+                        .accessibilityIdentifier("attachment-editor-\(value.rawValue)")
+                case .remove:
+                    AttachmentEditorRowButton(systemImage: "trash", title: "Remove", destructive: true, action: removeFile)
+                        .help("Remove attachment")
+                        .accessibilityLabel("Remove")
+                        .accessibilityHint("Removes the attachment and closes the editor")
+                        .accessibilityIdentifier("attachment-editor-remove")
+                }
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Editing tools")
+    }
+
+    /// Marks or unmarks the file in place; the tile behind reflects it.
+    private var spoilerToggle: some View {
+        let on = spoilered
+        return AttachmentEditorRowButton(systemImage: "eye.slash", title: "Spoiler", selected: on) { request.spoiler?.toggle() }
+            .help(on ? "Remove spoiler" : "Mark as spoiler")
+            .accessibilityLabel("Spoiler")
+            .accessibilityValue(on ? "On" : "Off")
+            .accessibilityAddTraits(on ? .isSelected : [])
+            .accessibilityIdentifier("attachment-editor-spoiler")
     }
 
     // MARK: Stage
@@ -578,19 +720,36 @@ struct AttachmentEditor: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // A zoomed picture stays inside the stage, under both bars.
+        .clipped()
     }
 
-    /// The picture fitted inside the stage: cropped in Draw and Text, whole
-    /// with the crop frame in Crop (with more room for its handles).
+    /// The picture fitted inside the stage with the same padding in every
+    /// state: cropped while viewing and in Draw and Text, whole with the crop
+    /// frame in Crop. Viewing, it zooms (`MediaZoom`), a staged video plays
+    /// in its place, and a spoiler shows covered.
     @ViewBuilder private func stage(_ image: CGImage, size: CGSize) -> some View {
         let edit = shown
         let region = tool == .crop ? EditRect.full : history.current.crop
         let rotated = AttachmentEdit.rotatedSize(width: Double(image.width), height: Double(image.height), rotation: edit.rotation)
         if let layout = AttachmentEditLayout.fit(pictureWidth: rotated.width, pictureHeight: rotated.height, region: region,
                                                  boxWidth: Double(size.width), boxHeight: Double(size.height),
-                                                 padding: tool == .crop ? 28 : 16) {
+                                                 padding: Self.stagePadding) {
             ZStack(alignment: .topLeading) {
-                pictureLayer(image, edit: edit, region: region, layout: layout)
+                ZStack(alignment: .topLeading) {
+                    pictureLayer(image, edit: edit, region: region, layout: layout)
+                    if let playing { videoLayer(playing, layout: layout) }
+                }
+                // Only the blur eases; the picture's geometry never animates.
+                .animation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.base)) { content in
+                    content.blur(radius: covered ? 36 : 0)
+                }
+                .overlay {
+                    ZStack {
+                        if covered { SpoilerLabel().allowsHitTesting(false).transition(.opacity) }
+                    }
+                    .animation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.base), value: covered)
+                }
                 interaction(edit: edit, region: region, layout: layout)
                 if let field { textField(field, region: region, layout: layout) }
                 if tool == .draw {
@@ -600,8 +759,27 @@ struct AttachmentEditor: View {
             }
             .frame(width: layout.width, height: layout.height)
             .coordinateSpace(NamedCoordinateSpace.named(Self.stageSpace))
+            // Always applied, standing aside while a tool is picked, so the stage is never rebuilt.
+            // Its ratio is the stage's own (in thousandths of a point), so it fits exactly.
+            .modifier(MediaZoom(width: max(1, Int((layout.width * 1000).rounded())), height: max(1, Int((layout.height * 1000).rounded())),
+                                container: CGSize(width: layout.width, height: layout.height),
+                                scale: $scale, offset: $offset, enabled: tool == nil && playing == nil))
             .frame(width: size.width, height: size.height)
         }
+    }
+
+    /// The staged video, playing with the platform's controls, in the picture's box.
+    private func videoLayer(_ url: URL, layout: AttachmentEditLayout) -> some View {
+        ZStack {
+            Color.black
+            if let player { VideoPlayer(player: player) }
+        }
+        .frame(width: layout.width, height: layout.height)
+        .onAppear {
+            if player == nil { player = AVPlayer(url: url) }
+            player?.play()
+        }
+        .onDisappear { player?.pause() }
     }
 
     /// The whole rotated picture with its marks, moved so `region` fills the
@@ -633,6 +811,17 @@ struct AttachmentEditor: View {
 
     @ViewBuilder private func interaction(edit: AttachmentEdit, region: EditRect, layout: AttachmentEditLayout) -> some View {
         switch tool {
+        case nil:
+            // Viewing: the stage's zoom takes the gestures; this only describes the picture.
+            if playing == nil {
+                Color.clear
+                    .allowsHitTesting(false)
+                    .accessibilityElement()
+                    .accessibilityLabel(request.name)
+                    .accessibilityValue(covered ? "Spoiler" : "")
+                    .accessibilityAddTraits(.isImage)
+                    .accessibilityIdentifier("attachment-editor-image")
+            }
         case .crop:
             cropFrame(edit.crop, layout: layout)
         case .draw:
@@ -865,8 +1054,7 @@ struct AttachmentEditor: View {
     }
 }
 
-/// A tool in the editor's switcher, and in a staged file's preview, where it
-/// opens the editor on that tool.
+/// A tool in the editor's bottom row; selected is terracotta over a subtle wash.
 struct AttachmentEditToolButton: View {
     let tool: AttachmentEditTool
     var selected = false
@@ -888,6 +1076,36 @@ struct AttachmentEditToolButton: View {
         .modifier(ControlPointer())
         .accessibilityLabel(tool.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Spoiler and Remove in the editor's bottom row, beside its tools
+/// (`AttachmentEditToolButton`): selected is terracotta over a subtle wash;
+/// Remove is in the error colour.
+private struct AttachmentEditorRowButton: View {
+    let systemImage: String
+    let title: String
+    var selected = false
+    var destructive = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .medium))
+                    .frame(width: 18, height: 18)
+                    .accessibilityHidden(true)
+                Text(title).font(CaperTheme.font(11, weight: .bold))
+            }
+            .foregroundStyle(destructive ? CaperTheme.error : selected ? CaperTheme.terracottaBright : CaperTheme.muted)
+            .frame(minWidth: 64, minHeight: 48)
+            .background(selected ? CaperTheme.terracotta.opacity(0.16) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? CaperTheme.terracotta : Color.clear, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .modifier(ControlPointer())
     }
 }
 

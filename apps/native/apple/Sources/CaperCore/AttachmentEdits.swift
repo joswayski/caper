@@ -323,9 +323,6 @@ struct AttachmentEditLayout: Equatable {
 enum AttachmentEditTool: String, CaseIterable, Sendable {
     case crop, draw, text
 
-    /// Where the editor opens when no tool is picked.
-    static let initial = AttachmentEditTool.draw
-
     var title: String {
         switch self {
         case .crop: return "Crop"

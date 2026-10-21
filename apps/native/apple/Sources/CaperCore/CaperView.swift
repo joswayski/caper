@@ -5962,10 +5962,8 @@ private struct MentionCardView: View {
     @State private var copyingPicture = false
     @State private var pictureCopyError = false
     @Environment(\.openURL) private var openURL
-    /// A staged file open in the attachment editor.
+    /// A staged file open in the attachment editor (viewing, or on a tool).
     @State private var editingFile: AttachmentEditRequest?
-    /// A staged file the editor can open, in the preview with its tools.
-    @State private var previewingFile: AttachmentDraftPreviewRequest?
     private var blocked: Bool { model.blockedIDs.contains(person.id) }
     private var ownedSpaces: [Space] {
         // Don't offer the open space to someone who is already in it.
@@ -5997,10 +5995,10 @@ private struct MentionCardView: View {
                 #endif
         } else {
             #if os(macOS)
-            // Only the popover can present over itself: the editor and the
-            // preview replace the card inside it, which grows to fit, while the
-            // card stays underneath so its pickers and composer state carry on.
-            let covered = editingFile != nil || previewingFile != nil || pictureViewer != nil
+            // Only the popover can present over itself: the editor replaces
+            // the card inside it, which grows to fit, while the card stays
+            // underneath so its pickers and composer state carry on.
+            let covered = editingFile != nil || pictureViewer != nil
             ZStack {
                 profileCard
                     .opacity(covered ? 0 : 1)
@@ -6065,7 +6063,7 @@ private struct MentionCardView: View {
         }
     }
 
-    /// The editor, or the preview whose tools open it in its place.
+    /// The editor: viewing a staged file, or on a tool.
     @ViewBuilder private var presentedFile: some View {
         if let editingFile {
             AttachmentEditor(request: editingFile) { withoutPresentationAnimation { self.editingFile = nil } }
@@ -6073,15 +6071,6 @@ private struct MentionCardView: View {
                 .frame(width: 720, height: 600)
                 #endif
                 .id(editingFile.id)
-        } else if let previewingFile {
-            AttachmentDraftPreview(request: previewingFile) { withoutPresentationAnimation { self.previewingFile = nil } } edit: { tool in
-                let next = previewingFile.edit(tool)
-                withoutPresentationAnimation { self.previewingFile = nil; editingFile = next }
-            }
-            #if os(macOS)
-            .frame(width: 720, height: 600)
-            #endif
-            .id(previewingFile.id)
         }
     }
 
@@ -6240,9 +6229,7 @@ private struct MentionCardView: View {
         .popover(isPresented: $showingEmojiPicker) { emojiPicker.onDisappear { finishEmojiPicker() } }
         #else
         .sheet(isPresented: $showingEmojiPicker, onDismiss: finishEmojiPicker) { emojiPicker }
-        // One cover for both, so a tool in the preview swaps it for the editor in place.
-        .fullScreenCover(isPresented: Binding(get: { editingFile != nil || previewingFile != nil },
-                                              set: { if !$0 { editingFile = nil; previewingFile = nil } })) {
+        .fullScreenCover(isPresented: Binding(get: { editingFile != nil }, set: { if !$0 { editingFile = nil } })) {
             presentedFile
                 .presentationBackground(.clear)
                 .preferredColorScheme(.dark)
@@ -6253,7 +6240,6 @@ private struct MentionCardView: View {
         .onChange(of: showingEmojiPicker) { _, _ in updateDialogState() }
         .onChange(of: previewFile) { _, _ in updateDialogState() }
         .onChange(of: editingFile?.id) { _, _ in updateDialogState() }
-        .onChange(of: previewingFile?.id) { _, _ in updateDialogState() }
         .onChange(of: draft.editable) { _, editable in if !editable { autocomplete.update(nil) } }
         .onDisappear {
             photoLoading?.cancel()
@@ -6499,7 +6485,7 @@ private struct MentionCardView: View {
 
     private func updateDialogState() {
         draft.presentingDialog = showingFiles || showingPhotos || photoLoading != nil || showingEmojiPicker || showingGifPicker || previewFile != nil
-            || editingFile != nil || previewingFile != nil || showingDrawer
+            || editingFile != nil || showingDrawer
     }
 
     #if os(iOS)
@@ -6521,33 +6507,29 @@ private struct MentionCardView: View {
     }
     #endif
 
-    /// Files the editor can open show in the app's preview with Spoiler,
-    /// the editor's tools and Remove (the pencil opens it too); QuickLook
-    /// shows the rest.
+    /// Files the editor can open show in it, viewing with no tool picked,
+    /// with Spoiler and Remove beside its tools (the pencil opens it too);
+    /// QuickLook shows the rest.
     private func preview(_ file: ProfileMessageDraft.File) {
         draft.presentingDialog = true
-        let url = file.editPreview ?? file.local.url
-        guard canEdit(file) else { previewFile = url; return }
-        let id = file.id
-        let draft = draft
-        let spoiler = AttachmentDraftSpoiler(isOn: { draft.files.first(where: { $0.id == id })?.spoiler ?? false },
-                                             toggle: { draft.toggleSpoiler(id: id) })
-        withoutPresentationAnimation {
-            previewingFile = AttachmentDraftPreviewRequest(name: file.local.name,
-                                                           kind: file.editPreview == nil ? AttachmentKind.local(contentType: file.local.contentType) : .image,
-                                                           url: url, spoiler: spoiler, remove: { draft.remove(id: id) }) { tool in
-                draft.files.first(where: { $0.id == id }).flatMap { editRequest($0, tool: tool) }
-            }
-        }
+        guard let request = editRequest(file) else { previewFile = file.editPreview ?? file.local.url; return }
+        withoutPresentationAnimation { editingFile = request }
     }
 
     private func canEdit(_ file: ProfileMessageDraft.File) -> Bool { file.editable && draft.editable && pending == nil }
 
-    private func editRequest(_ file: ProfileMessageDraft.File, tool: AttachmentEditTool) -> AttachmentEditRequest? {
+    private func editRequest(_ file: ProfileMessageDraft.File) -> AttachmentEditRequest? {
         guard canEdit(file) else { return nil }
-        return AttachmentEditRequest(name: file.local.name, kind: AttachmentKind.local(contentType: file.local.contentType),
-                                     original: file.local.url, edit: file.edit, tool: tool) { edit, preview in
-            draft.setEdit(id: file.id, edit: edit, preview: preview)
+        let id = file.id
+        let draft = draft
+        let kind = AttachmentKind.local(contentType: file.local.contentType)
+        let spoiler = AttachmentDraftSpoiler(isOn: { draft.files.first(where: { $0.id == id })?.spoiler ?? false },
+                                             toggle: { draft.toggleSpoiler(id: id) })
+        return AttachmentEditRequest(name: file.local.name, kind: kind, original: file.local.url, edit: file.edit,
+                                     // The original plays only while unedited; an edit shows the editor's frame.
+                                     playback: kind == .video && file.editPreview == nil ? file.local.url : nil,
+                                     spoiler: spoiler, remove: { draft.remove(id: id) }) { edit, preview in
+            draft.setEdit(id: id, edit: edit, preview: preview)
         }
     }
 
