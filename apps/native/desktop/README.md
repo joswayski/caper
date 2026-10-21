@@ -206,15 +206,25 @@ just that player in the card.
   while preparing or confirming, still under reduced motion); a failed upload
   keeps its error border and shows a centred round Retry. Spoilered files show
   only a crossed-out eye over the obscured thumbnail. Clicking the picture or
-  the pencil of a file the editor can open shows the in-app preview, whose
-  tool row is Spoiler, Crop, Draw, Text and Remove; other files' pencils open
-  a menu with the spoiler toggle and Remove attachment, and right-clicking a
-  tile offers Edit (when previewable), the spoiler toggle and Remove
-  attachment. The preview's tools
-  on JPEG, PNG, WebP, BMP and TIFF stills (not
-  animated) and, with FFmpeg, videos open the editor (`attachment_editor.rs`):
-  crop, rotate left, draw and text with six colours, the egui colour picker
-  and a size slider, undo/redo (Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y). Saving cancels
+  the pencil (or the menu's Edit) of a file the editor can open (JPEG, PNG,
+  WebP, BMP and TIFF stills, not animated, and with FFmpeg, videos) opens the
+  attachment editor (`attachment_editor.rs`) viewing it, with no tool chosen:
+  the file as it will be sent (a video's still), zoomable like the media
+  viewer, and covered as recipients see it while marked as a spoiler. It is
+  one screen in every state: Close, the file name, Open in default app, Undo,
+  Redo, Reset and Done along the top; the picture in one place (choosing a
+  tool never moves or rescales an uncropped picture); a strip for the chosen
+  tool's options, which fade in; and the tool row Spoiler | Crop, Draw,
+  Text | Remove. A tool is chosen in place and clicking it again returns to
+  viewing; Spoiler toggles live, Remove removes the file and closes, Done
+  saves (or just closes with nothing changed), and Close or Escape discards.
+  Profile card files open the same way; a profile picture or space icon opens
+  on Crop without Spoiler or Remove. Other files' pencils open a menu with the
+  spoiler toggle and Remove attachment, and right-clicking a tile offers Edit
+  (when the editor can open it), the spoiler toggle and Remove attachment.
+  The editor offers crop, rotate left, draw and text with six colours, the
+  egui colour picker and a size slider, undo/redo (Ctrl+Z, Ctrl+Shift+Z,
+  Ctrl+Y). Saving cancels
   the upload in flight and prepares the original again with the edit
   (`attachment_edit.rs`): stills at native resolution, always re-encoded by
   their source class with PNG as the fallback; videos always transcoded,
@@ -597,7 +607,8 @@ pages from a stand-in server on that port instead. Release builds ignore it.
 `CAPER_WEB_PLAYER` names a helper outside the usual places.
 `parity-attachment-editor` opens the attachment editor on a synthetic picture
 with a labelled line and text (`-crop` and `-text` open those tools, `-narrow`
-a 390px-wide window); `-chip` shows the composer file's Edit button.
+a 390px-wide window); `-chip` shows the composer file's Edit button, and
+`-preview` opens it viewing, with no tool chosen.
 `parity-requests` previews an open incoming request and the requests list;
 `parity-requests-outgoing` an unaccepted request you sent; `parity-blocked`
 Maya's #general messages collapsed after blocking her; `parity-blocked-dm` the

@@ -1472,7 +1472,7 @@ pub fn clamp_pan(pan: egui::Vec2, shown: egui::Vec2, stage: egui::Vec2) -> egui:
 }
 
 /// How far a picture is zoomed past its fitted size, and moved from the
-/// stage's centre: the viewer's, and the draft preview's.
+/// stage's centre: the viewer's, and the attachment editor's while viewing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Zoom {
     pub scale: f32,

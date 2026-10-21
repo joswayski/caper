@@ -1493,7 +1493,6 @@ struct CaperApp {
     /// Editing a draft's file before it is sent, while open.
     attachment_editor: Option<attachment_editor::Editor>,
     /// A draft's file the editor can open, previewed with its tools, while open.
-    draft_preview: Option<attachment_editor::Preview>,
     /// Edited files the preview opened in another app, kept until Caper
     /// quits or signs out so that app can go on showing them.
     opened_files: Vec<std::sync::Arc<uploads::Scratch>>,
@@ -1815,7 +1814,6 @@ impl CaperApp {
             voice_sends: Vec::new(),
             voice_playback: None,
             attachment_editor: None,
-            draft_preview: None,
             opened_files: Vec::new(),
             attachment_editor_shown: false,
             media_proxy: None,
@@ -3943,7 +3941,7 @@ impl CaperApp {
             draft.edit = Some(edit);
             if name.ends_with("-preview") {
                 let key = draft.key;
-                self.preview_draft(context, key);
+                self.view_draft(context, key);
             }
             return;
         }
@@ -3961,7 +3959,7 @@ impl CaperApp {
             draft.source_name.clone(),
             scratch.path(),
             Some(edit),
-            tool,
+            Some(tool),
         );
         if tool == attachment_editor::Tool::Text {
             editor.place_text(0.5, 0.42, "Caption");
@@ -8139,7 +8137,6 @@ impl CaperApp {
         self.local_pictures.clear();
         self.viewer = None;
         self.attachment_editor = None;
-        self.draft_preview = None;
         self.opened_files.clear();
         self.attachment_progress.clear();
         self.embed_arrivals.clear();
@@ -8653,7 +8650,6 @@ impl CaperApp {
             || self.message_delete.is_some()
             || self.viewer.is_some()
             || self.attachment_editor.is_some()
-            || self.draft_preview.is_some()
             || self.forwarding.is_open()
     }
 
@@ -10185,19 +10181,15 @@ impl CaperApp {
         } else if self.needs_first_space() {
             self.first_space_page(context);
         } else {
-            // Before the page, like the media viewer: the preview and the
-            // editor are modal and take the keys they use. The preview's
-            // tools hand over to the editor within this pass.
-            self.attachment_editor_shown =
-                self.attachment_editor.is_some() || self.draft_preview.is_some();
+            // Before the page, like the media viewer: the editor is modal
+            // and takes the keys it uses.
+            self.attachment_editor_shown = self.attachment_editor.is_some();
             if !self.updates.has_available() {
-                self.draft_preview_dialog(context);
                 self.attachment_editor_dialog(context);
             }
             // Ctrl+, (⌘, on macOS) opens Settings, as in the Apple client.
             if self.dialog.is_none()
                 && self.attachment_editor.is_none()
-                && self.draft_preview.is_none()
                 && !self.updates.has_available()
                 && context.input_mut(|input| {
                     input.consume_shortcut(&egui::KeyboardShortcut::new(
@@ -19887,8 +19879,8 @@ impl CaperApp {
                 let painter = ui.painter_at(rect);
                 painter.rect_filled(rect, 8.0, SURFACE);
                 let thumb = egui::Rect::from_min_size(rect.min, rect.size());
-                // The preview, and the editor's tools in it, start from the
-                // local original, so they need no upload.
+                // The editor, viewing or editing, starts from the
+                // local original, so it needs no upload.
                 let previewable = draft.editable.is_some() && draft.local_path.is_some();
                 let uploading = draft.attachment.is_none() && draft.error.is_none();
                 if draft.thumbnail.is_none()
@@ -20074,7 +20066,7 @@ impl CaperApp {
             self.retry_upload(key);
         }
         if let Some(key) = view {
-            self.preview_draft(ui.ctx(), key);
+            self.view_draft(ui.ctx(), key);
         }
         if let Some(attachment) = media_preview {
             self.viewer = Some(viewer::Viewer::open(vec![attachment], 0));
@@ -20085,8 +20077,9 @@ impl CaperApp {
         }
     }
 
-    /// Opens the editor on a composer file's local original, on `tool`.
-    fn edit_draft(&mut self, context: &egui::Context, key: u64, tool: attachment_editor::Tool) {
+    /// Opens the editor on a composer file's local original, viewing it
+    /// as it will be sent, with no tool chosen.
+    fn view_draft(&mut self, context: &egui::Context, key: u64) {
         let Some(draft) = self.draft_files.iter().find(|draft| draft.key == key) else {
             return;
         };
@@ -20100,81 +20093,13 @@ impl CaperApp {
             draft.source_name.clone(),
             path,
             draft.edit.clone(),
-            tool,
+            None,
         ));
     }
 
-    /// Previews a composer file the editor can open, as it will be sent.
-    fn preview_draft(&mut self, context: &egui::Context, key: u64) {
-        let Some(draft) = self.draft_files.iter().find(|draft| draft.key == key) else {
-            return;
-        };
-        let (Some(kind), Some(path)) = (draft.editable, &draft.local_path) else {
-            return;
-        };
-        self.draft_preview = Some(attachment_editor::Preview::open(
-            context,
-            attachment_editor::Target::Draft(key),
-            kind,
-            draft.name.clone(),
-            path,
-            draft.edit.clone(),
-        ));
-    }
-
-    /// The draft preview over everything; its tools open the editor in its place.
-    fn draft_preview_dialog(&mut self, context: &egui::Context) {
-        let Some(mut preview) = self.draft_preview.take() else {
-            return;
-        };
-        let to_send = self.draft_to_send(&preview.target);
-        let spoiler = self.previewed_spoiler(&preview.target);
-        let outcome = preview.show(context, to_send, spoiler);
-        if !matches!(
-            outcome,
-            attachment_editor::PreviewOutcome::Open | attachment_editor::PreviewOutcome::Spoiler
-        ) {
-            self.opened_files.extend(preview.take_opened());
-        }
-        let tool = match outcome {
-            attachment_editor::PreviewOutcome::Open => {
-                self.draft_preview = Some(preview);
-                return;
-            }
-            attachment_editor::PreviewOutcome::Spoiler => {
-                self.change_previewed(&preview.target, false);
-                self.draft_preview = Some(preview);
-                return;
-            }
-            attachment_editor::PreviewOutcome::Remove => {
-                self.change_previewed(&preview.target, true);
-                return;
-            }
-            attachment_editor::PreviewOutcome::Close => return,
-            attachment_editor::PreviewOutcome::Edit(tool) => tool,
-        };
-        match preview.target {
-            attachment_editor::Target::Picture { .. } => (),
-            attachment_editor::Target::Draft(key) => self.edit_draft(context, key, tool),
-            attachment_editor::Target::Profile {
-                person,
-                index,
-                path,
-            } => {
-                self.attachment_editor = self
-                    .profile_drafts
-                    .get(&person)
-                    .filter(|draft| draft.editable())
-                    .and_then(|draft| draft.files.get(index))
-                    .filter(|file| file.path == path)
-                    .and_then(|file| profile_file_editor(context, &person, index, file, tool));
-            }
-        }
-    }
-
-    /// Whether a previewed staged file is marked as a spoiler, while it can
-    /// still change; `None` leaves Spoiler and Remove out of the preview.
-    fn previewed_spoiler(&self, target: &attachment_editor::Target) -> Option<bool> {
+    /// Whether an edited staged file is marked as a spoiler, while it can
+    /// still change; `None` leaves Spoiler and Remove out of the editor.
+    fn edited_spoiler(&self, target: &attachment_editor::Target) -> Option<bool> {
         match target {
             attachment_editor::Target::Picture { .. } => None,
             attachment_editor::Target::Draft(key) => self
@@ -20196,8 +20121,8 @@ impl CaperApp {
         }
     }
 
-    /// The preview's Spoiler toggle, or its Remove when `remove`.
-    fn change_previewed(&mut self, target: &attachment_editor::Target, remove: bool) {
+    /// The editor's Spoiler toggle, or its Remove when `remove`.
+    fn change_edited(&mut self, target: &attachment_editor::Target, remove: bool) {
         match target {
             attachment_editor::Target::Picture { .. } => (),
             attachment_editor::Target::Draft(key) if remove => self.remove_draft(*key),
@@ -20234,9 +20159,9 @@ impl CaperApp {
         }
     }
 
-    /// A previewed draft file as it will be sent: the original until it is
+    /// An edited draft file as it will be sent: the original until it is
     /// edited, then the edit its upload prepares. A profile card's files
-    /// are prepared only at Send, so its preview prepares an edit itself.
+    /// are prepared only at Send, so its editor prepares an edit itself.
     fn draft_to_send(&self, target: &attachment_editor::Target) -> attachment_editor::ToSend {
         use attachment_editor::ToSend;
         match target {
@@ -20353,9 +20278,27 @@ impl CaperApp {
         {
             return;
         }
-        let edit = match editor.show(context) {
+        let to_send = self.draft_to_send(&editor.target);
+        let spoiler = self.edited_spoiler(&editor.target);
+        let outcome = editor.show(context, to_send, spoiler);
+        if !matches!(
+            outcome,
+            attachment_editor::Outcome::Open | attachment_editor::Outcome::Spoiler
+        ) {
+            self.opened_files.extend(editor.take_opened());
+        }
+        let edit = match outcome {
             attachment_editor::Outcome::Open => {
                 self.attachment_editor = Some(editor);
+                return;
+            }
+            attachment_editor::Outcome::Spoiler => {
+                self.change_edited(&editor.target, false);
+                self.attachment_editor = Some(editor);
+                return;
+            }
+            attachment_editor::Outcome::Remove => {
+                self.change_edited(&editor.target, true);
                 return;
             }
             attachment_editor::Outcome::Cancel => return,
@@ -22242,20 +22185,9 @@ impl CaperApp {
             // Before any removal, while the places still hold.
             if let Some(index) = view
                 && let Some(file) = draft.files.get(index)
-                && let Some(kind) = file.editable
+                && file.editable.is_some()
             {
-                self.draft_preview = Some(attachment_editor::Preview::open(
-                    ui.ctx(),
-                    attachment_editor::Target::Profile {
-                        person: person.to_owned(),
-                        index,
-                        path: file.path.clone(),
-                    },
-                    kind,
-                    file.name(),
-                    &file.path,
-                    file.edit.clone(),
-                ));
+                self.attachment_editor = profile_file_editor(ui.ctx(), person, index, file, None);
             }
             if let Some(index) = remove {
                 let file = draft.files.remove(index);
@@ -23799,7 +23731,7 @@ impl CaperApp {
             "Picture".into(),
             &path,
             None,
-            attachment_editor::Tool::Crop,
+            Some(attachment_editor::Tool::Crop),
         ));
     }
 
@@ -26107,13 +26039,13 @@ fn tile_edit_menu(response: &egui::Response, spoiler: bool) -> TileChoice {
         .unwrap_or_default()
 }
 
-/// The editor on a profile card's staged file, opening on `tool`.
+/// The editor on a profile card's staged file, viewing it for `None`.
 fn profile_file_editor(
     context: &egui::Context,
     person: &str,
     index: usize,
     file: &profile_dm::File,
-    tool: attachment_editor::Tool,
+    tool: Option<attachment_editor::Tool>,
 ) -> Option<attachment_editor::Editor> {
     Some(attachment_editor::Editor::open(
         context,
@@ -51633,29 +51565,31 @@ mod tests {
 
         // Escape and an unchanged Done leave the upload alone.
         click_at(&mut app, &context, pencil.center());
-        assert!(app.draft_preview.is_some(), "the pencil opens the preview");
-        click_label(&mut app, &context, "Draw");
-        assert!(app.attachment_editor.is_some(), "its Draw opens the editor");
+        assert!(
+            app.attachment_editor.is_some(),
+            "the pencil opens the editor"
+        );
         assert!(app.conversation_covered());
         let output = editor_ready(&mut app, &context);
         for label in [
-            "Cancel editing",
+            crate::attachment_editor::CLOSE,
             "Undo",
             "Redo",
             "Reset",
             "Done",
+            "Spoiler",
             "Crop",
             "Draw",
             "Text",
+            "Remove",
         ] {
             assert!(node_bounds(&output, label).is_some(), "{label}");
         }
-        text_position(&output, "Edit image");
         text_position(&output, "TEST FIXTURE diagram.png");
         assert_eq!(
             app.attachment_editor.as_ref().unwrap().tool(),
-            crate::attachment_editor::Tool::Draw,
-            "Draw is the default tool"
+            None,
+            "it opens viewing"
         );
         render(&mut app, &context, press(egui::Key::Escape));
         assert!(app.attachment_editor.is_none());
@@ -52047,7 +51981,7 @@ mod tests {
             click_opening(&mut app, &context, pencil.center()).is_none(),
             "the pencil never previews the file under it"
         );
-        assert!(app.draft_preview.is_none() && app.attachment_editor.is_none());
+        assert!(app.attachment_editor.is_none());
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         assert!(
@@ -52123,8 +52057,8 @@ mod tests {
         };
         let output = open_menu(&mut app);
         assert!(
-            app.draft_preview.is_none(),
-            "opening the menu never previews"
+            app.attachment_editor.is_none(),
+            "opening the menu never opens the editor"
         );
         click_at(
             &mut app,
@@ -52134,8 +52068,8 @@ mod tests {
         assert!(app.draft_files[1].spoiler);
         let output = open_menu(&mut app);
         click_at(&mut app, &context, text_position(&output, "Edit"));
-        assert!(app.draft_preview.is_some(), "Edit opens the preview");
-        app.draft_preview = None;
+        assert!(app.attachment_editor.is_some(), "Edit opens the editor");
+        app.attachment_editor = None;
         let output = open_menu(&mut app);
         click_at(&mut app, &context, text_position(&output, "Remove spoiler"));
         assert!(!app.draft_files[1].spoiler);
@@ -52260,23 +52194,6 @@ mod tests {
                 && circle.fill == super::ACTION)));
     }
 
-    /// Renders until the draft preview has decoded its picture.
-    fn preview_ready(app: &mut CaperApp, context: &egui::Context) -> egui::FullOutput {
-        for _ in 0..500 {
-            render(app, context, vec![]);
-            if app
-                .draft_preview
-                .as_ref()
-                .is_some_and(|preview| !preview.loading())
-            {
-                render(app, context, vec![]);
-                return render(app, context, vec![]);
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        panic!("the preview never loaded its picture");
-    }
-
     /// The bounds of the control whose label starts with `prefix`.
     fn bounds_starting(output: &egui::FullOutput, prefix: &str) -> egui::Rect {
         let bounds = output
@@ -52337,7 +52254,7 @@ mod tests {
     }
 
     #[test]
-    fn editable_drafts_preview_in_the_app_with_tools_that_open_the_editor() {
+    fn editable_drafts_open_the_editor_viewing_with_tools_chosen_in_place() {
         use crate::attachment_editor::Tool;
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -52348,46 +52265,43 @@ mod tests {
         let original = edit_fixture("preview.png");
         app.draft_files[1].local_path = Some(original.clone());
         app.draft_files[1].editable = Some(crate::attachment_edit::Kind::Image);
-        // Turned a quarter: the preview shows what will be sent.
+        // Turned a quarter: viewing shows what will be sent.
         app.draft_files[1].edit = Some(crate::attachment_edit::Edit::default().rotate_left());
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         // The tile, away from its actions.
         let tile = bounds_starting(&output, "Preview TEST FIXTURE diagram.png\n");
         let spot = egui::pos2(tile.left() + 12.0, tile.center().y);
-        // Layout settles over a pass after the preview or editor closes.
+        // Layout settles over a pass after the editor closes.
         let open = |app: &mut CaperApp| {
             render(app, &context, vec![]);
             let opened = click_opening(app, &context, spot);
-            assert!(app.draft_preview.is_some(), "the preview opens");
+            let editor = app.attachment_editor.as_ref().expect("the editor opens");
+            assert_eq!(editor.tool(), None, "viewing");
             opened
         };
         assert_eq!(open(&mut app), None, "not the system viewer");
         assert!(app.conversation_covered());
-        let output = preview_ready(&mut app, &context);
-        for label in [
-            "Close preview",
+        let output = editor_ready(&mut app, &context);
+        let bar = [
+            crate::attachment_editor::CLOSE,
             "Open in default app",
-            "Spoiler",
-            "Crop",
-            "Draw",
-            "Text",
-            "Remove",
-        ] {
+            "Undo",
+            "Redo",
+            "Reset",
+            "Done",
+        ];
+        let row = ["Spoiler", "Crop", "Draw", "Text", "Remove"];
+        for label in bar.iter().chain(&row) {
             assert!(node_bounds(&output, label).is_some(), "{label}");
         }
         text_position(&output, "TEST FIXTURE diagram.png");
-        let picture = node_bounds(&output, "Image TEST FIXTURE diagram.png").expect("the picture");
-        assert_eq!(
-            picture.size(),
-            egui::vec2(48.0, 64.0),
-            "turned, not enlarged"
-        );
+        const VIEWING: &str = "Image TEST FIXTURE diagram.png";
+        let picture = node_bounds(&output, VIEWING).expect("the picture");
+        // Turned: taller than wide.
+        assert!(picture.height() > picture.width(), "{picture:?}");
         // Spoiler, the editor's tools, then Remove, centred under it.
-        let tools: Vec<_> = ["Spoiler", "Crop", "Draw", "Text", "Remove"]
-            .map(|label| node_bounds(&output, label).unwrap())
-            .into_iter()
-            .collect();
+        let tools: Vec<_> = row.map(|label| node_bounds(&output, label).unwrap()).into();
         assert!(
             tools
                 .windows(2)
@@ -52410,7 +52324,7 @@ mod tests {
         assert_eq!(selected(&output), Some(egui::accesskit::Toggled::False));
         click_label(&mut app, &context, "Spoiler");
         assert!(app.draft_files[1].spoiler);
-        assert!(app.draft_preview.is_some(), "the preview stays open");
+        assert!(app.attachment_editor.is_some(), "the editor stays open");
         render(&mut app, &context, vec![]);
         assert_eq!(
             selected(&render(&mut app, &context, vec![])),
@@ -52418,47 +52332,50 @@ mod tests {
         );
         click_label(&mut app, &context, "Spoiler");
         assert!(!app.draft_files[1].spoiler);
-        // Escape closes only the preview.
-        render(&mut app, &context, press(egui::Key::Escape));
-        assert!(app.draft_preview.is_none() && app.attachment_editor.is_none());
-
-        // Text and Crop close it and open the editor there, on the saved edit.
-        for (label, tool) in [("Text", Tool::Text), ("Crop", Tool::Crop)] {
-            open(&mut app);
-            preview_ready(&mut app, &context);
-            click_label(&mut app, &context, label);
-            assert!(app.draft_preview.is_none(), "{label}");
-            assert_eq!(
-                app.attachment_editor.as_ref().map(|editor| editor.tool()),
-                Some(tool)
-            );
-            editor_ready(&mut app, &context);
-            let editor = app.attachment_editor.as_ref().unwrap();
-            assert_eq!((editor.tool(), editor.current().rotation), (tool, 270));
-            render(&mut app, &context, press(egui::Key::Escape));
-            assert!(app.attachment_editor.is_none());
+        // Draw is chosen in place: the picture, the bar and the row stay.
+        click_label(&mut app, &context, "Draw");
+        assert_eq!(
+            app.attachment_editor.as_ref().unwrap().tool(),
+            Some(Tool::Draw)
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(node_bounds(&output, "Image being edited"), Some(picture));
+        for (label, rect) in row.iter().zip(&tools) {
+            assert_eq!(node_bounds(&output, label).as_ref(), Some(rect), "{label}");
         }
-        // The pencil opens the same preview.
-        click_label(&mut app, &context, "Edit TEST FIXTURE diagram.png");
-        assert!(app.draft_preview.is_some() && app.attachment_editor.is_none());
+        // Again returns to viewing; Text and Crop switch in place on the saved edit.
+        click_label(&mut app, &context, "Draw");
+        assert_eq!(app.attachment_editor.as_ref().unwrap().tool(), None);
+        for (label, tool) in [("Text", Tool::Text), ("Crop", Tool::Crop)] {
+            click_label(&mut app, &context, label);
+            let editor = app.attachment_editor.as_ref().unwrap();
+            assert_eq!(
+                (editor.tool(), editor.current().rotation),
+                (Some(tool), 270)
+            );
+        }
+        // Escape closes.
         render(&mut app, &context, press(egui::Key::Escape));
-        // A click on the dark area around the picture closes it.
-        open(&mut app);
-        preview_ready(&mut app, &context);
-        click_at(&mut app, &context, egui::pos2(40.0, 450.0));
-        assert!(app.draft_preview.is_none() && app.attachment_editor.is_none());
-        // Remove removes the file and closes.
+        assert!(app.attachment_editor.is_none());
+        // The pencil opens the same, viewing.
+        click_label(&mut app, &context, "Edit TEST FIXTURE diagram.png");
+        assert_eq!(app.attachment_editor.as_ref().unwrap().tool(), None);
+        render(&mut app, &context, press(egui::Key::Escape));
+        // Remove removes the file and closes, discarding an unsaved change.
         let removed = app.draft_files[1].key;
         open(&mut app);
-        preview_ready(&mut app, &context);
+        editor_ready(&mut app, &context);
+        click_label(&mut app, &context, "Crop");
+        click_label(&mut app, &context, "Rotate left");
         click_label(&mut app, &context, "Remove");
-        assert!(app.draft_preview.is_none() && app.attachment_editor.is_none());
+        assert!(app.attachment_editor.is_none());
         assert!(app.draft_files.iter().all(|draft| draft.key != removed));
         let _ = std::fs::remove_file(original);
     }
 
     #[test]
-    fn spoilered_draft_previews_show_the_picture_covered_as_it_will_be_seen() {
+    fn spoilered_drafts_show_covered_while_viewing_and_plainly_while_editing() {
         const PICTURE: &str = "Image TEST FIXTURE diagram.png";
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -52466,7 +52383,7 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-attachment-editor-preview"),
         );
-        let output = preview_ready(&mut app, &context);
+        let output = editor_ready(&mut app, &context);
         let picture = node_bounds(&output, PICTURE).expect("the picture");
         // The cover's "Spoiler", centred on the picture (the tool's is below it).
         let cover = |output: &egui::FullOutput| {
@@ -52507,20 +52424,31 @@ mod tests {
         assert!(node_bounds(&output, PICTURE).is_some());
         app.draft_files[1].spoiler = true;
         assert!(cover(&render(&mut app, &context, vec![])).is_some());
-        // The editor still shows the picture plainly.
-        click_label(&mut app, &context, "Crop");
-        let output = editor_ready(&mut app, &context);
+        // A chosen tool shows the picture plainly, in the same place.
+        click_label(&mut app, &context, "Draw");
         assert!(app.draft_files[1].spoiler);
-        assert!(!output.shapes.iter().any(|clipped| matches!(&clipped.shape,
-                egui::Shape::Text(text) if text.galley.text() == "Spoiler")));
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(node_bounds(&output, "Image being edited"), Some(picture));
+        assert!(cover(&output).is_none());
     }
 
-    /// Opens the editor on Draw from a staged file's pencil, through its preview.
+    /// Opens the editor from a staged file's pencil and chooses Draw.
     fn edit_in_draw(app: &mut CaperApp, context: &egui::Context, name: &str) {
         click_label(app, context, &format!("Edit {name}"));
-        assert!(app.draft_preview.is_some(), "the pencil opens the preview");
+        let editor = app
+            .attachment_editor
+            .as_ref()
+            .expect("the pencil opens the editor");
+        assert_eq!(editor.tool(), None, "viewing");
+        editor_ready(app, context);
         click_label(app, context, "Draw");
-        assert!(app.draft_preview.is_none());
+        assert_eq!(
+            app.attachment_editor
+                .as_ref()
+                .and_then(|editor| editor.tool()),
+            Some(crate::attachment_editor::Tool::Draw)
+        );
     }
 
     #[test]
@@ -52540,7 +52468,7 @@ mod tests {
         render(&mut app, &context, vec![]);
         let url = click_opening(&mut app, &context, spot).expect("the system viewer");
         assert!(url.starts_with("file:///"));
-        assert!(app.draft_preview.is_none());
+        assert!(app.attachment_editor.is_none());
         let _ = std::fs::remove_file(original);
     }
 
@@ -52698,7 +52626,7 @@ mod tests {
     }
 
     #[test]
-    fn draft_previews_open_what_will_be_sent_in_its_default_app() {
+    fn the_editor_opens_what_will_be_sent_in_its_default_app() {
         const OPEN: &str = "Open in default app";
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -52716,7 +52644,7 @@ mod tests {
         let open = |app: &mut CaperApp| {
             render(app, &context, vec![]);
             assert_eq!(click_opening(app, &context, spot), None);
-            preview_ready(app, &context)
+            editor_ready(app, &context)
         };
         // Unedited, it opens the original.
         let output = open(&mut app);
@@ -52726,14 +52654,17 @@ mod tests {
             click_opening(&mut app, &context, button),
             Some(url::Url::from_file_path(&original).unwrap().into())
         );
-        assert!(app.draft_preview.is_some(), "the preview stays");
+        assert!(app.attachment_editor.is_some(), "the editor stays");
         render(&mut app, &context, press(egui::Key::Escape));
         // Edited, it waits while the edit is prepared...
         app.draft_files[1].edit = Some(crate::attachment_edit::Edit::default().rotate_left());
         let output = open(&mut app);
         assert_eq!(disabled(&output, OPEN), Some(true));
         assert_eq!(click_opening(&mut app, &context, button), None);
-        assert!(app.draft_preview.is_some(), "a click on it doesn't close");
+        assert!(
+            app.attachment_editor.is_some(),
+            "a click on it doesn't close"
+        );
         text_position(
             &hover_still(&mut app, &context, button),
             "Available when your edit is ready",
@@ -52766,9 +52697,9 @@ mod tests {
             Some(url),
             "the same copy again"
         );
-        // Closing the preview leaves it to the app showing it.
+        // Closing the editor leaves it to the app showing it.
         render(&mut app, &context, press(egui::Key::Escape));
-        assert!(app.draft_preview.is_none());
+        assert!(app.attachment_editor.is_none());
         assert!(path.exists());
         // An edit that couldn't be applied has nothing to open.
         app.draft_files[1].prepared = None;
@@ -52785,7 +52716,7 @@ mod tests {
     }
 
     #[test]
-    fn draft_previews_zoom_and_pan_like_the_media_viewer() {
+    fn viewing_zooms_and_pans_like_the_media_viewer() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -52793,9 +52724,9 @@ mod tests {
             Some("parity-attachment-editor-preview"),
         );
         const PICTURE: &str = "Image TEST FIXTURE diagram.png";
-        let output = preview_ready(&mut app, &context);
+        let output = editor_ready(&mut app, &context);
         let fitted = node_bounds(&output, PICTURE).expect("the picture");
-        let zoom = |app: &CaperApp| app.draft_preview.as_ref().expect("still open").zoom();
+        let zoom = |app: &CaperApp| app.attachment_editor.as_ref().expect("still open").zoom();
         let near = |a: egui::Vec2, b: egui::Vec2| (a - b).length() < 0.5;
         let button = |pos, pressed| egui::Event::PointerButton {
             pos,
@@ -52830,7 +52761,7 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         let stage = node_bounds(&output, PICTURE).unwrap();
-        assert!(stage.width() > fitted.width() && (stage.height() - fitted.height()).abs() < 0.5);
+        assert!(stage.width() > fitted.width() && stage.height() > fitted.height());
         render(
             &mut app,
             &context,
@@ -52843,7 +52774,8 @@ mod tests {
         assert!(near(zoom(&app).pan - before, egui::vec2(-200.0, -100.0)));
         let crop = node_bounds(&output, "Crop").unwrap().center();
         drag(&mut app, spot, crop - spot);
-        assert!(app.draft_preview.is_some() && app.attachment_editor.is_none());
+        let editor = app.attachment_editor.as_ref().expect("still open");
+        assert_eq!(editor.tool(), None, "the drag never reaches the tools");
         // Double-click returns to fit, and zooms to the viewer's 2.5× again
         // (apart, so the clicks don't run into a triple).
         let double_click = |app: &mut CaperApp, at| {
@@ -52861,48 +52793,10 @@ mod tests {
         drag(&mut app, fitted.center(), egui::vec2(-1000.0, 600.0));
         let room = (fitted.size() * 2.5 - stage.size()) / 2.0;
         assert!(near(zoom(&app).pan, egui::vec2(-room.x, room.y)));
-        // A pinch's lifted finger is no click on the dark area around it.
-        let side = egui::pos2(6.0, fitted.center().y);
-        let touch = |id, phase, pos| egui::Event::Touch {
-            device_id: egui::TouchDeviceId(0),
-            id: egui::TouchId(id),
-            phase,
-            pos,
-            force: None,
-        };
-        render(
-            &mut app,
-            &context,
-            vec![
-                touch(0, egui::TouchPhase::Start, side),
-                egui::Event::PointerMoved(side),
-                button(side, true),
-            ],
-        );
-        render(
-            &mut app,
-            &context,
-            vec![touch(
-                1,
-                egui::TouchPhase::Start,
-                side + egui::vec2(0.0, 80.0),
-            )],
-        );
-        render(
-            &mut app,
-            &context,
-            vec![
-                touch(1, egui::TouchPhase::End, side + egui::vec2(0.0, 120.0)),
-                touch(0, egui::TouchPhase::End, side),
-                button(side, false),
-                egui::Event::PointerGone,
-            ],
-        );
-        assert!(app.draft_preview.is_some(), "a pinch never closes it");
-        // A click there still closes it, zoomed or not.
-        click_at(&mut app, &context, side);
-        assert!(app.draft_preview.is_none());
-        // Reopened, it fits again; the tools still open the editor while zoomed.
+        // Escape closes it.
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.attachment_editor.is_none());
+        // Reopened, it fits again; choosing a tool while zoomed resets the zoom.
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let tile = bounds_starting(&output, "Preview TEST FIXTURE diagram.png\n");
@@ -52911,19 +52805,22 @@ mod tests {
             &context,
             egui::pos2(tile.left() + 12.0, tile.center().y),
         );
-        preview_ready(&mut app, &context);
+        editor_ready(&mut app, &context);
         assert_eq!(zoom(&app), crate::viewer::Zoom::default());
         render(
             &mut app,
             &context,
             vec![egui::Event::PointerMoved(spot), egui::Event::Zoom(3.0)],
         );
+        assert_eq!(zoom(&app).scale, 3.0);
         click_label(&mut app, &context, "Crop");
-        assert!(app.draft_preview.is_none());
         assert_eq!(
-            app.attachment_editor.as_ref().map(|editor| editor.tool()),
+            app.attachment_editor
+                .as_ref()
+                .and_then(|editor| editor.tool()),
             Some(crate::attachment_editor::Tool::Crop)
         );
+        assert_eq!(zoom(&app), crate::viewer::Zoom::default());
     }
 
     /// Videos open on a still with the whole-video hint (`CAPER_FFMPEG`).
@@ -52959,11 +52856,18 @@ mod tests {
             app.draft_files[1].editable,
             Some(crate::attachment_edit::Kind::Video)
         );
-        edit_in_draw(&mut app, &context, "TEST FIXTURE diagram.png");
+        click_label(&mut app, &context, "Edit TEST FIXTURE diagram.png");
         let output = editor_ready(&mut app, &context);
-        text_position(&output, "Edit video");
-        node_bounds(&output, "Video frame being edited").expect("the still");
+        node_bounds(&output, "Still from TEST FIXTURE diagram.png").expect("the still");
         let overlays = crate::ffmpeg::overlays(binary);
+        if overlays {
+            click_label(&mut app, &context, "Draw");
+        } else {
+            click_label(&mut app, &context, "Crop");
+        }
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        node_bounds(&output, "Video frame being edited").expect("the still");
         let draw = output
             .platform_output
             .accesskit_update
@@ -52982,11 +52886,11 @@ mod tests {
                 &output,
                 "Drawings and text stay on screen for the whole video.",
             );
-            assert_eq!(tool, crate::attachment_editor::Tool::Draw);
+            assert_eq!(tool, Some(crate::attachment_editor::Tool::Draw));
             click_label(&mut app, &context, "Crop");
         } else {
             text_position(&output, "Crop and rotation apply to the whole video.");
-            assert_eq!(tool, crate::attachment_editor::Tool::Crop);
+            assert_eq!(tool, Some(crate::attachment_editor::Tool::Crop));
         }
         click_label(&mut app, &context, "Rotate left");
         click_label(&mut app, &context, "Done");
@@ -52994,8 +52898,8 @@ mod tests {
             app.draft_files[1].edit.as_ref().map(|edit| edit.rotation),
             Some(270)
         );
-        // Its preview shows the turned still, with the editor's rule for
-        // Draw and Text, and Crop opening the editor.
+        // Viewing shows the turned still, with the editor's rule for
+        // Draw and Text, and Crop chosen in place.
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let tile = bounds_starting(&output, "Preview TEST FIXTURE diagram.png\n");
@@ -53004,7 +52908,7 @@ mod tests {
             &context,
             egui::pos2(tile.left() + 12.0, tile.center().y),
         );
-        let output = preview_ready(&mut app, &context);
+        let output = editor_ready(&mut app, &context);
         let still = node_bounds(&output, "Still from TEST FIXTURE diagram.png").expect("the still");
         assert!(still.height() > still.width(), "turned");
         let draw = output
@@ -53021,7 +52925,9 @@ mod tests {
         assert_eq!(draw.is_disabled(), !overlays);
         click_label(&mut app, &context, "Crop");
         assert_eq!(
-            app.attachment_editor.as_ref().map(|editor| editor.tool()),
+            app.attachment_editor
+                .as_ref()
+                .and_then(|editor| editor.tool()),
             Some(crate::attachment_editor::Tool::Crop)
         );
         let _ = std::fs::remove_file(clip);
@@ -53084,27 +52990,31 @@ mod tests {
         );
         assert!(!app.profile_drafts["fixture-alex"].sending);
         assert!(app.selected_direct.is_none(), "uploading never navigates");
-        // The card tile's preview marks it as a spoiler and keeps its edit.
+        // The card tile's editor marks it as a spoiler and keeps its edit.
         let output = click_label(&mut app, &context, &format!("Edit {name}"));
         assert!(opened_url(&output).is_none());
-        assert!(app.draft_preview.is_some(), "the pencil opens the preview");
+        let editor = app
+            .attachment_editor
+            .as_ref()
+            .expect("the pencil opens the editor");
+        assert_eq!(editor.tool(), None, "viewing");
         click_label(&mut app, &context, "Spoiler");
         assert!(
-            app.draft_preview.is_some(),
-            "toggling keeps the preview open"
+            app.attachment_editor.is_some(),
+            "toggling keeps the editor open"
         );
         let file = &app.profile_drafts["fixture-alex"].files[0];
         assert!(file.spoiler);
         assert_eq!(file.edit.as_ref().map(|edit| edit.rotation), Some(270));
         render(&mut app, &context, press(egui::Key::Escape));
-        assert!(app.draft_preview.is_none() && app.mention_card.is_some());
-        // A spoilered file still previews in the app, and Crop edits it from there.
+        assert!(app.attachment_editor.is_none() && app.mention_card.is_some());
+        // A spoilered file still opens in the editor, and Crop edits it there.
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let tile = bounds_starting(&output, &format!("Preview {name}\n"));
         let spot = egui::pos2(tile.left() + 12.0, tile.center().y);
         assert_eq!(click_opening(&mut app, &context, spot), None);
-        let output = preview_ready(&mut app, &context);
+        let output = editor_ready(&mut app, &context);
         assert!(app.mention_card.is_some(), "the card stays under it");
         // Opening the local original prepares the edit independently of its upload.
         let open = node_bounds(&output, "Open in default app")
@@ -53122,7 +53032,7 @@ mod tests {
         assert_eq!((sent.width(), sent.height()), (48, 64), "turned, as sent");
         click_label(&mut app, &context, "Crop");
         let editor = app.attachment_editor.as_ref().expect("the editor");
-        assert_eq!(editor.tool(), crate::attachment_editor::Tool::Crop);
+        assert_eq!(editor.tool(), Some(crate::attachment_editor::Tool::Crop));
         assert!(matches!(
             editor.target,
             crate::attachment_editor::Target::Profile { index: 0, .. }

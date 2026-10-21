@@ -11,9 +11,10 @@
 //! drawn turned and cropped by texture coordinates; marks are painted with
 //! the same geometry the export uses (`attachment_edit`).
 //!
-//! [`Preview`] shows such a file in the app before it is sent, with the
-//! tools that open the editor on one of them, and opens what will be sent
-//! in its default app.
+//! A staged file opens viewing, with no tool chosen: the file as it will be
+//! sent, zoomable, covered while marked as a spoiler. Choosing a tool edits
+//! in place on the same screen, and Open in default app opens what will be
+//! sent.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,7 +29,7 @@ use crate::attachment_edit::{
 };
 use crate::compress::Compression;
 use crate::uploads;
-use crate::viewer::{self, Zoom};
+use crate::viewer::Zoom;
 use crate::{ACTION, BLACKOUT, BORDER, ERROR, MUTED, NavIcon, RAISED, SURFACE, TERRACOTTA, TEXT};
 
 const TOP_BAR: f32 = 56.0;
@@ -61,7 +62,7 @@ const TOOL_BUTTONS: [(Tool, NavIcon, &str); 3] = [
     (Tool::Text, NavIcon::Type, "Text"),
 ];
 const TOOL_WIDTH: f32 = 96.0;
-/// The preview's tools sit 4 points apart in a bordered group with 5 points
+/// The tool row's buttons sit 4 points apart in a bordered group with 5 points
 /// of padding; a divider with 4 points either side separates Spoiler and
 /// Remove from the editor's tools.
 const PREVIEW_TOOL_GAP: f32 = 4.0;
@@ -69,8 +70,10 @@ const PREVIEW_GROUP_GAP: f32 = 9.0;
 const PREVIEW_TOOLS_HEIGHT: f32 = 50.0;
 /// Narrower preview tools show only their icons.
 const MIN_PREVIEW_TOOL: f32 = 36.0;
-/// The preview's button for what will be sent, and why it waits.
+/// The editor's button for what will be sent, and why it waits.
 const OPEN_SENT: &str = "Open in default app";
+/// The editor's Close, which discards any unsaved change.
+pub const CLOSE: &str = "Close editor";
 const EDIT_PENDING: &str = "Available when your edit is ready";
 pub const VIDEO_MARKS_UNAVAILABLE: &str =
     "Drawing on videos needs a newer FFmpeg than this build includes.";
@@ -98,7 +101,7 @@ pub enum Target {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Tool {
     Crop,
     Draw,
@@ -107,9 +110,14 @@ pub enum Tool {
 
 pub enum Outcome {
     Open,
+    /// Close, discarding any unsaved change.
     Cancel,
     /// A change; `None` returns the draft to its original.
     Save(Option<Edit>),
+    /// Mark the staged file as a spoiler, or not; the editor stays open.
+    Spoiler,
+    /// Remove the staged file and close, discarding any unsaved change.
+    Remove,
 }
 
 struct Picture {
@@ -227,10 +235,16 @@ pub struct Editor {
     pub target: Target,
     kind: Kind,
     name: String,
+    /// The original, which Open in default app opens while unedited.
+    path: PathBuf,
     initial: Edit,
     states: Vec<Edit>,
     index: usize,
+    /// The chosen tool, unless `viewing`.
     tool: Tool,
+    /// No tool chosen: the picture as it will be sent, zoomable, under a
+    /// spoiler cover when marked as one.
+    viewing: bool,
     color: [u8; 3],
     stroke_points: f32,
     text_points: f32,
@@ -245,12 +259,25 @@ pub struct Editor {
     live_text: Option<(usize, f64, f64)>,
     field: Option<Field>,
     opened: bool,
+    /// Viewing's zoom, as the media viewer zooms; a chosen tool resets it.
+    zoom: Zoom,
+    /// The picture blurred as a spoilered attachment's cover is, for a
+    /// staged file marked as a spoiler.
+    cover: Option<egui::TextureHandle>,
+    /// The spoiler cover's fade ([`crate::motion::fade_toward`]).
+    cover_fade: Option<(f32, bool, f64)>,
+    /// When the decoded picture arrived, for it to fade in over the spinner.
+    arrived_at: Option<f64>,
+    own: Option<Own>,
+    /// The edited file last opened in another app, which the app keeps
+    /// until it quits ([`Editor::take_opened`]).
+    opened_file: Option<Arc<uploads::Scratch>>,
 }
 
 impl Editor {
     /// Starts decoding `path` off the UI thread; `edit` is what the draft
-    /// has. It opens on `tool` (the pencil's is Draw), or on Crop for a
-    /// video this FFmpeg cannot mark.
+    /// has. It opens viewing, with no tool chosen, for `None`; otherwise on
+    /// `tool`, or on Crop for a video this FFmpeg cannot mark.
     pub fn open(
         context: &egui::Context,
         target: Target,
@@ -258,14 +285,14 @@ impl Editor {
         name: String,
         path: &Path,
         edit: Option<Edit>,
-        tool: Tool,
+        tool: Option<Tool>,
     ) -> Self {
         let (sender, receiver) = mpsc::channel();
-        let (path, repaint) = (path.to_owned(), context.clone());
+        let (source, repaint) = (path.to_owned(), context.clone());
         std::thread::spawn(move || {
             let _ = sender.send(match kind {
-                Kind::Image => load_image(&path),
-                Kind::Video => load_video(&path),
+                Kind::Image => load_image(&source),
+                Kind::Video => load_video(&source),
             });
             repaint.request_repaint();
         });
@@ -274,10 +301,12 @@ impl Editor {
             target,
             kind,
             name,
+            path: path.to_owned(),
             states: vec![initial.clone()],
             initial,
             index: 0,
-            tool,
+            tool: tool.unwrap_or(Tool::Crop),
+            viewing: tool.is_none(),
             color: COLORS[0],
             stroke_points: STROKE_SIZES.2,
             text_points: TEXT_SIZES.2,
@@ -291,6 +320,12 @@ impl Editor {
             live_text: None,
             field: None,
             opened: false,
+            zoom: Zoom::default(),
+            cover: None,
+            cover_fade: None,
+            arrived_at: None,
+            own: None,
+            opened_file: None,
         }
     }
 
@@ -299,9 +334,35 @@ impl Editor {
         self.loading.is_some()
     }
 
+    /// The chosen tool; `None` while viewing.
     #[cfg(test)]
-    pub fn tool(&self) -> Tool {
-        self.tool
+    pub fn tool(&self) -> Option<Tool> {
+        (!self.viewing).then_some(self.tool)
+    }
+
+    #[cfg(test)]
+    pub fn zoom(&self) -> Zoom {
+        self.zoom
+    }
+
+    /// The edited file opened in another app, for the app to keep until it
+    /// quits: closing the editor must not remove a file still being shown.
+    pub fn take_opened(&mut self) -> Option<Arc<uploads::Scratch>> {
+        self.opened_file.take()
+    }
+
+    /// Chooses `tool` in place, or returns to viewing with `None`.
+    fn choose(&mut self, tool: Option<Tool>) {
+        self.commit_field();
+        self.gesture = None;
+        self.live_crop = None;
+        self.live_text = None;
+        self.erasing = false;
+        self.zoom = Zoom::default();
+        self.viewing = tool.is_none();
+        if let Some(tool) = tool {
+            self.tool = tool;
+        }
     }
 
     /// Opens a text field with `text` at `x`, `y` (layout fixtures).
@@ -390,10 +451,20 @@ impl Editor {
                 if !self.marks {
                     self.tool = Tool::Crop;
                 }
+                let image = color_image(&loaded.image);
+                // Only a staged file can be marked as a spoiler.
+                if !matches!(self.target, Target::Picture { .. }) {
+                    self.cover = Some(context.load_texture(
+                        "attachment-editor-cover",
+                        crate::attachments::blur_thumbnail(&image),
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
+                self.arrived_at = Some(context.input(|input| input.time));
                 self.picture = Some(Picture {
                     texture: context.load_texture(
                         "attachment-editor",
-                        color_image(&loaded.image),
+                        image,
                         egui::TextureOptions::LINEAR,
                     ),
                     pixels: loaded.image,
@@ -410,8 +481,37 @@ impl Editor {
         }
     }
 
+    /// A profile card's edit, once prepared, opens as it was asked to.
+    fn receive_prepared(&mut self, context: &egui::Context) {
+        let Some(Own::Preparing(preparation)) = &self.own else {
+            return;
+        };
+        let prepared = match preparation.result.try_recv() {
+            Ok(prepared) => prepared,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => None,
+        };
+        match prepared {
+            Some(prepared) => {
+                let prepared = Arc::new(prepared);
+                self.own = Some(Own::Ready(prepared.clone()));
+                self.open_sent(context, ToSend::Prepared(prepared));
+            }
+            None => self.own = Some(Own::Failed),
+        }
+    }
+
     /// Draws the editor over everything; returns what the person chose.
-    pub fn show(&mut self, context: &egui::Context) -> Outcome {
+    /// `to_send` is the draft's file as it stands this frame, which Open in
+    /// default app opens. `spoiler` is whether a staged file that can still
+    /// change is marked as one; it adds Spoiler and Remove to the tools.
+    /// `None` shows only the editor's tools.
+    pub fn show(
+        &mut self,
+        context: &egui::Context,
+        to_send: ToSend,
+        spoiler: Option<bool>,
+    ) -> Outcome {
         if !self.opened {
             self.opened = true;
             // The composer below must not keep typing.
@@ -420,6 +520,13 @@ impl Editor {
             }
         }
         self.receive(context);
+        self.receive_prepared(context);
+        let to_send = match (to_send, &self.own) {
+            (ToSend::AtSend(_), Some(Own::Preparing(_))) => ToSend::Preparing,
+            (ToSend::AtSend(_), Some(Own::Ready(prepared))) => ToSend::Prepared(prepared.clone()),
+            (ToSend::AtSend(_), Some(Own::Failed)) => ToSend::Failed,
+            (to_send, _) => to_send,
+        };
         // Escape closes an open colour picker first, which handles it itself.
         let popup = egui::Popup::is_any_open(context);
         let escape = !popup
@@ -458,20 +565,32 @@ impl Editor {
         let modal = egui::Modal::new(egui::Id::new("attachment-editor"))
             .frame(egui::Frame::NONE)
             .backdrop_color(BLACKOUT)
-            .show(context, |ui| self.contents(ui, screen));
-        crate::motion::modal(context, modal.response.layer_id);
+            .show(context, |ui| self.contents(ui, screen, to_send, spoiler));
+        // It arrives with a short fade and settles from just smaller.
+        crate::motion::modal_zoom(context, modal.response.layer_id, screen.center());
         // Nothing below sees Escape while the editor is open.
         context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         modal.inner
     }
 
-    fn contents(&mut self, ui: &mut egui::Ui, screen: Rect) -> Outcome {
+    /// One screen for viewing and editing: the top bar, the picture's
+    /// place and the tool row stay the same whichever tool is chosen.
+    fn contents(
+        &mut self,
+        ui: &mut egui::Ui,
+        screen: Rect,
+        to_send: ToSend,
+        spoiler: Option<bool>,
+    ) -> Outcome {
         let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
         ui.painter().rect_filled(rect, 0.0, BLACKOUT);
         let mut outcome = Outcome::Open;
+        let picture_target = matches!(self.target, Target::Picture { .. });
         let top = Rect::from_min_size(rect.min, egui::vec2(rect.width(), TOP_BAR));
         let tools = Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - TOOLS), rect.max);
-        let options_height = if rect.width() < NARROW && self.tool != Tool::Crop {
+        // The options strip keeps its height in every state (empty while
+        // viewing), so choosing a tool never moves the picture.
+        let options_height = if rect.width() < NARROW {
             OPTIONS * 2.0 - 12.0
         } else {
             OPTIONS
@@ -491,20 +610,21 @@ impl Editor {
             egui::pos2(rect.right(), hint.map_or(options.top(), |hint| hint.top())),
         );
         let layout = self.layout(stage);
-        let edge = layout.map_or(1.0, |layout| layout.edge);
+        let edge = layout.map_or(1.0, |layout| layout.edge / self.zoom.scale);
         let ready = self.picture.is_some();
 
-        // Top bar: Cancel, the title and name, Undo, Redo, Reset and Done.
+        // Top bar: Close, the name, Open in default app, Undo, Redo, Reset
+        // and Done, the same in every state.
         let painter = ui.painter_at(rect);
         painter.line_segment(
             [top.left_bottom(), top.right_bottom()],
             Stroke::new(1.0, BORDER),
         );
-        let cancel = Rect::from_center_size(
+        let close = Rect::from_center_size(
             egui::pos2(top.left() + 16.0 + 18.0, top.center().y),
             egui::vec2(36.0, 36.0),
         );
-        if icon_button(ui, cancel, NavIcon::Close, "Cancel editing", "Cancel", true).clicked() {
+        if icon_button(ui, close, NavIcon::Close, CLOSE, "Close", true).clicked() {
             return Outcome::Cancel;
         }
         let mut right = top.right() - 16.0;
@@ -518,22 +638,22 @@ impl Editor {
             rect
         };
         let done = place(64.0);
+        // With nothing changed, Done just closes.
+        let can_finish = ready || !picture_target;
         let done_response = ui
             .scope_builder(egui::UiBuilder::new().max_rect(done), |ui| {
-                crate::primary_button(ui, "Done", ready)
+                crate::primary_button(ui, "Done", can_finish)
             })
             .inner;
-        done_response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ready, "Done"));
-        if done_response.clicked() {
+        done_response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, can_finish, "Done")
+        });
+        if done_response.clicked() && can_finish {
             let fin = with_field(self.current(), self.field.as_ref());
-            outcome = if fin == self.initial && !matches!(self.target, Target::Picture { .. }) {
+            outcome = if fin == self.initial && !picture_target {
                 Outcome::Cancel
             } else {
-                Outcome::Save(
-                    (fin.is_edited() || matches!(self.target, Target::Picture { .. }))
-                        .then_some(fin),
-                )
+                Outcome::Save((fin.is_edited() || picture_target).then_some(fin))
             };
         }
         let reset = place(64.0);
@@ -561,36 +681,57 @@ impl Editor {
         if icon_button(ui, undo, NavIcon::Undo, "Undo", "Undo (Ctrl+Z)", can_undo).clicked() {
             self.undo();
         }
-        let title_left = cancel.right() + 12.0;
-        let title_width = (undo.left() - 12.0 - title_left).max(0.0);
+        // What will be sent, in its default app (a video plays there).
+        let mut title_right = undo.left();
+        if !picture_target {
+            let open = place(36.0);
+            title_right = open.left();
+            match to_send {
+                ToSend::Preparing => {
+                    let response = ui.interact(
+                        open,
+                        ui.id().with("attachment-editor-preparing"),
+                        egui::Sense::hover(),
+                    );
+                    egui::Spinner::new().size(16.0).color(MUTED).paint_at(
+                        ui,
+                        Rect::from_center_size(open.center(), egui::vec2(16.0, 16.0)),
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, false, OPEN_SENT)
+                    });
+                    response.on_hover_text(EDIT_PENDING);
+                }
+                ToSend::Failed => {
+                    icon_button(ui, open, NavIcon::ExternalLink, OPEN_SENT, OPEN_SENT, false)
+                        .on_hover_text(markup::FAILED);
+                }
+                to_send => {
+                    if icon_button(ui, open, NavIcon::ExternalLink, OPEN_SENT, OPEN_SENT, true)
+                        .clicked()
+                    {
+                        self.open_sent(ui.ctx(), to_send);
+                    }
+                }
+            }
+        }
+        let title_left = close.right() + 12.0;
         let mut job = egui::text::LayoutJob::simple_singleline(
-            if self.kind == Kind::Video {
-                "Edit video".into()
-            } else {
-                "Edit image".into()
-            },
+            self.name.clone(),
             egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
             TEXT,
         );
-        job.wrap = egui::text::TextWrapping::truncate_at_width(title_width);
+        job.wrap =
+            egui::text::TextWrapping::truncate_at_width((title_right - 12.0 - title_left).max(0.0));
         let title = ui.painter().layout_job(job);
-        let mut job = egui::text::LayoutJob::simple_singleline(
-            self.name.clone(),
-            egui::FontId::proportional(12.0),
-            MUTED,
-        );
-        job.wrap = egui::text::TextWrapping::truncate_at_width(title_width);
-        let name = ui.painter().layout_job(job);
-        let height = title.size().y + name.size().y;
-        let title_top = top.center().y - height / 2.0;
-        painter.galley(egui::pos2(title_left, title_top), title.clone(), TEXT);
         painter.galley(
-            egui::pos2(title_left, title_top + title.size().y),
-            name,
-            MUTED,
+            egui::pos2(title_left, top.center().y - title.size().y / 2.0),
+            title,
+            TEXT,
         );
 
-        // The stage: the picture, its marks and the crop frame.
+        // The stage: the picture, its marks and the crop frame, or the
+        // picture as it will be sent while viewing.
         if self.failed {
             painter.text(
                 stage.center(),
@@ -600,7 +741,7 @@ impl Editor {
                 MUTED,
             );
         } else if let Some(layout) = layout {
-            self.stage(ui, stage, layout, options);
+            self.stage(ui, stage, layout, options, spoiler == Some(true));
         } else {
             egui::Spinner::new().size(24.0).color(MUTED).paint_at(
                 ui,
@@ -621,53 +762,172 @@ impl Editor {
             );
         }
 
-        // The active tool's options, then the tools.
+        // The chosen tool's options fade in; switching away is instant.
+        if ready && !self.viewing {
+            let from = crate::motion::mark(ui);
+            self.options(ui, options, edge);
+            let to = crate::motion::mark(ui);
+            let shown = crate::motion::entrance(
+                ui.ctx(),
+                ui.id().with(("attachment-editor-options", self.tool)),
+                crate::motion::FAST,
+            );
+            crate::motion::settle_range(
+                ui.ctx(),
+                ui.layer_id(),
+                from..to,
+                shown,
+                egui::emath::TSTransform::IDENTITY,
+            );
+        }
+
+        // The tool row: a staged file's Spoiler, then Crop, Draw and Text,
+        // each chosen in place (again to go back to viewing), then Remove.
         painter.line_segment(
             [options.left_top(), options.right_top()],
             Stroke::new(1.0, BORDER),
         );
-        if ready {
-            self.options(ui, options, edge);
-        }
-        let start = tools.center().x - TOOL_WIDTH * 1.5 - 8.0;
-        for (index, (tool, icon, label)) in TOOL_BUTTONS.into_iter().enumerate() {
-            let button = Rect::from_min_size(
-                egui::pos2(start + index as f32 * (TOOL_WIDTH + 8.0), tools.top() + 8.0),
-                egui::vec2(TOOL_WIDTH, 40.0),
+        let (group, buttons, dividers) = preview_tool_layout(
+            tools.center().x,
+            tools.bottom() - 3.0,
+            rect.width() - 2.0 * PADDING,
+            spoiler.is_some(),
+        );
+        ui.painter().rect(
+            group,
+            8.0,
+            SURFACE,
+            Stroke::new(1.0, BORDER),
+            egui::StrokeKind::Inside,
+        );
+        for x in dividers {
+            ui.painter().vline(
+                x + 0.5,
+                group.shrink2(egui::vec2(0.0, 12.0)).y_range(),
+                Stroke::new(1.0, BORDER),
             );
-            let enabled = ready && (tool == Tool::Crop || self.marks);
-            let response = tool_button(ui, button, icon, label, self.tool == tool, enabled);
-            // Only Draw and Text are ever unavailable, and only for videos.
-            let response = if ready && !enabled {
-                response.on_hover_text(VIDEO_MARKS_UNAVAILABLE)
-            } else {
-                response
-            };
-            if response.clicked() && enabled && self.tool != tool {
-                self.commit_field();
-                self.gesture = None;
-                self.tool = tool;
-                self.erasing = false;
+        }
+        for (tool, button) in buttons {
+            match tool {
+                PreviewTool::Spoiler => {
+                    let marked = spoiler.unwrap_or(false);
+                    if tool_button(ui, button, NavIcon::EyeOff, "Spoiler", marked, true).clicked() {
+                        outcome = Outcome::Spoiler;
+                    }
+                }
+                PreviewTool::Remove => {
+                    let response = tool_button_toned(
+                        ui,
+                        button,
+                        NavIcon::Trash,
+                        "Remove",
+                        false,
+                        true,
+                        Some(ERROR),
+                    );
+                    if response.clicked() {
+                        outcome = Outcome::Remove;
+                    }
+                }
+                PreviewTool::Edit(tool) => {
+                    let (_, icon, label) = TOOL_BUTTONS
+                        .into_iter()
+                        .find(|(candidate, ..)| *candidate == tool)
+                        .expect("every tool has a button");
+                    let enabled = ready && (tool == Tool::Crop || self.marks);
+                    let selected = !self.viewing && self.tool == tool;
+                    let response = tool_button(ui, button, icon, label, selected, enabled);
+                    // Only Draw and Text are ever unavailable, and only for videos.
+                    let response = if ready && !enabled {
+                        response.on_hover_text(VIDEO_MARKS_UNAVAILABLE)
+                    } else {
+                        response
+                    };
+                    if response.clicked() && enabled {
+                        if !selected {
+                            self.choose(Some(tool));
+                        } else if !picture_target {
+                            // A profile picture's adjustment stays on Crop.
+                            self.choose(None);
+                        }
+                    }
+                }
             }
         }
+
         outcome
+    }
+
+    /// Opens what will be sent in its default app: the original, or the
+    /// prepared edit from a file this app owns. A profile card's edit is
+    /// prepared first and opens once ready.
+    fn open_sent(&mut self, context: &egui::Context, to_send: ToSend) {
+        let path = match to_send {
+            ToSend::Original => self.path.clone(),
+            ToSend::Prepared(prepared) => {
+                // The edit can't change while the preview is open.
+                let Ok(file) = self
+                    .opened_file
+                    .clone()
+                    .map_or_else(|| prepared.on_disk(), Ok)
+                else {
+                    return;
+                };
+                let path = file.path().to_owned();
+                self.opened_file = Some(file);
+                path
+            }
+            ToSend::AtSend(settings) => return self.prepare(context, settings),
+            ToSend::Preparing | ToSend::Failed => return,
+        };
+        if let Ok(url) = url::Url::from_file_path(&path) {
+            context.open_url(egui::OpenUrl::new_tab(url));
+        }
+    }
+
+    /// Prepares a profile card's edit as its Send will, off the UI thread.
+    fn prepare(&mut self, context: &egui::Context, settings: Compression) {
+        // The saved edit, which Send prepares.
+        let edit = self.initial.clone();
+        if !edit.is_edited() {
+            return;
+        }
+        let (sender, result) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (path, name, stop, repaint) = (
+            self.path.clone(),
+            self.name.clone(),
+            cancel.clone(),
+            context.clone(),
+        );
+        std::thread::spawn(move || {
+            let prepared =
+                uploads::prepare_edited_path(&path, &name, &edit, &settings, &|_| {}, &stop);
+            let _ = sender.send(prepared.ok());
+            repaint.request_repaint();
+        });
+        self.own = Some(Own::Preparing(Preparation { result, cancel }));
     }
 
     fn layout(&self, stage: Rect) -> Option<Layout> {
         let picture = self.picture.as_ref()?;
         let (width, height) =
             markup::rotated_size(picture.width, picture.height, self.current().rotation);
-        let (region, padding) = if self.tool == Tool::Crop {
-            (Crop::FULL, CROP_PADDING)
+        // One padding in every state (what the crop frame's handles need),
+        // so choosing a tool never moves or resizes an uncropped picture.
+        let region = if self.tool == Tool::Crop && !self.viewing {
+            Crop::FULL
         } else {
-            (self.current().crop, PADDING)
+            self.current().crop
         };
-        Some(Layout::new(
-            stage,
-            (width as f32, height as f32),
-            region,
-            padding,
-        ))
+        let mut layout = Layout::new(stage, (width as f32, height as f32), region, CROP_PADDING);
+        if self.viewing {
+            let mut zoom = self.zoom;
+            let placed = zoom.place(stage, layout.rect.size());
+            layout.edge *= placed.width() / layout.rect.width();
+            layout.rect = placed;
+        }
+        Some(layout)
     }
 
     /// What is on screen: the committed edit plus anything in progress.
@@ -703,14 +963,93 @@ impl Editor {
         shown
     }
 
-    fn stage(&mut self, ui: &mut egui::Ui, stage: Rect, layout: Layout, options: Rect) {
+    fn stage(
+        &mut self,
+        ui: &mut egui::Ui,
+        stage: Rect,
+        layout: Layout,
+        options: Rect,
+        spoiler: bool,
+    ) {
         let Some(picture) = &self.picture else {
             return;
         };
         let shown = self.shown();
+        // It fades in over the spinner once decoded.
+        let arrival = self.arrived_at.map_or(1.0, |at| {
+            crate::motion::progress(ui.ctx(), at, crate::motion::BASE)
+        });
+        if arrival < 1.0 {
+            let from = crate::motion::mark(ui);
+            egui::Spinner::new().size(24.0).color(MUTED).paint_at(
+                ui,
+                Rect::from_center_size(stage.center(), egui::vec2(24.0, 24.0)),
+            );
+            crate::motion::settle(
+                ui.ctx(),
+                ui.layer_id(),
+                from,
+                1.0 - arrival,
+                egui::emath::TSTransform::IDENTITY,
+            );
+        }
+        let from = crate::motion::mark(ui);
         let painter = ui.painter_at(stage);
-        paint_picture(&painter, &picture.texture, &layout, shown.rotation);
-        paint_marks(&ui.painter_at(layout.rect), &layout, &shown.marks);
+        paint_picture(
+            &painter,
+            &picture.texture,
+            &layout,
+            shown.rotation,
+            Color32::WHITE,
+        );
+        paint_marks(
+            &ui.painter_at(layout.rect.intersect(stage)),
+            &layout,
+            &shown.marks,
+        );
+        // While viewing, a spoiler shows covered, as the people it is sent
+        // to will see it; a chosen tool shows the picture plainly.
+        let cover = if self.viewing {
+            crate::motion::fade_toward(ui.ctx(), &mut self.cover_fade, spoiler)
+        } else {
+            // Back to viewing, the cover fades in again.
+            self.cover_fade = Some((0.0, false, f64::NEG_INFINITY));
+            0.0
+        };
+        if cover > 0.0
+            && let Some(blurred) = &self.cover
+        {
+            paint_spoiler_cover(&painter, blurred, &layout, shown.rotation, stage, cover);
+        }
+        crate::motion::settle(
+            ui.ctx(),
+            ui.layer_id(),
+            from,
+            arrival,
+            egui::emath::TSTransform::IDENTITY,
+        );
+        if self.viewing {
+            let shown_rect = layout.rect.intersect(stage);
+            let response = ui.interact(
+                shown_rect,
+                ui.id().with("attachment-editor-stage"),
+                egui::Sense::click_and_drag(),
+            );
+            let mut label = match self.kind {
+                Kind::Image => format!("Image {}", self.name),
+                Kind::Video => format!("Still from {}", self.name),
+            };
+            if spoiler {
+                label.push_str(SPOILER_LABEL);
+            }
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, &label));
+            let base = zoom_base(&layout, self.zoom);
+            self.zoom.interact(ui, &response, stage, base);
+            // Keep it covering the stage however far it is dragged.
+            self.zoom.place(stage, base);
+            return;
+        }
         let response = ui.interact(
             layout.rect,
             ui.id().with("attachment-editor-stage"),
@@ -1347,7 +1686,9 @@ impl Editor {
             self.stroke_points
         } else {
             self.field.as_ref().map_or(self.text_points, |field| {
-                (field.size as f32 * edge).clamp(min, max)
+                // Whole points, as the slider sets them: a size that
+                // rounds away from its own value would read as a change.
+                (field.size as f32 * edge).round().clamp(min, max)
             })
         };
         let preview = Rect::from_min_size(size.min, egui::vec2(44.0, 36.0));
@@ -1439,18 +1780,7 @@ impl Editor {
     }
 }
 
-pub enum PreviewOutcome {
-    Open,
-    Close,
-    /// Close it and edit the file, starting on this tool.
-    Edit(Tool),
-    /// Mark the staged file as a spoiler, or not; the preview stays open.
-    Spoiler,
-    /// Remove the staged file and close.
-    Remove,
-}
-
-/// One of the preview's tool buttons.
+/// One of the tool row's buttons.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PreviewTool {
     Spoiler,
@@ -1458,7 +1788,7 @@ pub enum PreviewTool {
     Remove,
 }
 
-/// Where the preview's tool row goes, centred on `center_x` with its bottom
+/// Where the tool row goes, centred on `center_x` with its bottom
 /// at `bottom`: Spoiler, then Crop, Draw and Text, then Remove when
 /// `staged` (a staged file that can still change), or only the editor's
 /// tools. Buttons narrow to fit `available` width. Returns the bordered
@@ -1514,7 +1844,7 @@ pub fn preview_tool_layout(
     (group, buttons, dividers)
 }
 
-/// The file as it will be sent, which the preview's Open in default app opens.
+/// The file as it will be sent, which the editor's Open in default app opens.
 #[derive(Clone)]
 pub enum ToSend {
     /// Unedited: the original itself.
@@ -1549,484 +1879,25 @@ enum Own {
     Failed,
 }
 
-/// A staged file the editor can open, previewed in the app as web's draft
-/// viewer does: what will be sent (a video's still), fitted on a dark page
-/// and zoomed as the media viewer zooms, with Crop, Draw and Text under it
-/// opening the editor on that tool (and, for a staged file, Spoiler and
-/// Remove either side of them). The system viewer other files open in
-/// cannot hold those; Open in default app hands it what will be sent.
-pub struct Preview {
-    pub target: Target,
-    kind: Kind,
-    name: String,
-    path: PathBuf,
-    edit: Option<Edit>,
-    picture: Option<egui::TextureHandle>,
-    /// The picture blurred as a spoilered attachment's cover is, for a
-    /// staged file marked as a spoiler.
-    cover: Option<egui::TextureHandle>,
-    /// When the decoded picture arrived, for it to fade in over the spinner.
-    arrived_at: Option<f64>,
-    /// The spoiler cover's fade ([`crate::motion::fade_toward`]).
-    cover_fade: Option<(f32, bool, f64)>,
-    loading: Option<Receiver<Option<Loaded>>>,
-    failed: bool,
-    /// As in the editor: Draw and Text wait for a video's FFmpeg check.
-    marks: bool,
-    zoom: Zoom,
-    /// A pinch since the last press: its lifted finger is no backdrop click.
-    pinched: bool,
-    own: Option<Own>,
-    /// The edited file last opened in another app, which the app keeps
-    /// until it quits ([`Preview::take_opened`]).
-    opened_file: Option<Arc<uploads::Scratch>>,
-    opened: bool,
-}
-
-impl Preview {
-    /// Starts decoding `path` with `edit` applied, off the UI thread.
-    pub fn open(
-        context: &egui::Context,
-        target: Target,
-        kind: Kind,
-        name: String,
-        path: &Path,
-        edit: Option<Edit>,
-    ) -> Self {
-        let (sender, receiver) = mpsc::channel();
-        let (source, applied, repaint) = (path.to_owned(), edit.clone(), context.clone());
-        std::thread::spawn(move || {
-            let loaded = match kind {
-                Kind::Image => load_image(&source),
-                Kind::Video => load_video(&source),
-            };
-            let _ = sender.send(loaded.map(|loaded| edited(loaded, applied.as_ref())));
-            repaint.request_repaint();
-        });
-        Self {
-            target,
-            kind,
-            name,
-            path: path.to_owned(),
-            edit,
-            picture: None,
-            cover: None,
-            arrived_at: None,
-            cover_fade: None,
-            loading: Some(receiver),
-            failed: false,
-            marks: kind == Kind::Image,
-            zoom: Zoom::default(),
-            pinched: false,
-            own: None,
-            opened_file: None,
-            opened: false,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn loading(&self) -> bool {
-        self.loading.is_some()
-    }
-
-    #[cfg(test)]
-    pub fn zoom(&self) -> Zoom {
-        self.zoom
-    }
-
-    /// The edited file opened in another app, for the app to keep until it
-    /// quits: closing the preview must not remove a file still being shown.
-    pub fn take_opened(&mut self) -> Option<Arc<uploads::Scratch>> {
-        self.opened_file.take()
-    }
-
-    fn receive(&mut self, context: &egui::Context) {
-        let Some(receiver) = &self.loading else {
-            return;
-        };
-        let loaded = match receiver.try_recv() {
-            Ok(loaded) => loaded,
-            Err(mpsc::TryRecvError::Empty) => return,
-            Err(mpsc::TryRecvError::Disconnected) => None,
-        };
-        self.loading = None;
-        match loaded {
-            Some(loaded) => {
-                self.marks = loaded.marks;
-                let image = color_image(&loaded.image);
-                // Only a staged file can be marked as a spoiler.
-                if !matches!(self.target, Target::Picture { .. }) {
-                    self.cover = Some(context.load_texture(
-                        "attachment-preview-cover",
-                        crate::attachments::blur_thumbnail(&image),
-                        egui::TextureOptions::LINEAR,
-                    ));
-                }
-                self.picture = Some(context.load_texture(
-                    "attachment-preview",
-                    image,
-                    egui::TextureOptions::LINEAR,
-                ));
-                self.arrived_at = Some(context.input(|input| input.time));
-            }
-            None => self.failed = true,
-        }
-    }
-
-    /// A profile card's edit, once prepared, opens as it was asked to.
-    fn receive_prepared(&mut self, context: &egui::Context) {
-        let Some(Own::Preparing(preparation)) = &self.own else {
-            return;
-        };
-        let prepared = match preparation.result.try_recv() {
-            Ok(prepared) => prepared,
-            Err(mpsc::TryRecvError::Empty) => return,
-            Err(mpsc::TryRecvError::Disconnected) => None,
-        };
-        match prepared {
-            Some(prepared) => {
-                let prepared = Arc::new(prepared);
-                self.own = Some(Own::Ready(prepared.clone()));
-                self.open_sent(context, ToSend::Prepared(prepared));
-            }
-            None => self.own = Some(Own::Failed),
-        }
-    }
-
-    /// Draws the preview over everything; returns what the person chose.
-    /// `to_send` is the draft's file as it stands this frame.
-    /// `spoiler` is whether a staged file that can still change is marked
-    /// as one; it adds Spoiler and Remove to the tools. `None` shows only
-    /// the editor's tools.
-    pub fn show(
-        &mut self,
-        context: &egui::Context,
-        to_send: ToSend,
-        spoiler: Option<bool>,
-    ) -> PreviewOutcome {
-        if !self.opened {
-            self.opened = true;
-            // The composer below must not keep typing.
-            if let Some(focused) = context.memory(|memory| memory.focused()) {
-                context.memory_mut(|memory| memory.surrender_focus(focused));
-            }
-        }
-        self.receive(context);
-        self.receive_prepared(context);
-        let to_send = match (to_send, &self.own) {
-            (ToSend::AtSend(_), Some(Own::Preparing(_))) => ToSend::Preparing,
-            (ToSend::AtSend(_), Some(Own::Ready(prepared))) => ToSend::Prepared(prepared.clone()),
-            (ToSend::AtSend(_), Some(Own::Failed)) => ToSend::Failed,
-            (to_send, _) => to_send,
-        };
-        // Nothing below sees Escape while the preview is open.
-        let escape =
-            context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        let screen = context.content_rect();
-        let modal = egui::Modal::new(egui::Id::new("attachment-preview"))
-            .frame(egui::Frame::NONE)
-            // Nearly opaque, as the media viewer is.
-            .backdrop_color(Color32::from_black_alpha(250))
-            .show(context, |ui| self.contents(ui, screen, to_send, spoiler));
-        // It arrives with a short fade and settles from just smaller.
-        crate::motion::modal_zoom(context, modal.response.layer_id, screen.center());
-        if escape {
-            PreviewOutcome::Close
-        } else {
-            modal.inner
-        }
-    }
-
-    fn contents(
-        &mut self,
-        ui: &mut egui::Ui,
-        screen: Rect,
-        to_send: ToSend,
-        spoiler: Option<bool>,
-    ) -> PreviewOutcome {
-        let (rect, backdrop) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
-        let mut outcome = PreviewOutcome::Open;
-        let top = Rect::from_min_size(rect.min, egui::vec2(rect.width(), TOP_BAR));
-        let (tools, buttons, dividers) = preview_tool_layout(
-            rect.center().x,
-            rect.bottom() - 20.0,
-            rect.width() - 2.0 * PADDING,
-            spoiler.is_some(),
-        );
-        let stage = Rect::from_min_max(
-            egui::pos2(rect.left() + PADDING, top.bottom() + 8.0),
-            egui::pos2(rect.right() - PADDING, tools.top() - 12.0),
-        );
-
-        // Top bar: the name, then what will be sent in its default app, and Close.
-        let close = Rect::from_min_size(
-            egui::pos2(top.right() - 16.0 - 36.0, top.center().y - 18.0),
-            egui::vec2(36.0, 36.0),
-        );
-        if icon_button(ui, close, NavIcon::Close, "Close preview", "Close", true).clicked() {
-            outcome = PreviewOutcome::Close;
-        }
-        let open = close.translate(egui::vec2(-44.0, 0.0));
-        match to_send {
-            ToSend::Preparing => {
-                let response = ui.interact(
-                    open,
-                    ui.id().with("attachment-preview-preparing"),
-                    egui::Sense::hover(),
-                );
-                egui::Spinner::new().size(16.0).color(MUTED).paint_at(
-                    ui,
-                    Rect::from_center_size(open.center(), egui::vec2(16.0, 16.0)),
-                );
-                response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, false, OPEN_SENT)
-                });
-                response.on_hover_text(EDIT_PENDING);
-            }
-            ToSend::Failed => {
-                icon_button(ui, open, NavIcon::ExternalLink, OPEN_SENT, OPEN_SENT, false)
-                    .on_hover_text(markup::FAILED);
-            }
-            to_send => {
-                if icon_button(ui, open, NavIcon::ExternalLink, OPEN_SENT, OPEN_SENT, true)
-                    .clicked()
-                {
-                    self.open_sent(ui.ctx(), to_send);
-                }
-            }
-        }
-        let title_left = top.left() + 20.0;
-        let mut job = egui::text::LayoutJob::simple_singleline(
-            self.name.clone(),
-            egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
-            TEXT,
-        );
-        job.wrap =
-            egui::text::TextWrapping::truncate_at_width((open.left() - 12.0 - title_left).max(0.0));
-        let title = ui.painter().layout_job(job);
-        ui.painter().galley(
-            egui::pos2(title_left, top.center().y - title.size().y / 2.0),
-            title,
-            TEXT,
-        );
-
-        // What will be sent, fitted without enlarging it, zooming as the
-        // media viewer does and kept to the stage. It fades in over the
-        // spinner once decoded; while marked as a spoiler it shows covered,
-        // as the people it is sent to will see it.
-        let mut picture = None;
-        let marked = spoiler == Some(true);
-        let cover = crate::motion::fade_toward(ui.ctx(), &mut self.cover_fade, marked);
-        if let Some(texture) = &self.picture {
-            let arrival = self.arrived_at.map_or(1.0, |at| {
-                crate::motion::progress(ui.ctx(), at, crate::motion::BASE)
-            });
-            if arrival < 1.0 {
-                let from = crate::motion::mark(ui);
-                egui::Spinner::new().size(24.0).color(MUTED).paint_at(
-                    ui,
-                    Rect::from_center_size(stage.center(), egui::vec2(24.0, 24.0)),
-                );
-                crate::motion::settle(
-                    ui.ctx(),
-                    ui.layer_id(),
-                    from,
-                    1.0 - arrival,
-                    egui::emath::TSTransform::IDENTITY,
-                );
-            }
-            let from = crate::motion::mark(ui);
-            let base = viewer::fit(texture.size_vec2(), stage.size());
-            let placed = self.zoom.place(stage, base);
-            let painter = ui.painter_at(stage);
-            let uv = Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0));
-            painter.image(texture.id(), placed, uv, Color32::WHITE);
-            let shown = placed.intersect(stage);
-            if cover > 0.0
-                && let Some(blurred) = &self.cover
-            {
-                paint_spoiler_cover(&painter, blurred, placed, shown, cover);
-            }
-            crate::motion::settle(
-                ui.ctx(),
-                ui.layer_id(),
-                from,
-                arrival,
-                egui::emath::TSTransform::IDENTITY,
-            );
-            let response = ui.interact(
-                shown,
-                ui.id().with("attachment-preview-picture"),
-                egui::Sense::click_and_drag(),
-            );
-            let mut label = match self.kind {
-                Kind::Image => format!("Image {}", self.name),
-                Kind::Video => format!("Still from {}", self.name),
-            };
-            if marked {
-                label.push_str(SPOILER_LABEL);
-            }
-            response
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, &label));
-            self.zoom.interact(ui, &response, stage, base);
-            picture = Some(shown);
-        } else if self.failed {
-            ui.painter().text(
-                stage.center(),
-                egui::Align2::CENTER_CENTER,
-                "This file can’t be previewed here.",
-                egui::FontId::proportional(13.0),
-                MUTED,
-            );
-        } else {
-            egui::Spinner::new().size(24.0).color(MUTED).paint_at(
-                ui,
-                Rect::from_center_size(stage.center(), egui::vec2(24.0, 24.0)),
-            );
-        }
-
-        // A staged file's Spoiler toggle, then Crop, Draw and Text, each
-        // opening the editor on itself, then Remove.
-        ui.painter().rect(
-            tools,
-            8.0,
-            SURFACE,
-            Stroke::new(1.0, BORDER),
-            egui::StrokeKind::Inside,
-        );
-        for x in dividers {
-            ui.painter().vline(
-                x + 0.5,
-                tools.shrink2(egui::vec2(0.0, 12.0)).y_range(),
-                Stroke::new(1.0, BORDER),
-            );
-        }
-        for (tool, button) in buttons {
-            match tool {
-                PreviewTool::Spoiler => {
-                    let marked = spoiler.unwrap_or(false);
-                    let response =
-                        tool_button(ui, button, NavIcon::EyeOff, "Spoiler", marked, true);
-                    if response.clicked() {
-                        outcome = PreviewOutcome::Spoiler;
-                    }
-                }
-                PreviewTool::Remove => {
-                    let response = tool_button_toned(
-                        ui,
-                        button,
-                        NavIcon::Trash,
-                        "Remove",
-                        false,
-                        true,
-                        Some(ERROR),
-                    );
-                    if response.clicked() {
-                        outcome = PreviewOutcome::Remove;
-                    }
-                }
-                PreviewTool::Edit(tool) => {
-                    let (_, icon, label) = TOOL_BUTTONS
-                        .into_iter()
-                        .find(|(candidate, ..)| *candidate == tool)
-                        .expect("every tool has a button");
-                    // The editor's rule: only Draw and Text, only for videos.
-                    let enabled = tool == Tool::Crop || self.marks;
-                    let response = tool_button(ui, button, icon, label, false, enabled);
-                    let response = if self.picture.is_some() && !enabled {
-                        response.on_hover_text(VIDEO_MARKS_UNAVAILABLE)
-                    } else {
-                        response
-                    };
-                    if response.clicked() && enabled {
-                        outcome = PreviewOutcome::Edit(tool);
-                    }
-                }
-            }
-        }
-        // A click on the dark area around them closes, as in the viewer; a
-        // pinch's lifted finger, or a click on a waiting Open, does not.
-        let (press, pinching) =
-            ui.input(|input| (input.pointer.any_pressed(), input.multi_touch().is_some()));
-        self.pinched = (self.pinched && !press) || pinching;
-        let pressed = ui.input(|input| input.pointer.interact_pos());
-        let around = pressed.is_none_or(|pos| {
-            !tools.contains(pos)
-                && !open.contains(pos)
-                && !picture.is_some_and(|picture: Rect| picture.contains(pos))
-        });
-        if backdrop.clicked() && around && !self.pinched {
-            outcome = PreviewOutcome::Close;
-        }
-        outcome
-    }
-
-    /// Opens what will be sent in its default app: the original, or the
-    /// prepared edit from a file this app owns. A profile card's edit is
-    /// prepared first and opens once ready.
-    fn open_sent(&mut self, context: &egui::Context, to_send: ToSend) {
-        let path = match to_send {
-            ToSend::Original => self.path.clone(),
-            ToSend::Prepared(prepared) => {
-                // The edit can't change while the preview is open.
-                let Ok(file) = self
-                    .opened_file
-                    .clone()
-                    .map_or_else(|| prepared.on_disk(), Ok)
-                else {
-                    return;
-                };
-                let path = file.path().to_owned();
-                self.opened_file = Some(file);
-                path
-            }
-            ToSend::AtSend(settings) => return self.prepare(context, settings),
-            ToSend::Preparing | ToSend::Failed => return,
-        };
-        if let Ok(url) = url::Url::from_file_path(&path) {
-            context.open_url(egui::OpenUrl::new_tab(url));
-        }
-    }
-
-    /// Prepares a profile card's edit as its Send will, off the UI thread.
-    fn prepare(&mut self, context: &egui::Context, settings: Compression) {
-        let Some(edit) = self.edit.clone() else {
-            return;
-        };
-        let (sender, result) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let (path, name, stop, repaint) = (
-            self.path.clone(),
-            self.name.clone(),
-            cancel.clone(),
-            context.clone(),
-        );
-        std::thread::spawn(move || {
-            let prepared =
-                uploads::prepare_edited_path(&path, &name, &edit, &settings, &|_| {}, &stop);
-            let _ = sender.send(prepared.ok());
-            repaint.request_repaint();
-        });
-        self.own = Some(Own::Preparing(Preparation { result, cancel }));
-    }
-}
-
-/// The preview's picture under a spoiler cover, as the people it is sent to
-/// see it until they reveal it: blurred and dimmed over blackout, with a
+/// The picture under a spoiler cover, as the people it is sent to see it
+/// until they reveal it: blurred and dimmed over blackout, with a
 /// crossed-out eye and "Spoiler" centred on what shows, at `opacity`.
 fn paint_spoiler_cover(
     painter: &egui::Painter,
     blurred: &egui::TextureHandle,
-    placed: Rect,
-    shown: Rect,
+    layout: &Layout,
+    rotation: u16,
+    stage: Rect,
     opacity: f32,
 ) {
-    let uv = Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0));
+    let placed = layout.rect;
+    let shown = placed.intersect(stage);
     painter.rect_filled(placed, 0.0, BLACKOUT.gamma_multiply(opacity));
-    painter.image(
-        blurred.id(),
-        placed,
-        uv,
+    paint_picture(
+        painter,
+        blurred,
+        layout,
+        rotation,
         Color32::WHITE.gamma_multiply(opacity),
     );
     painter.rect_filled(
@@ -2065,13 +1936,9 @@ fn paint_spoiler_cover(
     );
 }
 
-/// The still as it will be sent: turned, cropped and marked.
-fn edited(mut loaded: Loaded, edit: Option<&Edit>) -> Loaded {
-    if let Some(edit) = edit {
-        let shown = image::DynamicImage::ImageRgba8(std::mem::take(&mut loaded.image));
-        loaded.image = markup::render(&shown, edit).unwrap_or(shown).into_rgba8();
-    }
-    loaded
+/// The fitted (unzoomed) size of viewing's picture.
+fn zoom_base(layout: &Layout, zoom: Zoom) -> Vec2 {
+    layout.rect.size() / zoom.scale
 }
 
 /// The edit with an open text field applied, as committing it would.
@@ -2139,6 +2006,7 @@ fn paint_picture(
     texture: &egui::TextureHandle,
     layout: &Layout,
     rotation: u16,
+    tint: Color32,
 ) {
     let region = layout.region;
     let rect = layout.rect;
@@ -2155,7 +2023,7 @@ fn paint_picture(
         mesh.vertices.push(egui::epaint::Vertex {
             pos,
             uv: upright(rotation, x, y),
-            color: Color32::WHITE,
+            color: tint,
         });
     }
     mesh.add_triangle(0, 1, 2);
@@ -2730,17 +2598,25 @@ mod tests {
             marks: false,
         };
         for tool in [Tool::Crop, Tool::Draw, Tool::Text] {
-            assert_eq!(open(Kind::Image, tool).tool(), tool);
+            assert_eq!(open(Kind::Image, Some(tool)).tool(), Some(tool));
             // A video keeps it until its FFmpeg turns out unable to mark.
-            let mut editor = open(Kind::Video, tool);
-            assert_eq!(editor.tool(), tool);
+            let mut editor = open(Kind::Video, Some(tool));
+            assert_eq!(editor.tool(), Some(tool));
             let (sender, receiver) = mpsc::channel();
             editor.loading = Some(receiver);
             sender.send(Some(still())).unwrap();
             editor.receive(&context);
-            assert_eq!(editor.tool(), Tool::Crop, "{tool:?}");
+            assert_eq!(editor.tool(), Some(Tool::Crop), "{tool:?}");
         }
-        let mut editor = open(Kind::Video, Tool::Text);
+        // Without a tool it opens viewing, and stays so for any video.
+        let mut editor = open(Kind::Video, None);
+        assert_eq!(editor.tool(), None);
+        let (sender, receiver) = mpsc::channel();
+        editor.loading = Some(receiver);
+        sender.send(Some(still())).unwrap();
+        editor.receive(&context);
+        assert_eq!(editor.tool(), None);
+        let mut editor = open(Kind::Video, Some(Tool::Text));
         let (sender, receiver) = mpsc::channel();
         editor.loading = Some(receiver);
         sender
@@ -2750,7 +2626,7 @@ mod tests {
             }))
             .unwrap();
         editor.receive(&context);
-        assert_eq!(editor.tool(), Tool::Text);
+        assert_eq!(editor.tool(), Some(Tool::Text));
     }
 
     #[test]
@@ -2766,44 +2642,6 @@ mod tests {
             }
             assert_eq!(brush_diameter(STROKE_SIZES.0, edge), MIN_BRUSH);
         }
-    }
-
-    #[test]
-    fn previews_show_the_picture_as_it_will_be_sent() {
-        let loaded = || Loaded {
-            image: image::RgbaImage::from_fn(64, 32, |x, _| {
-                image::Rgba(if x < 32 {
-                    [255, 0, 0, 255]
-                } else {
-                    [0, 0, 255, 255]
-                })
-            }),
-            width: 640,
-            height: 320,
-            marks: true,
-        };
-        assert_eq!(edited(loaded(), None).image.dimensions(), (64, 32));
-        let left = Edit {
-            crop: Crop {
-                x: 0.0,
-                y: 0.0,
-                width: 0.5,
-                height: 1.0,
-            },
-            ..Edit::default()
-        };
-        let shown = edited(loaded(), Some(&left));
-        assert_eq!(shown.image.dimensions(), (32, 32));
-        assert!(
-            shown
-                .image
-                .pixels()
-                .all(|pixel| pixel.0 == [255, 0, 0, 255])
-        );
-        // The original's size stays for the editor's measurements.
-        assert_eq!((shown.width, shown.height), (640, 320));
-        let turned = edited(loaded(), Some(&Edit::default().rotate_left()));
-        assert_eq!(turned.image.dimensions(), (32, 64));
     }
 
     #[test]
@@ -2885,19 +2723,21 @@ mod tests {
         );
     }
 
-    /// A staged picture's preview, its picture decoded once `send` is called.
-    fn staged_preview(context: &egui::Context) -> (Preview, impl FnOnce()) {
+    /// A staged picture's editor, opened viewing; its picture is decoded
+    /// once `send` is called.
+    fn staged_editor(context: &egui::Context) -> (Editor, impl FnOnce()) {
         crate::configure(context);
-        let mut preview = Preview::open(
+        let mut editor = Editor::open(
             context,
             Target::Draft(1),
             Kind::Image,
             "photo.png".into(),
             Path::new("missing"),
             None,
+            None,
         );
         let (sender, receiver) = mpsc::channel();
-        preview.loading = Some(receiver);
+        editor.loading = Some(receiver);
         let send = move || {
             sender
                 .send(Some(Loaded {
@@ -2908,31 +2748,85 @@ mod tests {
                 }))
                 .unwrap();
         };
-        (preview, send)
+        (editor, send)
     }
 
-    /// One pass of `preview` at `time` seconds, with motion when `motion`.
-    fn preview_pass(
+    const SCREEN: Vec2 = egui::vec2(1000.0, 700.0);
+
+    /// One pass of `editor` at `time` seconds in a `screen`-sized window,
+    /// with motion when `motion`; returns its output and outcome.
+    fn pass_in(
         context: &egui::Context,
-        preview: &mut Preview,
+        editor: &mut Editor,
         time: f64,
         spoiler: Option<bool>,
         motion: bool,
-    ) -> egui::FullOutput {
+        screen: Vec2,
+        events: Vec<egui::Event>,
+    ) -> (egui::FullOutput, Outcome) {
         context.enable_accesskit();
-        context.run(
+        let mut outcome = Outcome::Open;
+        let output = context.run(
             egui::RawInput {
                 time: Some(time),
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),
+                events,
                 ..Default::default()
             },
             |context| {
                 if motion {
                     crate::motion::enable(context);
                 }
-                preview.show(context, ToSend::Original, spoiler);
+                outcome = editor.show(context, ToSend::Original, spoiler);
             },
+        );
+        (output, outcome)
+    }
+
+    fn editor_pass(
+        context: &egui::Context,
+        editor: &mut Editor,
+        time: f64,
+        spoiler: Option<bool>,
+        motion: bool,
+    ) -> egui::FullOutput {
+        pass_in(context, editor, time, spoiler, motion, SCREEN, vec![]).0
+    }
+
+    /// Clicks `at` over two passes; returns the outcome of the release.
+    fn click(
+        context: &egui::Context,
+        editor: &mut Editor,
+        time: f64,
+        spoiler: Option<bool>,
+        screen: Vec2,
+        at: Pos2,
+    ) -> Outcome {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        pass_in(
+            context,
+            editor,
+            time,
+            spoiler,
+            false,
+            screen,
+            vec![egui::Event::PointerMoved(at), button(true)],
+        );
+        pass_in(
+            context,
+            editor,
+            time + 0.01,
+            spoiler,
+            false,
+            screen,
+            vec![button(false)],
         )
+        .1
     }
 
     fn node(output: &egui::FullOutput, label: &str) -> Option<Rect> {
@@ -2972,11 +2866,8 @@ mod tests {
             })
     }
 
-    /// The spoiler cover's centred badge over `picture`: its rect and fill.
-    fn spoiler_badge(
-        output: &egui::FullOutput,
-        picture: Rect,
-    ) -> Option<(Rect, egui::epaint::RectShape)> {
+    /// The spoiler cover's centred badge over `picture`.
+    fn spoiler_badge(output: &egui::FullOutput, picture: Rect) -> Option<egui::epaint::RectShape> {
         output
             .shapes
             .iter()
@@ -2986,7 +2877,7 @@ mod tests {
                         && (rect.rect.center() - picture.center()).length() < 1.0
                         && rect.rect.width() < picture.width() =>
                 {
-                    Some((rect.rect, rect.clone()))
+                    Some(rect.clone())
                 }
                 _ => None,
             })
@@ -3001,38 +2892,208 @@ mod tests {
         })
     }
 
+    const VIEWING: &str = "Image photo.png";
+    const EDITING: &str = "Image being edited";
+
     #[test]
-    fn a_spoilered_preview_shows_its_picture_covered_as_recipients_see_it() {
+    fn staged_files_open_viewing_on_one_screen_with_tools_chosen_in_place() {
         let context = egui::Context::default();
-        let (mut preview, send) = staged_preview(&context);
+        let (mut editor, send) = staged_editor(&context);
         send();
-        preview_pass(&context, &mut preview, 0.9, Some(false), false);
-        let output = preview_pass(&context, &mut preview, 1.0, Some(false), false);
-        let picture = node(&output, "Image photo.png").expect("the picture");
-        let original = preview.picture.clone().expect("decoded");
-        let cover = preview.cover.clone().expect("a blurred cover");
+        editor_pass(&context, &mut editor, 1.0, Some(false), false);
+        let output = editor_pass(&context, &mut editor, 1.1, Some(false), false);
+        assert_eq!(editor.tool(), None, "viewing");
+        // The top bar, the same in every state.
+        let bar = [CLOSE, OPEN_SENT, "Undo", "Redo", "Reset", "Done"];
+        let top: Vec<_> = bar.map(|label| node(&output, label).expect(label)).into();
+        // The tool row: Spoiler | Crop Draw Text | Remove.
+        let row = ["Spoiler", "Crop", "Draw", "Text", "Remove"];
+        let tools: Vec<_> = row.map(|label| node(&output, label).unwrap()).into();
+        assert!(
+            tools
+                .windows(2)
+                .all(|pair| pair[0].right() < pair[1].left())
+        );
+        let viewing = node(&output, VIEWING).expect("the picture");
+        assert!(tools[0].top() > viewing.bottom());
+        // Choosing Draw keeps the picture exactly where it was.
+        click(
+            &context,
+            &mut editor,
+            2.0,
+            Some(false),
+            SCREEN,
+            tools[2].center(),
+        );
+        assert_eq!(editor.tool(), Some(Tool::Draw));
+        let output = editor_pass(&context, &mut editor, 2.1, Some(false), false);
+        assert_eq!(node(&output, EDITING), Some(viewing));
+        assert!(node(&output, VIEWING).is_none());
+        for (label, rect) in bar.iter().zip(&top) {
+            assert_eq!(node(&output, label).as_ref(), Some(rect), "{label}");
+        }
+        for (label, rect) in row.iter().zip(&tools) {
+            assert_eq!(node(&output, label).as_ref(), Some(rect), "{label}");
+        }
+        // Crop too, for an uncropped picture; Text switches in place.
+        click(
+            &context,
+            &mut editor,
+            3.0,
+            Some(false),
+            SCREEN,
+            tools[1].center(),
+        );
+        assert_eq!(editor.tool(), Some(Tool::Crop));
+        let output = editor_pass(&context, &mut editor, 3.1, Some(false), false);
+        assert_eq!(node(&output, EDITING), Some(viewing));
+        assert!(node(&output, "Rotate left").is_some());
+        click(
+            &context,
+            &mut editor,
+            4.0,
+            Some(false),
+            SCREEN,
+            tools[3].center(),
+        );
+        assert_eq!(editor.tool(), Some(Tool::Text));
+        // Choosing it again returns to viewing.
+        click(
+            &context,
+            &mut editor,
+            5.0,
+            Some(false),
+            SCREEN,
+            tools[3].center(),
+        );
+        assert_eq!(editor.tool(), None);
+        let output = editor_pass(&context, &mut editor, 5.1, Some(false), false);
+        assert_eq!(node(&output, VIEWING), Some(viewing));
+        assert!(
+            node(&output, "Rotate left").is_none(),
+            "no options while viewing"
+        );
+        // Spoiler toggles without leaving; Remove asks to remove and close.
+        assert!(matches!(
+            click(
+                &context,
+                &mut editor,
+                6.0,
+                Some(false),
+                SCREEN,
+                tools[0].center()
+            ),
+            Outcome::Spoiler
+        ));
+        assert_eq!(editor.tool(), None);
+        assert!(matches!(
+            click(
+                &context,
+                &mut editor,
+                7.0,
+                Some(false),
+                SCREEN,
+                tools[4].center()
+            ),
+            Outcome::Remove
+        ));
+        // Done with nothing changed just closes.
+        assert!(matches!(
+            click(
+                &context,
+                &mut editor,
+                8.0,
+                Some(false),
+                SCREEN,
+                top[5].center()
+            ),
+            Outcome::Cancel
+        ));
+    }
+
+    #[test]
+    fn a_narrow_window_keeps_the_options_height_while_viewing() {
+        let context = egui::Context::default();
+        let (mut editor, send) = staged_editor(&context);
+        send();
+        let narrow = egui::vec2(480.0, 760.0);
+        let pass = |editor: &mut Editor, time| {
+            pass_in(&context, editor, time, Some(false), false, narrow, vec![]).0
+        };
+        pass(&mut editor, 1.0);
+        let output = pass(&mut editor, 1.1);
+        let viewing = node(&output, VIEWING).unwrap();
+        let draw = node(&output, "Draw").unwrap();
+        click(
+            &context,
+            &mut editor,
+            2.0,
+            Some(false),
+            narrow,
+            draw.center(),
+        );
+        assert_eq!(editor.tool(), Some(Tool::Draw));
+        let output = pass(&mut editor, 2.1);
+        assert_eq!(node(&output, EDITING), Some(viewing));
+        // Colours and the size take a row each, inside the reserved strip.
+        let size = node(&output, "Line size").expect("the size");
+        assert!(size.bottom() < draw.top() && size.top() > viewing.bottom());
+    }
+
+    #[test]
+    fn a_spoiler_shows_covered_only_while_viewing() {
+        let context = egui::Context::default();
+        let (mut editor, send) = staged_editor(&context);
+        send();
+        editor_pass(&context, &mut editor, 0.9, Some(false), false);
+        let output = editor_pass(&context, &mut editor, 1.0, Some(false), false);
+        let picture = node(&output, VIEWING).expect("the picture");
+        let original = editor.picture.as_ref().unwrap().texture.clone();
+        let cover = editor.cover.clone().expect("a blurred cover");
         assert_eq!(mesh_opacity(&output, &original, picture), Some(1.0));
         assert!(mesh_opacity(&output, &cover, picture).is_none());
         assert!(spoiler_badge(&output, picture).is_none());
 
         // Marked, the picture is covered at once without motion: blurred,
         // dimmed, and the crossed-out eye with "Spoiler" in a blackout badge.
-        let output = preview_pass(&context, &mut preview, 1.1, Some(true), false);
-        let label = format!("Image photo.png{SPOILER_LABEL}");
+        let output = editor_pass(&context, &mut editor, 1.1, Some(true), false);
+        let label = format!("{VIEWING}{SPOILER_LABEL}");
         assert_eq!(node(&output, &label), Some(picture));
         assert_eq!(mesh_opacity(&output, &cover, picture), Some(1.0));
-        let (badge, shape) = spoiler_badge(&output, picture).expect("the badge");
+        let shape = spoiler_badge(&output, picture).expect("the badge");
         assert_eq!(shape.fill, BLACKOUT.gamma_multiply(0.9));
         assert_eq!(shape.stroke, Stroke::new(1.0, BORDER));
         assert_eq!(shape.corner_radius, egui::CornerRadius::same(8));
-        assert!(spoiler_text_over(&output, badge));
-        assert!(picture.contains_rect(badge));
-        // The tool row's Spoiler stays where it was.
-        assert!(node(&output, "Spoiler").is_some_and(|tool| tool.top() > picture.bottom()));
+        assert!(spoiler_text_over(&output, shape.rect));
+        assert!(picture.contains_rect(shape.rect));
 
-        // Removing it uncovers the picture.
-        let output = preview_pass(&context, &mut preview, 1.2, Some(false), false);
-        assert!(node(&output, "Image photo.png").is_some());
+        // A chosen tool shows the picture plainly.
+        let draw = node(&output, "Draw").unwrap();
+        click(
+            &context,
+            &mut editor,
+            2.0,
+            Some(true),
+            SCREEN,
+            draw.center(),
+        );
+        let output = editor_pass(&context, &mut editor, 2.1, Some(true), false);
+        assert_eq!(node(&output, EDITING), Some(picture));
+        assert!(mesh_opacity(&output, &cover, picture).is_none());
+        assert!(spoiler_badge(&output, picture).is_none());
+        assert_eq!(mesh_opacity(&output, &original, picture), Some(1.0));
+        // Back to viewing it is covered again; unmarked, uncovered.
+        click(
+            &context,
+            &mut editor,
+            3.0,
+            Some(true),
+            SCREEN,
+            draw.center(),
+        );
+        let output = editor_pass(&context, &mut editor, 3.1, Some(true), false);
+        assert!(spoiler_badge(&output, picture).is_some());
+        let output = editor_pass(&context, &mut editor, 3.2, Some(false), false);
         assert!(mesh_opacity(&output, &cover, picture).is_none());
         assert!(spoiler_badge(&output, picture).is_none());
     }
@@ -3040,62 +3101,42 @@ mod tests {
     #[test]
     fn the_spoiler_cover_fades_in_and_out_with_motion() {
         let context = egui::Context::default();
-        let (mut preview, send) = staged_preview(&context);
+        let (mut editor, send) = staged_editor(&context);
         send();
-        // Past the preview's own arrival.
-        preview_pass(&context, &mut preview, 1.0, Some(false), true);
-        let output = preview_pass(&context, &mut preview, 3.0, Some(false), true);
-        let picture = node(&output, "Image photo.png").unwrap();
-        let cover = preview.cover.clone().unwrap();
+        // Past the editor's own arrival.
+        editor_pass(&context, &mut editor, 1.0, Some(false), true);
+        let output = editor_pass(&context, &mut editor, 3.0, Some(false), true);
+        let picture = node(&output, VIEWING).unwrap();
+        let cover = editor.cover.clone().unwrap();
         let opacity =
             |output: &egui::FullOutput| mesh_opacity(output, &cover, picture).unwrap_or(0.0);
         let base = f64::from(crate::motion::BASE);
-        assert_eq!(
-            opacity(&preview_pass(&context, &mut preview, 4.0, Some(true), true)),
-            0.0
-        );
-        let midway = opacity(&preview_pass(
-            &context,
-            &mut preview,
-            4.0 + base / 2.0,
-            Some(true),
-            true,
-        ));
+        let at = |editor: &mut Editor, time, marked| {
+            opacity(&editor_pass(&context, editor, time, Some(marked), true))
+        };
+        assert_eq!(at(&mut editor, 4.0, true), 0.0);
+        let midway = at(&mut editor, 4.0 + base / 2.0, true);
         assert!(midway > 0.5 && midway < 1.0, "decelerating: {midway}");
-        let output = preview_pass(&context, &mut preview, 4.0 + base, Some(true), true);
+        let output = editor_pass(&context, &mut editor, 4.0 + base, Some(true), true);
         assert_eq!(opacity(&output), 1.0);
         assert!(spoiler_badge(&output, picture).is_some());
         // Unmarked, it fades out from where it was.
-        assert_eq!(
-            opacity(&preview_pass(
-                &context,
-                &mut preview,
-                5.0,
-                Some(false),
-                true
-            )),
-            1.0
-        );
-        let midway = opacity(&preview_pass(
-            &context,
-            &mut preview,
-            5.0 + base / 2.0,
-            Some(false),
-            true,
-        ));
+        assert_eq!(at(&mut editor, 5.0, false), 1.0);
+        let midway = at(&mut editor, 5.0 + base / 2.0, false);
         assert!(midway > 0.0 && midway < 0.5, "decelerating: {midway}");
-        let output = preview_pass(&context, &mut preview, 5.0 + base, Some(false), true);
+        let output = editor_pass(&context, &mut editor, 5.0 + base, Some(false), true);
         assert_eq!(opacity(&output), 0.0);
         assert!(spoiler_badge(&output, picture).is_none());
-        // A preview opened on a spoilered file starts covered, without a fade.
-        let (mut covered, send) = staged_preview(&context);
+        // Opened on a spoilered file, it starts covered, without a fade.
+        let (mut covered, send) = staged_editor(&context);
         send();
-        preview_pass(&context, &mut covered, 6.0, Some(true), true);
-        let output = preview_pass(&context, &mut covered, 6.0 + base / 2.0, Some(true), true);
+        editor_pass(&context, &mut covered, 6.0, Some(true), true);
+        let output = editor_pass(&context, &mut covered, 6.0 + base / 2.0, Some(true), true);
         let cover = covered.cover.clone().unwrap();
         // The picture itself is still fading in; the cover is fully on it.
         let arriving = mesh_opacity(&output, &cover, picture).unwrap();
-        let original = mesh_opacity(&output, covered.picture.as_ref().unwrap(), picture).unwrap();
+        let texture = covered.picture.as_ref().unwrap().texture.clone();
+        let original = mesh_opacity(&output, &texture, picture).unwrap();
         assert!(arriving > 0.5 && arriving < 1.0, "{arriving}");
         assert_eq!(arriving, original);
     }
@@ -3116,37 +3157,19 @@ mod tests {
     }
 
     #[test]
-    fn previews_arrive_with_a_short_fade_and_their_picture_fades_in_over_the_spinner() {
+    fn the_editor_arrives_with_a_short_fade_and_its_picture_fades_in_over_the_spinner() {
         let context = egui::Context::default();
-        let (mut preview, send) = staged_preview(&context);
+        let (mut editor, send) = staged_editor(&context);
         let base = f64::from(crate::motion::BASE);
         // Opening: faded out and just smaller, then settling in (after
         // the modal's first, sizing pass).
-        preview_pass(&context, &mut preview, 1.0, Some(false), true);
-        let first = tool_row(&preview_pass(
-            &context,
-            &mut preview,
-            1.0,
-            Some(false),
-            true,
-        ))
-        .unwrap();
-        let midway = tool_row(&preview_pass(
-            &context,
-            &mut preview,
-            1.0 + base / 2.0,
-            Some(false),
-            true,
-        ))
-        .unwrap();
-        let landed = tool_row(&preview_pass(
-            &context,
-            &mut preview,
-            1.0 + base,
-            Some(false),
-            true,
-        ))
-        .unwrap();
+        editor_pass(&context, &mut editor, 1.0, Some(false), true);
+        let row = |editor: &mut Editor, time| {
+            tool_row(&editor_pass(&context, editor, time, Some(false), true)).unwrap()
+        };
+        let first = row(&mut editor, 1.0);
+        let midway = row(&mut editor, 1.0 + base / 2.0);
+        let landed = row(&mut editor, 1.0 + base);
         assert_eq!(first.fill.a(), 0);
         assert!((first.rect.width() - landed.rect.width() * 0.98).abs() < 0.01);
         assert!(
@@ -3164,35 +3187,71 @@ mod tests {
                     _ => None,
                 })
         };
-        let waiting = preview_pass(&context, &mut preview, 2.0, Some(false), true);
-        assert!(spinner(&waiting).is_some() && preview.picture.is_none());
+        let waiting = editor_pass(&context, &mut editor, 2.0, Some(false), true);
+        assert!(spinner(&waiting).is_some() && editor.picture.is_none());
         send();
-        let output = preview_pass(&context, &mut preview, 3.0, Some(false), true);
-        let picture = node(&output, "Image photo.png").unwrap();
-        let original = preview.picture.clone().unwrap();
+        let output = editor_pass(&context, &mut editor, 3.0, Some(false), true);
+        let picture = node(&output, VIEWING).unwrap();
+        let original = editor.picture.as_ref().unwrap().texture.clone();
         assert_eq!(mesh_opacity(&output, &original, picture), Some(0.0));
-        let output = preview_pass(&context, &mut preview, 3.0 + base / 2.0, Some(false), true);
+        let output = editor_pass(&context, &mut editor, 3.0 + base / 2.0, Some(false), true);
         let shown = mesh_opacity(&output, &original, picture).unwrap();
         assert!(shown > 0.5 && shown < 1.0, "{shown}");
         assert!(spinner(&output).is_some_and(
             |color| matches!(color, egui::epaint::ColorMode::Solid(color) if color.a() > 0)
         ));
-        let output = preview_pass(&context, &mut preview, 3.0 + base, Some(false), true);
+        let output = editor_pass(&context, &mut editor, 3.0 + base, Some(false), true);
         assert_eq!(mesh_opacity(&output, &original, picture), Some(1.0));
         assert!(spinner(&output).is_none());
         // With reduced motion it is all there at once (the app also turns
         // egui's own fades off then).
         let context = egui::Context::default();
-        let (mut still, send) = staged_preview(&context);
+        let (mut still, send) = staged_editor(&context);
         context.all_styles_mut(|style| style.animation_time = 0.0);
         send();
-        let output = preview_pass(&context, &mut still, 1.0, Some(false), false);
+        let output = editor_pass(&context, &mut still, 1.0, Some(false), false);
         assert_eq!(tool_row(&output), None, "the sizing pass");
-        let output = preview_pass(&context, &mut still, 1.0, Some(false), false);
+        let output = editor_pass(&context, &mut still, 1.0, Some(false), false);
         assert_eq!(tool_row(&output).unwrap().fill, SURFACE);
-        assert_eq!(
-            mesh_opacity(&output, still.picture.as_ref().unwrap(), picture),
-            Some(1.0)
+        let texture = still.picture.as_ref().unwrap().texture.clone();
+        assert_eq!(mesh_opacity(&output, &texture, picture), Some(1.0));
+    }
+
+    #[test]
+    fn a_profile_picture_adjusts_on_crop_without_spoiler_or_remove() {
+        let context = egui::Context::default();
+        crate::configure(&context);
+        let mut editor = Editor::open(
+            &context,
+            Target::Picture {
+                destination: crate::pictures::Target::Avatar,
+                epoch: 0,
+                path: PathBuf::from("missing"),
+                scratch: None,
+            },
+            Kind::Image,
+            "Picture".into(),
+            Path::new("missing"),
+            None,
+            Some(Tool::Crop),
         );
+        let (sender, receiver) = mpsc::channel();
+        editor.loading = Some(receiver);
+        sender
+            .send(Some(Loaded {
+                image: image::RgbaImage::new(64, 64),
+                width: 64,
+                height: 64,
+                marks: true,
+            }))
+            .unwrap();
+        editor_pass(&context, &mut editor, 1.0, None, false);
+        let output = editor_pass(&context, &mut editor, 1.1, None, false);
+        assert_eq!(editor.tool(), Some(Tool::Crop));
+        assert!(node(&output, "Spoiler").is_none() && node(&output, "Remove").is_none());
+        assert!(node(&output, OPEN_SENT).is_none());
+        let crop = node(&output, "Crop").unwrap();
+        click(&context, &mut editor, 2.0, None, SCREEN, crop.center());
+        assert_eq!(editor.tool(), Some(Tool::Crop), "it stays on Crop");
     }
 }

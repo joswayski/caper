@@ -207,7 +207,8 @@ pub fn settle(
     settle_range(context, layer, from..usize::MAX, opacity, transform);
 }
 
-fn settle_range(
+/// Like [`settle`] for the shapes in `range` only.
+pub fn settle_range(
     context: &Context,
     layer: LayerId,
     range: std::ops::Range<usize>,
