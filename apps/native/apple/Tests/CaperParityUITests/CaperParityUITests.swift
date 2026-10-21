@@ -2917,15 +2917,30 @@ final class CaperParityUITests: XCTestCase {
         capture("profile-picture-edit-hover", app: app)
         #endif
         edit.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["From Photos…"].firstMatch.waitForExistence(timeout: 5))
-        #if os(macOS)
-        XCTAssertTrue(app.descendants(matching: .any)["From your Mac…"].firstMatch.exists)
-        #else
-        XCTAssertTrue(app.descendants(matching: .any)["From Files…"].firstMatch.exists)
-        #endif
-        XCTAssertFalse(app.descendants(matching: .any)["Choose image…"].firstMatch.exists)
+        // One entry chooses a new picture: the attach drawer on iPhone and
+        // iPad, the image file importer on the Mac (as chat's "Upload a file").
+        let choose = app.descendants(matching: .any)["choose-profile-picture"].firstMatch
+        XCTAssertTrue(choose.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["Choose a new picture…"].firstMatch.exists)
+        for old in ["From Photos…", "From Files…", "From your Mac…", "Choose image…"] {
+            XCTAssertFalse(app.descendants(matching: .any)[old].firstMatch.exists, "\(old) was folded into Choose a new picture…")
+        }
         XCTAssertFalse(app.descendants(matching: .any)["Files"].firstMatch.exists)
         capture("profile-picture-menu", app: app)
+        #if os(iOS)
+        choose.tap()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Full Access' OR label BEGINSWITH[c] 'Allow'")).firstMatch
+        if allow.waitForExistence(timeout: 5) { allow.tap() }
+        let drawer = try require(app.otherElements["picture-drawer"], timeout: 10, "Choosing a picture opens the attach drawer")
+        assertStaticText("Choose a picture", in: app)
+        XCTAssertTrue(app.buttons["attach-drawer-photos"].exists)
+        XCTAssertTrue(app.buttons["attach-drawer-files"].exists)
+        XCTAssertFalse(app.buttons["attach-drawer-send"].exists, "Choosing a picture has no Send")
+        capture("profile-picture-drawer", app: app)
+        app.buttons["Close picture chooser"].tap()
+        XCTAssertTrue(drawer.waitForNonExistence(timeout: 5))
+        #endif
     }
 
     func testOwnMessageAuthorOpensProfileEditorRetainsRejectedValuesAndRetries() async throws {

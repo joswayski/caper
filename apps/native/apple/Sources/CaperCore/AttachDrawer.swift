@@ -69,30 +69,47 @@ struct AttachDrawerDraft {
     let valid: () -> Bool
 }
 
+/// What the drawer is for: adding files to a message draft, or choosing one
+/// picture (profile picture, space icon). Choosing hands over a loader for the
+/// picture's original bytes as soon as the drawer has closed, so GIFs keep
+/// every frame; the caller opens and crops it.
+enum AttachDrawerMode {
+    case attach(AttachDrawerDraft)
+    /// Images only, one at a time: a tap, a photo, a library pick or an image
+    /// file closes the drawer. No numbers, capacity line or Send.
+    case picture(title: String, pick: (@escaping () async throws -> Data) -> Void)
+}
+
 @MainActor
 final class AttachDrawerLibrary: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
     @Published private(set) var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @Published private(set) var assets: PHFetchResult<PHAsset>?
     private var observing = false
+    /// Picture choosing lists photos only, never sharing the composer's warm fetch.
+    private var imagesOnly = false
 
     var readable: Bool { status == .authorized || status == .limited }
 
     /// The newest fetch, shared with the composer's warm-up so the drawer opens on it.
     private(set) static var fetched: PHFetchResult<PHAsset>?
 
-    /// Every photo and video, newest first. A fetch result is lazy: tiles read only the assets they show.
-    static func fetch() -> PHFetchResult<PHAsset> {
+    /// Every photo and video (or every photo), newest first. A fetch result is
+    /// lazy: tiles read only the assets they show.
+    static func fetch(imagesOnly: Bool = false) -> PHFetchResult<PHAsset> {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        options.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d",
-                                        PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
+        options.predicate = imagesOnly
+            ? NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+            : NSPredicate(format: "mediaType == %d OR mediaType == %d",
+                          PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
         let assets = PHAsset.fetchAssets(with: options)
-        fetched = assets
+        if !imagesOnly { fetched = assets }
         return assets
     }
 
     /// Asks once, the first time the drawer opens; later opens just read.
-    func start() {
+    func start(imagesOnly: Bool = false) {
+        self.imagesOnly = imagesOnly
         status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if status == .notDetermined {
             PHPhotoLibrary.requestAuthorization(for: .readWrite) { _ in
@@ -100,7 +117,7 @@ final class AttachDrawerLibrary: NSObject, ObservableObject, PHPhotoLibraryChang
             }
         }
         // Open on the composer's warm fetch, then catch up after the sheet is up.
-        if readable, let warm = Self.fetched {
+        if readable, !imagesOnly, let warm = Self.fetched {
             assets = warm
             if !observing { PHPhotoLibrary.shared().register(self); observing = true }
             Task { @MainActor [weak self] in await Task.yield(); self?.reload() }
@@ -113,7 +130,7 @@ final class AttachDrawerLibrary: NSObject, ObservableObject, PHPhotoLibraryChang
         status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard readable else { assets = nil; return }
         if !observing { PHPhotoLibrary.shared().register(self); observing = true }
-        let fresh = Self.fetch()
+        let fresh = Self.fetch(imagesOnly: imagesOnly)
         // An unchanged library keeps the grid as it is instead of rebuilding every tile.
         if let assets, assets.count == fresh.count,
            assets.firstObject?.localIdentifier == fresh.firstObject?.localIdentifier,
@@ -128,7 +145,7 @@ final class AttachDrawerLibrary: NSObject, ObservableObject, PHPhotoLibraryChang
             // iCloud sync reports changes constantly; only ones touching this fetch redraw the grid.
             guard let details = changeInstance.changeDetails(for: assets) else { return }
             self.assets = details.fetchResultAfterChanges
-            Self.fetched = details.fetchResultAfterChanges
+            if !imagesOnly { Self.fetched = details.fetchResultAfterChanges }
         }
     }
 
@@ -180,9 +197,10 @@ final class AttachDrawerLibrary: NSObject, ObservableObject, PHPhotoLibraryChang
 /// (with the camera first) to tap into the draft, Files, and Send. Tapping adds
 /// to the draft at once, so uploads start while the person keeps choosing;
 /// tapping again removes it. At the limit, other tiles dim and a tap nudges
-/// the capacity line instead.
+/// the capacity line instead. In picture mode the same drawer lists photos
+/// only and a single tap chooses (see `AttachDrawerMode`).
 struct AttachDrawer: View {
-    let draft: AttachDrawerDraft
+    let mode: AttachDrawerMode
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -198,13 +216,24 @@ struct AttachDrawer: View {
     @State private var showingPhotos = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var expanded = false
+    /// Picture mode: a camera photo, chosen once the camera has closed.
+    @State private var capturedPicture: LocalAttachmentFile?
     @GestureState private var drag: CGFloat = 0
+
+    init(draft: AttachDrawerDraft) { self.mode = .attach(draft) }
+    init(mode: AttachDrawerMode) { self.mode = mode }
 
     static func source(_ identifier: String) -> String { "photos:\(identifier)" }
 
-    private var files: [AttachDrawerFile] { draft.files() }
+    private var draft: AttachDrawerDraft? {
+        if case .attach(let draft) = mode { return draft }
+        return nil
+    }
+    private var picking: Bool { draft == nil }
+    private var valid: Bool { draft?.valid() ?? true }
+    private var files: [AttachDrawerFile] { draft?.files() ?? [] }
     private var used: Int { files.count + queue.order.count }
-    private var full: Bool { used >= AttachmentPolicy.maxAttachments }
+    private var full: Bool { !picking && used >= AttachmentPolicy.maxAttachments }
     private var cameraAvailable: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
 
     var body: some View {
@@ -240,25 +269,38 @@ struct AttachDrawer: View {
         // Hosts use a transparent full-screen cover; this drawer owns its height.
         .presentationBackground(.clear)
         .accessibilityAction(.escape) { close() }
-        .task { library.start() }
+        .task { library.start(imagesOnly: picking) }
         .onChange(of: scenePhase) { _, phase in if phase == .active { library.reload() } }
-        .onChange(of: draft.valid()) { _, valid in if !valid { close() } }
+        .onChange(of: valid) { _, valid in if !valid { close() } }
         .onDisappear {
             // Copies still running belong to taps the person made; let them land
             // in the draft. Only the observer stops.
             library.stop()
         }
-        .fullScreenCover(isPresented: $showingCamera) {
-            AttachCameraPicker { file in
+        .fullScreenCover(isPresented: $showingCamera, onDismiss: {
+            // Closing the drawer waits for the camera to be gone.
+            guard let file = capturedPicture else { return }
+            capturedPicture = nil
+            let url = file.url
+            choose { try await Self.readStaged(url) }
+        }) {
+            AttachCameraPicker(imagesOnly: picking) { file in
                 showingCamera = false
                 guard let file else { return }
+                guard let draft else { capturedPicture = file; return }
                 guard draft.valid(), !full else { AttachmentStaging.remove(file.url); nudge(); return }
                 draft.add([file])
             }
             .ignoresSafeArea()
         }
-        .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+        .fileImporter(isPresented: $showingFiles, allowedContentTypes: picking ? [.image] : [.item],
+                      allowsMultipleSelection: !picking) { result in
             guard case .success(let urls) = result else { return }
+            guard let draft else {
+                guard let url = urls.first else { return }
+                choose { try await Task.detached(priority: .userInitiated) { try PictureFile.read(url) }.value }
+                return
+            }
             let room = max(0, AttachmentPolicy.maxAttachments - used)
             let files = urls.prefix(room).compactMap { try? AttachmentStaging.stage(copying: $0) }
             draft.add(files)
@@ -266,12 +308,18 @@ struct AttachDrawer: View {
             else if files.count < urls.count { notice = "Some files couldn’t be added." }
             else { close() }
         }
+        // `.current` keeps the library's original bytes, so GIFs stay animated.
         .photosPicker(isPresented: $showingPhotos, selection: $photoItems,
-                      maxSelectionCount: max(1, AttachmentPolicy.maxAttachments - used),
-                      matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
+                      maxSelectionCount: picking ? 1 : max(1, AttachmentPolicy.maxAttachments - used),
+                      matching: picking ? PHPickerFilter.images : PHPickerFilter.any(of: [.images, .videos]), preferredItemEncoding: .current)
         .onChange(of: photoItems) { _, items in
             guard !items.isEmpty else { return }
             photoItems = []
+            guard let draft else {
+                guard let item = items.first else { return }
+                choose { try await PictureFile.data(from: item) }
+                return
+            }
             Task { @MainActor in
                 var picked: [LocalAttachmentFile] = []
                 for item in items {
@@ -296,7 +344,7 @@ struct AttachDrawer: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(expanded ? "Collapse attachment drawer" : "Expand attachment drawer")
+                .accessibilityLabel(expanded ? "Collapse \(drawerName)" : "Expand \(drawerName)")
                 .accessibilityIdentifier("attach-drawer-resize")
                 header
             }
@@ -314,27 +362,49 @@ struct AttachDrawer: View {
             Divider().overlay(CaperTheme.border)
             toolbar
         }
-        .overlay(alignment: .bottomTrailing) { sendButton(files) }
+        .overlay(alignment: .bottomTrailing) { if let draft { sendButton(draft, files) } }
         .overlay(alignment: .topTrailing) {
             Button { close() } label: {
                 CaperIcon(name: "x", size: 18).frame(width: 44, height: 28).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(CaperTheme.muted)
-            .accessibilityLabel("Close attachment drawer")
+            .accessibilityLabel("Close \(drawerName)")
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("attach-drawer")
+        .accessibilityIdentifier(picking ? "picture-drawer" : "attach-drawer")
     }
+
+    private var drawerName: String { picking ? "picture chooser" : "attachment drawer" }
 
     private func close() { withoutPresentationAnimation { dismiss() } }
 
+    /// Picture mode: closes, then hands over the picture's loader.
+    private func choose(_ load: @escaping () async throws -> Data) {
+        guard case .picture(_, let pick) = mode else { return }
+        pick(load)
+        close()
+    }
+
+    /// Reads a staged copy's bytes unchanged, then removes the copy.
+    private static func readStaged(_ url: URL) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            defer { AttachmentStaging.remove(url) }
+            return try PictureFile.read(url)
+        }.value
+    }
+
     // MARK: Header
+
+    private var title: String {
+        if case .picture(let title, _) = mode { return title }
+        return "Attach"
+    }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Attach").font(CaperTheme.font(15, weight: .bold))
-            if let hint = AttachCapacity.hint(used) ?? notice {
+            Text(title).font(CaperTheme.font(15, weight: .bold))
+            if let hint = (picking ? nil : AttachCapacity.hint(used)) ?? notice {
                 Text(hint).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     .modifier(LimitNudge(nudges: reduceMotion ? 0 : CGFloat(nudges)))
             }
@@ -351,7 +421,8 @@ struct AttachDrawer: View {
         case .denied, .restricted:
             accessMessage(library.status == .restricted
                 ? "Photo access is restricted on this device."
-                : "Caper can’t see your photos. Allow access in Settings, or choose items one at a time.",
+                : picking ? "Caper can’t see your photos. Allow access in Settings, or choose a photo."
+                    : "Caper can’t see your photos. Allow access in Settings, or choose items one at a time.",
                 settings: library.status == .denied)
         default:
             VStack(spacing: 0) {
@@ -386,7 +457,7 @@ struct AttachDrawer: View {
                             .opacity(full ? 0.4 : 1)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Camera")
+                    .accessibilityLabel(picking ? "Take a photo" : "Camera")
                     .accessibilityIdentifier("attach-drawer-camera")
                 }
                 if let assets = library.assets {
@@ -395,9 +466,12 @@ struct AttachDrawer: View {
                         let source = Self.source(asset.localIdentifier)
                         let selected = order[source]
                         let copying = queue.isPending(source)
-                        Button { toggle(source, identifier: asset.localIdentifier, draftID: selected?.id) } label: {
+                        Button {
+                            if picking { choosePhoto(asset.localIdentifier) }
+                            else { toggle(source, identifier: asset.localIdentifier, draftID: selected?.id) }
+                        } label: {
                             AttachLibraryTile(asset: asset, order: selected?.position, copying: copying,
-                                              dimmed: full && selected == nil && !copying)
+                                              dimmed: full && selected == nil && !copying, selectable: !picking)
                             .id(asset.localIdentifier)
                         }
                         .buttonStyle(.plain)
@@ -419,7 +493,7 @@ struct AttachDrawer: View {
             if library.status == .notDetermined {
                 ProgressView().tint(CaperTheme.muted)
             } else if library.readable && library.assets?.count == 0 {
-                Text("No photos or videos yet.").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                Text(picking ? "No photos yet." : "No photos or videos yet.").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
             }
         }
     }
@@ -433,10 +507,10 @@ struct AttachDrawer: View {
                 }
                 .buttonStyle(CaperPrimaryButton())
             }
-            Button("Choose photos and videos") { if full { nudge() } else { showingPhotos = true } }
+            Button(picking ? "Choose a photo" : "Choose photos and videos") { if full { nudge() } else { showingPhotos = true } }
                 .font(CaperTheme.font(14, weight: .bold))
             if cameraAvailable {
-                Button("Take a photo or video") { if full { nudge() } else { showingCamera = true } }
+                Button(picking ? "Take a photo" : "Take a photo or video") { if full { nudge() } else { showingCamera = true } }
                     .font(CaperTheme.font(14, weight: .bold))
             }
         }
@@ -448,8 +522,10 @@ struct AttachDrawer: View {
 
     private var toolbar: some View {
         HStack(spacing: 0) {
-            toolbarItem("Photos", icon: "images", selected: true) {}
+            // Picture mode: the full library picker, for photos past the grid.
+            toolbarItem("Photos", icon: "images", selected: true) { if picking { showingPhotos = true } }
                 .accessibilityAddTraits(.isSelected)
+                .accessibilityIdentifier("attach-drawer-photos")
             toolbarItem("Files", icon: "paperclip", selected: false) { if full { nudge() } else { showingFiles = true } }
                 .accessibilityIdentifier("attach-drawer-files")
         }
@@ -469,7 +545,7 @@ struct AttachDrawer: View {
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder private func sendButton(_ files: [AttachDrawerFile]) -> some View {
+    @ViewBuilder private func sendButton(_ draft: AttachDrawerDraft, _ files: [AttachDrawerFile]) -> some View {
         if !files.isEmpty || !queue.order.isEmpty {
             let ready = draft.canSend() && queue.order.isEmpty
             Button {
@@ -496,7 +572,18 @@ struct AttachDrawer: View {
 
     // MARK: Selection
 
+    /// Picture mode: the tapped photo's original (or edited) bytes, downloaded
+    /// from iCloud when needed while the editor shows its progress.
+    private func choosePhoto(_ identifier: String) {
+        UISelectionFeedbackGenerator().selectionChanged()
+        choose {
+            guard let file = await AttachDrawerLibrary.stage(identifier) else { throw PictureError.unreadable }
+            return try await Self.readStaged(file.url)
+        }
+    }
+
     private func toggle(_ source: String, identifier: String, draftID: String?) {
+        guard let draft else { return }
         if let draftID { draft.remove(draftID); notice = nil; return }
         if queue.isPending(source) {
             copies.removeValue(forKey: source)?.cancel()
@@ -709,6 +796,8 @@ private struct AttachLibraryTile: View {
     let order: Int?
     let copying: Bool
     let dimmed: Bool
+    /// False when a tap chooses at once: no selection circle.
+    var selectable = true
     @State private var image: UIImage?
     @State private var request: PHImageRequestID?
     @State private var frames: AttachmentOriginal?
@@ -744,7 +833,7 @@ private struct AttachLibraryTile: View {
                     } else if copying {
                         ProgressView().controlSize(.small).tint(CaperTheme.text)
                             .frame(width: 24, height: 24).background(CaperTheme.blackout.opacity(0.7), in: Circle())
-                    } else {
+                    } else if selectable {
                         Circle().strokeBorder(CaperTheme.text.opacity(0.9), lineWidth: 1.5)
                             .background(CaperTheme.blackout.opacity(0.35), in: Circle())
                             .frame(width: 24, height: 24)
@@ -796,15 +885,16 @@ private struct AttachLibraryTile: View {
     }
 }
 
-/// The system camera for one photo or video, staged like any picked file.
+/// The system camera for one photo or video (or only a photo), staged like any picked file.
 struct AttachCameraPicker: UIViewControllerRepresentable {
+    var imagesOnly = false
     let finish: (LocalAttachmentFile?) -> Void
 
     func makeUIViewController(context: Context) -> UIImagePickerController {
         let picker = UIImagePickerController()
         picker.sourceType = .camera
-        picker.mediaTypes = [UTType.image.identifier, UTType.movie.identifier]
-        picker.videoQuality = .typeHigh
+        picker.mediaTypes = imagesOnly ? [UTType.image.identifier] : [UTType.image.identifier, UTType.movie.identifier]
+        if !imagesOnly { picker.videoQuality = .typeHigh }
         picker.delegate = context.coordinator
         return picker
     }

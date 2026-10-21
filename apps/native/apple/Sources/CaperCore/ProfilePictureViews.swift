@@ -149,9 +149,14 @@ struct PictureEditor<Preview: View>: View {
     @State private var error: String?
     /// The server has no upload storage (503): only removal stays offered.
     @State private var unavailable = false
-    @State private var showPhotos = false
+    /// The Mac's image file importer (iPhone and iPad choose in the drawer).
     @State private var showFiles = false
-    @State private var photoItem: PhotosPickerItem?
+    #if os(iOS)
+    /// The attach drawer in picture mode, as the composer's attach button opens it.
+    @State private var showDrawer = false
+    /// The drawer's choice, opened once the drawer has closed.
+    @State private var pendingPick: (() async throws -> Data)?
+    #endif
     @State private var dropping = false
     @State private var editing: AttachmentEditRequest?
     @State private var stagedURL: URL?
@@ -168,10 +173,8 @@ struct PictureEditor<Preview: View>: View {
 
     #if os(macOS)
     private var actionSide: CGFloat { 28 }
-    private var fileSourceLabel: String { "From your Mac…" }
     #else
     private var actionSide: CGFloat { 44 }
-    private var fileSourceLabel: String { "From Files…" }
     #endif
 
     init(purpose: PicturePurpose, hasPicture: Bool, currentURL: URL? = nil, upload: @escaping (PreparedPicture) async throws -> Void,
@@ -251,13 +254,18 @@ struct PictureEditor<Preview: View>: View {
                     .preferredColorScheme(.dark)
             }
         }
-        // `.current` keeps the library's original bytes, so GIFs stay animated.
-        .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images, preferredItemEncoding: .current)
-        .onChange(of: photoItem) { _, item in
-            guard let item else { return }
-            photoItem = nil
-            start { try await PictureFile.data(from: item) }
+        #if os(iOS)
+        // The same drawer as chat attachments, in picture mode: photos only,
+        // one tap chooses, and the original bytes come back (GIFs stay animated).
+        .fullScreenCover(isPresented: $showDrawer, onDismiss: {
+            guard let load = pendingPick else { return }
+            pendingPick = nil
+            start(load)
+        }) {
+            AttachDrawer(mode: .picture(title: avatar ? "Choose a picture" : "Choose an icon",
+                                        pick: { pendingPick = $0 }))
         }
+        #endif
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.image]) { result in
             guard case .success(let url) = result else { return }
             start { try await Task.detached(priority: .userInitiated) { try PictureFile.read(url) }.value }
@@ -296,50 +304,77 @@ struct PictureEditor<Preview: View>: View {
         }
     }
 
+    /// Without a current picture or previous pictures, choosing is the only
+    /// action: the pencil chooses directly instead of opening a one-item menu.
+    private var menuless: Bool { !hasPicture && history == nil }
+
+    /// iPhone and iPad open the attach drawer; the Mac, like its "Upload a
+    /// file", opens the image file importer.
+    private func choosePicture() {
+        guard phase == nil, !unavailable else { return }
+        #if os(iOS)
+        withoutPresentationAnimation { showDrawer = true }
+        #else
+        showFiles = true
+        #endif
+    }
+
+    private var pencil: some View {
+        CaperIcon(name: "pencil", size: 15).frame(width: actionSide, height: actionSide)
+    }
+
     private var pictureMenu: some View {
         ZStack {
-            Menu {
-                if hasPicture, let currentURL {
-                    Button("Edit current \(noun)") {
-                        start {
-                            let configuration = URLSessionConfiguration.ephemeral
-                            configuration.httpCookieAcceptPolicy = .never
-                            configuration.httpShouldSetCookies = false
-                            let session = URLSession(configuration: configuration)
-                            defer { session.invalidateAndCancel() }
-                            return try await ProfilePictureDecoder.fetch(currentURL, session: session)
-                        }
-                    }
-                    .disabled(unavailable)
+            Group {
+                if menuless {
+                    Button { choosePicture() } label: { pencil }
+                        .disabled(unavailable || (phase != nil && phase != .regenerating))
+                } else {
+                    menu
+                        // Regenerating swaps the picture in place: the button keeps its
+                        // look (its items are disabled instead), so it never flashes.
+                        .disabled(phase != nil && phase != .regenerating)
                 }
-                Button { showPhotos = true } label: { Label("From Photos…", systemImage: "photo.on.rectangle") }
-                    .disabled(unavailable || phase != nil)
-                Button { showFiles = true } label: { Label(fileSourceLabel, systemImage: "folder") }
-                    .disabled(unavailable || phase != nil)
-                if history != nil {
-                    Button("Previous pictures") { historyExpected = currentAsset; showHistory = true }
-                        .disabled(phase != nil)
-                }
-                if hasPicture {
-                    Divider()
-                    Button(role: .destructive, action: { removePicture() }) { Label("Remove \(noun)", systemImage: "trash") }
-                }
-            } label: {
-                CaperIcon(name: "pencil", size: 15).frame(width: actionSide, height: actionSide)
             }
-            .menuStyle(.button)
             .buttonStyle(PrimaryIconButton())
-            .menuIndicator(.hidden)
             .fixedSize()
-            // Regenerating swaps the picture in place: the button keeps its
-            // look (its items are disabled instead), so it never flashes.
-            .disabled((phase != nil && phase != .regenerating) || (unavailable && !hasPicture && history == nil))
             .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
             .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
         }
         .padding(3)
         .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 10))
         .onHover { hoveredAction = $0 ? .edit : nil }
+    }
+
+    private var menu: some View {
+        Menu {
+            if hasPicture, let currentURL {
+                Button("Edit current \(noun)") {
+                    start {
+                        let configuration = URLSessionConfiguration.ephemeral
+                        configuration.httpCookieAcceptPolicy = .never
+                        configuration.httpShouldSetCookies = false
+                        let session = URLSession(configuration: configuration)
+                        defer { session.invalidateAndCancel() }
+                        return try await ProfilePictureDecoder.fetch(currentURL, session: session)
+                    }
+                }
+                .disabled(unavailable)
+            }
+            Button { choosePicture() } label: { Label("Choose a new \(noun)…", systemImage: "photo.on.rectangle") }
+                .disabled(unavailable || phase != nil)
+                .accessibilityIdentifier(avatar ? "choose-profile-picture" : "choose-space-icon")
+            if history != nil {
+                Button("Previous pictures") { historyExpected = currentAsset; showHistory = true }
+                    .disabled(phase != nil)
+            }
+            if hasPicture {
+                Divider()
+                Button(role: .destructive, action: { removePicture() }) { Label("Remove \(noun)", systemImage: "trash") }
+            }
+        } label: { pencil }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
     }
 
     @ViewBuilder private var regenerateButton: some View {
