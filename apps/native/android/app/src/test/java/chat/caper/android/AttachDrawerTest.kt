@@ -13,12 +13,10 @@ import org.junit.Test
 
 class AttachDrawerTest {
     @Test fun capacityShowsOnlyAtTheLimitAsOnWeb() {
-        assertNull(AttachCapacity.label(0))
-        assertNull(AttachCapacity.label(9))
-        assertEquals("10 of 10 attached", AttachCapacity.label(10))
-        assertEquals("10 of 10 attached", AttachCapacity.label(12))
+        assertNull(AttachCapacity.hint(0))
         assertNull(AttachCapacity.hint(9))
         assertEquals("Remove a file to add another.", AttachCapacity.hint(10))
+        assertEquals("Remove a file to add another.", AttachCapacity.hint(12))
     }
 
     @Test fun requestsTheNarrowestPermissionsForEachRelease() {

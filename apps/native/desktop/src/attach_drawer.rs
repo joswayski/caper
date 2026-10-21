@@ -3,7 +3,7 @@
 //! It still opens at the attachment limit, where it says so and the choices
 //! nudge that line instead of opening a dialog that couldn't add anything.
 
-use crate::{MUTED, TERRACOTTA, TERRACOTTA_BRIGHT, TEXT, motion, uploads};
+use crate::{MUTED, TEXT, motion, uploads};
 use eframe::egui::{self, RichText};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,13 +12,6 @@ pub enum AttachChoice {
     Upload,
     /// Files copied to the clipboard (profile messages).
     Paste,
-}
-
-/// The limit line, worded as on every client. Drafts below the limit show
-/// nothing, so only a full one has a label.
-pub fn label(attached: usize) -> Option<String> {
-    let max = uploads::MAX_ATTACHMENTS;
-    (attached >= max).then(|| format!("{max} of {max} attached"))
 }
 
 /// How to make room once full.
@@ -52,30 +45,13 @@ pub fn popup(button: &egui::Response, attached: usize, paste: bool) -> Option<At
         if elapsed < motion::SLOW {
             ui.ctx().request_repaint();
         }
-        if let Some(label) = label(attached) {
+        if let Some(hint) = hint(attached) {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 // The row rests 4 points in, so the shake can move it either way.
                 ui.add_space(4.0 + offset);
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(uploads::MAX_ATTACHMENTS as f32 * 9.0 - 3.0, 10.0),
-                    egui::Sense::hover(),
-                );
-                for index in 0..uploads::MAX_ATTACHMENTS {
-                    ui.painter().circle_filled(
-                        egui::pos2(rect.min.x + 3.0 + index as f32 * 9.0, rect.center().y),
-                        3.0,
-                        TERRACOTTA,
-                    );
-                }
-                ui.label(RichText::new(label).size(12.0).color(TERRACOTTA_BRIGHT));
+                ui.label(RichText::new(hint).size(12.0).color(MUTED));
             });
-            if let Some(hint) = hint(attached) {
-                ui.horizontal(|ui| {
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(hint).size(12.0).color(MUTED));
-                });
-            }
             ui.add_space(2.0);
         }
         ui.add_space(4.0);
@@ -131,12 +107,10 @@ mod tests {
 
     #[test]
     fn capacity_shows_only_at_the_limit_as_on_web() {
-        assert_eq!(label(0), None);
-        assert_eq!(label(9), None);
-        assert_eq!(label(10).as_deref(), Some("10 of 10 attached"));
-        assert_eq!(label(12).as_deref(), Some("10 of 10 attached"));
+        assert_eq!(hint(0), None);
         assert_eq!(hint(9), None);
         assert_eq!(hint(10), Some("Remove a file to add another."));
+        assert_eq!(hint(12), Some("Remove a file to add another."));
     }
 
     #[test]

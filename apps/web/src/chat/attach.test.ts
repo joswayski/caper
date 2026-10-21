@@ -3,16 +3,15 @@ import { attachCapacity } from "./attach.ts";
 
 describe("attachCapacity", () => {
   it("says nothing until the draft is full", () => {
-    expect(attachCapacity(0)).toEqual({ full: false, label: undefined, hint: undefined });
-    expect(attachCapacity(9)).toEqual({ full: false, label: undefined, hint: undefined });
+    expect(attachCapacity(0)).toEqual({ full: false, hint: undefined });
+    expect(attachCapacity(9)).toEqual({ full: false, hint: undefined });
   });
 
-  it("names the limit and how to make room once full", () => {
+  it("explains how to make room without a redundant count", () => {
     expect(attachCapacity(10)).toEqual({
       full: true,
-      label: "10 of 10 attached",
       hint: "Remove a file to add another.",
     });
-    expect(attachCapacity(12).label).toBe("10 of 10 attached");
+    expect(attachCapacity(12).hint).toBe("Remove a file to add another.");
   });
 });

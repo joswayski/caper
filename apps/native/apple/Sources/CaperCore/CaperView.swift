@@ -6282,23 +6282,20 @@ private struct MentionCardView: View {
                 HStack(alignment: .bottom, spacing: 0) {
                 Group {
                 #if os(iOS)
-                Button { showingDrawer = true; updateDialogState() } label: {
+                Button { withoutPresentationAnimation { showingDrawer = true }; updateDialogState() } label: {
                     CaperIcon(name: "plus", size: 18).foregroundStyle(showingDrawer ? CaperTheme.text : CaperTheme.muted)
                         .frame(width: 40, height: 42).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .fixedSize()
                 .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog)
-                .sheet(isPresented: $showingDrawer, onDismiss: updateDialogState) { AttachDrawer(draft: drawerDraft) }
+                .fullScreenCover(isPresented: $showingDrawer, onDismiss: updateDialogState) { AttachDrawer(draft: drawerDraft) }
                 // Prepare the gallery while the composer is up, so the drawer opens filled.
                 .task { AttachGalleryCache.warm() }
                 #else
                 // One unfiltered "Upload a file", as on the desktop clients; at the limit it says so.
                 Menu {
-                    if let limit = AttachCapacity.label(draft.files.count) {
-                        Text(limit)
-                        if let hint = AttachCapacity.hint(draft.files.count) { Text(hint) }
-                    }
+                    if let hint = AttachCapacity.hint(draft.files.count) { Text(hint) }
                     Button { draft.presentingDialog = true; showingFiles = true } label: {
                         Label("Upload a file", systemImage: "arrow.up.doc")
                     }
@@ -6499,7 +6496,7 @@ private struct MentionCardView: View {
             sending: { draft.sending },
             send: {
                 // Send refuses while a dialog is open, so close the drawer first.
-                showingDrawer = false
+                withoutPresentationAnimation { showingDrawer = false }
                 updateDialogState()
                 send()
             },

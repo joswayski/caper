@@ -285,6 +285,7 @@ private fun formatDuration(ms: Long): String {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetMaxWidth = androidx.compose.ui.unit.Dp.Unspecified,
         containerColor = Surface, contentColor = Text,
     ) {
         Box(Modifier.fillMaxWidth().height(height)) {
@@ -292,22 +293,11 @@ private fun formatDuration(ms: Long): String {
                 // Header: the title, and only once full the limit line, which shakes when it refuses a file.
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Attach", fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.weight(1f))
-                    AttachCapacity.label(used)?.let { label ->
-                        Row(
-                            Modifier.graphicsLayer { translationX = nudge.value.dp.toPx() }
-                                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-                            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.clearAndSetSemantics {}) {
-                                repeat(AttachmentPolicy.MAX_ATTACHMENTS) { Box(Modifier.size(6.dp).background(Terracotta, CircleShape)) }
-                            }
-                            Text(label, fontSize = 12.sp, color = TerracottaBright)
-                        }
-                    }
                 }
                 AttachCapacity.hint(used)?.let {
-                    Text(it, Modifier.padding(horizontal = 16.dp), fontSize = 12.sp, color = TextMuted)
+                    Text(it, Modifier.padding(horizontal = 16.dp)
+                        .graphicsLayer { translationX = nudge.value.dp.toPx() }
+                        .semantics { liveRegion = LiveRegionMode.Polite }, fontSize = 12.sp, color = TextMuted)
                 }
                 Spacer(Modifier.height(10.dp))
                 Box(Modifier.weight(1f).fillMaxWidth()) {

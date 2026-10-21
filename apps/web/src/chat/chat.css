@@ -2540,8 +2540,12 @@ button.chat-mention-card-avatar {
   background: var(--surface);
   box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
 }
+html:has(.chat-attach-overlay) {
+  /* Scroll is locked while open; don't reserve a strip beside the drawer. */
+  scrollbar-gutter: auto;
+}
 .chat-attach-drawer-sheet {
-  width: min(480px, 100%);
+  width: 100%;
   max-width: none;
   padding: 8px 16px max(16px, env(safe-area-inset-bottom));
   gap: 14px;
@@ -2562,34 +2566,14 @@ button.chat-mention-card-avatar {
 .chat-attach-drawer:not(.chat-attach-drawer-sheet) .chat-attach-options button {
   font-size: 0.875rem;
 }
-.chat-attach-meter {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--terracotta-bright);
-  font-size: 0.75rem;
-}
 .chat-attach-hint {
   grid-column: 1 / -1;
   margin: 0;
   color: var(--text-muted);
   font-size: 0.75rem;
 }
-.chat-attach-drawer-sheet .chat-attach-meter,
 .chat-attach-drawer-sheet .chat-attach-hint {
   font-size: 0.82rem;
-}
-.chat-attach-pips {
-  display: flex;
-  gap: 3px;
-}
-/* Shown only for a full draft, so every pip is lit. */
-.chat-attach-pips i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--terracotta);
 }
 .chat-attach-close {
   grid-column: 3;

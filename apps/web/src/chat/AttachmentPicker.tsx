@@ -18,7 +18,6 @@ import {
   useRole,
 } from "@floating-ui/react";
 import { attachCapacity } from "./attach.ts";
-import { MAX_ATTACHMENTS } from "./uploads.ts";
 
 interface AttachChoice {
   id: "camera" | "media" | "files";
@@ -137,24 +136,17 @@ export default function AttachmentPicker({
         {(drawer || capacity.full) && (
           <div className="chat-attach-heading">
             {drawer && <strong>Attach</strong>}
-            {/* Only a full draft says how many files it holds. */}
-            {capacity.full && (
-              <div
+            {capacity.hint && (
+              <p
                 key={nudges}
-                className="chat-attach-meter"
+                className="chat-attach-hint"
                 data-nudge={nudges > 0 || undefined}
                 role="status"
                 aria-live="polite"
               >
-                <span className="chat-attach-pips" aria-hidden="true">
-                  {Array.from({ length: MAX_ATTACHMENTS }, (_, index) => (
-                    <i key={index} />
-                  ))}
-                </span>
-                <span>{capacity.label}</span>
-              </div>
+                {capacity.hint}
+              </p>
             )}
-            {capacity.hint && <p className="chat-attach-hint">{capacity.hint}</p>}
             {drawer && (
               <button type="button" className="chat-attach-close" aria-label="Close" onClick={() => setOpen(false)}>
                 <X size={16} aria-hidden="true" />
@@ -222,7 +214,7 @@ export default function AttachmentPicker({
       {open && !disabled && (
         <FloatingPortal>
           {drawer ? (
-            <FloatingOverlay lockScroll className="chat-actions-overlay">
+            <FloatingOverlay lockScroll className="chat-actions-overlay chat-attach-overlay">
               {panel}
             </FloatingOverlay>
           ) : (

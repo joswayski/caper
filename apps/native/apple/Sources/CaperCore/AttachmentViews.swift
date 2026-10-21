@@ -2888,7 +2888,7 @@ struct AttachmentPickerButton: View {
     var body: some View {
         Button {
             drawerTarget = chat.attachmentTarget(inThread: inThread)
-            showDrawer = drawerTarget != nil
+            withoutPresentationAnimation { showDrawer = drawerTarget != nil }
         } label: {
             Image("caper-plus").renderingMode(.template).resizable().frame(width: 18, height: 18)
                 .foregroundStyle(showDrawer ? CaperTheme.text : CaperTheme.muted)
@@ -2900,9 +2900,9 @@ struct AttachmentPickerButton: View {
         .disabled(!chat.canAttach)
         .opacity(chat.canAttach ? 1 : 0.4)
         .accessibilityLabel("Attach files")
-        .accessibilityValue(!chat.canAttach ? chat.attachUnavailableReason : AttachCapacity.label(AttachmentPolicy.maxAttachments - remaining) ?? "")
+        .accessibilityValue(!chat.canAttach ? chat.attachUnavailableReason : AttachCapacity.hint(AttachmentPolicy.maxAttachments - remaining) ?? "")
         .accessibilityIdentifier("attach-files-button")
-        .sheet(isPresented: $showDrawer) {
+        .fullScreenCover(isPresented: $showDrawer) {
             if let target = drawerTarget { AttachDrawer(draft: drawerDraft(target)) }
         }
         // Prepare the gallery while the composer is up, so the drawer opens filled.
@@ -2925,10 +2925,7 @@ struct AttachmentPickerButton: View {
     /// menu still opens at the limit to say so.
     var body: some View {
         Menu {
-            if let limit = AttachCapacity.label(AttachmentPolicy.maxAttachments - remaining) {
-                Text(limit)
-                if let hint = AttachCapacity.hint(AttachmentPolicy.maxAttachments - remaining) { Text(hint) }
-            }
+            if let hint = AttachCapacity.hint(AttachmentPolicy.maxAttachments - remaining) { Text(hint) }
             Button {
                 selectionTarget = chat.attachmentTarget(inThread: inThread)
                 showFiles = selectionTarget != nil
