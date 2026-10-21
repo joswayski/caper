@@ -222,7 +222,7 @@ export default function AttachmentPicker({
       {open && !disabled && (
         <FloatingPortal>
           {drawer ? (
-            <FloatingOverlay lockScroll className="chat-actions-overlay">
+            <FloatingOverlay lockScroll className="chat-actions-overlay chat-attach-overlay">
               {panel}
             </FloatingOverlay>
           ) : (

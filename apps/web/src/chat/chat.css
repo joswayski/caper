@@ -2540,8 +2540,12 @@ button.chat-mention-card-avatar {
   background: var(--surface);
   box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
 }
+html:has(.chat-attach-overlay) {
+  /* Scroll is locked while open; don't reserve a strip beside the drawer. */
+  scrollbar-gutter: auto;
+}
 .chat-attach-drawer-sheet {
-  width: min(480px, 100%);
+  width: 100%;
   max-width: none;
   padding: 8px 16px max(16px, env(safe-area-inset-bottom));
   gap: 14px;

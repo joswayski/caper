@@ -200,6 +200,8 @@ struct AttachDrawer: View {
     @State private var showingFiles = false
     @State private var showingPhotos = false
     @State private var photoItems: [PhotosPickerItem] = []
+    @State private var expanded = false
+    @GestureState private var drag: CGFloat = 0
 
     static func source(_ identifier: String) -> String { "photos:\(identifier)" }
 
@@ -209,24 +211,41 @@ struct AttachDrawer: View {
     private var cameraAvailable: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
 
     var body: some View {
-        let files = files
-        VStack(alignment: .leading, spacing: 0) {
-            header(files.count)
-            content(files)
-            Divider().overlay(CaperTheme.border)
-            toolbar
+        GeometryReader { geometry in
+            let height = geometry.size.height
+            let collapsedHeight = height * 0.5
+            let panelHeight = expanded ? height : collapsedHeight
+            ZStack(alignment: .bottom) {
+                Color.black.opacity(0.55).ignoresSafeArea()
+                    .onTapGesture { close() }
+                    .accessibilityHidden(true)
+                    .modifier(Entrance.scrim)
+                panel
+                    .padding(.leading, geometry.safeAreaInsets.leading)
+                    .padding(.trailing, geometry.safeAreaInsets.trailing)
+                    .frame(height: min(height, max(collapsedHeight, panelHeight - drag)))
+                    .background {
+                        UnevenRoundedRectangle(topLeadingRadius: 16, topTrailingRadius: 16)
+                            .fill(CaperTheme.surface).ignoresSafeArea(edges: .bottom)
+                    }
+                    .offset(y: max(0, drag - (panelHeight - collapsedHeight)))
+                    .modifier(Entrance(offset: CGSize(width: 0, height: 12), animation: CaperMotion.easeOut(CaperMotion.base)))
+            }
+            // The surface reaches both window edges, including in landscape;
+            // the controls still respect the notch and home-indicator safe areas.
+            .frame(width: geometry.size.width + geometry.safeAreaInsets.leading + geometry.safeAreaInsets.trailing,
+                   height: height)
+            .offset(x: -geometry.safeAreaInsets.leading)
         }
-        .overlay(alignment: .bottomTrailing) { sendButton(files) }
-        .background(CaperTheme.surface)
         .foregroundStyle(CaperTheme.text)
         .font(CaperTheme.font(14))
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-        .presentationBackground(CaperTheme.surface)
-        .presentationCornerRadius(16)
+        // A system medium sheet floats away from the edges on iOS 26.
+        // Hosts use a transparent full-screen cover; this drawer owns its height.
+        .presentationBackground(.clear)
+        .accessibilityAction(.escape) { close() }
         .task { library.start() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { library.reload() } }
-        .onChange(of: draft.valid()) { _, valid in if !valid { dismiss() } }
+        .onChange(of: draft.valid()) { _, valid in if !valid { close() } }
         .onDisappear {
             // Copies still running belong to taps the person made; let them land
             // in the draft. Only the observer stops.
@@ -248,7 +267,7 @@ struct AttachDrawer: View {
             draft.add(files)
             if urls.count > room { notice = "Only \(room) more file\(room == 1 ? "" : "s") can be attached." }
             else if files.count < urls.count { notice = "Some files couldn’t be added." }
-            else { dismiss() }
+            else { close() }
         }
         .photosPicker(isPresented: $showingPhotos, selection: $photoItems,
                       maxSelectionCount: max(1, AttachmentPolicy.maxAttachments - used),
@@ -267,6 +286,51 @@ struct AttachDrawer: View {
             }
         }
     }
+
+    private var panel: some View {
+        let files = files
+        return VStack(alignment: .leading, spacing: 0) {
+            VStack(spacing: 0) {
+                Button {
+                    withAnimation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.base)) { expanded.toggle() }
+                } label: {
+                    Capsule().fill(CaperTheme.muted).frame(width: 36, height: 5)
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(expanded ? "Collapse attachment drawer" : "Expand attachment drawer")
+                .accessibilityIdentifier("attach-drawer-resize")
+                header(files.count)
+            }
+            .contentShape(Rectangle())
+            .simultaneousGesture(DragGesture()
+                .updating($drag) { value, state, _ in state = value.translation.height }
+                .onEnded { value in
+                    let travel = value.predictedEndTranslation.height
+                    if !expanded && travel > 80 { close() }
+                    else if abs(travel) > 40 {
+                        withAnimation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.base)) { expanded = travel < 0 }
+                    }
+                })
+            content(files)
+            Divider().overlay(CaperTheme.border)
+            toolbar
+        }
+        .overlay(alignment: .bottomTrailing) { sendButton(files) }
+        .overlay(alignment: .topTrailing) {
+            Button { close() } label: {
+                CaperIcon(name: "x", size: 18).frame(width: 44, height: 28).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(CaperTheme.muted)
+            .accessibilityLabel("Close attachment drawer")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("attach-drawer")
+    }
+
+    private func close() { withoutPresentationAnimation { dismiss() } }
 
     // MARK: Header
 
@@ -428,7 +492,7 @@ struct AttachDrawer: View {
             let ready = draft.canSend() && queue.order.isEmpty
             Button {
                 draft.send()
-                dismiss()
+                close()
             } label: {
                 ZStack {
                     if ready || draft.sending() { CaperIcon(name: "send", size: 20) }

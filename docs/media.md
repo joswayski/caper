@@ -2479,13 +2479,19 @@ Phones keep a photo library apart from their files, so they offer both; desktop
 web, the Mac and Rust desktop offer one unfiltered "Upload a file", as Discord
 does.
 
+- **Width**: mobile attachment drawers reach both window edges, without floating
+  side gutters; controls retain safe-area padding. Android and touch web do not
+  cap the drawer width on tablets or landscape layouts. Desktop menus are unchanged.
 - **Limit line**: nothing below the limit. At 10 files it shows ten terracotta
   pips, "10 of 10 attached" and "Remove a file to add another." The drawer and
   menu stay openable at the limit. Choosing anything then shakes the line sideways (4 px,
   `--motion-slow`, none under reduced motion) and, on phones, buzzes, instead
   of opening a picker that couldn't add anything.
-- **iPhone/iPad** (`AttachDrawer.swift`): a sheet (medium/large detents) with a
-  Camera tile and the photo library newest first (PhotoKit). Tapping a tile
+- **iPhone/iPad** (`AttachDrawer.swift`): an edge-to-edge drawer in a transparent
+  full-screen cover (the system's medium sheet floats on iOS 26), initially
+  half-height. Drag its header or tap the handle to expand/collapse; drag down
+  from half-height, tap outside, Close, or VoiceOver escape to dismiss. Its
+  Camera tile and photo library show newest first (PhotoKit). Tapping a tile
   copies the original (from iCloud if needed) and adds it to the draft at once,
   so uploads start while choosing. Numbered terracotta badges show draft order,
   which follows tap order even when copies finish out of order
@@ -2541,6 +2547,14 @@ tiles scroll. Android coalesces MediaStore change bursts and cancels thumbnail
 decodes for tiles that scroll away.
 Native gallery playback/lifecycle and rendered drawers still need device
 validation; browser checks do not establish it.
+
+Edge-to-edge layout validation (October 21, 2026): the real web picker was
+rendered in a labelled Chromium fixture at 390 and 600 px (open and full),
+with measured zero side gaps and inspected screenshots; the 1280 px desktop
+menu remained 200 px wide. This is browser-layout evidence, not native device
+evidence. The iOS UI test now checks both drawer widths, expansion/collapse,
+and drag dismissal; it still needs an Apple SDK/simulator run, including
+camera/Files presentation, landscape, and the profile-DM composer.
 
 Google Play: photo/video permissions need the Photo and Video Permissions
 declaration in Play Console (App content); the text is in

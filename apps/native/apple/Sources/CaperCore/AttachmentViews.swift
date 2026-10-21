@@ -3152,7 +3152,7 @@ struct AttachmentPickerButton: View {
     var body: some View {
         Button {
             drawerTarget = chat.attachmentTarget(inThread: inThread)
-            showDrawer = drawerTarget != nil
+            withoutPresentationAnimation { showDrawer = drawerTarget != nil }
         } label: {
             Image("caper-plus").renderingMode(.template).resizable().frame(width: 18, height: 18)
                 .foregroundStyle(showDrawer ? CaperTheme.text : CaperTheme.muted)
@@ -3166,7 +3166,7 @@ struct AttachmentPickerButton: View {
         .accessibilityLabel("Attach files")
         .accessibilityValue(!chat.canAttach ? chat.attachUnavailableReason : AttachCapacity.label(AttachmentPolicy.maxAttachments - remaining) ?? "")
         .accessibilityIdentifier("attach-files-button")
-        .sheet(isPresented: $showDrawer) {
+        .fullScreenCover(isPresented: $showDrawer) {
             if let target = drawerTarget { AttachDrawer(draft: drawerDraft(target)) }
         }
         // Prepare the gallery while the composer is up, so the drawer opens filled.

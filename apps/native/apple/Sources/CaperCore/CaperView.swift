@@ -6292,14 +6292,14 @@ private struct MentionCardView: View {
                 HStack(alignment: .bottom, spacing: 0) {
                 Group {
                 #if os(iOS)
-                Button { showingDrawer = true; updateDialogState() } label: {
+                Button { withoutPresentationAnimation { showingDrawer = true }; updateDialogState() } label: {
                     CaperIcon(name: "plus", size: 18).foregroundStyle(showingDrawer ? CaperTheme.text : CaperTheme.muted)
                         .frame(width: 40, height: 42).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .fixedSize()
                 .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog)
-                .sheet(isPresented: $showingDrawer, onDismiss: updateDialogState) { AttachDrawer(draft: drawerDraft) }
+                .fullScreenCover(isPresented: $showingDrawer, onDismiss: updateDialogState) { AttachDrawer(draft: drawerDraft) }
                 // Prepare the gallery while the composer is up, so the drawer opens filled.
                 .task { AttachGalleryCache.warm() }
                 #else
@@ -6509,7 +6509,7 @@ private struct MentionCardView: View {
             sending: { draft.sending },
             send: {
                 // Send refuses while a dialog is open, so close the drawer first.
-                showingDrawer = false
+                withoutPresentationAnimation { showingDrawer = false }
                 updateDialogState()
                 send()
             },

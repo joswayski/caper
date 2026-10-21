@@ -1278,7 +1278,20 @@ final class CaperParityUITests: XCTestCase {
         let tiles = app.buttons.matching(identifier: "attach-drawer-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 10), "The simulator's sample photos must appear")
         XCTAssertFalse(app.descendants(matching: .any)["attach-drawer-capacity"].exists, "Below the limit the drawer shows no count")
+        let drawer = try require(app.otherElements["attach-drawer"], timeout: 5, "Missing attachment drawer")
+        XCTAssertEqual(drawer.frame.minX, app.frame.minX, accuracy: 1, "The collapsed drawer reaches the left edge")
+        XCTAssertEqual(drawer.frame.maxX, app.frame.maxX, accuracy: 1, "The collapsed drawer reaches the right edge")
+        let collapsedHeight = drawer.frame.height
         capture("attach-drawer-open", app: app)
+        app.buttons["attach-drawer-resize"].tap()
+        let expanded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "frame.height > %f", collapsedHeight + 40), object: drawer)
+        XCTAssertEqual(XCTWaiter.wait(for: [expanded], timeout: 5), .completed)
+        XCTAssertEqual(drawer.frame.minX, app.frame.minX, accuracy: 1)
+        XCTAssertEqual(drawer.frame.maxX, app.frame.maxX, accuracy: 1)
+        capture("attach-drawer-expanded", app: app)
+        app.buttons["attach-drawer-resize"].tap()
+        let collapsed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "frame.height <= %f", collapsedHeight + 1), object: drawer)
+        XCTAssertEqual(XCTWaiter.wait(for: [collapsed], timeout: 5), .completed)
         guard tiles.count >= 2 else { return }
         tiles.element(boundBy: 1).tap()
         tiles.element(boundBy: 0).tap()
@@ -1291,6 +1304,8 @@ final class CaperParityUITests: XCTestCase {
         tiles.element(boundBy: 1).tap()
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Attached 1"), object: tiles.element(boundBy: 0))
         XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 5), .completed, "The remaining file moves up to first")
+        app.buttons["attach-drawer-resize"].swipeDown()
+        XCTAssertTrue(drawer.waitForNonExistence(timeout: 5), "Dragging down from the collapsed drawer dismisses it")
     }
     #endif
 

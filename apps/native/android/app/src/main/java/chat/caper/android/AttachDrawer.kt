@@ -285,6 +285,7 @@ private fun formatDuration(ms: Long): String {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetMaxWidth = androidx.compose.ui.unit.Dp.Unspecified,
         containerColor = Surface, contentColor = Text,
     ) {
         Box(Modifier.fillMaxWidth().height(height)) {
