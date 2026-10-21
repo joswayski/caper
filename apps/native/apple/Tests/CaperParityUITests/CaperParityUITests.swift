@@ -2866,16 +2866,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(edit.label, "Change profile picture")
         XCTAssertEqual(regenerate.frame.midY, edit.frame.midY, accuracy: 1)
         XCTAssertLessThan(regenerate.frame.maxX, edit.frame.minX)
-        #if os(macOS)
-        // Desktop badges must not grow to iPhone touch-target dimensions.
+        // The badges stay small beside the frame; iOS widens their touch area instead.
         for control in [regenerate, edit] {
             XCTAssertLessThanOrEqual(control.frame.width, 34)
             XCTAssertLessThanOrEqual(control.frame.height, 34)
         }
+        #if os(macOS)
         username.hover()
-        #else
-        XCTAssertGreaterThanOrEqual(regenerate.frame.height, 44)
-        XCTAssertGreaterThanOrEqual(edit.frame.height, 44)
         #endif
         XCTAssertFalse(app.staticTexts["Regenerating…"].exists)
         capture("profile-picture-idle", app: app)

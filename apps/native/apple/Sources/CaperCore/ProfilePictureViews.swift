@@ -171,10 +171,13 @@ struct PictureEditor<Preview: View>: View {
     /// The frame's side, in points.
     static var side: CGFloat { 112 }
 
-    #if os(macOS)
+    /// The badges stay small beside the 112-point frame on every platform.
     private var actionSide: CGFloat { 28 }
+    #if os(macOS)
+    private var hitOutset: CGFloat { 0 }
     #else
-    private var actionSide: CGFloat { 44 }
+    /// Touch reaches 44 points around each 28-point badge.
+    private var hitOutset: CGFloat { 8 }
     #endif
 
     init(purpose: PicturePurpose, hasPicture: Bool, currentURL: URL? = nil, upload: @escaping (PreparedPicture) async throws -> Void,
@@ -337,6 +340,7 @@ struct PictureEditor<Preview: View>: View {
                 }
             }
             .buttonStyle(PrimaryIconButton())
+            .contentShape(Rectangle().inset(by: -hitOutset))
             .fixedSize()
             .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
             .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
@@ -406,6 +410,7 @@ struct PictureEditor<Preview: View>: View {
                     .frame(width: actionSide, height: actionSide)
                 }
                 .buttonStyle(PrimaryIconButton())
+                .contentShape(Rectangle().inset(by: -hitOutset))
                 // Not disabled while it runs (the action guards repeats), so the
                 // button keeps its fill and only the spinner shows progress.
                 .disabled(phase != nil && phase != .regenerating)
