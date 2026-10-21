@@ -41,6 +41,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -593,7 +595,7 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
  * tile has two round corner buttons, diagonal from each other so a mis-tap can't remove: Remove
  * (top right; a ring around it shows preparing and upload progress) and the pencil (bottom left).
  * With [edit], images and videos the editor can open preview in the app: the pencil or a tap opens
- * [DraftPreview] (unblurred, even for a spoiler), which toggles the spoiler ([toggleSpoiler]),
+ * [DraftPreview] (covered as recipients see it while a spoiler), which toggles the spoiler ([toggleSpoiler]),
  * opens [AttachmentEditor] on the original with Crop, Draw or Text, and removes the file; a saved
  * change arrives as the draft key, the edit (null for the original) and its render. Other files
  * preview in the system viewer, and their pencil opens a menu with the spoiler toggle and Remove.
@@ -853,6 +855,10 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
  * [controls] at the bottom: the spoiler toggle ([toggleSpoiler], which changes the tile in place),
  * the editor's tools (each hands the file to the editor on that tool through [edit]), and Remove
  * ([remove], which also closes the preview). Pictures zoom as in the media viewer; closing resets them.
+ * While the spoiler is on, the media sits under the cover recipients see (the blurred, dimmed
+ * poster and a centred Spoiler label), which fades in and out with the toggle and blocks zoom
+ * and the video's controls; a covered video pauses. The preview arrives with a short fade and
+ * slight scale, and a picture fades in over its loading state; closing is instant.
  */
 @Composable private fun DraftPreview(
     draft: DraftAttachmentUi, controls: List<DraftPreviewControl>, close: () -> Unit,
@@ -861,10 +867,12 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
     val context = LocalContext.current
     val media = draftPreviewMedia(draft)
     val video = draft.editKind == "video"
+    val still = reducedMotion()
+    val cover by animateFloatAsState(if (draft.spoiler) 1f else 0f, if (still) snap() else tween(MOTION_BASE, easing = EaseOut), label = "draftPreviewSpoiler")
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         // Filled before the insets, so the bar areas aren't left showing the dimmed scrim.
         Column(
-            Modifier.fillMaxSize().swipeCancelsPresses().entrance(MOTION_BASE).background(Blackout).systemBarsPadding()
+            Modifier.fillMaxSize().swipeCancelsPresses().entrance(MOTION_BASE, scale = 0.98f).background(Blackout).systemBarsPadding()
                 .semantics { paneTitle = if (video) "Video preview" else "Image preview" },
         ) {
             Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -876,10 +884,16 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
             Box(Modifier.weight(1f).fillMaxWidth().clipToBounds(), contentAlignment = Alignment.Center) {
                 when {
                     media == null -> Spinner(null, Modifier.size(28.dp))
-                    media.video -> DraftPreviewVideo(media.uri)
+                    media.video -> DraftPreviewVideo(media.uri, paused = draft.spoiler)
                     else -> {
                         var failed by remember(media.uri) { mutableStateOf(false) }
                         var loaded by remember(media.uri) { mutableStateOf<IntSize?>(null) }
+                        // The decoded picture fades in over the loading state instead of popping in.
+                        val shown by animateFloatAsState(if (loaded != null) 1f else 0f, if (still) snap() else tween(MOTION_BASE, easing = EaseOut), label = "draftPreviewLoaded")
+                        // The spinner waits a moment, so a quick decode never flashes it.
+                        var slow by remember(media.uri) { mutableStateOf(false) }
+                        LaunchedEffect(media.uri) { kotlinx.coroutines.delay(300); slow = true }
+                        if (!failed && loaded == null && slow) Spinner(null, Modifier.size(28.dp))
                         if (failed) Text(if (video) "This video can’t be shown here." else "This image can’t be shown here.", Modifier.padding(24.dp),
                             color = TextMuted, fontSize = 14.sp)
                         // Zooms like the media viewer, so it decodes at full resolution (Coil caps it at 4096 px a side).
@@ -889,12 +903,25 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
                                     AttachmentImages.request(context, media.uri, "draft-preview:${draft.key}:${media.uri}").newBuilder().size(coil3.size.Size.ORIGINAL).build()
                                 },
                                 contentDescription = draft.name, imageLoader = AttachmentImages.loader(context),
-                                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize().graphicsLayer { alpha = shown }, contentScale = ContentScale.Fit,
                                 onSuccess = { loaded = IntSize(it.result.image.width, it.result.image.height) },
                                 onError = { failed = true },
                             )
                         }
                     }
+                }
+                // The cover recipients see, over the whole media area so a zoomed picture can't show
+                // past it; it takes every touch, so the covered media can't be zoomed or played.
+                if (cover > 0f) Box(
+                    Modifier.matchParentSize().graphicsLayer { alpha = cover }.background(Surface)
+                        .then(if (draft.spoiler) Modifier.pointerInput(Unit) {
+                            awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } }
+                        } else Modifier),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    val source = draftSpoilerSource(draft)
+                    SpoilerThumbnail(source, "draft:${draft.key}:$source:spoiler")
+                    SpoilerBadge(revealHint = false)
                 }
             }
             if (controls.isNotEmpty()) Row(
@@ -940,9 +967,9 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
     }
 }
 
-/** A staged video with playback controls; it plays while the app is visible and pauses when it is stopped. */
+/** A staged video with playback controls; it plays while the app is visible and not [paused], and pauses when it is stopped. */
 @OptIn(UnstableApi::class)
-@Composable private fun DraftPreviewVideo(uri: String) {
+@Composable private fun DraftPreviewVideo(uri: String, paused: Boolean) {
     val context = LocalContext.current
     var failed by remember(uri) { mutableStateOf(false) }
     val player = remember(uri) {
@@ -956,10 +983,15 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
         }
     }
     DisposableEffect(player) { onDispose { player.release() } }
+    val hold by rememberUpdatedState(paused)
+    var started by remember(player) { mutableStateOf(false) }
     LifecycleStartEffect(player) {
-        player.playWhenReady = true
-        onStopOrDispose { player.pause() }
+        started = true
+        player.playWhenReady = !hold
+        onStopOrDispose { started = false; player.pause() }
     }
+    // Covering it as a spoiler pauses it; uncovering resumes while the app is visible.
+    LaunchedEffect(player, paused) { if (paused) player.pause() else if (started) player.playWhenReady = true }
     if (failed) return Text("This video can’t be played here.", Modifier.padding(24.dp), color = TextMuted, fontSize = 14.sp)
     AndroidView(
         factory = {
