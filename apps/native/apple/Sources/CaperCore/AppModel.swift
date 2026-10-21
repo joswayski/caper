@@ -2931,13 +2931,18 @@ public final class ChatModel {
     /// Failed files may be retried by Send; initial uploads must settle first.
     public var canSubmit: Bool { canSubmit(inThread: false) }
     public func canSubmit(inThread: Bool) -> Bool {
+        canPressSend(inThread: inThread)
+            && (delivery.pending != nil || attachmentFiles(inThread: inThread).allSatisfy { $0.attachment != nil || $0.error != nil })
+    }
+    /// Whether Send can be pressed now. Unlike `canSubmit`, files may still be
+    /// preparing or uploading: `send` waits for them, as web and Android do.
+    public func canPressSend(inThread: Bool) -> Bool {
         if sending || uploadSubmission != nil || delivery.rejected { return false }
         let root = inThread ? threadRootID : nil
         if inThread && root == nil { return false }
         if let pending = delivery.pending { return pending.threadRootId == root }
         let files = attachmentFiles(inThread: inThread)
-        return files.allSatisfy { $0.attachment != nil || $0.error != nil }
-            && MessageValidation.error(for: inThread ? threadDraft : draft, attachmentCount: files.count) == nil
+        return MessageValidation.error(for: inThread ? threadDraft : draft, attachmentCount: files.count) == nil
     }
     public var pinErrors: [String: String] = [:]
     public var pendingPins: Set<String> = []

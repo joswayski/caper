@@ -4302,7 +4302,7 @@ private struct ChatView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PrimaryIconButton())
-                .disabled(!chat.canSubmit || chat.pendingMessage?.threadRootId != nil)
+                .disabled(!chat.canPressSend(inThread: false) || chat.pendingMessage?.threadRootId != nil)
                 .help(chat.sending ? "Sending…" : chat.sendRejected ? "Edit or dismiss the rejected message before sending another." : "Send message")
                 .accessibilityLabel("Send message")
                 .accessibilityValue(chat.sending ? "Sending" : "")
@@ -4645,7 +4645,7 @@ private struct NativeThreadView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(PrimaryIconButton())
-        .disabled(chat.threadLoading || chat.pendingMessage != nil || !chat.canSubmit(inThread: true))
+        .disabled(chat.threadLoading || chat.pendingMessage != nil || !chat.canPressSend(inThread: true))
         .help("Send reply")
         .accessibilityLabel("Send reply")
     }

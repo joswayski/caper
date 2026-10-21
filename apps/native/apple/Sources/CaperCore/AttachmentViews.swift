@@ -2220,9 +2220,13 @@ struct AttachmentDraftPreview: View {
     /// The image's zoom; each preview opens fitted.
     @State private var scale: CGFloat = 1
     @State private var offset: CGSize = .zero
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #if os(macOS)
     @FocusState private var focused: Bool
     #endif
+
+    /// Read live, so marking the file shows here at once, as people will see it.
+    private var spoilered: Bool { request.spoiler?.isOn() ?? false }
 
     var body: some View {
         ZStack {
@@ -2236,6 +2240,10 @@ struct AttachmentDraftPreview: View {
             VStack(spacing: 0) {
                 topBar
                 media
+                    // A spoiler shows covered, as the message will; the editor still shows it plainly.
+                    .blur(radius: spoilered ? 36 : 0)
+                    .overlay { if spoilered { SpoilerLabel().allowsHitTesting(false).transition(.opacity) } }
+                    .animation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.base), value: spoilered)
                     .padding(.horizontal, 16)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     // Under both bars: a zoomed image spreads beneath them, and
@@ -2307,6 +2315,8 @@ struct AttachmentDraftPreview: View {
                     .accessibilityAddTraits(.isImage)
                     .accessibilityIdentifier("attachment-draft-preview-image")
             }
+            // The decoded picture fades in over the spinner instead of popping.
+            .transition(.opacity)
         } else if failed {
             VStack(spacing: 6) {
                 Image(systemName: "photo").font(.system(size: 22))
@@ -2318,7 +2328,9 @@ struct AttachmentDraftPreview: View {
             ProgressView()
                 .accessibilityLabel("Loading")
                 .task {
-                    if let loaded = await AttachmentEditorPicture.load(request.url, kind: .image, maxEdge: 4096) { picture = loaded } else { failed = true }
+                    if let loaded = await AttachmentEditorPicture.load(request.url, kind: .image, maxEdge: 4096) {
+                        withAnimation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.base)) { picture = loaded }
+                    } else { failed = true }
                 }
         }
     }
@@ -3179,7 +3191,7 @@ struct AttachmentPickerButton: View {
             files: { chat.attachmentFiles(inThread: inThread).map { AttachDrawerFile(id: $0.id, source: $0.source) } },
             add: { chat.addAttachments($0, to: target) },
             remove: { chat.removeAttachmentDraft(id: $0) },
-            canSend: { chat.canSubmit(inThread: inThread) },
+            canSend: { chat.canPressSend(inThread: inThread) },
             sending: { chat.sending },
             send: { Task { await chat.send(inThread: inThread) } },
             valid: { chat.canAttach && chat.attachmentTarget(inThread: inThread) == target })

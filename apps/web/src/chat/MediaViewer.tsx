@@ -579,6 +579,8 @@ export default function MediaViewer({
           <div
             ref={refs.setFloating}
             className="chat-viewer"
+            // A staged file marked as a spoiler shows covered, as it will be sent.
+            data-draft-spoiler={(current && editing?.toggleSpoiler && editing.spoiler?.(current.id)) || undefined}
             tabIndex={-1}
             aria-label={current?.kind === "video" ? "Video viewer" : "Image viewer"}
             aria-describedby={items.length > 1 && current ? `${titleId} ${counterId}` : titleId}
@@ -736,6 +738,12 @@ export default function MediaViewer({
                 <EyeOff size={16} aria-hidden="true" />
                 Hide spoiler
               </button>
+            )}
+            {current && editing?.toggleSpoiler && editing.spoiler?.(current.id) && (
+              <span className="chat-viewer-draft-spoiler" aria-hidden="true">
+                <EyeOff size={16} aria-hidden="true" />
+                Spoiler
+              </span>
             )}
             {current ? (
               <ViewerItem

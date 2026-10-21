@@ -1893,6 +1893,7 @@ final class AttachmentTests: XCTestCase {
         let file = try AttachmentStaging.stage(data: Data("reply".utf8), filename: "reply.txt")
         chat.addAttachments([file], inThread: true)
         XCTAssertFalse(chat.canSubmit(inThread: true), "preparation/upload must finish first")
+        XCTAssertTrue(chat.canPressSend(inThread: true), "Send can be pressed while files upload; it waits for them")
         await waitUntil("thread upload") { chat.threadAttachmentDrafts.first?.attachment != nil }
         let assetID = try XCTUnwrap(chat.threadAttachmentDrafts.first?.attachment?.id)
         XCTAssertTrue(chat.canSubmit(inThread: true), "ready files need no text")

@@ -1855,7 +1855,12 @@ upload shows one centred eggshell Retry button; a spoilered tile is blurred
 with a centred crossed-out eye. Edit, like a tap on the picture, opens the
 file's preview, whose tool row holds **Spoiler**, **Crop**, **Draw**, **Text**
 and **Remove**; files with no preview (PDFs, audio) get a menu with Mark as
-spoiler and Remove attachment instead. Long press or context click offers Edit,
+spoiler and Remove attachment instead. While the file is marked as a spoiler, the
+preview shows it covered (blurred, with a centred Spoiler label) as it will be
+sent; the cover fades in and out, and the editor still shows the picture
+plainly. On iPhone and iPad the attach drawer's Send, like the composer's, can
+be pressed while files still upload, as on web and Android: the message goes as
+soon as they finish, instead of the button showing a spinner. Long press or context click offers Edit,
 the spoiler toggle and Remove attachment. A spoilered file stays editable: the editor and preview show
 it unblurred to its author, its tile shows the blurred edited render, and Send
 carries both the edit (already in the uploaded file) and the spoiler flag.
