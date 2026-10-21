@@ -59,6 +59,18 @@ keyboard reopening. This targets the reported gap after returning from Browse;
 Apple compilation, before/after rendering, channel/DM device checks and Reduce
 Motion acceptance remain unverified in the Linux orb.
 
+Apple Browse navigation records its horizontal motion in `DrawerPose` without
+also applying a SwiftUI animation to the workspace. This isolates the stationary
+sidebar's scroll/layout corrections from tapped, released and cancelled Browse
+slides; member-drawer animation is unchanged. The iPhone UI case
+`testBrowseKeepsScrolledDirectMessagesAndSavedDivider` checks a nonzero DM scroll
+offset and a non-default saved split across repeated tap/swipe round trips.
+Validation (2026-10-21): `git diff --check` passes. No Swift/Xcode toolchain or
+connected Mac runner is available in the Linux orb, so compilation, this UI case,
+and visual confirmation of the reported downward DM drift remain pending.
+Also check keyboard-open navigation and Reduce Motion on an iPhone before release;
+resting accessibility frames alone cannot establish smooth animation.
+
 Message composers offer `:` emoji autocomplete on web, Android, Apple and Rust
 desktop, using the same bundled Emoji 15 catalog. A colon at the start of a draft,
 after whitespace or after an opening bracket activates suggestions; URLs, times,

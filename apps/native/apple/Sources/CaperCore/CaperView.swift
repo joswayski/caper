@@ -657,7 +657,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     let timing = DrawerSettle.Timing.settle
                     drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: open ? 1 : 0, timing: timing)
                     SwipeTapGuard.release()
-                    withAnimation(reduceMotion ? nil : timing.animation) { drawer.drag = nil }
+                    withAnimation(reduceMotion || drawer is BrowseDrawer ? nil : timing.animation) { drawer.drag = nil }
                 }
             }
     }
@@ -683,7 +683,10 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
         let timing = DrawerSettle.Timing.release(release)
         drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: release.target, timing: timing, leads: release.commit)
         SwipeTapGuard.release()
-        withAnimation(reduceMotion ? nil : timing.animation) {
+        // DrawerPose already animates Browse's conversation layer. An inherited
+        // animation also interpolates the stationary sidebar's scroll/layout
+        // corrections, making the DM pane drift vertically as it is uncovered.
+        withAnimation(reduceMotion || drawer is BrowseDrawer ? nil : timing.animation) {
             drawer.drag = nil
             if release.commit {
                 // Only Browse marks its switch; the member list animates inside the conversation.
@@ -937,7 +940,8 @@ private struct WorkspaceView: View {
         if browseDrawer.releasing { model.navigationOpen = open; return }
         guard model.navigationOpen != open else { return }
         browseDrawer.slide(to: open ? 1 : 0, timing: .tap, reduceMotion: reduceMotion)
-        var transaction = Transaction(animation: DrawerSettle.Timing.tap.animation)
+        // The recorded slide moves only the conversation, not Browse's contents.
+        var transaction = Transaction(animation: nil)
         transaction.browseSlide = true
         withTransaction(transaction) { model.navigationOpen = open }
     }
