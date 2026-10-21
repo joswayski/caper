@@ -7,6 +7,26 @@ object AttachCapacity {
         if (attached >= max) "Remove a file to add another." else null
 }
 
+/**
+ * What the attach drawer picks for: files for a message draft (many, any kind, then Send), or a
+ * single picture for a profile picture or space icon (images only, handed over on the first pick).
+ */
+data class AttachDrawerPurpose(val title: String, val single: Boolean) {
+    /** Whether the grid lists videos and the camera can record one. */
+    val videos: Boolean get() = !single
+    /** The document picker's MIME filter for Files. */
+    val documentTypes: List<String> get() = if (single) listOf("image/*") else listOf("*/*")
+
+    companion object {
+        val ATTACH = AttachDrawerPurpose("Attach", single = false)
+
+        /** "Choose a picture", "Choose an icon". */
+        fun picture(noun: String) = AttachDrawerPurpose(
+            "Choose ${if (noun.firstOrNull()?.lowercaseChar() in setOf('a', 'e', 'i', 'o', 'u')) "an" else "a"} $noun", single = true,
+        )
+    }
+}
+
 /** How much of the photo library the drawer can show. */
 enum class LibraryAccess { FULL, PARTIAL, NONE }
 

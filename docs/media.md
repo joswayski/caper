@@ -2494,6 +2494,14 @@ npx wrangler deploy --env staging
 
 #### Attach drawer (October 19, 2026)
 
+Choosing a new profile picture or space icon uses the same picker as the
+composer on every client: the attach drawer in a single-picture mode on
+iPhone, iPad and Android (photos only, camera for a photo, Photos and Files
+for one image; tapping one closes it and opens the crop editor, with no
+selection numbers or Send), the same Camera / Photos / Files sheet on touch
+web, and the file dialog directly on desktop web, Mac and Rust desktop, as
+the composer's Upload a file does.
+
 Attach (the composer's `+`, in channel, thread and profile-DM composers) opens
 the attach drawer on phones and an attach menu on desktop. The smiley opens a
 separate, unified Emojis / GIFs / Stickers drawer on mobile; `+` stays for files.

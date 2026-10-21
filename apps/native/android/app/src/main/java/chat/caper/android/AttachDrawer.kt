@@ -64,6 +64,7 @@ import coil3.gif.AnimatedImageDecoder
 import coil3.gif.GifDecoder
 import coil3.request.ImageRequest
 import chat.caper.android.data.AttachCapacity
+import chat.caper.android.data.AttachDrawerPurpose
 import chat.caper.android.data.AttachmentPolicy
 import chat.caper.android.data.LibraryAccess
 import chat.caper.android.data.LibraryPermissions
@@ -203,6 +204,11 @@ private fun formatDuration(ms: Long): String {
  * choosing; tapping again removes it. At the limit, other tiles dim and a tap nudges the capacity
  * line instead. Library access is asked for the first time the drawer opens; without it, the
  * system photo picker still chooses items one at a time.
+ *
+ * With a [AttachDrawerPurpose.single] purpose (a profile picture or space icon) the same drawer
+ * lists photos only and has no order numbers, capacity line or Send: tapping a photo hands it to
+ * [add] and closes the drawer, and the camera takes a photo. [gallery], [files] and [camera]
+ * close it themselves (the caller dismisses before launching).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun AttachDrawer(
@@ -212,7 +218,9 @@ private fun formatDuration(ms: Long): String {
     files: () -> Unit,
     camera: (video: Boolean) -> Unit,
     onDismiss: () -> Unit,
+    purpose: AttachDrawerPurpose = AttachDrawerPurpose.ATTACH,
 ) {
+    val single = purpose.single
     val context = LocalContext.current
     val activity = LocalActivity.current
     val view = LocalView.current
@@ -262,11 +270,11 @@ private fun formatDuration(ms: Long): String {
         runCatching { context.contentResolver.registerContentObserver(MediaStore.Files.getContentUri("external"), true, observer) }
         onDispose { context.contentResolver.unregisterContentObserver(observer) }
     }
-    val used = host.files.size
+    val used = if (single) 0 else host.files.size
     val full = used >= AttachmentPolicy.MAX_ATTACHMENTS
     // Library URI -> (position in the draft, draft key).
-    val selected = remember(host.files) {
-        buildMap { host.files.forEachIndexed { index, file -> file.pickedUri?.let { if (it !in this) put(it, index + 1 to file.key) } } }
+    val selected = remember(host.files, single) {
+        if (single) emptyMap() else buildMap { host.files.forEachIndexed { index, file -> file.pickedUri?.let { if (it !in this) put(it, index + 1 to file.key) } } }
     }
     val nudge = remember { Animatable(0f) }
     fun refuse() {
@@ -279,6 +287,8 @@ private fun formatDuration(ms: Long): String {
             })
         }
     }
+    // A picture can't be a video: the shared library list, without them.
+    val shown = remember(library, purpose.videos) { if (purpose.videos) library else library?.filter { !it.video } }
     val hasCamera = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY) }
     val height = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.7f
 
@@ -292,7 +302,7 @@ private fun formatDuration(ms: Long): String {
             Column(Modifier.fillMaxSize()) {
                 // Header: the title, and only once full the limit line, which shakes when it refuses a file.
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Attach", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Text(purpose.title, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
                 AttachCapacity.hint(used)?.let {
                     Text(it, Modifier.padding(horizontal = 16.dp)
@@ -308,8 +318,12 @@ private fun formatDuration(ms: Long): String {
                             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             Text(
-                                if (blocked) "Caper can’t see your photos. Allow access in Settings, or choose items one at a time."
-                                else "Allow photo access to pick recent photos and videos here, or choose items one at a time.",
+                                when {
+                                    single && blocked -> "Caper can’t see your photos. Allow access in Settings, or choose a photo."
+                                    single -> "Allow photo access to pick a recent photo here, or choose a photo."
+                                    blocked -> "Caper can’t see your photos. Allow access in Settings, or choose items one at a time."
+                                    else -> "Allow photo access to pick recent photos and videos here, or choose items one at a time."
+                                },
                                 color = TextMuted, fontSize = 14.sp, textAlign = TextAlign.Center,
                             )
                             Button(
@@ -321,7 +335,7 @@ private fun formatDuration(ms: Long): String {
                                 shape = MaterialTheme.shapes.small,
                                 colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction),
                             ) { Text(if (blocked) "Open Settings" else "Allow access", fontWeight = FontWeight.Bold) }
-                            TextButton({ if (full) refuse() else gallery() }) { Text("Choose photos and videos", color = Text) }
+                            TextButton({ if (full) refuse() else gallery() }) { Text(if (single) "Choose a photo" else "Choose photos and videos", color = Text) }
                             if (hasCamera) TextButton({ if (full) refuse() else camera(false) }) { Text("Take a photo", color = Text) }
                         }
                         else -> Column(Modifier.fillMaxSize()) {
@@ -337,16 +351,21 @@ private fun formatDuration(ms: Long): String {
                                 GridCells.Adaptive(88.dp), Modifier.fillMaxSize().semantics { testTag = "attach-drawer-grid" },
                                 state = libraryGrid,
                                 // Keep the last row clear of the floating Send button.
-                                contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = 76.dp),
+                                contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = if (single) 2.dp else 76.dp),
                                 horizontalArrangement = Arrangement.spacedBy(2.dp), verticalArrangement = Arrangement.spacedBy(2.dp),
                             ) {
-                                if (hasCamera) item(key = "camera") { CameraTile(full, ::refuse, camera) }
-                                items(library.orEmpty(), key = { it.id }) { item ->
+                                if (hasCamera) item(key = "camera") { CameraTile(full, ::refuse, camera, video = purpose.videos) }
+                                items(shown.orEmpty(), key = { it.id }) { item ->
                                     val selection = selected[item.uri.toString()]
                                     LibraryTile(item, selection?.first, dimmed = full && selection == null,
                                         // Every GIF on screen plays, unless motion is reduced or the app is paused.
-                                        animate = resumed && !still) {
+                                        animate = resumed && !still, single = single) {
                                         when {
+                                            single -> {
+                                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                                add(listOf(item.uri))
+                                                onDismiss()
+                                            }
                                             selection != null -> host.remove(selection.second)
                                             full -> refuse()
                                             else -> {
@@ -357,7 +376,7 @@ private fun formatDuration(ms: Long): String {
                                     }
                                 }
                             }
-                            if (library?.isEmpty() == true) Text("No photos or videos yet.", Modifier.padding(16.dp), color = TextMuted, fontSize = 13.sp)
+                            if (shown?.isEmpty() == true) Text(if (single) "No photos yet." else "No photos or videos yet.", Modifier.padding(16.dp), color = TextMuted, fontSize = 13.sp)
                         }
                     }
                 }
@@ -367,7 +386,7 @@ private fun formatDuration(ms: Long): String {
                     DrawerTab("Files", R.drawable.lucide_paperclip, selected = false, Modifier.weight(1f)) { if (full) refuse() else files() }
                 }
             }
-            if (host.files.isNotEmpty()) {
+            if (!single && host.files.isNotEmpty()) {
                 FilledIconButton(
                     { host.send(); onDismiss() },
                     Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 76.dp).navigationBarsPadding().size(52.dp)
@@ -396,12 +415,13 @@ private fun formatDuration(ms: Long): String {
     }
 }
 
-@Composable private fun CameraTile(full: Boolean, refuse: () -> Unit, camera: (Boolean) -> Unit) {
+@Composable private fun CameraTile(full: Boolean, refuse: () -> Unit, camera: (Boolean) -> Unit, video: Boolean = true) {
     var menu by remember { mutableStateOf(false) }
     Box(
         Modifier.aspectRatio(1f).background(SurfaceRaised).alpha(if (full) 0.4f else 1f)
-            .clickable(onClickLabel = "Camera") { if (full) refuse() else menu = true }
-            .semantics { contentDescription = "Camera"; role = Role.Button },
+            // Photos only: no menu, the camera opens for a photo.
+            .clickable(onClickLabel = if (video) "Camera" else "Take photo") { if (full) refuse() else if (video) menu = true else camera(false) }
+            .semantics { contentDescription = if (video) "Camera" else "Take photo"; role = Role.Button },
         contentAlignment = Alignment.Center,
     ) {
         Icon(painterResource(R.drawable.lucide_camera), null, Modifier.size(26.dp), tint = TextMuted)
@@ -412,7 +432,7 @@ private fun formatDuration(ms: Long): String {
     }
 }
 
-@Composable private fun LibraryTile(item: LibraryItem, order: Int?, dimmed: Boolean, animate: Boolean, onClick: () -> Unit) {
+@Composable private fun LibraryTile(item: LibraryItem, order: Int?, dimmed: Boolean, animate: Boolean, single: Boolean = false, onClick: () -> Unit) {
     val context = LocalContext.current
     val px = with(LocalDensity.current) { AttachDrawerCache.TILE_DP.dp.roundToPx() }
     var failed by remember(item.uri) { mutableStateOf(false) }
@@ -425,9 +445,11 @@ private fun formatDuration(ms: Long): String {
             .clickable(onClick = onClick)
             .semantics(mergeDescendants = true) {
                 contentDescription = if (item.video) "Video, ${item.durationMs / 1000} seconds" else if (item.gif) "GIF" else "Photo"
-                stateDescription = order?.let { "Attached $it" } ?: if (dimmed) "Attachment limit reached" else ""
-                selected = order != null
-                role = Role.Checkbox
+                if (single) role = Role.Button else {
+                    stateDescription = order?.let { "Attached $it" } ?: if (dimmed) "Attachment limit reached" else ""
+                    selected = order != null
+                    role = Role.Checkbox
+                }
                 testTag = "attach-drawer-tile"
             },
     ) {
@@ -444,7 +466,7 @@ private fun formatDuration(ms: Long): String {
             .background(Blackout.copy(alpha = 0.7f), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 2.dp),
             fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Text)
         if (order != null) Box(Modifier.fillMaxSize().background(Blackout.copy(alpha = 0.25f)).border(3.dp, Terracotta))
-        Box(Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp)) {
+        if (!single) Box(Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp)) {
             if (order != null) Box(
                 Modifier.fillMaxSize().entrance(MOTION_BASE, scale = 0.94f).background(Terracotta, CircleShape),
                 contentAlignment = Alignment.Center,

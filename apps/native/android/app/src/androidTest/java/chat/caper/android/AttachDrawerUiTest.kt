@@ -14,15 +14,18 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import chat.caper.android.data.AttachDrawerPurpose
 import chat.caper.android.data.LibraryPermissions
 import chat.caper.android.model.DraftAttachmentUi
 import chat.caper.android.ui.CaperTheme
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -105,6 +108,37 @@ class AttachDrawerUiTest {
             save("attach-drawer-full-test-fixture")
         } finally {
             seeded.forEach { context.contentResolver.delete(it, null, null) }
+        }
+    }
+
+    @Test fun aPictureDrawerHandsOverTheFirstPhotoAndCloses() {
+        val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+        LibraryPermissions.requested(Build.VERSION.SDK_INT).forEach { automation.grantRuntimePermission(context.packageName, it) }
+        val seeded = seed(0)
+        try {
+            val picked = mutableListOf<Uri>()
+            val open = mutableStateOf(true)
+            compose.setContent {
+                CaperTheme {
+                    if (open.value) AttachDrawer(
+                        AttachDrawerHost(emptyList(), remove = {}, canSend = false, send = {}),
+                        add = { picked += it }, gallery = {}, files = {}, camera = {}, onDismiss = { open.value = false },
+                        purpose = AttachDrawerPurpose.picture("picture"),
+                    )
+                }
+            }
+            compose.waitUntil(15_000) { compose.onAllNodesWithTag("attach-drawer-tile", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithText("Choose a picture").assertExists()
+            compose.onNodeWithText("Attach").assertDoesNotExist()
+            save("picture-drawer-open-test-fixture")
+            compose.onNodeWithContentDescription("Send message").assertDoesNotExist()
+            compose.onAllNodesWithTag("attach-drawer-tile", useUnmergedTree = true)[0].performClick()
+            compose.runOnIdle {
+                assertEquals(1, picked.size)
+                assertTrue(!open.value)
+            }
+        } finally {
+            context.contentResolver.delete(seeded, null, null)
         }
     }
 }

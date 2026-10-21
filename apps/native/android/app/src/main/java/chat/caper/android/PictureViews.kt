@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import chat.caper.android.data.AttachDrawerPurpose
 import chat.caper.android.data.FileDrop
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.PROFILE_PICTURE_KEY
@@ -124,8 +126,8 @@ private val FrameSide = 112.dp
 
 /**
  * Edit profile's picture in its frame, with an edit badge on the corner. Without a custom
- * picture the saved mascot holds up "change me!" and the frame opens the system photo picker
- * (images only; GIFs stay animated); with one, it offers a new picture or removal. The change
+ * picture the saved mascot holds up "change me!" and the frame opens the attach drawer for one
+ * picture (images only; GIFs stay animated); with one, it offers a new picture or removal. The change
  * runs in the view model, so it finishes (or fails here) even if the dialog closes.
  */
 @Composable internal fun ProfilePictureSection(state: AppUiState, viewModel: CaperViewModel) {
@@ -136,9 +138,7 @@ private val FrameSide = 112.dp
     var pickerEpoch by remember { mutableStateOf<Long?>(null) }
     // An error from an earlier visit doesn't greet the next one; a change in flight keeps showing.
     LaunchedEffect(Unit) { viewModel.dismissPictureError(PROFILE_PICTURE_KEY) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null && pickerEpoch == viewModel.accountEpoch) editPicture(uri)
-    }
+    val picker = rememberPictureDrawer("picture") { uri -> if (pickerEpoch == viewModel.accountEpoch) editPicture(uri) }
     val name = account.displayName ?: account.username ?: "You"
     // Set even when this server sends no URL to show it with, so it can still be removed.
     val hasPicture = !account.avatarAsset.isNullOrEmpty()
@@ -152,7 +152,7 @@ private val FrameSide = 112.dp
         label = "Change profile picture", noun = "picture",
         drop = editPicture,
         edit = account.avatarUrl?.let { url -> { editPicture(Uri.parse(url)) } },
-        change = { pickerEpoch = epoch; runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
+        change = { pickerEpoch = epoch; picker() },
         remove = { viewModel.removePicture() },
         history = { gallery = true },
     ) {
@@ -187,9 +187,7 @@ private val FrameSide = 112.dp
     val editPicture = pictureEditor(viewModel, epoch, space.id)
     var pickerTarget by remember { mutableStateOf<Pair<Long, String>?>(null) }
     LaunchedEffect(space.id) { viewModel.dismissPictureError(space.id) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null && pickerTarget == (viewModel.accountEpoch to space.id)) editPicture(uri)
-    }
+    val picker = rememberPictureDrawer("icon") { uri -> if (pickerTarget == (viewModel.accountEpoch to space.id)) editPicture(uri) }
     Text("Icon", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     PictureFrame(
         save = save,
@@ -198,11 +196,49 @@ private val FrameSide = 112.dp
         label = "Change space icon", noun = "icon",
         drop = editPicture,
         edit = space.iconUrl?.let { url -> { editPicture(Uri.parse(url)) } },
-        change = { pickerTarget = epoch to space.id; runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
+        change = { pickerTarget = epoch to space.id; picker() },
         remove = { viewModel.removePicture(space.id) },
     ) {
         SpaceTileFace(space.name, space.iconAsset, space.iconUrl, FrameSide, TextMuted, fontSize = 34.sp)
     }
+}
+
+/**
+ * Opens the chat's attach drawer to choose one picture ([noun]: "picture" or "icon"): a recent
+ * photo, a new photo from the camera, or an image from Files, with the system photo picker when
+ * library access is denied. Each hands its Uri to [picked] once and closes the drawer.
+ */
+@Composable private fun rememberPictureDrawer(noun: String, picked: (Uri) -> Unit): () -> Unit {
+    val context = LocalContext.current
+    val purpose = remember(noun) { AttachDrawerPurpose.picture(noun) }
+    var open by remember { mutableStateOf(false) }
+    val onPicked by rememberUpdatedState(picked)
+    val photo = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { it?.let(onPicked) }
+    val document = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(onPicked) }
+    // The camera writes into a private file; saved so a capture survives the activity being recreated.
+    var capture by rememberSaveable { mutableStateOf<String?>(null) }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        capture?.let { if (ok) onPicked(Uri.parse(it)) }
+        capture = null
+    }
+    // Prepare the gallery while the frame is up, so the drawer opens filled.
+    LaunchedEffect(Unit) { AttachDrawerCache.warm(context) }
+    if (open) AttachDrawer(
+        AttachDrawerHost(emptyList(), remove = {}, canSend = false, send = {}),
+        add = { uris -> uris.firstOrNull()?.let(onPicked) },
+        gallery = { open = false; runCatching { photo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
+        files = { open = false; runCatching { document.launch(purpose.documentTypes.toTypedArray()) } },
+        camera = { _ ->
+            open = false
+            cameraCaptureUri(context, video = false)?.let { uri ->
+                capture = uri.toString()
+                runCatching { takePhoto.launch(uri) }.onFailure { capture = null }
+            }
+        },
+        onDismiss = { open = false },
+        purpose = purpose,
+    )
+    return { open = true }
 }
 
 /**

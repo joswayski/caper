@@ -1,6 +1,7 @@
 package chat.caper.android
 
 import chat.caper.android.data.AttachCapacity
+import chat.caper.android.data.AttachDrawerPurpose
 import chat.caper.android.data.LibraryAccess
 import chat.caper.android.data.LibraryPermissions
 import chat.caper.android.data.LibraryPermissions.READ_EXTERNAL_STORAGE
@@ -8,7 +9,9 @@ import chat.caper.android.data.LibraryPermissions.READ_MEDIA_IMAGES
 import chat.caper.android.data.LibraryPermissions.READ_MEDIA_VIDEO
 import chat.caper.android.data.LibraryPermissions.READ_MEDIA_VISUAL_USER_SELECTED
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AttachDrawerTest {
@@ -17,6 +20,23 @@ class AttachDrawerTest {
         assertNull(AttachCapacity.hint(9))
         assertEquals("Remove a file to add another.", AttachCapacity.hint(10))
         assertEquals("Remove a file to add another.", AttachCapacity.hint(12))
+    }
+
+    @Test fun chatAttachesManyFilesOfAnyKind() {
+        val attach = AttachDrawerPurpose.ATTACH
+        assertEquals("Attach", attach.title)
+        assertFalse(attach.single)
+        assertTrue(attach.videos)
+        assertEquals(listOf("*/*"), attach.documentTypes)
+    }
+
+    @Test fun picturesChooseOneImage() {
+        val picture = AttachDrawerPurpose.picture("picture")
+        assertEquals("Choose a picture", picture.title)
+        assertTrue(picture.single)
+        assertFalse(picture.videos)
+        assertEquals(listOf("image/*"), picture.documentTypes)
+        assertEquals("Choose an icon", AttachDrawerPurpose.picture("icon").title)
     }
 
     @Test fun requestsTheNarrowestPermissionsForEachRelease() {
