@@ -37,7 +37,7 @@ const touchChoices: AttachChoice[] = [
 ];
 const desktopChoices: AttachChoice[] = [{ id: "files", label: "Upload a file", Icon: FileUp }];
 
-const touchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
+export const touchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
 const hasCamera = () => window.matchMedia("(pointer: coarse)").matches;
 
 /**
@@ -223,5 +223,92 @@ export default function AttachmentPicker({
         </FloatingPortal>
       )}
     </FloatingNode>
+  );
+}
+
+/** The same sheet as the composer's touch drawer, for choosing one picture
+ * (a profile picture or space icon): Camera, Photos and Files, images only. */
+export function PictureSourceSheet({
+  open,
+  title,
+  onChoose,
+  onClose,
+}: {
+  /** Its inputs stay mounted while closed, so a picker opened from it can still answer. */
+  open: boolean;
+  title: string;
+  onChoose: (file: File) => void;
+  onClose: () => void;
+}) {
+  const choices: AttachChoice[] = [
+    { id: "camera", label: "Camera", Icon: Camera, accept: "image/*", capture: "environment" },
+    { id: "media", label: "Photos", Icon: Images, accept: "image/*" },
+    { id: "files", label: "Files", Icon: FileText, accept: "image/*" },
+  ].filter((choice) => choice.id !== "camera" || hasCamera()) as AttachChoice[];
+  const inputs = useRef<Partial<Record<AttachChoice["id"], HTMLInputElement | null>>>({});
+  const { refs, context } = useFloating({ open, onOpenChange: (next) => !next && onClose() });
+  const { getFloatingProps } = useInteractions([useDismiss(context), useRole(context, { role: "dialog" })]);
+  return (
+    <>
+      {choices.map((choice) => (
+        <input
+          key={choice.id}
+          ref={(element) => {
+            inputs.current[choice.id] = element;
+            // Canceling the native picker must not dismiss any enclosing dialogs.
+            const cancel = (event: Event) => event.stopPropagation();
+            element?.addEventListener("cancel", cancel);
+            return () => element?.removeEventListener("cancel", cancel);
+          }}
+          type="file"
+          hidden
+          accept={choice.accept}
+          capture={choice.capture}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) onChoose(file);
+          }}
+        />
+      ))}
+      {open && (
+        <FloatingPortal>
+          <FloatingOverlay lockScroll className="chat-actions-overlay chat-attach-overlay">
+            <FloatingFocusManager context={context} initialFocus={-1}>
+              <div
+                ref={refs.setFloating}
+                className="chat-attach-drawer chat-attach-drawer-sheet"
+                aria-label={title}
+                {...getFloatingProps()}
+              >
+                <div className="chat-drawer-handle" aria-hidden="true" />
+                <div className="chat-attach-heading">
+                  <strong>{title}</strong>
+                  <button type="button" className="chat-attach-close" aria-label="Close" onClick={onClose}>
+                    <X size={16} aria-hidden="true" />
+                  </button>
+                </div>
+                <div className="chat-attach-options">
+                  {choices.map((choice) => (
+                    <button
+                      key={choice.id}
+                      type="button"
+                      onClick={() => {
+                        // The sheet closes as the picker opens, as the composer's does.
+                        inputs.current[choice.id]?.click();
+                        onClose();
+                      }}
+                    >
+                      <choice.Icon size={22} aria-hidden="true" />
+                      <span>{choice.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </FloatingFocusManager>
+          </FloatingOverlay>
+        </FloatingPortal>
+      )}
+    </>
   );
 }

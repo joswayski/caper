@@ -1,6 +1,7 @@
 import { Images, ImageUp, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import AttachmentEditor from "../chat/AttachmentEditor";
+import { PictureSourceSheet, touchLayout } from "../chat/AttachmentPicker";
 import type { AttachmentEdit } from "../chat/edit";
 import { pngIsAnimated, webpInfo } from "../chat/prepare";
 import "../chat/chat.css";
@@ -66,6 +67,10 @@ function PictureEditor({
   const [error, setError] = useState<string>();
   const [done, setDone] = useState<string>();
   const [menu, setMenu] = useState(false);
+  // Touch layouts choose from the same sheet as the composer; elsewhere the
+  // file dialog opens directly, as the composer's "Upload a file" does.
+  const [sources, setSources] = useState(false);
+  const pick = () => (touchLayout() ? setSources(true) : input.current?.click());
   const [dropping, setDropping] = useState(false);
   const [draft, setDraft] = useState<{ file: Blob; animation: boolean; gif: boolean }>();
   const active = useRef(true);
@@ -229,7 +234,7 @@ function PictureEditor({
           onClick={() => {
             if (regenerating) return;
             if (offersMenu) setMenu((open) => !open);
-            else input.current?.click();
+            else pick();
           }}
         >
           <span className="picture-settings-preview" data-mascot={mascot || undefined}>
@@ -275,7 +280,7 @@ function PictureEditor({
               disabled={unavailable}
               onClick={() => {
                 setMenu(false);
-                input.current?.click();
+                pick();
               }}
             >
               <ImageUp size={16} aria-hidden="true" />
@@ -361,6 +366,12 @@ function PictureEditor({
           event.currentTarget.value = "";
           if (file) void choose(file);
         }}
+      />
+      <PictureSourceSheet
+        open={sources}
+        title={noun === "icon" ? "Choose an icon" : `Choose a ${noun}`}
+        onChoose={(file) => void choose(file)}
+        onClose={() => setSources(false)}
       />
       {draft?.animation ? (
         <div className="picture-settings-animation" role="group" aria-label="Animated picture">
