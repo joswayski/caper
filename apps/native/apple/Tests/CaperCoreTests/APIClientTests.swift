@@ -2852,7 +2852,10 @@ final class APIClientTests: XCTestCase {
     @MainActor
     func testDirectMessagesSharePrefetchAndRestoreSeparateSnapshots() async throws {
         let model = AppModel(api: client())
-        model.account = Account(id: "me", username: "me", displayName: "Me")
+        let account = Account(id: "me", username: "me", displayName: "Me", avatarId: 7,
+                              avatarAsset: "Pic0000000000000self", avatarUrl: "https://cdn.caper.chat/assets/self?sig=picture")
+        model.account = account
+        model.receiveProfileConnection(.connected)
         let first = DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "a", username: "alpha", displayName: "Alpha"), lastSeq: "9007199254740993", readSeq: "0")
         let second = DirectMessageConversation(id: "dm0000000002", peer: DirectMessagePeer(id: "b", username: "beta", displayName: "Beta"), lastSeq: "7", readSeq: "0")
         model.directMessages = [first, second]
@@ -2881,12 +2884,17 @@ final class APIClientTests: XCTestCase {
         await fulfillment(of: [prefetched], timeout: 2)
         XCTAssertEqual(sessions, 0, "hover never creates a sending capability")
         await model.select(directMessage: first)
+        XCTAssertEqual(model.ownPresence, .online, "opening a DM does not disconnect the account")
         model.chat.draft = "private Alpha draft"
         await model.select(directMessage: second)
+        XCTAssertEqual(model.ownPresence, .online, "replacing the chat subscription must not flash unavailable")
+        XCTAssertEqual(model.account?.avatarPicture, account.avatarPicture)
         XCTAssertEqual(model.chat.currentSnapshot()?.cursor, "7")
         XCTAssertEqual(model.chat.messages.map(\.content.text), ["Only in dm0000000002"])
         XCTAssertEqual(model.chat.draft, "")
         await model.select(directMessage: first)
+        XCTAssertEqual(model.ownPresence, .online)
+        XCTAssertEqual(model.account?.avatarPicture, account.avatarPicture)
         XCTAssertEqual(model.chat.currentSnapshot()?.cursor, "9007199254740993")
         XCTAssertEqual(model.chat.messages.map(\.content.text), ["Only in dm0000000001"])
         XCTAssertEqual(model.chat.currentSnapshot()?.channel?.direct, true)
@@ -2896,6 +2904,7 @@ final class APIClientTests: XCTestCase {
         await model.select(directMessage: first)
         XCTAssertEqual(sessions, openSessions, "repeat clicks preserve the live chat")
         await model.logout()
+        XCTAssertNil(model.ownPresence, "logout still clears account presence")
         XCTAssertEqual(model.navigationCacheCounts.visited, 0)
     }
 
