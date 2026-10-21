@@ -1426,6 +1426,10 @@ struct CaperApp {
     navigation_prefetch: Option<navigation::Target>,
     navigation_error: Option<String>,
     navigation_cache: navigation::NavigationCache,
+    /// Each account's last space/channel, kept across launches like web.
+    space_landings: navigation::SpaceLandings,
+    /// The saved channel launch reopens in its space while still joined.
+    landing_channel: Option<navigation::SpaceLanding>,
     navigation_cache_generation: u64,
     notification_browse_space: Option<String>,
     dialog: Option<Dialog>,
@@ -1767,6 +1771,8 @@ impl CaperApp {
             navigation_prefetch: None,
             navigation_error: None,
             navigation_cache: navigation::NavigationCache::default(),
+            space_landings: navigation::SpaceLandings::default(),
+            landing_channel: None,
             navigation_cache_generation: 1,
             notification_browse_space: None,
             dialog: None,
@@ -5222,8 +5228,10 @@ impl CaperApp {
         if needs_profile {
             self.restoring = None;
             self.dialog = Some(Dialog::Profile);
-        } else if let Some(space) = self.spaces.first() {
-            self.select_space(space.id.clone());
+        } else if let Some(space) = self.initial_space() {
+            // Launch reopens the last space and channel, as web does, instead
+            // of the first joined channel.
+            self.select_space(space);
         } else {
             self.restoring = None;
             self.detail = None;
@@ -6951,6 +6959,14 @@ impl CaperApp {
         });
         // A visit always reads fresh: its cache entry may predate the report.
         let cached = cached.filter(|_| !visit);
+        let preferred = self
+            .landing_channel
+            .take()
+            .filter(|landing| {
+                cache_target.channel.is_none()
+                    && cache_target.space.as_deref() == Some(landing.space.as_str())
+            })
+            .and_then(|landing| landing.channel);
         self.worker.send(Command::PrepareNavigation {
             generation: self.generation,
             navigation: self.navigation,
@@ -6960,7 +6976,39 @@ impl CaperApp {
             name: self.identity_name(),
             cached,
             visit,
+            preferred,
         });
+    }
+
+    /// The space launch opens: the saved landing's while it is still listed,
+    /// else the first. Its saved channel waits for that navigation.
+    fn initial_space(&mut self) -> Option<String> {
+        let account = self.account.as_ref().map(|account| account.id.clone())?;
+        let saved = self.space_landings.get(&account).cloned();
+        let ids: Vec<&str> = self.spaces.iter().map(|space| space.id.as_str()).collect();
+        let space = navigation::initial_space(&ids, saved.as_ref())?;
+        self.landing_channel = saved.filter(|landing| landing.space == space);
+        Some(space)
+    }
+
+    /// Records the open space channel as this account's next launch landing.
+    /// Direct messages, visits and unjoined previews are never stored.
+    fn remember_space_landing(&mut self) {
+        if !self.persist_preferences || self.visit.is_some() || self.selected_direct.is_some() {
+            return;
+        }
+        let (Some(account), Some(space)) = (
+            self.account.as_ref().map(|account| account.id.clone()),
+            self.selected_space.clone(),
+        ) else {
+            return;
+        };
+        let channel = self.selected_channel.clone();
+        if channel.is_some() && !self.selected_is_joined() {
+            return;
+        }
+        self.space_landings
+            .set(&account, navigation::SpaceLanding { space, channel });
     }
 
     fn prefetch(&mut self, target: NavigationTarget) {
@@ -7172,6 +7220,9 @@ impl CaperApp {
                     self.voice.state.browse(channel.clone());
                     self.accept_channel(history, session, general, &channel);
                     self.draft = self.drafts.remove(&channel).unwrap_or_default();
+                }
+                if !direct {
+                    self.remember_space_landing();
                 }
                 if let Some((request, source)) = forward_focus
                     && request == self.navigation
@@ -9803,6 +9854,9 @@ impl CaperApp {
             return;
         }
         self.whats_new.restore(storage);
+        if let Some(json) = storage.get_string(navigation::SpaceLandings::STORAGE_KEY) {
+            self.space_landings = navigation::SpaceLandings::restore(&json);
+        }
         if let Some(json) = storage.get_string("audio-preferences-v1") {
             self.voice.preferences = voice::Preferences::restore(&json);
         }
@@ -9901,6 +9955,9 @@ impl eframe::App for CaperApp {
             storage.set_string("members-width-v1", self.members_width.to_string());
             storage.set_string("sound-effects-v1", self.sound_effects.to_string());
             storage.set_string("voice-send-on-stop-v1", self.voice_send_on_stop.to_string());
+            if let Some(json) = self.space_landings.to_json() {
+                storage.set_string(navigation::SpaceLandings::STORAGE_KEY, json);
+            }
             self.whats_new.save(storage);
         }
         if self.persist_preferences

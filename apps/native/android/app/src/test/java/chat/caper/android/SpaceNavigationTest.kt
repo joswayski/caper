@@ -75,4 +75,15 @@ class SpaceNavigationTest {
         assertEquals("This person already has a pending invitation.", memberAddError("user already invited"))
         assertEquals("Network is unreachable", memberAddError("Network is unreachable"))
     }
+
+    @Test fun `launch reopens the saved space while it is still listed`() {
+        val ids = listOf("space0000001", "space0000002")
+        assertEquals("space0000002", initialSpaceId(ids, SpaceLanding("space0000002", "channel00002")))
+        assertEquals("a left space falls back to the first", "space0000001", initialSpaceId(ids, SpaceLanding("space0000009", null)))
+        assertEquals("space0000001", initialSpaceId(ids, null))
+        assertNull(initialSpaceId(emptyList(), SpaceLanding("space0000002", null)))
+        // The saved channel then lands only while it is still joined.
+        assertEquals(design, spaceLandingChannel(channels, preferred = null, remembered = design.id))
+        assertEquals(general, spaceLandingChannel(channels, preferred = null, remembered = preview.id))
+    }
 }

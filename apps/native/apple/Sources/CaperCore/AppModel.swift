@@ -323,10 +323,14 @@ public final class AppModel {
     @ObservationIgnored private var membershipRevision = 0
     @ObservationIgnored private var membershipRefreshing = false
 
-    public init(api: APIClient = APIClient(), preferredInitialSpaceID: String? = nil) {
+    /// Where the last opened space/channel is kept across launches.
+    @ObservationIgnored private let landingDefaults: UserDefaults
+
+    public init(api: APIClient = APIClient(), preferredInitialSpaceID: String? = nil, landingDefaults: UserDefaults = .standard) {
         self.api = api
         whatsNew = WhatsNewModel(api: api)
         self.preferredInitialSpaceID = preferredInitialSpaceID
+        self.landingDefaults = landingDefaults
         let chatModel = ChatModel(api: api)
         let voiceClient = VoiceClient(api: api)
         chat = chatModel
@@ -710,9 +714,16 @@ public final class AppModel {
                 await self.navigate(space: space, channelID: channelID)
                 return
             }
-            if let selected = self.spaces.first(where: { $0.id == self.selectedSpaceID })
-                ?? self.spaces.first(where: { $0.id == self.preferredInitialSpaceID })
-                ?? self.spaces.first {
+            // Launch reopens the last space and channel, as web does, instead of
+            // the first joined channel (iOS often relaunches a closed app).
+            let saved = self.selectedSpaceID == nil ? self.account.flatMap { SpaceLanding.load(accountID: $0.id, defaults: self.landingDefaults) } : nil
+            if let id = SpaceLanding.initialSpaceID(spaceIDs: self.spaces.map(\.id), selected: self.selectedSpaceID,
+                                                    preferred: self.preferredInitialSpaceID, saved: saved),
+               let selected = self.spaces.first(where: { $0.id == id }) {
+                if let saved, saved.spaceID == id, let channelID = saved.channelID, self.lastChannelBySpace[id] == nil {
+                    // Only a still-joined channel is reopened; navigate checks that.
+                    self.lastChannelBySpace[id] = channelID
+                }
                 await self.select(space: selected)
             }
             if case let .direct(conversationID)? = route, self.generation == attempt {
@@ -1679,6 +1690,9 @@ public final class AppModel {
             visit = nil; visitReturn = nil
             self.detail = detail
             lastChannelBySpace[space.id] = channel?.id
+            if let accountID = account?.id, channel?.joined != false {
+                SpaceLanding.save(SpaceLanding(spaceID: space.id, channelID: channel?.id), accountID: accountID, defaults: landingDefaults)
+            }
             // A space tile changes the channels shown in Browse. Only an
             // explicit channel selection should reveal chat on a phone.
             if channelID != nil || !narrowLayout { navigationOpen = false }

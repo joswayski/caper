@@ -12,6 +12,53 @@ pub struct Target {
     pub channel: Option<String>,
 }
 
+/// The space and channel an account last opened, kept across launches like
+/// web's `caper:space-landing:<account>`. IDs only, per account and device;
+/// direct messages, visits and unjoined previews are never stored.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SpaceLanding {
+    pub space: String,
+    #[serde(default)]
+    pub channel: Option<String>,
+}
+
+#[derive(Default)]
+pub struct SpaceLandings(HashMap<String, SpaceLanding>);
+
+impl SpaceLandings {
+    pub const STORAGE_KEY: &'static str = "space-landing-v1";
+
+    /// Missing or corrupt storage falls back to the first joined channel.
+    pub fn restore(json: &str) -> Self {
+        Self(serde_json::from_str(json).unwrap_or_default())
+    }
+
+    pub fn to_json(&self) -> Option<String> {
+        serde_json::to_string(&self.0).ok()
+    }
+
+    pub fn get(&self, account: &str) -> Option<&SpaceLanding> {
+        self.0
+            .get(account)
+            .filter(|landing| !landing.space.is_empty())
+    }
+
+    pub fn set(&mut self, account: &str, landing: SpaceLanding) {
+        if !account.is_empty() && !landing.space.is_empty() {
+            self.0.insert(account.to_owned(), landing);
+        }
+    }
+}
+
+/// Launch opens the saved landing's space while it is still listed, else the first.
+pub fn initial_space(spaces: &[&str], saved: Option<&SpaceLanding>) -> Option<String> {
+    saved
+        .map(|landing| landing.space.as_str())
+        .filter(|space| spaces.contains(space))
+        .or_else(|| spaces.first().copied())
+        .map(str::to_owned)
+}
+
 #[derive(Clone)]
 pub struct Read {
     pub detail: Option<SpaceDetail>,
@@ -393,6 +440,42 @@ mod tests {
                 .cursor,
             "7"
         );
+    }
+
+    #[test]
+    fn space_landing_round_trips_per_account_and_picks_a_listed_space() {
+        let mut landings = SpaceLandings::default();
+        landings.set(
+            "a",
+            SpaceLanding {
+                space: "s2".into(),
+                channel: Some("c2".into()),
+            },
+        );
+        let restored = SpaceLandings::restore(&landings.to_json().unwrap());
+        let saved = restored.get("a").cloned();
+        assert_eq!(
+            saved.as_ref().and_then(|l| l.channel.as_deref()),
+            Some("c2")
+        );
+        assert!(
+            restored.get("b").is_none(),
+            "another account never inherits it"
+        );
+        assert!(SpaceLandings::restore("not json").get("a").is_none());
+        assert_eq!(
+            initial_space(&["s1", "s2"], saved.as_ref()).as_deref(),
+            Some("s2")
+        );
+        let gone = SpaceLanding {
+            space: "s9".into(),
+            channel: None,
+        };
+        assert_eq!(
+            initial_space(&["s1", "s2"], Some(&gone)).as_deref(),
+            Some("s1")
+        );
+        assert_eq!(initial_space(&[], saved.as_ref()), None);
     }
 
     #[test]

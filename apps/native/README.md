@@ -46,6 +46,11 @@ desktop cannot draw on videos until its bundled FFmpeg gains an overlay filter.
 See [editing attachments](../../docs/media.md#editing-attachments-before-sending)
 for what each platform has and has not been validated on.
 
+Like web, every native client reopens the space and channel you last had open
+when it launches (per account and device, IDs only, joined channels only; DMs
+and previews are not saved), falling back to the first joined channel if you
+have left it.
+
 Live forwarding is implemented in the native clients: a channel/DM picker with
 an optional note, a live original card, and a read-only shared conversation.
 Replies to the destination wrapper remain independent. Rust desktop exposes

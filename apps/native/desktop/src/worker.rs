@@ -180,6 +180,9 @@ pub enum Command {
         /// Open `channel` by id even when it is a space channel outside the
         /// lists: the Caper team visiting a feedback report.
         visit: bool,
+        /// Without `channel`, open this one while it is still joined (the
+        /// landing saved from the last launch), else the first joined channel.
+        preferred: Option<String>,
     },
     PrefetchNavigation {
         generation: u64,
@@ -1001,6 +1004,7 @@ fn prepare_navigation(
     name: &str,
     cached: Option<History>,
     visit: bool,
+    preferred: Option<&str>,
 ) -> Result<PreparedNavigation, LoadError> {
     let detail = space
         .map(|space| api.space(token.unwrap_or_default(), space))
@@ -1040,7 +1044,14 @@ fn prepare_navigation(
                     })?,
             )
         } else {
-            detail.channels.iter().find(|entry| entry.joined)
+            preferred
+                .and_then(|id| {
+                    detail
+                        .channels
+                        .iter()
+                        .find(|entry| entry.id == id && entry.joined)
+                })
+                .or_else(|| detail.channels.iter().find(|entry| entry.joined))
         }
     } else {
         None
@@ -1975,6 +1986,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             name,
             cached,
             visit,
+            preferred,
         } => Event::NavigationPrepared {
             generation,
             navigation,
@@ -1986,6 +1998,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 &name,
                 cached,
                 visit,
+                preferred.as_deref(),
             ),
         },
         Command::PrefetchNavigation {
@@ -2652,6 +2665,7 @@ mod tests {
             "User",
             None,
             false,
+            None,
         )
         .unwrap();
         assert_eq!(prepared.detail.unwrap().space.id, "s");
@@ -2666,6 +2680,7 @@ mod tests {
             "User",
             Some(warm),
             false,
+            None,
         )
         .err()
         .unwrap();
@@ -2754,6 +2769,7 @@ mod tests {
             "Jose",
             None,
             true,
+            None,
         )
         .unwrap();
         assert!(prepared.detail.is_none());
@@ -2772,6 +2788,7 @@ mod tests {
             "Jose",
             None,
             false,
+            None,
         );
         assert_eq!(
             refused.err().unwrap().message,
@@ -3040,6 +3057,7 @@ mod tests {
             "User",
             read.history,
             false,
+            None,
         )
         .unwrap();
         let mut retained = first.conversation.unwrap().0;
@@ -3052,6 +3070,7 @@ mod tests {
             "User",
             Some(retained),
             false,
+            None,
         )
         .unwrap();
         assert!(revisited.detail.is_none());

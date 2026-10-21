@@ -245,7 +245,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 else if (invite != null) { finishRestoring(); openFromNotification(null, invite.second, invite.third, invite.first) }
                 else if (pending != null) { pendingDirectIntent = null; selectDirect(pending) }
                 else if (pendingChannel != null) selectSpace(pendingChannel.first, pendingChannel.second)
-                else list.spaces.firstOrNull()?.let { selectSpace(it.id) } ?: finishRestoring()
+                else {
+                    // Launch reopens the last space and channel, as web does, instead of
+                    // the first joined channel. selectSpace only reopens a still-joined one.
+                    val saved = SpaceLandings.load(getApplication(), account.id)
+                    val spaceId = initialSpaceId(list.spaces.map { it.id }, saved)
+                    if (saved?.channelId != null && saved.spaceId == spaceId) lastChannelBySpace[spaceId] = saved.channelId
+                    spaceId?.let { selectSpace(it) } ?: finishRestoring()
+                }
             } catch (error: Throwable) {
                 if (requestAccountGeneration == accountGeneration) {
                     mutable.value = AppUiState(screen = SessionScreen.SignedOut, error = message(error))
@@ -596,6 +603,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val committed = ++generation
                 closeChannel(clearPending = true)
                 if (!channel.direct) lastChannelBySpace[channel.spaceId] = channel.id
+                if (!channel.direct && channel.joined) mutable.value.account?.id?.let {
+                    SpaceLandings.save(getApplication(), it, SpaceLanding(channel.spaceId, channel.id))
+                }
                 mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = null, channelVisitUnread = visitUnread)
                 renewDraftUploads(channel.id)
                 installHistoryPins(history)
