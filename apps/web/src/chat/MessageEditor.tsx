@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { dialogKeyDown } from "../components/dialogKeyboard";
 import { focusReturn } from "./focus-return.ts";
 import type { ChatMessage } from "./types.ts";
+import MentionTextarea from "./MentionTextarea.tsx";
 
 export default function MessageEditor({
   message,
@@ -81,7 +82,7 @@ export default function MessageEditor({
         <h2 id="chat-edit-heading">Edit message</h2>
         <p className="chat-edit-notice">Previous versions remain visible to people who can read this message.</p>
         <label htmlFor="chat-edit-text">Message</label>
-        <textarea
+        <MentionTextarea
           ref={textarea}
           id="chat-edit-text"
           value={draft}

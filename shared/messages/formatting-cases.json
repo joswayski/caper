@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {"text":"plain <b>not HTML</b>","runs":[{"text":"plain <b>not HTML</b>","bold":false,"italic":false}]},
+    {"text":"a **bold** and _italic_!","runs":[{"text":"a ","bold":false,"italic":false},{"text":"bold","bold":true,"italic":false},{"text":" and ","bold":false,"italic":false},{"text":"italic","bold":false,"italic":true},{"text":"!","bold":false,"italic":false}]},
+    {"text":"**bold _both_ end**","runs":[{"text":"bold ","bold":true,"italic":false},{"text":"both","bold":true,"italic":true},{"text":" end","bold":true,"italic":false}]},
+    {"text":"_italic **both** end_","runs":[{"text":"italic ","bold":false,"italic":true},{"text":"both","bold":true,"italic":true},{"text":" end","bold":false,"italic":true}]},
+    {"text":"**é🙂** _x_","runs":[{"text":"é🙂","bold":true,"italic":false},{"text":" ","bold":false,"italic":false},{"text":"x","bold":false,"italic":true}]},
+    {"text":"** unclosed** _space _","runs":[{"text":"** unclosed** _space _","bold":false,"italic":false}]},
+    {"text":"before **x\ny** after","runs":[{"text":"before ","bold":false,"italic":false},{"text":"x\ny","bold":true,"italic":false},{"text":" after","bold":false,"italic":false}]},
+    {"text":"snake_case_name @a_b_c ***literal***","runs":[{"text":"snake_case_name @a_b_c ***literal***","bold":false,"italic":false}]},
+    {"text":"\\**literal** and \\_literal_","runs":[{"text":"\\**literal** and \\_literal_","bold":false,"italic":false}]},
+    {"text":"https://example.com/a_b_c **https://example.com/path**","runs":[{"text":"https://example.com/a_b_c ","bold":false,"italic":false},{"text":"https://example.com/path","bold":true,"italic":false}]},
+    {"text":"**one**\n_two_","runs":[{"text":"one","bold":true,"italic":false},{"text":"\n","bold":false,"italic":false},{"text":"two","bold":false,"italic":true}]},
+    {"text":"","runs":[]}
+  ]
+}

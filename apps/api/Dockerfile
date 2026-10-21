@@ -17,6 +17,7 @@ RUN mkdir apps/api/src \
 COPY apps/api/src apps/api/src
 COPY apps/api/build.rs apps/api/build.rs
 COPY apps/api/migrations apps/api/migrations
+COPY shared/messages shared/messages
 
 RUN cargo build --locked --release --package caper-api
 

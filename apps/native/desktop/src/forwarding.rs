@@ -425,7 +425,8 @@ impl Forwarding {
                                 });
                             });
                         }
-                        ui.add_enabled(pending.is_none(), egui::TextEdit::multiline(text).hint_text("Add a note (optional)").desired_rows(2));
+                        let note = ui.add_enabled(pending.is_none(), egui::TextEdit::multiline(&mut *text).hint_text("Add a note (optional)").desired_rows(2));
+                        crate::formatting::controls(ui, text, &note, pending.is_none());
                         if !self.busy && destinations.is_empty() { ui.label("Join a channel or start a DM to forward here."); }
                         // Web's eggshell primary, neutral while disabled.
                         let send = crate::toned(ui, crate::PRIMARY_TONE, !self.busy && !selected.is_empty() && session.is_some() && text.chars().count() <= 4000, egui::Button::new(format!("{} ({})", if pending.is_some() { "Retry forwards" } else { "Forward" }, selected.len()))).clicked();

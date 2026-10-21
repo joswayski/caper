@@ -233,17 +233,20 @@ internal class MentionVisualTransformation(private val source: MentionSource) : 
  */
 internal fun highlightedMentions(text: String, mentions: List<MessageMention>): List<MentionSpan> {
     if (mentions.isEmpty()) return emptyList()
+    val formatted = chat.caper.android.data.formattedMessage(text)
     val everyone = mentions.any { it.type == "everyone" }
     val here = mentions.any { it.type == "here" }
     val feedback = mentions.any { it.type == "feedback" }
     val users = mentions.filter { it.type == "user" }.mapNotNull { it.username?.lowercase(Locale.ROOT) }.toSet()
-    return mentionSpans(text).filter { span ->
+    return mentionSpans(formatted.text).filter { span ->
         when (span.name) {
             "everyone" -> everyone
             "here" -> here
             in FEEDBACK_NAMES -> feedback
             else -> span.name in users
         }
+    }.map { span ->
+        span.copy(start = formatted.sourceIndices[span.start], end = formatted.sourceIndices[span.end - 1] + 1)
     }
 }
 

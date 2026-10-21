@@ -21,11 +21,13 @@ mod emoji;
 mod feedback;
 mod ffmpeg;
 mod file_drop;
+mod formatting;
 mod forwarding;
 mod gateway;
 mod grouping;
 mod invites;
 mod klipy;
+#[path = "../../../../shared/messages/links.rs"]
 mod links;
 #[path = "../voice-spike/src/media.rs"]
 mod media;
@@ -16500,7 +16502,7 @@ impl CaperApp {
                             let button = ui.add_enabled_ui(attach && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Plus, "Attach files", 28.0))
                                 .inner.on_disabled_hover_text(if !attach { attach_unavailable.to_owned() } else { "Attach files".to_owned() });
                             pick = attach_drawer::popup(&button, files, false);
-                            let output = ui.allocate_ui_with_layout(egui::vec2(text_width, editor_height - 20.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                            let mut output = ui.allocate_ui_with_layout(egui::vec2(text_width, editor_height - 20.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                                 ui.set_width(text_width);
                                 // Let Reply focus and accept typing while history loads; sending still waits.
                                 ui.scope(|ui| {
@@ -16524,6 +16526,7 @@ impl CaperApp {
                             if gif_shown {
                                 choose_gif = ui.add_enabled_ui(!loading && !blocked, |ui| klipy::button(ui, 28.0)).inner.clicked();
                             }
+                            formatting::composer_controls(ui, &mut draft.0, &mut output, !loading);
                             choose_emoji = ui.add_enabled_ui(!loading, |ui| drawn_icon_button_sized(ui, NavIcon::Smile, "Insert emoji", 28.0)).inner.clicked();
                             if mic_in_field { record = mic_button(ui, mic && !loading, mic_unavailable, 28.0); }
                             output
@@ -17043,7 +17046,7 @@ impl CaperApp {
                         );
                         hint.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - 8.0).max(1.0));
                         let hint = emoji::layout_job(ui, hint);
-                        let output = egui::TextEdit::multiline(draft)
+                        let mut output = egui::TextEdit::multiline(draft)
                             .id(composer_id)
                             .layouter(&mut layouter)
                             .desired_width(f32::INFINITY)
@@ -17056,6 +17059,7 @@ impl CaperApp {
                             .hint_text(hint.clone())
                             .frame(false)
                             .char_limit(4_000).show(ui);
+                        formatting::composer_controls(ui, draft, &mut output, true);
                         if draft.is_empty() {
                             let position = egui::pos2(output.galley_pos.x, output.response.rect.center().y - hint.size().y / 2.0);
                             emoji::paint_inline(&ui.painter().with_clip_rect(output.text_clip_rect), position, &hint);
@@ -22386,7 +22390,7 @@ impl CaperApp {
                         menu_open = egui::Popup::menu(&attach).is_open();
                     });
                     let width = (ui.available_width() - 92.0).max(0.0);
-                    let output = ui
+                    let mut output = ui
                         .allocate_ui_with_layout(
                             egui::vec2(width, 120.0),
                             egui::Layout::top_down(egui::Align::Min),
@@ -22426,6 +22430,7 @@ impl CaperApp {
                             },
                         )
                         .inner;
+                    formatting::composer_controls(ui, &mut draft.text, &mut output, editable);
                     ui.vertical(|ui| {
                         ui.add_space(7.0);
                         ui.horizontal(|ui| {
@@ -30234,6 +30239,30 @@ fn rich_text(
     )
 }
 
+fn append_formatted(
+    job: &mut egui::text::LayoutJob,
+    text: &str,
+    range: std::ops::Range<usize>,
+    mut gap: f32,
+    base: &egui::TextFormat,
+    styles: &[(std::ops::Range<usize>, bool, bool)],
+) {
+    for (style, bold, italic) in styles {
+        let start = range.start.max(style.start);
+        let end = range.end.min(style.end);
+        if start >= end {
+            continue;
+        }
+        let mut format = base.clone();
+        if *bold {
+            format.font_id.family = egui::FontFamily::Name("Satoshi Bold".into());
+        }
+        format.italics |= *italic;
+        job.append(&text[start..end], gap, format);
+        gap = 0.0;
+    }
+}
+
 /// [`rich_text`] cut to `max_rows` wrapped rows, ending in an ellipsis
 /// (link preview text, clamped like web's 8 lines).
 #[allow(clippy::too_many_arguments)]
@@ -30247,12 +30276,30 @@ fn rich_text_rows(
     edited: bool,
     max_rows: usize,
 ) -> Body {
+    let formatted = formatting::runs(text);
+    let visible: String = formatted.iter().map(|run| run.text.as_str()).collect();
+    let text = visible.as_str();
+    let mut offset = 0;
+    let styles: Vec<_> = formatted
+        .iter()
+        .map(|run| {
+            let start = offset;
+            offset += run.text.len();
+            (start..offset, run.bold, run.italic)
+        })
+        .collect();
     let pills = mentions::highlights(text, mentions);
     let ranges: Vec<_> = pills.iter().map(|(range, _)| range.clone()).collect();
     let runs = message_runs(text, &ranges);
     let linked = runs.iter().any(|run| matches!(run, Run::Link(..)));
     let emojis = emoji::inline(text);
-    if pills.is_empty() && !linked && !edited && emojis.is_empty() && max_rows == usize::MAX {
+    if pills.is_empty()
+        && !linked
+        && !edited
+        && emojis.is_empty()
+        && max_rows == usize::MAX
+        && !formatted.iter().any(|r| r.bold || r.italic)
+    {
         let (position, galley, response) =
             egui::Label::new(RichText::new(text).font(plain.font_id).color(plain.color))
                 .layout_in_ui(ui);
@@ -30325,7 +30372,7 @@ fn rich_text_rows(
             .filter(|(emoji, _)| emoji.start >= range.start && emoji.end <= range.end)
         {
             if start < emoji.start {
-                job.append(&text[start..emoji.start], gap, format.clone());
+                append_formatted(&mut job, text, start..emoji.start, gap, &format, &styles);
                 gap = 0.0;
             }
             let hidden = |size: f32| egui::TextFormat {
@@ -30350,7 +30397,7 @@ fn rich_text_rows(
             start = emoji.end;
         }
         if start < range.end {
-            job.append(&text[start..range.end], gap, format);
+            append_formatted(&mut job, text, start..range.end, gap, &format, &styles);
         }
         after_pill = is_pill;
         after_link = matches!(run, Run::Link(..));

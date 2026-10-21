@@ -145,6 +145,8 @@ enum ComposerAutocomplete {
 @MainActor final class ComposerAutocompleteController: ObservableObject {
     @Published var match: ComposerAutocompleteMatch?
     @Published var selected = 0
+    @Published var formattingSelection = false
+    var formatAction: ((String) -> Void)?
     var acceptAction: ((Int) -> Void)?
     var insertAction: ((String) -> Void)?
     var restoreFocusAction: (() -> Void)?
@@ -292,6 +294,9 @@ final class ComposerTextView: UITextView {
     var autocompleteActive: (() -> Bool)?
     var handleKey: ((String) -> Void)?
     var pasteAttachments: (() -> Bool)?
+    var formatSelection: ((String) -> Void)?
+    @objc func formatBold(_ sender: Any?) { formatSelection?("**") }
+    @objc func formatItalic(_ sender: Any?) { formatSelection?("_") }
     private var emojiTooltip: UILabel?
     private var emojiHover: Task<Void, Never>?
     private var inspectedRange: NSRange?
@@ -395,12 +400,14 @@ final class ComposerTextView: UITextView {
     func touched() { hideEmojiName(); if !covered { focusRelease?.cancel(); focusRelease = nil; focusHeld = false } }
     override func accessibilityActivate() -> Bool { touched(); return super.accessibilityActivate() }
     override var keyCommands: [UIKeyCommand]? {
-        guard markedTextRange == nil, autocompleteActive?() == true else { return super.keyCommands }
+        let formatting = [UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(formatBold(_:))),
+                          UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(formatItalic(_:)))]
+        guard markedTextRange == nil, autocompleteActive?() == true else { return (super.keyCommands ?? []) + formatting }
         return [UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow, "\r", "\t", UIKeyCommand.inputEscape].map {
             let command = UIKeyCommand(input: $0, modifierFlags: [], action: #selector(autocompleteKey(_:)))
             command.wantsPriorityOverSystemBehavior = true
             return command
-        }
+        } + formatting
     }
     @objc private func autocompleteKey(_ command: UIKeyCommand) { if let input = command.input { handleKey?(input) } }
 }
@@ -411,7 +418,7 @@ private final class TouchDownObserver: UIGestureRecognizer {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) { touched?(); state = .failed }
 }
 
-struct NativeMessageComposer: UIViewRepresentable {
+struct NativeMessageTextEditor: UIViewRepresentable {
     @Binding var text: String
     let placeholder: String
     let controller: ComposerAutocompleteController
@@ -441,6 +448,7 @@ struct NativeMessageComposer: UIViewRepresentable {
         view.addGestureRecognizer(UIHoverGestureRecognizer(target: view, action: #selector(ComposerTextView.inspectEmojiHover(_:))))
         view.autocompleteActive = { [weak controller] in controller?.match != nil }
         view.handleKey = { [weak coordinator = context.coordinator] in coordinator?.handle($0) }
+        view.formatSelection = { [weak coordinator = context.coordinator] in coordinator?.format($0) }
         view.backgroundColor = .clear; view.textColor = UIColor(CaperTheme.text); view.font = UIFont(name: "Satoshi-Regular", size: 14)
         // The text container already supplies 5 points of line-fragment padding.
         view.textContainerInset = UIEdgeInsets(top: 11, left: 0, bottom: 11, right: 7)
@@ -476,9 +484,23 @@ struct NativeMessageComposer: UIViewRepresentable {
         return CGSize(width: width, height: min(174, max(42, height)))
     }
     final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
-        var parent: NativeMessageComposer; weak var view: UITextView?; var dismissed = false
+        var parent: NativeMessageTextEditor; weak var view: UITextView?; var dismissed = false
         private var highlighting = false
-        init(_ parent: NativeMessageComposer) { self.parent = parent }
+        init(_ parent: NativeMessageTextEditor) { self.parent = parent }
+        func format(_ marker: String) {
+            guard let view, view.isEditable, view.markedTextRange == nil,
+                  let result = MessageFormatting.toggle(view.text, selection: view.selectedRange, marker: marker),
+                  result.text.unicodeScalars.count <= 4000 else { return }
+            view.text = result.text; view.selectedRange = result.selection
+            parent.text = result.text; dismissed = false; refresh(view)
+        }
+        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+            guard textView.isEditable else { return nil }
+            return UIMenu(children: [UIMenu(title: "", options: .displayInline, children: [
+                UIAction(title: "B", discoverabilityTitle: "Bold") { [weak self] _ in self?.format("**") },
+                UIAction(title: "I", discoverabilityTitle: "Italic") { [weak self] _ in self?.format("_") }
+            ])] + suggestedActions)
+        }
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
         func scrollViewDidScroll(_ scrollView: UIScrollView) { (scrollView as? ComposerTextView)?.hideEmojiName() }
         func textViewDidBeginEditing(_ textView: UITextView) { refresh(textView) }
@@ -488,6 +510,8 @@ struct NativeMessageComposer: UIViewRepresentable {
         func refresh(_ textView: UITextView) {
             guard !highlighting else { return }
             highlight(textView)
+            parent.controller.formattingSelection = textView.selectedRange.length > 0
+            parent.controller.formatAction = { [weak self] in self?.format($0) }
             let match = dismissed || !textView.isFirstResponder ? nil : ComposerAutocomplete.match(text: textView.text, selection: textView.selectedRange, markedText: textView.markedTextRange != nil, mentions: parent.mentions)
             parent.controller.update(match)
             parent.controller.acceptAction = { [weak self] index in self?.accept(index) }
@@ -543,6 +567,19 @@ struct NativeMessageComposer: UIViewRepresentable {
 final class ComposerTextView: NSTextView {
     var handleKey: ((NSEvent) -> Bool)?
     var focusChanged: ((Bool) -> Void)?
+    var formatSelection: ((String) -> Void)?
+    @objc func formatBold(_ sender: Any?) { formatSelection?("**") }
+    @objc func formatItalic(_ sender: Any?) { formatSelection?("_") }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        if isEditable {
+            let bold = NSMenuItem(title: "B — Bold", action: #selector(formatBold(_:)), keyEquivalent: "b")
+            let italic = NSMenuItem(title: "I — Italic", action: #selector(formatItalic(_:)), keyEquivalent: "i")
+            bold.target = self; italic.target = self
+            menu.insertItem(italic, at: 0); menu.insertItem(bold, at: 0)
+        }
+        return menu
+    }
     /// Only text drags edit the draft. File drags fall through to the
     /// conversation's drop target, which attaches them, instead of typing
     /// their paths (NSTextView's default for file URLs).
@@ -564,7 +601,7 @@ final class ComposerTextView: NSTextView {
     override func resignFirstResponder() -> Bool { let result = super.resignFirstResponder(); if result { focusChanged?(false) }; return result }
 }
 
-struct NativeMessageComposer: NSViewRepresentable {
+struct NativeMessageTextEditor: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
     let controller: ComposerAutocompleteController
@@ -596,6 +633,7 @@ struct NativeMessageComposer: NSViewRepresentable {
         view.setAccessibilityIdentifier("message-composer"); view.setAccessibilityLabel(placeholder)
         view.setAccessibilityHelp("Return sends. Shift-Return adds a new line."); context.coordinator.view = view
         view.handleKey = { [weak coordinator = context.coordinator] in coordinator?.handle($0) == true }
+        view.formatSelection = { [weak coordinator = context.coordinator] in coordinator?.format($0) }
         view.focusChanged = { [weak coordinator = context.coordinator] focused in
             guard let coordinator, let view = coordinator.view else { return }
             if focused { coordinator.refresh(view) } else { coordinator.parent.controller.update(nil) }
@@ -640,9 +678,9 @@ struct NativeMessageComposer: NSViewRepresentable {
         return CGSize(width: width, height: min(174, max(42, height)))
     }
     final class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: NativeMessageComposer; weak var view: ComposerTextView?; var dismissed = false
+        var parent: NativeMessageTextEditor; weak var view: ComposerTextView?; var dismissed = false
         private var highlighting = false
-        init(_ parent: NativeMessageComposer) { self.parent = parent }
+        init(_ parent: NativeMessageTextEditor) { self.parent = parent }
         // Older macOS SDKs (15.x) don't mark NSTextViewDelegate main-actor, so these delegate
         // calls are nonisolated there. AppKit still delivers them on the main thread.
         func textDidChange(_ notification: Notification) {
@@ -656,6 +694,8 @@ struct NativeMessageComposer: NSViewRepresentable {
         @MainActor func refresh(_ view: ComposerTextView) {
             guard !highlighting else { return }
             highlight(view)
+            parent.controller.formattingSelection = view.selectedRange().length > 0
+            parent.controller.formatAction = { [weak self] in self?.format($0) }
             let match = dismissed || view.window?.firstResponder !== view ? nil : ComposerAutocomplete.match(text: view.string, selection: view.selectedRange(), markedText: view.hasMarkedText(), mentions: parent.mentions)
             parent.controller.update(match); parent.controller.acceptAction = { [weak self] in self?.accept($0) }
             parent.controller.insertAction = { [weak self, selection = view.selectedRange()] in self?.insert($0, selection: selection) }
@@ -688,6 +728,10 @@ struct NativeMessageComposer: NSViewRepresentable {
         }
         @MainActor func handle(_ event: NSEvent) -> Bool {
             guard let view, !view.hasMarkedText() else { return false }
+            if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+               let key = event.charactersIgnoringModifiers?.lowercased(), ["b", "i"].contains(key) {
+                format(key == "b" ? "**" : "_"); return true
+            }
             let key = event.keyCode
             if parent.controller.match != nil {
                 if key == 125 || key == 126 { parent.controller.move(down: key == 125); return true }
@@ -696,6 +740,14 @@ struct NativeMessageComposer: NSViewRepresentable {
             }
             if key == 36 && parent.submitOnReturn && !event.modifierFlags.contains(.shift) { parent.submit(); return true }
             return false
+        }
+        @MainActor func format(_ marker: String) {
+            guard let view, view.isEditable, !view.hasMarkedText(),
+                  let result = MessageFormatting.toggle(view.string, selection: view.selectedRange(), marker: marker),
+                  result.text.unicodeScalars.count <= 4000,
+                  view.shouldChangeText(in: NSRange(location: 0, length: (view.string as NSString).length), replacementString: result.text) else { return }
+            view.string = result.text; view.setSelectedRange(result.selection); view.didChangeText()
+            parent.text = result.text; dismissed = false; refresh(view)
         }
         @MainActor func accept(_ index: Int) {
             guard let view, let match = parent.controller.match,

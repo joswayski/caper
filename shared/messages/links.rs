@@ -193,8 +193,7 @@ mod tests {
     #[test]
     fn shared_cases_produce_identical_segments() {
         let cases: Cases =
-            serde_json::from_str(include_str!("../../../../shared/messages/link-cases.json"))
-                .expect("valid shared link cases");
+            serde_json::from_str(include_str!("link-cases.json")).expect("valid shared link cases");
         assert!(cases.cases.len() > 30, "the shared cases loaded");
         for case in cases.cases {
             let actual: Vec<_> = segments(&case.text)

@@ -11,6 +11,7 @@ import {
 import { Forward, X } from "lucide-react";
 import Avatar from "../components/Avatar";
 import LinkedText from "./LinkedText.tsx";
+import MentionTextarea from "./MentionTextarea.tsx";
 import { apiError, ChatHistoryError } from "./client.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
 import { attachmentsOf, isChatMessage, sequence, type ChatMessage } from "./types.ts";
@@ -371,7 +372,12 @@ export function ForwardPicker({
         </div>
         <label>
           Add a note (optional)
-          <textarea rows={2} value={note} disabled={!!command} onChange={(event) => setNote(event.target.value)} />
+          <MentionTextarea
+            rows={2}
+            value={note}
+            disabled={!!command}
+            onChange={(event) => setNote(event.target.value)}
+          />
         </label>
         {error && (
           <p role="alert" className="chat-forward-error">

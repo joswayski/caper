@@ -452,6 +452,7 @@ impl CaperApp {
                             .desired_rows(7)
                             .margin(egui::Margin::symmetric(10, 8)),
                     );
+                    crate::formatting::controls(ui, &mut editor.draft, &input, !editor.busy);
                     if editor.focus {
                         input.request_focus();
                         editor.focus = false;

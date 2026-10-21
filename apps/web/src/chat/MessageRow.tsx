@@ -7,6 +7,8 @@ import { emojiAsset, emojiCode } from "./emoji.ts";
 import { ForwardCard } from "./Forwarding.tsx";
 import { ReplyContext } from "./Replies.tsx";
 import LinkedText from "./LinkedText.tsx";
+import FormattedText from "./FormattedText.tsx";
+import { formattedRuns } from "./formatting.ts";
 import {
   attachmentsOf,
   type ChatAttachment,
@@ -81,10 +83,20 @@ export function MessageText({
 }: {
   message: ChatMessage;
   mentionNames: ReadonlyMap<string, string>;
-  actions: RowActions;
+  actions: Pick<RowActions, "openMention">;
 }) {
-  return mentionSegments(message.content.text, message.content.mentions).map((segment, part) => {
-    if (!segment.mention) return <LinkedText key={part} text={segment.text} />;
+  const runs = formattedRuns(message.content.text);
+  const displayed = runs.map((run) => run.text).join("");
+  let offset = 0;
+  return mentionSegments(displayed, message.content.mentions).map((segment, part) => {
+    const start = offset;
+    offset += segment.text.length;
+    const content = (
+      <FormattedText key={part} runs={runs} range={{ start, end: offset }}>
+        {segment.mention ? undefined : (text) => <LinkedText text={text} formatted={false} />}
+      </FormattedText>
+    );
+    if (!segment.mention) return content;
     const user = segment.user;
     if (!user)
       return (
@@ -97,7 +109,7 @@ export function MessageText({
               : undefined
           }
         >
-          {segment.text}
+          {content}
         </span>
       );
     return (
@@ -112,7 +124,7 @@ export function MessageText({
           actions.openMention(user, event.currentTarget);
         }}
       >
-        {segment.text}
+        {content}
       </button>
     );
   });

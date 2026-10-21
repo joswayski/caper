@@ -5543,31 +5543,8 @@ private struct MessageRow: View {
     /// Links are found after mentions, in the text between pills only.
     private var messageText: (text: Text, hasLinks: Bool) {
         let content = message.content
-        let segments = MentionAutocomplete.segments(in: content.text, mentions: content.mentions)
-        var text = Text("")
-        var styled = false
-        var hasLinks = false
-        for segment in segments {
-            guard segment.highlighted else {
-                if let linked = MessageLinks.renderedText(segment.text) {
-                    text = text + linked
-                    hasLinks = true
-                } else {
-                    text = text + Text(segment.text)
-                }
-                continue
-            }
-            var part = AttributedString(segment.text)
-            part.font = CaperTheme.font(14, weight: .medium)
-            part.foregroundColor = CaperTheme.text
-            part.backgroundColor = CaperTheme.terracotta.opacity(0.24)
-            // A person's pill opens the mention card; @everyone/@here stay inert.
-            if let user = segment.user { part.link = MentionCard.url(for: user) }
-            text = text + Text(part)
-            styled = true
-        }
-        guard styled || hasLinks else { return (Text(content.text), false) }
-        return (text, hasLinks)
+        return (MessageFormatting.renderedText(content.text, mentions: content.mentions),
+                MessageLinks.segments(in: content.text).contains { $0.href != nil })
     }
     /// "(edited)": opens the edit history, in the header or, on a grouped row, after the text.
     private var editedMarker: some View {

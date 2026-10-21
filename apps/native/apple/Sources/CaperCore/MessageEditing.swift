@@ -6,7 +6,7 @@ struct MessageEditorView: View {
     @State private var draft: String
     @State private var busy = false
     @State private var error: String?
-    @FocusState private var focused: Bool
+    @StateObject private var autocomplete = ComposerAutocompleteController()
     let close: () -> Void
 
     init(chat: ChatModel, message: ChatMessage, close: @escaping () -> Void) {
@@ -19,16 +19,19 @@ struct MessageEditorView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Edit message").font(CaperTheme.font(20, weight: .bold))
                 Text("Previous versions remain visible to people who can read this message.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                TextEditor(text: $draft).focused($focused).frame(minHeight: 150, maxHeight: 280)
-                    .font(CaperTheme.font(14)).scrollContentBackground(.hidden).padding(8)
+                NativeMessageComposer(text: $draft, placeholder: "Edit message", controller: autocomplete,
+                                      mentions: .empty, submit: {}, submitOnReturn: false, editable: !busy,
+                                      accessibilityID: "message-edit-text")
+                    .frame(minHeight: 150, maxHeight: 280).padding(8)
                     .background(CaperTheme.composer, in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border)).disabled(busy)
                     .accessibilityLabel("Message").accessibilityIdentifier("message-edit-text")
+                ComposerSuggestionsView(controller: autocomplete)
                 Text("\(draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 if let error {
                     Text(error).foregroundStyle(CaperTheme.error)
                     Button("Discard draft and load latest") { perform {
-                        baseline = try await chat.reloadMessage(baseline); draft = baseline.content.text; focused = true
+                        baseline = try await chat.reloadMessage(baseline); draft = baseline.content.text
                     } }.disabled(busy)
                 }
                 HStack {
@@ -46,7 +49,7 @@ struct MessageEditorView: View {
             .frame(width: 520, height: 430)
             #endif
             .interactiveDismissDisabled(busy)
-            .onAppear { focused = true }
+            .onAppear { autocomplete.restoreFocus() }
             .onChange(of: chat.editingContext) { _, _ in close() }
             // Deleted meanwhile (here or elsewhere): nothing is left to edit.
             .onChange(of: chat.isDeleted(baseline.id)) { _, deleted in if deleted { close() } }
@@ -57,8 +60,9 @@ struct MessageEditorView: View {
         Task { @MainActor in
             do { try await operation() }
             catch is CancellationError { return }
-            catch { self.error = error.localizedDescription; focused = true }
+            catch { self.error = error.localizedDescription }
             busy = false
+            Task { @MainActor in autocomplete.restoreFocus() }
         }
     }
 }
