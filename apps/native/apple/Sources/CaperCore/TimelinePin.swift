@@ -22,8 +22,15 @@ final class TimelinePinBox {
     /// SwiftUI can report new reactions before their chips have been measured.
     /// Retain the reader's bottom position across those separate layout passes,
     /// including wrapped chips and the keyboard returning after a picker closes.
-    func needsReveal(to pin: TimelinePin) -> Bool {
+    func needsReveal(to pin: TimelinePin, scrolling: Bool = false) -> Bool {
         defer { last = pin }
+        // Interactive keyboard dismissal changes the viewport in both
+        // directions. scrollTo would interrupt the gesture driving it. Keep
+        // measuring, but discard pending follow so it cannot replay afterward.
+        guard !scrolling else {
+            updatedAtBottom = false
+            return false
+        }
         guard let last, last.firstID == pin.firstID else {
             updatedAtBottom = false
             return false

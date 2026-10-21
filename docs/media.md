@@ -10351,3 +10351,28 @@ Validation:
 - No physical iPhone/Android keyboard, real Safari, Windows or macOS runtime
   acceptance was performed. Browser layout/focus checks do not prove native
   software-keyboard presentation.
+
+## Interactive keyboard dismissal follow guard (October 21, 2026)
+
+Apple channel/DM and thread timelines retain interactive keyboard dismissal but
+suspend automatic bottom scrolling while the timeline is scrolling. Viewport
+measurements still advance and pending reaction-follow state is cleared, so
+keyboard movement cannot trigger a competing `scrollTo` or replay stale follow
+after the drag. Incoming messages and pending sends respect the same guard.
+Idle keyboard opening, attachment removal and reaction growth still follow a
+reader at the bottom. Android and web dismiss their keyboard outright on a
+vertical drag; neither uses this Apple interactive-resize path.
+
+Validation: the new drag/reversal/cancellation regression fails with the old
+follow logic; all 10 `TimelinePinTests` pass with the guard in a temporary Linux
+Swift 6.1.2 package using production `TimelinePin.swift`, the unchanged XCTest
+file and Equatable message-data stand-ins. Changed Swift files parse for iOS and
+macOS. This is not Apple SDK compilation or native gesture acceptance.
+
+The channel and thread composer UI tests now include slow partial dismissal
+(keyboard must return fully open) before full dismissal and draft preservation.
+They still require Xcode execution: no Apple SDK, simulator or connected Mac
+runner is available in this orb. Before release, exercise slow down/up reversal,
+release halfway, full dismissal and reopening on iPhone in channels, DMs and
+threads, including incoming messages and a pending send during the drag; inspect
+a recording for sticking and confirm drafts and composer spacing stay intact.
