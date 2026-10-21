@@ -1048,6 +1048,9 @@ struct PictureEdit {
     )>,
     /// A change in flight: its target, and whether it removes the picture.
     busy: Option<(pictures::Target, bool)>,
+    /// The change in flight regenerates the default avatar: the frame keeps
+    /// its look (presses are still ignored), so nothing flashes.
+    regenerating: bool,
     gallery: Option<AvatarGallery>,
     /// The last failure and the target it concerns.
     error: Option<(pictures::Target, String)>,
@@ -24140,6 +24143,7 @@ impl CaperApp {
         result: Result<pictures::Changed, pictures::Failure>,
     ) {
         self.picture_edit.busy = None;
+        self.picture_edit.regenerating = false;
         match result {
             Ok(changed) => {
                 self.picture_edit.gallery = None;
@@ -24213,6 +24217,9 @@ impl CaperApp {
         let unavailable = edit.unavailable;
         // With uploads unavailable, a custom picture can still be removed.
         let enabled = idle && (custom || gallery_available || !unavailable);
+        // Regenerating swaps the picture in place, so the frame looks as it does at rest.
+        let regenerating = edit.regenerating && busy.is_some();
+        let looks_enabled = (idle || regenerating) && (custom || gallery_available || !unavailable);
         let side = PICTURE_FRAME;
         let (outer, response) = ui.allocate_exact_size(
             egui::vec2(side + PICTURE_BADGE_OVERHANG, side + PICTURE_BADGE_OVERHANG),
@@ -24268,7 +24275,7 @@ impl CaperApp {
             ui.painter().rect_filled(rect, corner, RAISED);
         }
         face(ui, rect);
-        if busy.is_some() {
+        if busy.is_some() && !regenerating {
             if mascot {
                 ui.painter()
                     .circle_filled(rect.center(), side / 2.0, SURFACE.gamma_multiply(0.45));
@@ -24303,7 +24310,7 @@ impl CaperApp {
         ui.painter().rect_filled(
             badge.shrink(3.0),
             8.0,
-            match (enabled, hovered, response.is_pointer_button_down_on()) {
+            match (looks_enabled, hovered && enabled, response.is_pointer_button_down_on()) {
                 (false, ..) => BORDER,
                 (true, _, true) => ACTION_PRESS,
                 (true, true, false) => ACTION_HOVER,
@@ -24311,7 +24318,7 @@ impl CaperApp {
             },
         );
         egui::Image::new(egui::include_image!("../resources/icons/pencil.svg"))
-            .tint(if enabled { ON_ACTION } else { MUTED })
+            .tint(if looks_enabled { ON_ACTION } else { MUTED })
             .paint_at(
                 ui,
                 egui::Rect::from_center_size(badge.center(), egui::vec2(15.0, 15.0)),
@@ -24359,8 +24366,10 @@ impl CaperApp {
                 .as_ref()
                 .is_some_and(|account| account.avatar_asset.is_none())
         {
+            // Stays enabled while it runs (a repeat is ignored), so it doesn't flash.
+            let regenerating = self.picture_edit.regenerating && self.picture_edit.busy.is_some();
             let regenerate = ui.add_enabled(
-                idle && !self.loading,
+                (idle || regenerating) && !self.loading,
                 egui::Button::image(
                     egui::Image::new(egui::include_image!("../resources/icons/rotate-ccw.svg"))
                         .tint(TEXT)
@@ -24377,10 +24386,12 @@ impl CaperApp {
                 )
             });
             if regenerate.on_hover_text("Regenerate avatar").clicked()
+                && idle
                 && let Some(token) = self.token.clone()
             {
                 self.picture_edit.error = None;
                 self.picture_edit.busy = Some((pictures::Target::Avatar, false));
+                self.picture_edit.regenerating = true;
                 self.worker.send(Command::RegenerateAvatar {
                     epoch: self.account_epoch,
                     token,

@@ -163,7 +163,8 @@ private val FrameSide = 112.dp
         }
     }
     if (!hasPicture) {
-        IconButton(onClick = { viewModel.regenerateAvatar() }, enabled = save?.busy != true) {
+        // Stays enabled while it runs (a repeat is ignored), so it doesn't flash.
+        IconButton(onClick = { if (save?.busy != true) viewModel.regenerateAvatar() }, enabled = save?.busy != true || save?.regenerating == true) {
             Icon(painterResource(R.drawable.lucide_rotate_ccw), "Regenerate avatar", Modifier.size(20.dp))
         }
     }
@@ -217,8 +218,13 @@ private val FrameSide = 112.dp
     picture: @Composable () -> Unit,
 ) {
     val busy = save?.busy == true
+    // Regenerating swaps the picture in place: the badge keeps its look and the
+    // picture isn't dimmed (presses are still ignored), so nothing flashes.
+    val regenerating = save?.regenerating == true
+    val looksBusy = busy && !regenerating
     // With uploads unavailable, a custom picture can still be removed.
     val enabled = !busy && (hasPicture || history != null || !unavailable)
+    val looksEnabled = !looksBusy && (hasPicture || history != null || !unavailable)
     var menu by remember { mutableStateOf(false) }
     var dropping by remember { mutableStateOf(false) }
     val canDrop by rememberUpdatedState(!busy && !unavailable)
@@ -253,7 +259,7 @@ private val FrameSide = 112.dp
                     .padding(end = 6.dp, bottom = 6.dp),
             ) {
                 Box(
-                    Modifier.size(FrameSide).alpha(if (busy) 0.55f else 1f)
+                    Modifier.size(FrameSide).alpha(if (looksBusy) 0.55f else 1f)
                         .then(if (mascot) {
                             if (dropping) Modifier.border(2.dp, Terracotta, CircleShape) else Modifier
                         } else Modifier.clip(PictureShape).background(SurfaceRaised)
@@ -263,10 +269,10 @@ private val FrameSide = 112.dp
                 Box(
                     Modifier.align(Alignment.BottomEnd).offset(6.dp, 6.dp)
                         .background(Surface, RoundedCornerShape(10.dp)).padding(3.dp)
-                        .background(if (enabled) Action else Border, RoundedCornerShape(8.dp)).size(28.dp),
+                        .background(if (looksEnabled) Action else Border, RoundedCornerShape(8.dp)).size(28.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(painterResource(R.drawable.lucide_pencil), null, Modifier.size(15.dp), tint = if (enabled) OnAction else TextMuted)
+                    Icon(painterResource(R.drawable.lucide_pencil), null, Modifier.size(15.dp), tint = if (looksEnabled) OnAction else TextMuted)
                 }
             }
             DropdownMenu(menu, { menu = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {

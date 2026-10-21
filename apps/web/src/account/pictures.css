@@ -46,7 +46,7 @@
     border-color var(--motion-fast) ease,
     opacity var(--motion-fast) ease;
 }
-.picture-settings[aria-busy="true"] .picture-settings-preview {
+.picture-settings[aria-busy="true"]:not([data-regenerating]) .picture-settings-preview {
   opacity: 0.55;
 }
 /* The mascot artwork already supplies its own backdrop and outline. */

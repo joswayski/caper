@@ -313,11 +313,12 @@ struct PictureEditor<Preview: View>: View {
                     .disabled(unavailable)
                 }
                 Button { showPhotos = true } label: { Label("From Photos…", systemImage: "photo.on.rectangle") }
-                    .disabled(unavailable)
+                    .disabled(unavailable || phase != nil)
                 Button { showFiles = true } label: { Label(fileSourceLabel, systemImage: "folder") }
-                    .disabled(unavailable)
+                    .disabled(unavailable || phase != nil)
                 if history != nil {
                     Button("Previous pictures") { historyExpected = currentAsset; showHistory = true }
+                        .disabled(phase != nil)
                 }
                 if hasPicture {
                     Divider()
@@ -330,7 +331,9 @@ struct PictureEditor<Preview: View>: View {
             .buttonStyle(PrimaryIconButton())
             .menuIndicator(.hidden)
             .fixedSize()
-            .disabled(phase != nil || (unavailable && !hasPicture && history == nil))
+            // Regenerating swaps the picture in place: the button keeps its
+            // look (its items are disabled instead), so it never flashes.
+            .disabled((phase != nil && phase != .regenerating) || (unavailable && !hasPicture && history == nil))
             .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
             .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
         }
@@ -368,7 +371,9 @@ struct PictureEditor<Preview: View>: View {
                     .frame(width: actionSide, height: actionSide)
                 }
                 .buttonStyle(PrimaryIconButton())
-                .disabled(phase != nil)
+                // Not disabled while it runs (the action guards repeats), so the
+                // button keeps its fill and only the spinner shows progress.
+                .disabled(phase != nil && phase != .regenerating)
                 .accessibilityLabel("Regenerate avatar")
                 .accessibilityValue(phase == .regenerating ? "Regenerating" : "")
                 .accessibilityHint("Generate a new random avatar")

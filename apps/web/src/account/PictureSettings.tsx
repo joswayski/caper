@@ -174,10 +174,18 @@ function PictureEditor({
               ? pictureMessages.unavailable
               : done;
   // With uploads unavailable, the frame still offers removal of a custom picture.
-  const disabled = busy || (unavailable && !offersMenu);
+  // Regenerating swaps the picture in place: the edit badge keeps its look
+  // (it only ignores presses) and the picture isn't dimmed, so nothing flashes.
+  const regenerating = phase.kind === "regenerating";
+  const disabled = (busy && !regenerating) || (unavailable && !offersMenu);
 
   return (
-    <section className="picture-settings" aria-label={title} aria-busy={busy}>
+    <section
+      className="picture-settings"
+      aria-label={title}
+      aria-busy={busy}
+      data-regenerating={regenerating || undefined}
+    >
       <div
         ref={frame}
         className="picture-settings-frame"
@@ -214,10 +222,12 @@ function PictureEditor({
           aria-label={`Change ${title.toLowerCase()}`}
           title={`Change ${title.toLowerCase()}`}
           disabled={disabled}
+          aria-disabled={regenerating || undefined}
           aria-haspopup={offersMenu ? "menu" : undefined}
           aria-expanded={offersMenu ? menu : undefined}
           aria-controls={offersMenu && menu ? menuId : undefined}
           onClick={() => {
+            if (regenerating) return;
             if (offersMenu) setMenu((open) => !open);
             else input.current?.click();
           }}
