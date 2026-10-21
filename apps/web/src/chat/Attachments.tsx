@@ -827,7 +827,7 @@ export function DraftAttachments({
 }) {
   const [viewing, setViewing] = useState<{ key: string; anchor: HTMLElement }>();
   const closeViewer = useCallback(() => setViewing(undefined), []);
-  const [editingKey, setEditingKey] = useState<{ key: string; anchor: HTMLElement; tool?: EditTool }>();
+  const [editingKey, setEditingKey] = useState<{ key: string; anchor: HTMLElement; tool?: EditTool | null }>();
   const closeEditor = useCallback(() => setEditingKey(undefined), []);
   const edited = editingKey && drafts.find((draft) => draft.key === editingKey.key);
   const editedSource = edited?.editable && editing?.source(edited.key);
@@ -845,6 +845,14 @@ export function DraftAttachments({
         remove: onRemove,
       }
     : undefined;
+  // Files the editor can open go straight to it, opened for viewing with every
+  // tool in one place; the viewer shows other pictures and videos.
+  const opensEditor = (draft: DraftAttachment) =>
+    !!onRemove && !!editing && !!draft.editable && !!editing.source(draft.key);
+  const open = (draft: DraftAttachment, anchor: HTMLElement) => {
+    if (opensEditor(draft)) setEditingKey({ key: draft.key, anchor, tool: null });
+    else setViewing({ key: draft.key, anchor });
+  };
   const media: ChatAttachment[] = drafts.flatMap((draft) => {
     const kind = draft.localUrl ? draft.localKind : draft.attachment?.kind;
     const url = draft.localUrl ?? draft.attachment?.url;
@@ -959,7 +967,7 @@ export function DraftAttachments({
               draft={draft}
               onRemove={onRemove}
               onToggleSpoiler={onToggleSpoiler}
-              onEdit={viewable ? (anchor) => setViewing({ key: draft.key, anchor }) : undefined}
+              onEdit={viewable || opensEditor(draft) ? (anchor) => open(draft, anchor) : undefined}
               corners
             >
               {viewable ? (
@@ -968,7 +976,7 @@ export function DraftAttachments({
                   className="chat-draft-preview"
                   aria-label={`Preview ${draft.name}`}
                   aria-haspopup="dialog"
-                  onClick={(event) => setViewing({ key: draft.key, anchor: event.currentTarget })}
+                  onClick={(event) => open(draft, event.currentTarget)}
                 >
                   {content}
                 </button>
@@ -1051,6 +1059,11 @@ export function DraftAttachments({
             edit={edited.edit}
             tool={editingKey?.tool}
             anchor={editingKey?.anchor}
+            spoiler={onToggleSpoiler ? { on: !!edited.spoiler, toggle: () => onToggleSpoiler(edited.key) } : undefined}
+            onRemove={() => {
+              closeEditor();
+              onRemove(edited.key);
+            }}
             onCancel={closeEditor}
             onSave={(edit, preview) => {
               closeEditor();

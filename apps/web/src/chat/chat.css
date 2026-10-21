@@ -3889,6 +3889,48 @@ a.chat-draft-preview {
   color: var(--text);
   background: rgb(182 77 50 / 14%);
 }
+.chat-editor-modes .chat-editor-remove {
+  color: var(--error-text);
+}
+/* Spoiler is a mark on the file, not a tool: terracotta without the tool's frame. */
+.chat-editor-modes .chat-editor-spoiler-toggle[aria-pressed="true"] {
+  border-color: transparent;
+  color: var(--terracotta-bright);
+}
+/* A staged file marked as a spoiler shows covered until a tool is chosen. */
+.chat-editor-picture canvas {
+  transition: filter var(--motion-base) var(--ease-out);
+}
+.chat-editor-picture[data-covered] canvas {
+  filter: blur(32px) brightness(0.8);
+}
+.chat-editor-spoiler {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: rgb(12 13 15 / 90%);
+  font-size: 0.8rem;
+  font-weight: 700;
+  translate: -50% -50%;
+  pointer-events: none;
+  animation: chat-viewer-spoiler-in var(--motion-base) var(--ease-out);
+}
+/* Each tool's options arrive rather than swap in place. */
+.chat-editor-options > * {
+  animation: chat-editor-options-in var(--motion-fast) var(--ease-out);
+}
+@keyframes chat-editor-options-in {
+  from {
+    opacity: 0;
+  }
+}
 @media (max-width: 760px), (pointer: coarse) {
   .chat-editor-bar {
     padding: 6px 8px;
@@ -3913,7 +3955,16 @@ a.chat-draft-preview {
   }
   .chat-editor-modes button {
     flex: 1;
+    flex-direction: column;
+    gap: 2px;
     min-width: 0;
+    height: 52px;
+    padding: 0 4px;
+    font-size: 0.72rem;
+  }
+  /* Room for Draw's two rows in every state, so the picture never resizes. */
+  .chat-editor-options {
+    min-height: 92px;
   }
 }
 @media (max-width: 420px) {
@@ -3925,8 +3976,13 @@ a.chat-draft-preview {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chat-editor-overlay {
+  .chat-editor-overlay,
+  .chat-editor-spoiler,
+  .chat-editor-options > * {
     animation: none;
+  }
+  .chat-editor-picture canvas {
+    transition: none;
   }
 }
 /* Above every chat layer, including the pins and forward dialogs it can open from. */

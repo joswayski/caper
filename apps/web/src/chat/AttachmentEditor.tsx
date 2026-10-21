@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Brush, Crop, Eraser, Redo2, RotateCcw, Type, Undo2, X } from "lucide-react";
+import { Brush, Crop, Eraser, EyeOff, Redo2, RotateCcw, Trash2, Type, Undo2, X } from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -55,8 +55,9 @@ interface Picture {
 const DISPLAY_EDGE = 2560;
 const PREVIEW_EDGE = 1280;
 const MAX_TEXT = 200;
-/** On-screen padding around the picture; the crop frame's handles need more. */
-const PADDING = { crop: 28, other: 16 };
+/** On-screen padding around the picture, room for the crop frame's handles.
+ * The same for every tool, so changing tools never moves the picture. */
+const PADDING = 28;
 const MIN_CROP_PIXELS = 32;
 /** The smallest brush ring, in CSS pixels, so a fine brush still shows where it lands. */
 const BRUSH_MIN = 6;
@@ -188,6 +189,8 @@ export default function AttachmentEditor({
   tool: initialTool = "draw",
   anchor,
   pictureMode = false,
+  spoiler,
+  onRemove,
   onCancel,
   onSave,
 }: {
@@ -195,12 +198,16 @@ export default function AttachmentEditor({
   kind: "image" | "video";
   name: string;
   edit?: AttachmentEdit;
-  /** The tool it opens on. */
-  tool?: Tool;
+  /** The tool it opens on; null opens it for viewing, with no tool chosen. */
+  tool?: Tool | null;
   /** Gets focus back on close. */
   anchor?: HTMLElement;
   /** Square framing for profile pictures and space icons; Done always saves. */
   pictureMode?: boolean;
+  /** A staged file's spoiler mark and its toggle, beside the tools. */
+  spoiler?: { on: boolean; toggle: () => void };
+  /** Removes a staged file; the caller closes the editor. */
+  onRemove?: () => void;
   /** Keep this stable: on phones it owns a history entry. */
   onCancel: () => void;
   /** Called only for a change; `edit` is undefined when it returns to the original. */
@@ -209,7 +216,7 @@ export default function AttachmentEditor({
   const [picture, setPicture] = useState<Picture>();
   const [failed, setFailed] = useState(false);
   const [history, setHistory] = useState(() => ({ states: [initial ?? NO_EDIT], index: 0 }));
-  const [tool, setTool] = useState<Tool>(initialTool);
+  const [tool, setTool] = useState<Tool | null>(initialTool);
   const [color, setColor] = useState<string>(EDIT_COLORS[0]);
   const [strokePoints, setStrokePoints] = useState<number>(STROKE_SIZES.initial);
   /** Draw's eraser: presses remove the lines they touch instead of drawing. */
@@ -315,7 +322,7 @@ export default function AttachmentEditor({
   const region = tool === "crop" ? FULL_CROP : current.crop;
   const layout = useMemo(() => {
     if (!rotated || !box) return;
-    const padding = tool === "crop" ? PADDING.crop : PADDING.other;
+    const padding = PADDING;
     const width = region.width * rotated.width;
     const height = region.height * rotated.height;
     const scale = Math.max(0.0001, Math.min((box.width - padding * 2) / width, (box.height - padding * 2) / height));
@@ -502,7 +509,7 @@ export default function AttachmentEditor({
   };
 
   const pointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (!layout || live.current || event.button !== 0 || tool === "crop") return;
+    if (!layout || live.current || event.button !== 0 || tool === "crop" || tool === null) return;
     event.preventDefault();
     if (field) {
       // A press outside the open field commits it, like a blur.
@@ -710,9 +717,10 @@ export default function AttachmentEditor({
     }
   };
 
+  // Choosing the current tool again goes back to viewing.
   const chooseTool = (next: Tool) => {
     if (field) commitField();
-    setTool(next);
+    setTool(tool === next ? null : next);
     setErasing(false);
   };
   const chooseColor = (next: string) => {
@@ -743,7 +751,11 @@ export default function AttachmentEditor({
         ? erasing
           ? "Drag over lines to erase them."
           : "Drag on the picture to draw."
-        : "Click or tap the picture to add text. Click text to change it, or drag it to move it.";
+        : tool === "text"
+          ? "Click or tap the picture to add text. Click text to change it, or drag it to move it."
+          : "Choose Crop, Draw or Text to change the picture.";
+  // Shown covered, as it will be sent, until a tool is chosen.
+  const covered = !!spoiler?.on && tool === null;
 
   return (
     <FloatingPortal root={anchor?.closest<HTMLElement>("dialog") ?? undefined}>
@@ -823,13 +835,17 @@ export default function AttachmentEditor({
               ) : !picture || !layout ? (
                 <span className="chat-spinner" role="status" aria-label="Loading" />
               ) : (
-                <div className="chat-editor-picture" style={{ width: layout.width, height: layout.height }}>
+                <div
+                  className="chat-editor-picture"
+                  data-covered={covered || undefined}
+                  style={{ width: layout.width, height: layout.height }}
+                >
                   <canvas
                     ref={canvas}
                     role="img"
                     aria-label={kind === "video" ? "Video frame being edited" : "Image being edited"}
                     aria-describedby={hintId}
-                    data-tool={tool}
+                    data-tool={tool ?? undefined}
                     style={{ width: layout.width, height: layout.height }}
                     onPointerDown={pointerDown}
                     onPointerMove={pointerMove}
@@ -838,6 +854,12 @@ export default function AttachmentEditor({
                     onPointerEnter={(event) => tool === "draw" && moveBrush(event)}
                     onPointerLeave={hideBrush}
                   />
+                  {covered && (
+                    <span className="chat-editor-spoiler" aria-hidden="true">
+                      <EyeOff size={16} aria-hidden="true" />
+                      Spoiler
+                    </span>
+                  )}
                   {tool === "draw" && (
                     <div
                       ref={brush}
@@ -945,8 +967,8 @@ export default function AttachmentEditor({
               <p className="chat-editor-hint">Drag the square to reposition. Adjust crop size to zoom.</p>
             )}
             <div className="chat-editor-tools">
-              <div className="chat-editor-options">
-                {tool === "crop" ? (
+              <div className="chat-editor-options" data-tool={tool ?? undefined}>
+                {tool === null ? null : tool === "crop" ? (
                   <>
                     {pictureMode && rotated && (
                       <div className="chat-editor-size">
@@ -1047,6 +1069,18 @@ export default function AttachmentEditor({
                 )}
               </div>
               <div className="chat-editor-modes" role="toolbar" aria-label="Editing tools">
+                {spoiler && (
+                  <button
+                    type="button"
+                    className="chat-editor-spoiler-toggle"
+                    aria-pressed={spoiler.on}
+                    title={spoiler.on ? "Remove spoiler" : "Mark as spoiler"}
+                    onClick={spoiler.toggle}
+                  >
+                    <EyeOff size={18} aria-hidden="true" />
+                    Spoiler
+                  </button>
+                )}
                 {(
                   [
                     ["crop", "Crop", Crop],
@@ -1065,6 +1099,12 @@ export default function AttachmentEditor({
                     {label}
                   </button>
                 ))}
+                {onRemove && (
+                  <button type="button" className="chat-editor-remove" aria-label={`Remove ${name}`} onClick={onRemove}>
+                    <Trash2 size={18} aria-hidden="true" />
+                    Remove
+                  </button>
+                )}
               </div>
             </div>
           </div>

@@ -1853,23 +1853,28 @@ Android). While a file prepares or uploads, a progress ring wraps the X, like
 iMessage; the figure is in its accessible label rather than tile text. A failed
 upload shows one centred eggshell Retry button; a spoilered tile is blurred
 with a centred crossed-out eye. Edit, like a tap on the picture, opens the
-file's preview, whose tool row holds **Spoiler**, **Crop**, **Draw**, **Text**
-and **Remove**; files with no preview (PDFs, audio) get a menu with Mark as
-spoiler and Remove attachment instead. While the file is marked as a spoiler, the
-preview shows it covered (blurred, with a centred Spoiler label) as it will be
-sent; the cover fades in and out, and the editor still shows the picture
-plainly. On iPhone and iPad the attach drawer's Send, like the composer's, can
-be pressed while files still upload, as on web and Android: the message goes as
-soon as they finish, instead of the button showing a spinner. Long press or context click offers Edit,
-the spoiler toggle and Remove attachment. A spoilered file stays editable: the editor and preview show
-it unblurred to its author, its tile shows the blurred edited render, and Send
-carries both the edit (already in the uploaded file) and the spoiler flag.
-In the preview, **Crop**, **Draw** and **Text** appear for files the editor can
-open; each closes the preview and opens the editor on that tool. Web uses
-its media viewer; Android, Apple and desktop open such files in the app's own
-preview instead of the system viewer (QuickLook on Apple, the system app on
-Android and desktop), which can't host the tools, and keep the system viewer
-for other files. Each preview zooms pictures like that app's media viewer
+editor itself for viewing, with no tool chosen: one screen whose tool row is
+always **Spoiler** | **Crop** **Draw** **Text** | **Remove**. Choosing a tool
+switches it in place (choosing it again goes back to viewing): the top bar,
+the picture's position and size, and the buttons never change, and the
+picture is never decoded again, so nothing flashes or jumps; only the tool's
+own options (Rotate left; colours and sizes) fade in above the row, in space
+reserved for them. Spoiler toggles the mark live; Remove removes the file and
+closes, discarding unsaved edits; Done saves edits (with none it just closes).
+While the file is marked as a spoiler and no tool is chosen, the picture shows
+covered (blurred, with a centred Spoiler label) as it will be sent; the cover
+fades in and out, and a chosen tool shows the picture plainly to edit. Files
+the editor can't open but can show (web's viewer) get Spoiler and Remove in
+their viewer; files with no preview (PDFs, audio) get a menu with Mark as
+spoiler and Remove attachment. On iPhone and iPad the attach drawer's Send,
+like the composer's, can be pressed while files still upload, as on web and
+Android: the message goes as soon as they finish, instead of the button
+showing a spinner. Long press or context click offers Edit, the spoiler toggle
+and Remove attachment. Send carries both the edit (already in the uploaded
+file) and the spoiler flag. Every client opens such files in this editor
+rather than the system viewer (QuickLook on Apple, the system app on Android
+and desktop), which can't host the tools, and keeps the system viewer for
+other files. The viewing state zooms pictures like that app's media viewer
 (pinch or, on desktop, Ctrl+scroll; double-tap or double-click; drag to pan
 while zoomed); video doesn't zoom except desktop's still frame. Desktop's
 preview also has Open in default app, which opens what will be sent: the
