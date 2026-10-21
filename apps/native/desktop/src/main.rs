@@ -24310,7 +24310,11 @@ impl CaperApp {
         ui.painter().rect_filled(
             badge.shrink(3.0),
             8.0,
-            match (looks_enabled, hovered && enabled, response.is_pointer_button_down_on()) {
+            match (
+                looks_enabled,
+                hovered && enabled,
+                response.is_pointer_button_down_on(),
+            ) {
                 (false, ..) => BORDER,
                 (true, _, true) => ACTION_PRESS,
                 (true, true, false) => ACTION_HOVER,
