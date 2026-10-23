@@ -10,6 +10,74 @@ membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
 
+### iPhone Duo readiness — not yet validated
+
+Apple's [preparation guide](https://developer.apple.com/iphone-duo/prepare/)
+requires Xcode 27.1 / the iOS 27.1 SDK for the edge-to-edge Duo experience.
+The [technical specifications](https://www.apple.com/iphone-duo/specs/) list a
+5.4-inch outer display (1398×2034 physical pixels) and a 7.6-inch inner display
+(1878×2670 physical pixels). These are **not** SwiftUI points or fixed app
+viewports: folding, rotation, Split View, keyboard and asymmetric safe areas
+change the space available to the app. Do not derive layout breakpoints from
+those pixel counts or identify the phone by its dimensions.
+
+The first native Apple pass keeps Browse and the conversation in one stable
+`AnyLayout` hierarchy instead of recreating the conversation when switching
+between compact, sidebar and member-panel arrangements. The existing 760-point
+compact threshold is unchanged; this is a content breakpoint, not a Duo profile.
+Members opens automatically only when it fits beside the conversation; the
+explicit Members action still works in narrower windows. Only backgrounds ignore
+container safe areas. Shared SwiftUI changes also apply to macOS; Android, Rust
+desktop and browser layouts are unchanged in this iPhone-focused pass.
+
+Validation in the Linux orb (2026-10-23): `npm run check` passes (with bundler
+warnings); `npm test` passes 780 tests. Python tooling runs 70 tests, with 69
+passing and the macOS-only disk-image check skipped; the four font checks,
+Ruff checks and shell syntax checks pass. The six simulator-script regressions
+use stub Apple commands, **not** Xcode. None of these checks compiles or renders
+SwiftUI. No Swift/Xcode tools or connected Mac runner are available.
+Native builds, the extended UI regression, screenshots and real
+Duo fold transitions remain unverified. Keep this work in a draft PR until a Mac
+can build and inspect it. The production TestFlight workflow still explicitly
+selects **Xcode 26**; these source changes alone do not enable full-screen Duo
+support. Upgrade that runner/SDK separately after verifying Xcode 27.1 and its
+Duo runtime, then validate the resulting archive before distributing it.
+
+On a Mac with Xcode 27.1 selected and the Duo simulator installed:
+
+```bash
+xcodebuild -version
+xcrun simctl list devices available
+CAPER_IOS_SIMULATOR_DESTINATION='platform=iOS Simulator,name=iPhone Duo,OS=latest' \
+  bash apps/native/apple/build.sh ios
+CAPER_IOS_SIMULATOR_DESTINATION='platform=iOS Simulator,name=iPhone Duo,OS=latest' \
+  bash apps/native/apple/parity-screenshots.sh ios \
+  -only-testing:CaperIOSParityTests/CaperParityUITests/testBlockedAuthorsCollapseUntilShown
+bash apps/native/apple/parity-screenshots.sh macos \
+  -only-testing:CaperMacOSParityTests/CaperParityUITests/testBlockedAuthorsCollapseUntilShown
+```
+
+Use a simulator `id=` destination instead if several devices have the same name.
+The scripts retain iPhone 16 as the default. The focused regression retains
+revealed messages during iOS rotations and checks draft/view-state continuity
+across 700/820/960-point Mac windows; those are **stress-test widths, not Duo
+dimensions**. Inspect exported `parity-artifacts` after each run (the next run
+replaces them). Rotation is not a fold test, and an ordinary iPhone simulation
+does not verify Duo's inner display.
+
+Before claiming Duo support, use Device Hub to open/close, rotate both displays,
+and exercise Split View on both sides **without relaunching**. Check sign-in,
+Browse, channels and DMs, a scrolled timeline, an unsent multiline draft with the
+keyboard open, members, an open thread with a reply draft, attach/emoji sheets,
+and the media viewer. Verify reachable controls and preserved context with
+VoiceOver, larger text and Reduce Motion. Thread presentation still switches
+between a cover and an inline pane based on workspace width; fitting that pane
+to the remaining conversation space and confirming its transition continuity
+remain follow-up work. Record sustained voice while folding on hardware
+separately; mocked UI and the simulator cannot establish native audio acceptance.
+
+### Shared client behavior
+
 Channels and direct messages occupy independently scrolling sidebar panes on web,
 Android, iOS/macOS and Rust desktop. Drag their horizontal divider to redistribute
 the height; both remain bounded above the account controls, even with long lists.
