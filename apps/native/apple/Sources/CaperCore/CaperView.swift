@@ -777,7 +777,15 @@ private struct WorkspaceView: View {
     private var workspaceContent: some View {
         GeometryReader { geometry in
             let narrow = geometry.size.width <= 760
-            let membersVisible = membersPreference ?? !narrow
+            let navigationWidth = 60 + CGFloat(min(liveSidebarWidth, sidebarMaximum(for: geometry.size.width)))
+            let tilesMembers = !narrow && geometry.size.width - navigationWidth >= 540
+            // An intermediate-width window must not open a member list over the
+            // conversation by default. The Members control can still reveal it.
+            let membersVisible = membersPreference ?? tilesMembers
+            let hasMembers = model.selectedDirectMessageID == nil && model.visit == nil
+            // Keep the same conversation subtree when folding, rotating or
+            // resizing. Switching branches recreates ChatView's scroll/picker state.
+            let layout = narrow ? AnyLayout(ZStackLayout(alignment: .leading)) : AnyLayout(HStackLayout(spacing: 0))
             VStack(spacing: 0) {
                 if let error = model.navigationError {
                     HStack {
@@ -793,7 +801,7 @@ private struct WorkspaceView: View {
                 let showsBrowse = !narrow || model.navigationOpen || !conversationAvailable
                 // Past the width, so the edge shadow leaves too.
                 let travel = geometry.size.width + drawerShadowRoom
-                ZStack(alignment: .leading) {
+                layout {
                     VStack(spacing: 0) {
                         HStack(spacing: 0) {
                             SpaceRail(model: model, narrow: narrow, showLogin: { sheet = .login }, create: { sheet = .createSpace }, openInvitation: { sheet = .invitation($0) })
@@ -858,66 +866,60 @@ private struct WorkspaceView: View {
                                         }
                                 }
                             }
-                            if !narrow {
-                                Group {
-                                    if geometry.size.width - 60 - min(liveSidebarWidth, sidebarMaximum(for: geometry.size.width)) >= 540 {
-                                        HStack(spacing: 0) {
-                                            ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
-                                                showMembers(!membersVisible)
-                                            }
-                                            if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model, close: { showMembers(false) }).frame(width: 220) }
-                                        }
-                                    } else {
-                                        ZStack(alignment: .trailing) {
-                                            ConversationStage(model: model, narrow: false, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
-                                                showMembers(!membersVisible)
-                                            }
-                                            if membersVisible && model.selectedDirectMessageID == nil && model.visit == nil { MemberPresenceView(model: model, close: { showMembers(false) }).frame(width: 220).padding(.top, 50) }
-                                        }
-                                    }
-                                }
-                            }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         // Phones keep the account bar in Browse, full width beneath the
                         // channels: the conversation slides off to reveal it.
                         if narrow { AccountBar(model: model, sheet: $sheet) }
                     }
+                    .frame(width: narrow ? nil : navigationWidth)
                     .allowsHitTesting(showsBrowse)
                     .accessibilityElement(children: .contain)
                     .accessibilityHidden(!showsBrowse)
-                    if narrow && conversationAvailable {
-                        ZStack(alignment: .trailing) {
-                            ConversationStage(model: model, narrow: true, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
-                                showMembers(!membersVisible)
-                            }
-                            if model.selectedDirectMessageID == nil && model.visit == nil {
+                    ZStack(alignment: .trailing) {
+                        ConversationStage(model: model, narrow: narrow, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
+                            showMembers(!membersVisible)
+                        }
+                        .padding(.trailing, tilesMembers && membersVisible && hasMembers ? 220 : 0)
+                        if hasMembers {
+                            if narrow {
                                 MembersOverlay(model: model, shows: membersVisible && !model.previewingChannel,
                                                width: min(280, geometry.size.width - 64)) { showMembers(false) }
+                            } else if membersVisible {
+                                MemberPresenceView(model: model, close: { showMembers(false) })
+                                    .frame(width: 220).padding(.top, tilesMembers ? 0 : 50)
                             }
                         }
-                        // Returning from Browse must not reopen the keyboard on its own.
-                        .environment(\.composerCovered, showsBrowse)
-                        // Full height, under the status bar and home indicator too, with a
-                        // soft shadow cast from the conversation's edge onto Browse, like the web's.
-                        .background {
-                            Rectangle().fill(CaperTheme.blackout)
-                                .shadow(color: .black.opacity(0.45), radius: 16, x: -12)
-                                .ignoresSafeArea(.container, edges: .vertical)
-                        }
-                        .modifier(BrowseLayer(showsBrowse: showsBrowse) { CGSize(width: $0 * travel, height: 0) })
-                        .allowsHitTesting(!showsBrowse)
-                        .accessibilityElement(children: .contain)
-                        .accessibilityHidden(showsBrowse)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // Returning from Browse must not reopen the keyboard on its own.
+                    .environment(\.composerCovered, narrow && showsBrowse)
+                    // Only backgrounds extend beyond the container safe area;
+                    // foreground controls also respect Duo's asymmetric side insets.
+                    .background {
+                        Rectangle().fill(CaperTheme.blackout)
+                            .shadow(color: .black.opacity(narrow ? 0.45 : 0), radius: 16, x: -12)
+                            .ignoresSafeArea(.container, edges: .vertical)
+                    }
+                    .modifier(BrowseLayer(showsBrowse: narrow && showsBrowse) { CGSize(width: narrow ? $0 * travel : 0, height: 0) })
+                    .allowsHitTesting(!narrow || !showsBrowse)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityHidden(narrow && showsBrowse)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipShape(SideClip())
                 .onChange(of: travel, initial: true) { _, travel in browseDrawer.travel = max(travel, 1) }
-                .onChange(of: narrow, initial: true) { _, narrow in model.narrowLayout = narrow }
+                .onChange(of: narrow, initial: true) { _, narrow in
+                    model.narrowLayout = narrow
+                    // A gesture from the previous layout must not leave the
+                    // conversation partially translated on the new display.
+                    browseDrawer.drag = nil
+                    browseDrawer.settle = nil
+                    browseDrawer.rest = narrow && showsBrowse ? 1 : 0
+                }
                 // A model change (a channel that finished opening) slides too:
                 // `DrawerPose` records it, so a finger can catch the conversation mid-slide.
-                .onChange(of: showsBrowse) { endEditing() }
+                .onChange(of: showsBrowse) { _, shows in if narrow && shows { endEditing() } }
             }
             #if os(iOS)
             // The reader already measures the keyboard-avoiding viewport. Keep

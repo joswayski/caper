@@ -3152,7 +3152,13 @@ final class CaperParityUITests: XCTestCase {
         addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
         // Maya wrote the second and third seeded messages in #general.
         try await Self.fixtureBlock("member000001")
-        let app = launch()
+        #if os(iOS)
+        XCUIDevice.shared.orientation = .portrait
+        defer { XCUIDevice.shared.orientation = .portrait }
+        #endif
+        let app = Self.configuredApp()
+        app.launchArguments += ["-caper.channelSidebarWidth", "280"]
+        app.launch(); launchedApp = app
         let toggle = try require(app.buttons["blocked-run-toggle"], timeout: 30, "Maya's messages must collapse into one run")
         XCTAssertEqual(toggle.label, "Show 2 blocked messages")
         XCTAssertFalse(app.descendants(matching: .any)["message-row-chan00000001m02"].exists)
@@ -3161,6 +3167,49 @@ final class CaperParityUITests: XCTestCase {
         _ = try require(app.descendants(matching: .any)["message-row-chan00000001m02"], timeout: 5, "Show must reveal the run in place")
         XCTAssertTrue(app.descendants(matching: .any)["message-row-chan00000001m03"].exists)
         XCTAssertEqual(app.buttons["blocked-run-toggle"].label, "Hide 2 blocked messages")
+
+        // This choice lives in the conversation view, unlike the model's draft.
+        // It catches a conversation being recreated at a layout breakpoint.
+        #if os(macOS)
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 5, "Missing composer")
+        type("Keep this draft while resizing", into: composer)
+        let window = app.windows.firstMatch
+        for width in [CGFloat(960), 820, 700, 820, 960] {
+            let frame = window.frame
+            let corner = window.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: frame.width - 1, dy: frame.height - 1))
+            corner.press(forDuration: 0.1, thenDragTo: corner.withOffset(CGVector(dx: width - frame.width, dy: 0)))
+            let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(window.frame.width - width) < 4 }, object: window)
+            XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed, "The test must cross the actual layout breakpoints")
+            XCTAssertEqual(app.buttons["blocked-run-toggle"].label, "Hide 2 blocked messages", "Resizing must retain the reader's revealed messages")
+            XCTAssertEqual(composer.value as? String, "Keep this draft while resizing")
+            XCTAssertTrue(composer.isHittable, "The composer must remain reachable")
+            XCTAssertTrue(window.frame.contains(app.buttons["send-message-button"].frame))
+            XCTAssertEqual(app.buttons["Back to Browse"].exists, width <= 760)
+            if width == 820 {
+                XCTAssertFalse(app.buttons["Close member list"].exists, "Members must not cover the conversation automatically")
+            }
+            // The standard desktop capture helper deliberately rejects narrow
+            // windows. These are resizing fixtures, not desktop parity captures.
+            let screenshot = XCTAttachment(screenshot: window.screenshot())
+            screenshot.name = "resize-\(Int(width))-revealed-messages"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+        }
+        #else
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait, .landscapeRight, .portrait] {
+            let previousWidth = app.frame.width
+            XCUIDevice.shared.orientation = orientation
+            let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(app.frame.width - previousWidth) > 10 }, object: app)
+            XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed, "Rotation must resize the app before checking its state")
+            XCTAssertTrue(app.buttons["blocked-run-toggle"].waitForExistence(timeout: 5))
+            XCTAssertEqual(app.buttons["blocked-run-toggle"].label, "Hide 2 blocked messages", "Rotation must retain the reader's revealed messages")
+            let composer = app.descendants(matching: .any)["message-composer"]
+            XCTAssertTrue(composer.isHittable)
+            XCTAssertTrue(app.frame.contains(app.buttons["send-message-button"].frame), "Send must fit the resized window")
+            capture("resize-\(orientation.rawValue)-revealed-messages", app: app)
+        }
+        #endif
     }
 
     #if os(macOS)
