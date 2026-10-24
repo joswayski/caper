@@ -84,6 +84,16 @@ public struct ChatGif: Codable, Equatable, Hashable, Sendable {
     /// reads animated WebP and GIF) should try them. WebP keeps stickers'
     /// transparency and is smaller; GIF is the fallback.
     var animatedSources: [URL] { [webp, gif].compactMap { $0.flatMap(URL.init(string:)) } }
+
+    /// A viewer-only image, not an uploaded asset. Keep KLIPY's URL and never
+    /// give its viewer a chat model that would try to refresh Caper signatures.
+    var mediaViewerAttachment: ChatAttachment? {
+        guard let url = webp ?? gif else { return nil }
+        let format = webp != nil ? "webp" : "gif"
+        return ChatAttachment(id: "klipy:\(url)", kind: .image, contentType: "image/\(format)",
+                              name: "\(accessibilityLabel).\(format)", size: 0, width: width, height: height,
+                              hasPreview: still != nil, url: url, previewUrl: still)
+    }
 }
 
 public enum KlipyRules {

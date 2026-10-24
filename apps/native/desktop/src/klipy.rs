@@ -942,14 +942,14 @@ impl Picker {
     }
 }
 
-/// One image to try: its URL and whether it loads as an animated GIF.
+/// One image to try: its URL and whether to decode animation frames.
 type Source<'a> = (&'a str, bool);
 
 /// Animated first, else the still; reduced motion prefers the still, then
 /// the GIF's first frame.
 fn tile_sources(tile: &Tile, playing: bool) -> Vec<Source<'_>> {
     let gif = tile.gif.as_deref().map(|url| (url, true));
-    let webp = Some((tile.url.as_str(), false)).filter(|_| tile.gif.as_deref() != Some(&tile.url));
+    let webp = Some((tile.url.as_str(), true)).filter(|_| tile.gif.as_deref() != Some(&tile.url));
     let still = tile.still.as_deref().map(|url| (url, false));
     if playing {
         [gif, webp, still]
@@ -964,7 +964,7 @@ fn tile_sources(tile: &Tile, playing: bool) -> Vec<Source<'_>> {
 /// A sent GIF's sources, in the order [`tile_sources`] uses.
 fn gif_sources(gif: &Gif, playing: bool) -> Vec<Source<'_>> {
     let animated = gif.gif.as_deref().map(|url| (url, true));
-    let webp = gif.webp.as_deref().map(|url| (url, false));
+    let webp = gif.webp.as_deref().map(|url| (url, true));
     let still = gif.still.as_deref().map(|url| (url, false));
     if playing {
         [animated, webp, still]
@@ -980,6 +980,38 @@ fn gif_sources(gif: &Gif, playing: bool) -> Vec<Source<'_>> {
 /// to re-sign them.
 pub fn media_key(url: &str) -> String {
     format!("{}{url}", crate::attachments::EXTERNAL_KEY)
+}
+
+/// The same original used inline, without Caper asset signing or a still preview.
+pub fn viewer_file(gif: &Gif) -> crate::model::Attachment {
+    use crate::model::{Attachment, AttachmentKind, AttachmentStatus};
+    let (url, content_type) = match gif.gif.as_ref() {
+        Some(url) => (url.clone(), "image/gif"),
+        None => (
+            gif.webp.clone().expect("validated GIF has an image"),
+            "image/webp",
+        ),
+    };
+    Attachment {
+        id: media_key(&url),
+        kind: AttachmentKind::Image,
+        content_type: content_type.into(),
+        name: gif.alt().into(),
+        size: 0,
+        width: Some(gif.width),
+        height: Some(gif.height),
+        duration_ms: None,
+        preview: gif.still.is_some(),
+        url: Some(url),
+        preview_url: gif.still.clone(),
+        unavailable: false,
+        status: AttachmentStatus::Ready,
+        animated: false,
+        spoiler: false,
+        voice: false,
+        waveform: None,
+        transcript: None,
+    }
 }
 
 /// Paints the first source that loads, contained in `rect`; a loading
@@ -1029,9 +1061,15 @@ fn paint(
 /// A message's GIF or sticker, below its text. Hover shows the title.
 pub fn message(ui: &mut egui::Ui, media: &mut Media, gif: &Gif) -> egui::Response {
     let size = gif.display_size(ui.available_width());
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let label = gif.alt().to_owned();
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, &label));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!("Open {label} in viewer"),
+        )
+    });
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -1064,7 +1102,9 @@ pub fn message(ui: &mut egui::Ui, media: &mut Media, gif: &Gif) -> egui::Respons
     if media.busy() {
         ui.ctx().request_repaint();
     }
-    response.on_hover_text(label)
+    response
+        .on_hover_cursor(egui::CursorIcon::ZoomIn)
+        .on_hover_text(label)
 }
 
 /// A muted "GIF" label for the composer button, in a quiet outline.
@@ -1320,7 +1360,7 @@ mod tests {
             urls(true),
             owned(&[
                 ("mdgif.gif", true),
-                ("mdwebp.webp", false),
+                ("mdwebp.webp", true),
                 ("mdjpg.jpg", false)
             ])
         );
@@ -1329,7 +1369,7 @@ mod tests {
             owned(&[
                 ("mdjpg.jpg", false),
                 ("mdgif.gif", true),
-                ("mdwebp.webp", false)
+                ("mdwebp.webp", true)
             ])
         );
     }
