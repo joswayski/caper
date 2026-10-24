@@ -8463,9 +8463,11 @@ impl CaperApp {
             .pending
             .as_ref()
             .and_then(|pending| pending.gif.clone());
-        // Text may be empty only when files or a GIF are attached.
-        if (text.trim().is_empty() && attachments.is_empty() && gif.is_none())
-            || count > 4_000
+        // Enter on an empty composer is a no-op, like its disabled Send button.
+        if text.trim().is_empty() && attachments.is_empty() && gif.is_none() {
+            return;
+        }
+        if count > 4_000
             || text
                 .chars()
                 .any(|character| character.is_control() && character != '\n' && character != '\t')
@@ -8473,8 +8475,6 @@ impl CaperApp {
             self.error = Some(
                 if count > 4_000 {
                     "Messages can be at most 4,000 characters."
-                } else if text.trim().is_empty() {
-                    "Write a message first."
                 } else {
                     "Messages cannot contain control characters."
                 }
@@ -47658,6 +47658,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn empty_enter_does_not_leave_a_warning_or_create_a_message() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        render(&mut app, &context, vec![]);
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
+        for text in ["", " \t\n "] {
+            app.draft = text.into();
+            render(&mut app, &context, press(egui::Key::Enter));
+            assert!(app.pending.is_none());
+            assert!(app.error.is_none(), "empty Enter must not leave a warning");
+            assert_eq!(app.draft, text);
+        }
+        render(&mut app, &context, vec![egui::Event::Text("Hello".into())]);
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert!(
+            app.pending
+                .as_ref()
+                .is_some_and(|pending| pending.text.contains("Hello"))
+        );
+        assert!(app.error.is_none());
     }
 
     #[test]

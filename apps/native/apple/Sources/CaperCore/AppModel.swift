@@ -3719,6 +3719,8 @@ public final class ChatModel {
         let target = composerTarget(inThread: inThread)
         var files = gif != nil ? [] : attachmentFiles(inThread: inThread)
         if delivery.pending == nil, gif == nil {
+            // Match the disabled Send button when a hardware keyboard submits an empty draft.
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty { return }
             if let validation = MessageValidation.error(for: text, attachmentCount: files.count) { error = validation; return }
             if files.contains(where: { $0.attachment == nil }) {
                 let submission = UUID()
