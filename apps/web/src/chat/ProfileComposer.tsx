@@ -444,12 +444,9 @@ export default function ProfileComposer({
       setError("Retry or edit the unsent message first.");
       return;
     }
-    if (!gif && ((!draft.text.trim() && !draft.files.length) || Array.from(draft.text).length > 4_000)) {
-      setError(
-        Array.from(draft.text).length > 4_000
-          ? "Messages must be 4,000 characters or fewer."
-          : "Write a message or attach a file first.",
-      );
+    if (!gif && !draft.command && !draft.text.trim() && !draft.files.length) return;
+    if (!gif && Array.from(draft.text).length > 4_000) {
+      setError("Messages must be 4,000 characters or fewer.");
       return;
     }
     pending.add(personId);

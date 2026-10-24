@@ -1025,7 +1025,15 @@ test("optimistic send is immediate; HTTP-first confirmation uses server content/
 
 test("file-only messages send attachment IDs, keep local previews while pending, and need content", async (t) => {
   const f = await sendingFixture(t);
-  await assert.rejects(f.client.send("   "), /Write a message first/);
+  for (const text of ["", " \t\n "]) {
+    for (const options of [{}, { threadRootId: "root", broadcast: true }]) {
+      assert.equal(await f.client.send(text, options), false);
+      assert.equal(f.state.pendingSend, undefined);
+      assert.equal(f.state.sendError, undefined);
+      assert.equal(f.posts.length, 0);
+    }
+  }
+  await assert.rejects(f.client.send("a".repeat(4_001)), /at most 4,000/);
   const local = {
     id: "f1",
     kind: "image" as const,

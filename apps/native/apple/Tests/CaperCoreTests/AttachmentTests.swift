@@ -1768,6 +1768,27 @@ final class AttachmentTests: XCTestCase {
     }
 
     @MainActor
+    func testEmptySendDoesNotLeaveAWarningOrCreateAMessage() async throws {
+        AttachmentURLProtocol.handler = composerHandler()
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.openThread("Root00000001")
+        for text in ["", " \t\n "] {
+            chat.draft = text
+            chat.threadDraft = text
+            for inThread in [false, true] {
+                await chat.send(inThread: inThread)
+                XCTAssertNil(chat.error)
+                XCTAssertNil(chat.delivery.pending)
+                XCTAssertEqual(chat.draft, text)
+                XCTAssertEqual(chat.threadDraft, text)
+            }
+        }
+        XCTAssertFalse(AttachmentURLProtocol.requests.contains { $0.method == "POST" && $0.url.path.hasSuffix("/messages") })
+        await chat.stop()
+    }
+
+    @MainActor
     func testSendRetriesFailedUploadsWithoutSendingSubsetOrLosingDraft() async throws {
         for outcome in ["success", "failure", "changed", "thread", "removed", "channel", "account"] {
             AttachmentURLProtocol.reset()
