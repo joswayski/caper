@@ -1779,7 +1779,7 @@ final class AttachmentTests: XCTestCase {
             for inThread in [false, true] {
                 await chat.send(inThread: inThread)
                 XCTAssertNil(chat.error)
-                XCTAssertNil(chat.delivery.pending)
+                XCTAssertNil(chat.pendingMessage)
                 XCTAssertEqual(chat.draft, text)
                 XCTAssertEqual(chat.threadDraft, text)
             }
