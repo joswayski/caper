@@ -36,6 +36,16 @@ import kotlinx.serialization.json.put
     /** The accessible label, and what a quote of a captionless GIF reads. */
     val label: String get() = title.ifEmpty { if (sticker) "Sticker" else "GIF" }
 
+    /** Viewer-only external image, never a Caper asset to sign or refresh. API 26–27 prefer GIF. */
+    fun mediaViewerAttachment(preferWebp: Boolean): ChatAttachment? {
+        val url = (if (preferWebp) webp ?: gif else gif ?: webp) ?: return null
+        val format = if (url == webp) "webp" else "gif"
+        return ChatAttachment(
+            id = "klipy:$url", kind = "image", contentType = "image/$format", name = "$label.$format", size = 0,
+            width = width, height = height, url = url, previewUrl = still,
+        )
+    }
+
     /** The send body's `gif`, without absent URLs (they would change the retry hash). */
     fun toJson(): JsonObject = buildJsonObject {
         put("provider", provider); put("kind", kind); put("slug", slug); put("title", title)

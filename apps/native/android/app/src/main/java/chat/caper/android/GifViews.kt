@@ -33,6 +33,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -81,6 +82,9 @@ private fun klipyRequest(context: Context, url: String, animate: Boolean): Image
  */
 @Composable internal fun MessageGif(gif: KlipyGif, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val attachment = remember(gif) { gif.mediaViewerAttachment(preferWebp = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) }
+    var viewing by remember(gif) { mutableStateOf(false) }
     val still = reducedMotion()
     val edge = if (gif.sticker) 160f else 300f
     val scale = minOf(1f, edge / maxOf(gif.width, gif.height))
@@ -94,7 +98,8 @@ private fun klipyRequest(context: Context, url: String, animate: Boolean): Image
     Box(
         modifier.padding(top = 4.dp).widthIn(max = (gif.width * scale).coerceAtLeast(1f).dp).fillMaxWidth().aspectRatio(ratio)
             .then(if (gif.sticker && !failed) Modifier else Modifier.clip(shape).background(Surface).border(1.dp, Border, shape))
-            .clearAndSetSemantics { contentDescription = if (failed) "${gif.label}, GIF unavailable" else gif.label; role = Role.Image },
+            .clickable(enabled = attachment != null, role = Role.Button, onClickLabel = "Open ${gif.label}") { viewing = true }
+            .clearAndSetSemantics { contentDescription = if (failed) "${gif.label}, GIF unavailable" else gif.label; role = Role.Button },
         contentAlignment = Alignment.Center,
     ) {
         if (failed || request == null) Text("GIF unavailable", Modifier.padding(8.dp), color = TextMuted, fontSize = 12.sp)
@@ -102,6 +107,12 @@ private fun klipyRequest(context: Context, url: String, animate: Boolean): Image
             model = request, contentDescription = null, imageLoader = AttachmentImages.loader(context),
             modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit, onError = { failed = true },
         )
+    }
+    // Like profile pictures, these are external media, not timeline assets to re-sign.
+    if (viewing && attachment != null) {
+        MediaViewer(ViewerPages(listOf(attachment.id), 0), listOf(attachment), caption = null,
+            close = { viewing = false }, open = { runCatching { uriHandler.openUri(it) } },
+            onLoadFailed = { _, _ -> }, hideSpoiler = {}, respectReducedMotion = true)
     }
 }
 

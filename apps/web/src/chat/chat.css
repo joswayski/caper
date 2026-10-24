@@ -6486,18 +6486,28 @@ a.chat-draft-preview {
   text-align: right;
 }
 .chat-message-gif {
+  display: block;
   max-width: 100%;
   margin-top: 4px;
+  padding: 0;
+  border: 0;
   overflow: hidden;
   border-radius: 8px;
   background: var(--surface-raised);
+  cursor: zoom-in;
+}
+.chat-message-gif:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .chat-message-gif[data-kind="sticker"] {
   border-radius: 0;
   background: transparent;
 }
-.chat-message-gif :is(img, video, .chat-gif, canvas) {
+.chat-message-gif :is(img, video, .chat-gif) {
   display: block;
+}
+.chat-message-gif :is(img, video, .chat-gif, canvas) {
   width: 100%;
   height: 100%;
   object-fit: contain;

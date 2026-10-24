@@ -92,6 +92,40 @@ final class KlipyTests: XCTestCase {
 
     func testSharedStickerParseCase() throws { try assertParse("parseSticker", kind: .sticker) }
 
+    func testViewerUsesExternalAnimatedImageForGIFsAndStickers() throws {
+        for kind in [ChatGif.Kind.gif, .sticker] {
+            let gif = ChatGif(kind: kind, slug: "hello", title: "Hello", width: 240, height: 180,
+                              gif: "https://static.klipy.com/hello.gif?original=1",
+                              webp: "https://static.klipy.com/hello.webp?original=1",
+                              mp4: "https://static.klipy.com/hello.mp4", still: "https://static.klipy.com/hello.jpg")
+            let item = try XCTUnwrap(gif.mediaViewerAttachment)
+            XCTAssertEqual(item.id, "klipy:\(try XCTUnwrap(gif.webp))")
+            XCTAssertEqual(item.url, gif.webp)
+            XCTAssertEqual(item.previewUrl, gif.still)
+            XCTAssertTrue(item.hasPreview)
+            XCTAssertEqual(item.kind, .image)
+            XCTAssertEqual(item.contentType, "image/webp")
+            XCTAssertEqual(item.name, "Hello.webp")
+            XCTAssertEqual(item.width, 240)
+            XCTAssertEqual(item.height, 180)
+            XCTAssertEqual(item.size, 0)
+            XCTAssertFalse(item.animated, "The viewer decodes image frames; this is not an MP4 loop")
+            XCTAssertEqual(MediaViewerPolicy.items([item], revealedSpoilerIDs: []), [item])
+        }
+    }
+
+    func testViewerFallsBackToGIFAndKeepsUntitledLabel() throws {
+        let gif = ChatGif(kind: .sticker, slug: "hello", title: "", width: 10, height: 20,
+                          gif: "https://static.klipy.com/hello.gif")
+        let item = try XCTUnwrap(gif.mediaViewerAttachment)
+        XCTAssertEqual(item.url, gif.gif)
+        XCTAssertEqual(item.contentType, "image/gif")
+        XCTAssertEqual(item.name, "Sticker.gif")
+        XCTAssertNil(item.previewUrl)
+        XCTAssertFalse(item.hasPreview)
+        XCTAssertNil(ChatGif(kind: .gif, slug: "empty", title: "", width: 10, height: 20).mediaViewerAttachment)
+    }
+
     func testSharedMessageRules() throws {
         let messages = try XCTUnwrap(try cases()["messages"] as? [String: Any])
         let valid = try XCTUnwrap(messages["valid"] as? [Any]), invalid = try XCTUnwrap(messages["invalid"] as? [Any])

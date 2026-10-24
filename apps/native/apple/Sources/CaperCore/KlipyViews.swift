@@ -72,8 +72,23 @@ struct KlipyAnimatedImage: View {
 struct MessageGifView: View {
     let gif: ChatGif
     @State private var failed = false
+    @Environment(\.mediaViewer) private var mediaViewer
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
+        Button {
+            guard let item = gif.mediaViewerAttachment else { return }
+            if let mediaViewer {
+                mediaViewer(MediaViewerRequest(items: [item], start: 0, chat: nil, hideSpoiler: { _ in }))
+            } else if let raw = item.url, let url = URL(string: raw) {
+                openURL(url)
+            }
+        } label: { media.contentShape(Rectangle()) }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open \(gif.accessibilityLabel)")
+    }
+
+    @ViewBuilder private var media: some View {
         let width = CGFloat(gif.width), height = CGFloat(gif.height)
         let edge: CGFloat = gif.kind == .sticker ? 160 : 300
         let scale = min(1, edge / max(width, height))

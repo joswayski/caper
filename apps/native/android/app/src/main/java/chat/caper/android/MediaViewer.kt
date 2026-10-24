@@ -205,6 +205,7 @@ private const val DOUBLE_TAP_ZOOM = 2f
     hideSpoiler: (String) -> Unit,
     profilePicture: Boolean = false,
     showActionsInitially: Boolean = false,
+    respectReducedMotion: Boolean = false,
 ) {
     val ids = pages.ids
     val names = remember { attachments.associate { it.id to it.name } }
@@ -315,7 +316,7 @@ private const val DOUBLE_TAP_ZOOM = 2f
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         when {
                             attachment == null -> Text("File removed", color = TextMuted, fontSize = 14.sp)
-                            attachment.kind == "image" -> ViewerImage(attachment, active, onLoadFailed, respectReducedMotion = profilePicture)
+                            attachment.kind == "image" -> ViewerImage(attachment, active, onLoadFailed, respectReducedMotion = profilePicture || respectReducedMotion)
                             else -> ViewerVideo(attachment, active, onLoadFailed)
                         }
                     }

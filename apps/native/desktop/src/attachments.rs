@@ -125,25 +125,39 @@ pub const THUMBNAIL_EDGE: u32 = 720;
 
 type ImageFrames = Vec<(egui::ColorImage, Duration)>;
 
-/// GIFs keep every composited frame and its delay, never the uploaded poster.
+/// GIF and WebP keep every composited frame and its delay, never the uploaded poster.
 /// Shrink playback frames to fit the retained-memory budget without freezing
 /// normal GIFs. Decode runs on the existing fetch worker.
 fn decode_gif(bytes: &[u8]) -> Option<ImageFrames> {
     use image::{AnimationDecoder, ImageDecoder};
     const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
-    let mut decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).ok()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16_384);
     limits.max_image_height = Some(16_384);
     limits.max_alloc = Some(32 * 1024 * 1024);
-    decoder.set_limits(limits).ok()?;
-    let (width, height) = decoder.dimensions();
+    let cursor = || std::io::Cursor::new(bytes);
+    let ((width, height), decoded) = match image::guess_format(bytes).ok()? {
+        image::ImageFormat::Gif => {
+            let mut decoder = image::codecs::gif::GifDecoder::new(cursor()).ok()?;
+            decoder.set_limits(limits).ok()?;
+            (decoder.dimensions(), decoder.into_frames())
+        }
+        image::ImageFormat::WebP => {
+            let mut decoder = image::codecs::webp::WebPDecoder::new(cursor()).ok()?;
+            decoder.set_limits(limits).ok()?;
+            if !decoder.has_animation() {
+                return decode_thumbnail(bytes).map(|image| vec![(image, Duration::ZERO)]);
+            }
+            (decoder.dimensions(), decoder.into_frames())
+        }
+        _ => return None,
+    };
     let denominator = width.max(height).max(THUMBNAIL_EDGE);
     let mut width = (width * THUMBNAIL_EDGE / denominator).max(1);
     let mut height = (height * THUMBNAIL_EDGE / denominator).max(1);
     let mut frames: Vec<(image::RgbaImage, Duration)> = Vec::new();
     let mut total = 0;
-    for frame in decoder.into_frames() {
+    for frame in decoded {
         let frame = frame.ok()?;
         if frames.len() >= 600 {
             // Keep the decode-work ceiling; never loop a truncated prefix.
@@ -516,7 +530,7 @@ impl Media {
 
     /// Refresh one attachment's URLs as soon as possible (a viewer load failed).
     pub fn refresh_now(&mut self, id: &str) {
-        if !self.retried.contains(id) {
+        if !id.starts_with(EXTERNAL_KEY) && !self.retried.contains(id) {
             self.retried.insert(id.to_owned());
             self.refresher.force(id);
         }
@@ -1166,7 +1180,7 @@ mod tests {
     }
 
     #[test]
-    fn gif_tiles_replace_local_stills_play_loop_and_honor_reduced_motion() {
+    fn gif_and_webp_tiles_replace_local_stills_play_loop_and_honor_reduced_motion() {
         let mut bytes = Vec::new();
         {
             let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
@@ -1181,71 +1195,88 @@ mod tests {
                     .unwrap();
             }
         }
-        let context = egui::Context::default();
-        let mut media = Media::new(None);
-        let url = signed(NOW);
-        media.insert_local(&context, "asset1", decode_thumbnail(&bytes).unwrap());
-        assert!(matches!(
-            media.gif(&context, "asset1", Some(&url), true, Instant::now()),
-            ImageState::Loading
-        ));
-        media.poll(&context);
-        media
-            .sender
-            .send(Fetched {
-                generation: media.generation,
-                id: "asset1".into(),
-                result: Ok(decode_gif(&bytes).unwrap()),
-            })
-            .unwrap();
-        media.poll(&context);
-        let now = Instant::now();
-        let ImageState::Ready(texture) = media.gif(&context, "asset1", Some(&url), true, now)
-        else {
-            panic!("GIF must load")
-        };
-        let color = || {
-            let delta = context.tex_manager().write().take_delta();
-            let update = &delta.set.iter().find(|(id, _)| *id == texture).unwrap().1;
-            let egui::ImageData::Color(image) = &update.image;
-            assert_eq!(image.size, [4, 2]);
-            image.pixels[0]
-        };
-        assert_eq!(color(), egui::Color32::RED);
-        // Re-signing and a late local thumbnail cannot restart or freeze the GIF.
-        media.insert_local(&context, "asset1", decode_thumbnail(&bytes).unwrap());
-        media.gif(
-            &context,
-            "asset1",
-            Some(&signed(NOW + 100)),
-            true,
-            now + Duration::from_millis(200),
-        );
-        assert_eq!(color(), egui::Color32::BLUE);
-        media.gif(
-            &context,
-            "asset1",
-            Some(&url),
-            true,
-            now + Duration::from_millis(920),
-        );
-        assert_eq!(color(), egui::Color32::RED);
-        media.gif(
-            &context,
-            "asset1",
-            Some(&url),
-            true,
-            now + Duration::from_millis(1100),
-        );
-        assert_eq!(color(), egui::Color32::BLUE);
-        media.gif(
-            &context,
-            "asset1",
-            Some(&url),
-            false,
-            now + Duration::from_millis(1100),
-        );
-        assert_eq!(color(), egui::Color32::RED);
+        // Same red (80ms), blue (800ms) frames, independently encoded as lossless WebP.
+        // magick -size 4x2 -delay 8 xc:red -delay 80 xc:blue -loop 0 -define webp:lossless=true animation.webp
+        for bytes in [
+            bytes.as_slice(),
+            include_bytes!("../../../../shared/klipy/animation.webp").as_slice(),
+        ] {
+            let context = egui::Context::default();
+            let mut media = Media::new(None);
+            let url = signed(NOW);
+            media.insert_local(&context, "asset1", decode_thumbnail(bytes).unwrap());
+            assert!(matches!(
+                media.gif(&context, "asset1", Some(&url), true, Instant::now()),
+                ImageState::Loading
+            ));
+            media.poll(&context);
+            media
+                .sender
+                .send(Fetched {
+                    generation: media.generation,
+                    id: "asset1".into(),
+                    result: Ok(decode_gif(bytes).unwrap()),
+                })
+                .unwrap();
+            media.poll(&context);
+            let now = Instant::now();
+            let ImageState::Ready(texture) = media.gif(&context, "asset1", Some(&url), true, now)
+            else {
+                panic!("GIF must load")
+            };
+            let assert_color = |expected: egui::Color32| {
+                let delta = context.tex_manager().write().take_delta();
+                let update = &delta.set.iter().find(|(id, _)| *id == texture).unwrap().1;
+                let egui::ImageData::Color(image) = &update.image;
+                assert_eq!(image.size, [4, 2]);
+                // WebP's compositing rounds by one channel value in the image decoder.
+                for (actual, expected) in image.pixels[0]
+                    .to_array()
+                    .into_iter()
+                    .zip(expected.to_array())
+                {
+                    assert!(
+                        actual.abs_diff(expected) <= 1,
+                        "expected {expected}, got {actual}"
+                    );
+                }
+            };
+            assert_color(egui::Color32::RED);
+            // Re-signing and a late local thumbnail cannot restart or freeze the GIF.
+            media.insert_local(&context, "asset1", decode_thumbnail(bytes).unwrap());
+            media.gif(
+                &context,
+                "asset1",
+                Some(&signed(NOW + 100)),
+                true,
+                now + Duration::from_millis(200),
+            );
+            assert_color(egui::Color32::BLUE);
+            media.gif(
+                &context,
+                "asset1",
+                Some(&url),
+                true,
+                now + Duration::from_millis(920),
+            );
+            assert_color(egui::Color32::RED);
+            media.gif(
+                &context,
+                "asset1",
+                Some(&url),
+                true,
+                now + Duration::from_millis(1100),
+            );
+            assert_color(egui::Color32::BLUE);
+            media.gif(
+                &context,
+                "asset1",
+                Some(&url),
+                false,
+                now + Duration::from_millis(1100),
+            );
+            assert_color(egui::Color32::RED);
+        }
     }
 
     #[test]
@@ -1501,6 +1532,7 @@ mod tests {
             media.image(&id, Some("https://static.klipy.com/a.gif")),
             ImageState::Failed
         ));
+        media.refresh_now(&id); // Opening the failed original in the viewer must not sign it either.
         assert!(media.take_refresh(Instant::now()).is_empty());
     }
 
