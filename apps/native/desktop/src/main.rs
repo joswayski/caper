@@ -2018,6 +2018,30 @@ impl CaperApp {
                 } else if name.starts_with("parity-attachment-editor") {
                     app.install_attachments_fixture();
                     app.install_attachment_editor_fixture(context, name);
+                } else if name == "parity-klipy-media" {
+                    let base = app.api_base.clone();
+                    app.media =
+                        attachments::Media::new(Some(api::Api::new(base.as_str()).unwrap()));
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    for (index, format) in ["gif", "webp"].into_iter().enumerate() {
+                        messages[index + 2].content.text.clear();
+                        messages[index + 2].content.gif = Some(klipy::Gif {
+                            kind: klipy::Kind::Gif,
+                            slug: format.into(),
+                            title: format!("TEST FIXTURE {format} animation"),
+                            width: 480,
+                            height: 270,
+                            gif: (format == "gif")
+                                .then(|| base.join("animation.gif").unwrap().to_string()),
+                            webp: (format == "webp")
+                                .then(|| base.join("animation.webp").unwrap().to_string()),
+                            mp4: None,
+                            still: Some(base.join("animation.png").unwrap().to_string()),
+                        });
+                    }
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid GIF fixture");
                 } else if name == "parity-inline-videos" {
                     app.install_attachments_fixture();
                     let base = app.api_base.clone();
@@ -19323,7 +19347,7 @@ impl CaperApp {
 
     /// A message's KLIPY GIF or sticker, loaded straight from KLIPY.
     fn message_gif(&mut self, ui: &mut egui::Ui, gif: &klipy::Gif, left: i8) {
-        egui::Frame::new()
+        let response = egui::Frame::new()
             .inner_margin(egui::Margin {
                 left,
                 right: 18,
@@ -19331,6 +19355,10 @@ impl CaperApp {
                 bottom: 4,
             })
             .show(ui, |ui| klipy::message(ui, &mut self.media, gif));
+        if response.inner.clicked() {
+            self.viewer = Some(viewer::Viewer::open(vec![klipy::viewer_file(gif)], 0));
+            ui.ctx().request_repaint();
+        }
     }
 
     fn attachment_list(
@@ -42211,10 +42239,13 @@ mod tests {
         assert!(pending.attachments.is_empty() && pending.thread_root_id.is_none());
         assert_eq!(app.draft, "still drafting");
         let output = render(&mut app, &context, vec![]);
+        let button = labelled_center(&output, "Open Hello in viewer").expect("GIF viewer button");
+        click(&mut app, &context, button);
         assert!(
-            labelled_center(&output, "Hello").is_some(),
-            "the pending row shows the GIF, labelled by its title"
+            app.viewer.is_some(),
+            "GIFs open the same viewer as attachments"
         );
+        app.viewer = None;
         // Retrying keeps the GIF even though the text is empty.
         app.pending.as_mut().unwrap().sending = false;
         app.send_message();

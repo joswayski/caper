@@ -3033,9 +3033,14 @@ them only to mobile user agents.
   its longer edge (stickers 160 px). Stickers have no background.
 - **Format:**
   - The web prefers a muted, looping, inline `mp4` for GIFs and the `webp`
-    for stickers (transparency).
+    for stickers (transparency). A failed inline MP4 falls back to the animated
+    image; the reduced-motion canvas never covers normal image playback.
   - Native apps use the animated format their decoder supports (`webp` or
-    `gif`).
+    `gif`). Windows/Linux decode both GIF and animated WebP frames, including
+    WebP-only picker results, within the existing frame-memory budget.
+- **Opening:** clicking or tapping a GIF or sticker opens the existing media
+  viewer, with zoom and media actions. Provider URLs remain external images
+  (or looping video on web), never uploaded assets to re-sign through Caper.
 - **Reduced motion:** reduced-motion settings show `still` (or the first
   frame).
 - **Labels:** the accessible label is the title, or `GIF` / `Sticker`.
@@ -3076,6 +3081,18 @@ Touch Chromium (390px, coarse pointer, 2x) covers results, empty/error/retry
 states and scroll/viewport bounds; desktop retains separate controls. iOS
 implementation and UI regression tests are not compiled or run in this Linux
 orb (no Apple toolchain or connected runner).
+
+GIF viewer/playback follow-up (October 24, 2026): web check/build and 781 tests
+pass; Android Kotlin compilation and 22 targeted JVM tests pass. Rust formatting,
+build, Clippy and the final 40 focused tests pass (one FFmpeg-dependent test
+ignored). The broader Rust run hit an intermittent, unchanged media-proxy
+connection-limit test; its isolated and final focused reruns pass. Chromium
+checked desktop/narrow opening, focus return, MP4 fallback and reduced motion
+against mocked KLIPY media. The native Linux `parity-klipy-media` fixture fetched
+loopback GIF/WebP originals, animated both 300×169 tiles and opened the viewer.
+Windows/device runtime and Apple SDK compilation remain unverified. Captures
+were made, but Amp's upload quota prevented visual inspection; DOM and pixel
+checks are not a substitute for that review.
 
 Not yet validated anywhere: live KLIPY responses (the shape of ad objects is
 undocumented beyond `type` and `content`), real ad delivery and taps, physical

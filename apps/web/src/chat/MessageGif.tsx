@@ -1,7 +1,9 @@
-import { useContext, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import GifImage from "./GifImage.tsx";
 import { gifLabel, gifOf } from "./klipy.ts";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
+import MediaViewer from "./MediaViewer.tsx";
+import type { ChatAttachment } from "./types.ts";
 
 /** Longer-edge caps: GIFs share the inline media size, stickers stay small. */
 const GIF_EDGE = 300;
@@ -17,6 +19,9 @@ export default function MessageGif({ content }: { content: { gif?: unknown } }) 
   const video = useRef<HTMLVideoElement>(null);
   const preview = useContext(MediaPreviewContext);
   const [failed, setFailed] = useState(false);
+  const [videoFailed, setVideoFailed] = useState(false);
+  const [anchor, setAnchor] = useState<HTMLElement>();
+  const close = useCallback(() => setAnchor(undefined), []);
   // Server markup has no media queries; the effect applies the reader's
   // setting right after hydration.
   const [reduced, setReduced] = useState(false);
@@ -32,9 +37,9 @@ export default function MessageGif({ content }: { content: { gif?: unknown } }) 
     const element = video.current;
     if (!element) return;
     element.muted = true;
-    if (still) element.pause();
+    if (still || anchor) element.pause();
     else void element.play().catch(() => undefined);
-  }, [still, gif?.mp4]);
+  }, [still, gif?.mp4, anchor]);
   if (!gif) return null;
   const label = gifLabel(gif);
   const edge = gif.kind === "sticker" ? STICKER_EDGE : GIF_EDGE;
@@ -47,26 +52,54 @@ export default function MessageGif({ content }: { content: { gif?: unknown } }) 
       </div>
     );
   const image = gif.kind === "sticker" ? (gif.webp ?? gif.gif) : (gif.gif ?? gif.webp);
+  const useVideo = gif.kind === "gif" && !!gif.mp4 && !videoFailed;
+  const attachment: ChatAttachment = {
+    id: `klipy:${gif.slug}`,
+    kind: useVideo ? "video" : "image",
+    contentType: useVideo ? "video/mp4" : "image/*",
+    name: label,
+    size: 0,
+    width: gif.width,
+    height: gif.height,
+    url: useVideo ? gif.mp4 : image,
+    previewUrl: gif.still,
+    animated: true,
+  };
   return (
-    <div className="chat-message-gif" data-kind={gif.kind} style={size} title={gif.title || undefined}>
-      {still && gif.still ? (
-        <img src={gif.still} alt={label} referrerPolicy="origin" onError={() => setFailed(true)} />
-      ) : gif.kind === "gif" && gif.mp4 ? (
-        <video
-          ref={video}
-          src={gif.mp4}
-          poster={gif.still}
-          muted
-          loop
-          playsInline
-          autoPlay={!still}
-          preload="auto"
-          aria-label={label}
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <GifImage src={image} alt={label} referrerPolicy="origin" decoding="async" onError={() => setFailed(true)} />
+    <>
+      <button
+        type="button"
+        className="chat-message-gif"
+        data-kind={gif.kind}
+        style={size}
+        title={gif.title || undefined}
+        aria-label={`Open ${label} in viewer`}
+        aria-haspopup="dialog"
+        disabled={preview}
+        onClick={(event) => setAnchor(event.currentTarget)}
+      >
+        {still && gif.still ? (
+          <img src={gif.still} alt={label} referrerPolicy="origin" onError={() => setFailed(true)} />
+        ) : useVideo ? (
+          <video
+            ref={video}
+            src={gif.mp4}
+            poster={gif.still}
+            muted
+            loop
+            playsInline
+            autoPlay={!still && !anchor}
+            preload="auto"
+            aria-label={label}
+            onError={() => setVideoFailed(true)}
+          />
+        ) : (
+          <GifImage src={image} alt={label} referrerPolicy="origin" decoding="async" onError={() => setFailed(true)} />
+        )}
+      </button>
+      {anchor && (
+        <MediaViewer attachments={[attachment]} attachmentId={attachment.id} anchor={anchor} onClose={close} />
       )}
-    </div>
+    </>
   );
 }

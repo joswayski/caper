@@ -5,6 +5,7 @@ import chat.caper.android.model.KlipyConfig
 import chat.caper.android.model.KlipyGif
 import chat.caper.android.model.klipyGifOf
 import chat.caper.android.model.klipyMediaUrl
+import chat.caper.android.viewerPages
 import java.io.File
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -68,6 +69,42 @@ class KlipyTest {
     @Test fun `shared parse cases keep KLIPY's order, ads and fallbacks`() = checkParse("parse", KlipyKind.GIFS)
 
     @Test fun `shared sticker parse case`() = checkParse("parseSticker", KlipyKind.STICKERS)
+
+    @Test fun `viewer uses provider image URLs and matches platform decoder preference`() {
+        for (kind in listOf("gif", "sticker")) {
+            val gif = KlipyGif(kind = kind, slug = "hello", title = "Hello", width = 240, height = 180,
+                gif = "https://static.klipy.com/hello.gif?original=1", webp = "https://static.klipy.com/hello.webp?original=1",
+                mp4 = "https://static.klipy.com/hello.mp4", still = "https://static.klipy.com/hello.jpg")
+            for (preferWebp in listOf(true, false)) {
+                val item = requireNotNull(gif.mediaViewerAttachment(preferWebp))
+                val format = if (preferWebp) "webp" else "gif"
+                assertEquals(if (preferWebp) gif.webp else gif.gif, item.url)
+                assertEquals("klipy:${item.url}", item.id)
+                assertEquals(gif.still, item.previewUrl)
+                assertEquals("image", item.kind)
+                assertEquals("image/$format", item.contentType)
+                assertEquals("Hello.$format", item.name)
+                assertEquals(240, item.width)
+                assertEquals(180, item.height)
+                assertEquals(0L, item.size)
+                assertFalse(item.animated)
+                assertEquals(listOf(item.id), viewerPages(listOf(item), item.id)?.ids)
+            }
+        }
+    }
+
+    @Test fun `viewer falls back to the available image and keeps untitled labels`() {
+        val gif = KlipyGif(kind = "sticker", slug = "hello", width = 10, height = 20,
+            gif = "https://static.klipy.com/hello.gif")
+        val item = requireNotNull(gif.mediaViewerAttachment(preferWebp = true))
+        assertEquals(gif.gif, item.url)
+        assertEquals("image/gif", item.contentType)
+        assertEquals("Sticker.gif", item.name)
+        assertNull(item.previewUrl)
+        val webp = gif.copy(gif = null, webp = "https://static.klipy.com/hello.webp")
+        assertEquals(webp.webp, webp.mediaViewerAttachment(preferWebp = false)?.url)
+        assertNull(gif.copy(gif = null).mediaViewerAttachment(preferWebp = true))
+    }
 
     @Test fun `shared message cases render only valid gifs`() {
         val messages = cases.getValue("messages").jsonObject
