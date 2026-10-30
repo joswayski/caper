@@ -11,11 +11,13 @@ just that player in the card.
 
 - Signed-out first launch opens passwordless email request/verification and
   first-account profile onboarding, with no Guest/General fallback.
+- Ctrl/Cmd + Plus, Minus or 0 changes or resets interface zoom and briefly
+  shows its percentage without taking focus or moving content for the notice.
 - Packaged releases check for signed updates 20 seconds after launch and every
-  minute. **User Settings → Check for updates** checks in that menu, with inline
-  progress and success/failure feedback; it does not open Settings. The Updates
-  section in Settings keeps the same check action, shows the last successful check
-  time, and links the installed source revision to GitHub. Confirmed rate limits
+  minute. **Settings… → Updates → Check for updates** offers manual checks with
+  inline progress and success/failure feedback. The quick account menu has no
+  duplicate check action or background-check status. Settings shows the last
+  successful check time and links the installed source revision to GitHub. Confirmed rate limits
   quietly defer to the next check without discarding known updates. Opening Settings
   does not start another check. A known release adds a persistent
   **Update available** button above the profile/audio row, with a thin rainbow edge
@@ -327,7 +329,9 @@ just that player in the card.
   (owners) show the picture in a frame with an edit badge on its corner. The
   frame opens the native file dialog, or with a custom picture set a menu to
   choose another or remove it; without one, your mascot holds up a
-  "change me!" sign. GIFs upload unchanged up to 5 MB and
+  "change me!" sign. Regenerate and edit use matching badges on its bottom
+  corners; regeneration swaps the mascot without adding a progress row or
+  shifting the form. GIFs upload unchanged up to 5 MB and
   1024 px, and bigger ones are shrunk to a square that fits (frames and timing kept);
   other images become a 512 px square WebP; HEIC/AVIF are refused locally.
   Pictures replace the mascot in every avatar and icons fill rail tiles, cached by

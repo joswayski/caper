@@ -580,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn account_menu_check_reports_progress_success_and_retryable_failure_in_place() {
+    fn settings_check_reports_progress_success_and_retryable_failure_in_place() {
         let context = egui::Context::default();
         context.enable_accesskit();
         let mut app = crate::CaperApp::new(
@@ -602,41 +602,11 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |context| app.page(context),
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| app.settings_dialog(ui));
+                },
             )
         };
-        frame(&mut app, vec![]);
-        let output = frame(&mut app, vec![]);
-        let bounds = output
-            .platform_output
-            .accesskit_update
-            .as_ref()
-            .unwrap()
-            .nodes
-            .iter()
-            .find(|(_, node)| node.label() == Some("User Settings"))
-            .unwrap()
-            .1
-            .bounds()
-            .unwrap();
-        let settings = egui::pos2(
-            ((bounds.x0 + bounds.x1) / 2.0) as f32,
-            ((bounds.y0 + bounds.y1) / 2.0) as f32,
-        );
-        for pressed in [true, false] {
-            frame(
-                &mut app,
-                vec![
-                    egui::Event::PointerMoved(settings),
-                    egui::Event::PointerButton {
-                        pos: settings,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-            );
-        }
         frame(&mut app, vec![]);
         let output = frame(&mut app, vec![]);
         let pos = output
@@ -651,7 +621,7 @@ mod tests {
                     None
                 }
             })
-            .expect("manual check is directly in the account menu");
+            .expect("manual check stays available in Settings");
         for pressed in [true, false] {
             frame(
                 &mut app,
@@ -669,12 +639,7 @@ mod tests {
         receiver
             .try_recv()
             .expect("the button wakes the update worker");
-        assert!(app.dialog.is_none(), "checking must not open Settings");
         let checking = frame(&mut app, vec![]);
-        assert!(
-            egui::Popup::is_any_open(&context),
-            "keep the account menu open"
-        );
         let button = checking
             .platform_output
             .accesskit_update
@@ -696,10 +661,6 @@ mod tests {
             app.updates.state.lock().unwrap().finish(result);
             frame(&mut app, vec![]);
             let output = frame(&mut app, vec![]);
-            assert!(
-                egui::Popup::is_any_open(&context),
-                "removing an outdated update notice must not close the menu"
-            );
             assert!(
                 output.shapes.iter().any(|shape| matches!(
                     &shape.shape, egui::Shape::Text(text) if text.galley.job.text == expected
@@ -744,7 +705,6 @@ mod tests {
             }
             receiver.try_recv().expect("retry wakes the update worker");
             assert!(app.dialog.is_none());
-            assert!(egui::Popup::is_any_open(&context));
         }
         app.updates
             .state
@@ -753,10 +713,6 @@ mod tests {
             .finish(Ok(Some(release("0.1.99"))));
         frame(&mut app, vec![]);
         assert_eq!(app.updates.available().unwrap().version, "0.1.99");
-        assert!(
-            !egui::Popup::is_any_open(&context),
-            "only a found update leaves the menu for review"
-        );
         assert!(app.dialog.is_none());
     }
 
