@@ -228,7 +228,10 @@ const screenshot = (name) => {
 // On phones the member list slides in and out; these wait until it rests or is gone.
 const membersSettled = () => wait('!document.querySelector(".space-member-presence")?.getAnimations().length');
 function toggleMembers() {
-  browser("click", ".member-list-toggle");
+  if (evaluate('matchMedia("(max-width: 760px)").matches')) {
+    browser("click", ".chat-title-menu > summary");
+    browser("click", ".chat-header-menu button[aria-expanded]");
+  } else browser("click", ".member-list-toggle");
   membersSettled();
 }
 function closeMembers() {
@@ -289,7 +292,7 @@ function stableShell(selector) {
   assert.deepEqual(geometry(selector), before);
 }
 function testSettingRows(width, height) {
-  wait('document.querySelectorAll(".profile-dialog .privacy-settings input:checked").length === 2');
+  wait('document.querySelectorAll(".profile-dialog .privacy-settings input[type=radio]:checked").length === 2');
   const settingRows = evaluate(`(() => {
     const center = element => { const r = element.getBoundingClientRect(); return r.top + r.height / 2; };
     return [...document.querySelectorAll('.profile-dialog .privacy-settings label')].map(row => ({
@@ -300,7 +303,15 @@ function testSettingRows(width, height) {
       hintLineHeight: row.querySelector('small') && parseFloat(getComputedStyle(row.querySelector('small')).lineHeight),
     }));
   })()`);
-  assert.equal(settingRows.length, 6, "Both settings groups must render all choices");
+  assert.equal(
+    evaluate('document.querySelectorAll(".profile-dialog .privacy-settings input[type=radio]").length'),
+    6,
+    "Notification and privacy groups must render all radio choices",
+  );
+  assert.ok(
+    settingRows.some((row) => row.label === "When voice starts in a space"),
+    "Voice toggle must render",
+  );
   for (const row of settingRows) {
     assert.ok(Math.abs(row.textOffset) < 1, `${row.label}: text must be vertically centered`);
     assert.ok(Math.abs(row.radioOffset) < 1, `${row.label}: radio must be vertically centered`);
@@ -448,6 +459,9 @@ function testModalGeometry() {
     }
     browser("focus", '[aria-label="Manage fixture-channel"]');
     browser("press", "Enter");
+    wait(
+      '[...document.querySelectorAll("details[open] button")].some(button => button.textContent === "Channel settings" && button.checkVisibility())',
+    );
     browser("find", "role", "button", "click", "--name", "Channel settings", "--exact");
     const selectors = [".space-dialog[open]", ".space-field input", ".channel-privacy input"];
     const before = selectors.map(anchored);
@@ -524,7 +538,7 @@ function testModalGeometry() {
     );
     evaluate("spaceControlFixture.memberRelease()");
     wait(
-      'document.querySelector("#member-username").value === "" && document.querySelector(".member-manager").textContent.includes("@fixture_new")',
+      'document.querySelector("#member-username").value === "" && document.querySelector("#member-username").closest(".member-manager").textContent.includes("@fixture_new")',
     );
     screenshot(`modal-member-added-${width}-${height}`);
     evaluate('document.querySelector(".space-dialog[open]").scrollTop = 0');

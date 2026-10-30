@@ -8767,7 +8767,7 @@ private struct NewDirectMessageSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             SheetHeader(title: "New direct message", detail: "Enter an account’s exact username.", closeDisabled: pending, close: close)
-            let choices = suggestions.choices(text: username, candidates: candidates, focused: usernameFocused && !pending)
+            let choices = suggestions.choices(text: username, candidates: candidates, enabled: !pending)
             VStack(alignment: .leading, spacing: 6) {
                 TextField("Exact username", text: Binding(get: { username }, set: { if !pending { username = ProfileValidation.normalizeUsername($0) } })).textFieldStyle(.roundedBorder)
                     #if os(iOS)
@@ -8815,7 +8815,7 @@ private struct NewDirectMessageSheet: View {
             .interactiveDismissDisabled(pending).preference(key: DialogDismissDisabled.self, value: pending)
     }
     private func pickHighlighted() {
-        let choices = suggestions.choices(text: username, candidates: candidates, focused: !pending)
+        let choices = suggestions.choices(text: username, candidates: candidates, enabled: !pending)
         if let choice = suggestions.highlightedChoice(in: choices) { pick(choice) }
     }
     /// Fills in the exact username without opening the conversation; the list
@@ -9823,7 +9823,7 @@ private struct SpaceEditor: View {
                         } else {
                             Text("Invite by username").font(CaperTheme.font(14, weight: .bold))
                         }
-                        let choices = suggestions.choices(text: username, candidates: inviteCandidates, focused: memberFocused)
+                        let choices = suggestions.choices(text: username, candidates: inviteCandidates)
                         VStack(alignment: .leading, spacing: 6) {
                             // The field stays enabled during a request so it keeps focus; addMember ignores it until then.
                             HStack {
@@ -9923,7 +9923,7 @@ private struct SpaceEditor: View {
     }
     /// Return picks the highlighted suggestion while the list is open; it invites otherwise.
     private func submitMember() {
-        let choices = suggestions.choices(text: username, candidates: inviteCandidates, focused: true)
+        let choices = suggestions.choices(text: username, candidates: inviteCandidates)
         if let choice = suggestions.highlightedChoice(in: choices) { pickMember(choice) } else { addMember() }
     }
     /// Fills in the exact username without inviting; the list stays closed until it is edited.
@@ -10012,7 +10012,7 @@ private struct ChannelEditor: View {
                             Text(membersError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                             Button("Retry loading members") { Task { await loadMembers(channel) } }.disabled(loadingMembers)
                         }
-                        let choices = suggestions.choices(text: username, candidates: grantCandidates, focused: memberFocused)
+                        let choices = suggestions.choices(text: username, candidates: grantCandidates)
                         VStack(alignment: .leading, spacing: 6) {
                             // Not disabled while an invite is sent, so the field keeps focus; addMember ignores it until then.
                             HStack {
@@ -10130,7 +10130,7 @@ private struct ChannelEditor: View {
     }
     /// Return picks the highlighted suggestion while the list is open; it invites otherwise.
     private func submitMember(_ channel: Channel) {
-        let choices = suggestions.choices(text: username, candidates: grantCandidates, focused: true)
+        let choices = suggestions.choices(text: username, candidates: grantCandidates)
         if let choice = suggestions.highlightedChoice(in: choices) { pickMember(choice) } else { addMember(channel) }
     }
     /// Fills in the exact username without inviting; the list stays closed until it is edited.

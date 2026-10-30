@@ -2792,11 +2792,6 @@ html:has(.sidebar-sections-resize:active) * {
     width: 44px;
     height: 44px;
   }
-  /* iOS zooms focused inputs below 16px. Keep forms and keyboard entry stable. */
-  .space-field input,
-  .member-add input {
-    font-size: 16px;
-  }
   .space-dialog > header > button,
   .space-access-notice button {
     width: 44px;

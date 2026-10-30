@@ -145,6 +145,27 @@ async function testRecipientLookup() {
     assert.equal(created.length, 1);
     assert.equal(created[0].peer.username, "jordan");
     assert.equal(created[0].status, "outgoing");
+
+    if (width === 390) browser("click", ".navigation-toggle");
+    browser("click", '[aria-label="New direct message"]');
+    browser("fill", ".space-dialog input", "maya");
+    wait('!!document.querySelector(".people-suggestions")');
+    const buttonRect = () => evaluate(`document.querySelector('${submit}').getBoundingClientRect().toJSON()`);
+    const before = buttonRect();
+    browser(
+      "mouse",
+      "move",
+      String(Math.round(before.x + before.width / 2)),
+      String(Math.round(before.y + before.height / 2)),
+    );
+    browser("mouse", "down", "left");
+    assert.deepEqual(buttonRect(), before, "Leaving the username field must not move the action under the pointer");
+    browser("mouse", "up", "left");
+    wait('!document.querySelector(".space-dialog[open]")');
+    assert.ok(
+      (await conversations()).conversations.some((conversation) => conversation.peer.username === "maya"),
+      "One click must open the exact recipient while suggestions are showing",
+    );
     console.log(
       `PASS: recipient lookup, missing account, confirmation, edit invalidation, known recipient and explicit creation at ${width}px`,
     );

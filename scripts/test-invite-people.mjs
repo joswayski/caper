@@ -216,6 +216,11 @@ try {
   click("Cancel");
   wait('document.querySelectorAll("dialog[open]").length === 1');
   settings();
+  const mobileFields = evaluate(`return [...document.querySelectorAll('dialog[open] input, dialog[open] select')]
+    .filter(field => field.checkVisibility() && !['checkbox', 'radio', 'file'].includes(field.type))
+    .map(field => ({ name: field.getAttribute('aria-label') || field.id, size: parseFloat(getComputedStyle(field).fontSize) }));`);
+  assert.ok(mobileFields.length >= 5, "Exercise the link, username, expiry, limits and landing controls");
+  for (const field of mobileFields) assert.ok(field.size >= 16, `${field.name} must not trigger Safari's focus zoom`);
   capture("web-invite-settings-narrow");
   browser("scrollintoview", '.invite-link-options button[type="submit"]');
   const bounds = evaluate(
