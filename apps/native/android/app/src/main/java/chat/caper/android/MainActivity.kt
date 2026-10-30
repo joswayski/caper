@@ -700,6 +700,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             val selected = state.selectedSpace?.space?.id == space.id
             val muted = state.notificationSettings?.spaceMuted(space.id, now) == true
             val unread = state.unreadSpaces.any { it.id == space.id }
+            val unreadCount = state.unreadSpaces.firstOrNull { it.id == space.id }?.channels?.sumOf { it.unreadCount ?: 0 } ?: 0
+            val unreadLabel = if (unreadCount > 0) "$unreadCount unread ${if (unreadCount == 1) "message" else "messages"}" else "Unread activity"
             val connected = state.account != null && voice.phase == VoiceState.Phase.CONNECTED && voice.spaceId == space.id
             val voiceActive = state.account != null && (connected || space.id in state.voiceActivitySpaceIds)
             val interaction = remember(space.id) { MutableInteractionSource() }
@@ -712,14 +714,16 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 Box {
                     Surface(
                         Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).hoverable(interaction).clickable(interactionSource = interaction, indication = null) { viewModel.selectSpace(space.id) }
-                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
+                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) unreadLabel else null, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
                         color = Surface, shape = MaterialTheme.shapes.medium,
                     ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, TextMuted) }
-                    if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
+                    if (muted) Box(Modifier.align(Alignment.TopStart).offset(x = (-3).dp, y = (-3).dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
                     if (voiceActive) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(18.dp).background(if (connected) VoiceSessionGreen else Blackout, CircleShape).border(2.dp, Blackout, CircleShape).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
                         Icon(painterResource(R.drawable.lucide_volume_2), null, Modifier.size(11.dp), tint = Text)
                     }
-                    if (unread) Box(Modifier.align(Alignment.TopStart).offset(x = (-2).dp, y = (-2).dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
+                    if (unreadCount > 0) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).defaultMinSize(minWidth = 20.dp, minHeight = 20.dp).background(Terracotta, CircleShape).border(2.dp, Blackout, CircleShape).padding(horizontal = 5.dp, vertical = 2.dp).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
+                        Text(if (unreadCount > 99) "99+" else "$unreadCount", color = Text, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    } else if (unread) Box(Modifier.align(Alignment.BottomEnd).offset(x = 2.dp, y = 2.dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
                 }
             }
         }

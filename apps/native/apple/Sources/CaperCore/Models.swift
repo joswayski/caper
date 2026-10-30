@@ -123,6 +123,7 @@ public struct UnreadChannel: Codable, Equatable, Sendable {
     public let id: String
     public let lastSeq: String
     public var readSeq: String? = nil
+    public var unreadCount: Int? = nil
 }
 
 public struct UnreadSpace: Codable, Equatable, Sendable {

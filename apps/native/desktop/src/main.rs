@@ -2521,10 +2521,11 @@ impl CaperApp {
                     );
                     if name == "parity-unread" {
                         app.unread_spaces = serde_json::from_value(serde_json::json!([
-                            {"id": "space0000001", "channels": [{"id": "chan00000002", "lastSeq": "4"}]},
-                            {"id": "space0000002", "channels": [{"id": "quiet0000001", "lastSeq": "6"}]}
+                            {"id": "space0000001", "channels": [{"id": "chan00000002", "lastSeq": "4", "unreadCount": 1}]},
+                            {"id": "space0000002", "channels": [{"id": "quiet0000001", "lastSeq": "150", "unreadCount": 137}]}
                         ]))
                         .expect("valid unread fixture");
+                        app.voice_activity_spaces.insert("space0000002".into());
                     }
                 } else if matches!(name, "parity-invitation" | "parity-invitation-narrow") {
                     let invitation = model::Space {
@@ -11734,6 +11735,13 @@ impl CaperApp {
                         for (id, name, demo, (icon_asset, icon_url)) in spaces {
                             let active = self.selected_space.as_deref() == Some(&id);
                             let unread = self.unread_spaces.iter().any(|space| space.id == id);
+                            let unread_count: u64 = self
+                                .unread_spaces
+                                .iter()
+                                .filter(|space| space.id == id)
+                                .flat_map(|space| &space.channels)
+                                .filter_map(|channel| channel.unread_count)
+                                .sum();
                             let muted = (!demo && self.account.is_some())
                                 .then(|| self.muted_label(&Scope::Space(id.clone())))
                                 .flatten();
@@ -11782,7 +11790,7 @@ impl CaperApp {
                             if let Some(label) = &muted {
                                 description.push_str(&format!("\n{label}"));
                                 let badge = egui::Rect::from_center_size(
-                                    response.rect.right_bottom() - egui::vec2(3.0, 3.0),
+                                    response.rect.left_top() + egui::vec2(3.0, 3.0),
                                     egui::vec2(18.0, 18.0),
                                 );
                                 ui.painter().circle_filled(badge.center(), 9.0, BLACKOUT);
@@ -11813,13 +11821,39 @@ impl CaperApp {
                                     "\nVoice active in this space"
                                 });
                             }
-                            if unread {
-                                // Leave the speaker and mute badges unobscured.
-                                let center = if voice_active {
-                                    response.rect.left_top() + egui::vec2(1.0, 1.0)
+                            if unread_count > 0 {
+                                let label = if unread_count > 99 {
+                                    "99+".to_owned()
                                 } else {
-                                    response.rect.right_top() + egui::vec2(-1.0, 1.0)
+                                    unread_count.to_string()
                                 };
+                                let galley = ui.painter().layout_no_wrap(
+                                    label,
+                                    egui::FontId::proportional(11.0),
+                                    TEXT,
+                                );
+                                let size = egui::vec2((galley.size().x + 10.0).max(20.0), 20.0);
+                                let badge = egui::Rect::from_min_size(
+                                    response.rect.right_bottom() + egui::vec2(3.0 - size.x, -17.0),
+                                    size,
+                                );
+                                ui.painter().rect_filled(badge, 10.0, BLACKOUT);
+                                ui.painter().rect_filled(badge.shrink(2.0), 8.0, TERRACOTTA);
+                                ui.painter().galley(
+                                    badge.center() - galley.size() / 2.0,
+                                    galley,
+                                    TEXT,
+                                );
+                                description.push_str(&format!(
+                                    "\n{unread_count} unread {}",
+                                    if unread_count == 1 {
+                                        "message"
+                                    } else {
+                                        "messages"
+                                    }
+                                ));
+                            } else if unread {
+                                let center = response.rect.right_bottom() - egui::vec2(1.0, 1.0);
                                 ui.painter().circle_filled(center, 5.0, BLACKOUT);
                                 ui.painter().circle_filled(center, 3.0, TEXT);
                                 description.push_str("\nUnread activity");
@@ -43516,6 +43550,12 @@ mod tests {
     fn voice_activity_rail_preserves_unread_and_muted_badges() {
         let (context, mut app) = fixture("parity-unread");
         context.enable_accesskit();
+        // Old servers omit counts: preserve their dot until a fresh snapshot.
+        for space in &mut app.unread_spaces {
+            for channel in &mut space.channels {
+                channel.unread_count = None;
+            }
+        }
         let space = app
             .spaces
             .iter()
@@ -43529,18 +43569,41 @@ mod tests {
         let label = format!(
             "{}, {}, Voice active in this space, Unread activity",
             space.name,
-            app.muted_label(&crate::notifications::Scope::Space(space.id))
+            app.muted_label(&crate::notifications::Scope::Space(space.id.clone()))
                 .unwrap()
         );
         let rect = node_bounds(&output, &label).expect("all badge descriptions remain accessible");
         for center in [
-            rect.left_top() + egui::vec2(1.0, 1.0),
+            rect.right_bottom() - egui::vec2(1.0, 1.0),
             rect.right_top() + egui::vec2(-3.0, 3.0),
-            rect.right_bottom() - egui::vec2(3.0, 3.0),
+            rect.left_top() + egui::vec2(3.0, 3.0),
         ] {
             assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
                 egui::Shape::Circle(circle) if circle.fill == super::BLACKOUT && circle.center == center
             )), "badge backing remains visible at {center:?}");
+        }
+        for (count, badge) in [(1, "1"), (12, "12"), (99, "99"), (137, "99+")] {
+            app.unread_spaces
+                .iter_mut()
+                .find(|s| s.id == space.id)
+                .unwrap()
+                .channels[0]
+                .unread_count = Some(count);
+            let output = context.run(egui::RawInput::default(), |context| {
+                egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+            });
+            let counted_label = label.replace(
+                "Unread activity",
+                &format!(
+                    "{count} unread {}",
+                    if count == 1 { "message" } else { "messages" }
+                ),
+            );
+            assert!(
+                node_bounds(&output, &counted_label).is_some(),
+                "the full count remains accessible alongside voice and mute state"
+            );
+            assert!(texts(&output).contains(&badge), "visible count caps at 99+");
         }
     }
 

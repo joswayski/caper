@@ -3194,12 +3194,14 @@ export default function Spaces({
     <nav className="space-rail" aria-label="Spaces">
       {spaces.map((space) => {
         const muted = isMuted(overrideFor(notifications, { spaceId: space.id })?.mutedUntil);
-        const unread = unreadSpaces.some((item) => item.id === space.id);
+        const unread = unreadSpaces.find((item) => item.id === space.id);
+        const unreadCount = unread?.channels.reduce((total, channel) => total + (channel.unreadCount ?? 0), 0) ?? 0;
         const connected = connectedSpaceId === space.id;
         const voiceActive = connected || voiceActivity.includes(space.id);
         const label = [
           space.name,
-          unread && "unread activity",
+          unread &&
+            (unreadCount ? `${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"}` : "unread activity"),
           muted && "muted",
           voiceActive && (connected ? "connected to voice" : "voice active"),
         ]
@@ -3224,7 +3226,11 @@ export default function Spaces({
               onClick={() => choose(space.id)}
             >
               <SpaceIcon space={space} />
-              {unread && <i className="space-unread" aria-hidden="true" />}
+              {unread && (
+                <i className="space-unread" data-count={unreadCount || undefined} aria-hidden="true">
+                  {unreadCount ? (unreadCount > 99 ? "99+" : unreadCount) : null}
+                </i>
+              )}
               {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
               {voiceActive && (
                 <Volume2 className="space-rail-voice" data-connected={connected ? "" : undefined} aria-hidden="true" />

@@ -1133,11 +1133,13 @@ private struct SpaceRailButton: View {
     private let corner: CGFloat = 12
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
     private var unread: Bool { model.unreadSpaces.contains { $0.id == space.id } }
+    private var unreadCount: Int { model.unreadSpaces.first { $0.id == space.id }?.channels.reduce(0) { $0 + ($1.unreadCount ?? 0) } ?? 0 }
     private var connected: Bool { model.account != nil && model.voice.phase == .connected && model.voice.context?.spaceID == space.id }
     private var voiceActive: Bool { model.account != nil && (connected || model.voiceActivitySpaceIDs.contains(space.id)) }
     private var state: String {
         let base: String = model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : ""
-        return [base, unread ? "Unread activity" : "", muted ? "Muted" : "", connected ? "Connected to voice" : voiceActive ? "Voice active" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
+        let unreadLabel = unreadCount > 0 ? "\(unreadCount) unread \(unreadCount == 1 ? "message" : "messages")" : "Unread activity"
+        return [base, unread ? unreadLabel : "", muted ? "Muted" : "", connected ? "Connected to voice" : voiceActive ? "Voice active" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     var body: some View {
@@ -1145,7 +1147,7 @@ private struct SpaceRailButton: View {
             // The space's icon fills the tile; badges stay on top of it.
             SpaceIconTile(name: space.demo == true ? "C" : space.name, picture: space.iconPicture, size: narrow ? 44 : 40,
                           fill: CaperTheme.surface, corner: corner, dimmed: muted)
-                .overlay(alignment: .bottomTrailing) { mutedBadge }
+                .overlay(alignment: .topLeading) { mutedBadge }
                 .overlay(alignment: .topTrailing) {
                     if voiceActive {
                         CaperIcon(name: "volume-2", size: 11)
@@ -1156,11 +1158,19 @@ private struct SpaceRailButton: View {
                             .offset(x: 3, y: -3).accessibilityHidden(true)
                     }
                 }
-                .overlay(alignment: .topLeading) {
-                    if unread {
+                .overlay(alignment: .bottomTrailing) {
+                    if unreadCount > 0 {
+                        Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
+                            .font(CaperTheme.font(11, weight: .bold)).monospacedDigit()
+                            .foregroundStyle(CaperTheme.text)
+                            .padding(.horizontal, 4).frame(minWidth: 18, minHeight: 18)
+                            .background(Capsule().fill(CaperTheme.terracotta))
+                            .overlay(Capsule().stroke(CaperTheme.blackout, lineWidth: 2))
+                            .offset(x: 3, y: 3).accessibilityHidden(true)
+                    } else if unread {
                         Circle().fill(CaperTheme.text).frame(width: 8, height: 8)
                             .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
-                            .offset(x: -2, y: -2).accessibilityHidden(true)
+                            .offset(x: 2, y: 2).accessibilityHidden(true)
                     }
                 }
         }
@@ -1184,7 +1194,7 @@ private struct SpaceRailButton: View {
             MutedBell(size: 9)
                 .frame(width: 16, height: 16)
                 .background(Circle().fill(CaperTheme.blackout))
-                .offset(x: 4, y: 4)
+                .offset(x: -4, y: -4)
         }
     }
 }
