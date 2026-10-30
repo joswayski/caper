@@ -1164,6 +1164,8 @@ fn projected_reactions(
 struct CaperApp {
     daily_icon: Option<daily_icon::DailyIcon>,
     window_state: Option<window_state::WindowState>,
+    zoom_factor: Option<f32>,
+    zoom_notice_until: f64,
     /// When files were first dragged over the window, for the drop overlay's animation.
     file_drop_since: Option<f64>,
     /// The `parity-file-drop` fixture shows the overlay without a drag.
@@ -1582,6 +1584,8 @@ impl CaperApp {
         let mut app = Self {
             daily_icon: None,
             window_state: None,
+            zoom_factor: None,
+            zoom_notice_until: 0.0,
             file_drop_since: None,
             file_drop_fixture: false,
             worker,
@@ -10301,6 +10305,7 @@ impl CaperApp {
         if self.account.is_some() && !self.updates.has_available() {
             self.space_notice(context);
         }
+        self.zoom_notice(context);
         // egui's buttons and custom click targets do not set a hand cursor.
         // Only supply a fallback: text fields and resize handles keep theirs.
         // A disabled button on a clickable row (a channel's unavailable
@@ -10341,6 +10346,38 @@ impl CaperApp {
                 context.set_cursor_icon(egui::CursorIcon::PointingHand);
             }
         }
+    }
+
+    /// Observe egui's zoom, including its keyboard shortcuts and reset, without
+    /// treating the monitor's DPI scale as user zoom or moving page content.
+    fn zoom_notice(&mut self, context: &egui::Context) {
+        let factor = context.zoom_factor();
+        let now = context.input(|input| input.time);
+        if self
+            .zoom_factor
+            .replace(factor)
+            .is_some_and(|previous| previous != factor)
+        {
+            self.zoom_notice_until = now + 2.0;
+        }
+        if now >= self.zoom_notice_until {
+            return;
+        }
+        context.request_repaint_after(Duration::from_secs_f64(self.zoom_notice_until - now));
+        egui::Area::new(egui::Id::new("zoom-notice"))
+            .order(egui::Order::Tooltip)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0))
+            .interactable(false)
+            .show(context, |ui| {
+                egui::Frame::new()
+                    .fill(SURFACE)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(8)
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        ui.label(bold(format!("Zoom {:.0}%", factor * 100.0)).size(14.0));
+                    });
+            });
     }
 
     /// Only the release notes scroll; the install action always stays visible.
@@ -15144,7 +15181,6 @@ impl CaperApp {
                 if self.focus_user_settings {
                     settings.request_focus();
                 }
-                // Keep the result visible when a check removes the update notice.
                 let settings_menu =
                     egui::Popup::menu(&settings).id(ui.make_persistent_id("account-settings-menu"));
                 if settings.clicked() {
@@ -15157,27 +15193,6 @@ impl CaperApp {
                     .show(|ui| {
                         if ui.button("Settings…").clicked() {
                             self.open_settings();
-                            ui.close();
-                        }
-                        let checking = self.updates.status() == updates::Status::Checking;
-                        if ui
-                            .add_enabled(
-                                self.updates.can_check() && !checking,
-                                egui::Button::new("Check for updates"),
-                            )
-                            .on_hover_text(if self.updates.can_check() {
-                                "Check now without leaving this menu."
-                            } else {
-                                "Update checks are available in packaged release builds."
-                            })
-                            .clicked()
-                        {
-                            self.updates.check_now();
-                        }
-                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                            self.update_check_status(ui);
-                        });
-                        if self.updates.has_available() {
                             ui.close();
                         }
                         ui.separator();
@@ -23505,8 +23520,7 @@ impl CaperApp {
     }
 
     fn update_check_status(&self, ui: &mut egui::Ui) {
-        // Both Settings and the account menu keep their status rows mounted,
-        // so even a check that finishes within one frame cannot move controls.
+        // Settings keeps its status row mounted, so a fast check cannot move controls.
         let (message, color) = match self.updates.status() {
             updates::Status::UpToDate => ("No newer published release is available.".into(), MUTED),
             updates::Status::Available => ("An update is available to review.".into(), MUTED),
@@ -24448,7 +24462,7 @@ impl CaperApp {
             );
         let (mut change, mut remove, mut adjust, mut restore) = (false, false, false, false);
         if custom || gallery_available {
-            egui::Popup::menu(&response).show(|ui| {
+            let shown = egui::Popup::menu(&response).show(|ui| {
                 if !idle {
                     ui.disable();
                 }
@@ -24479,6 +24493,11 @@ impl CaperApp {
                     ui.close();
                 }
             });
+            if let Some(shown) = shown {
+                // Clicking the dialog raises it; its picture menu must stay above it.
+                ui.ctx()
+                    .set_sublayer(ui.layer_id(), shown.response.layer_id);
+            }
         } else {
             change = response.clicked();
         }
@@ -24490,23 +24509,51 @@ impl CaperApp {
                 .is_some_and(|account| account.avatar_asset.is_none())
         {
             // Stays enabled while it runs (a repeat is ignored), so it doesn't flash.
-            let regenerating = self.picture_edit.regenerating && self.picture_edit.busy.is_some();
-            let regenerate = ui.add_enabled(
-                (idle || regenerating) && !self.loading,
-                egui::Button::image(
-                    egui::Image::new(egui::include_image!("../resources/icons/rotate-ccw.svg"))
-                        .tint(TEXT)
-                        .fit_to_exact_size(egui::vec2(16.0, 16.0)),
-                )
-                .min_size(egui::vec2(32.0, 32.0))
-                .corner_radius(16.0),
+            let enabled = (idle || regenerating) && !self.loading;
+            let badge = egui::Rect::from_min_size(
+                egui::pos2(outer.left(), outer.bottom() - 34.0),
+                egui::vec2(34.0, 34.0),
             );
+            let regenerate = ui.interact(
+                badge,
+                response.id.with("regenerate"),
+                if enabled {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                },
+            );
+            ui.painter().rect_filled(badge, 10.0, SURFACE);
+            ui.painter().rect_filled(
+                badge.shrink(3.0),
+                8.0,
+                match (
+                    enabled,
+                    regenerate.hovered(),
+                    regenerate.is_pointer_button_down_on(),
+                ) {
+                    (false, ..) => BORDER,
+                    (true, _, true) => ACTION_PRESS,
+                    (true, true, false) => ACTION_HOVER,
+                    (true, false, false) => ACTION,
+                },
+            );
+            egui::Image::new(egui::include_image!("../resources/icons/rotate-ccw.svg"))
+                .tint(if enabled { ON_ACTION } else { MUTED })
+                .paint_at(
+                    ui,
+                    egui::Rect::from_center_size(badge.center(), egui::vec2(15.0, 15.0)),
+                );
+            if regenerate.has_focus() {
+                ui.painter().rect_stroke(
+                    badge.shrink(1.0),
+                    9.0,
+                    Stroke::new(2.0, TERRACOTTA),
+                    egui::StrokeKind::Inside,
+                );
+            }
             regenerate.widget_info(|| {
-                egui::WidgetInfo::labeled(
-                    egui::WidgetType::Button,
-                    idle && !self.loading,
-                    "Regenerate avatar",
-                )
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Regenerate avatar")
             });
             if regenerate.on_hover_text("Regenerate avatar").clicked()
                 && idle
@@ -24521,7 +24568,7 @@ impl CaperApp {
                 });
             }
         }
-        if let Some(removing) = busy {
+        if let Some(removing) = busy.filter(|_| !regenerating) {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(12.0).color(MUTED));
                 ui.label(
@@ -45054,6 +45101,140 @@ mod tests {
                 .as_deref(),
             Some("middle-portrait")
         );
+    }
+
+    #[test]
+    fn profile_regeneration_keeps_the_picture_controls_and_form_in_place() {
+        use crate::pictures::{Applied, Changed, Target};
+        let (context, mut app) = fixture("parity-channel");
+        app.token = Some("fixture-only".into());
+        app.open_profile_dialog();
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let before = render(&mut app, &context, vec![]);
+        let frame = node_bounds(&before, "Change profile picture").unwrap();
+        let regenerate = node_bounds(&before, "Regenerate avatar").unwrap();
+        assert!(
+            frame.contains_rect(regenerate),
+            "regenerate belongs on the picture"
+        );
+        assert_eq!(
+            regenerate.bottom(),
+            frame.bottom(),
+            "both badges share a baseline"
+        );
+        let positions = |output: &egui::FullOutput| {
+            ["Edit profile", "Username", "Display name", "Save profile"]
+                .map(|text| text_position(output, text))
+        };
+        let resting = positions(&before);
+        // Reusing the picture menu after interacting with the dialog must not
+        // reopen it behind the dialog's raised layer.
+        click(&mut app, &context, frame.max - egui::vec2(17.0, 17.0));
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Escape));
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, regenerate.center());
+        assert!(app.picture_edit.regenerating);
+        for _ in 0..3 {
+            let busy = render(&mut app, &context, vec![]);
+            assert_eq!(positions(&busy), resting);
+            assert_eq!(node_bounds(&busy, "Regenerate avatar"), Some(regenerate));
+            assert!(!shows(&busy, "Saving…"));
+            assert!(
+                !egui::Popup::is_any_open(&context),
+                "regenerate must not open the edit menu"
+            );
+        }
+        let mut account = app.account.clone().unwrap();
+        account.avatar_id = Some(3);
+        app.picture_changed(
+            Target::Avatar,
+            Ok(Changed {
+                applied: Applied::Account(account),
+                local: None,
+            }),
+        );
+        for _ in 0..3 {
+            assert_eq!(positions(&render(&mut app, &context, vec![])), resting);
+        }
+        // The adjacent pencil still opens its own menu.
+        click(&mut app, &context, frame.max - egui::vec2(17.0, 17.0));
+        assert!(shows(
+            &render(&mut app, &context, vec![]),
+            "Previous pictures"
+        ));
+        click_label(&mut app, &context, "Previous pictures");
+        render(&mut app, &context, vec![]);
+        assert!(shows(
+            &render(&mut app, &context, vec![]),
+            "Choose a picture to preview. Save when you’re ready."
+        ));
+    }
+
+    #[test]
+    fn zoom_shortcuts_show_percentage_then_hide_without_changing_focus() {
+        let (context, mut app) = fixture("parity-channel");
+        let frame = |app: &mut CaperApp, time, events| {
+            context.run(
+                egui::RawInput {
+                    time: Some(time),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.page(context),
+            )
+        };
+        frame(&mut app, 1.0, vec![]);
+        assert!(!shows(&frame(&mut app, 1.1, vec![]), "Zoom 100%"));
+        let focus = context.memory(|memory| memory.focused());
+        for (index, (key, expected)) in [
+            (egui::Key::Plus, "Zoom 110%"),
+            (egui::Key::Equals, "Zoom 120%"),
+            (egui::Key::Minus, "Zoom 110%"),
+            (egui::Key::Num0, "Zoom 100%"),
+            (egui::Key::Minus, "Zoom 90%"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let time = 2.0 + index as f64;
+            for (pressed, offset) in [(true, 0.0), (false, 0.1)] {
+                frame(
+                    &mut app,
+                    time + offset,
+                    vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: egui::Modifiers::COMMAND,
+                    }],
+                );
+            }
+            let output = frame(&mut app, time + 0.2, vec![]);
+            assert!(shows(&output, expected), "missing {expected}");
+            assert_eq!(context.memory(|memory| memory.focused()), focus);
+        }
+        assert!(shows(&frame(&mut app, 7.9, vec![]), "Zoom 90%"));
+        assert!(!shows(&frame(&mut app, 8.2, vec![]), "Zoom 90%"));
+    }
+
+    #[test]
+    fn account_menu_leaves_update_controls_in_settings() {
+        let (context, mut app) = fixture("parity-desktop");
+        app.updates = crate::updates::Updates::preview_status(crate::updates::Status::UpToDate);
+        click_label(&mut app, &context, "User Settings");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Settings…") && shows(&output, "Audio test"));
+        assert!(!shows(&output, "Check for updates"));
+        assert!(!shows(&output, "No newer published release is available."));
     }
 
     #[test]
