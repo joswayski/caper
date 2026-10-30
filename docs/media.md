@@ -10474,8 +10474,11 @@ Validation:
   was available for native layout or software-keyboard acceptance.
 - Apple implementation and existing suggestion-state tests are updated; no
   Xcode/Apple SDK is available here, so they have not been compiled or run.
-- The older `MODALS_ONLY=1 scripts/test-space-controls.mjs` run timed out waiting
-  for its mocked member addition to appear. That broader suite is not a passing
-  result; the targeted DM/invite suites and field audit above passed.
+- The broader `MODALS_ONLY=1 scripts/test-space-controls.mjs` run is not a
+  passing result. Its stale member-section selector and settings counts were
+  corrected, and mobile member actions now use the visible channel menu. A
+  subsequent run was blocked because the account footer covered the Space
+  settings menu action on a mobile viewport. This separate menu issue remains;
+  the targeted DM/invite suites and field audit above passed.
 - Docker has no running daemon in this orb; the web image's application build
   stage was checked directly by `npm run check`, not by building the image.
