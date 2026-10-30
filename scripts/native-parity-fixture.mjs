@@ -412,6 +412,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       type: "text",
       text,
       ...(message.content.attachments ? { attachments: message.content.attachments } : {}),
+      ...(message.content.gif ? { gif: message.content.gif } : {}),
       ...(mentions.length ? { mentions } : {}),
     };
     versions.push({ revision: message.revision, content: clone(message.content), createdAt: message.editedAt });
@@ -652,6 +653,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             : messageFor(messageId);
           if (!message || typeof text !== "string") return reject(response, 400, "Invalid fixture edit.");
           if (body.incomingEdit.attachments) message.content.attachments = body.incomingEdit.attachments;
+          if (body.incomingEdit.gif) message.content.gif = body.incomingEdit.gif;
           edit(message, text);
         }
         if (body.incomingReaction) {

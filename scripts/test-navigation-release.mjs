@@ -36,6 +36,16 @@ let socket;
 let recording = false;
 try {
   assert.equal((await (await fetch(`${api}/health`)).json()).fixture, true);
+  assert.equal(
+    (
+      await fetch(`${api}/__fixture/control`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reset: true }),
+      })
+    ).status,
+    200,
+  );
   browser("open", "about:blank");
   browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
   browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
@@ -84,6 +94,105 @@ try {
       sessionId,
     );
   };
+
+  // KLIPY media is mocked locally; actual touch input still passes through the
+  // rendered GIF/video and the room's navigation handlers.
+  const mediaBytes = (format, options = []) =>
+    execFileSync("ffmpeg", [
+      "-v",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc2=size=240x160:rate=8:duration=1",
+      ...options,
+      "-f",
+      format,
+      "pipe:1",
+    ]).toString("base64");
+  const gifBytes = mediaBytes("gif");
+  const videoBytes = mediaBytes("mp4", ["-c:v", "libx264", "-movflags", "frag_keyframe+empty_moov"]);
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(event.data);
+    if (message.method !== "Fetch.requestPaused") return;
+    const video = message.params.request.url.endsWith(".mp4");
+    void cdp(
+      "Fetch.fulfillRequest",
+      {
+        requestId: message.params.requestId,
+        responseCode: 200,
+        responseHeaders: [{ name: "Content-Type", value: video ? "video/mp4" : "image/gif" }],
+        body: video ? videoBytes : gifBytes,
+      },
+      sessionId,
+    );
+  });
+  await cdp("Fetch.enable", { patterns: [{ urlPattern: "https://fixture.klipy.com/*" }] }, sessionId);
+  for (const variant of ["video", "gif", "sticker"]) {
+    const response = await fetch(`${api}/__fixture/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        incomingEdit: {
+          channelId: "chan00000001",
+          messageId: "chan00000001m04",
+          text: `TEST FIXTURE — swipe ${variant}, then tap`,
+          gif: {
+            provider: "klipy",
+            kind: variant === "sticker" ? "sticker" : "gif",
+            slug: "fixture-swipe",
+            title: "TEST FIXTURE media",
+            width: 240,
+            height: 160,
+            gif: "https://fixture.klipy.com/swipe.gif",
+            ...(variant === "video" ? { mp4: "https://fixture.klipy.com/swipe.mp4" } : {}),
+          },
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const loaded =
+      variant === "video"
+        ? 'document.querySelector(".chat-message-gif video")?.readyState >= 2'
+        : 'document.querySelector(".chat-message-gif img")?.naturalWidth > 0';
+    // Yield to the CDP response handler while the mocked media loads.
+    for (let attempt = 0; attempt < 50 && !evaluate(loaded); attempt++) await pause(100);
+    assert.ok(evaluate(loaded), `${variant}: mock media loaded`);
+    const media = evaluate('document.querySelector(".chat-message-gif").getBoundingClientRect().toJSON()');
+    if (artifacts && variant === "video") {
+      browser("record", "start", `${artifacts}/media-swipe.mp4`, "--fps", "30", "--cursor");
+      recording = true;
+    }
+    const x = media.left + 20,
+      y = media.top + media.height / 2;
+    await touch("touchStart", x, y);
+    for (let step = 1; step <= 20; step++) {
+      await touch("touchMove", x + step * 10, y, 0.025);
+      await pause(25);
+    }
+    await touch("touchEnd", 0, 0);
+    await pause(500);
+    settled();
+    assert.equal(browsing(), true, `${variant}: swiping media must reveal Browse`);
+    assert.equal(
+      evaluate('!!document.querySelector(".chat-viewer")'),
+      false,
+      `${variant}: release must not open media`,
+    );
+    browser("find", "role", "button", "click", "--name", "Close navigation", "--exact");
+    settled();
+    await touch("touchStart", x, y);
+    await touch("touchEnd", 0, 0);
+    browser("wait", "--fn", '!!document.querySelector(".chat-viewer")');
+    // Let the viewer paint, including any intercepted media request.
+    await pause(600);
+    browser("find", "role", "button", "click", "--name", "Close viewer", "--exact");
+    if (recording) {
+      browser("record", "stop");
+      recording = false;
+    }
+    console.log(`PASS: ${variant} swipe opens Browse without a viewer; ordinary tap opens viewer`);
+  }
 
   // Assert the rendered offset, not animation duration or internal easing parameters.
   // A held release must start gently, move monotonically and reach its destination.

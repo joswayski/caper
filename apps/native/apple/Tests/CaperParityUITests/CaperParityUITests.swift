@@ -3383,6 +3383,34 @@ final class CaperParityUITests: XCTestCase {
         _ = try require(app.descendants(matching: .any)["mention-card"], timeout: 5, "Tapping a pill must open the mention card")
     }
 
+    func testSwipeFromGifOrStickerDoesNotOpenViewer() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        for kind in ["gif", "sticker"] {
+            // An unavailable source still exercises the real message media button;
+            // this checks gesture arbitration, not KLIPY delivery or image decoding.
+            try await Self.fixtureControl(["incomingEdit": [
+                "channelId": "chan00000001", "messageId": "chan00000001m04", "text": "TEST FIXTURE media swipe",
+                "gif": ["provider": "klipy", "kind": kind, "slug": "fixture-swipe", "title": "TEST FIXTURE media",
+                        "width": 240, "height": 160, "gif": "https://fixture.klipy.com/swipe.gif"],
+            ]])
+            let app = launch()
+            let media = try require(app.buttons["Open TEST FIXTURE media"], timeout: 30, "Missing media button")
+            let start = media.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5))
+            start.press(forDuration: 0.01,
+                        thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0)).withOffset(CGVector(dx: 0, dy: media.frame.midY)),
+                        withVelocity: .slow, thenHoldForDuration: 0)
+            XCTAssertTrue(app.buttons["Close navigation"].waitForExistence(timeout: 3), "Swiping media opens Browse")
+            XCTAssertFalse(app.buttons["media-viewer-close"].waitForExistence(timeout: 1), "The swipe's release must not open media")
+            app.buttons["Close navigation"].tap()
+            XCTAssertTrue(app.buttons["Back to Browse"].waitForExistence(timeout: 3))
+            try await Task.sleep(for: .milliseconds(600))
+            media.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            XCTAssertTrue(app.buttons["media-viewer-close"].waitForExistence(timeout: 3), "An ordinary media tap still opens the viewer")
+            app.terminate()
+        }
+    }
+
     /// The phone member list keeps its contents until it has slid away.
     private func assertMembersClosed(in app: XCUIApplication, _ message: String) {
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: staticTexts("Members", in: app).firstMatch)

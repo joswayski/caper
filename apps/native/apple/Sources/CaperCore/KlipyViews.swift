@@ -77,6 +77,7 @@ struct MessageGifView: View {
 
     var body: some View {
         Button {
+            guard !SwipeTapGuard.swiping else { return }
             guard let item = gif.mediaViewerAttachment else { return }
             if let mediaViewer {
                 mediaViewer(MediaViewerRequest(items: [item], start: 0, chat: nil, hideSpoiler: { _ in }))
