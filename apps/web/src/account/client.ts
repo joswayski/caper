@@ -35,11 +35,13 @@ export function displayNameError(value: string, saved?: string | null) {
 export class AccountApiError extends Error {
   readonly status: number;
   readonly attemptsRemaining?: number;
+  readonly code?: string;
 
-  constructor(status: number, message: string, attemptsRemaining?: number) {
+  constructor(status: number, message: string, attemptsRemaining?: number, code?: string) {
     super(message);
     this.status = status;
     this.attemptsRemaining = attemptsRemaining;
+    this.code = code;
   }
 }
 
@@ -93,10 +95,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: init?.body ? { "content-type": "application/json", ...init.headers } : init?.headers,
   });
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { error?: unknown; attemptsRemaining?: number } | null;
+    const body = (await response.json().catch(() => null)) as {
+      error?: unknown;
+      attemptsRemaining?: number;
+      code?: string;
+    } | null;
     // Proxies and gateways answer with their own JSON (`{"error": true, ...}`); only an API message is a message.
     const message = typeof body?.error === "string" ? body.error : "Account request failed";
-    throw new AccountApiError(response.status, message, body?.attemptsRemaining);
+    throw new AccountApiError(response.status, message, body?.attemptsRemaining, body?.code);
   }
   return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
 }
@@ -127,10 +133,17 @@ export async function verifyEmailCode(challengeId: string, code: string) {
   return rememberAccount(result.account);
 }
 
-export async function updateProfile(username: string, displayName: string) {
+export interface ProfileAvatar {
+  avatarId: number;
+  avatarAsset: string | null;
+  expectedAvatarId: number | null;
+  expectedAvatarAsset: string | null;
+}
+
+export async function updateProfile(username: string, displayName: string, avatar?: ProfileAvatar) {
   const account = await request<Account>("/api/account/profile", {
     method: "POST",
-    body: JSON.stringify({ username, displayName }),
+    body: JSON.stringify({ username, displayName, avatar }),
   });
   return rememberSavedAccount(account);
 }

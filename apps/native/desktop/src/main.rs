@@ -46,6 +46,7 @@ mod os_notifications;
 mod pictures;
 mod player;
 mod profile_dm;
+mod profile_edit;
 mod startup;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
@@ -1528,6 +1529,7 @@ struct CaperApp {
     /// download once the next frame inserts them.
     local_pictures: Vec<(String, pictures::Frames)>,
     picture_edit: PictureEdit,
+    profile_edit: Option<profile_edit::Draft>,
     open_after_refresh: Option<String>,
     /// The Caper team's inbox (`feedbackTeam` accounts only), and whether it
     /// covers the conversation pane.
@@ -1838,6 +1840,7 @@ impl CaperApp {
             pictures,
             local_pictures: Vec::new(),
             picture_edit: PictureEdit::default(),
+            profile_edit: None,
             open_after_refresh: None,
             feedback: feedback::Inbox::default(),
             feedback_open: false,
@@ -4143,16 +4146,6 @@ impl CaperApp {
                         }
                     }
                 }
-                Event::AvatarSelected {
-                    epoch,
-                    result,
-                    refreshed,
-                } if epoch == self.account_epoch => {
-                    if let Some(account) = refreshed {
-                        self.account_changed(account);
-                    }
-                    self.picture_changed(pictures::Target::Avatar, result);
-                }
                 Event::Picture {
                     epoch,
                     target,
@@ -5270,6 +5263,15 @@ impl CaperApp {
     }
 
     fn profiled(&mut self, account: Account, spaces: Spaces) {
+        if let Some(draft) = self.profile_edit.take()
+            && let Some(picture) = draft.picture
+            && let Some(asset) = account.avatar_asset.as_ref()
+            && let Some(frames) = pictures::decode(&picture.bytes, !motion::reduced())
+        {
+            self.local_pictures.push((asset.clone(), frames));
+        }
+        self.picture_edit = PictureEdit::default();
+        self.error = None;
         let onboarding = self
             .account
             .as_ref()
@@ -5348,6 +5350,7 @@ impl CaperApp {
         self.profile_drafts.clear();
         self.profile_picker = None;
         self.picture_edit = PictureEdit::default();
+        self.profile_edit = None;
         self.composer_emoji = None;
         self.profile_navigation = None;
         self.unread_spaces.clear();
@@ -10664,7 +10667,10 @@ impl CaperApp {
         if let Some(account) = &self.account {
             self.username = account.username.clone().unwrap_or_default();
             self.display_name = account.display_name.clone().unwrap_or_default();
+            self.profile_edit = Some(profile_edit::Draft::new(account));
         }
+        self.picture_edit = PictureEdit::default();
+        self.error = None;
         self.dialog = Some(Dialog::Profile);
     }
 
@@ -10965,6 +10971,7 @@ impl CaperApp {
                                     token: self.token.clone().unwrap_or_default(),
                                     username: self.username.trim().to_ascii_lowercase(),
                                     display_name: self.display_name.trim().into(),
+                                    avatar: None,
                                 });
                             }
                             ui.add_space(16.0);
@@ -20453,6 +20460,12 @@ impl CaperApp {
                     && self.picture_target_valid(&destination)
                     && let Some(token) = self.token.clone()
                 {
+                    if destination == pictures::Target::Avatar {
+                        if let Some(draft) = &mut self.profile_edit {
+                            draft.prepare(context, path, edit, scratch);
+                        }
+                        return;
+                    }
                     self.picture_edit.busy = Some((destination.clone(), false));
                     self.worker.send(Command::Picture {
                         epoch,
@@ -22792,6 +22805,35 @@ impl CaperApp {
     }
 
     fn dialogs(&mut self, context: &egui::Context, dialog_was_open: bool) {
+        if self
+            .profile_edit
+            .as_ref()
+            .is_some_and(|draft| draft.confirm_discard)
+        {
+            let mut discard = false;
+            let mut keep = false;
+            let modal = egui::Modal::new(egui::Id::new("discard-profile")).show(context, |ui| {
+                ui.set_width(340.0);
+                ui.heading("Discard profile changes?");
+                ui.label("Your changes have not been saved.");
+                ui.horizontal(|ui| {
+                    keep = primary_button(ui, "Keep editing", true).clicked();
+                    discard = secondary_button(ui, "Discard", true).clicked();
+                });
+            });
+            motion::modal(context, modal.response.layer_id);
+            if discard {
+                self.profile_edit = None;
+                self.picture_edit = PictureEdit::default();
+                self.dialog = None;
+                self.error = None;
+            } else if (keep || modal.should_close())
+                && let Some(draft) = &mut self.profile_edit
+            {
+                draft.confirm_discard = false;
+            }
+            return;
+        }
         // A picture editor owns the screen; keep its settings destination alive
         // without drawing another modal over it or letting it consume input.
         if self.attachment_editor_shown || self.picture_edit.choice.is_some() {
@@ -22933,6 +22975,7 @@ impl CaperApp {
         };
         // A member removal in flight can't be cancelled or closed.
         let removing = self.loading && matches!(dialog, Dialog::RemoveMember { .. });
+        let profile_dialog = matches!(dialog, Dialog::Profile);
         let join_dialog = matches!(dialog, Dialog::JoinInvite);
         // These requests navigate when they finish, so their dialogs stay open
         // (Cancel, close, Escape and backdrop do nothing) until then.
@@ -22941,7 +22984,8 @@ impl CaperApp {
         let hold_while_loading = return_to.is_some()
             || matches!(
                 dialog,
-                Dialog::CreateSpace
+                Dialog::Profile
+                    | Dialog::CreateSpace
                     | Dialog::CreateChannel
                     | Dialog::StartDirect
                     | Dialog::LeaveSpace { .. }
@@ -23015,6 +23059,11 @@ impl CaperApp {
                                                     .fit_to_exact_size(egui::vec2(32.0, 32.0)));
                                             }
                                             ui.label(bold(title).size(19.0));
+                                            if profile_dialog && self.profile_edit.as_ref().is_some_and(|draft| draft.dirty(&self.username, &self.display_name)) {
+                                                let (dot, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
+                                                ui.painter().circle_filled(dot.center(), 3.0, TERRACOTTA);
+                                                ui.label(RichText::new("Unsaved changes").size(12.0).color(MUTED));
+                                            }
                                         });
                                         if whats_new {
                                             ui.add_space(-ui.spacing().item_spacing.y + 2.0);
@@ -23040,7 +23089,7 @@ impl CaperApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::TOP),
                                         |ui| {
-                                            ui.add_enabled_ui(!removing, |ui| {
+                                            ui.add_enabled_ui(!(removing || profile_dialog && self.loading), |ui| {
                                                 // Centered on the 36px title row.
                                                 ui.allocate_ui_with_layout(
                                                     egui::vec2(28.0, 36.0),
@@ -23319,6 +23368,16 @@ impl CaperApp {
             && !joining
             && self.direct_lookup_pending.is_none()
         {
+            if profile_dialog {
+                if let Some(draft) = &mut self.profile_edit
+                    && draft.dirty(&self.username, &self.display_name)
+                {
+                    draft.confirm_discard = true;
+                    return;
+                }
+                self.profile_edit = None;
+                self.picture_edit = PictureEdit::default();
+            }
             if whats_new {
                 self.whats_new.dismiss();
             }
@@ -23729,9 +23788,16 @@ impl CaperApp {
     }
 
     fn profile_dialog(&mut self, ui: &mut egui::Ui) {
+        if self.profile_edit.is_none() {
+            self.profile_edit = self.account.as_ref().map(profile_edit::Draft::new);
+        }
+        if self.loading {
+            ui.disable();
+        }
         if let Some(account) = self
-            .account
-            .clone()
+            .profile_edit
+            .as_ref()
+            .map(|draft| draft.preview.clone())
             .filter(|account| account.username.is_some() && account.display_name.is_some())
         {
             let name = self.identity_name();
@@ -23781,7 +23847,19 @@ impl CaperApp {
         );
         // Web's compact, end-aligned primary (sized so "Saving…" doesn't
         // resize it); Log out stays apart at the start of the row.
+        let dirty = self
+            .profile_edit
+            .as_ref()
+            .is_some_and(|draft| draft.dirty(&self.username, &self.display_name));
+        let preparing = self
+            .profile_edit
+            .as_ref()
+            .is_some_and(|draft| draft.preparing.is_some());
         let enabled = !self.loading
+            && dirty
+            && !preparing
+            && self.picture_edit.picking.is_none()
+            && self.picture_edit.downloading.is_none()
             && self.username.len() >= 3
             && !self.display_name.trim().is_empty()
             && name_error.is_none();
@@ -23814,15 +23892,23 @@ impl CaperApp {
                 (log_out, save)
             })
             .inner;
+        if preparing {
+            ui.label(RichText::new("Preparing picture…").small().color(MUTED));
+        }
         if log_out.is_some_and(|button| button.clicked()) {
             self.logout();
         } else if save.clicked() {
             self.loading = true;
+            self.error = None;
             self.worker.send(Command::Profile {
                 generation: self.generation,
                 token: self.token.clone().unwrap_or_default(),
                 username: self.username.trim().to_ascii_lowercase(),
                 display_name: self.display_name.trim().into(),
+                avatar: self
+                    .profile_edit
+                    .as_ref()
+                    .and_then(profile_edit::Draft::save),
             });
         }
     }
@@ -23854,6 +23940,9 @@ impl CaperApp {
     ) {
         if !self.picture_target_valid(&destination) {
             return;
+        }
+        if destination == pictures::Target::Avatar && self.profile_edit.is_none() {
+            self.profile_edit = self.account.as_ref().map(profile_edit::Draft::new);
         }
         self.attachment_editor = Some(attachment_editor::Editor::open(
             context,
@@ -23912,11 +24001,25 @@ impl CaperApp {
     }
 
     fn download_picture(&mut self, context: &egui::Context, target: pictures::Target) {
+        if target == pictures::Target::Avatar
+            && let Some(picture) = self
+                .profile_edit
+                .as_ref()
+                .and_then(|draft| draft.picture.clone())
+        {
+            let scratch = std::sync::Arc::new(uploads::Scratch::new("profile-draft"));
+            if std::fs::write(scratch.path(), &picture.bytes).is_ok() {
+                self.stage_picture(context, target, scratch.path().to_owned(), Some(scratch));
+            } else {
+                self.picture_edit.error = Some((target, "Could not open that picture.".into()));
+            }
+            return;
+        }
         let url = match &target {
             pictures::Target::Avatar => self
-                .account
+                .profile_edit
                 .as_ref()
-                .and_then(|account| account.avatar_url.clone()),
+                .and_then(|draft| draft.preview.avatar_url.clone()),
             pictures::Target::SpaceIcon(id) => self
                 .spaces
                 .iter()
@@ -23963,7 +24066,7 @@ impl CaperApp {
         let modal = egui::Modal::new(egui::Id::new("avatar-gallery")).show(context, |ui| {
             ui.set_width(420.0);
             ui.heading("Previous pictures");
-            ui.label("Choose a picture to preview. Save when you’re ready.");
+            ui.label("Choose a picture to preview. Use it in your profile draft.");
             if let Some(picture) = gallery
                 .pictures
                 .iter()
@@ -24074,11 +24177,15 @@ impl CaperApp {
                     && !stale
                     && !gallery.loading
                     && gallery.selected.is_some()
-                    && gallery.selected != gallery.expected;
+                    && gallery.selected.as_ref()
+                        != self
+                            .profile_edit
+                            .as_ref()
+                            .and_then(|draft| draft.preview.avatar_asset.as_ref());
                 save = ui
                     .add_enabled(
                         can_save,
-                        egui::Button::new(RichText::new("Save picture").color(if can_save {
+                        egui::Button::new(RichText::new("Use picture").color(if can_save {
                             ON_ACTION
                         } else {
                             MUTED
@@ -24101,15 +24208,16 @@ impl CaperApp {
         }
         if let Some(token) = self.token.clone() {
             if save && let Some(asset) = gallery.selected.clone() {
-                self.worker.send(Command::SelectAvatar {
-                    epoch: self.account_epoch,
-                    token,
-                    asset,
-                    expected: gallery.expected.clone(),
-                });
-                self.picture_edit.busy = Some((pictures::Target::Avatar, false));
+                let url = gallery
+                    .pictures
+                    .iter()
+                    .find(|picture| picture.avatar_asset == asset)
+                    .map(|picture| picture.avatar_url.clone());
+                if let Some(draft) = &mut self.profile_edit {
+                    draft.select(Some(asset), url);
+                }
                 self.picture_edit.error = None;
-                gallery.error = None;
+                return;
             } else if load && !gallery.loading {
                 let request = Instant::now();
                 self.worker.send(Command::AvatarHistory {
@@ -24128,6 +24236,19 @@ impl CaperApp {
 
     /// Picker results, local previews of uploaded pictures, and picture loads.
     fn picture_housekeeping(&mut self, context: &egui::Context) {
+        if let Some(result) = self
+            .profile_edit
+            .as_mut()
+            .and_then(profile_edit::Draft::poll)
+        {
+            match result {
+                Ok((key, frames)) => {
+                    self.pictures.insert(context, &key, frames);
+                    self.picture_edit.error = None;
+                }
+                Err(error) => self.picture_edit.error = Some((pictures::Target::Avatar, error)),
+            }
+        }
         if self
             .picture_edit
             .picking
@@ -24190,16 +24311,22 @@ impl CaperApp {
                     if self.picture_target_valid(&target)
                         && let Some(token) = self.token.clone()
                     {
-                        self.picture_edit.busy = Some((target.clone(), false));
-                        self.worker.send(Command::Picture {
-                            epoch: self.account_epoch,
-                            token,
-                            target,
-                            path: Some(path),
-                            animate: !motion::reduced(),
-                            edit: None,
-                            scratch,
-                        });
+                        if target == pictures::Target::Avatar {
+                            if let Some(draft) = &mut self.profile_edit {
+                                draft.prepare(context, path, None, scratch);
+                            }
+                        } else {
+                            self.picture_edit.busy = Some((target.clone(), false));
+                            self.worker.send(Command::Picture {
+                                epoch: self.account_epoch,
+                                token,
+                                target,
+                                path: Some(path),
+                                animate: !motion::reduced(),
+                                edit: None,
+                                scratch,
+                            });
+                        }
                     }
                 }
                 2 => self.open_picture_editor(context, target, path, scratch),
@@ -24254,6 +24381,15 @@ impl CaperApp {
 
     /// Upload the picture at `path`, or remove the current one (`None`).
     fn change_picture(&mut self, target: pictures::Target, path: Option<std::path::PathBuf>) {
+        if target == pictures::Target::Avatar {
+            if path.is_none()
+                && let Some(draft) = &mut self.profile_edit
+            {
+                draft.select(None, None);
+                self.picture_edit.error = None;
+            }
+            return;
+        }
         let Some(token) = self.token.clone() else {
             return;
         };
@@ -24337,6 +24473,11 @@ impl CaperApp {
             .filter(|(busy, _)| *busy == target)
             .map(|(_, removing)| *removing);
         let idle = edit.busy.is_none()
+            && !self.loading
+            && self
+                .profile_edit
+                .as_ref()
+                .is_none_or(|draft| draft.preparing.is_none())
             && edit.picking.is_none()
             && edit.downloading.is_none()
             && edit.choice.is_none()
@@ -24502,12 +24643,7 @@ impl CaperApp {
             change = response.clicked();
         }
         ui.add_space(4.0);
-        if target == pictures::Target::Avatar
-            && self
-                .account
-                .as_ref()
-                .is_some_and(|account| account.avatar_asset.is_none())
-        {
+        if target == pictures::Target::Avatar && !custom {
             // Stays enabled while it runs (a repeat is ignored), so it doesn't flash.
             let enabled = (idle || regenerating) && !self.loading;
             let badge = egui::Rect::from_min_size(
@@ -24557,15 +24693,10 @@ impl CaperApp {
             });
             if regenerate.on_hover_text("Regenerate avatar").clicked()
                 && idle
-                && let Some(token) = self.token.clone()
+                && let Some(draft) = &mut self.profile_edit
             {
                 self.picture_edit.error = None;
-                self.picture_edit.busy = Some((pictures::Target::Avatar, false));
-                self.picture_edit.regenerating = true;
-                self.worker.send(Command::RegenerateAvatar {
-                    epoch: self.account_epoch,
-                    token,
-                });
+                draft.regenerate();
             }
         }
         if let Some(removing) = busy.filter(|_| !regenerating) {
@@ -24611,7 +24742,10 @@ impl CaperApp {
                 self.picture_edit.gallery = Some(AvatarGallery {
                     request: Some(request),
                     expected: account.avatar_asset.clone(),
-                    selected: account.avatar_asset.clone(),
+                    selected: self
+                        .profile_edit
+                        .as_ref()
+                        .and_then(|draft| draft.preview.avatar_asset.clone()),
                     loading: true,
                     ..Default::default()
                 });
@@ -44852,7 +44986,7 @@ mod tests {
     fn picture_editor_covers_settings_and_cancel_returns_without_uploading() {
         let (context, mut app) = fixture("parity-pictures-editor");
         let output = editor_ready(&mut app, &context);
-        assert!(shows(&output, "Done"));
+        assert!(shows(&output, "Apply crop"));
         assert!(
             !shows(&output, "Save profile"),
             "settings must not cover the editor"
@@ -44935,8 +45069,7 @@ mod tests {
 
     #[test]
     fn previous_picture_gallery_previews_cancel_and_saves_only_the_chosen_nonadjacent_id() {
-        let (base, seen) = account_server_with(|route, body| {
-            match route {
+        let (base, seen) = account_server_with(|route, body| match route {
             "GET /api/account/avatar/history" => (
                 200,
                 serde_json::json!({
@@ -44948,22 +45081,15 @@ mod tests {
                 })
                 .to_string(),
             ),
-            "GET /api/account/me" => (200, serde_json::json!({"id":"fixture-owner", "username":"fixture_owner", "displayName":"Fixture Owner", "avatarAsset":"middle-portrait", "avatarUrl":"https://example.test/b"}).to_string()),
-            "POST /api/account/avatar/select" => {
+            "GET /api/spaces" => (200, r#"{"spaces":[],"invitations":[]}"#.into()),
+            "POST /api/account/profile" => {
                 let request: serde_json::Value = serde_json::from_slice(body).unwrap();
-                if request["expectedAvatarAsset"] == "distant-landscape" {
-                    return (409, r#"{"error":"Picture changed elsewhere"}"#.into());
-                }
-                assert_eq!(
-                    request,
-                    serde_json::json!({
-                        "avatarAsset":"distant-landscape", "expectedAvatarAsset":"fixture-gif"
-                    })
-                );
+                assert_eq!(request["avatar"]["avatarAsset"], "distant-landscape");
+                assert_eq!(request["avatar"]["expectedAvatarAsset"], "fixture-gif");
+                assert_eq!(request["displayName"], "Fixture Owner");
                 (200, serde_json::json!({"id":"fixture-owner", "username":"fixture_owner", "displayName":"Fixture Owner", "avatarAsset":"distant-landscape", "avatarUrl":"https://example.test/c"}).to_string())
             }
             _ => (404, "{}".into()),
-        }
         });
         let (context, mut app) = fixture("parity-pictures-profile");
         app.worker =
@@ -44992,7 +45118,7 @@ mod tests {
             let output = render(&mut app, &context, vec![]);
             assert!(shows(&output, "Current"), "{:?}", texts(&output));
             assert_eq!(app.picture_edit.gallery.as_ref().unwrap().pictures.len(), 3);
-            click_label(&mut app, &context, "Save picture");
+            click_label(&mut app, &context, "Use picture");
             assert!(
                 app.picture_edit.busy.is_none(),
                 "the current selection cannot save"
@@ -45051,9 +45177,29 @@ mod tests {
             Some("fixture-gif")
         );
         click_label(&mut app, &context, "Previous picture 3");
-        click_label(&mut app, &context, "Save picture");
-        click_label(&mut app, &context, "Save picture");
-        receive_until(&mut app, |app| app.picture_edit.busy.is_none());
+        click_label(&mut app, &context, "Use picture");
+        assert_eq!(
+            app.account.as_ref().unwrap().avatar_asset.as_deref(),
+            Some("fixture-gif")
+        );
+        assert_eq!(
+            app.profile_edit
+                .as_ref()
+                .unwrap()
+                .preview
+                .avatar_asset
+                .as_deref(),
+            Some("distant-landscape")
+        );
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| request.starts_with("POST"))
+        );
+        click_label(&mut app, &context, "Save profile");
+        receive_until(&mut app, |app| !app.loading);
         assert_eq!(
             app.account.as_ref().unwrap().avatar_asset.as_deref(),
             Some("distant-landscape")
@@ -45063,49 +45209,15 @@ mod tests {
             seen.lock()
                 .unwrap()
                 .iter()
-                .filter(|request| request.starts_with("POST /api/account/avatar/select"))
+                .filter(|request| request.starts_with("POST /api/account/profile"))
                 .count(),
             1
         );
-        // A missed live event is repaired on conflict; reopening uses the refreshed account.
-        click_label(&mut app, &context, "Change profile picture");
-        click_label(&mut app, &context, "Previous pictures");
-        receive_until(&mut app, |app| {
-            app.picture_edit
-                .gallery
-                .as_ref()
-                .is_some_and(|gallery| !gallery.loading)
-        });
-        click_label(&mut app, &context, "Previous picture 1");
-        click_label(&mut app, &context, "Save picture");
-        receive_until(&mut app, |app| app.picture_edit.busy.is_none());
-        assert_eq!(
-            app.account.as_ref().unwrap().avatar_asset.as_deref(),
-            Some("middle-portrait")
-        );
-        click_label(&mut app, &context, "Cancel");
-        click_label(&mut app, &context, "Change profile picture");
-        click_label(&mut app, &context, "Previous pictures");
-        receive_until(&mut app, |app| {
-            app.picture_edit
-                .gallery
-                .as_ref()
-                .is_some_and(|gallery| !gallery.loading)
-        });
-        assert_eq!(
-            app.picture_edit
-                .gallery
-                .as_ref()
-                .unwrap()
-                .expected
-                .as_deref(),
-            Some("middle-portrait")
-        );
+        assert!(app.profile_edit.is_none());
     }
 
     #[test]
     fn profile_regeneration_keeps_the_picture_controls_and_form_in_place() {
-        use crate::pictures::{Applied, Changed, Target};
         let (context, mut app) = fixture("parity-channel");
         app.token = Some("fixture-only".into());
         app.open_profile_dialog();
@@ -45135,8 +45247,14 @@ mod tests {
         render(&mut app, &context, vec![]);
         render(&mut app, &context, press(egui::Key::Escape));
         render(&mut app, &context, vec![]);
+        let original = app.account.as_ref().unwrap().avatar_id;
         click(&mut app, &context, regenerate.center());
-        assert!(app.picture_edit.regenerating);
+        assert!(app.picture_edit.busy.is_none());
+        assert_eq!(app.account.as_ref().unwrap().avatar_id, original);
+        assert_ne!(
+            app.profile_edit.as_ref().unwrap().preview.avatar_id,
+            original
+        );
         for _ in 0..3 {
             let busy = render(&mut app, &context, vec![]);
             assert_eq!(positions(&busy), resting);
@@ -45147,15 +45265,8 @@ mod tests {
                 "regenerate must not open the edit menu"
             );
         }
-        let mut account = app.account.clone().unwrap();
-        account.avatar_id = Some(3);
-        app.picture_changed(
-            Target::Avatar,
-            Ok(Changed {
-                applied: Applied::Account(account),
-                local: None,
-            }),
-        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Unsaved changes"));
         for _ in 0..3 {
             assert_eq!(positions(&render(&mut app, &context, vec![])), resting);
         }
@@ -45169,8 +45280,146 @@ mod tests {
         render(&mut app, &context, vec![]);
         assert!(shows(
             &render(&mut app, &context, vec![]),
-            "Choose a picture to preview. Save when you’re ready."
+            "Choose a picture to preview. Use it in your profile draft."
         ));
+    }
+
+    #[test]
+    fn profile_draft_close_routes_confirm_and_busy_save_cannot_close() {
+        for route in ["close", "escape", "backdrop"] {
+            let (context, mut app) = fixture("parity-channel");
+            app.token = Some("fixture-only".into());
+            app.open_profile_dialog();
+            click_label(&mut app, &context, "Save profile");
+            assert!(!app.loading, "unchanged save is disabled");
+            let original = app.account.as_ref().unwrap().display_name.clone();
+            app.display_name = "Private draft name".into();
+            for busy in [true, false] {
+                app.loading = busy;
+                render(&mut app, &context, vec![]);
+                match route {
+                    "close" => {
+                        click_label(&mut app, &context, "Close Edit profile");
+                    }
+                    "escape" => {
+                        render(&mut app, &context, press(egui::Key::Escape));
+                    }
+                    _ => {
+                        click(&mut app, &context, egui::pos2(5.0, 5.0));
+                    }
+                }
+                assert!(matches!(app.dialog, Some(Dialog::Profile)));
+                assert_eq!(
+                    app.profile_edit.as_ref().unwrap().confirm_discard,
+                    !busy,
+                    "{route}"
+                );
+            }
+            click_label(&mut app, &context, "Keep editing");
+            assert_eq!(app.display_name, "Private draft name");
+            assert_eq!(app.account.as_ref().unwrap().display_name, original);
+            render(&mut app, &context, press(egui::Key::Escape));
+            click_label(&mut app, &context, "Discard");
+            assert!(app.dialog.is_none());
+            assert!(app.profile_edit.is_none());
+            app.open_profile_dialog();
+            assert_eq!(Some(app.display_name.clone()), original);
+        }
+    }
+
+    #[test]
+    fn profile_failure_keeps_names_and_removed_picture_private_for_retry() {
+        let (base, seen) = account_server_with(|route, body| match route {
+            "GET /api/spaces" => (200, r#"{"spaces":[],"invitations":[]}"#.into()),
+            "POST /api/account/profile" => {
+                let request: serde_json::Value = serde_json::from_slice(body).unwrap();
+                assert_eq!(request["displayName"], "Draft name");
+                assert_eq!(request["avatar"]["avatarAsset"], serde_json::Value::Null);
+                assert_eq!(request["avatar"]["expectedAvatarAsset"], "fixture-gif");
+                (409, r#"{"error":"stale","code":"profile_changed"}"#.into())
+            }
+            _ => (404, "{}".into()),
+        });
+        let (context, mut app) = fixture("parity-pictures-profile");
+        app.worker =
+            crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+        app.open_profile_dialog();
+        app.display_name = "Draft name".into();
+        app.change_picture(crate::pictures::Target::Avatar, None);
+        assert_eq!(
+            app.account.as_ref().unwrap().avatar_asset.as_deref(),
+            Some("fixture-gif")
+        );
+        assert!(seen.lock().unwrap().is_empty());
+        for _ in 0..2 {
+            click_label(&mut app, &context, "Save profile");
+            receive_until(&mut app, |app| !app.loading);
+            assert!(
+                app.error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("changed elsewhere"))
+            );
+            assert_eq!(app.display_name, "Draft name");
+            assert!(
+                app.profile_edit
+                    .as_ref()
+                    .unwrap()
+                    .preview
+                    .avatar_asset
+                    .is_none()
+            );
+            assert_eq!(
+                app.account.as_ref().unwrap().avatar_asset.as_deref(),
+                Some("fixture-gif")
+            );
+            assert_ne!(
+                app.account.as_ref().unwrap().display_name.as_deref(),
+                Some("Draft name")
+            );
+        }
+    }
+
+    #[test]
+    fn profile_crop_prepares_locally_without_saving_the_account() {
+        let (context, mut app) = fixture("parity-pictures-editor");
+        let (base, seen) = account_server(vec![]);
+        app.worker =
+            crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+        editor_ready(&mut app, &context);
+        let original = app.account.clone().unwrap();
+        click_label(&mut app, &context, "Apply crop");
+        for _ in 0..500 {
+            // The render helper draws page() only; pump the same local
+            // preparation receiver that update() polls before drawing.
+            app.picture_housekeeping(&context);
+            render(&mut app, &context, vec![]);
+            if app
+                .profile_edit
+                .as_ref()
+                .is_some_and(|draft| draft.picture.is_some())
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let draft = app.profile_edit.as_ref().unwrap();
+        assert!(
+            draft.picture.is_some(),
+            "preparing={}, editor={}, error={:?}",
+            draft.preparing.is_some(),
+            app.attachment_editor.is_some(),
+            app.picture_edit.error,
+        );
+        assert!(draft.uploaded.lock().unwrap().is_none());
+        assert!(draft.avatar_dirty());
+        assert_eq!(
+            app.account.as_ref().unwrap().avatar_asset,
+            original.avatar_asset
+        );
+        assert!(seen.lock().unwrap().is_empty());
+        render(&mut app, &context, press(egui::Key::Escape));
+        click_label(&mut app, &context, "Discard");
+        assert!(app.profile_edit.is_none());
     }
 
     #[test]
@@ -45297,6 +45546,17 @@ mod tests {
                 local: None,
             }),
         );
+        // A committed account update never overwrites an open private draft.
+        // Reopening starts from that new saved baseline.
+        assert!(
+            app.profile_edit
+                .as_ref()
+                .unwrap()
+                .preview
+                .avatar_asset
+                .is_some()
+        );
+        app.open_profile_dialog();
         let own_members = |app: &CaperApp| {
             app.detail
                 .as_ref()
@@ -45341,6 +45601,7 @@ mod tests {
                 local: Some(("new-picture".into(), frames)),
             }),
         );
+        app.open_profile_dialog();
         assert_eq!(own_members(&app).as_deref(), Some("new-picture"));
         assert!(
             app.timeline

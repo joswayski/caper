@@ -21,9 +21,13 @@ const reducedMotion = () => typeof matchMedia !== "undefined" && matchMedia(REDU
  * parent must be positioned). GIFs animate; with reduced motion a still frame
  * is shown instead.
  */
-export default function Picture({ asset, url }: { asset?: string; url?: string }) {
+export default function Picture({ asset, url, localPreview }: { asset?: string; url?: string; localPreview?: string }) {
   const [, setRevision] = useState(0);
-  const source = pictureSource(asset, url);
+  // Only editor-owned object URLs bypass the remote-picture URL policy. Use
+  // the same renderer so animated drafts honor reduced motion too.
+  const preview = localPreview?.startsWith("blob:") ? localPreview : undefined;
+  const source = preview ?? pictureSource(asset, url);
+  asset = preview ?? asset;
   if (!asset || !source) return null;
   // A new URL (a re-signed or replaced picture) starts a fresh load.
   return <PictureImage key={source} asset={asset} source={source} onFailed={() => setRevision((value) => value + 1)} />;

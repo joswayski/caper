@@ -10,7 +10,7 @@ use crate::{
 };
 use axum::{
     Extension, Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
 };
@@ -1298,10 +1298,17 @@ async fn parts(
     Ok(Json(json!({ "parts": urls })))
 }
 
+#[derive(Default, Deserialize)]
+struct CompletionOptions {
+    #[serde(default)]
+    draft: bool,
+}
+
 async fn complete(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     Path(asset): Path<String>,
+    Query(options): Query<CompletionOptions>,
 ) -> Result<Json<Value>, ApiError> {
     // Keep HTTP responses inside proxy/client deadlines. Dropping a JoinHandle
     // detaches the bounded job; a 409 polls its durable uploaded_at result.
@@ -1310,6 +1317,7 @@ async fn complete(
         State(state),
         Extension(principal),
         Path(asset),
+        options,
     ));
     match tokio::time::timeout(Duration::from_secs(10), job).await {
         Ok(result) => result.map_err(|_| unavailable())?,
@@ -1324,6 +1332,7 @@ async fn complete_inner(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     Path(asset): Path<String>,
+    options: CompletionOptions,
 ) -> Result<Json<Value>, ApiError> {
     let assets = enabled(&state)?;
     // Bound work before acquiring database connections. Existing clients retry
@@ -1496,7 +1505,11 @@ async fn complete_inner(
     // Only the first completion applies a picture, and only when no picture
     // chosen after it has completed, so neither a late retry nor a slower
     // earlier upload can undo a newer change.
-    let applied = if first && purpose.is_picture() {
+    // New profile editors upload only when Save is pressed, then commit the
+    // verified asset together with names through /account/profile. Legacy
+    // clients keep their immediate-apply behavior.
+    let applied = if first && purpose.is_picture() && !(options.draft && purpose == Purpose::Avatar)
+    {
         Some(
             pictures::apply(&mut tx, purpose, &asset, principal.user.id, row.space_id)
                 .await
@@ -1563,7 +1576,8 @@ async fn completed(
 
 /// Cancellation races safely with Send's row lock: only an unlinked file can
 /// be abandoned. Repeating it does not postpone cleanup or erase message files.
-/// A completed picture is already applied and can only be replaced or removed.
+/// Completed pictures are retained, including staged avatars; cancellation
+/// cannot erase them.
 async fn cancel(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,

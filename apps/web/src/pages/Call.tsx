@@ -29,7 +29,7 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import ProfileForm from "../account/ProfileForm";
+import ProfileForm, { type ProfileFormHandle } from "../account/ProfileForm";
 import { hostProfileEditor } from "../account/profile-editor";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
@@ -560,7 +560,9 @@ export default function Call({
   const audioReturnFocus = useRef<HTMLElement | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const profileDialog = useRef<HTMLDialogElement>(null);
-  const profileBackdrop = useBackdropDismiss(() => setProfileOpen(false));
+  const profileForm = useRef<ProfileFormHandle>(null);
+  const closeProfile = () => profileForm.current?.requestClose(() => setProfileOpen(false));
+  const profileBackdrop = useBackdropDismiss(closeProfile);
   // Your own profile card in chat or the member list opens this dialog too.
   useEffect(() => (account ? hostProfileEditor(() => setProfileOpen(true)) : undefined), [!!account]);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -2343,17 +2345,12 @@ export default function Call({
         {...profileBackdrop}
         onCancel={(event) => {
           event.preventDefault();
-          setProfileOpen(false);
+          closeProfile();
         }}
       >
         <div className="audio-dialog-heading">
           <h2 id="profile-dialog-title">Edit profile</h2>
-          <button
-            type="button"
-            className="voice-icon-button"
-            aria-label="Close profile"
-            onClick={() => setProfileOpen(false)}
-          >
+          <button type="button" className="voice-icon-button" aria-label="Close profile" onClick={closeProfile}>
             <X aria-hidden="true" />
           </button>
         </div>
@@ -2362,7 +2359,9 @@ export default function Call({
         <div className="audio-dialog-body">
           {profileOpen && account && (
             <ProfileForm
+              ref={profileForm}
               account={account}
+              onCancel={() => setProfileOpen(false)}
               onSaved={(updated) => {
                 setAccount(updated);
                 setName(updated.displayName ?? "");

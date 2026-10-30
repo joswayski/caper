@@ -690,6 +690,7 @@ fn upload_with_delays(
         progress,
         cancel,
         delays,
+        false,
         |id, completed| Attachment::parse(completed).filter(|attachment| attachment.id == id),
     )
 }
@@ -714,6 +715,26 @@ fn upload_picture_with_delays(
     bytes: Vec<u8>,
     delays: &[Duration],
 ) -> Result<(String, Value), UploadError> {
+    upload_picture_mode(api, token, request, bytes, delays, false)
+}
+
+pub fn upload_draft_picture(
+    api: &Api,
+    token: &str,
+    request: Value,
+    bytes: Vec<u8>,
+) -> Result<(String, Value), UploadError> {
+    upload_picture_mode(api, token, request, bytes, &COMPLETE_RETRY_DELAYS, true)
+}
+
+fn upload_picture_mode(
+    api: &Api,
+    token: &str,
+    request: Value,
+    bytes: Vec<u8>,
+    delays: &[Duration],
+    draft: bool,
+) -> Result<(String, Value), UploadError> {
     let size = bytes.len() as u64;
     let prepared = Prepared {
         name: request["filename"].as_str().unwrap_or("picture").into(),
@@ -737,6 +758,7 @@ fn upload_picture_with_delays(
         Arc::new(|_| {}),
         Arc::new(AtomicBool::new(false)),
         delays,
+        draft,
         |id, completed| {
             (completed["id"].as_str() == Some(id)).then(|| (id.to_owned(), completed.clone()))
         },
@@ -755,6 +777,7 @@ fn transfer<T>(
     progress: Arc<dyn Fn(f32) + Send + Sync>,
     cancel: Arc<AtomicBool>,
     delays: &[Duration],
+    draft: bool,
     finish: impl FnOnce(&str, &Value) -> Option<T>,
 ) -> Result<T, UploadError> {
     let invalid = || UploadError::new("The upload service returned an invalid response.");
@@ -838,7 +861,12 @@ fn transfer<T>(
         let mut delays = delays.iter();
         let completed = loop {
             cancelled(&cancel)?;
-            match api.complete_asset(token, &id) {
+            let completed = if draft {
+                api.complete_asset_mode(token, &id, true)
+            } else {
+                api.complete_asset(token, &id)
+            };
+            match completed {
                 Err(error) if error.status == Some(409) => match delays.next() {
                     Some(delay) => std::thread::sleep(*delay),
                     None => return Err(error),
@@ -1094,6 +1122,78 @@ mod tests {
         let path = copy.path().to_owned();
         drop((stored, copy));
         assert!(!path.exists(), "the last owner removes it");
+    }
+
+    #[test]
+    fn profile_picture_draft_completes_privately_and_reuses_upload_on_retry() {
+        let original =
+            json!({"id":"self", "username":"alice", "displayName":"Alice", "avatarId":17});
+        let saved = json!({"id":"self", "username":"alice", "displayName":"New name", "avatarId":17, "avatarAsset":"asset0001"});
+        let (base, server) = serve(|base| {
+            vec![
+                (201, reserved(base)),
+                (200, String::new()),
+                (
+                    200,
+                    json!({"id":"asset0001", "account":original}).to_string(),
+                ),
+                (409, r#"{"error":"taken","code":"username_taken"}"#.into()),
+                (200, saved.to_string()),
+                (200, saved.to_string()),
+            ]
+        });
+        let api = Api::new(&base).unwrap();
+        let account = serde_json::from_value(original).unwrap();
+        let mut draft = crate::profile_edit::Draft::new(&account);
+        draft.picture = Some(Arc::new(crate::pictures::Prepared {
+            bytes: b"prepared image bytes".to_vec(),
+            content_type: "image/webp",
+            width: 8,
+            height: 8,
+        }));
+        let avatar = draft.save().unwrap();
+        let payload = avatar.payload(&api, "token").unwrap();
+        assert_eq!(
+            payload,
+            json!({"avatarId":17,"avatarAsset":"asset0001","expectedAvatarId":17,"expectedAvatarAsset":null})
+        );
+        assert!(
+            api.update_profile("token", "alice", "New name", Some(payload.clone()))
+                .is_err()
+        );
+        assert_eq!(draft.uploaded.lock().unwrap().as_deref(), Some("asset0001"));
+        assert!(draft.picture.is_some());
+        assert!(account.avatar_asset.is_none());
+        let retry = draft.save().unwrap().payload(&api, "token").unwrap();
+        assert_eq!(retry, payload);
+        let result = api
+            .update_profile("token", "alice", "New name", Some(retry))
+            .unwrap();
+        assert_eq!(result.avatar_asset.as_deref(), Some("asset0001"));
+        api.update_profile("token", "alice", "Name only", None)
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.line.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "POST /api/assets HTTP/1.1",
+                "PUT /r2/original/asset0001?X-Amz-Signature=s HTTP/1.1",
+                "POST /api/assets/asset0001/complete?draft=true HTTP/1.1",
+                "POST /api/account/profile HTTP/1.1",
+                "POST /api/account/profile HTTP/1.1",
+                "POST /api/account/profile HTTP/1.1",
+            ]
+        );
+        let body: Value = serde_json::from_slice(&requests[4].body).unwrap();
+        assert_eq!(
+            body,
+            json!({"username":"alice","displayName":"New name","avatar":payload})
+        );
+        let body: Value = serde_json::from_slice(&requests[5].body).unwrap();
+        assert_eq!(body, json!({"username":"alice","displayName":"Name only"}));
     }
 
     #[test]

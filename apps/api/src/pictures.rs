@@ -425,6 +425,98 @@ pub(crate) struct SelectAvatar {
     pub expected_avatar_asset: Value,
 }
 
+/// An explicit profile save, including the picture the editor opened with.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct ProfileAvatar {
+    avatar_id: i16,
+    avatar_asset: Option<String>,
+    expected_avatar_id: Value,
+    expected_avatar_asset: Value,
+}
+
+pub(crate) async fn save_profile(
+    pool: &PgPool,
+    owner: i64,
+    username: &str,
+    display_name: &str,
+    avatar: ProfileAvatar,
+) -> Result<crate::accounts::User, ApiError> {
+    let expected_asset = match &avatar.expected_avatar_asset {
+        Value::Null => None,
+        Value::String(asset) => Some(asset.as_str()),
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid expected avatar",
+            ));
+        }
+    };
+    let expected_id = avatar.expected_avatar_id.as_i64();
+    if !(0..800).contains(&avatar.avatar_id)
+        || (!avatar.expected_avatar_id.is_null()
+            && !expected_id.is_some_and(|id| (0..800).contains(&id)))
+    {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid avatar"));
+    }
+    let unavailable = |_| crate::assets::unavailable();
+    let mut tx = pool.begin().await.map_err(unavailable)?;
+    let current: (i16, Option<String>) = sqlx::query_as(
+        "SELECT avatar_id,avatar_asset FROM public.users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(owner)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(unavailable)?
+    .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"))?;
+    if Some(i64::from(current.0)) != expected_id || current.1.as_deref() != expected_asset {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "Your picture changed elsewhere. Reopen your profile to refresh.",
+        )
+        .with_code("profile_changed"));
+    }
+    if let Some(asset) = &avatar.avatar_asset {
+        // As in history selection, never lock assets after the user: upload
+        // completion takes those locks in the opposite order.
+        let valid: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM public.assets WHERE external_id=$1 AND owner_id=$2
+             AND purpose='avatar' AND uploaded_at IS NOT NULL AND deleted_at IS NULL AND purged_at IS NULL)",
+        )
+        .bind(asset)
+        .bind(owner)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(unavailable)?;
+        if !valid {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "Profile picture is unavailable.",
+            ));
+        }
+    }
+    let user = sqlx::query_as(
+        "UPDATE public.users SET username=$2,display_name=$3,avatar_id=$4,avatar_asset=$5,
+         avatar_selected_at=clock_timestamp(),updated_at=now() WHERE id=$1
+         RETURNING id,external_id,avatar_id,avatar_asset,email,username,display_name",
+    )
+    .bind(owner)
+    .bind(username)
+    .bind(display_name)
+    .bind(avatar.avatar_id)
+    .bind(avatar.avatar_asset)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|error| match error {
+        sqlx::Error::Database(error) if error.is_unique_violation() => {
+            ApiError::new(StatusCode::CONFLICT, "username unavailable")
+        }
+        _ => crate::assets::unavailable(),
+    })?;
+    tx.commit().await.map_err(unavailable)?;
+    Ok(user)
+}
+
 pub(crate) async fn select_avatar(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,

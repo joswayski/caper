@@ -26,6 +26,8 @@ struct AttachmentEditRequest: Identifiable {
     var tool: AttachmentEditTool?
     /// Profile pictures use a square crop and always save on Done.
     var pictureMode = false
+    /// Applying a profile crop only changes its local draft; space icons still save immediately.
+    var deferredPicture = false
     /// A staged video as it will be sent, played while viewing with no
     /// unsaved change; nil shows the editor's frame.
     var playback: URL?
@@ -39,7 +41,7 @@ struct AttachmentEditRequest: Identifiable {
     let save: (AttachmentEdit, URL?) -> Void
 
     init(name: String, kind: AttachmentKind, original: URL, edit: AttachmentEdit, tool: AttachmentEditTool? = nil,
-         pictureMode: Bool = false, playback: URL? = nil, spoiler: AttachmentDraftSpoiler? = nil, remove: (() -> Void)? = nil,
+         pictureMode: Bool = false, deferredPicture: Bool = false, playback: URL? = nil, spoiler: AttachmentDraftSpoiler? = nil, remove: (() -> Void)? = nil,
          save: @escaping (AttachmentEdit, URL?) -> Void) {
         self.name = name
         self.kind = kind
@@ -47,6 +49,7 @@ struct AttachmentEditRequest: Identifiable {
         self.edit = edit
         self.tool = tool
         self.pictureMode = pictureMode
+        self.deferredPicture = deferredPicture
         self.playback = playback
         self.spoiler = spoiler
         self.remove = remove
@@ -55,6 +58,7 @@ struct AttachmentEditRequest: Identifiable {
 
     /// The bottom row, left to right.
     var row: [AttachmentEditorRowItem] { AttachmentEditorRowItem.row(spoiler: spoiler != nil, remove: remove != nil) }
+    var saveLabel: String { deferredPicture ? "Apply crop" : "Done" }
 }
 
 /// A staged file's spoiler mark, read live from its composer (the editor's
@@ -458,7 +462,7 @@ struct AttachmentEditor: View {
                 .buttonStyle(CaperSecondaryButton(minHeight: Self.textButtonHeight))
                 .fixedSize()
                 .disabled(picture == nil || !history.current.isEdited)
-            Button(action: done) { Text("Done").padding(.horizontal, 16) }
+            Button(action: done) { Text(request.saveLabel).padding(.horizontal, 16) }
                 .buttonStyle(CaperPrimaryButton())
                 .fixedSize()
                 // With no change it only closes, so it works before (or without) the picture.

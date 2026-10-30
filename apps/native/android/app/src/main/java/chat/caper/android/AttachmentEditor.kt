@@ -210,6 +210,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     cancel: () -> Unit, save: (AttachmentEdit?, Bitmap?) -> Unit,
     initialTool: EditTool? = null,
     pictureMode: Boolean = false,
+    doneLabel: String = "Done",
     editable: Boolean = true,
     media: DraftPreviewMedia? = null,
     spoiler: Boolean = false,
@@ -359,7 +360,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                 TextButton({ field = null; commit(AttachmentEdit.NONE) }, enabled = canEdit && AttachmentEdits.isEdited(current),
                     shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors(), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Reset") }
                 Button(::done, enabled = !saving && (ready || !pictureMode), shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
-                    contentPadding = PaddingValues(horizontal = 14.dp)) { Text("Done", fontWeight = FontWeight.Bold) }
+                    contentPadding = PaddingValues(horizontal = 14.dp)) { Text(doneLabel, fontWeight = FontWeight.Bold) }
             }
             if (pictureMode) Text("The square is what will be saved. Drag inside to reposition; drag its corners to resize.",
                 Modifier.padding(horizontal = 16.dp, vertical = 4.dp), color = TextMuted, fontSize = 12.sp)

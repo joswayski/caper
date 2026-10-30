@@ -322,9 +322,20 @@ public enum ProfilePicturePreparer {
 // MARK: Upload
 
 /// Reserve, PUT straight to storage with exactly the presigned headers (no
-/// app credentials), then complete, which applies the picture at once. Any
-/// failure before completion cancels the reservation, as for attachments.
+/// app credentials), then complete. Staged avatars wait for the profile save;
+/// other pictures apply immediately. Failure before completion cancels the reservation.
 public enum ProfilePictureUploader {
+    /// Private staging for Save profile; ignore completion's unchanged account
+    /// and use the reservation ID in the atomic profile request.
+    public static func stageAvatar(_ picture: PreparedPicture, api: APIClient,
+                                   completeRetryDelays: [Duration] = AttachmentUploader.completeRetryDelays) async throws -> String {
+        try await upload(picture, input: PictureCreateInput(picture: picture, purpose: .avatar), api: api,
+                         completeRetryDelays: completeRetryDelays) { id in
+            try await api.completeDraftAvatar(id: id)
+            return id
+        }
+    }
+
     public static func uploadAvatar(_ picture: PreparedPicture, api: APIClient,
                                     completeRetryDelays: [Duration] = AttachmentUploader.completeRetryDelays) async throws -> Account {
         try await upload(picture, input: PictureCreateInput(picture: picture, purpose: .avatar), api: api,

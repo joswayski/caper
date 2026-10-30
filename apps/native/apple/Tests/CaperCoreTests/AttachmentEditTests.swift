@@ -242,8 +242,15 @@ final class AttachmentEditTests: XCTestCase {
         let file = URL(fileURLWithPath: "/tmp/photo.png")
         let pencil = AttachmentEditRequest(name: "photo.png", kind: .image, original: file, edit: .original) { _, _ in }
         XCTAssertNil(pencil.tool, "the tile and the pencil open it viewing")
+        XCTAssertEqual(pencil.saveLabel, "Done")
         let cropping = AttachmentEditRequest(name: "photo.png", kind: .image, original: file, edit: .original, tool: .crop) { _, _ in }
         XCTAssertEqual(cropping.tool, .crop)
+        let icon = AttachmentEditRequest(name: "Space icon", kind: .image, original: file, edit: .original,
+                                         tool: .crop, pictureMode: true) { _, _ in }
+        XCTAssertEqual(icon.saveLabel, "Done", "space icons still apply immediately")
+        let profile = AttachmentEditRequest(name: "Profile picture", kind: .image, original: file, edit: .original,
+                                            tool: .crop, pictureMode: true, deferredPicture: true) { _, _ in }
+        XCTAssertEqual(profile.saveLabel, "Apply crop", "only the private profile draft defers publication")
     }
 
     func testPickingTheSelectedToolReturnsToViewing() {

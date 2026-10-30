@@ -189,6 +189,7 @@ export default function AttachmentEditor({
   tool: initialTool = "draw",
   anchor,
   pictureMode = false,
+  saveLabel = "Done",
   spoiler,
   onRemove,
   onCancel,
@@ -204,6 +205,7 @@ export default function AttachmentEditor({
   anchor?: HTMLElement;
   /** Square framing for profile pictures and space icons; Done always saves. */
   pictureMode?: boolean;
+  saveLabel?: string;
   /** A staged file's spoiler mark and its toggle, beside the tools. */
   spoiler?: { on: boolean; toggle: () => void };
   /** Removes a staged file; the caller closes the editor. */
@@ -824,7 +826,7 @@ export default function AttachmentEditor({
                 disabled={!picture || saving}
                 onClick={() => void done()}
               >
-                Done
+                {saveLabel}
               </button>
             </header>
             <div ref={setStage} className="chat-editor-stage">

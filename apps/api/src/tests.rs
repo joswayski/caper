@@ -503,6 +503,104 @@ async fn regenerate_avatar_changes_saved_mascot_and_never_replaces_a_photo(pool:
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable Postgres DATABASE_URL"]
+async fn profile_save_commits_names_and_picture_atomically(pool: sqlx::PgPool) {
+    let owner: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name,avatar_id) VALUES ('draft-owner','draft_owner','Original',799) RETURNING id")
+        .fetch_one(&pool).await.unwrap();
+    let other: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES ('draft-other','taken_name','Other') RETURNING id")
+        .fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 hour')")
+        .bind(Sha256::digest(b"draft-session").as_slice()).bind(owner).execute(&pool).await.unwrap();
+    for (id, user, uploaded) in [
+        ("owned-picture", owner, true),
+        ("foreign-picture", other, true),
+        ("unfinished-picture", owner, false),
+    ] {
+        sqlx::query("INSERT INTO public.assets(external_id,owner_id,purpose,kind,content_type,filename,byte_size,uploaded_at) VALUES ($1,$2,'avatar','image','image/png','a.png',1,CASE WHEN $3 THEN now() END)")
+            .bind(id).bind(user).bind(uploaded).execute(&pool).await.unwrap();
+    }
+    let (mut state, _) = state();
+    state.database = Some(pool.clone());
+    state.auth = auth::AuthVerifier::new();
+    let router = app(state);
+    let send = |username: &str,
+                asset: Option<&str>,
+                avatar_id: i16,
+                expected_id: i16,
+                expected_asset: Option<&str>| {
+        router.clone().oneshot(Request::builder().method("POST").uri("/api/account/profile")
+            .header("content-type", "application/json").header("authorization", "Bearer draft-session")
+            .body(Body::from(json!({"username":username,"displayName":"Updated","avatar":{
+                "avatarId":avatar_id,"avatarAsset":asset,"expectedAvatarId":expected_id,"expectedAvatarAsset":expected_asset
+            }}).to_string())).unwrap())
+    };
+    for (username, asset, avatar_id, expected_id, status) in [
+        (
+            "taken_name",
+            Some("owned-picture"),
+            17,
+            799,
+            StatusCode::CONFLICT,
+        ),
+        (
+            "draft_owner",
+            Some("foreign-picture"),
+            17,
+            799,
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "draft_owner",
+            Some("unfinished-picture"),
+            17,
+            799,
+            StatusCode::NOT_FOUND,
+        ),
+        ("draft_owner", None, 800, 799, StatusCode::BAD_REQUEST),
+        ("draft_owner", None, 17, 798, StatusCode::CONFLICT),
+    ] {
+        assert_eq!(
+            send(username, asset, avatar_id, expected_id, None)
+                .await
+                .unwrap()
+                .status(),
+            status
+        );
+        let saved = accounts::load(&pool, owner).await.unwrap().unwrap();
+        assert_eq!(saved.display_name.as_deref(), Some("Original"));
+        assert_eq!(saved.avatar_id, 799);
+        assert!(saved.avatar_asset.is_none());
+    }
+    assert_eq!(
+        send("draft_owner", Some("owned-picture"), 17, 799, None)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let saved = accounts::load(&pool, owner).await.unwrap().unwrap();
+    assert_eq!(saved.display_name.as_deref(), Some("Updated"));
+    assert_eq!(saved.avatar_id, 17);
+    assert_eq!(saved.avatar_asset.as_deref(), Some("owned-picture"));
+    // A stale editor cannot silently remove that photo, even with the right mascot ID.
+    let response = send("draft_owner", None, 0, 17, None).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), BODY_LIMIT).await.unwrap()).unwrap();
+    assert_eq!(body["code"], "profile_changed");
+    assert_eq!(
+        send("draft_owner", None, 0, 17, Some("owned-picture"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let saved = accounts::load(&pool, owner).await.unwrap().unwrap();
+    assert_eq!(saved.avatar_id, 0);
+    assert!(saved.avatar_asset.is_none());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable Postgres DATABASE_URL"]
 async fn profile_updates_preserve_reserved_names_but_reject_new_claims(pool: sqlx::PgPool) {
     let user_id: i64 = sqlx::query_scalar(
         "INSERT INTO public.users(external_id) VALUES ('profile-fixture') RETURNING id",

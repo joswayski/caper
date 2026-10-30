@@ -172,14 +172,14 @@ export async function preparePicture(file: Blob, edit?: AttachmentEdit): Promise
   }
 }
 
-export type PictureTarget = { purpose: "avatar" } | { purpose: "spaceIcon"; spaceId: string };
+export type PictureTarget = { purpose: "avatar"; draft?: boolean } | { purpose: "spaceIcon"; spaceId: string };
 
 async function failure(response: Response, purpose: PicturePurpose) {
   const body = (await response.json().catch(() => undefined)) as { error?: unknown; code?: unknown } | undefined;
   return new PictureError(pictureErrorMessage(response.status, body, purpose), response.status);
 }
 
-/** Reserve, PUT with exactly the signed headers, then complete (which applies it). Returns the completion body. */
+/** Reserve, PUT with signed headers, then verify. Draft avatars wait for profile Save to apply. */
 export async function uploadPicture(
   picture: PreparedPicture,
   target: PictureTarget,
@@ -211,7 +211,7 @@ export async function uploadPicture(
   try {
     if (typeof reservation.upload?.url !== "string") throw new PictureError(pictureMessages.failed);
     await transport.put(reservation.upload.url, reservation.upload.headers ?? {}, picture.blob, progress, signal);
-    const path = `/api/assets/${encodeURIComponent(id)}/complete`;
+    const path = `/api/assets/${encodeURIComponent(id)}/complete${target.purpose === "avatar" && target.draft ? "?draft=true" : ""}`;
     for (let attempt = 0; ; attempt++) {
       const completed = await transport.fetch(path, { method: "POST", credentials: "same-origin", signal });
       if (completed.ok) {

@@ -465,6 +465,21 @@ public final class AppModel {
         }
     }
 
+    /// The editor publishes names and its private avatar together. Failed saves
+    /// leave both the draft and the current global account untouched.
+    public func saveProfile(draft: ProfileEditDraft) async throws {
+        guard !busy, account?.id == draft.baseline.id else { throw CancellationError() }
+        let attempt = generation
+        busy = true
+        defer { busy = false }
+        let updated = try await draft.save(api: api) {
+            guard self.generation == attempt, self.account?.id == draft.baseline.id else { throw CancellationError() }
+        }
+        guard generation == attempt, account?.id == draft.baseline.id, updated.id == draft.baseline.id else { throw CancellationError() }
+        account = updated
+        refreshOwnIdentity(updated)
+    }
+
     /// Own profile refresh (docs/media.md): retained self identities read
     /// `account` (members, invitations, self-DMs, authors, pins, threads,
     /// forwards, replies, reactions, profile cards, the voice roster); the

@@ -34,6 +34,13 @@ class PictureException(override val message: String) : Exception(message)
 /** Bytes ready to upload as a picture, with their pixel size. */
 class PreparedPicture(val bytes: ByteArray, val contentType: String, val width: Int, val height: Int)
 
+/** The atomic profile mutation, including the picture baseline when (and only when) it changed. */
+data class ProfileAvatar(
+    val avatarId: Int, val avatarAsset: String?, val expectedAvatarId: Int?, val expectedAvatarAsset: String?,
+) {
+    init { require(avatarId in 0..799) }
+}
+
 /** What a picture is for: your profile picture, or the icon of a space you own. */
 sealed interface PictureTarget {
     data object Avatar : PictureTarget
@@ -113,15 +120,17 @@ fun pictureError(error: Throwable, target: PictureTarget): String = when (error)
 
 /**
  * Reserve a picture upload, PUT the bytes straight to storage with exactly the presigned
- * headers, then confirm: the server checks the stored file and applies it at once, answering
- * with the account (profile picture) or the space (icon). A failure cancels the reservation.
+ * headers, then confirm. Draft completion only verifies the asset, returning the unchanged
+ * account; the caller commits its ID with the profile. Space icons still apply immediately.
+ * A failed upload cancels the reservation.
  */
 class PictureUploader(
     private val api: CaperApi,
     /** Allow ten queued files to finish metadata processing (409 while queued). */
     private val completeRetryDelaysMs: List<Long> = List(240) { 5_000L },
 ) {
-    suspend fun upload(token: String, target: PictureTarget, picture: PreparedPicture): PictureCompletion {
+    suspend fun upload(token: String, target: PictureTarget, picture: PreparedPicture, draft: Boolean = false): PictureCompletion {
+        require(!draft || target == PictureTarget.Avatar)
         val size = picture.bytes.size.toLong()
         if (size < 1) throw PictureException(PicturePolicy.UNUSABLE)
         val reservation = api.createPicture(
@@ -131,7 +140,7 @@ class PictureUploader(
         try {
             currentCoroutineContext().ensureActive()
             api.putUpload(reservation.upload, size, { ByteArrayInputStream(picture.bytes) })
-            val result = complete(token, reservation.id)
+            val result = complete(token, reservation.id, draft)
             currentCoroutineContext().ensureActive()
             val applied = when (target) {
                 PictureTarget.Avatar -> result.account != null
@@ -145,15 +154,15 @@ class PictureUploader(
         }
     }
 
-    private suspend fun complete(token: String, id: String): PictureCompletion {
+    private suspend fun complete(token: String, id: String, draft: Boolean): PictureCompletion {
         for (wait in completeRetryDelaysMs) {
             try {
-                return api.completePicture(token, id)
+                return api.completePicture(token, id, draft)
             } catch (error: ApiException) {
                 if (error.status != 409) throw error
             }
             delay(wait)
         }
-        return api.completePicture(token, id)
+        return api.completePicture(token, id, draft)
     }
 }

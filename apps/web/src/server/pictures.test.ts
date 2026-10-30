@@ -23,6 +23,7 @@ import {
 import { mentionCardPerson, withInvited } from "../chat/mentions.ts";
 import type { UploadTransport } from "../chat/uploads.ts";
 import Avatar from "../components/Avatar.tsx";
+import Picture from "../components/Picture.tsx";
 import SpaceIcon from "../components/SpaceIcon.tsx";
 
 /** A GIF header (signature plus logical screen size); enough for the client's checks. */
@@ -298,6 +299,33 @@ test("a space icon reserves with its purpose and space, PUTs the signed headers,
   assert.equal(fake.calls.filter((call) => call.path.endsWith("/complete")).length, 2);
   assert.equal((body.space as { iconAsset: string }).iconAsset, "asset123");
   assert.equal(progress.at(-1), 1);
+});
+
+test("local profile previews render without accepting untrusted blob URLs from account data", () => {
+  const local = renderToStaticMarkup(createElement(Picture, { localPreview: "blob:https://caper.test/local" }));
+  assert.match(local, /src="blob:https:\/\/caper.test\/local"/);
+  assert.equal(
+    renderToStaticMarkup(createElement(Picture, { asset: "remote", url: "blob:https://caper.test/local" })),
+    "",
+  );
+});
+
+test("staging a profile photo verifies it without changing the remembered account", async () => {
+  const before = getRememberedAccount();
+  const fake = transport({
+    "/api/assets": [reservation()],
+    "/api/assets/asset123/complete?draft=true": [
+      Response.json({ id: "asset123", account: { id: "must-not-be-published" } }),
+    ],
+  });
+  const body = await uploadPicture(
+    { blob: new Blob([gif(64, 64)]), contentType: "image/gif", width: 64, height: 64 },
+    { purpose: "avatar", draft: true },
+    () => {},
+    fake.value,
+  );
+  assert.equal(body.id, "asset123");
+  assert.equal(getRememberedAccount(), before);
 });
 
 test("rejected pictures explain why, and a failed complete cancels the reservation", async () => {

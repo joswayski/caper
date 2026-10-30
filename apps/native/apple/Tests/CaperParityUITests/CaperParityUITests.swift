@@ -563,6 +563,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.textFields["Username"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.textFields["Display name"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["change-profile-picture"].exists)
+        XCTAssertFalse(app.buttons["profile-save"].isEnabled, "Opening your saved profile is not a change")
         capture("mention-card-edit-profile", app: app)
         app.buttons["Close profile"].tap()
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["profile-save"])
@@ -2274,10 +2275,30 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertLessThan(settings.frame.maxX, app.descendants(matching: .any)["channel-sidebar-resize"].frame.midX)
         app.buttons["account-profile"].tap()
         XCTAssertTrue(app.buttons["profile-save"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["profile-save"].isEnabled)
         app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).click()
         let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["profile-save"])
         XCTAssertEqual(XCTWaiter().wait(for: [dismissed], timeout: 3), .completed)
         XCTAssertTrue(app.buttons["account-profile"].isHittable)
+
+        // The same backdrop and Escape must ask before dropping a local edit.
+        app.buttons["account-profile"].tap()
+        XCTAssertTrue(app.buttons["regenerate-avatar"].waitForExistence(timeout: 5))
+        app.buttons["regenerate-avatar"].tap()
+        assertStaticText("Unsaved changes", in: app)
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).click()
+        let discard = app.alerts["Discard profile changes?"]
+        XCTAssertTrue(discard.waitForExistence(timeout: 3))
+        discard.buttons["Keep editing"].click()
+        XCTAssertTrue(app.buttons["profile-save"].isEnabled)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(discard.waitForExistence(timeout: 3))
+        discard.buttons["Discard"].click()
+        XCTAssertTrue(app.buttons["profile-save"].waitForNonExistence(timeout: 3))
+        app.buttons["account-profile"].tap()
+        XCTAssertTrue(app.buttons["profile-save"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["profile-save"].isEnabled, "Discard must not carry an edit into the next sheet")
+        app.buttons["Close profile"].click()
     }
 
     func testMembersStartOpenAndCanBeToggledWithoutChangingConversation() {
@@ -2847,10 +2868,21 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
-    func testProfilePictureControlsStayAlignedDuringRegeneration() async throws {
+    func testProfilePictureControlsStayAlignedWhileDraftingThenSave() async throws {
         try await Self.fixtureControl(["reset": true])
+        // Negative control: the obsolete immediate-publication endpoint never
+        // releases. A local preview must still finish and enable Save profile.
         try await Self.fixtureControl(["holdAvatarRegeneration": true])
         addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        func savedAvatarID() async throws -> Int {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/account/me")!)
+            request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            let account = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            return try XCTUnwrap(account["avatarId"] as? Int)
+        }
+        let originalAvatar = try await savedAvatarID()
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
                               "Missing your seeded message")
@@ -2875,33 +2907,32 @@ final class CaperParityUITests: XCTestCase {
         username.hover()
         #endif
         XCTAssertFalse(app.staticTexts["Regenerating…"].exists)
+        let submit = app.buttons["profile-save"]
+        XCTAssertFalse(submit.isEnabled, "An unchanged profile cannot be saved")
         capture("profile-picture-idle", app: app)
 
         regenerate.tap()
-        let pending = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == false"), object: regenerate)
-        XCTAssertEqual(XCTWaiter.wait(for: [pending], timeout: 5), .completed)
-        XCTAssertFalse(regenerate.isEnabled)
-        XCTAssertFalse(edit.isEnabled)
-        XCTAssertEqual(regenerate.value as? String, "Regenerating")
-        XCTAssertFalse(app.staticTexts["Regenerating…"].exists, "Progress belongs inside the button, not below the avatar")
-        XCTAssertEqual(username.frame, originalUsernameFrame, "Progress must not move the form or resize its sheet")
-        XCTAssertEqual(regenerate.frame, originalRegenerateFrame)
-        XCTAssertEqual(edit.frame, originalEditFrame)
-        #if os(macOS)
-        username.hover()
-        regenerate.hover()
-        assertStaticText("Generate a new random avatar", in: app)
-        #endif
-        capture("profile-picture-regenerating", app: app)
-
-        try await Self.fixtureControl(["holdAvatarRegeneration": false])
-        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: regenerate)
-        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        assertStaticText("Unsaved changes", in: app)
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: submit)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed,
+                       "Regeneration must finish locally even while the old server endpoint is held")
+        XCTAssertTrue(regenerate.isEnabled)
+        XCTAssertTrue(edit.isEnabled)
+        XCTAssertNotEqual(regenerate.value as? String, "Regenerating")
         XCTAssertFalse(app.staticTexts["Regenerating…"].exists)
         XCTAssertEqual(username.frame, originalUsernameFrame, "Replacing the avatar must not move the form")
         XCTAssertEqual(regenerate.frame, originalRegenerateFrame)
         XCTAssertEqual(edit.frame, originalEditFrame)
-        capture("profile-picture-regenerated", app: app)
+        capture("profile-picture-unsaved", app: app)
+        let previewAccountAvatar = try await savedAvatarID()
+        XCTAssertEqual(previewAccountAvatar, originalAvatar, "Previewing must not publish the chosen avatar")
+
+        app.buttons["Close profile"].tap()
+        let discard = app.alerts["Discard profile changes?"]
+        XCTAssertTrue(discard.waitForExistence(timeout: 5))
+        XCTAssertTrue(discard.buttons["Discard"].exists)
+        discard.buttons["Keep editing"].tap()
+        XCTAssertTrue(submit.isEnabled, "Keep editing retains the local avatar draft")
 
         #if os(macOS)
         regenerate.hover()
@@ -2937,7 +2968,24 @@ final class CaperParityUITests: XCTestCase {
         capture("profile-picture-drawer", app: app)
         app.buttons["Close picture chooser"].tap()
         XCTAssertTrue(drawer.waitForNonExistence(timeout: 5))
+        #else
+        // Close only the menu before testing the outer profile's Save action.
+        app.typeKey(.escape, modifierFlags: [])
         #endif
+
+        try await Self.fixtureControl(["failure": ["path": "/api/account/profile", "method": "POST", "status": 503,
+                                                   "error": "TEST FIXTURE: profile save temporarily unavailable."]])
+        save(submit, from: app.textFields["Display name"])
+        assertStaticText("Your profile could not be saved. Your changes are still here. Please try again.", in: app)
+        assertStaticText("Unsaved changes", in: app)
+        XCTAssertTrue(submit.isEnabled, "A failed publication keeps the chosen avatar available to retry")
+        let rejectedAccountAvatar = try await savedAvatarID()
+        XCTAssertEqual(rejectedAccountAvatar, originalAvatar)
+        save(submit, from: app.textFields["Display name"])
+        XCTAssertTrue(submit.waitForNonExistence(timeout: 10), "Only Save profile publishes and closes the editor")
+        let savedAvatar = try await savedAvatarID()
+        XCTAssertNotEqual(savedAvatar, originalAvatar, "Save must publish the locally generated avatar")
+        XCTAssertTrue((0..<800).contains(savedAvatar))
     }
 
     func testOwnMessageAuthorOpensProfileEditorRetainsRejectedValuesAndRetries() async throws {
@@ -2958,6 +3006,7 @@ final class CaperParityUITests: XCTestCase {
         let savedUsername = try XCTUnwrap(username.value as? String)
         let originalName = try XCTUnwrap(displayName.value as? String)
         XCTAssertFalse(savedUsername.isEmpty)
+        XCTAssertFalse(submit.isEnabled, "Save stays disabled until a field or picture changes")
         type(" UI edit", into: displayName)
         let editedName = try XCTUnwrap(displayName.value as? String)
         XCTAssertNotEqual(editedName, originalName)
@@ -2969,7 +3018,8 @@ final class CaperParityUITests: XCTestCase {
         let (_, response) = try await URLSession.shared.data(for: control)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         save(submit, from: displayName)
-        assertStaticText("Your profile could not be saved. Please try again.", in: app)
+        assertStaticText("Your profile could not be saved. Your changes are still here. Please try again.", in: app)
+        assertStaticText("Unsaved changes", in: app)
         XCTAssertEqual(username.value as? String, savedUsername)
         XCTAssertEqual(displayName.value as? String, editedName)
         XCTAssertTrue(submit.isEnabled)

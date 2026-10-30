@@ -217,9 +217,7 @@ import kotlinx.coroutines.launch
     )
     // Replace the bottom sheet with the existing editor, including picture controls.
     if (editingProfile && canEditProfile && account != null && state != null && viewModel != null) {
-        ProfileScreen(account, state.busy, state.error, onDismiss, picture = { ProfilePictureSection(state, viewModel) }) { username, display ->
-            viewModel.updateProfile(username, display, onDismiss)
-        }
+        ProfileEditor(state, viewModel, onDismiss)
     }
 }
 
