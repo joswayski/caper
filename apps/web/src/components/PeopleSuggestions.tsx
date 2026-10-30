@@ -37,12 +37,13 @@ export function usePeopleSuggestions({
   onChoose: (username: string) => void;
 }) {
   const id = useId();
-  const [focused, setFocused] = useState(false);
   // The field value the list was closed for (chosen or Escape); typing reopens it.
   const [dismissed, setDismissed] = useState<string>();
   const [selected, setSelected] = useState(0);
   const query = value.trim().replace(/^@/, "");
-  const options = focused && query && dismissed !== value && people ? rankPeople(people, query) : [];
+  // This list occupies layout space. Collapsing it on blur moves the following
+  // controls between pointer-down and click, swallowing their first activation.
+  const options = query && dismissed !== value && people ? rankPeople(people, query) : [];
   const open = options.length > 0;
   const active = Math.min(selected, Math.max(0, options.length - 1));
   const activeId = open ? `${id}-${options[active].id}` : undefined;
@@ -87,8 +88,6 @@ export function usePeopleSuggestions({
       "aria-expanded": open,
       "aria-controls": open ? `${id}-options` : undefined,
       "aria-activedescendant": activeId,
-      onFocus: () => setFocused(true),
-      onBlur: () => setFocused(false),
       onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => {
         if (!open || event.nativeEvent.isComposing) return;
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {

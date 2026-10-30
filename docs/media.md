@@ -10438,3 +10438,44 @@ runner is available in this orb. Before release, exercise slow down/up reversal,
 release halfway, full dismissal and reopening on iPhone in channels, DMs and
 threads, including incoming messages and a pending send during the drag; inspect
 a recording for sticking and confirm drafts and composer spacing stay intact.
+
+## Input focus stability (October 30, 2026)
+
+Text-entry controls on narrow or coarse-pointer web layouts use at least 16px
+text before and during focus, including readonly invite links, search fields
+and selects. This avoids Safari's small-input focus zoom without disabling
+user zoom. Checkboxes, radios, file inputs, color controls and sliders retain
+their own sizing; desktop text sizing is unchanged.
+
+Web, Android and Apple inline username suggestions stay in place when focus
+moves to another control. Choosing a person, Escape, clearing the query or a
+pending request can still dismiss them. Previously the web's blur handler
+removed the inline list between pointer-down and click, moving the following
+Open conversation button by 60px and swallowing its activation. Rust desktop
+already places these suggestions in an overlay rather than the form's layout;
+its focus-dependent popup remains unchanged.
+
+Validation:
+
+- `npm run check` and `npm test` pass (781 tests). The added direct-message
+  browser regression fails before the fix with a 60px button movement and
+  passes afterward at 1440px and 390px. The invite browser suite passes with
+  checks for mobile font sizes on the link, username, expiry, limits and select
+  controls.
+- A temporary local-fixture audit exercised 23 fields each in desktop Chromium,
+  Chromium with a Pixel touch profile and WebKit with an iPhone touch profile.
+  It covered email/code, main composer, emoji/GIF/sticker/member searches,
+  profile names, space/channel creation, space settings, invites and new DMs.
+  Focus preserved field identity, value and geometry; profile labels focused
+  the correct field, drafts survived picker visits, and a single click/tap
+  opened the exact DM recipient. Mobile contexts verified coarse-pointer
+  media. These are browser emulations, not physical phone keyboards or Safari.
+- Android Kotlin compilation and all 588 JVM tests pass. No connected device
+  was available for native layout or software-keyboard acceptance.
+- Apple implementation and existing suggestion-state tests are updated; no
+  Xcode/Apple SDK is available here, so they have not been compiled or run.
+- The older `MODALS_ONLY=1 scripts/test-space-controls.mjs` run timed out waiting
+  for its mocked member addition to appear. That broader suite is not a passing
+  result; the targeted DM/invite suites and field audit above passed.
+- Docker has no running daemon in this orb; the web image's application build
+  stage was checked directly by `npm run check`, not by building the image.

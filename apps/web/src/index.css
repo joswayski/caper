@@ -81,6 +81,29 @@
   }
 }
 
+/* Safari zooms text-entry controls below 16px on focus, moving the whole page.
+   Apply the same size before and during focus, including search and readonly
+   invite links. This invariant must win over compact component font rules;
+   leave non-text controls alone and preserve the user's ability to zoom. */
+@media (max-width: 760px), (pointer: coarse) {
+  input:not(
+    [type="checkbox"],
+    [type="radio"],
+    [type="range"],
+    [type="color"],
+    [type="file"],
+    [type="hidden"],
+    [type="button"],
+    [type="submit"],
+    [type="reset"],
+    [type="image"]
+  ),
+  textarea,
+  select {
+    font-size: max(16px, 1rem) !important;
+  }
+}
+
 .page {
   min-height: 100vh;
   min-height: 100dvh;

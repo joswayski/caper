@@ -51,9 +51,10 @@ struct PeopleSuggestionState: Equatable {
     var highlighted = 0
     var closedFor: String?
 
-    /// The rows under the field: none unless it has focus and the list is open.
-    func choices(text: String, candidates: [MentionCandidate], focused: Bool) -> [MentionCandidate] {
-        guard focused, closedFor != text else { return [] }
+    /// Inline rows must not collapse on focus changes and move adjacent controls.
+    /// Pending forms can disable suggestions; choosing or Escape dismisses them.
+    func choices(text: String, candidates: [MentionCandidate], enabled: Bool = true) -> [MentionCandidate] {
+        guard enabled, closedFor != text else { return [] }
         return PeopleSuggestions.match(text: text, candidates: candidates)
     }
 

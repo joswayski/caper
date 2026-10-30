@@ -2143,8 +2143,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 }
 
 /**
- * An exact-username field ([content] applies `field` to it) with [people] suggested inline below it while it is
- * focused and its text matches someone (`usernameSuggestions`). While the list is open Up/Down move, Enter or the
+ * An exact-username field ([content] applies `field` to it) with [people] suggested inline below it when its
+ * text matches someone (`usernameSuggestions`). Focus changes must not collapse the list and move nearby controls.
+ * While the list is open Up/Down move, Enter or the
  * IME action (`imeAction`, which runs `closed` otherwise) fills in the highlighted username, and Escape hides the
  * list without closing the dialog. Choosing never submits; the list stays hidden until the text changes.
  */
@@ -2152,17 +2153,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     username: String, onUsername: (String) -> Unit, people: List<MentionCandidate>,
     content: @Composable (field: Modifier, imeAction: (closed: () -> Unit) -> Unit) -> Unit,
 ) {
-    var focused by remember { mutableStateOf(false) }
     var dismissedAt by remember { mutableStateOf<String?>(null) }
     // Hidden only until the text changes: coming back to the same text later lists again.
     LaunchedEffect(username) { if (username != dismissedAt) dismissedAt = null }
     var escaping by remember { mutableStateOf(false) }
-    val rows = if (focused && username != dismissedAt) usernameSuggestions(people, username) else emptyList()
+    val rows = if (username != dismissedAt) usernameSuggestions(people, username) else emptyList()
     var selected by remember(rows) { mutableIntStateOf(0) }
     fun choose(index: Int) = rows.getOrNull(index)?.let { dismissedAt = it.username; onUsername(it.username) }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         content(
-            Modifier.onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { event ->
+            Modifier.onPreviewKeyEvent { event ->
                 when {
                     // Dialogs close on Escape's key-up: swallow the one whose key-down hid the list.
                     event.key == Key.Escape && event.type == KeyEventType.KeyUp -> escaping.also { escaping = false }

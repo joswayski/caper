@@ -109,29 +109,29 @@ final class PeopleSuggestionsTests: XCTestCase {
 
     // MARK: Field state
 
-    func testListShowsOnlyWhileFocusedAndStaysClosedForPickedText() {
+    func testInlineListDependsOnTextAndAvailabilityNotFocus() {
         var state = PeopleSuggestionState()
-        XCTAssertEqual(state.choices(text: "al", candidates: candidates, focused: true).count, 5)
-        XCTAssertEqual(state.choices(text: "al", candidates: candidates, focused: false), [], "hidden without focus")
+        XCTAssertEqual(state.choices(text: "al", candidates: candidates).count, 5)
+        XCTAssertEqual(state.choices(text: "al", candidates: candidates, enabled: false), [], "hidden while unavailable")
         // A pick fills in the username and closes the list until the text changes.
         state.close(for: "alice")
-        XCTAssertEqual(state.choices(text: "alice", candidates: candidates, focused: true), [])
+        XCTAssertEqual(state.choices(text: "alice", candidates: candidates), [])
         state.textChanged(to: "alice")
-        XCTAssertEqual(state.choices(text: "alice", candidates: candidates, focused: true), [], "the pick's own edit keeps it closed")
+        XCTAssertEqual(state.choices(text: "alice", candidates: candidates), [], "the pick's own edit keeps it closed")
         state.textChanged(to: "alic")
         XCTAssertNil(state.closedFor)
-        XCTAssertEqual(state.choices(text: "alic", candidates: candidates, focused: true).map(\.username), ["alice", "alicia", "malice"])
+        XCTAssertEqual(state.choices(text: "alic", candidates: candidates).map(\.username), ["alice", "alicia", "malice"])
         // Escape closes it the same way.
         state.close(for: "alic")
-        XCTAssertEqual(state.choices(text: "alic", candidates: candidates, focused: true), [])
+        XCTAssertEqual(state.choices(text: "alic", candidates: candidates), [])
         state.textChanged(to: "")
         state.textChanged(to: "alic")
-        XCTAssertFalse(state.choices(text: "alic", candidates: candidates, focused: true).isEmpty, "retyping reopens it")
+        XCTAssertFalse(state.choices(text: "alic", candidates: candidates).isEmpty, "retyping reopens it")
     }
 
     func testHighlightWrapsAndResetsOnEdit() {
         var state = PeopleSuggestionState()
-        let choices = state.choices(text: "al", candidates: candidates, focused: true)
+        let choices = state.choices(text: "al", candidates: candidates)
         XCTAssertEqual(state.highlightedChoice(in: choices)?.username, "alice", "Return picks the first row by default")
         state.move(down: false, count: choices.count)
         XCTAssertEqual(state.highlightedChoice(in: choices)?.username, "malice", "Up from the first row wraps to the last")

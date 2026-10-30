@@ -5472,13 +5472,7 @@ a.chat-draft-preview {
     transition: none;
   }
 }
-/* iOS zooms focused inputs below 16px. Keep keyboard entry stable. */
 @media (max-width: 760px), (pointer: coarse) {
-  :is(.chat-composer, .chat-profile-composer) textarea,
-  .chat-forward-body :is(input[type="search"], textarea),
-  .chat-edit-dialog :is(textarea, select) {
-    font-size: 16px;
-  }
   .chat-thread-composer form textarea {
     min-height: 46px;
   }
