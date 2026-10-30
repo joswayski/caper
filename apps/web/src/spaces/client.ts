@@ -175,7 +175,7 @@ export function archiveFeedback(channelId: string, threadRootId: string, archive
 
 export interface UnreadSpace {
   id: string;
-  channels: { id: string; lastSeq: string; readSeq?: string }[];
+  channels: { id: string; lastSeq: string; readSeq?: string; unreadCount?: number }[];
 }
 
 export function listUnreadSpaces() {
