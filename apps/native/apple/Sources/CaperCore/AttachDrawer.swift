@@ -63,7 +63,6 @@ struct AttachDrawerDraft {
     let add: ([LocalAttachmentFile]) -> Void
     let remove: (String) -> Void
     let canSend: () -> Bool
-    let sending: () -> Bool
     let send: () -> Void
     /// False once the draft can't take files (conversation changed, uploads off); the drawer closes.
     let valid: () -> Bool
@@ -92,17 +91,21 @@ final class AttachDrawerLibrary: NSObject, ObservableObject, PHPhotoLibraryChang
 
     /// The newest fetch, shared with the composer's warm-up so the drawer opens on it.
     private(set) static var fetched: PHFetchResult<PHAsset>?
+    private var fetching: Task<Void, Never>?
 
     /// Every photo and video (or every photo), newest first. A fetch result is
-    /// lazy: tiles read only the assets they show.
-    static func fetch(imagesOnly: Bool = false) -> PHFetchResult<PHAsset> {
-        let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        options.predicate = imagesOnly
-            ? NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
-            : NSPredicate(format: "mediaType == %d OR mediaType == %d",
-                          PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
-        let assets = PHAsset.fetchAssets(with: options)
+    /// lazy: tiles read only the assets they show. Sorting a large library takes
+    /// long enough to hold up the drawer's entrance, so it runs off the main actor.
+    static func fetch(imagesOnly: Bool = false) async -> PHFetchResult<PHAsset> {
+        let assets = await Task.detached(priority: .userInitiated) {
+            let options = PHFetchOptions()
+            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            options.predicate = imagesOnly
+                ? NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+                : NSPredicate(format: "mediaType == %d OR mediaType == %d",
+                              PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
+            return PHAsset.fetchAssets(with: options)
+        }.value
         if !imagesOnly { fetched = assets }
         return assets
     }
@@ -128,14 +131,18 @@ final class AttachDrawerLibrary: NSObject, ObservableObject, PHPhotoLibraryChang
 
     func reload() {
         status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard readable else { assets = nil; return }
+        guard readable else { fetching?.cancel(); assets = nil; return }
         if !observing { PHPhotoLibrary.shared().register(self); observing = true }
-        let fresh = Self.fetch(imagesOnly: imagesOnly)
-        // An unchanged library keeps the grid as it is instead of rebuilding every tile.
-        if let assets, assets.count == fresh.count,
-           assets.firstObject?.localIdentifier == fresh.firstObject?.localIdentifier,
-           assets.lastObject?.localIdentifier == fresh.lastObject?.localIdentifier { return }
-        assets = fresh
+        fetching?.cancel()
+        fetching = Task { [weak self, imagesOnly] in
+            let fresh = await Self.fetch(imagesOnly: imagesOnly)
+            guard let self, !Task.isCancelled, readable else { return }
+            // An unchanged library keeps the grid as it is instead of rebuilding every tile.
+            if let assets, assets.count == fresh.count,
+               assets.firstObject?.localIdentifier == fresh.firstObject?.localIdentifier,
+               assets.lastObject?.localIdentifier == fresh.lastObject?.localIdentifier { return }
+            assets = fresh
+        }
     }
 
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
@@ -150,6 +157,7 @@ final class AttachDrawerLibrary: NSObject, ObservableObject, PHPhotoLibraryChang
     }
 
     func stop() {
+        fetching?.cancel(); fetching = nil
         if observing { PHPhotoLibrary.shared().unregisterChangeObserver(self); observing = false }
     }
 
@@ -209,8 +217,6 @@ struct AttachDrawer: View {
     @State private var copies: [String: Task<Void, Never>] = [:]
     @State private var nudges = 0
     @State private var notice: String?
-    /// How many library items the grid lists; grows as it scrolls.
-    @State private var shown = 240
     @State private var showingCamera = false
     @State private var showingFiles = false
     @State private var showingPhotos = false
@@ -349,7 +355,10 @@ struct AttachDrawer: View {
                 header
             }
             .contentShape(Rectangle())
-            .simultaneousGesture(DragGesture()
+            // Measured on the screen: the header moves with the drawer, so in its
+            // own space the finger seemed to travel less each frame and the
+            // drawer jittered behind it.
+            .simultaneousGesture(DragGesture(coordinateSpace: .global)
                 .updating($drag) { value, state, _ in state = value.translation.height }
                 .onEnded { value in
                     let travel = value.predictedEndTranslation.height
@@ -435,67 +444,25 @@ struct AttachDrawer: View {
                     }
                     .padding(.horizontal, 16).padding(.bottom, 8)
                 }
-                grid(files)
+                AttachLibraryGrid(assets: library.assets, status: library.status, selection: Self.selection(files),
+                                  pending: queue.order, full: full, picking: picking, cameraAvailable: cameraAvailable,
+                                  camera: { if full { nudge() } else { showingCamera = true } },
+                                  tap: { source, identifier, draftID in
+                                      if picking { choosePhoto(identifier) }
+                                      else { toggle(source, identifier: identifier, draftID: draftID) }
+                                  })
+                    .equatable()
             }
         }
     }
 
-    private func grid(_ files: [AttachDrawerFile]) -> some View {
-        // Library source -> (position in the draft, draft ID).
-        var order: [String: (position: Int, id: String)] = [:]
+    /// Library source -> its place in the draft.
+    private static func selection(_ files: [AttachDrawerFile]) -> [String: AttachDrawerSelection] {
+        var order: [String: AttachDrawerSelection] = [:]
         for (index, file) in files.enumerated() {
-            if let source = file.source, order[source] == nil { order[source] = (index + 1, file.id) }
+            if let source = file.source, order[source] == nil { order[source] = AttachDrawerSelection(position: index + 1, id: file.id) }
         }
-        let count = min(library.assets?.count ?? 0, shown)
-        return ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 2)], spacing: 2) {
-                if cameraAvailable {
-                    Button { if full { nudge() } else { showingCamera = true } } label: {
-                        Color.clear.aspectRatio(1, contentMode: .fit)
-                            .background(CaperTheme.raised)
-                            .overlay(CaperIcon(name: "camera", size: 26).foregroundStyle(CaperTheme.muted))
-                            .opacity(full ? 0.4 : 1)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(picking ? "Take a photo" : "Camera")
-                    .accessibilityIdentifier("attach-drawer-camera")
-                }
-                if let assets = library.assets {
-                    ForEach(0..<count, id: \.self) { index in
-                        let asset = assets.object(at: index)
-                        let source = Self.source(asset.localIdentifier)
-                        let selected = order[source]
-                        let copying = queue.isPending(source)
-                        Button {
-                            if picking { choosePhoto(asset.localIdentifier) }
-                            else { toggle(source, identifier: asset.localIdentifier, draftID: selected?.id) }
-                        } label: {
-                            AttachLibraryTile(asset: asset, order: selected?.position, copying: copying,
-                                              dimmed: full && selected == nil && !copying, selectable: !picking)
-                            .id(asset.localIdentifier)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(AttachLibraryTile.label(asset))
-                        .accessibilityValue(selected.map { "Attached \($0.position)" }
-                            ?? (copying ? "Adding" : full ? "Attachment limit reached" : ""))
-                        .accessibilityAddTraits(selected != nil ? .isSelected : [])
-                        .accessibilityIdentifier("attach-drawer-tile")
-                        .onAppear { if index >= count - 30 && count < assets.count { shown += 240 } }
-                    }
-                }
-            }
-            .padding(.horizontal, 2)
-            // Keep the last row clear of the floating Send button.
-            .padding(.bottom, 72)
-        }
-        .accessibilityIdentifier("attach-drawer-grid")
-        .overlay {
-            if library.status == .notDetermined {
-                ProgressView().tint(CaperTheme.muted)
-            } else if library.readable && library.assets?.count == 0 {
-                Text(picking ? "No photos yet." : "No photos or videos yet.").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
-            }
-        }
+        return order
     }
 
     private func accessMessage(_ text: String, settings: Bool) -> some View {
@@ -547,26 +514,9 @@ struct AttachDrawer: View {
 
     @ViewBuilder private func sendButton(_ draft: AttachDrawerDraft, _ files: [AttachDrawerFile]) -> some View {
         if !files.isEmpty || !queue.order.isEmpty {
-            let ready = draft.canSend() && queue.order.isEmpty
-            Button {
-                draft.send()
-                close()
-            } label: {
-                ZStack {
-                    if ready || draft.sending() { CaperIcon(name: "send", size: 20) }
-                    else { ProgressView().tint(CaperTheme.muted) }
-                }
-                .frame(width: 52, height: 52)
-                .foregroundStyle(ready ? CaperTheme.onAction : CaperTheme.muted)
-                .background(ready ? CaperTheme.action : CaperTheme.raised, in: Circle())
-                .overlay(Circle().strokeBorder(ready ? Color.clear : CaperTheme.border))
-            }
-            .buttonStyle(.plain)
-            .disabled(!ready)
-            .padding(.trailing, 16).padding(.bottom, 72)
-            .accessibilityLabel(ready ? "Send message" : "Uploading attachments")
-            .accessibilityIdentifier("attach-drawer-send")
-            .modifier(Entrance.chip)
+            AttachDrawerSendButton(draft: draft, copying: !queue.order.isEmpty) { close() }
+                .padding(.trailing, 16).padding(.bottom, 72)
+                .modifier(Entrance.chip)
         }
     }
 
@@ -612,6 +562,120 @@ struct AttachDrawer: View {
     private func nudge() {
         nudges += 1
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
+    }
+}
+
+/// Send keeps its icon while items are picked and copied, and only steps back
+/// to neutral chrome until they're in (as on Android), rather than swapping to
+/// a spinner on every pick. It reads the draft itself, so upload progress
+/// redraws just this button.
+private struct AttachDrawerSendButton: View {
+    let draft: AttachDrawerDraft
+    let copying: Bool
+    let sent: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let ready = draft.canSend() && !copying
+        Button {
+            draft.send()
+            sent()
+        } label: {
+            CaperIcon(name: "send", size: 20)
+                .frame(width: 52, height: 52)
+                .foregroundStyle(ready ? CaperTheme.onAction : CaperTheme.muted)
+                .background(ready ? CaperTheme.action : CaperTheme.raised, in: Circle())
+                .overlay(Circle().strokeBorder(ready ? Color.clear : CaperTheme.border))
+        }
+        .buttonStyle(.plain)
+        .disabled(!ready)
+        .animation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.fast), value: ready)
+        .accessibilityLabel(ready ? "Send message" : "Uploading attachments")
+        .accessibilityIdentifier("attach-drawer-send")
+    }
+}
+
+/// Where a library item sits in the draft.
+struct AttachDrawerSelection: Equatable {
+    let position: Int
+    let id: String
+}
+
+/// The library grid. The drawer redraws on every frame of a resize drag and on
+/// every upload-progress tick; comparing only what the tiles show
+/// (`equatable()`) keeps those redraws from rebuilding the grid.
+private struct AttachLibraryGrid: View, Equatable {
+    let assets: PHFetchResult<PHAsset>?
+    let status: PHAuthorizationStatus
+    /// Library source -> its place in the draft.
+    let selection: [String: AttachDrawerSelection]
+    /// Sources still copying, in tap order.
+    let pending: [String]
+    let full: Bool
+    /// A tap chooses at once (picture mode).
+    let picking: Bool
+    let cameraAvailable: Bool
+    let camera: () -> Void
+    let tap: (_ source: String, _ identifier: String, _ draftID: String?) -> Void
+    /// How many library items the grid lists; grows as it scrolls.
+    @State private var shown = 240
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.assets === rhs.assets && lhs.status == rhs.status && lhs.selection == rhs.selection
+            && lhs.pending == rhs.pending && lhs.full == rhs.full && lhs.picking == rhs.picking
+            && lhs.cameraAvailable == rhs.cameraAvailable
+    }
+
+    private var readable: Bool { status == .authorized || status == .limited }
+
+    var body: some View {
+        let count = min(assets?.count ?? 0, shown)
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 2)], spacing: 2) {
+                if cameraAvailable {
+                    Button(action: camera) {
+                        Color.clear.aspectRatio(1, contentMode: .fit)
+                            .background(CaperTheme.raised)
+                            .overlay(CaperIcon(name: "camera", size: 26).foregroundStyle(CaperTheme.muted))
+                            .opacity(full ? 0.4 : 1)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(picking ? "Take a photo" : "Camera")
+                    .accessibilityIdentifier("attach-drawer-camera")
+                }
+                if let assets {
+                    ForEach(0..<count, id: \.self) { index in
+                        let asset = assets.object(at: index)
+                        let source = AttachDrawer.source(asset.localIdentifier)
+                        let selected = selection[source]
+                        let copying = pending.contains(source)
+                        Button { tap(source, asset.localIdentifier, selected?.id) } label: {
+                            AttachLibraryTile(asset: asset, order: selected?.position, copying: copying,
+                                              dimmed: full && selected == nil && !copying, selectable: !picking)
+                            .id(asset.localIdentifier)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(AttachLibraryTile.label(asset))
+                        .accessibilityValue(selected.map { "Attached \($0.position)" }
+                            ?? (copying ? "Adding" : full ? "Attachment limit reached" : ""))
+                        .accessibilityAddTraits(selected != nil ? .isSelected : [])
+                        .accessibilityIdentifier("attach-drawer-tile")
+                        .onAppear { if index >= count - 30 && count < assets.count { shown += 240 } }
+                    }
+                }
+            }
+            .padding(.horizontal, 2)
+            // Keep the last row clear of the floating Send button.
+            .padding(.bottom, 72)
+        }
+        .accessibilityIdentifier("attach-drawer-grid")
+        .overlay {
+            if status == .notDetermined {
+                ProgressView().tint(CaperTheme.muted)
+            } else if readable && assets?.count == 0 {
+                Text(picking ? "No photos yet." : "No photos or videos yet.").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+            }
+        }
     }
 }
 
@@ -740,10 +804,10 @@ enum AttachGalleryCache {
         if let warmed, Date().timeIntervalSince(warmed) < 30 { return }
         warmed = Date()
         let scale = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen.scale }.first ?? 3
-        let assets = AttachDrawerLibrary.fetch()
-        let newest = (0..<min(assets.count, warmCount)).map { assets.object(at: $0) }
-        for asset in newest where thumbnail(key(asset)) == nil { requestThumbnail(asset, scale: scale) }
         Task { @MainActor in
+            let assets = await AttachDrawerLibrary.fetch()
+            let newest = (0..<min(assets.count, warmCount)).map { assets.object(at: $0) }
+            for asset in newest where thumbnail(key(asset)) == nil { requestThumbnail(asset, scale: scale) }
             for asset in newest where isGIF(asset) { _ = await animation(for: asset) }
         }
     }

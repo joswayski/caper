@@ -6499,7 +6499,6 @@ private struct MentionCardView: View {
             add: { draft.add($0) },
             remove: { draft.remove(id: $0) },
             canSend: { draft.canSend && !draft.sending },
-            sending: { draft.sending },
             send: {
                 // Send refuses while a dialog is open, so close the drawer first.
                 withoutPresentationAnimation { showingDrawer = false }

@@ -2916,7 +2916,6 @@ struct AttachmentPickerButton: View {
             add: { chat.addAttachments($0, to: target) },
             remove: { chat.removeAttachmentDraft(id: $0) },
             canSend: { chat.canPressSend(inThread: inThread) },
-            sending: { chat.sending },
             send: { Task { await chat.send(inThread: inThread) } },
             valid: { chat.canAttach && chat.attachmentTarget(inThread: inThread) == target })
     }
