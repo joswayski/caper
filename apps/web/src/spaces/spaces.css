@@ -101,7 +101,7 @@
 }
 .space-rail .space-unread {
   position: absolute;
-  top: -3px;
+  bottom: -3px;
   right: -3px;
   width: 10px;
   height: 10px;
@@ -109,9 +109,21 @@
   border-radius: 50%;
   background: var(--text);
 }
-.space-rail-item[data-voice] .space-unread {
-  right: auto;
-  left: -3px;
+.space-rail .space-unread[data-count] {
+  display: grid;
+  place-items: center;
+  width: auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border-radius: 10px;
+  background: var(--terracotta);
+  color: var(--text);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
 }
 .space-rail .space-rail-voice {
   position: absolute;
@@ -918,8 +930,8 @@ html:has(.sidebar-sections-resize:active) * {
 }
 .space-rail .space-rail-muted {
   position: absolute;
-  right: -6px;
-  bottom: -6px;
+  left: -6px;
+  top: -6px;
   width: 18px;
   height: 18px;
   padding: 2px;

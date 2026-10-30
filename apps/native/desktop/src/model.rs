@@ -278,6 +278,8 @@ pub struct UnreadChannel {
     pub last_seq: String,
     #[serde(default)]
     pub read_seq: Option<String>,
+    #[serde(default)]
+    pub unread_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

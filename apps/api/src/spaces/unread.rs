@@ -9,9 +9,9 @@ pub(super) async fn list(
     // Use message sequences, not channel heads: reactions, edits and pins
     // advance the stream but must not invent unread messages. Unjoined
     // channels and non-broadcast thread replies count only direct @mentions.
-    // Only channels whose stream moved past the read position are checked:
-    // joined channels take their newest qualifying message by index.
-    let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+    // Only channels whose stream moved past the read position are checked.
+    // Count messages, not stream events; the two sets below are disjoint.
+    let rows: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
         "WITH visible AS (
           SELECT s.external_id AS space,c.id,c.external_id AS channel,COALESCE(r.seq,0) AS read_seq,
                  EXISTS(SELECT 1 FROM public.channel_joins cj
@@ -27,30 +27,30 @@ pub(super) async fn list(
           -- Few messages mention any one person: find them once through
           -- messages_mentions instead of walking each unread history. OFFSET 0
           -- keeps the planner from pushing the per-channel join into this scan.
-          SELECT v.id,max(m.channel_seq) AS seq
-          FROM (SELECT channel_id,channel_seq,session_id FROM public.messages
-                WHERE forward_source_id IS NULL
+          SELECT v.id,max(m.channel_seq) AS seq,count(*) AS unread_count
+          FROM (SELECT channel_id,channel_seq,session_id,thread_root_id,broadcast FROM public.messages
+                WHERE forward_source_id IS NULL AND deleted_at IS NULL
                   AND payload->'content'->'mentions' @> jsonb_build_array(jsonb_build_object('type','user','id',$2::text))
                 OFFSET 0) m
           JOIN visible v ON v.id=m.channel_id AND m.channel_seq>v.read_seq
           JOIN public.chat_sessions cs ON cs.id=m.session_id
           JOIN public.users author ON author.id=cs.user_id AND author.deleted_at IS NULL
-          WHERE cs.user_id<>$1
+          WHERE cs.user_id<>$1 AND NOT (v.joined AND (m.thread_root_id IS NULL OR m.broadcast))
             AND NOT EXISTS(SELECT 1 FROM public.user_blocks b
                  WHERE b.blocker_id=$1 AND b.blocked_id=cs.user_id AND b.deleted_at IS NULL)
           GROUP BY v.id
         )
-        SELECT v.space,v.channel,GREATEST(latest.seq,mention.seq),v.read_seq
+        SELECT v.space,v.channel,GREATEST(latest.seq,mention.seq),v.read_seq,
+               COALESCE(latest.unread_count,0)+COALESCE(mention.unread_count,0)
         FROM visible v
         LEFT JOIN LATERAL (
-          SELECT m.channel_seq AS seq FROM public.messages m
+          SELECT max(m.channel_seq) AS seq,count(*) AS unread_count FROM public.messages m
           JOIN public.chat_sessions cs ON cs.id=m.session_id
           JOIN public.users author ON author.id=cs.user_id AND author.deleted_at IS NULL
           WHERE v.joined AND m.channel_id=v.id AND m.channel_seq>v.read_seq AND m.deleted_at IS NULL
             AND (m.thread_root_id IS NULL OR m.broadcast) AND cs.user_id<>$1
             AND NOT EXISTS(SELECT 1 FROM public.user_blocks b
                  WHERE b.blocker_id=$1 AND b.blocked_id=cs.user_id AND b.deleted_at IS NULL)
-          ORDER BY m.channel_seq DESC LIMIT 1
         ) latest ON true
         LEFT JOIN mentioned mention ON mention.id=v.id
         WHERE latest.seq IS NOT NULL OR mention.seq IS NOT NULL
@@ -62,11 +62,11 @@ pub(super) async fn list(
     .await
     .map_err(database_error)?;
     let mut spaces: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    for (space, channel, seq, read_seq) in rows {
+    for (space, channel, seq, read_seq, unread_count) in rows {
         spaces
             .entry(space)
             .or_default()
-            .push(json!({"id":channel,"lastSeq":seq.to_string(),"readSeq":read_seq.to_string()}));
+            .push(json!({"id":channel,"lastSeq":seq.to_string(),"readSeq":read_seq.to_string(),"unreadCount":unread_count}));
     }
     let feedback_waiting = crate::feedback::waiting_count(pool(&state)?, principal.user.id).await?;
     let badge_count = crate::push::badge::count(pool(&state)?, principal.user.id)
