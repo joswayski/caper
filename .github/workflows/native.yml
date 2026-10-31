@@ -212,12 +212,16 @@ jobs:
       - name: Clear macOS notices off the self-hosted VM's screen
         # Starting the runner's launchd service posts an "App Background Activity"
         # notice that sits over the top-right of the screen, where UI tests click
-        # dialog close buttons, and clicking it opens System Settings.
+        # dialog close buttons, and clicking it opens System Settings. Privacy
+        # alerts such as "Allow Python to find devices on local networks?" (from
+        # the build's Python steps) sit over the app window until answered.
         if: runner.environment == 'self-hosted' && matrix.platform == 'macos'
         run: |
           osascript -e 'quit app "System Settings"' 2>/dev/null || true
-          killall NotificationCenter 2>/dev/null || true
+          killall NotificationCenter UserNotificationCenter 2>/dev/null || true
           sleep 2
+          # A UI test fails on any window over the app; name what is still there.
+          pgrep -lx 'System Settings|UserNotificationCenter' || true
       - name: Exercise native UI against the loopback parity fixture
         env:
           PLATFORM: ${{ matrix.platform }}
