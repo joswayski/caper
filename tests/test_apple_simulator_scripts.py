@@ -29,7 +29,7 @@ class AppleSimulatorScriptTests(unittest.TestCase):
         config.write_text(f"CAPER_SOURCE_REVISION = {'a' * 40}\n")
         binary = self.root / "bin"
         binary.mkdir()
-        for name in ("node", "curl"):
+        for name in ("node", "curl", "defaults"):
             tool = binary / name
             # No fixture server or network is needed for shell argument tests.
             tool.write_text("#!/usr/bin/env bash\nexit 0\n")

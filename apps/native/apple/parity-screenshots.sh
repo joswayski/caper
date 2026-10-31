@@ -27,6 +27,9 @@ if [[ "$PLATFORM" == macos ]]; then
   destination="platform=macOS,arch=${CAPER_MACOS_ARCH:-$(uname -m)}"
 else
   scheme=CaperIOSParityTests
+  # The composer tests measure the software keyboard; a connected hardware
+  # keyboard (the simulator default on CI hosts) keeps it offscreen.
+  defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
   destination="${CAPER_IOS_SIMULATOR_DESTINATION:-platform=iOS Simulator,name=iPhone 16,OS=latest}"
 fi
 set +e
