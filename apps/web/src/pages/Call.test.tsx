@@ -32,6 +32,29 @@ test("device choices keep system routing distinct from explicit devices with the
   expect(markup).not.toContain('role="menuitemradio"');
 });
 
+test.each(["audioinput", "audiooutput"] as const)("device labels hide USB IDs without changing %s routing", (kind) => {
+  const labels = [
+    "Default - Microphone (HyperX QuadCast 2 S) (03f0:0d84)",
+    "Microphone (HyperX QuadCast 2 S) (03F0:0D84)",
+    "Communications - Microphone (HyperX QuadCast 2 S) (03f0:0d84)",
+    "Headphones (Studio)",
+    "Model (123:456)",
+    "",
+  ];
+  const devices = labels.map(
+    (label, i) => ({ deviceId: i ? `device-${i}` : "default", label, kind }) as MediaDeviceInfo,
+  );
+  expect(audioDeviceOptions(devices, kind === "audioinput")).toEqual([
+    { id: "", label: "System default", detail: "Microphone (HyperX QuadCast 2 S)" },
+    { id: "device-1", label: "Microphone (HyperX QuadCast 2 S)", detail: "" },
+    { id: "device-2", label: "Communications - Microphone (HyperX QuadCast 2 S)", detail: "" },
+    { id: "device-3", label: "Headphones (Studio)", detail: "" },
+    { id: "device-4", label: "Model (123:456)", detail: "" },
+    { id: "device-5", label: kind === "audioinput" ? "Microphone" : "Audio output", detail: "" },
+  ]);
+  expect(devices[0]?.label).toBe(labels[0]);
+});
+
 test("a direct spaces visit renders a visible server fallback before account data or hydration", () => {
   const Pending = SpacesRoute.options.pendingComponent!;
   const markup = renderToStaticMarkup(<Pending />);

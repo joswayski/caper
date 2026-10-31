@@ -2,7 +2,13 @@ import { useId, useLayoutEffect, useRef, useState } from "react";
 import { Bluetooth, ChevronRight, Headphones, Headset, Mic, Monitor, Speaker, X } from "lucide-react";
 
 export function audioDeviceOptions(devices: MediaDeviceInfo[], input: boolean) {
-  const matching = devices.filter((device) => device.kind === (input ? "audioinput" : "audiooutput"));
+  const matching = devices
+    .filter((device) => device.kind === (input ? "audioinput" : "audiooutput"))
+    .map((device) => ({
+      deviceId: device.deviceId,
+      // Chromium appends USB vendor/product IDs; keep model names and routing IDs intact.
+      label: device.label.replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, ""),
+    }));
   const defaultName = matching
     .find((device) => device.deviceId === "default")
     ?.label.replace(/^Default\s*[-–]\s*/i, "");
@@ -184,12 +190,12 @@ export default function AudioDevicePicker({
                   close();
                 }}
               >
+                <span className="audio-device-radio" aria-hidden="true" />
                 <DeviceIcon label={option.detail || option.label} input={input} />
                 <span>
                   {option.label}
                   {option.detail && <small>{option.detail}</small>}
                 </span>
-                <span className="audio-device-radio" aria-hidden="true" />
               </button>
             ))}
           </div>
