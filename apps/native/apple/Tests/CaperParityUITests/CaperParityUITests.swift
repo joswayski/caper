@@ -3342,7 +3342,23 @@ final class CaperParityUITests: XCTestCase {
         let app = launch(fixture: "manage-space")
         assertStaticText("Manage space", in: app)
         assertElement("space-members-heading", label: "Members 3", in: app)
+        let name = app.textFields["Space name"]
+        let save = app.buttons["Save name"]
+        XCTAssertFalse(save.isEnabled, "An unchanged space name must not offer a save")
+        XCTAssertLessThan(save.frame.width, name.frame.width / 2, "Save name is a compact action, not a full-width banner")
+        #if os(macOS)
+        type(" revised", into: name)
+        XCTAssertTrue(save.isEnabled, "Editing the name enables Save name")
+        #endif
+        XCTAssertFalse(app.textFields["invite-link-expiry-number"].exists, "Custom-link settings start collapsed, as on web")
         capture("manage-space", app: app)
+        let customLinks = app.descendants(matching: .any)["space-custom-links"].firstMatch
+        customLinks.tap()
+        XCTAssertTrue(app.textFields["invite-link-expiry-number"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["invite-link-max-uses"].exists)
+        capture("manage-space-custom-links", app: app)
+        customLinks.tap()
+        XCTAssertFalse(app.textFields["invite-link-expiry-number"].exists)
         let username = app.textFields["Exact username"]
         XCTAssertTrue(username.isEnabled, "The dialog must not inherit the disabled workspace")
         let remove = app.buttons["Remove"].firstMatch
