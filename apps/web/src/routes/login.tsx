@@ -244,9 +244,7 @@ function Login() {
           </>
         ) : (
           <>
-            <p className="leading-[1.65] text-content-muted">
-              Use your email to create an account or return to one. We’ll send a code to your email.
-            </p>
+            <p className="leading-[1.65] text-content-muted">Use your email to create an account or log back in.</p>
             <form onSubmit={(event) => void requestCode(event)}>
               <label className="my-2 mt-5 block text-[.9rem] font-bold" htmlFor="email">
                 Email address

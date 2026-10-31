@@ -8928,12 +8928,13 @@ private struct LoginPage: View {
                 Wordmark().padding(.bottom, 58)
                 Text(model.challengeID == nil ? "Welcome to Caper" : "Check your email.")
                     .font(CaperTheme.font(52, weight: .black)).tracking(-2.5).padding(.bottom, 4)
-                Text(model.challengeID == nil ? "Use your email to create an account or return to one. We’ll send a code to your email." : "Enter the six-character code sent to \(email.trimmingCharacters(in: .whitespacesAndNewlines)). It expires in 10 minutes.")
+                Text(model.challengeID == nil ? "Use your email to create an account or log back in." : "Enter the six-character code sent to \(email.trimmingCharacters(in: .whitespacesAndNewlines)). It expires in 10 minutes.")
                     .font(CaperTheme.font(16)).foregroundStyle(CaperTheme.muted).lineSpacing(7).padding(.bottom, 20)
                 if model.challengeID == nil {
                     CaperField(title: "Email address", text: input($email, clearsError: true), placeholder: "you@example.com", focus: $emailFocused)
+                        .submitLabel(.send).onSubmit(submitEmail)
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
-                    Button { Task { await model.requestCode(email: email) } } label: { actionLabel("Email me a code", busy: "Sending…") }
+                    Button(action: submitEmail) { actionLabel("Email me a code", busy: "Sending…") }
                         .buttonStyle(LoginActionButton(minWidth: 200)).disabled(model.busy || email.isEmpty)
                         .accessibilityLabel(model.busy ? "Sending…" : "Email me a code")
                         .frame(maxWidth: .infinity, alignment: .trailing).padding(.top, 12)
@@ -9002,9 +9003,17 @@ private struct LoginPage: View {
             #endif
             .frame(maxWidth: .infinity, alignment: .center)
         }.background(CaperTheme.blackout.ignoresSafeArea())
+            .textSelection(.enabled)
             // As on web, the current field is focused on each step and when a request ends.
             .onChange(of: model.busy) { _, busy in if !busy { focusField() } }
             .onChange(of: model.challengeID) { _, _ in if !model.busy { focusField() } }
+    }
+
+    private func submitEmail() {
+        Task {
+            guard !model.busy, !email.isEmpty, model.challengeID == nil else { return }
+            await model.requestCode(email: email)
+        }
     }
 
     private func focusField() {

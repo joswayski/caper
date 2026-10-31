@@ -11024,7 +11024,7 @@ impl CaperApp {
                                     self.email.trim()
                                 )
                             } else {
-                                "Use your email to create an account or return to one. We’ll send a code to your email."
+                                "Use your email to create an account or log back in."
                                     .into()
                             })
                             .size(16.0)
@@ -54515,7 +54515,7 @@ mod tests {
             text_position(&output, "Email me a code");
             text_position(
                 &output,
-                "Use your email to create an account or return to one. We’ll send a code to your email.",
+                "Use your email to create an account or log back in.",
             );
             if let Some(error) = error {
                 text_position(&output, &error);
@@ -54736,7 +54736,7 @@ mod tests {
             let description = text_rect(if verifying {
                 "Enter the six-character code sent to fixture@example.test. It expires in 10 minutes."
             } else {
-                "Use your email to create an account or return to one. We’ll send a code to your email."
+                "Use your email to create an account or log back in."
             });
             assert_eq!(description.top() - heading.bottom(), 4.0);
             let control_rect = |height: f32| {
