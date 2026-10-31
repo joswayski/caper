@@ -29,7 +29,7 @@ private struct Verification: Decodable { let account: Account; let token: String
 private struct SessionInput: Encodable { let name: String }
 private struct EmailInput: Encodable { let email: String }
 private struct VerifyInput: Encodable { let challengeId: String; let code: String; let tokenTransport = "bearer" }
-private struct ProfileInput: Encodable { let username: String; let displayName: String }
+private struct ProfileInput: Encodable { let username: String; let displayName: String; let avatar: ProfileAvatarInput? }
 private struct SendInput: Encodable {
     let clientMessageId: String
     let text: String
@@ -163,8 +163,8 @@ public actor APIClient {
         return result.account
     }
 
-    public func updateProfile(username: String, displayName: String) async throws -> Account {
-        let account: Account = try await request("api/account/profile", method: "POST", body: ProfileInput(username: username, displayName: displayName))
+    public func updateProfile(username: String, displayName: String, avatar: ProfileAvatarInput? = nil) async throws -> Account {
+        let account: Account = try await request("api/account/profile", method: "POST", body: ProfileInput(username: username, displayName: displayName, avatar: avatar))
         // The next conversation mints a session carrying the new author name.
         cachedChatSession = nil
         return account
@@ -599,6 +599,12 @@ public actor APIClient {
         guard Self.validAssetID(id) else { throw APIError(status: 400, message: "Invalid file ID.") }
         let completed: AvatarCompletion = try await request("api/assets/\(id)/complete", method: "POST")
         return completed.account
+    }
+
+    /// Verifies the uploaded asset without applying or broadcasting a picture.
+    public func completeDraftAvatar(id: String) async throws {
+        guard Self.validAssetID(id) else { throw APIError(status: 400, message: "Invalid file ID.") }
+        let _: AvatarCompletion = try await request("api/assets/\(id)/complete?draft=true", method: "POST")
     }
 
     /// Completing a space icon applies it; the server returns the space.

@@ -10024,7 +10024,8 @@ user's pictures from storage on account deletion belongs with that future flow.
 The gallery lists retained, completed uploads newest first, including the current
 picture, in pages of 40. It does not reconstruct editing steps or recover cropped
 pixels; each thumbnail is a saved image. Selecting a thumbnail changes only the
-preview; **Save picture** applies that exact image without uploading or re-encoding.
+preview; **Use picture** puts that image into the private profile draft without
+uploading or re-encoding. **Save profile** publishes it with the edited names.
 Cancel leaves the account alone. The gallery also works while showing the mascot.
 Migration `202610190001_avatar_restore.sql` adds nullable `avatar_selected_at`;
 uploads reserved before a selection or removal cannot overwrite it on completion.
@@ -10036,6 +10037,8 @@ uploads reserved before a selection or removal cannot overwrite it on completion
 | `POST /api/assets` `{"purpose":"avatar"\|"spaceIcon", "spaceId"?, filename, contentType, byteSize, width, height}` | Reserves a picture (no `channelId`/`preview`). `spaceIcon` requires owning the space (`404` otherwise). PNG, JPEG, WebP or GIF only (`400 picture_type`); GIFs ≤ 5 MiB and other pictures ≤ 1 MiB (`413 picture_too_large`); 1–1024 px each side. 50 picture uploads per person per day (`429 picture_rate_limited`), plus the usual 30/minute and 20 pending. Returns `{id, kind, upload}`; picture IDs are 20 characters. |
 | `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. Pictures are ordered by reservation: one that completes after a later-reserved picture already completed is kept but not applied, and the response shows the newer one. |
 | `POST /api/assets/{id}/cancel` | Cancels a picture before completion; `409` afterwards. |
+| `POST /api/assets/{id}/complete?draft=true` | For avatars, verifies and retains the upload without applying it or broadcasting a profile change. Clients call this only after Save profile, before the atomic profile commit. A repeated completion never applies it, even without the query flag. Space icons are unchanged. |
+| `POST /api/account/profile` with optional `avatar: {avatarId,avatarAsset,expectedAvatarId,expectedAvatarAsset}` | Saves names and the chosen mascot/photo atomically, then broadcasts once. `avatarAsset` is an owned, completed, retained avatar ID or null. `avatarId` is 0–799. Expected fields describe the picture when editing began; `409 profile_changed` rejects stale drafts without changing names. Omitting `avatar` keeps the existing picture. |
 | `DELETE /api/account/avatar` | Back to the saved mascot; returns the account. |
 | `POST /api/account/avatar/regenerate` | No body. Saves a randomly chosen different mascot ID and returns the account; broadcasts the profile change, including active voice participants. `409` if a custom picture is present. No upload/storage configuration required. |
 | `GET /api/account/avatar/history?cursor=<asset ID>` | Returns `{pictures:[{avatarAsset,avatarUrl}],nextCursor}` for your own retained, completed avatar uploads only. Stable newest-first pages of 40; `nextCursor: null` at the end. Includes the current picture. |
@@ -10082,9 +10085,9 @@ pixels; it cannot recover parts cropped out of an earlier upload (choose the
 original file again for those). Dropping a file onto the frame opens the same
 editor. Cancel leaves the saved picture unchanged and makes no upload reservation.
 **Previous pictures** opens a thumbnail grid with a current marker and larger
-preview. Save is disabled until a different picture is selected, and while saving.
-The saved account refreshes on success; failures remain inline without applying
-the preview. Loading, empty history, retry and Load more are supported. Space
+preview. **Use picture** selects into the profile draft; it does not publish.
+The saved account refreshes only after **Save profile** succeeds; failures remain
+inline and retain the draft. Loading, empty history, retry and Load more are supported. Space
 icons have no history picker.
 GIFs offer **Keep original animation** or an explicitly acknowledged still-frame
 edit; cropping animation is not supported. Animated PNG/WebP require confirmation
@@ -10096,9 +10099,52 @@ up a "change me!" sign (`assets/avatars/change-me.svg`, one vector drawn over
 any mascot); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
 All clients also offer a circular-arrow **Regenerate avatar** action only when no
-custom picture is set. Each press immediately saves a different mascot; it does
-not require Save profile. Pending requests disable the picture controls, and
-failures remain inline. A custom picture set elsewhere wins over regeneration.
+custom picture is set in the draft. Each press chooses a different mascot locally:
+no account write or profile broadcast occurs. New photos and crops are prepared
+locally too (**Apply crop**); uploading starts only on **Save profile**. Names,
+history selection, removal and regeneration share that single save action across
+web, Android, Apple and Rust desktop. A static warm **Unsaved changes** indicator
+marks a dirty draft; unchanged Save is disabled. Close/Escape/back navigation asks
+**Discard changes?**, with **Keep editing** and **Discard**; browser tab closing
+uses the browser's native unsaved-changes warning. No close path silently saves.
+While saving, controls and dismissal are blocked; failures keep the draft for retry.
+Legacy immediate-save endpoints remain for older clients. A picture changed on
+another device rejects a stale picture draft rather than overwriting it.
+
+### Private profile draft validation (October 30, 2026)
+
+- API: workspace tests (218 passed; opt-in tests excluded), formatting and Clippy
+  pass. Both the atomic profile endpoint regression and the extended picture
+  completion regression pass against disposable local PostgreSQL; picture
+  storage is a fake R2 server. These cover rejected/stale saves leaving names
+  unchanged, owned/completed assets, staged completion, and late legacy retries.
+- Web: `npm run check` passes. All 785 Vitest tests pass with one worker and a
+  default test deadline after reducing build contention.
+  The full `scripts/test-pictures.mjs` suite passes with mocked API, gateway,
+  CDN and storage: desktop/touch drafts, zero writes before Save, atomic save,
+  retained failed drafts, retry without reupload, history, crop, GIFs, space
+  icons, and reduced motion. Its existing two-frame GIF assertion failed once
+  and passed on an unchanged rerun. The additional modal-geometry harness
+  stopped at its Space settings click before reaching the profile checks;
+  that broader harness is not counted as passing.
+- Browser visuals: inspected desktop unchanged/dirty/discard states and a
+  real-pointer regeneration → Keep editing → Save recording; the mock observed
+  exactly one profile write after multiple regenerations. Chromium's 390px
+  touch layout (`pointer: coarse`) covers dirty/discard, failed save, crop and
+  prepared-photo previews. These are labelled local fixtures, not phone captures
+  or live multi-account synchronization evidence.
+- Android: fixture-mode `testDebugUnitTest lintDebug
+  compileDebugAndroidTestKotlin` passes with one Gradle worker (593 unit tests).
+  No connected device was available; Compose tests were compiled, not executed.
+- Rust desktop: Linux check/build, Clippy, scoped formatting and the full suite
+  pass (780 passed, 20 existing opt-in tests ignored). Real Xvfb renders cover
+  unchanged/dirty/discard, retained drafts and prepared crops while shared
+  identity stays unchanged. Windows and macOS rendering were not run.
+- Apple: implementation and model/UI regressions are present, but this Linux
+  orb has no Swift/Xcode and no connected Mac runner. Compilation, XCTest,
+  physical iOS/macOS dismissal and rendering remain unverified.
+- Docker images and production uploads were not exercised. The Docker daemon
+  is unavailable; web output and Rust debug binaries were built directly.
 
 ### Mascot regeneration validation (October 20, 2026)
 

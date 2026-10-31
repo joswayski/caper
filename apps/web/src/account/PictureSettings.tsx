@@ -1,25 +1,18 @@
 import { Images, ImageUp, Pencil, RefreshCw, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import AttachmentEditor from "../chat/AttachmentEditor";
 import { PictureSourceSheet, touchLayout } from "../chat/AttachmentPicker";
 import type { AttachmentEdit } from "../chat/edit";
 import { pngIsAnimated, webpInfo } from "../chat/prepare";
 import "../chat/chat.css";
 import Avatar from "../components/Avatar";
+import Picture from "../components/Picture";
 import SpaceIcon from "../components/SpaceIcon";
 import { removeSpaceIcon, SpacesApiError, type Space } from "../spaces/client";
 import { avatarUrl } from "./avatar";
-import {
-  AccountApiError,
-  getAccount,
-  getRememberedAccount,
-  regenerateAvatar,
-  removeAvatar,
-  subscribeAccount,
-  type Account,
-} from "./client";
+import { AccountApiError, type Account } from "./client";
 import AvatarHistory from "./AvatarHistory";
-import { PictureError, uploadAvatar, uploadSpaceIcon } from "./picture-upload";
+import { PictureError, preparePicture, uploadSpaceIcon, type PreparedPicture } from "./picture-upload";
 import { gifSize, pictureErrorMessage, pictureMessages } from "./pictures";
 import "./pictures.css";
 
@@ -49,6 +42,8 @@ function PictureEditor({
   onRemove,
   onHistory,
   onRegenerate,
+  localDraft = false,
+  onBusyChange,
 }: {
   title: string;
   preview: ReactNode;
@@ -62,6 +57,8 @@ function PictureEditor({
   onRemove: () => Promise<void>;
   onHistory?: () => void;
   onRegenerate?: () => Promise<void>;
+  localDraft?: boolean;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [error, setError] = useState<string>();
@@ -86,6 +83,9 @@ function PictureEditor({
   const frame = useRef<HTMLDivElement>(null);
   const menuId = useId();
   const busy = phase.kind !== "idle" || !!draft;
+  useEffect(() => {
+    onBusyChange?.(busy);
+  }, [busy, onBusyChange]);
   // The edit button is disabled while a request runs and the menu item that
   // started it is gone, so focus falls to the page. Keyboard users continue
   // from the edit button instead of the top of the page or dialog.
@@ -142,7 +142,7 @@ function PictureEditor({
     setPhase({ kind: "preparing" });
     try {
       await onUpload(file, (fraction) => setPhase({ kind: "uploading", progress: fraction }), edit);
-      setDone(`${title} updated.`);
+      setDone(localDraft ? "Picture ready to save." : `${title} updated.`);
     } catch (reason) {
       if (reason instanceof PictureError && reason.status === 503) setUnavailable(true);
       else setError(uploadError(reason));
@@ -158,7 +158,7 @@ function PictureEditor({
     setPhase({ kind: "removing" });
     try {
       await onRemove();
-      setDone(`${title} removed.`);
+      setDone(localDraft ? "Removal ready to save." : `${title} removed.`);
     } catch (reason) {
       setError(removeFailed(reason));
     } finally {
@@ -332,7 +332,7 @@ function PictureEditor({
             setPhase({ kind: "regenerating" });
             try {
               await onRegenerate();
-              setDone("Avatar regenerated.");
+              setDone(localDraft ? "Avatar ready to save." : "Avatar regenerated.");
             } catch (reason) {
               setError(
                 reason instanceof AccountApiError && reason.status === 409
@@ -399,6 +399,7 @@ function PictureEditor({
             name={title}
             tool="crop"
             pictureMode
+            saveLabel={localDraft ? "Apply crop" : undefined}
             anchor={frame.current?.querySelector<HTMLButtonElement>(".picture-settings-edit") ?? undefined}
             onCancel={cancelEdit}
             onSave={(edit) => void upload(draft.file, edit)}
@@ -438,13 +439,40 @@ function removalError(error: unknown, purpose: "avatar" | "spaceIcon", fallback:
   return fallback;
 }
 
-/** Profile settings: your picture in its frame; without one, your mascot asks to be changed. */
-export function ProfilePictureSettings({ account: initial }: { account: Account }) {
-  const remembered = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
-  const account = remembered?.id === initial.id ? remembered : initial;
+export interface ProfilePictureDraft {
+  avatarId: number;
+  avatarAsset?: string;
+  avatarUrl?: string;
+  upload?: PreparedPicture;
+  uploadedAsset?: string;
+}
+
+/** All choices stay in the parent profile draft; no account mutations here. */
+export function ProfilePictureSettings({
+  account,
+  draft,
+  onChange,
+  onBusyChange,
+}: {
+  account: Account;
+  draft: ProfilePictureDraft;
+  onChange: (draft: ProfilePictureDraft) => void;
+  onBusyChange: (busy: boolean) => void;
+}) {
   const name = account.displayName ?? account.username ?? "You";
-  const [history, setHistory] = useState<Account>();
-  const closeHistory = useCallback(() => setHistory(undefined), []);
+  const [history, setHistory] = useState(false);
+  const closeHistory = useCallback(() => setHistory(false), []);
+  const [previewUrl, setPreviewUrl] = useState<string>();
+  useEffect(() => {
+    if (!draft.upload) {
+      setPreviewUrl(undefined);
+      return;
+    }
+    const url = URL.createObjectURL(draft.upload.blob);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [draft.upload]);
+  const hasPicture = !!draft.upload || !!draft.avatarAsset;
   return (
     <>
       <PictureEditor
@@ -452,33 +480,41 @@ export function ProfilePictureSettings({ account: initial }: { account: Account 
         title="Profile picture"
         noun="picture"
         preview={
-          account.avatarAsset || !avatarUrl(account.avatarId) ? (
-            <Avatar person={account} name={name} />
+          draft.upload ? (
+            <Picture localPreview={previewUrl} />
+          ) : hasPicture || !avatarUrl(draft.avatarId) ? (
+            <Avatar person={draft} name={name} />
           ) : (
-            <ChangeMe avatarId={account.avatarId} />
+            <ChangeMe avatarId={draft.avatarId} />
           )
         }
-        removable={!!account.avatarAsset}
-        mascot={!account.avatarAsset && !!avatarUrl(account.avatarId)}
-        currentUrl={account.avatarUrl}
+        removable={hasPicture}
+        mascot={!hasPicture && !!avatarUrl(draft.avatarId)}
+        currentUrl={draft.upload ? previewUrl : draft.avatarUrl}
+        localDraft
+        onBusyChange={onBusyChange}
         removeFailed={(error) => removalError(error, "avatar", "Your picture couldn’t be removed. Try again.")}
-        onUpload={async (file, progress, edit) => {
-          await uploadAvatar(file, progress, undefined, edit);
+        onUpload={async (file, _progress, edit) => {
+          onChange({ avatarId: draft.avatarId, upload: await preparePicture(file, edit) });
         }}
         onRemove={async () => {
-          await removeAvatar();
+          onChange({ avatarId: draft.avatarId });
         }}
-        onHistory={() => setHistory(account)}
+        onHistory={() => setHistory(true)}
         onRegenerate={async () => {
-          try {
-            await regenerateAvatar();
-          } catch (error) {
-            if (error instanceof AccountApiError && error.status === 409) await getAccount().catch(() => {});
-            throw error;
-          }
+          onChange({ avatarId: (draft.avatarId + 1 + Math.floor(Math.random() * 799)) % 800 });
         }}
       />
-      {history?.id === account.id && <AvatarHistory account={history} onClose={closeHistory} />}
+      {history && (
+        <AvatarHistory
+          account={{ ...account, avatarId: draft.avatarId, avatarAsset: draft.avatarAsset, avatarUrl: draft.avatarUrl }}
+          onClose={closeHistory}
+          onSelect={(selected) => {
+            onChange({ avatarId: draft.avatarId, ...selected });
+            closeHistory();
+          }}
+        />
+      )}
     </>
   );
 }

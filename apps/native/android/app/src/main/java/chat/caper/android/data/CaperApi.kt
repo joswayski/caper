@@ -42,9 +42,15 @@ class CaperApi(
         buildJsonObject { put("challengeId", challenge); put("code", code.trim()); put("tokenTransport", "bearer") },
     )
     suspend fun me(token: String): Account = get("/api/account/me", token)
-    suspend fun profile(token: String, username: String, displayName: String): Account = post(
+    suspend fun profile(token: String, username: String, displayName: String, avatar: ProfileAvatar? = null): Account = post(
         "/api/account/profile",
-        buildJsonObject { put("username", username.trim()); put("displayName", displayName.trim()) }, token,
+        buildJsonObject {
+            put("username", username.trim()); put("displayName", displayName.trim())
+            if (avatar != null) putJsonObject("avatar") {
+                put("avatarId", avatar.avatarId); put("avatarAsset", avatar.avatarAsset)
+                put("expectedAvatarId", avatar.expectedAvatarId); put("expectedAvatarAsset", avatar.expectedAvatarAsset)
+            }
+        }, token,
     )
     suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
@@ -283,9 +289,9 @@ class CaperApi(
         return reservation
     }
 
-    /** Confirms a picture upload; the server applies it at once. `409` means storage has not seen it yet. */
-    suspend fun completePicture(token: String, id: String): PictureCompletion =
-        post("/api/assets/${id.assetPathId()}/complete", token = token)
+    /** Draft completion verifies the file without changing the account or broadcasting. */
+    suspend fun completePicture(token: String, id: String, draft: Boolean = false): PictureCompletion =
+        post("/api/assets/${id.assetPathId()}/complete" + if (draft) "?draft=true" else "", token = token)
 
     /** Back to the saved mascot; returns the account without a picture. */
     suspend fun removeAvatar(token: String): Account = request("/api/account/avatar", "DELETE", token)

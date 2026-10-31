@@ -548,6 +548,7 @@ function testModalGeometry() {
     assert.equal(opens(), 0, "Space settings backdrop must dismiss");
     browser("click", ".account-profile");
     wait('!!document.querySelector(".profile-dialog[open] form")');
+    browser("fill", "#display-name", "Updated fixture owner");
     // Normalize scroll before measuring: a short viewport legitimately scrolls
     // to an off-screen submit button when it is clicked.
     evaluate('document.querySelector(".profile-dialog button[type=submit]").scrollIntoView({block:"nearest"})');
@@ -574,6 +575,7 @@ function testModalGeometry() {
     testSettingRows(width, height);
     stableShell(".profile-dialog[open]");
     browser("press", "Escape");
+    browser("find", "role", "button", "click", "--name", "Discard", "--exact");
     browser("click", '[aria-label="User Settings"]');
     browser("find", "role", "button", "click", "--name", "Audio diagnostics", "--exact");
     wait('!!document.querySelector(".audio-dialog[open]")');

@@ -749,6 +749,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
             State(state.clone()),
             Extension(who.clone()),
             Path(id.to_owned()),
+            Query(CompletionOptions::default()),
         )
     };
     assert_eq!(
@@ -1762,6 +1763,7 @@ async fn exercise_media_privacy(
             State(state.clone()),
             Extension(owner.clone()),
             Path(id.to_owned()),
+            Query(CompletionOptions::default()),
         )
         .await;
         let completed = if mime == "video/mp4" {
@@ -1779,6 +1781,7 @@ async fn exercise_media_privacy(
                 State(state.clone()),
                 Extension(owner.clone()),
                 Path(id.to_owned()),
+                Query(CompletionOptions::default()),
             )
             .await
         } else {
@@ -1943,6 +1946,7 @@ async fn exercise_media_privacy(
             State(state.clone()),
             Extension(owner.clone()),
             Path(id.to_owned()),
+            Query(CompletionOptions::default()),
         )
         .await
         .unwrap();
@@ -2012,7 +2016,8 @@ async fn exercise_media_privacy(
             complete(
                 State(state.clone()),
                 Extension(owner.clone()),
-                Path(id.to_owned())
+                Path(id.to_owned()),
+                Query(CompletionOptions::default()),
             )
             .await
             .unwrap_err()
@@ -2148,6 +2153,7 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
             State(state.clone()),
             Extension(who.clone()),
             Path(id.to_owned()),
+            Query(CompletionOptions::default()),
         )
     };
     let code = |error: ApiError| (error.status, error.code);
@@ -2687,6 +2693,40 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
     assert!(cleared.get("iconAsset").is_none());
     assert_eq!(cleared["name"], "Friends");
 
+    // A profile draft is verified without becoming the public avatar. Even
+    // a legacy completion retry must not publish it afterwards.
+    let (_, Json(draft)) = create_as(&owner, picture("avatar", "image/jpeg", photo.len(), 640))
+        .await
+        .unwrap();
+    let draft_id = draft["id"].as_str().unwrap();
+    put(&draft, "upload", &photo).await;
+    let Json(completed_draft) = complete(
+        State(state.clone()),
+        Extension(owner.clone()),
+        Path(draft_id.to_owned()),
+        Query(CompletionOptions { draft: true }),
+    )
+    .await
+    .unwrap();
+    assert!(completed_draft["account"].get("avatarAsset").is_none());
+    assert!(
+        complete_as(&owner, draft_id).await.unwrap().0["account"]
+            .get("avatarAsset")
+            .is_none()
+    );
+    let verified: bool = sqlx::query_scalar(
+        "SELECT uploaded_at IS NOT NULL FROM public.assets WHERE external_id=$1",
+    )
+    .bind(draft_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(verified);
+    assert_eq!(
+        select(&owner, draft_id, None).await.unwrap().0["avatarAsset"],
+        draft_id
+    );
+
     // Picture changes are limited per day, separately from file uploads.
     sqlx::query("UPDATE public.assets SET created_at=now() WHERE owner_id=$1")
         .bind(owner.user.id)
@@ -2851,6 +2891,7 @@ async fn multipart_uploads_assemble_parts_copy_documents_and_abort_on_cancel() {
             State(state.clone()),
             Extension(owner.clone()),
             Path(id.to_owned()),
+            Query(CompletionOptions::default()),
         )
     };
     let send_part = |url: &str, bytes: &[u8]| {
@@ -3110,6 +3151,7 @@ async fn voice_messages_store_aac_and_deliver_transcripts() {
                 State(state),
                 Extension(owner),
                 Path(created["id"].as_str().unwrap().to_owned()),
+                Query(CompletionOptions::default()),
             )
             .await
             .unwrap()

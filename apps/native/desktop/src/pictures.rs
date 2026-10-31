@@ -582,6 +582,7 @@ pub struct History {
     pub next_cursor: Option<String>,
 }
 
+#[cfg(test)]
 pub fn select(
     api: &Api,
     token: &str,

@@ -18,21 +18,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub enum Command {
-    RegenerateAvatar {
-        epoch: u64,
-        token: String,
-    },
     AvatarHistory {
         epoch: u64,
         request: Instant,
         token: String,
         cursor: Option<String>,
-    },
-    SelectAvatar {
-        epoch: u64,
-        token: String,
-        asset: String,
-        expected: Option<String>,
     },
     /// Upload (`path`) or remove (`None`) a profile picture or space icon.
     /// `animate` decodes an uploaded GIF's frames for immediate display.
@@ -168,6 +158,7 @@ pub enum Command {
         token: String,
         username: String,
         display_name: String,
+        avatar: Option<crate::profile_edit::AvatarSave>,
     },
     PrepareNavigation {
         generation: u64,
@@ -643,11 +634,6 @@ pub enum Event {
         epoch: u64,
         request: Instant,
         result: Result<crate::pictures::History, String>,
-    },
-    AvatarSelected {
-        epoch: u64,
-        result: Result<crate::pictures::Changed, crate::pictures::Failure>,
-        refreshed: Option<Account>,
     },
     /// A live `profiles` change from the account feed.
     Profiles {
@@ -1578,32 +1564,6 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 result,
             }
         }
-        Command::RegenerateAvatar { epoch, token } => {
-            let result = api
-                .regenerate_avatar(&token)
-                .map(|account| {
-                    api.reset_chat_session();
-                    crate::pictures::Changed {
-                        applied: crate::pictures::Applied::Account(account),
-                        local: None,
-                    }
-                })
-                .map_err(|error| {
-                    crate::pictures::Failure::new(
-                        if error.status.is_some_and(|status| status.as_u16() == 409) {
-                            "Your picture changed elsewhere. Remove your custom picture before regenerating your avatar."
-                        } else {
-                            "Could not regenerate your avatar. Try again."
-                        },
-                    )
-                });
-            let refreshed = result.is_err().then(|| api.me(&token).ok()).flatten();
-            Event::AvatarSelected {
-                epoch,
-                result,
-                refreshed,
-            }
-        }
         Command::AvatarHistory {
             epoch,
             request,
@@ -1616,22 +1576,6 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .avatar_history(&token, cursor.as_deref())
                 .map_err(|error| error.message),
         },
-        Command::SelectAvatar {
-            epoch,
-            token,
-            asset,
-            expected,
-        } => {
-            let result = crate::pictures::select(api, &token, &asset, expected.as_deref());
-            // Refresh after a failed selection so reopening the chooser can recover
-            // from another device's change even if its live event was missed.
-            let refreshed = result.is_err().then(|| api.me(&token).ok()).flatten();
-            Event::AvatarSelected {
-                epoch,
-                result,
-                refreshed,
-            }
-        }
         Command::Picture {
             epoch,
             token,
@@ -1967,16 +1911,22 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             token,
             username,
             display_name,
+            avatar,
         } => Event::Profiled {
             generation,
-            result: api
-                .update_profile(&token, &username, &display_name)
-                .map_err(|error| profile_error(&error))
-                .and_then(|account| {
-                    api.spaces(&token)
-                        .map(|spaces| (account, spaces))
-                        .map_err(|error| error.to_string())
-                }),
+            result: (|| {
+                // No fallible follow-up may turn a committed profile into a
+                // reported failure. Fetch the navigation snapshot first.
+                let spaces = api.spaces(&token).map_err(|error| error.to_string())?;
+                let avatar = avatar
+                    .as_ref()
+                    .map(|avatar| avatar.payload(api, &token))
+                    .transpose()?;
+                let account = api
+                    .update_profile(&token, &username, &display_name, avatar)
+                    .map_err(|error| profile_error(&error))?;
+                Ok((account, spaces))
+            })(),
         },
         Command::PrepareNavigation {
             generation,
@@ -3336,6 +3286,9 @@ pub fn login_error(error: &crate::api::ApiError) -> String {
 pub fn profile_error(error: &crate::api::ApiError) -> String {
     use reqwest::StatusCode;
     match error.status {
+        Some(StatusCode::CONFLICT) if error.code.as_deref() == Some("profile_changed") => {
+            "Your profile changed elsewhere. Your changes have not been saved."
+        }
         Some(StatusCode::CONFLICT) => "That username is already taken.",
         Some(StatusCode::BAD_REQUEST) => "Check the username and display name requirements.",
         _ => "Your profile could not be saved. Please try again.",

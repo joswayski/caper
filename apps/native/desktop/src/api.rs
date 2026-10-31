@@ -163,19 +163,25 @@ impl Api {
         token: &str,
         username: &str,
         display_name: &str,
+        avatar: Option<Value>,
     ) -> Result<Account, ApiError> {
+        let mut body = json!({"username":username,"displayName":display_name});
+        if let Some(avatar) = avatar {
+            body["avatar"] = avatar;
+        }
         let account = self.request(
             Method::POST,
             "api/account/profile",
             Some(token),
             None,
-            Some(json!({"username":username,"displayName":display_name})),
+            Some(body),
         )?;
         // The next conversation mints a session carrying the new author name.
         *self.chat_session.lock().unwrap() = None;
         Ok(account)
     }
 
+    #[cfg(test)]
     pub fn regenerate_avatar(&self, token: &str) -> Result<Account, ApiError> {
         self.request(
             Method::POST,
@@ -198,6 +204,7 @@ impl Api {
         self.request(Method::GET, &path, Some(token), None, None)
     }
 
+    #[cfg(test)]
     pub fn select_avatar(
         &self,
         token: &str,
@@ -1113,10 +1120,23 @@ impl Api {
     /// `POST /api/assets/{id}/complete`: the API verifies the stored bytes
     /// (409: not arrived yet; 422: size or signature mismatch).
     pub fn complete_asset(&self, token: &str, id: &str) -> Result<Value, UploadError> {
+        self.complete_asset_mode(token, id, false)
+    }
+
+    /// Draft avatar completion verifies storage without applying the picture.
+    pub fn complete_asset_mode(
+        &self,
+        token: &str,
+        id: &str,
+        draft: bool,
+    ) -> Result<Value, UploadError> {
         let response = self
             .raw(
                 Method::POST,
-                &format!("api/assets/{id}/complete"),
+                &format!(
+                    "api/assets/{id}/complete{}",
+                    if draft { "?draft=true" } else { "" }
+                ),
                 Some(token),
                 None,
                 None,

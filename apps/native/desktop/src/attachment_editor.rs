@@ -586,6 +586,13 @@ impl Editor {
         ui.painter().rect_filled(rect, 0.0, BLACKOUT);
         let mut outcome = Outcome::Open;
         let picture_target = matches!(self.target, Target::Picture { .. });
+        let profile_picture = matches!(
+            self.target,
+            Target::Picture {
+                destination: crate::pictures::Target::Avatar,
+                ..
+            }
+        );
         let top = Rect::from_min_size(rect.min, egui::vec2(rect.width(), TOP_BAR));
         let tools = Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - TOOLS), rect.max);
         // The options strip keeps its height in every state (empty while
@@ -637,16 +644,21 @@ impl Editor {
             right -= 8.0;
             rect
         };
-        let done = place(64.0);
+        let done = place(if profile_picture { 112.0 } else { 64.0 });
         // With nothing changed, Done just closes.
         let can_finish = ready || !picture_target;
+        let finish_label = if profile_picture {
+            "Apply crop"
+        } else {
+            "Done"
+        };
         let done_response = ui
             .scope_builder(egui::UiBuilder::new().max_rect(done), |ui| {
-                crate::primary_button(ui, "Done", can_finish)
+                crate::primary_button(ui, finish_label, can_finish)
             })
             .inner;
         done_response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, can_finish, "Done")
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, can_finish, finish_label)
         });
         if done_response.clicked() && can_finish {
             let fin = with_field(self.current(), self.field.as_ref());
@@ -3248,10 +3260,17 @@ mod tests {
         editor_pass(&context, &mut editor, 1.0, None, false);
         let output = editor_pass(&context, &mut editor, 1.1, None, false);
         assert_eq!(editor.tool(), Some(Tool::Crop));
+        assert!(node(&output, "Apply crop").is_some());
         assert!(node(&output, "Spoiler").is_none() && node(&output, "Remove").is_none());
         assert!(node(&output, OPEN_SENT).is_none());
         let crop = node(&output, "Crop").unwrap();
         click(&context, &mut editor, 2.0, None, SCREEN, crop.center());
         assert_eq!(editor.tool(), Some(Tool::Crop), "it stays on Crop");
+        if let Target::Picture { destination, .. } = &mut editor.target {
+            *destination = crate::pictures::Target::SpaceIcon("space".into());
+        }
+        let output = editor_pass(&context, &mut editor, 2.1, None, false);
+        assert!(node(&output, "Done").is_some());
+        assert!(node(&output, "Apply crop").is_none());
     }
 }

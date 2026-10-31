@@ -2,17 +2,18 @@ import { Check } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Avatar from "../components/Avatar";
 import { Dialog } from "../spaces/Dialog";
-import {
-  AccountApiError,
-  getAccount,
-  getAvatarHistory,
-  selectAvatar,
-  type Account,
-  type PreviousPicture,
-} from "./client";
+import { getAvatarHistory, type Account, type PreviousPicture } from "./client";
 
 /** A local choice until Save: browsing old pictures must never change the account. */
-export default function AvatarHistory({ account, onClose }: { account: Account; onClose: () => void }) {
+export default function AvatarHistory({
+  account,
+  onClose,
+  onSelect,
+}: {
+  account: Account;
+  onClose: () => void;
+  onSelect: (picture: PreviousPicture) => void;
+}) {
   const [pictures, setPictures] = useState<PreviousPicture[]>([]);
   const [selected, setSelected] = useState<PreviousPicture | undefined>(
     account.avatarAsset ? { avatarAsset: account.avatarAsset, avatarUrl: account.avatarUrl ?? undefined } : undefined,
@@ -20,12 +21,8 @@ export default function AvatarHistory({ account, onClose }: { account: Account; 
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string>();
-  const [saveError, setSaveError] = useState<string>();
-  const [stale, setStale] = useState(false);
   const request = useRef(0);
-  const pending = useRef(false);
   const load = useCallback(async (after?: string | null) => {
     const attempt = ++request.current;
     setLoading(true);
@@ -64,8 +61,7 @@ export default function AvatarHistory({ account, onClose }: { account: Account; 
     else window.history.pushState(entry, "");
     const back = () => {
       if (window.history.state?.caperAvatarHistory === key) return;
-      if (pending.current) window.history.pushState(entry, "");
-      else onClose();
+      onClose();
     };
     window.addEventListener("popstate", back);
     return () => {
@@ -77,45 +73,10 @@ export default function AvatarHistory({ account, onClose }: { account: Account; 
     };
   }, [onClose]);
 
-  const save = async () => {
-    if (!selected || selected.avatarAsset === account.avatarAsset || pending.current || loading || stale) return;
-    pending.current = true;
-    setSaving(true);
-    setSaveError(undefined);
-    const attempt = ++request.current;
-    try {
-      await selectAvatar(selected.avatarAsset, account.avatarAsset ?? null);
-      if (attempt === request.current) onClose();
-    } catch (error) {
-      if (attempt !== request.current) return;
-      const conflict = error instanceof AccountApiError && error.status === 409;
-      setStale(conflict);
-      setSaveError(
-        conflict
-          ? "Your picture changed elsewhere. Close and reopen to refresh."
-          : error instanceof AccountApiError && error.status === 404
-            ? "That picture is no longer available. Choose another picture."
-            : "Your picture couldn’t be saved. Try again.",
-      );
-      if (conflict) await getAccount().catch(() => undefined);
-    } finally {
-      pending.current = false;
-      if (attempt === request.current) setSaving(false);
-    }
-  };
-
   return (
-    <Dialog
-      title="Previous pictures"
-      width="wide"
-      onClose={() => {
-        if (!pending.current) onClose();
-      }}
-      closeDisabled={saving}
-      dismissOnBackdrop={!saving}
-    >
-      <div className="avatar-history" aria-busy={loading || saving}>
-        <p className="avatar-history-hint">Choose a picture to preview. Save when it looks right.</p>
+    <Dialog title="Previous pictures" width="wide" onClose={onClose} dismissOnBackdrop>
+      <div className="avatar-history" aria-busy={loading}>
+        <p className="avatar-history-hint">Choose a picture for your profile draft. Save profile to publish it.</p>
         <div className="avatar-history-body">
           <div className="avatar-history-library">
             <div className="avatar-history-grid" role="group" aria-label="Saved profile pictures">
@@ -126,10 +87,8 @@ export default function AvatarHistory({ account, onClose }: { account: Account; 
                   className="avatar-history-choice"
                   aria-label={`${picture.avatarAsset === account.avatarAsset ? "Current picture" : "Previous picture"} ${index + 1}`}
                   aria-pressed={selected?.avatarAsset === picture.avatarAsset}
-                  disabled={saving}
                   onClick={() => {
                     setSelected(picture);
-                    setSaveError(undefined);
                   }}
                 >
                   <span className="avatar-history-thumbnail">
@@ -154,7 +113,7 @@ export default function AvatarHistory({ account, onClose }: { account: Account; 
               </p>
             )}
             {!loading && (loadError || cursor) && (
-              <button type="button" className="secondary" disabled={saving} onClick={() => void load(cursor)}>
+              <button type="button" className="secondary" onClick={() => void load(cursor)}>
                 {loadError ? "Retry" : "Load more"}
               </button>
             )}
@@ -166,22 +125,17 @@ export default function AvatarHistory({ account, onClose }: { account: Account; 
             <p>{selected ? "Preview" : "Select a picture"}</p>
           </div>
         </div>
-        {saveError && (
-          <p className="picture-settings-error" role="alert">
-            {saveError}
-          </p>
-        )}
         <footer className="space-dialog-actions">
-          <button type="button" className="secondary" disabled={saving} onClick={onClose}>
+          <button type="button" className="secondary" onClick={onClose}>
             Cancel
           </button>
           <button
             type="button"
             className="primary"
-            disabled={saving || loading || stale || !selected || selected.avatarAsset === account.avatarAsset}
-            onClick={() => void save()}
+            disabled={loading || !selected || selected.avatarAsset === account.avatarAsset}
+            onClick={() => selected && onSelect(selected)}
           >
-            {saving ? "Saving…" : "Save picture"}
+            Use picture
           </button>
         </footer>
       </div>

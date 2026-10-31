@@ -756,6 +756,7 @@ private struct WorkspaceView: View {
     @FocusState private var sidebarFocused: Bool
     @State private var membersPreference: Bool?
     @State private var modalDismissDisabled = false
+    @State private var profileDismissAction: ProfileDismissAction?
     @State private var browseDrawer = BrowseDrawer()
     @State private var membersDrawer = MembersDrawer()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -980,7 +981,10 @@ private struct WorkspaceView: View {
                     let top = max(16, geometry.size.height * 0.1)
                     ZStack(alignment: .top) {
                         Color.black.opacity(0.55).ignoresSafeArea()
-                            .onTapGesture { if !modalDismissDisabled { sheet = nil } }
+                            .onTapGesture {
+                                if item.id == "profile" { profileDismissAction?.action() }
+                                else if !modalDismissDisabled { sheet = nil }
+                            }
                             .accessibilityHidden(true)
                             .modifier(Entrance.scrim)
                         DialogHeight(maximum: min(680, max(1, geometry.size.height - top - 16))) {
@@ -998,8 +1002,12 @@ private struct WorkspaceView: View {
                             .padding(.top, top)
                             .accessibilityAddTraits(.isModal)
                             .onPreferenceChange(DialogDismissDisabled.self) { modalDismissDisabled = $0 }
+                            .onPreferenceChange(ProfileDismissPreference.self) { profileDismissAction = $0 }
                             #if os(macOS)
-                            .onExitCommand { if !modalDismissDisabled { sheet = nil } }
+                            .onExitCommand {
+                                if item.id == "profile" { profileDismissAction?.action() }
+                                else if !modalDismissDisabled { sheet = nil }
+                            }
                             #endif
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -1012,6 +1020,7 @@ private struct WorkspaceView: View {
         .modifier(AttachmentEditorHost())
         .onChange(of: sheet?.id, initial: true) { _, new in
             modalDismissDisabled = false
+            if new != "profile" { profileDismissAction = nil }
             model.whatsNew.workspaceModalOpen = new != nil
         }
         .onDisappear { model.whatsNew.workspaceModalOpen = false }
@@ -5815,18 +5824,21 @@ private struct MentionCardHost: ViewModifier {
     let viewerID: String?
     /// Block closes the card first, as on web, so the confirmation belongs to the host.
     @State private var blockTarget: BlockTarget?
+    @State private var profileDismissAction: ProfileDismissAction?
 
     @ViewBuilder func body(content: Content) -> some View {
         #if os(macOS)
         content.popover(item: protectedTarget, attachmentAnchor: anchor, arrowEdge: .bottom) { target in
             MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID),
                             requestBlock: { blockTarget = $0 }) { self.target = nil }
+                .onPreferenceChange(ProfileDismissPreference.self) { profileDismissAction = $0 }
         }
         .modifier(BlockConfirmation(target: $blockTarget) { await model.chat.block($0) })
         #else
         content.sheet(item: protectedTarget) { target in
             MentionCardView(model: model, person: model.mentionPerson(target, viewerID: viewerID),
                             requestBlock: { blockTarget = $0 }) { self.target = nil }
+                .onPreferenceChange(ProfileDismissPreference.self) { profileDismissAction = $0 }
         }
         .modifier(BlockConfirmation(target: $blockTarget) { await model.chat.block($0) })
         #endif
@@ -5834,6 +5846,7 @@ private struct MentionCardHost: ViewModifier {
 
     private var protectedTarget: Binding<MentionCardTarget?> {
         Binding(get: { target }, set: { next in
+            if next == nil, let profileDismissAction { profileDismissAction.action(); return }
             if let target {
                 let person = model.mentionPerson(target, viewerID: viewerID)
                 let draft = model.profileMessageDraft(personID: person.id)
@@ -9102,99 +9115,132 @@ private struct LoginActionLabel: View {
 }
 
 private struct ProfileSheet: View {
-    @Bindable var model: AppModel; let close: () -> Void
-    @State private var username = ""
-    @State private var displayName = ""
-    /// This sheet's own save failure. `model.error` is app-wide (the sidebar
-    /// shows it too), so an unrelated earlier error never shows here.
+    @Bindable var model: AppModel
+    let close: () -> Void
+    @State private var draft: ProfileEditDraft?
     @State private var saveError: String?
+    @State private var saving = false
+    @State private var pictureBusy = false
+    @State private var confirmingDiscard = false
+    @State private var dismissID = UUID()
+    @State private var epoch: Int?
     @FocusState private var displayNameFocused: Bool
+
     var body: some View {
         VStack(spacing: 0) {
-            // Web's Edit profile dialog; Log out lives in User Settings.
-            SheetHeader(title: "Edit profile",
-                        closeLabel: "Close profile", close: close)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    pictureSection
-                    CaperField(title: "Username", text: $username)
-                        .submitLabel(.next).onSubmit { displayNameFocused = true }
-                    Text("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
-                        // Return saves: on iPhone an error line can push Save
-                        // profile under the keyboard.
-                        .submitLabel(.done).onSubmit(save)
-                    let nameError = ProfileValidation.hiddenCharacterError(displayName: displayName, saved: model.account?.displayName)
-                    Text(nameError ?? "This is what people see in conversations.").font(CaperTheme.font(12))
-                        .foregroundStyle(nameError == nil ? CaperTheme.muted : CaperTheme.error)
-                    Text(saveError ?? " ").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
-                        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                        .opacity(saveError == nil ? 0 : 1).accessibilityHidden(saveError == nil)
-                    Button(model.busy ? "Saving…" : "Save profile", action: save)
-                        .buttonStyle(CaperPrimaryButton())
-                        .frame(width: 148)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .disabled(!canSave)
-                        .accessibilityIdentifier("profile-save")
-                }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(maxHeight: 620).scrollDismissesKeyboard(.interactively)
+            SheetHeader(title: "Edit profile", closeLabel: "Close profile", closeDisabled: saving, close: requestClose)
+            if let draft { form(draft) }
         }.background(CaperTheme.surface)
             .onAppear {
-                username = model.account?.username ?? ""
-                displayName = model.account?.displayName ?? ""
-            }
-            // A failed save's message belongs to this sheet: closing it must
-            // not leave the message in the sidebar.
-            .onDisappear {
-                if let saveError, model.error == saveError { model.error = nil }
-            }
-    }
-
-    private var canSave: Bool {
-        !model.busy && ProfileValidation.error(username: username, displayName: displayName, saved: model.account?.displayName) == nil
-    }
-
-    /// The current picture in its frame; without one, the mascot asks to be changed.
-    @ViewBuilder private var pictureSection: some View {
-        if let account = model.account {
-            let name = account.displayName ?? account.username ?? "You"
-            let side = PictureEditor<EmptyView>.side
-            let epoch = model.accountEpoch
-            PictureEditor(purpose: .avatar, hasPicture: account.avatarAsset != nil, currentURL: account.avatarPicture?.url,
-                          upload: {
-                              guard model.account?.id == account.id else { throw CancellationError() }
-                              try await model.changeAvatar($0)
-                          }, remove: {
-                              guard model.account?.id == account.id else { throw CancellationError() }
-                              try await model.removeAvatar()
-                          }, currentAsset: account.avatarAsset, history: { cursor in
-                              guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
-                              return try await model.avatarHistory(cursor: cursor)
-                          }, select: { asset, expected in
-                              guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
-                              try await model.selectAvatar(asset, expected: expected)
-                          }, regenerate: {
-                              guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
-                              try await model.regenerateAvatar()
-                          }, mascot: account.avatarAsset == nil && CaperAvatar.index(for: account.avatarId) != nil) {
-                if account.avatarAsset == nil {
-                    ChangeMeMascot(name: name, avatarID: account.avatarId, size: side)
-                } else {
-                    Avatar(name: name, size: side, avatarID: account.avatarId, picture: account.avatarPicture)
+                if draft == nil, let account = model.account {
+                    draft = ProfileEditDraft(account: account)
+                    epoch = model.accountEpoch
                 }
             }
-            .id("\(account.id):\(epoch)")
+            .preference(key: ProfileDismissPreference.self, value: ProfileDismissAction(id: dismissID, action: requestClose))
+            .onPreferenceChange(PictureEditorBusy.self) { pictureBusy = $0 }
+            .interactiveDismissDisabled(saving || pictureBusy || draft?.hasChanges == true)
+            #if os(iOS)
+            .background(ProfileEditDismissObserver(preventDismissal: saving || pictureBusy || draft?.hasChanges == true, attempt: requestClose))
+            .background(ProfileSheetOutsideTap(close: requestClose))
+            .background(Button("Close profile", action: requestClose).keyboardShortcut(.cancelAction).hidden())
+            #else
+            .onExitCommand(perform: requestClose)
+            #endif
+            .alert("Discard profile changes?", isPresented: $confirmingDiscard) {
+                Button("Keep editing", role: .cancel) {}
+                Button("Discard", role: .destructive) { if !saving { close() } }
+            } message: { Text("Your unsaved profile changes will be lost.") }
+    }
+
+    private func form(_ draft: ProfileEditDraft) -> some View {
+        @Bindable var draft = draft
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                pictureSection(draft)
+                CaperField(title: "Username", text: $draft.username)
+                    .submitLabel(.next).onSubmit { displayNameFocused = true }
+                Text("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                CaperField(title: "Display name", text: $draft.displayName, focus: $displayNameFocused)
+                    .submitLabel(.done).onSubmit(save)
+                let nameError = ProfileValidation.hiddenCharacterError(displayName: draft.displayName, saved: draft.baseline.displayName)
+                Text(nameError ?? "This is what people see in conversations.").font(CaperTheme.font(12))
+                    .foregroundStyle(nameError == nil ? CaperTheme.muted : CaperTheme.error)
+                Text(saveError ?? " ").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                    .opacity(saveError == nil ? 0 : 1).accessibilityHidden(saveError == nil)
+                HStack {
+                    HStack(spacing: 6) {
+                        Circle().fill(CaperTheme.terracotta).frame(width: 5, height: 5)
+                        Text("Unsaved changes").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    }.opacity(draft.hasChanges ? 1 : 0).accessibilityHidden(!draft.hasChanges)
+                        .accessibilityIdentifier("profile-unsaved")
+                    Spacer()
+                    Button(saving ? "Saving…" : "Save profile", action: save)
+                        .buttonStyle(CaperPrimaryButton()).frame(width: 148)
+                        .disabled(saving || pictureBusy || model.busy || !draft.canSave)
+                        .accessibilityIdentifier("profile-save")
+                }
+            }.disabled(saving).padding(22).frame(maxWidth: .infinity, alignment: .leading)
+        }.frame(maxHeight: 620).scrollDismissesKeyboard(.interactively)
+    }
+
+    private func pictureSection(_ draft: ProfileEditDraft) -> some View {
+        let name = draft.displayName.isEmpty ? draft.username : draft.displayName
+        let side = PictureEditor<EmptyView>.side
+        let hasPicture = draft.preparedPicture != nil || draft.avatarAsset != nil
+        return VStack(alignment: .leading) {
+            PictureEditor(purpose: .avatar, hasPicture: hasPicture, currentURL: draft.avatarPicture?.url,
+                          currentData: draft.preparedPicture?.data, deferred: true,
+                          upload: { draft.usePicture($0) }, remove: { draft.removePicture() },
+                          currentAsset: draft.avatarAsset, history: { cursor in
+                              guard model.account?.id == draft.baseline.id, model.accountEpoch == epoch else { throw CancellationError() }
+                              return try await model.avatarHistory(cursor: cursor)
+                          }, select: { picture in draft.useHistory(picture) },
+                          regenerate: { draft.regenerate() }, mascot: !hasPicture && CaperAvatar.index(for: draft.avatarId) != nil) {
+                if let prepared = draft.preparedPicture {
+                    PreparedPicturePreview(picture: prepared, size: side)
+                } else if !hasPicture {
+                    ChangeMeMascot(name: name, avatarID: draft.avatarId, size: side)
+                } else {
+                    Avatar(name: name, size: side, avatarID: draft.avatarId, picture: draft.avatarPicture)
+                }
+            }
             Divider().overlay(CaperTheme.border)
         }
     }
 
-    private func save() {
-        guard canSave else { return }
-        saveError = nil
-        Task {
-            await model.saveProfile(username: username, displayName: displayName)
-            if let error = model.error { saveError = error } else { close() }
+    private func requestClose() {
+        guard !saving else { return }
+        if pictureBusy { confirmingDiscard = true; return }
+        switch draft?.closeDecision ?? .close {
+        case .close: close()
+        case .confirmDiscard: confirmingDiscard = true
+        case .blocked: break
         }
+    }
+
+    private func save() {
+        guard let draft, draft.canSave, !saving, !pictureBusy, !model.busy, model.accountEpoch == epoch else { return }
+        saving = true; saveError = nil
+        Task {
+            do { try await model.saveProfile(draft: draft); saving = false; close() }
+            catch { saveError = ProfileEditDraft.saveError(error); saving = false }
+        }
+    }
+}
+
+/// Hosts route backdrop/Escape/popover dismissal to the editor, rather than
+/// dropping its private draft. Identity equality avoids storing new closures on every render.
+private struct ProfileDismissAction: Equatable {
+    let id: UUID
+    let action: () -> Void
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
+}
+private struct ProfileDismissPreference: PreferenceKey {
+    static let defaultValue: ProfileDismissAction? = nil
+    static func reduce(value: inout ProfileDismissAction?, nextValue: () -> ProfileDismissAction?) {
+        value = nextValue() ?? value
     }
 }
 

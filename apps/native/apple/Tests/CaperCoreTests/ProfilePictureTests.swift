@@ -472,6 +472,220 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertEqual(PictureURLProtocol.requests.count, 1, "nothing is uploaded after a refused reservation")
     }
 
+    // MARK: Private profile drafts
+
+    @MainActor
+    func testProfilePreviewsAreLocalAndRevertingNamesAndPictureClearsDirtyState() throws {
+        let account = Account(id: "self", username: "maya", displayName: "Maya", avatarId: 4,
+                              avatarAsset: pictureID, avatarUrl: pictureURL)
+        let model = AppModel(api: client())
+        model.account = account
+        let draft = ProfileEditDraft(account: account)
+        XCTAssertFalse(draft.canSave)
+        XCTAssertEqual(draft.closeDecision, .close)
+        draft.displayName = "New name"
+        XCTAssertTrue(draft.canSave)
+        XCTAssertEqual(draft.closeDecision, .confirmDiscard)
+        draft.displayName = "Maya"
+        XCTAssertFalse(draft.hasChanges)
+        draft.usePicture(PreparedPicture(data: Data([1, 2, 3]), contentType: "image/webp", width: 1, height: 1))
+        XCTAssertTrue(draft.hasChanges)
+        XCTAssertNotNil(draft.preparedPicture)
+        draft.removePicture()
+        XCTAssertTrue(draft.hasChanges, "removing the saved custom picture is a draft")
+        XCTAssertEqual(draft.avatarId, 4)
+        draft.useHistory(AvatarHistoryPicture(avatarAsset: pictureID, avatarUrl: pictureURL))
+        XCTAssertFalse(draft.hasChanges, "restoring the baseline picture is unchanged")
+        XCTAssertNil(draft.preparedPicture)
+        XCTAssertEqual(model.account, account)
+        XCTAssertTrue(PictureURLProtocol.requests.isEmpty, "no reservation, upload, selection, removal or regeneration request")
+    }
+
+    @MainActor
+    func testDraftRegenerationAlwaysDiffersFromPreviousAndNeverCallsAPI() {
+        for initial in [nil, 0, 799] as [Int?] {
+            let draft = ProfileEditDraft(account: Account(id: "self", username: "maya", displayName: "Maya", avatarId: initial))
+            for _ in 0..<800 {
+                let previous = draft.avatarId
+                draft.regenerate()
+                XCTAssertNotEqual(draft.avatarId, previous)
+                XCTAssertNotNil(CaperAvatar.index(for: draft.avatarId))
+                XCTAssertNil(draft.avatarAsset)
+            }
+        }
+        XCTAssertTrue(PictureURLProtocol.requests.isEmpty)
+    }
+
+    @MainActor
+    func testNameOnlyProfileSaveOmitsAvatarAndPublishesOnlyOnSave() async throws {
+        PictureURLProtocol.handler = { _ in
+            (200, Data(#"{"id":"self","username":"maya","displayName":"New name","avatarId":4}"#.utf8))
+        }
+        let model = AppModel(api: client())
+        let original = Account(id: "self", username: "maya", displayName: "Maya", avatarId: 4)
+        model.account = original
+        let draft = ProfileEditDraft(account: original)
+        draft.displayName = "New name"
+        XCTAssertEqual(model.account, original)
+        XCTAssertTrue(PictureURLProtocol.requests.isEmpty)
+        try await model.saveProfile(draft: draft)
+        XCTAssertEqual(model.account?.displayName, "New name")
+        XCTAssertFalse(model.busy)
+        let requests = PictureURLProtocol.requests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests[0].url.path, "/api/account/profile")
+        let body = try XCTUnwrap(json(requests[0].body))
+        XCTAssertEqual(Set(body.keys), ["username", "displayName"])
+    }
+
+    @MainActor
+    func testHistoryAndRemovalSaveAtomicallyWithOriginalExpectedPicture() async throws {
+        PictureURLProtocol.handler = { _ in
+            (200, Data(#"{"id":"self","username":"maya","displayName":"Maya","avatarId":4}"#.utf8))
+        }
+        let original = Account(id: "self", username: "maya", displayName: "Maya", avatarId: 4,
+                               avatarAsset: pictureID, avatarUrl: pictureURL)
+        let removal = ProfileEditDraft(account: original)
+        removal.removePicture()
+        _ = try await removal.save(api: client())
+        let removed = try XCTUnwrap(json(PictureURLProtocol.requests.last?.body)?["avatar"] as? [String: Any])
+        XCTAssertTrue(removed["avatarAsset"] is NSNull)
+        XCTAssertEqual(removed["expectedAvatarId"] as? Int, 4)
+        XCTAssertEqual(removed["expectedAvatarAsset"] as? String, pictureID)
+        XCTAssertEqual(removed["avatarId"] as? Int, 4)
+
+        let history = ProfileEditDraft(account: Account(id: "self", username: "maya", displayName: "Maya"))
+        history.useHistory(AvatarHistoryPicture(avatarAsset: pictureID, avatarUrl: pictureURL))
+        _ = try await history.save(api: client())
+        let selected = try XCTUnwrap(json(PictureURLProtocol.requests.last?.body)?["avatar"] as? [String: Any])
+        XCTAssertEqual(selected["avatarAsset"] as? String, pictureID)
+        XCTAssertEqual(selected["avatarId"] as? Int, 0, "legacy accounts need a valid mascot when changing a picture")
+        XCTAssertTrue(selected["expectedAvatarId"] is NSNull)
+        XCTAssertTrue(selected["expectedAvatarAsset"] is NSNull)
+        XCTAssertEqual(PictureURLProtocol.requests.map(\.url.path), ["/api/account/profile", "/api/account/profile"])
+    }
+
+    @MainActor
+    func testStagedPhotoSurvivesFailedSaveAndRetryDoesNotUploadAgain() async throws {
+        let publications = Counter()
+        PictureURLProtocol.handler = { request in
+            switch (request.httpMethod ?? "GET", request.url?.path ?? "") {
+            case ("POST", "/api/assets"): return (201, reservation(contentType: "image/webp", filename: "avatar.webp"))
+            case ("PUT", _): return (200, Data())
+            case ("POST", "/api/assets/\(pictureID)/complete"):
+                XCTAssertEqual(request.url?.query, "draft=true")
+                return (200, Data(#"{"id":"\#(pictureID)","account":{"id":"self","username":"maya","displayName":"Maya","avatarId":4}}"#.utf8))
+            case ("POST", "/api/account/profile"):
+                if publications.next() == 1 { return (500, Data(#"{"error":"try later"}"#.utf8)) }
+                return (200, Data(#"{"id":"self","username":"new_name","displayName":"New name","avatarId":4,"avatarAsset":"\#(pictureID)","avatarUrl":"\#(pictureURL)"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let model = AppModel(api: client())
+        let original = Account(id: "self", username: "maya", displayName: "Maya", avatarId: 4)
+        model.account = original
+        let draft = ProfileEditDraft(account: original)
+        let picture = PreparedPicture(data: Data([1, 2, 3]), contentType: "image/webp", width: 1, height: 1)
+        draft.username = "new_name"; draft.displayName = "New name"; draft.usePicture(picture)
+        XCTAssertTrue(PictureURLProtocol.requests.isEmpty)
+        do { try await model.saveProfile(draft: draft); XCTFail("expected failed publication") }
+        catch { XCTAssertEqual((error as? APIError)?.status, 500) }
+        XCTAssertEqual(model.account, original, "completion's account is not applied")
+        XCTAssertEqual(draft.preparedPicture, picture)
+        XCTAssertEqual(draft.stagedAsset, pictureID)
+        XCTAssertTrue(draft.canSave)
+        XCTAssertEqual(draft.closeDecision, .confirmDiscard)
+        XCTAssertFalse(model.busy)
+        try await model.saveProfile(draft: draft)
+        XCTAssertEqual(model.account?.username, "new_name")
+        XCTAssertEqual(model.account?.avatarAsset, pictureID)
+        let requests = PictureURLProtocol.requests
+        XCTAssertEqual(requests.map(\.url.path), ["/api/assets", "/original/\(pictureID)", "/api/assets/\(pictureID)/complete",
+                                                "/api/account/profile", "/api/account/profile"])
+        XCTAssertNil(header(requests[1], "authorization"))
+        let body = try XCTUnwrap(json(requests.last?.body))
+        XCTAssertEqual(body["username"] as? String, "new_name")
+        XCTAssertEqual(body["displayName"] as? String, "New name")
+        let avatar = try XCTUnwrap(body["avatar"] as? [String: Any])
+        XCTAssertEqual(avatar["avatarAsset"] as? String, pictureID)
+        XCTAssertEqual(avatar["expectedAvatarId"] as? Int, 4)
+        XCTAssertTrue(avatar["expectedAvatarAsset"] is NSNull)
+
+        draft.usePicture(PreparedPicture(data: Data([4, 5, 6]), contentType: "image/webp", width: 1, height: 1))
+        XCTAssertNil(draft.stagedAsset, "a different crop must not reuse the previous uploaded asset")
+    }
+
+    @MainActor
+    func testFailedDraftUploadKeepsLocalPhotoAndNeverPublishesNames() async throws {
+        PictureURLProtocol.handler = { request in
+            switch (request.httpMethod ?? "GET", request.url?.path ?? "") {
+            case ("POST", "/api/assets"): return (201, reservation(contentType: "image/webp", filename: "avatar.webp"))
+            case ("PUT", _): return (403, Data())
+            case ("POST", "/api/assets/\(pictureID)/cancel"): return (200, Data("{}".utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let model = AppModel(api: client())
+        let original = Account(id: "self", username: "maya", displayName: "Maya", avatarId: 4)
+        model.account = original
+        let draft = ProfileEditDraft(account: original)
+        let picture = PreparedPicture(data: Data([1]), contentType: "image/webp", width: 1, height: 1)
+        draft.displayName = "New name"; draft.usePicture(picture)
+        do { try await model.saveProfile(draft: draft); XCTFail("expected storage refusal") }
+        catch { XCTAssertEqual(ProfileEditDraft.saveError(error), "Storage refused the upload. Try again.") }
+        XCTAssertEqual(model.account, original)
+        XCTAssertEqual(draft.preparedPicture, picture)
+        XCTAssertEqual(draft.displayName, "New name")
+        XCTAssertNil(draft.stagedAsset)
+        XCTAssertTrue(draft.canSave)
+        XCTAssertFalse(model.busy)
+        XCTAssertEqual(PictureURLProtocol.requests.map(\.url.path), ["/api/assets", "/original/\(pictureID)", "/api/assets/\(pictureID)/cancel"])
+    }
+
+    @MainActor
+    func testProfileChangedConflictDoesNotReplaceDraftOrRefreshGlobalAccount() async throws {
+        PictureURLProtocol.handler = { _ in
+            (409, Data(#"{"error":"profile changed","code":"profile_changed"}"#.utf8))
+        }
+        let model = AppModel(api: client())
+        let original = Account(id: "self", username: "maya", displayName: "Maya", avatarId: 4)
+        model.account = original
+        let draft = ProfileEditDraft(account: original)
+        draft.displayName = "New name"; draft.regenerate()
+        let chosen = draft.avatarId
+        do { try await model.saveProfile(draft: draft); XCTFail("expected conflict") }
+        catch {
+            XCTAssertEqual((error as? APIError)?.code, "profile_changed")
+            XCTAssertTrue(ProfileEditDraft.saveError(error).contains("changed elsewhere"))
+        }
+        XCTAssertEqual(model.account, original)
+        XCTAssertEqual(draft.avatarId, chosen)
+        XCTAssertEqual(draft.displayName, "New name")
+        XCTAssertTrue(draft.canSave)
+        XCTAssertEqual(PictureURLProtocol.requests.map(\.url.path), ["/api/account/profile"], "no automatic refresh overwrites the preview")
+    }
+
+    @MainActor
+    func testSavingBlocksDismissAndPictureMutationsAndSessionFailureKeepsDraft() async throws {
+        let draft = ProfileEditDraft(account: Account(id: "self", username: "maya", displayName: "Maya", avatarId: 4))
+        draft.useHistory(AvatarHistoryPicture(avatarAsset: pictureID, avatarUrl: pictureURL))
+        do {
+            _ = try await draft.save(api: client()) {
+                XCTAssertTrue(draft.saving)
+                XCTAssertFalse(draft.canSave)
+                XCTAssertEqual(draft.closeDecision, .blocked)
+                draft.removePicture(); draft.regenerate()
+                XCTAssertEqual(draft.avatarAsset, pictureID)
+                XCTAssertEqual(draft.avatarId, 4)
+                throw CancellationError()
+            }
+            XCTFail("expected changed session cancellation")
+        } catch is CancellationError {} catch { XCTFail("unexpected error: \(error)") }
+        XCTAssertTrue(draft.canSave)
+        XCTAssertEqual(draft.closeDecision, .confirmDiscard)
+        XCTAssertTrue(PictureURLProtocol.requests.isEmpty)
+    }
+
     // MARK: Own profile refresh
 
     @MainActor

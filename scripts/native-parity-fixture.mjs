@@ -32,7 +32,13 @@ const members = [
 const accounts = [...members, { id: ids.invitee, username: "sam", displayName: "Sam", owner: false, avatarId: 719 }];
 // Shares no space with the owner, so a DM with Jordan is a message request.
 const stranger = { id: ids.stranger, username: "jordan", displayName: "Jordan", avatarId: 412 };
-const author = (member) => ({ id: member.id, name: member.displayName, isGuest: false, avatarId: member.avatarId });
+const author = (member) => ({
+  id: member.id,
+  name: member.displayName,
+  isGuest: false,
+  avatarId: member.avatarId,
+  ...(member.avatarAsset ? { avatarAsset: member.avatarAsset, avatarUrl: member.avatarUrl } : {}),
+});
 const demoSpace = { id: ids.demoSpace, name: "Caper", ownerId: ids.owner, demo: true };
 const demoChannel = { id: ids.demo, spaceId: ids.demoSpace, name: "general", private: false };
 const clone = (value) => structuredClone(value);
@@ -136,6 +142,9 @@ function initialState() {
     failures: [],
     challenges: new Map(),
     account,
+    profileAccounts: new Map(
+      accounts.filter((person) => person.id !== ids.owner).map((person) => [person.id, clone(person)]),
+    ),
     chatSessions: new Map(),
     sendKeys: new Map(),
     uploadsEnabled: false,
@@ -233,10 +242,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? "")
       ? state.account
       : request.headers.authorization === "Bearer fixture-member-token"
-        ? members[1]
+        ? state.profileAccounts.get(ids.member)
         : request.headers.authorization === "Bearer fixture-other-token" ||
             /(?:^|;\s*)caper_fixture=other(?:;|$)/.test(request.headers.cookie ?? "")
-          ? members[2]
+          ? state.profileAccounts.get(ids.other)
           : undefined;
   const channelFor = (id) =>
     id === ids.demo
@@ -310,6 +319,38 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       for (const [id, sub] of client.subscriptions) {
         if (sub.kind === kind && (sub.channelId ?? ids.demo) === channelId) client.send({ type: "event", id, event });
       }
+  };
+  // One synchronous commit, then one live event. Staged completion never calls this.
+  const commitProfile = (account) => {
+    if (account.id === ids.owner) state.account = account;
+    else state.profileAccounts.set(account.id, account);
+    for (const detail of state.spaces) {
+      const member = detail.members.find((person) => person.id === account.id);
+      if (member) Object.assign(member, account);
+    }
+    for (const sessionAuthor of state.chatSessions.values())
+      if (sessionAuthor.id === account.id)
+        Object.assign(sessionAuthor, author(account), {
+          avatarAsset: account.avatarAsset ?? null,
+          avatarUrl: account.avatarUrl ?? null,
+        });
+    for (const client of sockets) {
+      const visible =
+        client.userId === account.id ||
+        state.spaces.some(
+          (detail) =>
+            detail.members.some((person) => person.id === account.id) &&
+            detail.members.some((person) => person.id === client.userId),
+        ) ||
+        state.directs.some(
+          ({ peer }) => [ids.owner, peer.id].includes(account.id) && [ids.owner, peer.id].includes(client.userId),
+        );
+      if (!visible) continue;
+      for (const [id, sub] of client.subscriptions)
+        if (sub.kind === "profiles")
+          client.send({ type: "event", id, event: { type: "profile.updated", person: account } });
+    }
+    return account;
   };
   const channelEvents = (channelId) =>
     [
@@ -761,8 +802,20 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           : reject(response, 503, "TEST FIXTURE: uploads disabled.");
       if (path === "/api/assets" && method === "POST") {
         if (!user || !state.uploadsEnabled) return reject(response, 503, "Uploads unavailable.");
+        const avatar = body.purpose === "avatar";
         const channel = channelFor(body.channelId);
-        if (!channel || !canParticipate(channel, user)) return reject(response, 404, "resource not found");
+        if (!avatar && (!channel || !canParticipate(channel, user))) return reject(response, 404, "resource not found");
+        if (
+          avatar &&
+          (!["image/webp", "image/avif", "image/gif"].includes(body.contentType) ||
+            !Number.isSafeInteger(body.byteSize) ||
+            body.byteSize <= 0 ||
+            !Number.isSafeInteger(body.width) ||
+            body.width <= 0 ||
+            !Number.isSafeInteger(body.height) ||
+            body.height <= 0)
+        )
+          return reject(response, 400, "Invalid profile picture.");
         const id = randomUUID().replaceAll("-", "").slice(0, 15);
         const voice = body.voice === true;
         if (
@@ -775,29 +828,46 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         )
           return reject(response, 400, "Invalid voice message.");
         state.assets.set(id, {
+          ownerId: user.id,
+          purpose: avatar ? "avatar" : "attachment",
           channelId: body.channelId,
           name: body.filename,
           contentType: body.contentType,
           size: body.byteSize,
+          ...(avatar
+            ? {
+                width: body.width,
+                height: body.height,
+                url: `http://127.0.0.1:${request.socket.localPort}/api/assets/${id}/fixture-file`,
+              }
+            : {}),
           ...(voice ? { voice, durationMs: body.durationMs, waveform: body.waveform } : {}),
         });
         return json(response, 200, {
           id,
-          upload: { url: `/api/assets/${id}/fixture-upload`, headers: {} },
+          ...(avatar ? { kind: "image" } : {}),
+          upload: {
+            method: "PUT",
+            url: avatar
+              ? `http://127.0.0.1:${request.socket.localPort}/api/assets/${id}/fixture-upload`
+              : `/api/assets/${id}/fixture-upload`,
+            headers: {},
+          },
           ...(body.preview ? { previewUpload: { url: `/api/assets/${id}/fixture-preview`, headers: {} } } : {}),
         });
       }
       if (assetPut && method === "PUT") {
         const asset = state.assets.get(assetPut[1]);
-        if (!asset) return reject(response, 404, "Asset not found.");
+        if (!asset || asset.deleted) return reject(response, 404, "Asset not found.");
         if (assetPut[2] === "upload") asset.bytes = bytes;
-        if (assetPut[2] === "upload" && asset.voice) asset.data = Buffer.concat(chunks);
+        if (assetPut[2] === "upload" && (asset.voice || asset.purpose === "avatar")) asset.data = Buffer.concat(chunks);
         return json(response, 204);
       }
       const assetFile = /^\/api\/assets\/([^/]+)\/fixture-file$/.exec(path);
       if (assetFile && method === "GET") {
         const asset = state.assets.get(assetFile[1]);
-        if (!asset?.data) return reject(response, 404, "Asset not found.");
+        if (!asset?.data || asset.deleted || (asset.purpose === "avatar" && !asset.completed))
+          return reject(response, 404, "Asset not found.");
         // Served as recorded: the fixture labels voice notes audio/mp4 like the
         // API's transcode, but never transcodes them.
         response.writeHead(200, {
@@ -811,8 +881,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       const assetComplete = /^\/api\/assets\/([^/]+)\/complete$/.exec(path);
       if (assetComplete && method === "POST") {
         const asset = state.assets.get(assetComplete[1]);
-        if (!user || !asset) return reject(response, 404, "Asset not found.");
+        if (!user || !asset || asset.ownerId !== user.id || asset.deleted)
+          return reject(response, 404, "Asset not found.");
         if (asset.bytes !== asset.size) return reject(response, 422, "Upload incomplete.");
+        if (asset.purpose === "avatar") {
+          const first = !asset.completed;
+          asset.completed = true;
+          const account =
+            first && url.searchParams.get("draft") !== "true"
+              ? commitProfile({ ...user, avatarAsset: assetComplete[1], avatarUrl: asset.url })
+              : user;
+          return json(response, 200, { id: assetComplete[1], kind: "image", status: "ready", account });
+        }
         asset.attachment = asset.voice
           ? {
               id: assetComplete[1],
@@ -838,6 +918,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               status: "ready",
             };
         return json(response, 200, asset.attachment);
+      }
+      const assetCancel = /^\/api\/assets\/([^/]+)\/cancel$/.exec(path);
+      if (assetCancel && method === "POST") {
+        const asset = state.assets.get(assetCancel[1]);
+        if (!user || !asset || asset.ownerId !== user.id) return reject(response, 404, "Asset not found.");
+        if (!asset.completed && !asset.attachment) asset.deleted = true;
+        return json(response, 204);
       }
       if (path === "/api/klipy")
         return user
@@ -1066,6 +1153,21 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       }
       if (path === "/api/account/me")
         return user ? json(response, 200, user) : reject(response, 401, "Sign in required.");
+      if (path === "/api/account/avatar/history" && method === "GET") {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const assets = [...state.assets]
+          .reverse()
+          .filter(([, asset]) => asset.ownerId === user.id && asset.purpose === "avatar");
+        const cursor = url.searchParams.get("cursor");
+        const start = cursor === null ? 0 : assets.findIndex(([id]) => id === cursor) + 1;
+        const pictures = (cursor !== null && start === 0 ? [] : assets.slice(start))
+          .filter(([, asset]) => asset.completed && !asset.deleted)
+          .map(([id, asset]) => ({ avatarAsset: id, avatarUrl: asset.url }));
+        return json(response, 200, {
+          pictures: pictures.slice(0, 40),
+          nextCursor: pictures.length > 40 ? pictures[39].avatarAsset : null,
+        });
+      }
       if (path === "/api/account/avatar/regenerate" && method === "POST") {
         if (!user) return reject(response, 401, "Sign in required.");
         const before = state;
@@ -1082,8 +1184,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (response.destroyed) return;
         if (state !== before) return reject(response, 409, "TEST FIXTURE: reset during regeneration.");
         // Deterministic, visibly different artwork for UI checks, not random production selection.
-        state.account = { ...state.account, avatarId: state.account.avatarId === 0 ? 31 : 0 };
-        return json(response, 200, state.account);
+        const current = identity(request);
+        if (current.avatarAsset) return reject(response, 409, "custom avatar present");
+        return json(response, 200, commitProfile({ ...current, avatarId: current.avatarId === 0 ? 31 : 0 }));
       }
       if (path === "/api/whats-new" && method === "GET") {
         if (state.releaseHighlightsDelay)
@@ -1125,14 +1228,43 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           /[\p{Cc}]/u.test(displayName)
         )
           return reject(response, 400, "invalid profile");
-        state.account = { ...state.account, username, displayName };
-        for (const detail of state.spaces) {
-          const owner = detail.members.find((member) => member.id === ids.owner);
-          if (owner) Object.assign(owner, state.account);
+        if (
+          [state.account, ...state.profileAccounts.values()].some(
+            (person) => person.id !== user.id && person.username === username,
+          )
+        )
+          return reject(response, 409, "username unavailable");
+        let picture = {};
+        if (body.avatar !== undefined && body.avatar !== null) {
+          const avatar = body.avatar;
+          const validID = (id) => Number.isInteger(id) && id >= 0 && id < 800;
+          if (
+            !avatar ||
+            typeof avatar !== "object" ||
+            Array.isArray(avatar) ||
+            !validID(avatar.avatarId) ||
+            !(avatar.expectedAvatarId === null || validID(avatar.expectedAvatarId)) ||
+            !(avatar.avatarAsset === null || typeof avatar.avatarAsset === "string") ||
+            !(avatar.expectedAvatarAsset === null || typeof avatar.expectedAvatarAsset === "string")
+          )
+            return reject(response, 400, "invalid avatar");
+          if (
+            (user.avatarId ?? null) !== avatar.expectedAvatarId ||
+            (user.avatarAsset ?? null) !== avatar.expectedAvatarAsset
+          )
+            return json(response, 409, {
+              error: "Your picture changed elsewhere. Reopen your profile to refresh.",
+              code: "profile_changed",
+            });
+          const asset = avatar.avatarAsset === null ? null : state.assets.get(avatar.avatarAsset);
+          if (
+            avatar.avatarAsset !== null &&
+            (!asset || asset.ownerId !== user.id || asset.purpose !== "avatar" || !asset.completed || asset.deleted)
+          )
+            return reject(response, 404, "Profile picture is unavailable.");
+          picture = { avatarId: avatar.avatarId, avatarAsset: avatar.avatarAsset, avatarUrl: asset?.url ?? null };
         }
-        for (const sessionAuthor of state.chatSessions.values())
-          if (!sessionAuthor.isGuest) Object.assign(sessionAuthor, author(state.account));
-        return json(response, 200, state.account);
+        return json(response, 200, commitProfile({ ...user, username, displayName, ...picture }));
       }
       if (path === "/api/chat/session" && method === "POST") {
         const token = `fixture-chat-${randomUUID()}`;
@@ -1947,6 +2079,12 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             id: frame.id,
             event: state.media.get(channelId) ?? { type: "snapshot", revision: 0, participants: [] },
           });
+        } else if (frame.kind === "profiles") {
+          if (!client.userId)
+            return client.send({ type: "error", id: frame.id, status: 401, error: "account required" });
+          if (frame.after !== undefined || frame.channelId !== undefined)
+            return client.send({ type: "error", id: frame.id, status: 400, error: "invalid subscription" });
+          client.subscriptions.set(frame.id, frame);
         } else if (frame.kind === "notifications") {
           if (!client.userId)
             return client.send({ type: "error", id: frame.id, status: 401, error: "account required" });

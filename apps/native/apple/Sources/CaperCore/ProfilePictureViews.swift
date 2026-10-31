@@ -76,6 +76,28 @@ struct PictureFrames: View {
     }
 }
 
+/// A local, prepared crop/animation. No upload URL or global cache entry is
+/// needed to preview it; the draft retains the bytes until Save or Discard.
+struct PreparedPicturePreview: View {
+    let picture: PreparedPicture
+    let size: CGFloat
+    @Environment(\.displayScale) private var scale
+    @State private var frames: ProfilePictureFrames?
+
+    var body: some View {
+        Group {
+            if let frames { PictureFrames(frames: frames, size: size) }
+            else { CaperTheme.raised.frame(width: size, height: size) }
+        }.task(id: picture.data) {
+            let data = picture.data
+            let pixels = ProfilePicturePolicy.displayPixelSize(points: size, scale: scale)
+            let decoded = await Task.detached(priority: .userInitiated) { try? ProfilePictureDecoder.decode(data, pixelSize: pixels) }.value
+            guard !Task.isCancelled else { return }
+            frames = decoded
+        }
+    }
+}
+
 /// A picture filling a `size`-point square, or `fallback` while it loads and
 /// whenever it fails. Callers clip it to their shape (space tiles).
 struct PictureImage<Fallback: View>: View {
@@ -127,6 +149,12 @@ struct SpaceIconTile: View {
     }
 }
 
+/// A profile cannot publish while an applied crop is still being prepared.
+struct PictureEditorBusy: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
 /// Edit profile's picture and Manage space's icon. Only the corner controls
 /// are buttons, so opening a menu or saving never dims the picture itself.
 /// Regeneration progress stays inside its button without moving the form.
@@ -135,10 +163,12 @@ struct PictureEditor<Preview: View>: View {
     /// A custom picture is set (Remove is offered).
     let hasPicture: Bool
     let currentURL: URL?
+    let currentData: Data?
+    let deferred: Bool
     let upload: (PreparedPicture) async throws -> Void
     let remove: () async throws -> Void
     let history: ((String?) async throws -> AvatarHistory)?
-    let select: ((String, String?) async throws -> Void)?
+    let select: ((AvatarHistoryPicture) async throws -> Void)?
     let currentAsset: String?
     let regenerate: (() async throws -> Void)?
     let mascot: Bool
@@ -180,14 +210,17 @@ struct PictureEditor<Preview: View>: View {
     private var hitOutset: CGFloat { 8 }
     #endif
 
-    init(purpose: PicturePurpose, hasPicture: Bool, currentURL: URL? = nil, upload: @escaping (PreparedPicture) async throws -> Void,
+    init(purpose: PicturePurpose, hasPicture: Bool, currentURL: URL? = nil, currentData: Data? = nil, deferred: Bool = false,
+         upload: @escaping (PreparedPicture) async throws -> Void,
          remove: @escaping () async throws -> Void, currentAsset: String? = nil,
          history: ((String?) async throws -> AvatarHistory)? = nil,
-         select: ((String, String?) async throws -> Void)? = nil,
+         select: ((AvatarHistoryPicture) async throws -> Void)? = nil,
          regenerate: (() async throws -> Void)? = nil, mascot: Bool = false, @ViewBuilder preview: () -> Preview) {
         self.purpose = purpose
         self.hasPicture = hasPicture
         self.currentURL = currentURL
+        self.currentData = currentData
+        self.deferred = deferred
         self.upload = upload
         self.remove = remove
         self.history = history
@@ -203,7 +236,7 @@ struct PictureEditor<Preview: View>: View {
     private var status: String? {
         switch phase {
         case .loading: "Opening picture…"
-        case .uploading: "Uploading…"
+        case .uploading: deferred ? "Preparing picture…" : "Uploading…"
         case .removing: "Removing…"
         case .regenerating, nil: unavailable ? ProfilePicturePolicy.unavailableMessage : nil
         }
@@ -251,6 +284,7 @@ struct PictureEditor<Preview: View>: View {
             }
         }
         .zIndex(1)
+        .preference(key: PictureEditorBusy.self, value: phase != nil)
         .sheet(isPresented: $showHistory) {
             if let history, let select {
                 AvatarHistoryChooser(expected: historyExpected, history: history, select: select)
@@ -352,9 +386,11 @@ struct PictureEditor<Preview: View>: View {
 
     private var menu: some View {
         Menu {
-            if hasPicture, let currentURL {
+            if hasPicture, currentData != nil || currentURL != nil {
                 Button("Edit current \(noun)") {
                     start {
+                        if let currentData { return currentData }
+                        guard let currentURL else { throw PictureError.unreadable }
                         let configuration = URLSessionConfiguration.ephemeral
                         configuration.httpCookieAcceptPolicy = .never
                         configuration.httpShouldSetCookies = false
@@ -442,7 +478,8 @@ struct PictureEditor<Preview: View>: View {
             .contentShape(Rectangle())
     }
 
-    /// Picking never uploads: only Done (or explicitly keeping animation) does.
+    /// Picking never uploads. Applying the crop prepares local bytes; a deferred
+    /// profile editor retains them until Save profile, while space icons apply now.
     private func start(_ load: @escaping () async throws -> Data, allowAnimation: Bool = true) {
         guard phase == nil, editing == nil else { return }
         phase = .loading
@@ -468,7 +505,8 @@ struct PictureEditor<Preview: View>: View {
                     let rect = ProfilePicturePolicy.squareCrop(width: image.width, height: image.height)
                     let edit = AttachmentEdit(crop: EditRect(x: rect.minX / Double(image.width), y: rect.minY / Double(image.height),
                                                              width: rect.width / Double(image.width), height: rect.height / Double(image.height)))
-                    editing = AttachmentEditRequest(name: "Adjust \(noun)", kind: .image, original: url, edit: edit, tool: .crop, pictureMode: true) { edit, _ in
+                    editing = AttachmentEditRequest(name: "Adjust \(noun)", kind: .image, original: url, edit: edit, tool: .crop,
+                                                    pictureMode: true, deferredPicture: deferred) { edit, _ in
                         send(data, edit: edit)
                     }
                 }
@@ -519,7 +557,7 @@ private struct AvatarHistoryChooser: View {
     @Environment(\.dismiss) private var dismiss
     let expected: String?
     let history: (String?) async throws -> AvatarHistory
-    let select: (String, String?) async throws -> Void
+    let select: (AvatarHistoryPicture) async throws -> Void
     @State private var pictures: [AvatarHistoryPicture] = []
     @State private var selected: AvatarHistoryPicture?
     @State private var cursor: String?
@@ -562,7 +600,7 @@ private struct AvatarHistoryChooser: View {
             HStack {
                 Button("Cancel") { dismiss() }.disabled(saving)
                 Spacer()
-                Button(saving ? "Saving…" : "Save picture") { Task { await save() } }
+                Button(saving ? "Using picture…" : "Use picture") { Task { await save() } }
                     .buttonStyle(.borderedProminent).tint(CaperTheme.action)
                     .foregroundStyle(CaperTheme.blackout)
                     .disabled(saving || loading || stale || selected == nil || selected?.avatarAsset == expected)
@@ -583,14 +621,14 @@ private struct AvatarHistoryChooser: View {
     }
 
     @MainActor private func save() async {
-        guard let asset = selected?.avatarAsset, asset != expected, !saving else { return }
+        guard let selected, let asset = selected.avatarAsset, asset != expected, !saving else { return }
         saving = true; error = nil
         defer { saving = false }
-        do { try await select(asset, expected); dismiss() }
+        do { try await select(selected); dismiss() }
         catch is CancellationError {}
         catch let failure as APIError where failure.status == 409 {
             stale = true; error = "Your picture changed elsewhere. Close and reopen to refresh."
-        } catch { self.error = "Couldn’t save picture. Please retry." }
+        } catch { self.error = "Couldn’t use picture. Please retry." }
     }
 }
 

@@ -331,7 +331,13 @@ just that player in the card.
   choose another or remove it; without one, your mascot holds up a
   "change me!" sign. Regenerate and edit use matching badges on its bottom
   corners; regeneration swaps the mascot without adding a progress row or
-  shifting the form. GIFs upload unchanged up to 5 MB and
+  shifting the form. Profile names, mascot regeneration, picture removal,
+  **Apply crop**, and **Use picture** from history stay private until **Save
+  profile**. Preparing a photo is local; Save uploads it with draft completion
+  and commits the names and picture together. A static **Unsaved changes**
+  label marks edits; closing asks **Keep editing** or **Discard**, saving
+  holds the dialog open, and failures preserve the draft for retry. Space icon
+  edits still apply with **Done**. GIFs upload unchanged up to 5 MB and
   1024 px, and bigger ones are shrunk to a square that fits (frames and timing kept);
   other images become a 512 px square WebP; HEIC/AVIF are refused locally.
   Pictures replace the mascot in every avatar and icons fill rail tiles, cached by

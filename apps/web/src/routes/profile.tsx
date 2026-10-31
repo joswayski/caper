@@ -1,7 +1,7 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
 import { getAccount, getRememberedAccount, logout, type Account } from "../account/client";
-import ProfileForm from "../account/ProfileForm";
+import ProfileForm, { type ProfileFormHandle } from "../account/ProfileForm";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
 import StatusPage from "../components/StatusPage";
@@ -15,6 +15,7 @@ export const Route = createFileRoute("/profile")({
 
 function Profile() {
   const navigate = useNavigate();
+  const profileForm = useRef<ProfileFormHandle>(null);
   const [account, setAccount] = useState<Account | undefined>(() => getRememberedAccount());
   // Only a missing session means signed out; an outage keeps you here to retry.
   const [failed, setFailed] = useState(false);
@@ -50,17 +51,16 @@ function Profile() {
   return (
     <main className="grid min-h-dvh place-items-start justify-items-center px-6 pt-[clamp(48px,10vh,96px)] pb-12 max-[480px]:px-5 max-[480px]:pt-8">
       <section className="w-full max-w-[440px]">
-        {/* Settings save as they change, so leaving needs no Save: the way back
-            sits beside the wordmark rather than below every setting. */}
+        {/* The profile form guards navigation while its draft is unsaved. */}
         <div className="flex items-center justify-between gap-4">
           <Wordmark />
           {account.username && (
-            <a
+            <Link
               className="-my-2 -mr-2 inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 text-[.85rem] text-content-muted no-underline transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2"
-              href="/spaces"
+              to="/spaces"
             >
               <span aria-hidden="true">←</span> Back to spaces
-            </a>
+            </Link>
           )}
         </div>
         <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] text-content-muted max-[480px]:mt-[42px]">
@@ -70,7 +70,9 @@ function Profile() {
           {account.username ? "Make it yours." : "Choose how you show up."}
         </h1>
         <ProfileForm
+          ref={profileForm}
           account={account}
+          onCancel={account.username ? () => void navigate({ to: "/spaces" }) : undefined}
           onSaved={() => {
             const invite = inviteFromSearch(window.location.search);
             return invite ? navigate({ to: "/invite/$code", params: { code: invite } }) : navigate({ to: "/spaces" });
@@ -88,18 +90,20 @@ function Profile() {
             className="-mr-2 min-h-11 cursor-pointer rounded-control border-0 bg-transparent px-2 text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2 disabled:cursor-wait"
             type="button"
             disabled={loggingOut}
-            onClick={() => {
-              setLoggingOut(true);
-              setLogoutError(undefined);
-              logout().then(
-                () => window.location.assign("/"),
-                () => {
-                  // Stay signed in and say so, instead of a click that silently did nothing.
-                  setLoggingOut(false);
-                  setLogoutError("Couldn’t log out. Check your connection and try again.");
-                },
-              );
-            }}
+            onClick={() =>
+              profileForm.current?.requestClose(() => {
+                setLoggingOut(true);
+                setLogoutError(undefined);
+                logout().then(
+                  () => window.location.assign("/"),
+                  () => {
+                    // Stay signed in and say so, instead of a click that silently did nothing.
+                    setLoggingOut(false);
+                    setLogoutError("Couldn’t log out. Check your connection and try again.");
+                  },
+                );
+              })
+            }
           >
             {loggingOut ? "Logging out…" : "Log out"}
           </button>

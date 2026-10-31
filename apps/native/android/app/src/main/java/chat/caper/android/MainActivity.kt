@@ -459,11 +459,7 @@ internal data class VoiceJoinIntent(
             }
         }
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }, pendingLabel = "Leaving…", error = state.error) { viewModel.leaveCurrentSpace { overlay = null } }
-        Overlay.Profile -> state.account?.let { account ->
-            ProfileScreen(account, state.busy, state.error, { overlay = null }, picture = { ProfilePictureSection(state, viewModel) }) { username, display ->
-                viewModel.updateProfile(username, display) { overlay = null }
-            }
-        }
+        Overlay.Profile -> ProfileEditor(state, viewModel) { overlay = null }
         Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin,
             notifications = { NotificationSettingsSection(state, viewModel) },
             openWhatsNew = { overlay = Overlay.WhatsNew(); viewModel.refreshWhatsNew() }) { overlay = Overlay.Privacy }
@@ -3808,10 +3804,14 @@ internal fun counterTone(count: Int): Color = when {
 /** [picture] (Edit profile only) shows and changes your profile picture above the fields. */
 @Composable internal fun ProfileScreen(
     account: Account, busy: Boolean, error: String?, close: (() -> Unit)?, picture: (@Composable () -> Unit)? = null,
+    pictureChanged: Boolean = false,
     submit: (String, String) -> Unit,
 ) {
     var username by remember(account.id) { mutableStateOf(account.username.orEmpty()) }
     var name by remember(account.id) { mutableStateOf(account.displayName.orEmpty()) }
+    val changed = pictureChanged || username.trim() != account.username.orEmpty() || name.trim() != account.displayName.orEmpty()
+    var confirmDiscard by remember { mutableStateOf(false) }
+    val requestClose = { if (!busy) { if (changed) confirmDiscard = true else close?.invoke() }; Unit }
     // `error` is app-wide: Edit profile shows only its own save's failure, never an earlier one.
     var submitted by remember { mutableStateOf(close == null) }
     val form: @Composable ColumnScope.() -> Unit = {
@@ -3821,23 +3821,34 @@ internal fun counterTone(count: Int): Color = when {
         }
         if (picture != null) { picture(); HorizontalDivider(color = Border) }
         // Web's field hints (account/ProfileForm.tsx).
-        OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+        OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Next),
             supportingText = { Text("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.", color = TextMuted) })
         val nameError = displayNameError(name, account.displayName)
-        OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+        OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth(),
             isError = nameError != null,
             supportingText = { Text(nameError ?: "This is what people see in conversations.", color = if (nameError != null) ErrorText else TextMuted) })
         Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
             error?.takeIf { submitted }?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         }
-        PrimaryButton(if (account.username.isNullOrEmpty()) "Finish setup" else "Save profile", "Saving…", busy, profileValid(username, name, account.displayName),
+        if (close != null && changed) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box(Modifier.size(5.dp).background(Terracotta, CircleShape))
+            Text("Unsaved changes", color = TextMuted, fontSize = 12.sp)
+        }
+        PrimaryButton(if (account.username.isNullOrEmpty()) "Finish setup" else "Save profile", "Saving…", busy, profileValid(username, name, account.displayName) && (close == null || changed),
             Modifier.align(Alignment.End), minWidth = if (close == null) 200.dp else 148.dp,
             contentPadding = PaddingValues(horizontal = if (close == null) 20.dp else 16.dp, vertical = if (close == null) 16.dp else 8.dp)) { submitted = true; submit(username, name) }
     }
     // Onboarding spaces the form as the Edit profile dialog does.
     if (close == null) AuthFrame { Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) { form() } }
-    else CaperDialog("Edit profile", close) { form() }
+    else CaperDialog("Edit profile", requestClose, busy = busy) { form() }
+    if (confirmDiscard) AlertDialog(
+        onDismissRequest = { confirmDiscard = false },
+        title = { Text("Discard changes?") },
+        text = { Text("Your profile changes haven’t been saved.") },
+        confirmButton = { TextButton({ confirmDiscard = false; close?.invoke() }, enabled = !busy) { Text("Discard") } },
+        dismissButton = { TextButton({ confirmDiscard = false }) { Text("Keep editing") } },
+    )
 }
 
 @Composable private fun FirstSpaceScreen(state: AppUiState, viewModel: CaperViewModel) {

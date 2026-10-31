@@ -16,6 +16,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import chat.caper.android.model.Account
@@ -99,7 +100,75 @@ class ProfileUiTest {
         }
         compose.onNodeWithText("Edit profile").assertExists()
         compose.onNodeWithText("Finish setup").assertDoesNotExist()
+        compose.onNodeWithText("Save profile").assertIsNotEnabled()
+        compose.onNodeWithText("Display name").performTextReplacement("Fixture Updated")
         compose.onNodeWithText("Save profile").assertIsEnabled().performClick()
-        compose.runOnIdle { assertEquals("fixture_owner" to "Fixture Owner", submitted) }
+        compose.runOnIdle { assertEquals("fixture_owner" to "Fixture Updated", submitted) }
+    }
+
+    @Test fun changedProfileConfirmsDiscardAndFailedSaveKeepsDraft() {
+        val busy = mutableStateOf(false)
+        val error = mutableStateOf<String?>(null)
+        var closed = 0
+        var submitted: Pair<String, String>? = null
+        compose.setContent {
+            CaperTheme {
+                ProfileScreen(Account("account", "jose", "Jose"), busy.value, error.value, close = { closed++ }) { username, name ->
+                    submitted = username to name
+                    busy.value = true
+                }
+            }
+        }
+        compose.onNodeWithText("Save profile").assertIsNotEnabled()
+        compose.onNodeWithText("Unsaved changes").assertDoesNotExist()
+        compose.onNodeWithText("Display name").performTextReplacement("Joseph")
+        compose.onNodeWithText("Unsaved changes").assertExists()
+        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithText("Discard changes?").assertExists()
+        compose.onNodeWithText("Keep editing").performClick()
+        compose.runOnIdle { assertEquals(0, closed) }
+        compose.onNodeWithText("Save profile").performClick()
+        compose.onNodeWithContentDescription("Close").assertIsNotEnabled()
+        compose.onNodeWithText("Saving…").assertIsNotEnabled()
+        compose.runOnIdle {
+            assertEquals("jose" to "Joseph", submitted)
+            error.value = "Your profile could not be saved. Please try again."
+            busy.value = false
+        }
+        compose.onNodeWithText("Your profile could not be saved. Please try again.").assertExists()
+        compose.onNodeWithText("Joseph").assertExists()
+        compose.onNodeWithText("Save profile").assertIsEnabled()
+        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithText("Discard").performClick()
+        compose.runOnIdle { assertEquals(1, closed) }
+    }
+
+    @Test fun pictureOnlyChangesEnableSaveAndRequireDiscardConfirmation() {
+        val changed = mutableStateOf(false)
+        val draft = ProfileDraft(Account("account", "jose", "Jose"))
+        var closed = 0
+        compose.setContent {
+            CaperTheme {
+                ProfileScreen(draft.baseline, draft.picturePending, null, close = { closed++ }, pictureChanged = changed.value) { _, _ -> }
+            }
+        }
+        compose.onNodeWithText("Save profile").assertIsNotEnabled()
+        compose.runOnIdle { changed.value = true }
+        compose.onNodeWithText("Save profile").assertIsEnabled()
+        compose.runOnIdle { draft.picturePending = true }
+        compose.onNodeWithText("Saving…").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Close").assertIsNotEnabled()
+        androidx.test.espresso.Espresso.pressBack()
+        compose.runOnIdle { assertEquals(0, closed); draft.picturePending = false }
+        compose.onNodeWithText("Save profile").assertIsEnabled()
+        androidx.test.espresso.Espresso.pressBack()
+        compose.onNodeWithText("Discard changes?").assertExists()
+        compose.onNodeWithText("Keep editing").performClick()
+        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithText("Keep editing").performClick()
+        compose.runOnIdle { changed.value = false }
+        compose.onNodeWithText("Save profile").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Close").performClick()
+        compose.runOnIdle { assertEquals(1, closed) }
     }
 }

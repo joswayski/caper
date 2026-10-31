@@ -43,9 +43,9 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.AttachDrawerPurpose
+import chat.caper.android.data.EditPainter
 import chat.caper.android.data.FileDrop
 import chat.caper.android.model.AppUiState
-import chat.caper.android.model.PROFILE_PICTURE_KEY
 import chat.caper.android.model.Picture
 import chat.caper.android.model.PictureSaveUi
 import chat.caper.android.model.SpaceDetail
@@ -124,47 +124,68 @@ internal fun pictureRequest(context: Context, picture: Picture, px: Int, animate
 /** The picture frame's side. */
 private val FrameSide = 112.dp
 
-/**
- * Edit profile's picture in its frame, with an edit badge on the corner. Without a custom
- * picture the saved mascot holds up "change me!" and the frame opens the attach drawer for one
- * picture (images only; GIFs stay animated); with one, it offers a new picture or removal. The change
- * runs in the view model, so it finishes (or fails here) even if the dialog closes.
- */
-@Composable internal fun ProfilePictureSection(state: AppUiState, viewModel: CaperViewModel) {
+/** One private draft for either entry point, released only on successful save or discard. */
+@Composable internal fun ProfileEditor(state: AppUiState, viewModel: CaperViewModel, close: () -> Unit) {
     val account = state.account ?: return
-    val save = state.pictureSaves[PROFILE_PICTURE_KEY]
     val epoch = viewModel.accountEpoch
-    val editPicture = pictureEditor(viewModel, epoch, null)
+    val draft = remember(account.id, epoch) { ProfileDraft(account) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    DisposableEffect(draft) { onDispose { draft.releasePicture() } }
+    val busy = saving || draft.picturePending
+    ProfileScreen(draft.baseline, busy, error, close, pictureChanged = draft.pictureChanged,
+        picture = { ProfilePictureSection(state, viewModel, draft, busy) }) { username, display ->
+        if (!saving && !draft.picturePending) {
+            saving = true
+            error = null
+            scope.launch {
+                try {
+                    viewModel.updateProfile(username, display, draft, epoch)
+                    close()
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (failure: Exception) {
+                    error = if (failure is ProfileSaveException) failure.message
+                        else chat.caper.android.data.pictureError(failure, chat.caper.android.data.PictureTarget.Avatar)
+                } finally { saving = false }
+            }
+        }
+    }
+}
+
+/** All picture operations change only the editor's draft; uploading belongs to Save profile. */
+@Composable internal fun ProfilePictureSection(state: AppUiState, viewModel: CaperViewModel, draft: ProfileDraft, busy: Boolean) {
+    val account = draft.baseline
+    val epoch = viewModel.accountEpoch
+    val editPicture = pictureEditor(viewModel, epoch, null, draft::usePrepared, pending = { draft.picturePending = it })
     var pickerEpoch by remember { mutableStateOf<Long?>(null) }
-    // An error from an earlier visit doesn't greet the next one; a change in flight keeps showing.
-    LaunchedEffect(Unit) { viewModel.dismissPictureError(PROFILE_PICTURE_KEY) }
-    val picker = rememberPictureDrawer("picture") { uri -> if (pickerEpoch == viewModel.accountEpoch) editPicture(uri) }
+    val picker = rememberPictureDrawer("picture") { uri -> if (!busy && pickerEpoch == viewModel.accountEpoch) editPicture(uri) }
     val name = account.displayName ?: account.username ?: "You"
     // Set even when this server sends no URL to show it with, so it can still be removed.
-    val hasPicture = !account.avatarAsset.isNullOrEmpty()
+    val hasPicture = !draft.avatarAsset.isNullOrEmpty()
     var gallery by remember(epoch) { mutableStateOf(false) }
-    if (gallery) AvatarGallery(account.avatarAsset, epoch, viewModel) { gallery = false }
+    if (gallery) AvatarGallery(draft.avatarAsset, epoch, viewModel, draft::select) { gallery = false }
     PictureFrame(
-        save = save,
+        save = null, disabled = busy,
         unavailable = state.uploadsChecked && !state.uploadsEnabled,
         hasPicture = hasPicture,
-        mascot = !hasPicture && caperAvatarIndex(account.avatarId) != null,
+        mascot = !hasPicture && caperAvatarIndex(draft.avatarId) != null,
         label = "Change profile picture", noun = "picture",
         drop = editPicture,
-        edit = account.avatarUrl?.let { url -> { editPicture(Uri.parse(url)) } },
+        edit = draft.avatarUrl?.let { url -> { editPicture(Uri.parse(url)) } },
         change = { pickerEpoch = epoch; picker() },
-        remove = { viewModel.removePicture() },
+        remove = draft::remove,
         history = { gallery = true },
     ) {
         if (hasPicture) {
-            Avatar(name, FrameSide, avatarId = account.avatarId, avatarAsset = account.avatarAsset, avatarUrl = account.avatarUrl)
+            if (draft.prepared != null) PictureImage(Picture(draft.avatarAsset!!, draft.avatarUrl!!), FrameSide, Modifier.fillMaxSize())
+            else Avatar(name, FrameSide, avatarId = draft.avatarId, avatarAsset = draft.avatarAsset, avatarUrl = draft.avatarUrl)
         } else {
-            ChangeMeMascot(name, account.avatarId, FrameSide)
+            ChangeMeMascot(name, draft.avatarId, FrameSide)
         }
     }
     if (!hasPicture) {
-        // Stays enabled while it runs (a repeat is ignored), so it doesn't flash.
-        IconButton(onClick = { if (save?.busy != true) viewModel.regenerateAvatar() }, enabled = save?.busy != true || save?.regenerating == true) {
+        IconButton(onClick = { draft.regenerate() }, enabled = !busy) {
             Icon(painterResource(R.drawable.lucide_rotate_ccw), "Regenerate avatar", Modifier.size(20.dp))
         }
     }
@@ -250,10 +271,10 @@ private val FrameSide = 112.dp
     save: PictureSaveUi?, unavailable: Boolean, hasPicture: Boolean, label: String, noun: String,
     change: () -> Unit, remove: () -> Unit, drop: (Uri) -> Unit,
     edit: (() -> Unit)? = null, history: (() -> Unit)? = null,
-    mascot: Boolean = false,
+    mascot: Boolean = false, disabled: Boolean = false,
     picture: @Composable () -> Unit,
 ) {
-    val busy = save?.busy == true
+    val busy = disabled || save?.busy == true
     // Regenerating swaps the picture in place: the badge keeps its look and the
     // picture isn't dimmed (presses are still ignored), so nothing flashes.
     val regenerating = save?.regenerating == true
@@ -337,16 +358,17 @@ private val FrameSide = 112.dp
     }
 }
 
-@Composable private fun AvatarGallery(current: String?, epoch: Long, model: CaperViewModel, close: () -> Unit) {
+@Composable private fun AvatarGallery(
+    current: String?, epoch: Long, model: CaperViewModel,
+    use: (chat.caper.android.model.AvatarHistoryPicture) -> Unit, close: () -> Unit,
+) {
     val expected = remember { current }
     var pictures by remember { mutableStateOf(emptyList<chat.caper.android.model.AvatarHistoryPicture>()) }
     var selected by remember { mutableStateOf<chat.caper.android.model.AvatarHistoryPicture?>(null) }
     var cursor by remember { mutableStateOf<String?>(null) }
     var loaded by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
-    var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var stale by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     suspend fun load() {
         busy = true; error = null
@@ -359,7 +381,7 @@ private val FrameSide = 112.dp
         finally { busy = false }
     }
     LaunchedEffect(Unit) { load() }
-    AlertDialog(onDismissRequest = { if (!saving) close() }, title = { Text("Previous pictures") }, text = {
+    AlertDialog(onDismissRequest = close, title = { Text("Previous pictures") }, text = {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(Modifier.size(144.dp).clip(PictureShape).background(SurfaceRaised), contentAlignment = Alignment.Center) {
                 selected?.let { PictureImage(Picture(it.avatarAsset, it.avatarUrl), 144.dp, Modifier.fillMaxSize()) }
@@ -368,7 +390,7 @@ private val FrameSide = 112.dp
             LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxWidth().heightIn(max = 240.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(pictures, key = { it.avatarAsset }) { item ->
-                    Column(Modifier.clickable(enabled = !saving) { selected = item }, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(Modifier.clickable { selected = item }, horizontalAlignment = Alignment.CenterHorizontally) {
                         Box(Modifier.aspectRatio(1f).clip(PictureShape).border(2.dp, if (selected == item) Terracotta else Border, PictureShape)) {
                             PictureImage(Picture(item.avatarAsset, item.avatarUrl), 80.dp, Modifier.fillMaxSize(), "Previous picture")
                             if (selected == item) Text("✓", Modifier.align(Alignment.TopEnd).background(Terracotta), color = chat.caper.android.ui.Text)
@@ -380,26 +402,22 @@ private val FrameSide = 112.dp
             if (loaded && pictures.isEmpty()) Text("No previous pictures yet.")
             if (busy) CircularProgressIndicator(Modifier.size(24.dp))
             error?.let { Text(it, color = ErrorText) }
-            if (!busy && !saving && !stale && (error != null || cursor != null)) TextButton({ scope.launch { load() } }) { Text(if (error != null) "Retry" else "Load more") }
-            if (stale) TextButton({ close() }) { Text("Close and reopen to refresh") }
+            if (!busy && (error != null || cursor != null)) TextButton({ scope.launch { load() } }) { Text(if (error != null) "Retry" else "Load more") }
         }
     }, confirmButton = {
-        Button(onClick = { scope.launch {
-            saving = true; error = null
-            try { model.selectAvatar(epoch, selected!!.avatarAsset, expected); close() }
-            catch (e: kotlinx.coroutines.CancellationException) { throw e }
-            catch (e: Exception) {
-                stale = e is chat.caper.android.data.ApiException && e.status == 409
-                error = if (stale) "Your picture changed elsewhere. Reopen to refresh." else "Couldn’t save picture. Please retry."
-            } finally { saving = false }
-        } }, enabled = !saving && !busy && !stale && selected != null && selected?.avatarAsset != expected,
-            colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction)) { Text(if (saving) "Saving…" else "Save picture") }
-    }, dismissButton = { TextButton(close, enabled = !saving) { Text("Cancel") } })
+        Button(onClick = { selected?.let(use); close() }, enabled = selected != null && selected?.avatarAsset != expected,
+            colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction)) { Text("Use picture") }
+    }, dismissButton = { TextButton(close) { Text("Cancel") } })
 }
 
-/** A private, cancellable local draft. Ownership transfers to the upload only on Done. */
-@Composable private fun pictureEditor(viewModel: CaperViewModel, epoch: Long, spaceId: String?): (Uri) -> Unit {
+/** Cropping a profile photo prepares local bytes only; space icons keep their immediate-save flow. */
+@Composable private fun pictureEditor(
+    viewModel: CaperViewModel, epoch: Long, spaceId: String?,
+    prepared: ((chat.caper.android.data.PreparedPicture, File, File) -> Unit)? = null,
+    pending: (Boolean) -> Unit = {},
+): (Uri) -> Unit {
     val context = LocalContext.current
+    val onPending by rememberUpdatedState(pending)
     var source by remember(epoch, spaceId) { mutableStateOf<Uri?>(null) }
     val uri = source
     if (uri != null) key(epoch, spaceId, uri) {
@@ -410,6 +428,8 @@ private val FrameSide = 112.dp
         var gif by remember { mutableStateOf(false) }
         var consent by remember { mutableStateOf(false) }
         var handedOff by remember { mutableStateOf(false) }
+        var preparing by remember { mutableStateOf(false) }
+        val scope = rememberCoroutineScope()
         LaunchedEffect(uri) {
             try {
                 val copied = viewModel.copyPictureForEditor(uri, directory)
@@ -435,14 +455,41 @@ private val FrameSide = 112.dp
                 if (file == null) withContext(NonCancellable + Dispatchers.IO) { directory.deleteRecursively() }
             }
         }
-        DisposableEffect(directory) { onDispose { if (!handedOff) directory.deleteRecursively() } }
+        DisposableEffect(directory) { onDispose {
+            if (!handedOff) directory.deleteRecursively()
+            onPending(false)
+        } }
         fun upload(edit: AttachmentEdit?) {
             val local = file ?: return
-            handedOff = true
-            viewModel.changePicture(Uri.fromFile(local), spaceId, epoch, edit, directory)
-            source = null
+            if (preparing) return
+            if (prepared == null) {
+                handedOff = true
+                viewModel.changePicture(Uri.fromFile(local), requireNotNull(spaceId), epoch, edit, directory)
+                source = null
+            } else {
+                preparing = true
+                scope.launch {
+                    try {
+                        val picture = chat.caper.android.data.PicturePreparer.prepare(local, edit, EditPainter.typeface(context))
+                        val preview = withContext(Dispatchers.IO) {
+                            File(directory, "prepared-${UUID.randomUUID()}").apply { writeBytes(picture.bytes) }
+                        }
+                        check(viewModel.accountEpoch == epoch)
+                        prepared(picture, preview, directory)
+                        handedOff = true
+                        source = null
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        withContext(NonCancellable + Dispatchers.IO) { if (!handedOff) directory.deleteRecursively() }
+                        throw cancelled
+                    }
+                    catch (failure: Exception) {
+                        error = chat.caper.android.data.pictureError(failure, chat.caper.android.data.PictureTarget.Avatar)
+                    } finally { preparing = false; onPending(false) }
+                }
+            }
         }
         when {
+            preparing -> AlertDialog(onDismissRequest = {}, title = { Text("Preparing picture…") }, confirmButton = {})
             error != null -> AlertDialog(onDismissRequest = { source = null }, title = { Text("Picture unavailable") },
                 text = { Text(error!!) }, confirmButton = { TextButton({ source = null }) { Text("Close") } })
             file == null -> AlertDialog(onDismissRequest = { source = null }, title = { Text("Opening picture…") },
@@ -459,8 +506,8 @@ private val FrameSide = 112.dp
                 cancel = { source = null }, save = { edit, preview ->
                     preview?.recycle()
                     upload(edit ?: AttachmentEdit.NONE)
-                }, initialTool = EditTool.CROP, pictureMode = true)
+                }, initialTool = EditTool.CROP, pictureMode = true, doneLabel = if (prepared != null) "Apply crop" else "Done")
         }
     }
-    return { if (viewModel.accountEpoch == epoch) source = it }
+    return { if (viewModel.accountEpoch == epoch && source == null) { onPending(true); source = it } }
 }

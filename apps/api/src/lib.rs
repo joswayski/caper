@@ -1458,6 +1458,7 @@ async fn sign_picture_urls(
 struct ProfileInput {
     username: String,
     display_name: String,
+    avatar: Option<pictures::ProfileAvatar>,
 }
 
 async fn account_profile(
@@ -1488,6 +1489,12 @@ async fn account_profile(
             "account service unavailable",
         )
     })?;
+    if let Some(avatar) = input.avatar {
+        let user = pictures::save_profile(pool, principal.user.id, &username, display_name, avatar)
+            .await?;
+        profiles::account_changed(&state, user.id);
+        return Ok(Json(own_account(&state, &user).await));
+    }
     match accounts::set_profile(pool, principal.user.id, &username, display_name).await {
         Ok(Some(user)) => {
             profiles::account_changed(&state, user.id);

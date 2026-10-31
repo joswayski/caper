@@ -23,8 +23,8 @@ async function setup(t) {
   return { fixture, base, request };
 }
 
-function socket(url) {
-  const ws = new WebSocket(url);
+function socket(url, options) {
+  const ws = new WebSocket(url, options);
   const queued = [];
   const waiting = [];
   ws.addEventListener("message", ({ data }) => {
@@ -91,6 +91,200 @@ test("email code auth and validated profile persist across account and member re
   assert.deepEqual(
     history.value.messages.map((message) => message.author.avatarId),
     [0, 31, 31, 799],
+  );
+});
+
+test("profile drafts stage privately, then publish names and avatar together exactly once", async (t) => {
+  const { fixture, request } = await setup(t);
+  const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`, {
+    headers: { authorization: "Bearer fixture-owner-token" },
+  });
+  t.onTestFinished(() => stream.ws.close());
+  await stream.opened;
+  assert.equal((await stream.next()).type, "hello");
+  stream.ws.send(JSON.stringify({ type: "subscribe", id: "profiles", kind: "profiles" }));
+  assert.equal((await stream.next()).type, "subscribed");
+  const noUpdate = async () => {
+    // An ordered socket barrier: any premature/duplicate event arrives first.
+    stream.ws.send(JSON.stringify({ type: "heartbeat" }));
+    assert.equal((await stream.next()).type, "heartbeat");
+  };
+  const original = (await request("/api/account/me", { auth: true })).value;
+  await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true } });
+  // Real one-pixel GIF bytes, served unchanged by this disposable fixture.
+  const bytes = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
+  const reserved = await request("/api/assets", {
+    auth: true,
+    method: "POST",
+    body: {
+      purpose: "avatar",
+      filename: "avatar.gif",
+      contentType: "image/gif",
+      byteSize: bytes.length,
+      width: 1,
+      height: 1,
+    },
+  });
+  const asset = reserved.value.id;
+  const input = {
+    username: "new_owner",
+    displayName: "New Name",
+    avatar: {
+      avatarId: 799,
+      avatarAsset: asset,
+      expectedAvatarId: 0,
+      expectedAvatarAsset: null,
+    },
+  };
+  assert.equal(
+    (await request("/api/account/profile", { auth: true, method: "POST", body: input })).response.status,
+    404,
+    "uncompleted assets cannot publish even valid names",
+  );
+  assert.equal(
+    (await request(`/api/assets/${asset}/complete?draft=true`, { auth: true, method: "POST" })).response.status,
+    422,
+  );
+  assert.equal((await fetch(reserved.value.upload.url, { method: "PUT", body: bytes })).status, 204);
+  const staged = await request(`/api/assets/${asset}/complete?draft=true`, { auth: true, method: "POST" });
+  assert.equal(staged.response.status, 200);
+  assert.equal(staged.value.id, asset);
+  assert.deepEqual(staged.value.account, original);
+  assert.deepEqual((await request("/api/account/me", { auth: true })).value, original);
+  assert.deepEqual(
+    (await request(`/api/assets/${asset}/complete`, { auth: true, method: "POST" })).value.account,
+    original,
+    "a completion retry without draft=true must not publish a previously staged asset",
+  );
+  await noUpdate();
+  const history = (await request("/api/account/avatar/history", { auth: true })).value;
+  assert.equal(history.pictures[0].avatarAsset, asset);
+  assert.equal(history.nextCursor, null);
+  assert.deepEqual((await request(`/api/account/avatar/history?cursor=${asset}`, { auth: true })).value, {
+    pictures: [],
+    nextCursor: null,
+  });
+  assert.deepEqual((await request("/api/account/avatar/history", { auth: "fixture-member-token" })).value.pictures, []);
+  assert.deepEqual(Buffer.from(await (await fetch(history.pictures[0].avatarUrl)).arrayBuffer()), bytes);
+
+  const saved = await request("/api/account/profile", { auth: true, method: "POST", body: input });
+  assert.equal(saved.response.status, 200);
+  assert.deepEqual(saved.value, {
+    ...original,
+    username: "new_owner",
+    displayName: "New Name",
+    avatarId: 799,
+    avatarAsset: asset,
+    avatarUrl: history.pictures[0].avatarUrl,
+  });
+  assert.deepEqual((await stream.next()).event, { type: "profile.updated", person: saved.value });
+  await noUpdate();
+  const member = (await request(`/api/spaces/${ids.space}`, { auth: true })).value.members.find(
+    (person) => person.id === ids.owner,
+  );
+  assert.equal(member.displayName, "New Name");
+  assert.equal(member.avatarAsset, asset);
+
+  for (const avatar of [input.avatar, { ...input.avatar, expectedAvatarId: 799 }]) {
+    const stale = await request("/api/account/profile", {
+      auth: true,
+      method: "POST",
+      body: { ...input, displayName: "Must not apply", avatar },
+    });
+    assert.equal(stale.response.status, 409);
+    assert.equal(stale.value.code, "profile_changed");
+  }
+  assert.deepEqual((await request("/api/account/me", { auth: true })).value, saved.value);
+  await noUpdate();
+
+  const namesOnly = await request("/api/account/profile", {
+    auth: true,
+    method: "POST",
+    body: { username: "new_owner", displayName: "Name only" },
+  });
+  assert.equal(namesOnly.value.avatarAsset, asset, "omitting avatar preserves the picture");
+  assert.equal((await stream.next()).event.person.displayName, "Name only");
+  const removed = await request("/api/account/profile", {
+    auth: true,
+    method: "POST",
+    body: { ...input, avatar: { avatarId: 799, avatarAsset: null, expectedAvatarId: 799, expectedAvatarAsset: asset } },
+  });
+  assert.equal(removed.value.avatarAsset, null);
+  assert.equal((await stream.next()).event.person.avatarAsset, null);
+  assert.equal((await request("/api/account/avatar/history", { auth: true })).value.pictures[0].avatarAsset, asset);
+  const restored = await request("/api/account/profile", {
+    auth: true,
+    method: "POST",
+    body: { ...input, avatar: { ...input.avatar, expectedAvatarId: 799 } },
+  });
+  assert.equal(restored.value.avatarAsset, asset, "Use picture can select completed history without another upload");
+  assert.equal((await stream.next()).event.person.avatarAsset, asset);
+  await noUpdate();
+});
+
+test("profile publication rejects invalid and foreign pictures; legacy completion applies only once", async (t) => {
+  const { request } = await setup(t);
+  await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true } });
+  const original = (await request("/api/account/me", { auth: true })).value;
+  const reserved = await request("/api/assets", {
+    auth: "fixture-member-token",
+    method: "POST",
+    body: {
+      purpose: "avatar",
+      filename: "avatar.gif",
+      contentType: "image/gif",
+      byteSize: 3,
+      width: 1,
+      height: 1,
+    },
+  });
+  await fetch(reserved.value.upload.url, { method: "PUT", body: new Uint8Array([1, 2, 3]) });
+  const path = `/api/assets/${reserved.value.id}/complete`;
+  assert.equal((await request(path, { auth: true, method: "POST" })).response.status, 404);
+  const legacy = await request(path, { auth: "fixture-member-token", method: "POST" });
+  assert.equal(legacy.value.account.id, ids.member);
+  assert.equal(legacy.value.account.avatarAsset, reserved.value.id);
+  assert.deepEqual(
+    (await request("/api/account/me", { auth: true })).value,
+    original,
+    "another account's upload never changes the owner",
+  );
+  const avatar = { avatarId: 1, avatarAsset: reserved.value.id, expectedAvatarId: 0, expectedAvatarAsset: null };
+  for (const [candidate, status] of [
+    [avatar, 404],
+    [{ ...avatar, avatarId: 800 }, 400],
+    [{ ...avatar, expectedAvatarId: "0" }, 400],
+  ]) {
+    assert.equal(
+      (
+        await request("/api/account/profile", {
+          auth: true,
+          method: "POST",
+          body: {
+            username: "untouched",
+            displayName: "Untouched",
+            avatar: candidate,
+          },
+        })
+      ).response.status,
+      status,
+    );
+  }
+  assert.deepEqual((await request("/api/account/me", { auth: true })).value, original);
+  const removed = await request("/api/account/profile", {
+    auth: "fixture-member-token",
+    method: "POST",
+    body: {
+      username: "maya",
+      displayName: "Maya",
+      avatar: { avatarId: 31, avatarAsset: null, expectedAvatarId: 31, expectedAvatarAsset: reserved.value.id },
+    },
+  });
+  assert.equal(removed.response.status, 200);
+  assert.equal(
+    (await request(path, { auth: "fixture-member-token", method: "POST" })).value.account.avatarAsset,
+    null,
+    "retrying old completion cannot undo a later selection",
   );
 });
 

@@ -311,17 +311,26 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (request == accountGeneration) loadHome()
     }
 
-    fun updateProfile(username: String, displayName: String, onSuccess: () -> Unit) = launchAction { request ->
-        val saved = profileRequest { api.profile(requireAccountToken(), username, displayName) }
-        if (request != accountGeneration) return@launchAction
-        // Only `GET /api/account/me` reports the feedback team; a profile save keeps it.
-        val account = saved.copy(feedbackTeam = saved.feedbackTeam || mutable.value.account?.feedbackTeam == true)
-        mutable.value = mutable.value.copy(account = account, screen = SessionScreen.Home)
+    internal suspend fun updateProfile(username: String, displayName: String, draft: ProfileDraft, epoch: Long) {
+        check(epoch == accountGeneration && draft.baseline.id == mutable.value.account?.id)
+        check(!draft.picturePending) { "Finish preparing your picture before saving." }
+        val token = requireAccountToken()
+        draft.prepared?.let { picture ->
+            if (draft.stagedAsset == null) {
+                val staged = pictureUploader.upload(token, PictureTarget.Avatar, picture, draft = true)
+                check(epoch == accountGeneration)
+                // Completion's account is deliberately NOT applied: only the atomic save commits.
+                draft.stagedAsset = staged.id
+            }
+        }
+        val saved = profileRequest { api.profile(token, username, displayName, draft.avatar()) }
+        check(epoch == accountGeneration)
+        applyOwnAccount(saved)
         chatToken = null
         chatAuthor = null
         mutable.value = mutable.value.copy(chatAuthorId = null)
-        createChatSession(accountGeneration)
-        onSuccess()
+        // The profile is committed already; a chat-session failure must not turn it into a failed save.
+        viewModelScope.launch { createChatSession(epoch) }
     }
 
     fun logout() {
@@ -3268,11 +3277,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- Profile pictures and space icons -------------------------------------------------------
 
-    /**
-     * A photo picked for your profile picture ([spaceId] null) or the icon of a space you own:
-     * prepared on the device (GIFs unchanged, anything else a WebP square), uploaded, and applied
-     * by the server. Runs on with its dialog closed; the state shows progress and the error.
-     */
+    /** Copies a picture for local editing; this never reserves, uploads or applies an asset. */
     internal suspend fun copyPictureForEditor(uri: Uri, directory: File): File {
         if (uri.scheme != "https" && uri.scheme != "http") return preparer.copy(uri, directory).source
         // Picture URLs are signed delivery URLs, just like attachment downloads. Never send the
@@ -3299,16 +3304,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun changePicture(uri: Uri, spaceId: String? = null, epoch: Long = accountGeneration, edit: AttachmentEdit? = null, editorDirectory: File? = null) {
-        if (epoch != accountGeneration || accountToken == null || mutable.value.pictureSaves[spaceId ?: PROFILE_PICTURE_KEY]?.busy == true) {
+    fun changePicture(uri: Uri, spaceId: String, epoch: Long = accountGeneration, edit: AttachmentEdit? = null, editorDirectory: File? = null) {
+        if (epoch != accountGeneration || accountToken == null || mutable.value.pictureSaves[spaceId]?.busy == true) {
             editorDirectory?.deleteRecursively()
             return
         }
-        val key = spaceId ?: PROFILE_PICTURE_KEY
+        val key = spaceId
         if (mutable.value.pictureSaves[key]?.busy == true) return
         val token = accountToken ?: return
         val request = accountGeneration
-        val target = if (spaceId == null) PictureTarget.Avatar else PictureTarget.SpaceIcon(spaceId)
+        val target = PictureTarget.SpaceIcon(spaceId)
         setPictureSave(key, PictureSaveUi(uploading = true))
         pictureJobs[key] = viewModelScope.launch {
             val directory = File(uploadSession, "picture-${UUID.randomUUID()}")
@@ -3317,8 +3322,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val picture = PicturePreparer.prepare(picked.source, edit, EditPainter.typeface(getApplication()))
                 val result = pictureUploader.upload(token, target, picture)
                 if (request != accountGeneration) return@launch
-                result.account?.takeIf { spaceId == null }?.let(::applyOwnAccount)
-                result.space?.takeIf { spaceId != null }?.let(::applySpace)
+                result.space?.let(::applySpace)
                 setPictureSave(key, null)
             } catch (error: CancellationException) {
                 throw error
@@ -3333,60 +3337,25 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Back to your saved mascot ([spaceId] null) or the space's initial. */
-    fun removePicture(spaceId: String? = null) {
-        val key = spaceId ?: PROFILE_PICTURE_KEY
+    /** Space icons still save immediately; profile pictures go through the private profile draft. */
+    fun removePicture(spaceId: String) {
+        val key = spaceId
         if (mutable.value.pictureSaves[key]?.busy == true) return
         val token = accountToken ?: return
         val request = accountGeneration
-        val target = if (spaceId == null) PictureTarget.Avatar else PictureTarget.SpaceIcon(spaceId)
+        val target = PictureTarget.SpaceIcon(spaceId)
         setPictureSave(key, PictureSaveUi(removing = true))
         pictureJobs[key] = viewModelScope.launch {
             try {
-                if (spaceId == null) {
-                    val account = api.removeAvatar(token)
-                    if (request != accountGeneration) return@launch
-                    applyOwnAccount(account)
-                } else {
-                    val space = api.removeSpaceIcon(token, spaceId)
-                    if (request != accountGeneration) return@launch
-                    applySpace(space)
-                }
+                val space = api.removeSpaceIcon(token, spaceId)
+                if (request != accountGeneration) return@launch
+                applySpace(space)
                 setPictureSave(key, null)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 if (request == accountGeneration) setPictureSave(key, PictureSaveUi(error =
                     pictureError(error, target)))
-            }
-        }
-    }
-
-    fun regenerateAvatar() {
-        val key = PROFILE_PICTURE_KEY
-        if (mutable.value.pictureSaves[key]?.busy == true || mutable.value.account?.avatarAsset != null) return
-        val token = accountToken ?: return
-        val epoch = accountGeneration
-        setPictureSave(key, PictureSaveUi(regenerating = true))
-        pictureJobs[key] = viewModelScope.launch {
-            try {
-                val updated = api.regenerateAvatar(token)
-                if (epoch != accountGeneration) return@launch
-                applyOwnAccount(updated)
-                setPictureSave(key, null)
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) {
-                if (failure is chat.caper.android.data.ApiException && failure.status == 409) {
-                    try {
-                        val refreshed = api.me(token)
-                        if (epoch == accountGeneration) applyOwnAccount(refreshed)
-                    } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { }
-                }
-                if (epoch == accountGeneration) setPictureSave(key, PictureSaveUi(error =
-                    if (failure is chat.caper.android.data.ApiException && failure.status == 409)
-                        "Your picture changed elsewhere. Remove your custom picture before regenerating."
-                    else "Couldn’t regenerate avatar. Please retry."))
             }
         }
     }
@@ -3398,25 +3367,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         return result
     }
 
-    suspend fun selectAvatar(epoch: Long, asset: String, expected: String?) {
-        check(epoch == accountGeneration)
-        val token = accountToken ?: error("Signed out")
-        val result = try { api.selectAvatar(token, asset, expected) }
-        catch (failure: chat.caper.android.data.ApiException) {
-            if (failure.status == 409) {
-                try {
-                    val refreshed = api.me(token)
-                    if (epoch == accountGeneration) applyOwnAccount(refreshed)
-                } catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { /* Reopening can retry after a transient refresh failure. */ }
-            }
-            throw failure
-        }
-        check(epoch == accountGeneration)
-        applyOwnAccount(result)
-    }
-
-    /** Clears a finished picture change's error ([key]: [PROFILE_PICTURE_KEY] or a space ID); one in flight stays. */
+    /** Clears a finished space-icon change's error; one in flight stays. */
     fun dismissPictureError(key: String) {
         if (mutable.value.pictureSaves[key]?.busy == false) setPictureSave(key, null)
     }
@@ -3957,9 +3908,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Web's profile save copy (`account/ProfileForm.tsx`). */
     private suspend fun <T> profileRequest(block: suspend () -> T): T = try { block() } catch (error: ApiException) {
-        throw ProfileSaveException(when (error.status) {
-            409 -> "That username is already taken."
-            400 -> "Check the username and display name requirements."
+        throw ProfileSaveException(when {
+            error.code == "profile_changed" -> "Your profile picture changed elsewhere. Discard and reopen to refresh before saving."
+            error.status == 409 -> "That username is already taken."
+            error.status == 400 -> "Check the username and display name requirements."
             else -> "Your profile could not be saved. Please try again."
         })
     }
