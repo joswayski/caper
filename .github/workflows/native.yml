@@ -219,6 +219,10 @@ jobs:
         run: |
           osascript -e 'quit app "System Settings"' 2>/dev/null || true
           killall NotificationCenter UserNotificationCenter 2>/dev/null || true
+          # The VM keeps the app's saved window frames between runs; the parity
+          # tests expect the default desktop window size.
+          defaults read chat.caper.macos 2>/dev/null | sed -n 's/^ *"\(NSWindow Frame [^"]*\)".*/\1/p' |
+            while IFS= read -r key; do defaults delete chat.caper.macos "$key"; done
           sleep 2
           # A UI test fails on any window over the app; name what is still there.
           pgrep -lx 'System Settings|UserNotificationCenter' || true
