@@ -62,6 +62,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.foundation.verticalScroll
@@ -3681,15 +3682,17 @@ internal fun counterTone(count: Int): Color = when {
     val scroll = rememberScrollState()
     val keyboard = WindowInsets.isImeVisible
     LaunchedEffect(keyboard, scroll.maxValue) { if (keyboard) scroll.scrollTo(scroll.maxValue) }
-    BoxWithConstraints(Modifier.fillMaxSize().background(Blackout).verticalScroll(scroll)) {
-        val narrow = maxWidth <= 480.dp
-        Column(
-            Modifier.padding(horizontal = if (narrow) 20.dp else 0.dp).widthIn(max = 440.dp).fillMaxWidth()
-                .align(Alignment.TopCenter).padding(vertical = if (narrow) 32.dp else 64.dp),
-        ) {
-            Wordmark()
-            Spacer(Modifier.height(if (narrow) 42.dp else 56.dp))
-            content()
+    SelectionContainer {
+        BoxWithConstraints(Modifier.fillMaxSize().background(Blackout).verticalScroll(scroll)) {
+            val narrow = maxWidth <= 480.dp
+            Column(
+                Modifier.padding(horizontal = if (narrow) 20.dp else 0.dp).widthIn(max = 440.dp).fillMaxWidth()
+                    .align(Alignment.TopCenter).padding(vertical = if (narrow) 32.dp else 64.dp),
+            ) {
+                Wordmark()
+                Spacer(Modifier.height(if (narrow) 42.dp else 56.dp))
+                content()
+            }
         }
     }
 }
@@ -3730,7 +3733,7 @@ internal fun counterTone(count: Int): Color = when {
             if (busy) requested = true else if (requested) runCatching { emailFocus.requestFocus() }
         }
         Text("Welcome to Caper", Modifier.padding(bottom = 4.dp), fontSize = 49.sp, lineHeight = 53.sp, fontWeight = FontWeight.Bold, letterSpacing = (-2.5).sp)
-        Text("Use your email to create an account or return to one. We’ll send a code to your email.", color = TextMuted, lineHeight = 26.sp)
+        Text("Use your email to create an account or log back in.", color = TextMuted, lineHeight = 26.sp)
         Text("Email address", Modifier.padding(top = 20.dp, bottom = 8.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold)
         OutlinedTextField(
             email, { email = it; if (error != null) clearError() }, placeholder = { Text("you@example.com") },

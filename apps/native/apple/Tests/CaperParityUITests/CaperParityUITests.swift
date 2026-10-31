@@ -2434,8 +2434,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Create space"].exists)
         XCTAssertTrue(app.windows.firstMatch.frame.contains(email.frame), "Login must fit the viewport")
         capture("login", app: app)
-        email.tap(); email.typeText("owner@example.test")
-        app.buttons["Email me a code"].tap()
+        // Return uses the same action as the button, including the empty-field guard.
+        email.tap(); email.typeText("\n")
+        XCTAssertTrue(app.textFields["Email address"].exists)
+        XCTAssertFalse(app.textFields["Sign-in code"].exists)
+        email.tap(); email.typeText("owner@example.test\n")
         XCTAssertTrue(app.textFields["Sign-in code"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.windows.firstMatch.frame.contains(app.textFields["Sign-in code"].frame))
         XCTAssertEqual(staticTexts("WELCOME TO CAPER", in: app).count, 0)
