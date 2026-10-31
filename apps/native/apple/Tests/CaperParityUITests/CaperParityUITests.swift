@@ -3231,11 +3231,20 @@ final class CaperParityUITests: XCTestCase {
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 5, "Missing composer")
         type("Keep this draft while resizing", into: composer)
         let window = app.windows.firstMatch
-        for width in [CGFloat(960), 820, 700, 820, 960] {
+        let dragWidth = { (width: CGFloat) in
             let frame = window.frame
             let corner = window.coordinate(withNormalizedOffset: .zero)
                 .withOffset(CGVector(dx: frame.width - 1, dy: frame.height - 1))
             corner.press(forDuration: 0.1, thenDragTo: corner.withOffset(CGVector(dx: width - frame.width, dy: 0)))
+        }
+        // The app saves its window frame, so a narrow window would carry into
+        // every later test (which need a desktop width). Restore it, even on failure.
+        let originalWidth = window.frame.width
+        addTeardownBlock { @MainActor in
+            if window.exists, abs(window.frame.width - originalWidth) > 4 { dragWidth(originalWidth) }
+        }
+        for width in [CGFloat(960), 820, 700, 820, 960] {
+            dragWidth(width)
             let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(window.frame.width - width) < 4 }, object: window)
             XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed, "The test must cross the actual layout breakpoints")
             XCTAssertEqual(app.buttons["blocked-run-toggle"].label, "Hide 2 blocked messages", "Resizing must retain the reader's revealed messages")
