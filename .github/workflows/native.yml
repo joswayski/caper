@@ -226,6 +226,18 @@ jobs:
           sleep 2
           # A UI test fails on any window over the app; name what is still there.
           pgrep -lx 'System Settings|UserNotificationCenter' || true
+      - name: Reset the self-hosted simulator's privacy answers
+        # The VM keeps its simulator between runs: a photo prompt answered in an
+        # earlier run hid the attach drawer's library. The tests expect to be asked.
+        if: runner.environment == 'self-hosted' && matrix.platform == 'ios'
+        run: |
+          udid="$(xcrun simctl list devices available | sed -n 's/^ *iPhone 16 (\([0-9A-F-]*\)).*/\1/p' | tail -1)"
+          if [[ -z "$udid" ]]; then
+            echo '::warning::No iPhone 16 simulator to reset.'
+            exit 0
+          fi
+          xcrun simctl boot "$udid" 2>/dev/null || true
+          xcrun simctl privacy "$udid" reset all chat.caper.ios || echo '::warning::Could not reset simulator privacy.'
       - name: Exercise native UI against the loopback parity fixture
         env:
           PLATFORM: ${{ matrix.platform }}

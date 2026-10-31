@@ -1393,7 +1393,10 @@ private struct ChannelSidebar: View {
             .simultaneousGesture(TapGesture(count: 2).onEnded { channelsShare = 0.5 })
             .focusable().focusEffectDisabled().focused($dividerFocused)
             .accessibilityRepresentation {
+                // Newer iOS gives the representation the enclosing
+                // "channel-browser" identifier unless it carries its own.
                 Slider(value: Binding(get: { split }, set: { channelsShare = $0 }), in: lower...1 - lower, step: 0.05)
+                    .accessibilityIdentifier("sidebar-sections-resize")
             }
             .accessibilityLabel("Channels and direct messages divider")
             .accessibilityIdentifier("sidebar-sections-resize")

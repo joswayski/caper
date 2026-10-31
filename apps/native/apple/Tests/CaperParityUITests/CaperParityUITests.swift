@@ -706,8 +706,8 @@ final class CaperParityUITests: XCTestCase {
             .withOffset(CGVector(dx: composer.frame.midX, dy: timeline.frame.maxY - 30))
         partialStart.press(forDuration: 0.05, thenDragTo: partialStart.withOffset(CGVector(dx: 0, dy: openKeyboardTop - timeline.frame.maxY + 70)),
                            withVelocity: .slow, thenHoldForDuration: 0.2)
-        XCTAssertEqual(try keyboardTop(in: app), openKeyboardTop, accuracy: 2,
-                       "Cancelling partial dismissal must not leave the keyboard halfway down")
+        try assertKeyboardSettles(in: app, open: openKeyboardTop, refocus: composer,
+                                  "Cancelling partial dismissal must not leave the keyboard halfway down")
         // A drag that never reaches the keyboard must not resign focus as soon
         // as scrolling starts. Continue through the keyboard to dismiss it.
         let dragStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
@@ -764,6 +764,30 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
         capture("composer-keyboard-reopened", app: app)
+    }
+
+    /// A released partial dismissal must settle the keyboard fully open or
+    /// fully closed, never part-way; which one is the system's call (Xcode
+    /// 27.1's iPhone 16 simulator closes it). Reopens it when closed.
+    private func assertKeyboardSettles(in app: XCUIApplication, open: CGFloat, refocus composer: XCUIElement,
+                                       _ message: String) throws {
+        let probe = try require(app.descendants(matching: .any).matching(identifier: "parity-keyboard-top").firstMatch, timeout: 3,
+                                "Missing system keyboard measurement")
+        let bottom = Double(app.frame.maxY)
+        func settled(_ top: Double) -> Bool { abs(top - Double(open)) <= 2 || top >= bottom }
+        let deadline = Date().addingTimeInterval(3)
+        var top = Double(probe.value as? String ?? "") ?? .nan
+        while !settled(top) && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.1)
+            top = Double(probe.value as? String ?? "") ?? .nan
+        }
+        XCTAssertTrue(settled(top), "\(message) (keyboard top \(top))")
+        guard !app.keyboards.firstMatch.exists else { return }
+        let draft = composer.value as? String
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "Tapping the composer must reopen the keyboard")
+        XCTAssertEqual(try keyboardTop(in: app), open, accuracy: 2)
+        XCTAssertEqual(composer.value as? String, draft, "Dismissing must keep the draft")
     }
 
     /// Measure UIKit's full keyboard (including predictions), independently of
@@ -880,8 +904,8 @@ final class CaperParityUITests: XCTestCase {
             .withOffset(CGVector(dx: composer.frame.midX, dy: timeline.frame.maxY - 30))
         partialStart.press(forDuration: 0.05, thenDragTo: partialStart.withOffset(CGVector(dx: 0, dy: openKeyboardTop - timeline.frame.maxY + 70)),
                            withVelocity: .slow, thenHoldForDuration: 0.2)
-        XCTAssertEqual(try keyboardTop(in: app), openKeyboardTop, accuracy: 2,
-                       "Cancelling thread keyboard dismissal must restore the fully open keyboard")
+        try assertKeyboardSettles(in: app, open: openKeyboardTop, refocus: composer,
+                                  "Cancelling thread keyboard dismissal must not leave the keyboard halfway down")
         let dragStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
         dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 40)))
         XCTAssertTrue(app.keyboards.firstMatch.exists, "A short thread drag must keep the keyboard open")
@@ -1237,6 +1261,9 @@ final class CaperParityUITests: XCTestCase {
             "attachments": [["id": "fixturevoice001", "kind": "audio", "status": "ready",
                              "name": "TEST FIXTURE voice.m4a", "contentType": "audio/mp4",
                              "size": 1024, "durationMs": 14000, "voice": true,
+                             // Without a URL the row draws "File unavailable"; the
+                             // transcript renders without loading the audio.
+                             "url": "http://127.0.0.1:3001/fixture-voice.m4a",
                              "transcript": ["status": "ready", "text": transcript]]],
         ]])
         let app = launch()
@@ -2893,7 +2920,8 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
                               "Missing your seeded message")
-        try require(row.buttons["Open profile for Fixture Owner"], timeout: 5, "Missing your profile button").tap()
+        // The avatar and the name both open the profile.
+        try require(row.buttons["Open profile for Fixture Owner"].firstMatch, timeout: 5, "Missing your profile button").tap()
         try require(app.buttons["mention-card-edit-profile"], timeout: 5, "Missing Edit profile").tap()
         let username = try require(app.textFields["Username"], timeout: 5, "Missing profile editor")
         let regenerate = try require(app.buttons["regenerate-avatar"], timeout: 5, "Missing regenerate control")
@@ -3305,6 +3333,10 @@ final class CaperParityUITests: XCTestCase {
         type("jordan", into: username)
         let submit = app.buttons["dm-create-submit"]
         let fieldFrame = username.frame, buttonFrame = submit.frame
+        // Jordan isn't a suggestion, so the first press only finds the person
+        // and the second opens the conversation, which the server refuses.
+        submit.tap()
+        _ = try require(app.buttons["Open conversation"], timeout: 10, "Finding Jordan must offer to open the conversation")
         submit.tap()
         let failure = try require(app.staticTexts["dm-create-error"], timeout: 10, "The refusal must appear in the dialog")
         assertElement("dm-create-error", label: message, in: app)
@@ -3502,10 +3534,13 @@ final class CaperParityUITests: XCTestCase {
             XCTAssertTrue(close.waitForExistence(timeout: 3), "Swiping right from a message control opens Browse")
             XCTAssertFalse(app.descendants(matching: .any)["mention-card"].waitForExistence(timeout: 1),
                            "Lifting a swipe must not open the card under the finger")
-            // Browse fills the phone; swiping left anywhere on it returns.
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5)).press(forDuration: 0.01,
-                thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
-            XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's center returns to chat")
+            // Browse fills the phone; swiping left anywhere on it returns, except
+            // from the channels/DMs divider, which sits at mid-height by default.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.75)).press(forDuration: 0.01,
+                thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.75)), withVelocity: .fast, thenHoldForDuration: 0)
+            // The offscreen chat keeps its controls, so only hittable means it returned.
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: navigation)], timeout: 3),
+                           .completed, "Swipe left from Browse returns to chat")
         }
         // A plain tap still opens it, once the swipe has lifted. By coordinate:
         // hosted simulators can fail the link's scroll-to-visible after swipes.
@@ -3641,8 +3676,11 @@ final class CaperParityUITests: XCTestCase {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: height)).press(forDuration: 0.01,
                 thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: height)), withVelocity: .fast, thenHoldForDuration: 0)
         }
-        swipeBrowseLeft(at: 0.5)
-        XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swipe left from Browse's center returns to chat")
+        // Below the channels/DMs divider, which sits at mid-height by default.
+        swipeBrowseLeft(at: 0.75)
+        // The offscreen chat keeps its controls, so only hittable means it returned.
+        let returned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: navigation)
+        XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 3), .completed, "Swipe left from Browse returns to chat")
         // Observe past the delayed focus-release window as well as the slide.
         XCTAssertFalse(app.keyboards.firstMatch.waitForExistence(timeout: 1.5), "Returning must not reopen the keyboard")
         XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2, "Returning must restore the bottom edge without a keyboard-sized gap")
