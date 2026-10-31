@@ -21,6 +21,10 @@ final class CaperParityUITests: XCTestCase {
             "-caper.voice.outputGain", "100",
             "-caper.voice.inputGain", "100",
             "-caper.voice.processingStrength", "25",
+            // Launch reopens the last channel; a persistent runner would carry
+            // one test's channel into the next. A string here hides the saved
+            // landing data, so every launch starts where the fixture expects.
+            "-caper.space-landing.owner0000001", "",
         ]
         #if os(macOS)
         // A persistent runner can restore closed or Settings-only windows from
