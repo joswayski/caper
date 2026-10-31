@@ -252,7 +252,9 @@ jobs:
   testflight:
     name: iOS / TestFlight
     needs: resolve
-    runs-on: macos-15
+    # GitHub's Xcode 27 image (public preview) carries the iOS 27.1 SDK that
+    # lets iPhone Duo run the app edge to edge instead of in a centred window.
+    runs-on: xcode-27
     # Includes waiting for Apple to process the build before handing it to testers.
     timeout-minutes: 110
     permissions:
@@ -286,12 +288,13 @@ jobs:
             echo "APPLE_TEAM_ID=$(jq -r .team_id "$secret")"
           } >>"$GITHUB_ENV"
           rm -f "$secret"
-      - name: Use Xcode 26
-        # App Store Connect only accepts iOS builds made with the iOS 26 SDK or later.
+      - name: Use Xcode 27.1
+        # iPhone Duo only gives apps built with the iOS 27.1 SDK or later the full
+        # display; earlier SDKs run in compatibility mode.
         run: |
           set -euo pipefail
-          xcode="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -1 || true)"
-          [[ -n "$xcode" ]] || { echo "No Xcode 26 on this runner:" >&2; ls -d /Applications/Xcode* >&2; exit 1; }
+          xcode=/Applications/Xcode_27.1.app
+          [[ -d "$xcode" ]] || { echo "No Xcode 27.1 on this runner:" >&2; ls -d /Applications/Xcode* >&2; exit 1; }
           sudo xcode-select -s "$xcode/Contents/Developer"
           xcodebuild -version
       - name: Archive and upload to TestFlight

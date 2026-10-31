@@ -37,11 +37,12 @@ Ruff checks and shell syntax checks pass. The six simulator-script regressions
 use stub Apple commands, **not** Xcode. None of these checks compiles or renders
 SwiftUI. No Swift/Xcode tools or connected Mac runner are available.
 Native builds, the extended UI regression, screenshots and real
-Duo fold transitions remain unverified. Keep this work in a draft PR until a Mac
-can build and inspect it. The production TestFlight workflow still explicitly
-selects **Xcode 26**; these source changes alone do not enable full-screen Duo
-support. Upgrade that runner/SDK separately after verifying Xcode 27.1 and its
-Duo runtime, then validate the resulting archive before distributing it.
+Duo fold transitions remain unverified. The 2026-10-31 release compiled the
+iOS archive with Xcode 26.3 (TestFlight export then failed on Apple's pending
+license agreement). The TestFlight job now runs on GitHub's `xcode-27` image
+(public preview) and selects **Xcode 27.1**, so builds opt into the full Duo
+display; earlier builds ran in Apple's centred compatibility window. Inspect the
+first such build on a Duo before calling the layout ready.
 
 On a Mac with Xcode 27.1 selected and the Duo simulator installed:
 
