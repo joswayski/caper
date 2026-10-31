@@ -9617,9 +9617,8 @@ private struct InviteLinksSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Create a custom link").font(CaperTheme.font(14, weight: .bold))
-                Text("Anyone with the link can join this space.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                Text("Create a separate link. Existing links keep their settings.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                Text("Create a separate link").font(CaperTheme.font(14, weight: .bold))
+                Text("Choose different limits or a landing channel. Existing links keep their settings.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 10) { pickers }
@@ -9816,7 +9815,7 @@ private struct InviteOptionPicker<Value: Hashable & Sendable>: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                     .opacity(isEnabled ? 1 : 0.45)
-            }.menuStyle(.borderlessButton).menuIndicator(.hidden)
+            }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
                 .accessibilityLabel(title).accessibilityValue(current)
                 .modifier(ControlHover())
         }
@@ -9831,6 +9830,7 @@ private struct SpaceEditor: View {
     var joinInvite: (() -> Void)? = nil
     @State private var name = ""; @State private var username = ""; @State private var error: String?; @State private var pending = false
     @State private var confirmDelete = false
+    @State private var customLinksExpanded = false
     /// The member whose removal is being confirmed.
     @State private var removing: Member?
     @FocusState private var nameFocused: Bool
@@ -9856,8 +9856,18 @@ private struct SpaceEditor: View {
                     if !inviteOnly {
                         CaperField(title: "Space name", text: $name, placeholder: "Gaming nights", focus: $nameFocused)
                             .onChange(of: name) { _, _ in error = nil }
-                        Button(pending ? (managing ? "Saving…" : "Creating…") : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton())
-                            .disabled(pending || (!managing && model.limits != nil && !model.canCreateSpace))
+                        if managing {
+                            HStack {
+                                Spacer(minLength: 0)
+                                Button(pending ? "Saving…" : "Save name") { run { try await model.renameSpace(name) } }
+                                    .buttonStyle(CaperSecondaryButton(minHeight: 42))
+                                    .disabled(pending || name.trimmingCharacters(in: .whitespacesAndNewlines) == model.detail?.space.name)
+                            }
+                        } else {
+                            Button(pending ? "Creating…" : "Create space") { run { try await model.createSpace(name: name); close() } }
+                                .buttonStyle(CaperPrimaryButton())
+                                .disabled(pending || (model.limits != nil && !model.canCreateSpace))
+                        }
                         if !managing { createFooter }
                     }
                     if managing {
@@ -9866,7 +9876,12 @@ private struct SpaceEditor: View {
                         } else {
                             iconSection
                             Divider().overlay(CaperTheme.border)
-                            InviteLinksSection(model: model, mutationPending: .constant(false)).id(model.detail?.space.id)
+                            DisclosureGroup("Custom links", isExpanded: $customLinksExpanded) {
+                                InviteLinksSection(model: model, mutationPending: .constant(false)).id(model.detail?.space.id)
+                                    .padding(.top, 12)
+                            }
+                            .font(CaperTheme.font(12, weight: .medium)).tint(CaperTheme.text)
+                            .accessibilityIdentifier("space-custom-links")
                         }
                         Divider().overlay(CaperTheme.border)
                         Text("Pending invitations  \(model.pendingMembers.count)").font(CaperTheme.font(14, weight: .bold))

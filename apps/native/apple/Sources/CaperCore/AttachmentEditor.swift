@@ -276,12 +276,6 @@ struct AttachmentEditor: View {
         #if os(iOS)
         // Leaving the field (the keyboard's dismiss key) commits it, as Return does.
         .onChange(of: fieldFocused) { _, focused in if !focused, field != nil { commitField() } }
-        #else
-        // Takes the keyboard from the composer underneath, as the media viewer does.
-        .focusable()
-        .focusEffectDisabled()
-        .focused($editorFocused)
-        .onAppear { editorFocused = true }
         #endif
         .onDisappear { player?.pause() }
         .accessibilityElement(children: .contain)
@@ -726,6 +720,14 @@ struct AttachmentEditor: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // A zoomed picture stays inside the stage, under both bars.
         .clipped()
+        #if os(macOS)
+        // Take the keyboard from the composer without making the toolbar
+        // buttons inherit a focused ancestor and all draw focus rings.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($editorFocused)
+        .onAppear { editorFocused = true }
+        #endif
     }
 
     /// The picture fitted inside the stage with the same padding in every

@@ -10290,6 +10290,31 @@ another device rejects a stale picture draft rather than overwriting it.
 - Docker daemon unavailable; the web image's build stage was validated directly
   with `npm run check`, not an image build. No API or storage schema changes.
 
+### Apple space-settings alignment (October 31, 2026)
+
+Web already opens the square crop/draw/text editor from **Space settings → icon
+pencil → Edit icon**, as well as after choosing a new image. The browser picture
+suite also covers reopening a saved space icon, rotating/undoing, and cancelling
+without another upload reservation, at desktop and narrow widths.
+
+`npm run check` and all 787 Vitest tests (`--maxWorkers=1`) passed. The focused
+`checkExistingPictures` browser run passed, including the saved-icon regression;
+desktop/narrow captures were inspected. The complete picture suite stopped
+earlier on an existing ambiguous Maya-avatar locator in the reduced-motion viewer
+case, so it is not counted as passing. API, storage and CDN were explicitly mocked.
+
+Apple's Manage space now keeps custom-link options behind **Custom links**, uses
+neutral framed menus, and gives **Save name** a compact, right-aligned secondary
+button disabled for an unchanged name. The macOS attachment editor takes initial
+keyboard focus on its picture stage rather than around both toolbars, so sibling
+buttons do not inherit the stage's focus ring. The shared button styles and their
+keyboard-focus feedback are retained.
+
+Apple UI regressions cover the save button and custom-link disclosure. These
+changes still require Xcode compilation, XCTest, rendered macOS/iOS inspection,
+and pointer/Tab/Shift-Tab/Undo/Escape acceptance; this Linux orb has no Apple SDK
+or connected Mac runner. Browser checks do not validate the native changes.
+
 ### Profile-picture viewing (October 19, 2026)
 
 Click a custom picture inside a person's profile card to open the original in

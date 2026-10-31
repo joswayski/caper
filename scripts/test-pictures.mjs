@@ -1202,6 +1202,22 @@ async function checkExistingPictures(browser) {
   );
   await page.waitForFunction(loaded(".space-rail-item:first-child button"));
   await shot(manage, "pictures-space-dialog.png");
+  // The saved icon opens the same editor as a new upload, without another
+  // file picker. Cancel must keep the saved icon and must not upload an edit.
+  const beforeEdit = await page.evaluate(() => window.pictureFixture.reservations.length);
+  await iconButton.click();
+  await manage.getByRole("menuitem", { name: "Edit icon", exact: true }).click();
+  await editor.getByRole("button", { name: "Rotate left", exact: true }).click();
+  assert.ok(await editor.getByRole("button", { name: "Undo", exact: true }).isEnabled());
+  await editor.getByRole("button", { name: "Undo", exact: true }).click();
+  await shot(editor, "pictures-space-icon-editor-desktop.png");
+  const desktopViewport = page.viewportSize();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await shot(editor, "pictures-space-icon-editor-narrow.png");
+  await editor.getByRole("button", { name: "Cancel editing", exact: true }).click();
+  await page.setViewportSize(desktopViewport);
+  assert.equal(await page.evaluate(() => window.pictureFixture.reservations.length), beforeEdit);
+  await page.waitForFunction(loaded(".space-rail-item:first-child button"));
   // Replacement bypasses the menu, and invalid files keep the existing picture.
   let releaseUpload;
   const uploadHeld = new Promise((resolve) => (releaseUpload = resolve));
