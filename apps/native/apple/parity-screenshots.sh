@@ -5,9 +5,10 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$ROOT/../../.." && pwd)"
 PLATFORM="${1:-}"
 if [[ "$PLATFORM" != macos && "$PLATFORM" != ios ]]; then
-  echo "Usage: $0 macos|ios" >&2
+  echo "Usage: $0 macos|ios [xcodebuild arguments...]" >&2
   exit 2
 fi
+shift
 
 export CAPER_MACOS_BUNDLE_ID="${CAPER_MACOS_BUNDLE_ID:-chat.caper.macos}"
 export CAPER_IOS_BUNDLE_ID="${CAPER_IOS_BUNDLE_ID:-chat.caper.ios}"
@@ -26,13 +27,13 @@ if [[ "$PLATFORM" == macos ]]; then
   destination="platform=macOS,arch=${CAPER_MACOS_ARCH:-$(uname -m)}"
 else
   scheme=CaperIOSParityTests
-  destination='platform=iOS Simulator,name=iPhone 16,OS=latest'
+  destination="${CAPER_IOS_SIMULATOR_DESTINATION:-platform=iOS Simulator,name=iPhone 16,OS=latest}"
 fi
 set +e
 xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$scheme" -configuration Debug \
   -destination "$destination" -derivedDataPath "$ROOT/DerivedData-Parity" \
   -resultBundlePath "$ROOT/ParityResults.xcresult" \
-  -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 test
+  -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 "$@" test
 xcodebuild_status=$?
 set -e
 if [[ -d "$ROOT/ParityResults.xcresult" ]]; then
