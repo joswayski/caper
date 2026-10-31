@@ -1775,7 +1775,7 @@ async fn gifs_send_alone_retry_by_content_quote_as_gif_and_survive_caption_edits
     assert_eq!(cleared["content"]["gif"], gif("hello-hi"));
     pool.close().await;
     admin
-        .execute(format!("DROP DATABASE {database}").as_str())
+        .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
         .await
         .unwrap();
 }
