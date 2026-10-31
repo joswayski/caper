@@ -1178,6 +1178,9 @@ private struct AttachmentAnimationView: View {
     let openViewer: (() -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var playback: LoopingPlayback?
+    /// The poster stays alone until the file can play: the player surface
+    /// adds nothing before its first frame.
+    @State private var playbackReady = false
     @State private var poster: CGImage?
     @State private var playing = false
     @State private var userPaused = false
@@ -1189,7 +1192,7 @@ private struct AttachmentAnimationView: View {
             if let poster = poster ?? AttachmentImageLoader.shared.cachedPreview(for: attachment.id) {
                 Image(decorative: poster, scale: 1).resizable().scaledToFill()
             }
-            if let playback { PlayerSurface(player: playback.player) }
+            if let playback, playbackReady { PlayerSurface(player: playback.player) }
             if !playing {
                 Image(systemName: "play.fill").font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
                     .frame(width: 36, height: 36).background(Circle().fill(Color.black.opacity(0.6)))
@@ -1225,6 +1228,7 @@ private struct AttachmentAnimationView: View {
         .onDisappear {
             playback?.stop()
             playback = nil
+            playbackReady = false
             playing = false
         }
     }
@@ -1258,6 +1262,7 @@ private struct AttachmentAnimationView: View {
         created.player.play()
         playing = true
         let loaded = await created.loads()
+        if loaded, playback === created { playbackReady = true }
         guard !loaded, !Task.isCancelled, playback === created else { return }
         // Usually an expired signature: one fresh URL retries (see `attachment.url`).
         created.stop()
