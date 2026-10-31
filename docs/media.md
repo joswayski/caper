@@ -6937,6 +6937,12 @@ by toggling the variable alone: a follow-up PR must remove the explicit macOS
 quarantine after recovery, then validate complete ARM/Intel/iOS native suites on
 the intended main revision. Keep hosted routing if that control fails.
 
+**Mac CI runner recovery, October 31, 2026:** both VMs were deleted and
+recreated from `ghcr.io/cirruslabs/macos-tahoe-xcode:27.1` (Xcode 27.1, with
+iPhone 16 and iPhone Duo simulators), and `ci-mac-1-caper`/`ci-mac-2-caper`
+reported online. The explicit macOS quarantine is removed; Windows and Linux x64
+stay quarantined. Confirm a fresh `native.yml` run lands on both VMs and passes.
+
 **Linux CI runner quarantine, October 12, 2026:** the same routing workflow also
 keeps `linux=false`, even when `SELF_HOSTED_LINUX=on` and the runner reports
 online. In [native run 38304485868](https://github.com/joswayski/caper/actions/runs/38304485868/job/114997812443),

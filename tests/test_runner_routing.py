@@ -53,10 +53,10 @@ class RunnerRoutingTests(unittest.TestCase):
             with self.subTest(event=event):
                 self.assertEqual(
                     self.route(EVENT=event),
-                    {"mac": "false", "windows": "false", "linux": "false", "linux_arm": "true"},
+                    {"mac": "true", "windows": "false", "linux": "false", "linux_arm": "true"},
                 )
 
-    def test_arm_route_still_fails_closed(self):
+    def test_mac_routes_fail_closed(self):
         for overrides in (
             {"MAC": "off"},
             {"EVENT": "pull_request"},
@@ -67,7 +67,8 @@ class RunnerRoutingTests(unittest.TestCase):
             {"RUNNER_RESPONSE": '{"runners": []}'},
         ):
             with self.subTest(overrides=overrides):
-                self.assertEqual(self.route(**overrides)["linux_arm"], "false")
+                outputs = self.route(**overrides)
+                self.assertEqual((outputs["mac"], outputs["linux_arm"]), ("false", "false"))
 
 
 if __name__ == "__main__":

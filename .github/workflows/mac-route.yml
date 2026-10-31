@@ -4,9 +4,9 @@ name: Choose self-hosted runners
 # (joswayski/infrastructure: the Mac, label "josemac" and, for linux/arm64 image
 # builds in its Linux VM, "joselinux-arm", see docs/mac-ci-runner.md; the
 # Windows PC, labels "josewin" and "joselinux", see docs/windows-ci-runner.md).
-# macOS desktop, Windows and Linux x64 runners are quarantined after OS
-# memory-dialog interruptions and lost runner communication. The mac, windows
-# and linux outputs stay false until recovery is verified; Linux arm64 is unchanged.
+# Windows and Linux x64 runners are quarantined after lost runner
+# communication: the windows and linux outputs stay false until recovery is
+# verified. The Mac's VMs were rebuilt on Xcode 27.1 on October 31, 2026.
 # See docs/media.md, "Native distribution and acceptance".
 # Every other output is 'true' only when all of these hold, and jobs use
 # GitHub-hosted runners otherwise:
@@ -66,9 +66,7 @@ jobs:
           fi
           route() { # output enabled label description
             local output="$1" enabled="$2" label="$3" what="$4" use=false reason online
-            if [[ "$output" == mac ]]; then
-              reason="macOS desktop runners are quarantined pending verified recovery"
-            elif [[ "$output" == linux ]]; then
+            if [[ "$output" == linux ]]; then
               reason="Linux x64 runners are quarantined after lost runner communication"
             elif [[ "$output" == windows ]]; then
               reason="Windows runners are quarantined after lost runner communication"
