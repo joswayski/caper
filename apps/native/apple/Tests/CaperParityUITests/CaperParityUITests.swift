@@ -3615,8 +3615,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Back arrow leads the channel menu")
         XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the back touch target accessible")
         // Phones: the name opens the conversation's menu, as in Slack; Pins and Members move there.
-        XCTAssertFalse(app.buttons["channel-pins"].exists, "Pins lives in the phone title menu")
-        XCTAssertFalse(app.buttons["Show member list"].exists, "Members lives in the phone title menu")
+        // iPhone Duo also stacks them in its status column, beside the conversation.
+        for (control, name) in [("channel-pins", "Pins"), ("Show member list", "Members")] where app.buttons[control].exists {
+            XCTAssertGreaterThanOrEqual(app.buttons[control].frame.minX, app.buttons["send-message-button"].frame.maxX,
+                                        "\(name) lives in the phone title menu, or iPhone Duo's status column")
+        }
         XCTAssertFalse(app.descendants(matching: .any)["channel-more-menu"].exists, "There is no separate More button")
         let title = app.descendants(matching: .any)["channel-title-menu"]
         XCTAssertTrue(title.isHittable, "The phone header's title is the conversation menu")
@@ -3726,8 +3729,9 @@ final class CaperParityUITests: XCTestCase {
             thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
         assertStaticText("Members", in: app, timeout: 3)
         XCTAssertTrue(navigation.isHittable, "Swiping in the member list keeps the conversation, not Browse")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).press(forDuration: 0.01,
-            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
+        // Within the conversation: iPhone Duo's status column beside it belongs to the system.
+        timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).press(forDuration: 0.01,
+            thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
         assertMembersClosed(in: app, "Swiping the backdrop right closes the member list")
         chooseFromTitleMenu("Pins", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["pinned-messages"].waitForExistence(timeout: 3))
