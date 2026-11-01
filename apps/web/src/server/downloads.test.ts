@@ -98,7 +98,7 @@ test("each homepage offers only its own platform: direct links except for the Li
     );
     const actions = markup.slice(
       markup.indexOf('<div class="app-downloads">'),
-      markup.indexOf('<p class="experimental-note">'),
+      markup.indexOf('<div class="experimental-note">'),
     );
     assert.deepEqual(
       [...actions.matchAll(/href="([^"]+)"/g)].map((match) => match[1]),

@@ -12,7 +12,7 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { Check, ChevronDown, Copy, ExternalLink, X } from "lucide-react";
+import { ChevronDown, ExternalLink, Mail, TriangleAlert, X } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
@@ -33,6 +33,7 @@ const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
 const authorUrl = "https://josevalerio.com";
 const contactEmail = "jose@caper.chat";
+const feedbackInviteUrl = "https://caper.chat/invite/uz3HFpD8jV";
 const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
 
 type HomeProps = {
@@ -108,23 +109,16 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
               </a>
             </div>
           </div>
-          <p className="experimental-note">
-            <span className="experimental-warning">
-              Caper is a work in progress and may contain bugs or incomplete features.
-            </span>{" "}
-            Have feedback?{" "}
-            <a
-              className="inline-flex items-center gap-0.5 underline"
-              href="https://caper.chat/invite/uz3HFpD8jV"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Share it in Caper chat
-              <ExternalLink size={12} aria-hidden="true" />
-              <span className="sr-only"> (opens in a new tab)</span>
-            </a>
-            , or reach out on <ContactLinks />
-          </p>
+          <div className="experimental-note">
+            <p className="wip-alert" role="note">
+              <TriangleAlert aria-hidden="true" />
+              <span>
+                <strong>Work in progress.</strong> Caper may contain bugs or incomplete features.
+              </span>
+            </p>
+            <p className="feedback-label">Questions or feedback?</p>
+            <FeedbackList />
+          </div>
           <p className="made-by">
             Made by{" "}
             <a href={authorUrl} target="_blank" rel="noreferrer">
@@ -160,7 +154,7 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
   );
 }
 
-function ContactLinks() {
+function FeedbackList() {
   const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
   useEffect(() => {
     if (status !== "copied") return;
@@ -178,34 +172,50 @@ function ContactLinks() {
   }
 
   return (
-    <>
-      <a className="contact-action" href={xUrl} target="_blank" rel="noreferrer" aria-label="Jose on X">
-        <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
-          <path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3L12 14.6 5.5 22H2.3l7.9-9L1.8 2h6.5l4.5 6.6L18.9 2Zm-1.1 18h1.7L7.3 3.9H5.5L17.8 20Z" />
-        </svg>
-      </a>{" "}
-      {/* Kept together so "or by" never ends a line with its button on the next. */}
-      <span className="contact-or">
-        or by{" "}
+    <ul className="feedback-list">
+      <li>
+        Tell me on{" "}
+        <a className="feedback-chip" href={xUrl} target="_blank" rel="noreferrer" aria-label="@josevalerio on X">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+            <path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3L12 14.6 5.5 22H2.3l7.9-9L1.8 2h6.5l4.5 6.6L18.9 2Zm-1.1 18h1.7L7.3 3.9H5.5L17.8 20Z" />
+          </svg>
+          @josevalerio
+          <ExternalLink aria-hidden="true" className="feedback-chip-external" />
+        </a>
+      </li>
+      <li>
+        Share it in the{" "}
+        <a className="feedback-chip" href={feedbackInviteUrl} target="_blank" rel="noreferrer">
+          #feedback channel on caper.chat
+          <ExternalLink aria-hidden="true" className="feedback-chip-external" />
+        </a>
+      </li>
+      <li>
+        Email me at{" "}
         <button
           type="button"
-          className="contact-action"
+          className="feedback-chip feedback-email"
           data-copied={status === "copied"}
           onClick={() => void copyEmail()}
-          title={contactEmail}
+          aria-label={`Copy email ${contactEmail}`}
         >
-          {status === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-          <span>{status === "copied" ? "Copied." : "email."}</span>
+          <span className="feedback-email-address">
+            <Mail aria-hidden="true" />
+            {contactEmail}
+          </span>
+          <span className="feedback-email-hint" aria-hidden="true">
+            {status === "copied" ? "copied!" : "click to copy"}
+          </span>
         </button>
-      </span>
-      <span className={status === "failed" ? "contact-feedback" : "sr-only"} role="status">
-        {status === "copied"
-          ? "Email address copied to clipboard."
-          : status === "failed"
-            ? `Couldn’t copy. ${contactEmail}`
-            : ""}
-      </span>
-    </>
+        <span className={status === "failed" ? "contact-feedback" : "sr-only"} role="status">
+          {status === "copied"
+            ? "Email address copied to clipboard."
+            : status === "failed"
+              ? `Couldn’t copy. ${contactEmail}`
+              : ""}
+        </span>
+      </li>
+    </ul>
   );
 }
 
