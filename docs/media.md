@@ -27,7 +27,13 @@ between compact, sidebar and member-panel arrangements. The existing 760-point
 compact threshold is unchanged; this is a content breakpoint, not a Duo profile.
 Members opens automatically only when it fits beside the conversation; the
 explicit Members action still works in narrower windows. Only backgrounds ignore
-container safe areas. Shared SwiftUI changes also apply to macOS; Android, Rust
+container safe areas: on the folded outer display, iOS reserves a trailing
+column for the island and status, and Browse's card surface (plus the
+conversation's background) runs under it to the screen edge while channels,
+DMs and controls stay inside the safe area. The conversation slides past that
+column too, so neither it nor its edge shadow shows there with Browse open.
+Unverified on a Duo or its simulator; the iPhone 16 parity runs have no
+trailing inset, so this is a no-op there. Shared SwiftUI changes also apply to macOS; Android, Rust
 desktop and browser layouts are unchanged in this iPhone-focused pass.
 
 Validation in the Linux orb (2026-10-23): `npm run check` passes (with bundler

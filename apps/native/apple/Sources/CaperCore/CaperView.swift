@@ -450,7 +450,11 @@ private extension Transaction {
 /// Clips sideways only, so backgrounds still reach under the status bar and
 /// home indicator.
 private struct SideClip: Shape {
-    func path(in rect: CGRect) -> Path { Path(rect.insetBy(dx: 0, dy: -rect.height)) }
+    /// Reaches into a trailing safe-area column (a folded Duo's island and status).
+    var trailing: CGFloat = 0
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX, y: rect.minY - rect.height, width: rect.width + trailing, height: rect.height * 3))
+    }
 }
 
 /// Draws a drawer's layer where it is on each frame: under the finger, along
@@ -801,7 +805,8 @@ private struct WorkspaceView: View {
                 let conversationAvailable = !model.spaces.isEmpty || model.selectedDirectMessageID != nil || model.visit != nil
                 let showsBrowse = !narrow || model.navigationOpen || !conversationAvailable
                 // Past the width, so the edge shadow leaves too.
-                let travel = geometry.size.width + drawerShadowRoom
+                // And past a folded Duo's trailing status column, which Browse's surface fills.
+                let travel = geometry.size.width + geometry.safeAreaInsets.trailing + drawerShadowRoom
                 layout {
                     VStack(spacing: 0) {
                         HStack(spacing: 0) {
@@ -819,6 +824,16 @@ private struct WorkspaceView: View {
                             .clipShape(RoundedRectangle(cornerRadius: narrow ? 16 : 0))
                             .padding(.top, narrow ? 8 : 0)
                             .padding(.trailing, narrow ? 8 : 0)
+                            // A folded Duo reserves a trailing column for its island and
+                            // status. Run the card's surface under it to the screen edge;
+                            // the channels themselves stay inside the safe area.
+                            .background {
+                                if narrow && geometry.safeAreaInsets.trailing > 0 {
+                                    RoundedRectangle(cornerRadius: 16).fill(CaperTheme.sidebar)
+                                        .padding(.top, 8)
+                                        .ignoresSafeArea(.container, edges: .trailing)
+                                }
+                            }
                             .overlay(alignment: .trailing) {
                                 if !narrow {
                                     Color.clear
@@ -900,7 +915,7 @@ private struct WorkspaceView: View {
                     .background {
                         Rectangle().fill(CaperTheme.blackout)
                             .shadow(color: .black.opacity(narrow ? 0.45 : 0), radius: 16, x: -12)
-                            .ignoresSafeArea(.container, edges: .vertical)
+                            .ignoresSafeArea(.container, edges: [.vertical, .trailing])
                     }
                     .modifier(BrowseLayer(showsBrowse: narrow && showsBrowse) { CGSize(width: narrow ? $0 * travel : 0, height: 0) })
                     .allowsHitTesting(!narrow || !showsBrowse)
@@ -908,7 +923,7 @@ private struct WorkspaceView: View {
                     .accessibilityHidden(narrow && showsBrowse)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipShape(SideClip())
+                .clipShape(SideClip(trailing: narrow ? geometry.safeAreaInsets.trailing : 0))
                 .onChange(of: travel, initial: true) { _, travel in browseDrawer.travel = max(travel, 1) }
                 .onChange(of: narrow, initial: true) { _, narrow in
                     model.narrowLayout = narrow
