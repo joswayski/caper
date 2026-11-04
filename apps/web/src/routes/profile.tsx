@@ -1,6 +1,7 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { getAccount, getRememberedAccount, logout, type Account } from "../account/client";
+import { getInitialAccount } from "../account/server";
 import ProfileForm, { type ProfileFormHandle } from "../account/ProfileForm";
 import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
@@ -10,13 +11,24 @@ import { inviteFromSearch } from "../spaces/client";
 
 export const Route = createFileRoute("/profile")({
   head: () => ({ meta: [{ title: "Profile - Caper" }] }),
+  // Render the form on the server instead of an empty page that fills in
+  // after hydration. In the browser, the account the app already has wins.
+  loader: async ({ location }) => {
+    const account = (typeof window === "undefined" ? undefined : getRememberedAccount()) ?? (await getInitialAccount());
+    if (account === null) {
+      const invite = inviteFromSearch(location.searchStr);
+      throw redirect({ href: invite ? `/login?invite=${invite}` : "/login", replace: true });
+    }
+    return { initialAccount: account };
+  },
   component: Profile,
 });
 
 function Profile() {
   const navigate = useNavigate();
   const profileForm = useRef<ProfileFormHandle>(null);
-  const [account, setAccount] = useState<Account | undefined>(() => getRememberedAccount());
+  const { initialAccount } = Route.useLoaderData();
+  const [account, setAccount] = useState<Account | undefined>(() => getRememberedAccount() ?? initialAccount);
   // Only a missing session means signed out; an outage keeps you here to retry.
   const [failed, setFailed] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);

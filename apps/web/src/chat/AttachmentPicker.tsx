@@ -240,11 +240,13 @@ export function PictureSourceSheet({
   onChoose: (file: File) => void;
   onClose: () => void;
 }) {
+  // Every input renders, so the server and first client render agree; only an
+  // open sheet (always in the browser) asks whether there is a camera.
   const choices: AttachChoice[] = [
     { id: "camera", label: "Camera", Icon: Camera, accept: "image/*", capture: "environment" },
     { id: "media", label: "Photos", Icon: Images, accept: "image/*" },
     { id: "files", label: "Files", Icon: FileText, accept: "image/*" },
-  ].filter((choice) => choice.id !== "camera" || hasCamera()) as AttachChoice[];
+  ];
   const inputs = useRef<Partial<Record<AttachChoice["id"], HTMLInputElement | null>>>({});
   const { refs, context } = useFloating({ open, onOpenChange: (next) => !next && onClose() });
   const { getFloatingProps } = useInteractions([useDismiss(context), useRole(context, { role: "dialog" })]);
@@ -289,20 +291,22 @@ export function PictureSourceSheet({
                   </button>
                 </div>
                 <div className="chat-attach-options">
-                  {choices.map((choice) => (
-                    <button
-                      key={choice.id}
-                      type="button"
-                      onClick={() => {
-                        // The sheet closes as the picker opens, as the composer's does.
-                        inputs.current[choice.id]?.click();
-                        onClose();
-                      }}
-                    >
-                      <choice.Icon size={22} aria-hidden="true" />
-                      <span>{choice.label}</span>
-                    </button>
-                  ))}
+                  {choices
+                    .filter((choice) => choice.id !== "camera" || hasCamera())
+                    .map((choice) => (
+                      <button
+                        key={choice.id}
+                        type="button"
+                        onClick={() => {
+                          // The sheet closes as the picker opens, as the composer's does.
+                          inputs.current[choice.id]?.click();
+                          onClose();
+                        }}
+                      >
+                        <choice.Icon size={22} aria-hidden="true" />
+                        <span>{choice.label}</span>
+                      </button>
+                    ))}
                 </div>
               </div>
             </FloatingFocusManager>

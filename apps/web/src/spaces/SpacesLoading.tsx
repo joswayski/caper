@@ -41,6 +41,13 @@ export default function SpacesLoading() {
             <span className="spaces-skeleton-input" />
           </div>
         </div>
+        {/* Wide rooms open with Members beside the conversation; reserve it so
+            the conversation keeps its width when the real room replaces this. */}
+        <aside className="space-member-presence spaces-loading-members" aria-hidden="true">
+          <span className="spaces-skeleton-line" />
+          <span className="spaces-skeleton-line" />
+          <span className="spaces-skeleton-line" />
+        </aside>
       </section>
     </main>
   );

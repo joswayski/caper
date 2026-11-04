@@ -1744,6 +1744,7 @@ export default function Spaces({
   embedded = false,
   initialAccount,
   initialSpaceList,
+  initialDirects,
   initialSelection,
   initialView,
   initialSpaceError,
@@ -1753,6 +1754,7 @@ export default function Spaces({
   embedded?: boolean;
   initialAccount?: Account;
   initialSpaceList?: { spaces: Space[]; invitations?: Space[]; limits: SpaceLimits };
+  initialDirects?: DirectConversation[];
   initialSelection?: SpaceLanding;
   initialView?: PreparedSpace;
   initialSpaceError?: string;
@@ -1827,12 +1829,12 @@ export default function Spaces({
   const [railInvitation, setRailInvitation] = useState<Space>();
   const [limits, setLimits] = useState<SpaceLimits | undefined>(initialSpaceList?.limits);
   const [view, setView] = useState<PreparedSpace | undefined>(initialView);
-  const [directSnapshots, setDirects] = useState<DirectConversation[]>([]);
+  const [directSnapshots, setDirects] = useState<DirectConversation[]>(initialDirects ?? []);
   const directs = directSnapshots.map((conversation) => ({
     ...conversation,
     peer: withLatestProfile(conversation.peer, account, profiles),
   }));
-  const [directsLoading, setDirectsLoading] = useState(true);
+  const [directsLoading, setDirectsLoading] = useState(!initialDirects);
   const [directError, setDirectError] = useState<string>();
   const [selfDirectPending, setSelfDirectPending] = useState(false);
   const [requestsOpen, setRequestsOpen] = useState<boolean>();
@@ -2429,7 +2431,7 @@ export default function Spaces({
         if (![...result.spaces, ...(result.invitations ?? [])].some((space) => space.id === selected.spaceId))
           choose(result.spaces[0]?.id, undefined, true, selected.dmId, selected.visit);
         try {
-          const conversations = (await listDirectConversations()).conversations;
+          const conversations = initialDirects ?? (await listDirectConversations()).conversations;
           if (current) setDirects(conversations);
         } catch (reason) {
           if (current) setDirectError(errorMessage(reason));

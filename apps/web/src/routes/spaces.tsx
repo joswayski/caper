@@ -1,7 +1,7 @@
 import { createFileRoute, redirect, useLocation } from "@tanstack/react-router";
 import { getAccount } from "../account/client";
 import Spaces from "../spaces/Spaces";
-import { listSpaces } from "../spaces/client";
+import { listDirectConversations, listSpaces, type DirectConversation } from "../spaces/client";
 import { prepareSpaceLanding } from "../spaces/navigation";
 import SpacesLoading from "../spaces/SpacesLoading";
 
@@ -22,11 +22,18 @@ export const Route = createFileRoute("/spaces")({
       const account = await getAccount();
       if (!account) throw redirect({ to: "/login", replace: true });
       if (!account.username || !account.displayName) throw redirect({ to: "/profile", replace: true });
+      // Read DMs beside the landing conversation so the sidebar arrives whole,
+      // but never hold the conversation for them: Spaces fetches a late list itself.
+      let initialDirects: DirectConversation[] | undefined;
+      void listDirectConversations().then(
+        (result) => (initialDirects = result.conversations),
+        () => undefined,
+      );
       const initialSpaceList = await listSpaces().catch(() => undefined);
       const landing = initialSpaceList
         ? await prepareSpaceLanding(account.id, initialSpaceList.spaces, new URLSearchParams(location.searchStr))
         : undefined;
-      return { initialAccount: account, initialSpaceList, ...landing, entrySearch: location.searchStr };
+      return { initialAccount: account, initialSpaceList, initialDirects, ...landing, entrySearch: location.searchStr };
     },
   },
   component: SpacesPage,
@@ -40,7 +47,11 @@ function SpacesPage() {
     <Spaces
       {...(entrySearch === search
         ? initial
-        : { initialAccount: initial.initialAccount, initialSpaceList: initial.initialSpaceList })}
+        : {
+            initialAccount: initial.initialAccount,
+            initialSpaceList: initial.initialSpaceList,
+            initialDirects: initial.initialDirects,
+          })}
     />
   );
 }

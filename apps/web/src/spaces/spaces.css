@@ -211,6 +211,17 @@
   flex: 1;
   height: 40px;
 }
+.spaces-loading-members {
+  display: grid;
+  align-content: start;
+  gap: 30px;
+  padding: 56px 16px;
+}
+@media (max-width: 1099px) {
+  .spaces-loading > .spaces-loading-members {
+    display: none;
+  }
+}
 .demo-space-title {
   flex: 1;
   min-height: 38px;

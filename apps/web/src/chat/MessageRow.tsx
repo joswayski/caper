@@ -482,6 +482,8 @@ function MessageRowView({
                 className="chat-thread-context"
                 onMouseEnter={() => actions.prefetchThread(message.threadRootId!)}
                 onFocus={() => actions.prefetchThread(message.threadRootId!)}
+                // Touch has no hover: start reading the thread as the finger lands.
+                onPointerDown={() => actions.prefetchThread(message.threadRootId!)}
                 onClick={() => actions.openThread(message.threadRootId!)}
               >
                 Replied to a thread · View thread
@@ -630,6 +632,7 @@ function MessageRowView({
                     onMouseEnter={() => actions.prefetchThread(message.id)}
                     onFocus={() => actions.prefetchThread(message.id)}
                     onPointerDown={(event) => {
+                      actions.prefetchThread(message.id);
                       if (event.pointerType === "mouse" || !event.isPrimary || event.button !== 0) return;
                       event.currentTarget.dataset.pressing = "true";
                       event.currentTarget.setPointerCapture(event.pointerId);
