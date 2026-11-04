@@ -1299,15 +1299,17 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
         else if (state.presenceLoading) Text("Loading members…", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
         else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
             @Composable fun MemberRow(member: Member, quiet: Boolean, ring: Color) {
+                val offline = state.presence[member.id] == "offline"
+                val opacity = if (offline) 0.6f else 1f
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                     .clickable(role = Role.Button, onClickLabel = "Open profile for ${member.displayName}") { profile = mentionCard(member.id, member.username, state) }
                     .padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box {
+                    Box(Modifier.alpha(opacity)) {
                         Avatar(member.displayName, 30.dp, avatarId = member.avatarId, avatarAsset = member.avatarAsset, avatarUrl = member.avatarUrl)
                         PresenceDot(state.presence[member.id], state.presenceLive, ring, Modifier.align(Alignment.BottomEnd))
                     }
                     Spacer(Modifier.width(10.dp))
-                    Text(member.displayName, color = if (quiet) TextMuted else Text, fontSize = 12.sp,
+                    Text(member.displayName, modifier = Modifier.alpha(opacity), color = if (quiet && !offline) TextMuted else Text, fontSize = 12.sp,
                         fontWeight = if (quiet) FontWeight.Medium else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }

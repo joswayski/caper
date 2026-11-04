@@ -1314,10 +1314,17 @@ html:has(.sidebar-sections-resize:active) * {
 .member-presence-group + .member-presence-group {
   margin-top: 12px;
 }
-.member-group-others .member-profile-trigger strong,
-.member-offline .member-profile-trigger strong {
+.member-group-others .member-profile-trigger strong {
   color: var(--text-muted);
   font-weight: 500;
+}
+.member-offline .member-profile-trigger strong {
+  color: var(--text);
+  font-weight: 500;
+}
+/* Fade the content, not the button's hover surface or keyboard focus ring. */
+.member-offline .member-profile-trigger > * {
+  opacity: 0.6;
 }
 .member-presence-connecting {
   padding: 0 8px;

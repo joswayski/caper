@@ -3219,6 +3219,7 @@ private struct MemberPresenceView: View {
     @ViewBuilder private func memberRow(_ listed: Member, quiet: Bool, ring: Color) -> some View {
         // Rows show live profile updates and your latest saved name and picture.
         let member = model.profiled(listed)
+        let offline = presence.status(for: member) == .offline
         Button {
             // Swiping the phone panel closed lifts on the row it started on.
             guard !SwipeTapGuard.swiping else { return }
@@ -3231,9 +3232,10 @@ private struct MemberPresenceView: View {
                         .overlay(Circle().stroke(ring, lineWidth: 2))
                 }
                 Text(member.displayName).font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
-                    .foregroundStyle(quiet ? CaperTheme.muted : CaperTheme.text)
+                    .foregroundStyle(quiet && !offline ? CaperTheme.muted : CaperTheme.text)
                 Spacer(minLength: 0)
             }.frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+                .opacity(offline ? 0.6 : 1)
         }.buttonStyle(ProfileButtonStyle())
             .accessibilityLabel("Open profile for \(member.displayName)")
             #if os(macOS)

@@ -16218,6 +16218,9 @@ impl CaperApp {
                 }
                 let tint = ui.painter().add(egui::Shape::Noop);
                 let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    if index == 1 {
+                        ui.multiply_opacity(0.6);
+                    }
                     ui.set_min_width(ui.available_width());
                     ui.spacing_mut().item_spacing.x = 10.0;
                     ui.add_space(16.0);
@@ -16227,7 +16230,7 @@ impl CaperApp {
                         .map_or("unknown", String::as_str);
                     presence_avatar_on(ui, &member.display_name, member.avatar_id, member.picture(), 30.0, status, ring);
                     if quiet || index == 1 {
-                        emoji::name_label(ui, RichText::new(&member.display_name).size(12.0).color(MUTED), egui::Sense::hover());
+                        emoji::name_label(ui, RichText::new(&member.display_name).size(12.0).color(if index == 1 { TEXT } else { MUTED }), egui::Sense::hover());
                     } else {
                         emoji::name_label(ui, bold(&member.display_name).size(12.0), egui::Sense::hover());
                     }
