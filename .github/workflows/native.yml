@@ -127,13 +127,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
+          # Hosted Apple-silicon fallback: the Xcode 27 image matches the
+          # self-hosted Mac (macOS 27, Xcode 27.1) the parity suites are written
+          # against; macos-15 lays out differently and stopped acquiring jobs.
+          - os: xcode-27
             platform: macos
             target: macos-arm64
           - os: macos-15-intel
             platform: macos
             target: macos-x64
-          - os: macos-15
+          - os: xcode-27
             platform: ios
             target: ios-simulator-arm64
     # On the self-hosted Mac the macOS UI tests (josemac-ui) and the iOS
@@ -258,6 +261,18 @@ jobs:
     runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
+      # The emulator system image no longer fits beside the build on a stock
+      # hosted runner ("No space left on device"); drop toolchains Caper never uses.
+      - name: Free disk space on the GitHub runner
+        if: runner.environment != 'self-hosted'
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/share/boost \
+            /usr/local/share/powershell /usr/local/share/chromium /usr/local/.ghcup /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go /opt/hostedtoolcache/Ruby \
+            /opt/hostedtoolcache/PyPy /usr/share/swift /opt/microsoft /opt/google/chrome
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
