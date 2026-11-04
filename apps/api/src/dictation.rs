@@ -27,15 +27,16 @@ const MAX_TEXT_CHARS: usize = 4_000;
 
 /// Its own body limit: the app's 256 KiB is far too small for audio. Merge
 /// after the app-wide limit so that limit doesn't wrap this route as well.
+/// Route layers only, so unmatched paths keep falling through to 404.
 pub(crate) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/api/dictation", post(dictate))
-        .layer(axum::middleware::from_fn_with_state(
+        .route_layer(axum::middleware::from_fn_with_state(
             state,
             crate::account_auth,
         ))
-        .layer(DefaultBodyLimit::disable())
-        .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
+        .route_layer(DefaultBodyLimit::disable())
+        .route_layer(RequestBodyLimitLayer::new(BODY_LIMIT))
 }
 
 async fn dictate(
@@ -170,9 +171,16 @@ mod tests {
         assert_eq!(body["error"], "dictation unavailable");
         let (status, _) = send(state.clone(), "/api/dictation", vec![0; BODY_LIMIT + 1]).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
-        // Other routes keep the small limit.
-        let (status, _) = send(state, "/api/account/profile", vec![b' '; 300 * 1024]).await;
+        // Other routes keep the small limit, and unknown paths stay 404.
+        let (status, _) = send(
+            state.clone(),
+            "/api/account/profile",
+            vec![b' '; 300 * 1024],
+        )
+        .await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        let (status, _) = send(state, "/api/chat/general", Vec::new()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
