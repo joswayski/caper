@@ -126,7 +126,11 @@ just that player in the card.
   **Open in browser**. YouTube on Linux also needs GStreamer's
   `gstreamer1.0-libav` and `gstreamer1.0-plugins-bad` (the `.deb` recommends
   them). Clicks in the video go to the web view; on X11 keyboard focus follows
-  the window manager.
+  the window manager. Sending a channel message carries the composer's shown
+  card onto the pending and confirmed row until the server's `message.embeds`
+  replaces or removes it, so the row does not jump. Cards present when a row is
+  first drawn appear in place; ones that arrive while it is shown fade in
+  (opacity only, 140 ms; none with Reduce Motion).
 - Voice messages (`voice_note.rs`) in channel, DM and thread composers and the
   profile card, wherever files can be attached. A click on the microphone
   beside Emoji starts hands-free recording: the input row becomes a recording

@@ -498,6 +498,10 @@ struct PendingSend {
     share: Option<klipy::Share>,
     /// The composer's link preview was removed; retries keep it.
     suppress_embeds: bool,
+    /// The composer's loaded preview card (web `PendingChatMessage.embeds`),
+    /// drawn on the pending row and kept by the confirmed message until the
+    /// server's own `message.embeds` arrive. Never set with `suppress_embeds`.
+    embeds: Vec<model::Embed>,
 }
 
 impl PendingSend {
@@ -517,6 +521,7 @@ impl PendingSend {
                 gif: None,
                 share: None,
                 suppress_embeds: false,
+                embeds: Vec::new(),
             },
             |pending| Self {
                 id: pending.id.clone(),
@@ -532,8 +537,21 @@ impl PendingSend {
                 gif: pending.gif.clone(),
                 share: pending.share.clone(),
                 suppress_embeds: pending.suppress_embeds,
+                embeds: pending.embeds.clone(),
             },
         )
+    }
+
+    /// The confirmed message keeps the card the sender already saw while the
+    /// server unfurls its own (web `withEmbeds` on confirm); its
+    /// `message.embeds` event replaces it, or removes it when it has none.
+    fn carry_embeds(&self, message: &mut model::Message) {
+        if message.content.embeds.is_empty()
+            && !message.content.suppress_embeds
+            && !message.is_deleted()
+        {
+            message.content.embeds = self.embeds.clone();
+        }
     }
 
     fn confirmed_by(&self, message: &model::Message, author: &str) -> bool {
@@ -1202,6 +1220,9 @@ struct CaperApp {
     history_viewport: f32,
     history_at_end: bool,
     history_offset: Option<f32>,
+    /// How much the redone pass's main composer panel grows (shrinks)
+    /// because this pass's panel reused its last height.
+    composer_shift: f32,
     /// Lays out only the history rows near the viewport (see `virtual_list`).
     history_list: virtual_list::VirtualList,
     /// The history scroll area, to read its offset before the next pass.
@@ -1614,6 +1635,7 @@ impl CaperApp {
             history_viewport: 0.0,
             history_at_end: true,
             history_offset: None,
+            composer_shift: 0.0,
             history_list: virtual_list::VirtualList::default(),
             history_area: None,
             history_dates: DisplayDates::default(),
@@ -7684,7 +7706,7 @@ impl CaperApp {
             GatewayEvent::Message {
                 generation,
                 channel,
-                message,
+                mut message,
             } if current(
                 generation,
                 self.generation,
@@ -7702,7 +7724,9 @@ impl CaperApp {
                         .is_some_and(|session| pending.confirmed_by(&message, &session.author.id))
                 });
                 if confirmed {
-                    self.pending = None;
+                    if let Some(pending) = self.pending.take() {
+                        pending.carry_embeds(&mut message);
+                    }
                     self.release_pending_files();
                     self.error = None;
                     if self.visiting().is_some() {
@@ -7796,7 +7820,24 @@ impl CaperApp {
             ) =>
             {
                 let message = update.message_id.clone();
-                let cards = !update.embeds.is_empty();
+                // Only new cards fade in: the server's copy of the card a send
+                // carried from its composer stays in place.
+                let shown: Vec<String> = self
+                    .timeline
+                    .messages()
+                    .find(|item| item.id == message)
+                    .map(|item| {
+                        item.content
+                            .embeds
+                            .iter()
+                            .map(|embed| embed.url.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let cards = update
+                    .embeds
+                    .iter()
+                    .any(|embed| !shown.contains(&embed.url));
                 // Cards arriving now settle in; ones loaded with history appear in place.
                 if self.timeline.apply_embeds(*update) && cards {
                     if self.embed_arrivals.len() >= 64 {
@@ -7958,7 +7999,7 @@ impl CaperApp {
 
     fn sent(&mut self, result: Result<model::Message, worker::SendFailure>) {
         match result {
-            Ok(message) => {
+            Ok(mut message) => {
                 let root = message.thread_root_id.clone();
                 let confirmed = self.selected_channel.as_deref() == Some(&message.channel_id)
                     && self.pending.as_ref().is_some_and(|pending| {
@@ -7966,6 +8007,9 @@ impl CaperApp {
                             pending.confirmed_by(&message, &session.author.id)
                         })
                     });
+                if confirmed && let Some(pending) = &self.pending {
+                    pending.carry_embeds(&mut message);
+                }
                 if confirmed && self.timeline.merge_sent(message).is_ok() {
                     // Best effort, once KLIPY's GIF is really sent.
                     if let Some(share) = self.pending.take().and_then(|pending| pending.share) {
@@ -8540,6 +8584,10 @@ impl CaperApp {
                 .reply_targets
                 .remove(root.as_deref().unwrap_or("channel"));
             pending.suppress_embeds = root.is_none() && self.link_preview.removed(&text);
+            // The card already shown for this draft rides on the pending row.
+            if root.is_none() && !pending.suppress_embeds && self.draft == text {
+                pending.embeds = self.link_preview.card().cloned().into_iter().collect();
+            }
         }
         let id = pending.id.clone();
         let attachment_ids: Vec<String> = pending
@@ -17041,8 +17089,12 @@ impl CaperApp {
                 let first_line = galley.rows.first().map_or(galley.size().y, |row| row.height());
                 (((28.0 - first_line) / 2.0).max(0.0) + galley.size().y).max(28.0) + 6.0
             });
+            let reserved = voice_error_row + if joined { editor_height + 28.0 + session_row + chip_rows * 56.0 + voice_rows } else { 44.0 };
+            // The height this pass's panel gets, before its content is drawn.
+            let lagged = egui::containers::panel::PanelState::load(ui.ctx(), egui::Id::new("composer")).map(|state| state.rect.height());
+            let available = ui.available_rect_before_wrap().height();
             let composer = egui::TopBottomPanel::bottom("composer")
-                .min_height(voice_error_row + if joined { editor_height + 28.0 + session_row + chip_rows * 56.0 + voice_rows } else { 44.0 })
+                .min_height(reserved)
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
@@ -17331,6 +17383,17 @@ impl CaperApp {
                     }
                 });
             self.navigation_swipe_bottom = composer.response.rect.top();
+            // The panel reuses its last height, so content the reservation
+            // above cannot know (the link preview card appearing or going)
+            // lands a pass late. Redo the pass at the new height, carrying
+            // a conversation that showed its newest message along with it.
+            let height = composer.response.rect.height();
+            let change = lagged.map_or(0.0, |lagged| height - lagged.max(reserved).min(available));
+            // A window too short for the composer always overflows; that is no lag.
+            self.composer_shift = if change.abs() > 0.5 && height <= available { change } else { 0.0 };
+            if self.composer_shift != 0.0 {
+                ui.ctx().request_discard("fit the composer");
+            }
             // Web's arrivals: the rows below, with the pending send last.
             let pending = self.pending.as_ref().filter(|pending| pending.thread_root_id.is_none());
             self.arrivals.observe(
@@ -17554,6 +17617,8 @@ impl CaperApp {
                         if let Some(gif) = &pending.gif {
                             self.message_gif(ui, gif, 62);
                         }
+                            // The composer's card, until the confirmed message takes over.
+                            self.message_embeds(ui, &pending.id, &pending.embeds, Color32::TRANSPARENT);
                             if let Some(rejection) = &pending.rejection {
                                 egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
                                     ui.colored_label(ERROR, format!("Not sent. {rejection}"));
@@ -17723,6 +17788,17 @@ impl CaperApp {
                     || (viewport - self.history_viewport).abs() > 0.5)
             {
                 ui.ctx().request_discard("keep the newest message in place");
+            }
+            // The redone pass's viewport changes by the composer's shift:
+            // start it at its newest message rather than a frame late.
+            // Short conversations are bottom-aligned above instead.
+            let shift = std::mem::take(&mut self.composer_shift);
+            if shift != 0.0
+                && self.history_at_end
+                && height > viewport + 0.5
+                && self.history_offset.is_none()
+            {
+                self.history_offset = Some((height - viewport + shift).max(0.0));
             }
             self.history_at_end = at_end;
             self.history_viewport = viewport;
@@ -18467,36 +18543,8 @@ impl CaperApp {
             });
         }
         // Link previews follow the files, on the same fill.
-        if !deleted && !message.content.embeds.is_empty() {
-            let arrival = self.embed_arrival(ui.ctx(), &message.id);
-            let shown = egui::Frame::new()
-                .fill(fill)
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin {
-                            left: 62,
-                            right: 18,
-                            top: 2,
-                            bottom: 6,
-                        })
-                        .show(ui, |ui| {
-                            embeds::cards(
-                                ui,
-                                &mut self.media,
-                                &mut self.web_player,
-                                &message.id,
-                                &message.content.embeds,
-                                arrival,
-                            )
-                        })
-                        .inner
-                })
-                .inner;
-            ui.data_mut(|data| {
-                data.insert_temp(egui::Id::new(("embed-hovered", &message.id)), shown.hovered)
-            });
-            self.embed_action(ui.ctx(), shown.action);
+        if !deleted {
+            self.message_embeds(ui, &message.id, &message.content.embeds, fill);
         }
         if let Some(forward) = message.forward.as_ref().filter(|_| !deleted) {
             egui::Frame::new()
@@ -19450,12 +19498,56 @@ impl CaperApp {
         }
     }
 
+    /// A message's link preview cards under its files, on the row's `fill`.
+    /// Pending rows draw the composer card they carry the same way, so the
+    /// row already has its final height.
+    fn message_embeds(
+        &mut self,
+        ui: &mut egui::Ui,
+        message: &str,
+        cards: &[model::Embed],
+        fill: Color32,
+    ) {
+        if cards.is_empty() {
+            return;
+        }
+        let arrival = self.embed_arrival(ui.ctx(), message);
+        let shown = egui::Frame::new()
+            .fill(fill)
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 62,
+                        right: 18,
+                        top: 2,
+                        bottom: 6,
+                    })
+                    .show(ui, |ui| {
+                        embeds::cards(
+                            ui,
+                            &mut self.media,
+                            &mut self.web_player,
+                            message,
+                            cards,
+                            arrival,
+                        )
+                    })
+                    .inner
+            })
+            .inner;
+        ui.data_mut(|data| {
+            data.insert_temp(egui::Id::new(("embed-hovered", message)), shown.hovered)
+        });
+        self.embed_action(ui.ctx(), shown.action);
+    }
+
     /// Files under a message by processing status: inline images and video
     /// posters (opening the system browser or player), processing
     /// placeholders with the worker's progress, failures, and cards for audio
     /// and other files.
     /// Entrance progress of a message's link previews: cards that arrived
-    /// live settle in when first drawn soon after; others are in place.
+    /// live fade in when first drawn soon after; others are in place.
     fn embed_arrival(&mut self, context: &egui::Context, message: &str) -> f32 {
         let id = egui::Id::new(("embed-arrival", message));
         if let Some(at) = self.embed_arrivals.remove(message)
@@ -19467,7 +19559,7 @@ impl CaperApp {
         let Some(start) = context.data(|data| data.get_temp::<f64>(id)) else {
             return 1.0;
         };
-        let progress = motion::progress(context, start, motion::BASE);
+        let progress = motion::progress(context, start, motion::FAST);
         if progress >= 1.0 {
             context.data_mut(|data| data.remove::<f64>(id));
         }
@@ -52022,6 +52114,7 @@ mod tests {
         app.send_message();
         let pending = app.pending.as_ref().expect("sending");
         assert!(pending.suppress_embeds);
+        assert!(pending.embeds.is_empty(), "a removed card is not carried");
         let retry = PendingSend::prepare(Some(pending), "edited", Vec::new());
         assert!(retry.suppress_embeds, "a retry resends the same body");
         // The cleared draft starts over: the next message gets previews.
@@ -52031,6 +52124,203 @@ mod tests {
                 .removed("look https://youtu.be/dQw4w9WgXcQ")
         );
         assert!(!PendingSend::prepare(None, "next", Vec::new()).suppress_embeds);
+    }
+
+    /// A draft whose composer shows the YouTube card.
+    fn composer_card(app: &mut CaperApp, draft: &str) {
+        app.session = Some(session());
+        app.token = Some("fixture-token".into());
+        app.draft = draft.into();
+        let start = Instant::now();
+        app.link_preview.due(draft, true, start);
+        let (asked, _) = app
+            .link_preview
+            .due(draft, true, start + crate::embeds::PREVIEW_DEBOUNCE);
+        app.link_preview
+            .answer(asked.unwrap(), model::Embed::parse(&youtube_card()));
+    }
+
+    /// The server's copy of `pending`, as HTTP or the gateway confirm it.
+    fn confirmation(app: &CaperApp, pending: &PendingSend) -> Message {
+        let mut message = app.timeline.messages().last().unwrap().clone();
+        message.id = "sent-message".into();
+        message.seq = (app.timeline.cursor().parse::<u64>().unwrap() + 1).to_string();
+        message.client_message_id = pending.id.clone();
+        message.author = session().author;
+        message.content.text = pending.text.clone();
+        message.content.embeds = Vec::new();
+        message.content.attachments = Vec::new();
+        message.content.gif = None;
+        message.reply_to = None;
+        message.thread_root_id = None;
+        message.broadcast = false;
+        message.revision = 1;
+        message
+    }
+
+    #[test]
+    fn a_sent_composer_card_stays_until_the_servers_embeds_replace_or_remove_it() {
+        let (context, mut app) = fixture("parity-desktop");
+        let channel = app.selected_channel.clone().unwrap();
+        composer_card(&mut app, "look https://youtu.be/dQw4w9WgXcQ");
+        render(&mut app, &context, vec![]);
+        app.send_message();
+        let pending = app.pending.clone().expect("sending");
+        assert_eq!(pending.embeds.len(), 1, "the shown card rides on the send");
+        assert_eq!(pending.embeds[0].url, "https://youtu.be/dQw4w9WgXcQ");
+        assert_eq!(
+            PendingSend::prepare(Some(&pending), "edited", Vec::new()).embeds,
+            pending.embeds,
+            "a retry keeps it"
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            texts(&output).contains(&"Never Gonna Give You Up"),
+            "the pending row draws the card"
+        );
+        assert!(
+            app.link_preview.card().is_none(),
+            "the composer's card went"
+        );
+
+        let server = confirmation(&app, &pending);
+        app.sent(Ok(server.clone()));
+        assert!(app.pending.is_none());
+        let cards = |app: &CaperApp| {
+            app.timeline
+                .messages()
+                .find(|item| item.id == "sent-message")
+                .unwrap()
+                .content
+                .embeds
+                .clone()
+        };
+        assert_eq!(cards(&app), pending.embeds, "the confirmed row keeps it");
+        // A replay or page read before the server stored its cards keeps them.
+        app.timeline.merge_sent(server.clone()).unwrap();
+        assert_eq!(cards(&app), pending.embeds);
+        let update = |embeds: serde_json::Value| {
+            Box::new(
+                model::EmbedsUpdate::parse(&serde_json::json!({
+                    "type": "message.embeds", "schemaVersion": 1, "channelId": channel,
+                    "messageId": "sent-message", "revision": 1, "embeds": embeds
+                }))
+                .unwrap(),
+            )
+        };
+        // The server's identical card takes over in place, without a fade.
+        app.gateway(GatewayEvent::Embeds {
+            generation: app.generation,
+            channel: channel.clone(),
+            update: update(serde_json::json!([youtube_card()])),
+        });
+        assert_eq!(cards(&app), pending.embeds);
+        assert!(
+            app.embed_arrivals.is_empty(),
+            "nothing replays its entrance"
+        );
+        let mut other = youtube_card();
+        other["url"] = "https://youtu.be/other".into();
+        app.gateway(GatewayEvent::Embeds {
+            generation: app.generation,
+            channel: channel.clone(),
+            update: update(serde_json::json!([other])),
+        });
+        assert_eq!(cards(&app)[0].url, "https://youtu.be/other", "replaced");
+        assert!(
+            app.embed_arrivals.contains_key("sent-message"),
+            "a new card fades in"
+        );
+        app.gateway(GatewayEvent::Embeds {
+            generation: app.generation,
+            channel: channel.clone(),
+            update: update(serde_json::json!([])),
+        });
+        assert!(cards(&app).is_empty(), "an empty event removes it");
+    }
+
+    #[test]
+    fn a_gateway_confirmation_keeps_the_card_but_never_for_suppressed_or_carded_messages() {
+        let (context, mut app) = fixture("parity-desktop");
+        let channel = app.selected_channel.clone().unwrap();
+        composer_card(&mut app, "look https://youtu.be/dQw4w9WgXcQ");
+        render(&mut app, &context, vec![]);
+        app.send_message();
+        let pending = app.pending.clone().expect("sending");
+        let server = confirmation(&app, &pending);
+        app.gateway(GatewayEvent::Message {
+            generation: app.generation,
+            channel,
+            message: Box::new(server.clone()),
+        });
+        assert!(app.pending.is_none(), "the delivery confirms the send");
+        let stored = app
+            .timeline
+            .messages()
+            .find(|item| item.id == "sent-message")
+            .unwrap();
+        assert_eq!(stored.content.embeds, pending.embeds);
+
+        let mut suppressed = server.clone();
+        suppressed.content.suppress_embeds = true;
+        pending.carry_embeds(&mut suppressed);
+        assert!(suppressed.content.embeds.is_empty());
+        let mut carded = server;
+        let mut own = youtube_card();
+        own["url"] = "https://youtu.be/server".into();
+        carded.content.embeds = vec![model::Embed::parse(&own).unwrap()];
+        pending.carry_embeds(&mut carded);
+        assert_eq!(carded.content.embeds[0].url, "https://youtu.be/server");
+    }
+
+    #[test]
+    fn the_composer_card_never_hides_the_newest_message() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 1..=40);
+        app.session = Some(session());
+        app.token = Some("fixture-token".into());
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        // The bottom of `label`'s text and of the history viewport it is drawn in.
+        let bottom = |output: &egui::FullOutput, label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => {
+                        Some((text.pos.y + text.galley.size().y, shape.clip_rect.bottom()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{label} is drawn"))
+        };
+        let newest = "Scroll fixture message 40";
+        let (resting, _) = bottom(&render(&mut app, &context, vec![]), newest);
+        composer_card(&mut app, "look https://youtu.be/dQw4w9WgXcQ");
+        let shown = render(&mut app, &context, vec![]);
+        let (text, viewport) = bottom(&shown, newest);
+        assert!(
+            text < resting - 60.0,
+            "the newest message rose: {text} vs {resting}"
+        );
+        assert!(
+            text <= viewport + 0.5,
+            "and stays in view: {text} vs {viewport}"
+        );
+        let (card, _) = bottom(&shown, "Never Gonna Give You Up");
+        assert!(viewport < card, "above the composer's card");
+        app.send_message();
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let sent = render(&mut app, &context, vec![]);
+        let (card, viewport) = bottom(&sent, "Never Gonna Give You Up");
+        assert!(
+            card <= viewport + 0.5,
+            "the pending row's card is in view: {card} vs {viewport}"
+        );
     }
 
     #[test]

@@ -248,7 +248,8 @@ pub fn cards(
     if embeds.is_empty() {
         return shown;
     }
-    motion::arrive(ui, arrival, egui::vec2(0.0, 4.0), |ui| {
+    // Opacity only, as on web: the card fades in where it lands.
+    motion::arrive(ui, arrival, egui::Vec2::ZERO, |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 6.0);
         // Rows hug their text rather than the app's 36px control height.
         ui.spacing_mut().interact_size.y = 20.0;
