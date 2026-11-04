@@ -16,8 +16,13 @@ private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         if Self.deferred?(self, request) == true { return }
+        // A previous test's background task can still send after tearDown; fail it
+        // rather than crash the whole bundle on the cleared handler.
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.cancelled)); return
+        }
         do {
-            let (status, data) = try Self.handler(request)
+            let (status, data) = try handler(request)
             respond(status: status, data: data)
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
