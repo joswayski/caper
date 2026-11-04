@@ -225,13 +225,14 @@ jobs:
           fi
           sleep 3
           system_profiler SPDisplaysDataType
-      - name: Clear macOS notices off the self-hosted VM's screen
+      - name: Clear macOS notices off the screen
         # Starting the runner's launchd service posts an "App Background Activity"
         # notice that sits over the top-right of the screen, where UI tests click
         # dialog close buttons, and clicking it opens System Settings. Privacy
         # alerts such as "Allow Python to find devices on local networks?" (from
-        # the build's Python steps) sit over the app window until answered.
-        if: runner.environment == 'self-hosted' && matrix.platform == 'macos'
+        # the build's Python steps) sit over the app window until answered and
+        # keep keyboard focus from it; hosted macOS 27 runners show that one too.
+        if: matrix.platform == 'macos'
         run: |
           osascript -e 'quit app "System Settings"' 2>/dev/null || true
           killall NotificationCenter UserNotificationCenter 2>/dev/null || true

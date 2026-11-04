@@ -144,7 +144,8 @@ class ReactionUiTest {
         compose.onNodeWithContentDescription("👍 reaction, 2").assertIsEnabled()
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
         compose.onNodeWithContentDescription("React with 👍").assertIsEnabled()
-        compose.onNodeWithContentDescription("Add reaction").assertIsEnabled()
+        // The sheet's picker button and the row's shortcut beside the chips.
+        compose.onAllNodesWithContentDescription("Add reaction").assertCountEquals(2).assertAll(isEnabled())
         compose.onNodeWithText("Copy text").assertIsEnabled()
         // The sheet holds window focus; Espresso.pressBack targets the unfocused activity root.
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
