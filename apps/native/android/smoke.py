@@ -289,6 +289,22 @@ def capture(name: str, expected: str, seconds: int = 20) -> ET.Element:
     return root
 
 
+def reveal(text: str, *, anchor: str) -> ET.Element:
+    """Scroll the scrollable container around `anchor` (a tall dialog) until `text` is on screen."""
+    root = hierarchy()
+    marker = find(root, text=anchor)
+    assert marker is not None, f"Missing {anchor!r}"
+    container = next(node for node in nodes(root) if node.get("scrollable") == "true" and within(marker, node))
+    left, top, right, bottom = bounds(container)
+    x = str((left + right) // 2)
+    for _ in range(4):
+        if find(root, text=text) is not None:
+            return root
+        adb("shell", "input", "swipe", x, str(top + (bottom - top) * 3 // 4), x, str(top + (bottom - top) // 4), "400")
+        root = hierarchy()
+    raise AssertionError(f"{text!r} never scrolled into view")
+
+
 def viewport(width_dp: int, height_dp: int) -> None:
     # DPR 2, matching the supplied Chromium references.
     adb("shell", "wm", "size", f"{width_dp * 2}x{height_dp * 2}")
@@ -528,9 +544,7 @@ def main() -> None:
         "Speaker volume",
         "Voice enhancement",
         "Test speakers",
-        "Test microphone",
         "Try your microphone",
-        "Input level",
     ):
         assert find(audio, text=label) is not None, f"Missing audio test copy: {label}"
     for removed in (
@@ -544,9 +558,9 @@ def main() -> None:
         "Mic Test",
     ):
         assert find(audio, contains=removed) is None, f"Unexpected explanatory copy: {removed}"
-    assert find(audio, text="Choose speakers in system settings.") is not None, (
-        "Do not show a routing section without routes"
-    )
+    # Compact pickers (#725): the current device beside each volume, never an expanded route list.
+    for label in ("Microphone", "Audio output", "Microphone follows the communication route."):
+        assert find(audio, text=label) is not None, f"Missing compact device picker copy: {label}"
     assert find(audio, text="Connection details") is None
     assert find(audio, text="25%") is not None
     output = find(audio, description="Test speaker volume")
@@ -565,11 +579,14 @@ def main() -> None:
         "500",
     )
     wait_for(text="0%")
+    # The microphone test sits below the fold of the tall dialog.
+    lower = reveal("Test microphone", anchor="Only you can hear these tests.")
+    assert find(lower, text="Input level") is not None, "Missing audio test copy: Input level"
     tap(description="Close")
     tap(description="User Settings")
     tap(text="Audio test")
-    zero = capture("caper-android-audio-prejoin-zero-output", "0%")
-    assert find(zero, text="Test microphone") is not None
+    capture("caper-android-audio-prejoin-zero-output", "0%")
+    reveal("Test microphone", anchor="Only you can hear these tests.")
     tap(description="Close")
 
     tap(description="Edit profile for Fixture Owner")
