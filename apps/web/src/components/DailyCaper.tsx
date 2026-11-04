@@ -1,8 +1,8 @@
 import { useContext } from "react";
-import { DailyIconContext } from "./RotatingFavicon";
+import { DailyIconContext } from "./DailyIconProvider";
 import { dailyIconUrl } from "./daily-icon";
 
-/** Today's Caper character as a decorative illustration, matching the browser tab. */
+/** Today's Caper character as a decorative illustration. */
 export default function DailyCaper({ className }: { className?: string }) {
   const index = useContext(DailyIconContext);
   return (

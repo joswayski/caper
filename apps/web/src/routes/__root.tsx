@@ -1,6 +1,6 @@
 import { HeadContent, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import RotatingFavicon from "../components/RotatingFavicon";
+import DailyIconProvider from "../components/DailyIconProvider";
 import StatusPage from "../components/StatusPage";
 import { sidebarWidthScript } from "../pages/ChannelSidebar";
 import "../index.css";
@@ -107,7 +107,7 @@ function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
         <script dangerouslySetInnerHTML={{ __html: sidebarWidthScript }} />
       </head>
       <body>
-        <RotatingFavicon>{children}</RotatingFavicon>
+        <DailyIconProvider>{children}</DailyIconProvider>
         <Scripts />
       </body>
     </html>
