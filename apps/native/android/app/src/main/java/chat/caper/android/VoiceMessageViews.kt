@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -88,6 +89,8 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -105,7 +108,6 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -135,7 +137,6 @@ import chat.caper.android.voice.VoiceState
 import chat.caper.android.voice.startWithFallback
 import java.io.File
 import java.util.UUID
-import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -599,18 +600,23 @@ private class VoiceNoteRecorder(private val context: Context) {
 }
 
 /**
- * The composer's recording: held (release stops, slide left cancels) or hands-free after a tap
- * (Stop or discard in the bar), its timer and live meter, and the hint or error under the field.
- * Stopping hands the recording to [onRecorded], which stages or sends it.
+ * The composer's recording: held (release stops, slide up locks) or hands-free after a tap or a
+ * lock (Stop or discard in the bar), its timer and live meter, and the hint or error under the
+ * field. Stopping hands the recording to [onRecorded], which stages or sends it.
  */
 @Stable internal class VoiceRecorderState(context: Context, private val view: View) {
     private val recorder = VoiceNoteRecorder(context)
     private val live = LiveLevels()
     var recording by mutableStateOf(false)
         private set
-    /** Started by a tap: the bar offers Stop and discard instead of release and slide. */
+    /** Started by a tap or locked: the bar offers Stop and discard; releasing does nothing. */
     var handsFree by mutableStateOf(false)
         private set
+    /** A finger has held the mic past a tap's length: the release hint and the lock show. */
+    var holding by mutableStateOf(false)
+        private set
+    /** When the finger holding the mic went down (`SystemClock.uptimeMillis`), or null. */
+    var pressedAt: Long? = null
     var elapsedMs by mutableLongStateOf(0L)
         private set
     /** The live bars, oldest first, and when the newest arrived (`SystemClock.elapsedRealtime`). */
@@ -618,8 +624,11 @@ private class VoiceNoteRecorder(private val context: Context) {
         private set
     var lastBarAt by mutableLongStateOf(0L)
         private set
-    /** How far a hold has slid left (negative px); the bar follows it. */
-    var slide by mutableFloatStateOf(0f)
+    /** The bar still forming, drawn at the right edge so speech shows at once. */
+    var pending by mutableFloatStateOf(0f)
+        private set
+    /** How far a hold has slid up (negative px); the lock follows it. */
+    var lift by mutableFloatStateOf(0f)
     var notice by mutableStateOf<String?>(null)
         private set
     var noticeIsError by mutableStateOf(false)
@@ -641,8 +650,9 @@ private class VoiceNoteRecorder(private val context: Context) {
             session++
             recording = true
             handsFree = false
+            holding = false
             elapsedMs = 0L
-            slide = 0f
+            lift = 0f
             live.clear()
             bars = emptyList()
             notice = null
@@ -654,17 +664,19 @@ private class VoiceNoteRecorder(private val context: Context) {
         }
     }
 
-    /** A tap (not a hold) keeps recording hands-free until Stop or discard. */
-    fun keepRecordingHandsFree() { if (recording) { handsFree = true; slide = 0f } }
+    /** A tap (not a hold), or a hold slid up to the lock, keeps recording hands-free until Stop or discard. */
+    fun keepRecordingHandsFree() { if (recording) { handsFree = true; holding = false; lift = 0f; pressedAt = null } }
 
     /** Samples the input and the clock; returns how long to wait before the next sample (ms). */
     fun tick(): Long {
         if (!recording) return VoiceMessages.LIVE_SAMPLE_MS
         val now = SystemClock.elapsedRealtime()
-        if (live.sample(VoiceMessages.meterLevel(recorder.sample()), now)) {
-            bars = live.values
-            lastBarAt = live.lastBarAt ?: now
-        }
+        if (live.sample(VoiceMessages.meterLevel(recorder.sample()), now)) bars = live.values
+        lastBarAt = live.lastBarAt ?: now
+        pending = live.pending
+        // Still down after a tap's length: show what releasing and sliding do.
+        val down = pressedAt
+        if (!handsFree && !holding && down != null && SystemClock.uptimeMillis() - down >= VoiceMessages.TAP_MS) holding = true
         elapsedMs = recorder.elapsedMs
         if (elapsedMs >= VoiceMessages.MAX_DURATION_MS) stop()
         return live.nextSampleIn(now)
@@ -688,7 +700,10 @@ private class VoiceNoteRecorder(private val context: Context) {
     private fun reset() {
         recording = false
         handsFree = false
-        slide = 0f
+        holding = false
+        pressedAt = null
+        pending = 0f
+        lift = 0f
         live.clear()
         bars = emptyList()
         elapsedMs = 0L
@@ -751,14 +766,24 @@ internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Bool
 
 /**
  * The composer's microphone, a tool button like Emoji: a tap starts hands-free recording (Stop
- * in the bar ends it); a press and hold records until release, and sliding left cancels. The
- * first press asks for the microphone. [blocked] explains why it can't record now.
+ * in the bar ends it); a press and hold records until release, and sliding up locks it
+ * hands-free. Once the finger lifts from a hands-free recording the keyboard closes, so nothing
+ * types into the field under the bar. The first press asks for the microphone. [blocked]
+ * explains why it can't record now.
  */
 @Composable internal fun VoiceRecordButton(state: VoiceRecorderState, enabled: Boolean, blocked: String?) {
     val context = LocalContext.current
-    val cancelDistance = with(LocalDensity.current) { 96.dp.toPx() }
+    val view = LocalView.current
+    val lockDistance = with(LocalDensity.current) { VoiceMessages.LOCK_DP.dp.toPx() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focus = LocalFocusManager.current
+    val handsFree = {
+        state.keepRecordingHandsFree()
+        keyboard?.hide()
+        focus.clearFocus()
+    }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) { if (state.start()) state.keepRecordingHandsFree() } else state.error(VoiceMessages.PERMISSION_ERROR)
+        if (granted) { if (state.start()) handsFree() } else state.error(VoiceMessages.PERMISSION_ERROR)
     }
     val currentBlocked by rememberUpdatedState(blocked)
     val interactions = remember { MutableInteractionSource() }
@@ -769,7 +794,7 @@ internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Bool
         when {
             reason != null -> state.hint(reason)
             !allowed() -> permission.launch(Manifest.permission.RECORD_AUDIO)
-            state.start() -> state.keepRecordingHandsFree()
+            state.start() -> handsFree()
         }
     }
     val usable = enabled && blocked == null
@@ -797,8 +822,10 @@ internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Bool
                         else -> state.start()
                     }
                     val session = state.session
+                    if (started) state.pressedAt = SystemClock.uptimeMillis()
                     var lifted = false
                     var heldFor = 0L
+                    var locked = false
                     try {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -806,20 +833,24 @@ internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Bool
                             change.consume()
                             heldFor = change.uptimeMillis - down.uptimeMillis
                             if (!change.pressed) { lifted = true; break }
-                            if (started && state.recording && state.session == session && !state.handsFree) {
-                                val dx = (change.position.x - down.position.x).coerceAtMost(0f)
-                                state.slide = dx
-                                if (dx < -cancelDistance) state.discard(haptic = true)
+                            if (started && !locked && state.recording && state.session == session && !state.handsFree) {
+                                val dy = (change.position.y - down.position.y).coerceAtMost(0f)
+                                state.lift = dy
+                                if (dy < -lockDistance) {
+                                    locked = true
+                                    state.keepRecordingHandsFree()
+                                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                }
                             }
                         }
                     } finally {
                         interactions.tryEmit(PressInteraction.Release(press))
-                        if (started && state.recording && state.session == session && !state.handsFree) {
+                        if (started && state.recording && state.session == session) {
                             when {
-                                // A tap records hands-free; a hold stops on release.
-                                lifted && heldFor < VoiceMessages.TAP_MS && state.slide == 0f -> state.keepRecordingHandsFree()
-                                lifted -> state.stop()
-                                else -> state.discard(haptic = false)
+                                // A tap or a lock records hands-free; a hold stops on release. If
+                                // the system took the touch, keep recording rather than lose it.
+                                locked || !lifted || heldFor < VoiceMessages.TAP_MS -> handsFree()
+                                !state.handsFree -> state.stop()
                             }
                         }
                     }
@@ -842,57 +873,75 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
 }
 
 /**
- * Laid over the composer's row while recording. Hands-free: `[trash] ● 0:07 ⋯live⋯ [Stop]`.
- * Held: `● 0:07 ⋯live⋯ ‹ Slide to cancel (mic)`, while the mic underneath keeps the gesture.
+ * Laid over the composer's row while recording: `[trash] ● 0:07 ⋯live⋯ [Stop]`, Stop in
+ * terracotta pulsing once a second. While held, a live mic takes Stop's place with the lock
+ * above it and discard steps out (releasing stops), while the mic underneath keeps the gesture.
  */
 @Composable internal fun VoiceRecordingBar(state: VoiceRecorderState, modifier: Modifier = Modifier) {
     val still = reducedMotion()
-    val slideDp = with(LocalDensity.current) { state.slide.toDp() }
+    val lockDistance = with(LocalDensity.current) { VoiceMessages.LOCK_DP.dp.toPx() }
     Row(
         modifier.background(SurfaceComposer, MaterialTheme.shapes.small).border(1.dp, Border, MaterialTheme.shapes.small)
-            .padding(start = if (state.handsFree) 2.dp else 14.dp, end = 6.dp),
+            .padding(start = 2.dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (state.handsFree) IconButton({ state.discard(haptic = true) }, Modifier.size(44.dp)) {
+        IconButton({ state.discard(haptic = true) }, Modifier.size(44.dp).alpha(if (state.holding) 0f else 1f), enabled = !state.holding) {
             Icon(painterResource(R.drawable.lucide_trash_2), "Discard voice message", Modifier.size(18.dp), tint = TextMuted)
         }
-        RecordingDot(still)
+        Box(Modifier.size(10.dp).background(TerracottaBright, CircleShape))
         Text(
             VoiceMessages.clock(state.elapsedMs), Modifier.semantics { contentDescription = "Recording, ${VoiceMessages.clock(state.elapsedMs)}" },
             color = Text, fontSize = 14.sp, fontWeight = FontWeight.Medium, style = TabularNumbers,
         )
         LiveBars(state, still, Modifier.weight(1f).height(28.dp))
-        if (state.handsFree) FilledIconButton(
-            { state.stop() }, Modifier.size(40.dp).semantics { contentDescription = "Stop recording" }, shape = MaterialTheme.shapes.small,
-            colors = IconButtonDefaults.filledIconButtonColors(containerColor = Action, contentColor = OnAction),
-        ) { Box(Modifier.size(12.dp).background(OnAction, RoundedCornerShape(2.dp))) }
-        else {
-            Text(
-                "‹ Slide to cancel", Modifier.offset { IntOffset(if (still) 0 else (slideDp.toPx() / 2).roundToInt(), 0) }
-                    .alpha((1f + state.slide / 300f).coerceIn(0.3f, 1f)),
-                color = TextMuted, fontSize = 12.sp, maxLines = 1,
-            )
-            Box(Modifier.size(36.dp).background(Action, CircleShape), contentAlignment = Alignment.Center) {
-                Icon(painterResource(R.drawable.lucide_mic), null, Modifier.size(18.dp), tint = OnAction)
+        if (state.holding) Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(36.dp).background(Terracotta, MaterialTheme.shapes.small), contentAlignment = Alignment.Center) {
+                Icon(painterResource(R.drawable.lucide_mic), null, Modifier.size(18.dp), tint = Text)
             }
-        }
+            LockHint((-state.lift / lockDistance).coerceIn(0f, 1f), Modifier.align(Alignment.BottomCenter)
+                // Taller than the bar: drawn above it, over the conversation.
+                .wrapContentHeight(Alignment.Bottom, unbounded = true).offset(y = (-56).dp))
+        } else LiveStopButton(still) { state.stop() }
     }
 }
 
-/** The recording dot: pulses gently, or stays still when animations are removed. */
-@Composable private fun RecordingDot(still: Boolean) {
-    val alpha = if (still) 1f else {
-        val pulse = rememberInfiniteTransition(label = "recording")
-        pulse.animateFloat(1f, 0.35f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "dot").value
+/** The hands-free Stop: terracotta, with a ring that grows and fades from it every second. */
+@Composable private fun LiveStopButton(still: Boolean, stop: () -> Unit) {
+    val pulse = if (still) 1f else {
+        val transition = rememberInfiniteTransition(label = "live")
+        transition.animateFloat(0f, 1f, infiniteRepeatable(tween(1_000, easing = { 1 - (1 - it) * (1 - it) * (1 - it) })), label = "ring").value
     }
-    Box(Modifier.size(10.dp).alpha(alpha).background(Danger, CircleShape))
+    FilledIconButton(
+        stop, Modifier.size(40.dp).drawBehind {
+            if (still) return@drawBehind
+            val grow = 7.dp.toPx() * pulse
+            drawRoundRect(
+                TerracottaBright.copy(alpha = 0.55f * (1 - pulse)), Offset(-grow, -grow), Size(size.width + 2 * grow, size.height + 2 * grow),
+                CornerRadius(8.dp.toPx() + grow), style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()),
+            )
+        }.semantics { contentDescription = "Stop recording" }, shape = MaterialTheme.shapes.small,
+        colors = IconButtonDefaults.filledIconButtonColors(containerColor = TerracottaBright, contentColor = Text),
+    ) { Box(Modifier.size(12.dp).background(Text, RoundedCornerShape(2.dp))) }
+}
+
+/** Above a held mic: a lock with an arrow under it; sliding up lifts the lock and fades the arrow. */
+@Composable private fun LockHint(progress: Float, modifier: Modifier) {
+    Column(
+        modifier.background(SurfaceRaised, MaterialTheme.shapes.small).border(1.dp, Border, MaterialTheme.shapes.small)
+            .width(32.dp).padding(vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(14.dp).offset(y = (-6 * progress).dp), tint = Text)
+        Icon(painterResource(R.drawable.lucide_chevron_up), null, Modifier.size(14.dp).alpha(1 - progress), tint = TextMuted)
+    }
 }
 
 /**
  * The live meter ("pinch bars"): a pill per bar, newest at the right, scrolling left at a
  * constant rate (shifted per display frame between new bars; without animations they step).
- * Bars arrive flat and swell in from the right edge, brighten toward eggshell as they get louder,
- * and shrink and fade over the last [LivePinchReach] on the left. Silence shows small dots.
+ * The bar still forming sits at the right edge at full size from the first sample, so speech
+ * shows at once. Bars brighten toward eggshell as they get louder, and shrink and fade over the
+ * last [LivePinchReach] on the left. Silence shows small dots.
  */
 @Composable private fun LiveBars(state: VoiceRecorderState, still: Boolean, modifier: Modifier) {
     var frame by remember { mutableLongStateOf(0L) }
@@ -901,30 +950,27 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
         // Read every frame, so the bars glide between new ones.
         if (frame < 0L) return@drawBehind
         val bars = state.bars
-        if (bars.isEmpty() || size.width <= 0f) return@drawBehind
+        if (state.lastBarAt == 0L || size.width <= 0f) return@drawBehind
         val w = size.width
         val h = size.height
         val bar = LiveBarWidth.toPx()
         val step = LiveBarStep.toPx()
         val minHeight = LiveBarMinHeight.toPx()
         val reach = minOf(LivePinchReach.toPx(), 0.8f * w)
-        val entry = LiveEntry.toPx()
-        val arrival = LiveArrival.toPx()
         // Keeps sliding past one step while a bar is late instead of pausing; the
         // late bar lands where the slide has got to (the cadence restarts at 3).
-        val frac = if (still) 1f
+        val frac = if (still) 0f
             else ((SystemClock.elapsedRealtime() - state.lastBarAt).toFloat() / VoiceMessages.LIVE_BAR_MS).coerceIn(0f, 3f)
         clipRect {
-            for (k in 0 until bars.size) {
-                val x = w - frac * step - k * step
+            // k = 0 is the forming bar; then the finished ones, newest first.
+            for (k in 0..bars.size) {
+                val x = w - bar - frac * step - k * step
                 if (x < -step) break
                 val cx = x + bar / 2
-                val pinch = 1 - LivePinch * (1 - smoothstep(0f, reach, cx))
-                val swell = easeOutCubic((w - cx) / entry)
-                val alpha = smoothstep(0f, 0.1f * w, cx) * smoothstep(0f, arrival, w - cx)
+                val scale = 1 - LivePinch * (1 - smoothstep(0f, reach, cx))
+                val alpha = smoothstep(0f, 0.1f * w, cx)
                 if (alpha < 0.02f) continue
-                val scale = pinch * swell
-                val level = VoiceMessages.liveShape(bars[bars.size - 1 - k])
+                val level = VoiceMessages.liveShape(if (k == 0) state.pending else bars[bars.size - k])
                 val height = maxOf(minHeight * maxOf(0.6f, scale), level * scale * h * 0.94f)
                 val width = bar * (scale + 0.4f).coerceIn(0.6f, 1f)
                 drawRoundRect(
@@ -944,20 +990,12 @@ private val LiveBarMinHeight = 3.dp
 /** How small bars get at the left edge (70% smaller), over this distance (at most 80% of the meter). */
 private const val LivePinch = 0.7f
 private val LivePinchReach = 40.dp
-/** New bars enter flat and reach full size this far in, fading in over the last [LiveArrival]. */
-private val LiveEntry = 36.dp
-private val LiveArrival = 10.dp
 /** Quiet bars' colour; loud ones brighten toward eggshell ([Action]). */
 private val LiveQuiet = Color(0xFF969C9E)
 
 private fun smoothstep(from: Float, to: Float, t: Float): Float {
     val u = ((t - from) / (to - from)).coerceIn(0f, 1f)
     return u * u * (3 - 2 * u)
-}
-
-private fun easeOutCubic(t: Float): Float {
-    val u = 1 - t.coerceIn(0f, 1f)
-    return 1 - u * u * u
 }
 
 /** A straight sRGB mix, as the web meter draws it, at [alpha]. */
@@ -972,7 +1010,7 @@ private fun mixRgb(from: Color, to: Color, t: Float, alpha: Float) = Color(
 @Composable internal fun VoiceRecordingNotice(state: VoiceRecorderState) {
     val sendOnStop = VoicePreferences.sendOnStop(LocalContext.current)
     val text = when {
-        state.recording && !state.handsFree -> if (sendOnStop) "Release to send" else "Release to add it to your message"
+        state.recording && state.holding -> (if (sendOnStop) "Release to send" else "Release to add") + " · Slide up to lock"
         state.recording -> null
         else -> state.notice
     } ?: return

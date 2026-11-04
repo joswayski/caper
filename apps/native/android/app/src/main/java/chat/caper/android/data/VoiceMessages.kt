@@ -19,8 +19,13 @@ object VoiceMessages {
     const val MAX_DURATION_MS = 600_000L
     /** Shorter recordings are discarded. */
     const val MIN_DURATION_MS = 1_000L
-    /** A press shorter than this is a tap: it starts hands-free recording instead of a hold. */
+    /**
+     * A press shorter than this is a tap: it starts hands-free recording instead of a hold. Until
+     * a press has lasted this long it looks like a tap, so a tap never flashes the hold hints.
+     */
     const val TAP_MS = 300L
+    /** Sliding a held recording this far up (dp) locks it hands-free. */
+    const val LOCK_DP = 72f
     /** Bytes in the waveform this client uploads: one level per equal slice of the recording. */
     const val WAVEFORM_BYTES = 64
     /** What reply previews, pins and forward excerpts call a voice message instead of its file name. */
@@ -35,9 +40,12 @@ object VoiceMessages {
     const val SEND_ON_STOP_LABEL = "Send voice messages as soon as I stop recording"
     const val SEND_ON_STOP_KEY = "voiceSendOnStop"
     const val SEND_ON_STOP_DEFAULT = false
-    /** Live meter: input sampled about every [LIVE_SAMPLE_MS] (in step with the bars), a new bar every [LIVE_BAR_MS]. */
+    /**
+     * Live meter: input sampled about every [LIVE_SAMPLE_MS] (in step with the bars), a new bar
+     * every [LIVE_BAR_MS] (6 dp a bar: 80 dp a second).
+     */
     const val LIVE_SAMPLE_MS = 25L
-    const val LIVE_BAR_MS = 25L
+    const val LIVE_BAR_MS = 75L
     /** How far a live bar may fall from the one before: to 35% of it at most. */
     const val LIVE_FALL = 0.65f
 
@@ -173,6 +181,9 @@ class LiveLevels(private val capacity: Int = 200) {
         private set
 
     val values: List<Float> get() = bars.toList()
+
+    /** The bar still forming, drawn at the right edge so speech shows at once. */
+    val pending: Float get() = maxOf(peak, (bars.lastOrNull() ?: 0f) * (1 - VoiceMessages.LIVE_FALL))
 
     /** Feeds one input level (0..1) at [nowMs]; true when that added a bar (one at most). */
     fun sample(input: Float, nowMs: Long): Boolean {

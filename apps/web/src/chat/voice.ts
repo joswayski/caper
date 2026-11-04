@@ -17,8 +17,8 @@ export const HOLD_TAP_MS = 300;
 export const WAVEFORM_SLICES = 64;
 /** How often the input level is sampled while recording (50 Hz). */
 export const LEVEL_INTERVAL_MS = 20;
-/** The live meter adds one bar this often and scrolls between them. */
-export const LIVE_BAR_MS = 25;
+/** The live meter adds one bar this often and scrolls between them (80 px/s). */
+export const LIVE_BAR_MS = 75;
 /** A live bar may fall to this share of the one before, so gaps between words show. */
 const LIVE_FALL = 0.35;
 /** Waveform bars: width and gap in CSS pixels, shared by the player, chip and meter. */
@@ -258,6 +258,11 @@ export class LiveBars {
     this.lastBarAt = now - last > LIVE_BAR_MS * 3 ? now : last + LIVE_BAR_MS;
     return true;
   }
+
+  /** The bar still forming, drawn at the right edge so speech shows at once. */
+  get pending(): number {
+    return Math.max(this.peak, (this.values.at(-1) ?? 0) * LIVE_FALL);
+  }
 }
 
 /** A live bar's drawn height (0–1): speech sits around -35 to -12 dB, so that
@@ -271,14 +276,12 @@ const smoothstep = (from: number, to: number, value: number) => {
   return t * t * (3 - 2 * t);
 };
 
-/** How a live bar centred `x` px into a `width` px meter is drawn: it arrives
- * flat at the right and swells over 36 px, then pinches to 30% and fades out
+/** How a live bar centred `x` px into a `width` px meter is drawn: full size
+ * from the moment it appears at the right, then pinched to 30% and faded out
  * near the left edge. */
 export function liveBarShape(x: number, width: number): { scale: number; alpha: number } {
-  const fromRight = width - x;
   const pinch = 1 - 0.7 * (1 - smoothstep(0, Math.min(40, width * 0.8), x));
-  const swell = 1 - (1 - Math.min(1, Math.max(0, fromRight / 36))) ** 3;
-  return { scale: pinch * swell, alpha: smoothstep(0, width * 0.1, x) * smoothstep(0, 10, fromRight) };
+  return { scale: pinch, alpha: smoothstep(0, width * 0.1, x) };
 }
 
 // One voice message plays at a time across the app; recording stops playback.

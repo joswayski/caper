@@ -26,12 +26,12 @@ public enum VoiceMessage {
     /// Recording stops (and sends) at 10:00; the server accepts 1...600000.
     public static let maximumDurationMs = 600_000
     /// A touch released sooner was a tap: recording carries on hands-free
-    /// until Stop. Held longer, releasing stops.
+    /// until Stop. Held longer, releasing stops. Until a touch has been down
+    /// this long it looks like a tap, so a tap never flashes the hold hints.
     public static let tapThreshold: TimeInterval = 0.3
-    /// Sliding this far left (points) from the microphone cancels a held recording.
-    public static let cancelDistance: Double = 90
+    /// Sliding a held recording this far up (points) locks it hands-free.
+    public static let lockDistance: Double = 72
 
-    public static let slideHint = "Slide to cancel"
     public static let stopLabel = "Stop recording"
     public static let discardLabel = "Discard voice message"
     public static let recordLabel = "Record voice message"
@@ -51,7 +51,7 @@ public enum VoiceMessage {
 
     /// Shown above a held recording.
     public static func releaseHint(sendsOnStop: Bool) -> String {
-        sendsOnStop ? "Release to send" : "Release to add to your message"
+        (sendsOnStop ? "Release to send" : "Release to add") + " · Slide up to lock"
     }
 
     /// The uploaded file: AAC in MP4, mono, 48 kHz, about 64 kbps.
@@ -93,8 +93,9 @@ public enum VoiceMessage {
     /// The recording's level is read at 50 Hz for the live bars and the waveform,
     /// so at least one reading lands in every live bar despite the sleep's slack.
     public static let meterInterval: TimeInterval = 0.02
-    /// A new live bar enters at the right this often, scrolling at a constant rate.
-    public static let liveBarInterval: TimeInterval = 0.025
+    /// A new live bar enters at the right this often, scrolling at a constant
+    /// rate (6 points per bar: 80 points a second).
+    public static let liveBarInterval: TimeInterval = 0.075
 
     /// A recording long enough to send (and within the server's limit once clamped).
     public static func keeps(durationMs: Int) -> Bool { durationMs >= minimumDurationMs }
@@ -126,14 +127,13 @@ public enum VoiceMessage {
         return min(maximumDurationMs, max(1, value))
     }
 
-    /// What lifting a finger off the microphone does: `cancelled` wins (the
-    /// slide already cancelled); a quick tap keeps recording hands-free until
-    /// Stop; a hold stops, and a recording under a second is discarded.
-    public enum Release: Equatable, Sendable { case cancel, handsFree, discard, stop }
+    /// What lifting a finger off the microphone does: a quick tap, or a hold
+    /// slid up to the lock, keeps recording hands-free until Stop; a hold
+    /// stops, and a recording under a second is discarded.
+    public enum Release: Equatable, Sendable { case handsFree, discard, stop }
 
-    public static func release(pressDuration: TimeInterval, recordedMs: Int, cancelled: Bool) -> Release {
-        if cancelled { return .cancel }
-        if pressDuration < tapThreshold { return .handsFree }
+    public static func release(pressDuration: TimeInterval, recordedMs: Int, locked: Bool) -> Release {
+        if locked || pressDuration < tapThreshold { return .handsFree }
         return keeps(durationMs: recordedMs) ? .stop : .discard
     }
 
@@ -150,11 +150,11 @@ public enum VoiceMessage {
         !voiceStaged && staged < limit
     }
 
-    /// Sliding left (negative translation) far enough cancels.
-    public static func cancelsBySliding(translation: Double) -> Bool { translation <= -cancelDistance }
+    /// Sliding up (negative vertical translation) far enough locks.
+    public static func locksBySliding(translation: Double) -> Bool { translation <= -lockDistance }
 
-    /// How far the slide hint has travelled toward cancelling, 0...1.
-    public static func slideProgress(translation: Double) -> Double { min(1, max(0, -translation / cancelDistance)) }
+    /// How far a held finger has travelled toward the lock, 0...1.
+    public static func lockProgress(translation: Double) -> Double { min(1, max(0, -translation / lockDistance)) }
 
     /// Prefer a visible transcript for a quote without typed text.
     public static func excerptFallback(hasAttachments: Bool, hasVoice: Bool, attachments: [ChatAttachment] = []) -> String {
@@ -329,10 +329,11 @@ public enum VoiceWaveform {
 }
 
 /// The live recording meter ("pinch bars"): each bar is the loudest reading
-/// in its 25 ms window, falling fast between words, drawn as pills that sit
-/// as dots in silence, brighten toward eggshell when loud, shrink and fade
-/// near the left and arrive flat at the right before swelling to size. The
-/// player, the staged chip and the uploaded waveform don't use it.
+/// in its 75 ms window, falling fast between words, drawn as pills that sit
+/// as dots in silence, brighten toward eggshell when loud, and shrink and
+/// fade near the left. The bar still forming is drawn at the right edge at
+/// full size from the first reading, so speech shows at once. The player,
+/// the staged chip and the uploaded waveform don't use it.
 public struct VoiceLiveMeter: Equatable, Sendable {
     /// A bar may drop to 35% of the previous bar, so gaps between words show.
     public static let fall: Float = 0.65
@@ -345,12 +346,8 @@ public struct VoiceLiveMeter: Equatable, Sendable {
     /// Bars shrink to 30% over the leftmost 40 points (at most 80% of the meter)…
     public static let pinchDepth = 0.7
     public static let pinchDistance = 40.0
-    /// …fade out over the leftmost 10% of the meter…
+    /// …and fade out over the leftmost 10% of the meter.
     public static let fadeShare = 0.1
-    /// …and enter flat at the right edge, fading in over 10 points and
-    /// reaching full size 36 points in.
-    public static let entryDistance = 36.0
-    public static let arrivalDistance = 10.0
 
     /// Bar levels (0...1, perceptual), newest last.
     public private(set) var bars: [Float] = []
@@ -360,6 +357,10 @@ public struct VoiceLiveMeter: Equatable, Sendable {
     private var previous: Float = 0
 
     public init() {}
+
+    /// The bar still forming: the loudest reading since the newest bar, or
+    /// the newest bar's fall.
+    public var pending: Float { max(peak, previous * (1 - Self.fall)) }
 
     /// Takes one perceptual 0...1 reading and returns whether it added a bar.
     /// The first reading starts the clock (the first bar is due one `interval`
@@ -394,11 +395,6 @@ public struct VoiceLiveMeter: Equatable, Sendable {
         return t * t * (3 - 2 * t)
     }
 
-    public static func easeOutCubic(_ value: Double) -> Double {
-        let t = min(1, max(0, value))
-        return 1 - (1 - t) * (1 - t) * (1 - t)
-    }
-
     /// Size and opacity for a bar centred `center` points from the left of a
     /// meter `width` points wide.
     public struct Envelope: Equatable, Sendable {
@@ -408,10 +404,7 @@ public struct VoiceLiveMeter: Equatable, Sendable {
 
     public static func envelope(center: Double, width: Double) -> Envelope {
         let pinch = 1 - pinchDepth * (1 - smoothstep(0, min(pinchDistance, 0.8 * width), center))
-        let fade = smoothstep(0, fadeShare * width, center)
-        let swell = easeOutCubic((width - center) / entryDistance)
-        let arrive = smoothstep(0, arrivalDistance, width - center)
-        return Envelope(scale: pinch * swell, alpha: fade * arrive)
+        return Envelope(scale: pinch, alpha: smoothstep(0, fadeShare * width, center))
     }
 
     /// One pill to draw, in points from the meter's top left. `brightness`
@@ -425,15 +418,16 @@ public struct VoiceLiveMeter: Equatable, Sendable {
         public var alpha: Double
     }
 
-    /// The visible pills for `bars` (newest last) in a `width` × `height`
-    /// meter, newest at the right, scrolled left by `scroll` (0...1) of a
-    /// step since the newest bar was due. Nearly transparent bars are left out.
-    public static func layout(_ bars: [Float], width: Double, height: Double, scroll: Double) -> [Bar] {
+    /// The visible pills in a `width` × `height` meter: the forming bar
+    /// `pending` at the right edge, then `bars` (newest last) to its left,
+    /// all scrolled left by `scroll` (0...3) steps since the newest bar was
+    /// due. Nearly transparent bars are left out.
+    public static func layout(_ bars: [Float], pending: Float, width: Double, height: Double, scroll: Double) -> [Bar] {
         guard width > 0, height > 0 else { return [] }
-        let fraction = scroll.isFinite ? min(1, max(0, scroll)) : 1
+        let fraction = scroll.isFinite ? min(3, max(0, scroll)) : 0
         var pills: [Bar] = []
-        for (index, value) in bars.reversed().enumerated() {
-            let x = width - fraction * step - Double(index) * step
+        for (index, value) in ([pending] + bars.reversed()).enumerated() {
+            let x = width - barWidth - fraction * step - Double(index) * step
             if x < -step { break }
             let edge = envelope(center: x + barWidth / 2, width: width)
             guard edge.alpha >= 0.02 else { continue }

@@ -5875,6 +5875,7 @@ a.chat-draft-preview {
 /* Voice messages. The composer's microphone records; the recording bar takes
    the input row's place; sent ones play inline with their transcript. */
 .chat-voice-mic {
+  position: relative;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -5882,6 +5883,39 @@ a.chat-draft-preview {
 }
 .chat-voice-mic[data-recording] {
   color: var(--terracotta-bright);
+}
+/* Above a held microphone: slide up to the lock to keep recording hands-free. */
+.chat-voice-lock {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 32px;
+  padding: 10px 0 8px;
+  translate: -50% 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-raised);
+  pointer-events: none;
+  animation: chat-voice-rise var(--motion-fast) var(--ease-out);
+}
+.chat-voice-lock > svg {
+  color: var(--text-muted);
+}
+/* While held the finger is the control: releasing stops, so Discard and Stop
+   keep their places but step out until the recording locks or ends. */
+.chat-voice-recorder[data-mode="hold"] :is(.chat-voice-discard, .chat-voice-stop) {
+  visibility: hidden;
+}
+@keyframes chat-voice-rise {
+  from {
+    opacity: 0;
+    translate: -50% 6px;
+  }
 }
 .chat-voice-recorder {
   position: relative;
@@ -5925,10 +5959,22 @@ a.chat-draft-preview {
   color: var(--text-muted);
   background: transparent;
 }
+/* Stop is terracotta while live and pulses once a second. */
 .chat-voice-recorder .chat-voice-stop {
   margin-left: auto;
-  color: var(--on-action);
-  background: var(--action);
+  color: var(--text);
+  background: var(--terracotta);
+}
+.chat-voice-recorder .chat-voice-stop:not(:disabled) {
+  animation: chat-voice-live 1s var(--ease-out) infinite;
+}
+@keyframes chat-voice-live {
+  from {
+    box-shadow: 0 0 0 0 rgb(219 104 73 / 55%);
+  }
+  to {
+    box-shadow: 0 0 0 7px rgb(219 104 73 / 0%);
+  }
 }
 @media (hover: hover) {
   .chat-voice-recorder .chat-voice-discard:hover {
@@ -5936,11 +5982,8 @@ a.chat-draft-preview {
     background: var(--surface-hover);
   }
   .chat-voice-recorder .chat-voice-stop:hover:not(:disabled) {
-    background: var(--action-hover);
+    background: var(--terracotta-bright);
   }
-}
-.chat-voice-recorder .chat-voice-stop:active:not(:disabled) {
-  background: var(--action-press);
 }
 .chat-voice-recorder .chat-voice-stop:disabled {
   color: var(--text-muted);
@@ -5950,6 +5993,9 @@ a.chat-draft-preview {
 .chat-voice-recorder button:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: -2px;
+}
+.chat-voice-recorder .chat-voice-stop:focus-visible {
+  outline-color: var(--text);
 }
 @media (pointer: coarse) {
   .chat-voice-recorder .chat-voice-discard,
@@ -5967,12 +6013,6 @@ a.chat-draft-preview {
 }
 .chat-voice-dot[data-live] {
   background: var(--terracotta-bright);
-  animation: chat-voice-pulse 1.6s ease-in-out infinite;
-}
-@keyframes chat-voice-pulse {
-  50% {
-    opacity: 0.35;
-  }
 }
 .chat-voice-elapsed {
   flex: none;
@@ -5981,8 +6021,8 @@ a.chat-draft-preview {
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
 }
-/* The live meter, drawn on a canvas: a new bar every 25 ms scrolling right to
-   left (stepping with reduced motion). */
+/* The live meter, drawn on a canvas: a new bar every 75 ms scrolling right to
+   left (stepping with reduced motion), the forming one at the right edge. */
 .chat-voice-levels {
   display: block;
   /* A zero basis, so the canvas's own pixel size never feeds back into the row. */
@@ -5990,18 +6030,12 @@ a.chat-draft-preview {
   min-width: 0;
   height: 24px;
 }
-.chat-voice-recorder[data-mode="hold"] {
-  padding-right: 52px;
-}
-.chat-voice-recorder[data-mode="hold"] .chat-voice-levels {
-  flex: 1 1 0;
-  margin-right: 20px;
-}
 .chat-voice-release {
   position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  translate: -50% 0;
+  bottom: calc(100% + 8px);
+  left: 0;
+  max-width: calc(100% - 72px);
+  overflow: hidden;
   padding: 4px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -6009,31 +6043,9 @@ a.chat-draft-preview {
   background: var(--surface-raised);
   font-size: 0.75rem;
   font-weight: 700;
+  text-overflow: ellipsis;
   white-space: nowrap;
   pointer-events: none;
-}
-.chat-voice-slide {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 2px;
-  margin-left: auto;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  white-space: nowrap;
-}
-.chat-voice-held {
-  position: absolute;
-  top: 50%;
-  right: 4px;
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  translate: 0 -50%;
-  border-radius: 50%;
-  color: var(--on-action);
-  background: var(--action);
 }
 .chat-voice-status {
   display: flex;
@@ -6254,7 +6266,8 @@ a.chat-draft-preview {
 @media (prefers-reduced-motion: reduce) {
   .chat-voice-recorder,
   .chat-voice-transcript[data-arrive],
-  .chat-voice-dot[data-live] {
+  .chat-voice-recorder .chat-voice-stop:not(:disabled),
+  .chat-voice-lock {
     animation: none;
   }
 }

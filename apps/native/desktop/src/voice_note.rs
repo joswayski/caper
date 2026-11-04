@@ -31,8 +31,9 @@ pub const MIN_DURATION: Duration = Duration::from_secs(1);
 pub const SAMPLE_RATE: u32 = 48_000;
 /// The WAV fallback's rate: a third of the capture, plenty for speech.
 const FALLBACK_RATE: u32 = 16_000;
-/// The live meter: a new bar every 25 ms, scrolling left between them.
-pub const LIVE_INTERVAL: Duration = Duration::from_millis(25);
+/// The live meter: a new bar every 75 ms (6 px a bar: 80 px a second),
+/// scrolling left between them.
+pub const LIVE_INTERVAL: Duration = Duration::from_millis(75);
 /// How far a live bar may fall below the one before it: to 35% of it, so
 /// the gaps between words show.
 const LIVE_FALL: f32 = 0.65;
@@ -136,6 +137,13 @@ impl LiveMeter {
         } else {
             due + LIVE_INTERVAL
         });
+    }
+
+    /// The bar still forming: the loudest level since the newest bar, or that
+    /// bar's fall. Drawn at the right edge, so speech shows at once.
+    pub fn pending(&self) -> f32 {
+        let previous = self.bars.back().copied().unwrap_or(0.0);
+        self.peak.max(previous * (1.0 - LIVE_FALL))
     }
 
     /// How far (in bar steps) the bars have scrolled since the newest one. It
@@ -500,14 +508,17 @@ mod tests {
             meter.bars.is_empty(),
             "the first bar is due one interval later"
         );
+        assert_eq!(meter.pending(), 0.2, "the forming bar shows at once");
         // The loudest level inside the interval wins, not the last one.
-        meter.sample(0.9, at(10));
-        meter.sample(0.1, at(20));
-        meter.sample(0.1, at(25));
+        meter.sample(0.9, at(30));
+        meter.sample(0.1, at(60));
+        assert!(meter.bars.is_empty(), "a bar every 75 ms, not every level");
+        meter.sample(0.1, at(75));
         assert_eq!(meter.bars, [0.9]);
+        assert!((meter.pending() - 0.9 * 0.35).abs() < 1e-6);
         // Silence falls to 35% of the bar before, then on toward nothing.
-        meter.sample(0.0, at(50));
-        meter.sample(0.0, at(75));
+        meter.sample(0.0, at(150));
+        meter.sample(0.0, at(225));
         assert!(
             (meter.bars[1] - 0.9 * 0.35).abs() < 1e-6,
             "{:?}",
@@ -515,7 +526,7 @@ mod tests {
         );
         assert!((meter.bars[2] - 0.9 * 0.35 * 0.35).abs() < 1e-6);
         // A louder level than the fall replaces it at once.
-        meter.sample(0.5, at(100));
+        meter.sample(0.5, at(300));
         assert_eq!(meter.bars.back(), Some(&0.5));
     }
 
@@ -526,32 +537,32 @@ mod tests {
         let mut meter = LiveMeter::default();
         meter.sample(0.5, at(0));
         // A late level still schedules the next bar from when this one was due.
-        meter.sample(0.5, at(32));
+        meter.sample(0.5, at(96));
         assert_eq!(meter.bars.len(), 1);
-        meter.sample(0.5, at(49));
+        meter.sample(0.5, at(149));
         assert_eq!(meter.bars.len(), 1);
-        meter.sample(0.5, at(50));
+        meter.sample(0.5, at(150));
         assert_eq!(meter.bars.len(), 2);
-        assert!((meter.scroll(at(50)) - 0.0).abs() < 1e-6);
-        assert!((meter.scroll(at(60)) - 0.4).abs() < 1e-3);
+        assert!((meter.scroll(at(150)) - 0.0).abs() < 1e-6);
+        assert!((meter.scroll(at(180)) - 0.4).abs() < 1e-3);
         assert!(
-            (meter.scroll(at(90)) - 1.6).abs() < 1e-3,
+            (meter.scroll(at(270)) - 1.6).abs() < 1e-3,
             "keeps sliding while a bar is late"
         );
-        assert_eq!(meter.scroll(at(500)), 3.0);
+        assert_eq!(meter.scroll(at(1500)), 3.0);
         // One bar per level even when several are overdue, then a restart.
-        meter.sample(0.5, at(500));
+        meter.sample(0.5, at(1500));
         assert_eq!(meter.bars.len(), 3);
-        meter.sample(0.5, at(510));
+        meter.sample(0.5, at(1530));
         assert_eq!(
             meter.bars.len(),
             3,
-            "the stall restarted the cadence at 500"
+            "the stall restarted the cadence at 1500"
         );
-        meter.sample(0.5, at(525));
+        meter.sample(0.5, at(1575));
         assert_eq!(meter.bars.len(), 4);
         for ms in 0..1000 {
-            meter.sample(0.5, at(1000 + ms * 25));
+            meter.sample(0.5, at(3000 + ms * 75));
         }
         assert_eq!(meter.bars.len(), LIVE_BARS, "the history is capped");
         assert_eq!(LiveMeter::default().scroll(start), 1.0);

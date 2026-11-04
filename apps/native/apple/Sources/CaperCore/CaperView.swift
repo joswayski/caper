@@ -4512,6 +4512,9 @@ private struct ChatView: View {
                 .accessibilityValue(chat.sending ? "Sending" : "")
                 .accessibilityIdentifier("send-message-button")
             }
+            #if os(iOS)
+            .modifier(VoiceLockLayer())
+            #endif
             #if os(macOS)
             // Clicking the microphone replaces this row with the recording bar.
             .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight,
@@ -5132,6 +5135,9 @@ private struct NativeThreadView: View {
                         #endif
                     sendReplyButton
                 }
+                #if os(iOS)
+                .modifier(VoiceLockLayer())
+                #endif
                 #if os(macOS)
                 .modifier(VoiceComposerCover(chat: chat, inThread: true, restoreFocus: { composerAutocomplete.restoreFocus() }))
                 #endif
@@ -6618,6 +6624,9 @@ struct MentionCardView: View {
             }
             .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+            #if os(iOS)
+            .modifier(VoiceLockLayer())
+            #endif
             #if os(macOS)
             // Clicking the microphone replaces the box with the recording bar.
             .modifier(VoiceComposerCover(target: voiceTarget, restoreFocus: { autocomplete.restoreFocus() }))

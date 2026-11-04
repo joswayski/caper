@@ -999,11 +999,11 @@ impl VoiceRecording {
         self.meter.sample(voice_note::perceptual(rms), now);
     }
 
-    /// How far (0–1) the bars have scrolled toward the next one. Reduced
-    /// motion and the fixture rest at 1, so the bars step instead.
+    /// How far (in steps) the bars have scrolled toward the next one.
+    /// Reduced motion and the fixture rest at 0, so the bars step instead.
     fn scroll(&self, now: Instant) -> f32 {
         if self.fixed_elapsed.is_some() || motion::reduced() {
-            return 1.0;
+            return 0.0;
         }
         self.meter.scroll(now)
     }
@@ -29832,6 +29832,7 @@ impl CaperApp {
         let sending = recording.sending;
         let elapsed = recording.elapsed();
         let levels: Vec<f32> = recording.meter.bars.iter().copied().collect();
+        let pending = recording.meter.pending();
         let scroll = recording.scroll(Instant::now());
         let send_on_stop = self.voice_send_on_stop;
         let mut discard = false;
@@ -29857,22 +29858,12 @@ impl CaperApp {
             discard =
                 drawn_icon_button(&mut row, NavIcon::Trash, "Discard voice message").clicked();
             let (dot, _) = row.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-            // The dot pulses while recording; reduced motion keeps it still.
+            // The dot is steady; Stop carries the live pulse.
             let live = started && !sending;
-            let pulse = if live && !motion::reduced() {
-                let phase = (row.input(|input| input.time) * std::f64::consts::TAU / 1.2).cos();
-                0.6 + 0.4 * phase as f32
-            } else {
-                1.0
-            };
             row.painter().circle_filled(
                 dot.center(),
                 4.5,
-                if live {
-                    TERRACOTTA.gamma_multiply(pulse)
-                } else {
-                    MUTED
-                },
+                if live { TERRACOTTA_BRIGHT } else { MUTED },
             );
             let timer = voice_note::duration_label(elapsed.as_millis() as u64);
             row.add(egui::Label::new(bold(timer.clone()).size(13.0).color(TEXT)).selectable(false))
@@ -29910,7 +29901,7 @@ impl CaperApp {
                         MUTED,
                     );
                 }
-                None => paint_live_levels(row.painter(), meter, &levels, scroll),
+                None => paint_live_levels(row.painter(), meter, &levels, pending, scroll),
             }
             // Stop stages the recording (or sends it, with the setting on).
             send =
@@ -30256,11 +30247,19 @@ fn mic_button(ui: &mut egui::Ui, enabled: bool, unavailable: &str, size: f32) ->
     .clicked()
 }
 
-/// The recording bar's live input meter ("pinch bars"): newest level on the
-/// right, one 3 px pill every 6 px, scrolling left as levels arrive. New bars
-/// enter flat and swell; old ones pinch and fade over the left 40 px. Quiet
-/// bars are small grey dots and loud ones brighten toward eggshell.
-fn paint_live_levels(painter: &egui::Painter, rect: egui::Rect, levels: &[f32], scroll: f32) {
+/// The recording bar's live input meter ("pinch bars"): the forming bar
+/// (`pending`) at the right edge at full size from the first level, so
+/// speech shows at once, then finished levels to its left, one 3 px pill
+/// every 6 px, scrolling left as levels arrive. Old ones pinch and fade over
+/// the left 40 px. Quiet bars are small grey dots and loud ones brighten
+/// toward eggshell.
+fn paint_live_levels(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    levels: &[f32],
+    pending: f32,
+    scroll: f32,
+) {
     const BAR: f32 = 3.0;
     const STEP: f32 = 6.0;
     const MIN: f32 = 3.0;
@@ -30270,19 +30269,18 @@ fn paint_live_levels(painter: &egui::Painter, rect: egui::Rect, levels: &[f32], 
         return;
     }
     let painter = painter.with_clip_rect(painter.clip_rect().intersect(rect));
-    for (age, level) in levels.iter().rev().enumerate() {
+    for (age, level) in std::iter::once(&pending)
+        .chain(levels.iter().rev())
+        .enumerate()
+    {
         // Left edge of the bar, from the meter's left.
-        let x = width - scroll * STEP - age as f32 * STEP;
+        let x = width - BAR - scroll * STEP - age as f32 * STEP;
         if x < -STEP {
             break;
         }
         let center = x + BAR / 2.0;
-        let pinch = 1.0 - 0.70 * (1.0 - smoothstep(0.0, 40.0_f32.min(0.8 * width), center));
-        let fade = smoothstep(0.0, 0.10 * width, center);
-        let swell = egui::emath::easing::cubic_out(((width - center) / 36.0).clamp(0.0, 1.0));
-        let arrive = smoothstep(0.0, 10.0, width - center);
-        let scale = pinch * swell;
-        let alpha = fade * arrive;
+        let scale = 1.0 - 0.70 * (1.0 - smoothstep(0.0, 40.0_f32.min(0.8 * width), center));
+        let alpha = smoothstep(0.0, 0.10 * width, center);
         if alpha < 0.02 {
             continue;
         }
@@ -30380,20 +30378,35 @@ fn stop_button(ui: &mut egui::Ui, enabled: bool, label: &str, size: f32) -> egui
         },
     );
     if enabled {
+        // Live: terracotta, with a ring that grows and fades every second
+        // (still under reduced motion).
+        if !motion::reduced() {
+            let phase = (ui.input(|input| input.time) % 1.0) as f32;
+            let grow = egui::emath::easing::cubic_out(phase);
+            ui.painter().rect_stroke(
+                rect.expand(7.0 * grow),
+                8.0 + 7.0 * grow,
+                Stroke::new(2.0, TERRACOTTA_BRIGHT.gamma_multiply(0.55 * (1.0 - grow))),
+                egui::StrokeKind::Middle,
+            );
+            ui.ctx().request_repaint();
+        }
         let fill = if response.is_pointer_button_down_on() {
-            ACTION_PRESS
-        } else if response.hovered() || response.has_focus() {
-            ACTION_HOVER
+            TERRACOTTA
         } else {
-            ACTION
+            TERRACOTTA_BRIGHT
         };
         ui.painter().rect_filled(rect, 8.0, fill);
+        if response.has_focus() {
+            ui.painter()
+                .rect_stroke(rect, 8.0, Stroke::new(2.0, TEXT), egui::StrokeKind::Inside);
+        }
     }
     ui.painter().rect_filled(
         egui::Rect::from_center_size(rect.center(), egui::vec2(size * 0.34, size * 0.34)),
         2.0,
         if enabled {
-            ON_ACTION
+            TEXT
         } else {
             MUTED.gamma_multiply(0.5)
         },

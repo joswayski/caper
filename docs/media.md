@@ -2950,10 +2950,19 @@ changing them needs only an API restart.
 ### Recording and sending
 
 Tapping or clicking the microphone records hands-free: a bar with discard,
-a pulsing dot and timer, live levels and a Stop button (Enter stops, Escape
-discards). On touch layouts holding the microphone also records until
-release; sliding left cancels. Recordings under a second are dropped and
-10:00 stops automatically.
+a recording dot and timer, live levels and a terracotta Stop that pulses once
+a second while the microphone is live (Enter stops, Escape discards; on
+iPhone/iPad the microphone itself becomes Stop). Recording starts on touch
+down so no words are lost, but a touch looks like a tap until it has been
+held for 300 ms: a quick tap never shows hold hints. Held longer, a hint
+("Release to add · Slide up to lock", or "Release to send" with the setting
+on) appears above the bar and a lock pill above the microphone; releasing
+stops, and sliding up 72 pt/dp/px locks the recording hands-free. There is no
+slide-to-cancel: a released hold is staged (remove its chip), and a locked
+one has Discard. Once the finger lifts from a recording that carries on
+hands-free, touch layouts close the keyboard so typing can't reach the field
+hidden under the bar. Recordings under a second are dropped and 10:00 stops
+automatically.
 
 By default stopping does not send. The recording becomes a voice chip in the
 composer beside any staged files (play, waveform, duration, remove), so text,
@@ -2969,14 +2978,17 @@ readings). Players draw evenly spaced rounded bars by linear interpolation,
 with per-frame progress.
 
 The live recording meter is the same on every client. It adds a bar every
-25 ms holding the loudest level in that slice, and a bar may fall to 35% of the
-one before, so gaps between words show. The meter draws `clamp((v - 0.28) /
-0.47) ^ 1.2` of its height, which stretches speech (about -35 to -12 dB) to the
-full height. Bars are 3 px pills 6 px apart and at least a 3 px dot; loud bars
-warm from grey toward eggshell. A new bar arrives flat at the right edge and
-swells to full size over 36 px. Within 40 px of the left edge bars pinch to 30%
-of their height, and they fade out over the left 10% of the meter. It redraws
-every frame and scrolls continuously, stepping instead under reduced motion.
+75 ms (80 px a second) holding the loudest level in that slice, and a bar may
+fall to 35% of the one before, so gaps between words show. The bar still
+forming is drawn at the right edge at full size from the first reading (the
+louder of the slice's peak so far and the previous bar's fall), so speech
+shows within one level reading instead of after the slice. The meter draws
+`clamp((v - 0.28) / 0.47) ^ 1.2` of its height, which stretches speech (about
+-35 to -12 dB) to the full height. Bars are 3 px pills 6 px apart and at least
+a 3 px dot; loud bars warm from grey toward eggshell. Within 40 px of the left
+edge bars pinch to 30% of their height, and they fade out over the left 10% of
+the meter. It redraws every frame and scrolls continuously, stepping instead
+under reduced motion.
 
 On the web the recording runs through the call's microphone processing
 (`captureMicrophone`: DPDFNet-8 HR with its DPDFNet-2/RNNoise fallbacks, the

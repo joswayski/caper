@@ -120,26 +120,27 @@ test("any waveform length resamples by linear interpolation to the bars that fit
 test("live bars keep each slice's peak and fall fast between words", () => {
   const bars = new LiveBars(3);
   assert.equal(bars.sample(0.4, 0), false, "the first sample starts the clock");
-  bars.sample(0.9, 10);
-  assert.equal(bars.sample(0.2, 25), true);
+  assert.equal(bars.pending, 0.4, "the forming bar shows the first reading at once");
+  bars.sample(0.9, 30);
+  assert.equal(bars.sample(0.2, 60), false, "a bar every 75 ms, not every reading");
+  assert.equal(bars.sample(0.2, 75), true);
   assert.deepEqual(bars.values, [0.9], "the loudest level in the slice");
-  bars.sample(0, 50);
+  assert.ok(Math.abs(bars.pending - 0.9 * 0.35) < 1e-9, "the next bar starts from the fall");
+  bars.sample(0, 150);
   assert.ok(Math.abs(bars.values[1] - 0.9 * 0.35) < 1e-9, "falls at most to 35%");
-  bars.sample(Number.NaN, 60);
-  assert.equal(bars.sample(0.5, 75), true, "constant cadence");
-  assert.equal(bars.lastBarAt, 75);
-  bars.sample(0.5, 400);
-  assert.equal(bars.lastBarAt, 400, "a stall restarts the cadence");
+  bars.sample(Number.NaN, 160);
+  assert.equal(bars.sample(0.5, 225), true, "constant cadence");
+  assert.equal(bars.lastBarAt, 225);
+  bars.sample(0.5, 600);
+  assert.equal(bars.lastBarAt, 600, "a stall restarts the cadence");
   assert.equal(bars.values.length, 3, "history is capped");
 });
 
-test("live bars stretch speech and pinch toward the left", () => {
+test("live bars stretch speech, arrive full size and pinch toward the left", () => {
   assert.equal(liveBarLevel(0.28), 0);
   assert.equal(liveBarLevel(0.75), 1);
   assert.equal(liveBarLevel(1), 1);
-  const right = liveBarShape(400, 400);
-  assert.equal(right.scale, 0, "arrives flat");
-  assert.equal(right.alpha, 0, "and invisible");
+  assert.deepEqual(liveBarShape(398.5, 400), { scale: 1, alpha: 1 }, "full size and visible at the right edge");
   const middle = liveBarShape(200, 400);
   assert.deepEqual(middle, { scale: 1, alpha: 1 });
   const left = liveBarShape(0, 400);

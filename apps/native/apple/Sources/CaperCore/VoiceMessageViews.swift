@@ -308,8 +308,9 @@ struct VoiceTarget {
 /// The composer's microphone ("Record voice message"), a tool button beside
 /// Emoji. A click or tap records hands-free until Stop: on the Mac the row
 /// becomes the recording bar with Discard and Stop; on iPhone and iPad the
-/// microphone itself becomes Stop. Touch layouts can also press and hold
-/// (release to stop, slide left to cancel). VoiceOver activates it to start
+/// microphone itself becomes a pulsing terracotta Stop and the keyboard
+/// closes. Touch layouts can also press and hold: release stops, and sliding
+/// up to the lock keeps recording hands-free. VoiceOver activates it to start
 /// and again to stop.
 struct VoiceRecordButton: View {
     let target: VoiceTarget
@@ -318,7 +319,7 @@ struct VoiceRecordButton: View {
     private var owner: VoiceComposerID { target.owner }
     #if os(iOS)
     @State private var pressStart: Date?
-    @State private var cancelled = false
+    @State private var locked = false
     @GestureState private var pressing = false
     #endif
 
@@ -382,7 +383,15 @@ struct VoiceRecordButton: View {
     private var holdableMicrophone: some View {
         let enabled = target.enabled
         let active = recorder.isActive(owner)
-        return microphone
+        return CaperIcon(name: "mic", size: 18)
+            .foregroundStyle(active ? CaperTheme.text : CaperTheme.muted)
+            .frame(width: 30, height: 30)
+            // Held: the microphone under the finger is live terracotta.
+            .background(RoundedRectangle(cornerRadius: 8).fill(active ? CaperTheme.terracotta : .clear))
+            .frame(width: 36, height: height)
+            .contentShape(Rectangle())
+            // The composer box clips its contents, so `VoiceLockLayer` outside it draws the lock.
+            .anchorPreference(key: VoiceLockAnchorKey.self, value: .bounds) { active && recorder.holding ? $0 : nil }
             .opacity(enabled || active ? 1 : 0.45)
             .highPriorityGesture(holdGesture, including: enabled || active ? .all : .subviews)
             .onChange(of: pressing) { _, now in
@@ -392,8 +401,8 @@ struct VoiceRecordButton: View {
                 Task { @MainActor in
                     await Task.yield()
                     guard pressStart != nil else { return }
-                    pressStart = nil; cancelled = false
-                    if recorder.isActive(owner) { recorder.handsFree = true; recorder.slide = 0 }
+                    pressStart = nil; locked = false
+                    if recorder.isActive(owner) { goHandsFree() }
                 }
             }
             .accessibilityElement()
@@ -410,66 +419,146 @@ struct VoiceRecordButton: View {
             .updating($pressing) { _, state, _ in state = true }
             .onChanged { value in
                 if pressStart == nil {
-                    pressStart = Date(); cancelled = false
+                    let start = Date()
+                    pressStart = start; locked = false
                     begin(handsFree: false)
+                    // Still down after a tap's length: show what releasing and sliding do.
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(VoiceMessage.tapThreshold))
+                        if pressStart == start, !locked, recorder.isActive(owner), !recorder.handsFree { recorder.holding = true }
+                    }
                 }
-                guard !cancelled, recorder.isActive(owner), !recorder.handsFree else { return }
-                recorder.slide = min(0, Double(value.translation.width))
-                if VoiceMessage.cancelsBySliding(translation: Double(value.translation.width)) {
-                    cancelled = true
+                guard !locked, recorder.isActive(owner), !recorder.handsFree else { return }
+                let lift = min(0, Double(value.translation.height))
+                recorder.lift = lift
+                if VoiceMessage.locksBySliding(translation: lift) {
+                    locked = true
                     VoiceMessageRecorder.haptic()
-                    recorder.cancel()
+                    recorder.lift = 0; recorder.holding = false; recorder.handsFree = true
                 }
             }
             .onEnded { _ in
                 guard let start = pressStart else { return }
                 pressStart = nil
-                let wasCancelled = cancelled
-                cancelled = false
-                recorder.slide = 0
+                let wasLocked = locked
+                locked = false
+                recorder.lift = 0
                 // A start that failed (denied permission) already shows its notice.
                 guard recorder.isActive(owner) else { return }
                 let recorded = recorder.isRecording(owner) ? recorder.elapsedMs : 0
-                switch VoiceMessage.release(pressDuration: Date().timeIntervalSince(start), recordedMs: recorded, cancelled: wasCancelled) {
-                case .cancel, .discard: recorder.cancel()
-                case .handsFree: recorder.handsFree = true
+                switch VoiceMessage.release(pressDuration: Date().timeIntervalSince(start), recordedMs: recorded, locked: wasLocked) {
+                case .discard: recorder.cancel()
+                case .handsFree: goHandsFree()
                 case .stop: stop()
                 }
             }
     }
+
+    /// The finger has lifted and the recording carries on until Stop: the
+    /// keyboard closes, so typing can't reach the field hidden under the bar.
+    private func goHandsFree() {
+        recorder.handsFree = true; recorder.holding = false; recorder.lift = 0
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
     #endif
 }
 
-/// The eggshell square Stop of a hands-free recording ("Stop recording").
+/// The Stop of a hands-free recording ("Stop recording"): a terracotta
+/// square that pulses once a second while the microphone is live (still
+/// under Reduce Motion).
 struct VoiceStopButton: View {
     var height: CGFloat = 42
     var width: CGFloat = 36
+    var square: CGFloat = 30
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
-                .frame(width: 30, height: 30)
+                .frame(width: square, height: square)
                 .frame(width: width, height: height)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(VoiceStopStyle())
+        .buttonStyle(VoiceStopStyle(square: square))
         .help(VoiceMessage.stopLabel)
         .accessibilityLabel(VoiceMessage.stopLabel)
     }
 }
 
-/// Eggshell fill with a blackout glyph, as primary actions, on the glyph's square only.
+/// Terracotta fill with a text-coloured glyph on the glyph's square only,
+/// and a ring that grows and fades from it every second.
 private struct VoiceStopStyle: ButtonStyle {
+    let square: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(CaperTheme.onAction)
+            .foregroundStyle(CaperTheme.text)
             .background {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(configuration.isPressed ? CaperTheme.actionPress : CaperTheme.action)
-                    .frame(width: 30, height: 30)
+                ZStack {
+                    TimelineView(.animation(paused: reduceMotion)) { context in
+                        let phase = reduceMotion ? 1 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1)
+                        let grow = 1 - pow(1 - phase, 3)
+                        RoundedRectangle(cornerRadius: 8 + 7 * grow)
+                            .stroke(CaperTheme.terracottaBright.opacity(0.55 * (1 - grow)), lineWidth: 2)
+                            .frame(width: square + 14 * grow, height: square + 14 * grow)
+                    }
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(configuration.isPressed ? CaperTheme.terracotta : CaperTheme.terracottaBright)
+                        .frame(width: square, height: square)
+                }
             }
             .modifier(ControlPointer())
+    }
+}
+
+/// Where a held microphone is, for `VoiceLockLayer`.
+struct VoiceLockAnchorKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) { value = value ?? nextValue() }
+}
+
+/// Draws `VoiceLockHint` above a held microphone inside this view. Applied
+/// outside the composer box, whose rounded clip would cut it off.
+struct VoiceLockLayer: ViewModifier {
+    private var recorder: VoiceMessageRecorder { .shared }
+
+    func body(content: Content) -> some View {
+        content.overlayPreferenceValue(VoiceLockAnchorKey.self) { anchor in
+            GeometryReader { proxy in
+                if let anchor {
+                    let mic = proxy[anchor]
+                    VoiceLockHint(progress: VoiceMessage.lockProgress(translation: recorder.lift))
+                        .position(x: mic.midX, y: mic.minY - 8 - VoiceLockHint.height / 2)
+                        .modifier(Entrance.anchored)
+                }
+            }
+        }
+    }
+}
+
+/// Above a held microphone: a lock with an arrow under it. Sliding up lifts
+/// the lock toward the top and fades the arrow; reaching it locks the
+/// recording hands-free.
+struct VoiceLockHint: View {
+    let progress: Double
+    /// Two 14-point icons 8 apart with 10 points above and below.
+    static let height: CGFloat = 56
+
+    var body: some View {
+        VStack(spacing: 8) {
+            CaperIcon(name: "lock", size: 14).foregroundStyle(CaperTheme.text)
+                .offset(y: -6 * progress)
+            CaperIcon(name: "chevron-up", size: 14).foregroundStyle(CaperTheme.muted)
+                .opacity(1 - progress)
+        }
+        .padding(.vertical, 10)
+        .frame(width: 32, height: Self.height)
+        .background(RoundedRectangle(cornerRadius: 8).fill(CaperTheme.raised))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+        .fixedSize()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -516,7 +605,8 @@ struct VoiceComposerCover: ViewModifier {
             // Gives up keyboard focus, so Return reaches the bar's Stop rather than the message field.
             .disabled(recording)
             #endif
-            // iPhone keeps the keyboard up under a recording, so the composer doesn't move.
+            // iPhone keeps the keyboard up while a finger holds the microphone, so
+            // the composer doesn't move under it; it closes once recording goes hands-free.
             .accessibilityHidden(recording)
             .overlay(alignment: .bottom) {
                 if recording {
@@ -531,9 +621,9 @@ struct VoiceComposerCover: ViewModifier {
 }
 
 /// The recording bar: `[trash]  ● 0:07  live bars  [Stop]` on the Mac
-/// (Return stops, Escape discards). On touch devices a held recording shows
-/// the timer, live bars and "Slide to cancel"; a hands-free one shows Discard,
-/// the timer and live bars, with the microphone beside it turned into Stop.
+/// (Return stops, Escape discards). On touch devices it shows Discard, the
+/// timer and live bars, with the microphone beside it turned into Stop once
+/// the finger lifts; while held, Discard steps out (releasing stops).
 struct VoiceRecordingBar: View {
     let target: VoiceTarget
     var height: CGFloat = 42
@@ -542,10 +632,9 @@ struct VoiceRecordingBar: View {
     var body: some View {
         #if os(iOS)
         HStack(spacing: 10) {
-            if recorder.handsFree { discard } else { Color.clear.frame(width: 2) }
+            discard.opacity(recorder.holding ? 0 : 1).disabled(recorder.holding)
             VoiceRecordingTimer(elapsedMs: recorder.elapsedMs)
             VoiceLiveBars()
-            if !recorder.handsFree { slideHint }
         }
         .padding(.trailing, 12)
         .frame(maxWidth: .infinity, minHeight: height, maxHeight: height)
@@ -558,18 +647,12 @@ struct VoiceRecordingBar: View {
             discard.keyboardShortcut(.cancelAction)
             VoiceRecordingTimer(elapsedMs: recorder.elapsedMs)
             VoiceLiveBars()
-            Button {
+            VoiceStopButton(height: height, width: 42, square: 32) {
                 let target = target
                 Task { await VoiceTarget.finish(target) }
-            } label: {
-                Image(systemName: "stop.fill").font(.system(size: 13, weight: .bold))
-                    .frame(width: 42, height: height)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(PrimaryIconButton())
             .keyboardShortcut(.defaultAction)
             .help("\(VoiceMessage.stopLabel) (Return)")
-            .accessibilityLabel(VoiceMessage.stopLabel)
             .accessibilityIdentifier("\(target.identifier)-stop")
         }
         .padding(.leading, 4)
@@ -595,33 +678,15 @@ struct VoiceRecordingBar: View {
         .modifier(ControlPointer())
     }
 
-    #if os(iOS)
-    private var slideHint: some View {
-        let progress = VoiceMessage.slideProgress(translation: recorder.slide)
-        return HStack(spacing: 4) {
-            CaperIcon(name: "chevron-left", size: 14)
-            Text(VoiceMessage.slideHint).font(CaperTheme.font(12)).lineLimit(1)
-        }
-        .foregroundStyle(CaperTheme.muted)
-        .opacity(1 - progress * 0.8)
-        // Follows the finger (not an animation), so Reduce Motion is unaffected.
-        .offset(x: CGFloat(max(-VoiceMessage.cancelDistance, recorder.slide)) * 0.5)
-    }
-    #endif
 }
 
-/// The recording dot (pulsing; still under Reduce Motion) and m:ss.
+/// The recording dot (steady: Stop carries the pulse) and m:ss.
 struct VoiceRecordingTimer: View {
     let elapsedMs: Int
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 6) {
-            TimelineView(.animation(paused: reduceMotion)) { context in
-                let phase = reduceMotion ? 1 : 0.55 + 0.45 * (0.5 + 0.5 * cos(context.date.timeIntervalSinceReferenceDate * .pi))
-                Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).opacity(phase)
-            }
-            .frame(width: 8, height: 8)
+            Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8)
             Text(VoiceDuration.format(ms: elapsedMs))
                 .font(CaperTheme.font(13, weight: .medium)).monospacedDigit().foregroundStyle(CaperTheme.text)
         }
@@ -632,8 +697,8 @@ struct VoiceRecordingTimer: View {
 }
 
 /// The live input meter (`VoiceLiveMeter`'s pinch bars), redrawn every
-/// frame so it scrolls right to left at a constant rate (new bars step in
-/// without the slide under Reduce Motion).
+/// frame so it scrolls right to left at a constant rate with the forming bar
+/// at the right edge (new bars step in without the slide under Reduce Motion).
 struct VoiceLiveBars: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var recorder: VoiceMessageRecorder { .shared }
@@ -641,9 +706,10 @@ struct VoiceLiveBars: View {
     var body: some View {
         let levels = recorder.levels
         TimelineView(.animation(paused: reduceMotion)) { context in
-            let scroll = reduceMotion ? 1 : VoiceWaveform.scrollFraction(sinceLastBar: context.date.timeIntervalSince(recorder.lastBarAt))
+            let scroll = reduceMotion ? 0 : VoiceWaveform.scrollFraction(sinceLastBar: context.date.timeIntervalSince(recorder.lastBarAt))
+            let pending = recorder.pendingLevel
             Canvas { graphics, size in
-                for bar in VoiceLiveMeter.layout(levels, width: Double(size.width), height: Double(size.height), scroll: scroll) {
+                for bar in VoiceLiveMeter.layout(levels, pending: pending, width: Double(size.width), height: Double(size.height), scroll: scroll) {
                     let rect = CGRect(x: bar.x, y: bar.y, width: bar.width, height: bar.height)
                     let color = VoiceLiveMeter.color(brightness: bar.brightness)
                     graphics.fill(Path(roundedRect: rect, cornerRadius: min(rect.width, rect.height) / 2),
@@ -676,7 +742,7 @@ struct VoiceComposerNotice: View {
 
     var body: some View {
         #if os(iOS)
-        if recorder.isRecording(owner) && !recorder.handsFree {
+        if recorder.isRecording(owner) && recorder.holding {
             Text(VoiceMessage.releaseHint(sendsOnStop: VoiceMessageSettings.shared.sendOnStop))
                 .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.text)
                 .frame(maxWidth: .infinity)

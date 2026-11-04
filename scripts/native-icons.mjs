@@ -26,6 +26,7 @@ const names = {
   "chevron-down": "ChevronDown",
   "chevron-left": "ChevronLeft",
   "chevron-right": "ChevronRight",
+  "chevron-up": "ChevronUp",
   "chevrons-down-up": "ChevronsDownUp",
   "chevrons-up-down": "ChevronsUpDown",
   copy: "Copy",

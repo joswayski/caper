@@ -82,12 +82,17 @@ final class VoiceMessageRecorder {
     private(set) var levels: [Float] = []
     /// When the newest live bar was due, for the bars' constant scroll.
     @ObservationIgnored private(set) var lastBarAt = Date()
+    /// The live bar still forming, drawn at the right edge every frame.
+    @ObservationIgnored private(set) var pendingLevel: Float = 0
     /// A short inline message for one composer: a denied permission or a failure.
     private(set) var notice: (owner: VoiceComposerID, text: String)?
-    /// How far a held recording's finger has slid left (points, 0 or negative).
-    var slide: Double = 0
-    /// Recording continues without a finger on the microphone (a tap, or the
-    /// Mac's click): the bar shows Discard and Stop.
+    /// How far a held recording's finger has slid up (points, 0 or negative).
+    var lift: Double = 0
+    /// A finger has held the microphone past a tap's length: the release hint
+    /// and the lock show.
+    var holding = false
+    /// Recording continues without a finger on the microphone (a tap, a hold
+    /// slid up to the lock, or the Mac's click): the bar shows Discard and Stop.
     var handsFree = false
 
     /// The processed recording; nil while the plain recorder is the fallback.
@@ -291,8 +296,9 @@ final class VoiceMessageRecorder {
     private func addBar(_ level: Float, at now: Date) {
         if meter.add(level, at: now) {
             levels = meter.bars
-            lastBarAt = meter.lastBarAt ?? now
         }
+        lastBarAt = meter.lastBarAt ?? now
+        pendingLevel = meter.pending
     }
 
     /// Stops and returns the recording, or nil when it was under a second
@@ -354,7 +360,7 @@ final class VoiceMessageRecorder {
         capture = nil
         recorder = nil; onLimit = nil
         phase = .idle; owner = nil
-        elapsedMs = 0; levels = []; readings = []; lastReading = 0; slide = 0; handsFree = false
+        elapsedMs = 0; levels = []; readings = []; lastReading = 0; pendingLevel = 0; lift = 0; holding = false; handsFree = false
         stopObservingInterruptions()
         stopObservingEngine()
         endSession()
