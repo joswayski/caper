@@ -454,19 +454,16 @@ private extension Transaction {
 /// Duo's island and status, folded and unfolded, with the iOS 27.1 SDK. iOS
 /// stacks system toolbars there; Caper's conversation actions go there too.
 /// Regular iPhones in landscape inset both sides alike, so they have none.
+/// Surfaces run under it, as Slack's do, so it takes the color of the panel
+/// beside it; text and controls other than the column's own stay out of it.
 struct StatusColumn: Equatable {
     var width: CGFloat = 0
-    /// The container's top and bottom insets, which the card reaches into.
-    var top: CGFloat = 0
-    var bottom: CGFloat = 0
     /// Panels between the conversation and the column (the tiled member list).
     var gap: CGFloat = 0
 
     init() {}
     init(_ insets: EdgeInsets) {
         width = insets.trailing > insets.leading ? insets.trailing : 0
-        top = insets.top
-        bottom = insets.bottom
     }
 }
 
@@ -481,39 +478,16 @@ extension EnvironmentValues {
     }
 }
 
-/// Beside a status column the conversation is a card: its trailing corners
-/// round at the safe-area edge, reaching the screen's top and bottom, and the
-/// column stays open for its controls. Without a column it clips nothing.
-private struct StatusColumnCard: Shape {
-    var column: StatusColumn
-    func path(in rect: CGRect) -> Path {
-        guard column.width > 0 else { return Path(rect.insetBy(dx: -rect.width, dy: -rect.height)) }
-        // Open to the leading side, where the conversation casts its shadow over Browse.
-        let card = CGRect(x: rect.minX - rect.width, y: rect.minY - column.top,
-                          width: rect.width * 2, height: rect.height + column.top + column.bottom)
-        var path = UnevenRoundedRectangle(cornerRadii: .init(bottomTrailing: 16, topTrailing: 16), style: .continuous).path(in: card)
-        path.addRect(CGRect(x: rect.maxX, y: rect.minY - rect.height, width: column.width, height: rect.height * 3))
-        return path
-    }
-}
-
-/// Cuts off whatever reaches past the trailing edge into a status column,
-/// leaving the other edges unclipped.
-private struct ColumnEdgeClip: Shape {
-    var active: Bool
-    func path(in rect: CGRect) -> Path {
-        Path(CGRect(x: rect.minX - rect.width, y: rect.minY - rect.height,
-                    width: rect.width * (active ? 2 : 3), height: rect.height * 3))
-    }
-}
-
-/// A full-bleed surface that stops at a status column instead of running
-/// under it, leaving the column's own background and controls.
-private struct StatusColumnBackground: ViewModifier {
-    let color: Color
+/// A header's bottom rule. Beside a status column it runs under the column
+/// with the header's surface, rather than stopping short of the screen edge.
+private struct BottomRule: ViewModifier {
+    var color = CaperTheme.border
     @Environment(\.statusColumn) private var column
     func body(content: Content) -> some View {
-        content.background(color, ignoresSafeAreaEdges: column.width > 0 ? [.top, .bottom, .leading] : .all)
+        content.overlay(alignment: .bottom) {
+            Rectangle().fill(color).frame(height: 1)
+                .ignoresSafeArea(.container, edges: column.width > 0 ? .trailing : [])
+        }
     }
 }
 
@@ -983,10 +957,9 @@ private struct WorkspaceView: View {
                     .background {
                         Rectangle().fill(CaperTheme.blackout)
                             .shadow(color: .black.opacity(narrow ? 0.45 : 0), radius: 16, x: -12)
-                            .ignoresSafeArea(.container, edges: .vertical)
+                            // And under a status column, so no blackout shows beside the conversation.
+                            .ignoresSafeArea(.container, edges: [.vertical, .trailing])
                     }
-                    // Beside a status column (iPhone Duo), a card that ends where the column begins.
-                    .clipShape(StatusColumnCard(column: statusColumn))
                     .modifier(BrowseLayer(showsBrowse: narrow && showsBrowse) { CGSize(width: narrow ? $0 * travel : 0, height: 0) })
                     .allowsHitTesting(!narrow || !showsBrowse)
                     .accessibilityElement(children: .contain)
@@ -3064,7 +3037,7 @@ private struct PhoneVoiceStrip: View {
         content()
             .frame(maxWidth: .infinity, minHeight: 56, maxHeight: 56)
             .background(LiveNowPalette.stripFill)
-            .overlay(alignment: .bottom) { Rectangle().fill(LiveNowPalette.stripBorder).frame(height: 1) }
+            .modifier(BottomRule(color: LiveNowPalette.stripBorder))
             .modifier(Entrance(offset: CGSize(width: 0, height: -4), animation: CaperMotion.easeOut(CaperMotion.fast)))
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("voice-strip")
@@ -3156,7 +3129,7 @@ private struct MemberPresenceView: View {
                         .buttonStyle(SidebarIconButton()).accessibilityLabel("Close member list")
                 }
             }.padding(.horizontal, 12).frame(height: 50)
-                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                .modifier(BottomRule())
             if searching {
             HStack {
                     TextField("Name or username", text: $presence.query)
@@ -3211,7 +3184,7 @@ private struct MemberPresenceView: View {
             }.padding(.horizontal, 12)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .modifier(StatusColumnBackground(color: CaperTheme.sidebar))
+            .background(CaperTheme.sidebar)
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
             .coordinateSpace(.named(MentionCard.timelineSpace))
             .modifier(MentionCardHost(target: $profile, model: model, viewerID: model.account?.id))
@@ -3285,6 +3258,7 @@ private struct MembersOverlay: View {
     let width: CGFloat
     let close: () -> Void
     @Environment(MembersDrawer.self) private var drawer: MembersDrawer?
+    @Environment(\.statusColumn) private var statusColumn
     /// Bumped once a closing slide ends, to drop the list it kept in view.
     @State private var settled = 0
 
@@ -3298,7 +3272,13 @@ private struct MembersOverlay: View {
         let travel = width + 8 + drawerShadowRoom
         let rest: CGFloat = shows ? 1 : 0
         ZStack(alignment: .trailing) {
-            Color.black.opacity(0.25)
+            // The dimming also covers a status column, which shares the
+            // conversation's surface; touches there stay with the system.
+            Color.clear
+                .background {
+                    Color.black.opacity(0.25).allowsHitTesting(false)
+                        .ignoresSafeArea(.container, edges: statusColumn.width > 0 ? .trailing : [])
+                }
                 .contentShape(Rectangle())
                 .onTapGesture { if !SwipeTapGuard.swiping { close() } }
                 // Each layer swipes closed within its own bounds, before its
@@ -3746,7 +3726,7 @@ private struct ConversationStage: View {
                     // Centred under the heading, clear of the edges when it wraps.
                     .multilineTextAlignment(.center).padding(.horizontal, 24)
                 if model.isOwner { Button("Create channel", action: createChannel).buttonStyle(CaperPrimaryButton()).frame(width: 160).padding(.top, 6) }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity).modifier(StatusColumnBackground(color: CaperTheme.conversation))
+            }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.conversation)
         } else { ChatView(model: model, narrow: narrow, browse: browse, membersVisible: membersVisible, toggleMembers: toggleMembers) }
     }
 }
@@ -4009,8 +3989,7 @@ private struct ChatView: View {
         #if os(iOS)
         .fullScreenCover(isPresented: Binding(get: { narrow && chat.threadRootID != nil }, set: { if !$0 { chat.closeThread() } })) {
             NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource, fullScreen: true)
-                // A presentation: carry the column and the card that ends at it.
-                .clipShape(StatusColumnCard(column: statusColumn))
+                // A presentation: carry the column for its header rule.
                 .environment(\.statusColumn, statusColumn)
                 .presentationBackground(.clear)
         }
@@ -4024,8 +4003,6 @@ private struct ChatView: View {
         }
         #endif
         }
-        // Full-bleed rows (a mention's highlight) stop at the column; only its controls go there.
-        .clipShape(ColumnEdgeClip(active: statusColumn.width > 0))
         .overlay(alignment: .bottomTrailing) { statusColumnControls }
         .sheet(item: $chat.forwardTarget) { message in ForwardPickerView(chat: chat, message: message) }
         .sheet(item: $chat.forwardConversationTarget) { message in ForwardConversationView(chat: chat, messageID: message.id) }
@@ -4053,7 +4030,8 @@ private struct ChatView: View {
                 }
             }
             .padding(4)
-            .background(CaperTheme.surface, in: Capsule())
+            // The composer's fill, so the capsule reads as its neighbour.
+            .background(CaperTheme.composer, in: Capsule())
             .overlay(Capsule().strokeBorder(CaperTheme.border))
             .frame(width: statusColumn.width)
             .padding(.bottom, CaperTheme.workspaceBottomInset)
@@ -4227,7 +4205,7 @@ private struct ChatView: View {
                 }
             }
             .padding(.leading, narrow ? 13 : 18).padding(.trailing, narrow ? 10 : 18).frame(height: 50)
-                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                .modifier(BottomRule())
                 .modifier(BrowseSwipe(open: false, enabled: narrow && !membersVisible && !showingPins && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: browse))
                 .modifier(MembersSwipe(open: membersVisible, enabled: narrow && membersAvailable && !showingPins && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: toggleMembers))
                 // Checked as a channel opens: the strip's Join needs it, and a
@@ -4546,9 +4524,10 @@ private struct ChatView: View {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).monospacedDigit().foregroundStyle(counterTone).padding(.bottom, 6)
             }
         }
-            // Paint behind iOS's rounded keyboard corners; only the background
-            // ignores the safe area, so the controls still avoid the keyboard.
-            .modifier(StatusColumnBackground(color: CaperTheme.conversation))
+            // Paint behind iOS's rounded keyboard corners and under a status
+            // column; only the background ignores the safe area, so the
+            // controls still avoid the keyboard and the column.
+            .background { CaperTheme.conversation.ignoresSafeArea() }
             // Uploads and GIFs (KLIPY_APP_KEY) are optional server configuration;
             // recheck per conversation.
             .task(id: model.selectedDirectMessageID ?? model.selectedChannelID ?? model.visit?.channelID) {
@@ -4989,7 +4968,7 @@ private struct NativeThreadView: View {
                 }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
                 #endif
             }.padding(.horizontal, 18).frame(height: 50)
-                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                .modifier(BottomRule())
                 #if os(iOS)
                 .modifier(ThreadBackSwipe(enabled: canSwipeBack, move: moveBack, release: releaseBack))
                 #endif
@@ -5162,7 +5141,7 @@ private struct NativeThreadView: View {
             .padding(.top, 12)
             .padding(.bottom, 16)
             }
-        }.modifier(StatusColumnBackground(color: CaperTheme.conversation))
+        }.background { CaperTheme.conversation.ignoresSafeArea() }
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { backWidth = $0 }
             .offset(x: backOffset)

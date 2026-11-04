@@ -29,11 +29,13 @@ Members opens automatically only when it fits beside the conversation; the
 explicit Members action still works in narrower windows. Only backgrounds ignore
 container safe areas. iPhone Duo (folded and unfolded, iOS 27.1 SDK) reserves a
 trailing column for its island and status that the leading edge does not mirror;
-iOS stacks system toolbars there. Beside that column the conversation is a card
-with rounded trailing corners that ends where the column begins, and its Pins,
-Members and (1:1 DM) options sit in the column as a vertical capsule level with
-the composer. With Browse open the conversation and its column controls slide
-away, leaving the column blackout. Regular iPhones in landscape inset both sides
+iOS stacks system toolbars there. As in Slack, the surface beside the column
+(the conversation, a thread or the tiled member list) and its header rules run
+under it, so the column matches that panel instead of showing blackout; text
+stays out of it. The conversation's Pins, Members and (1:1 DM) options sit in
+the column as a vertical capsule level with the composer. With Browse open the
+conversation and its column controls slide away, leaving the column blackout
+like Browse's own chrome. Regular iPhones in landscape inset both sides
 equally and keep the previous layout. This is Apple-only because only Apple's
 hardware reserves such a column. Shared SwiftUI changes also apply to macOS; Android, Rust
 desktop and browser layouts are unchanged in this iPhone-focused pass.
