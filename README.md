@@ -29,6 +29,58 @@ Desktop apps update themselves; phone apps update through TestFlight and Google 
 
 Per-feature details, rollout state and validation gaps live in [docs/media.md](docs/media.md).
 
+## Architecture
+
+```mermaid
+flowchart LR
+  clients["Clients<br/>Web (TanStack Start) · iOS · macOS<br/>Android · Rust desktop"]
+
+  subgraph Cloudflare
+    tunnel["Cloudflare Tunnel"]
+    sfu["Realtime SFU / TURN<br/>voice audio"]
+    cdn["CDN Worker<br/>cdn.caper.chat"]
+    r2[("R2<br/>uploads")]
+    embed["Embed Worker<br/>link previews"]
+  end
+
+  subgraph AWS["AWS · k3s cluster"]
+    webpod["Web server"]
+    api["Rust API<br/>HTTP"]
+    gateway["Rust gateway<br/>WebSocket"]
+    valkey[("Valkey<br/>fanout · presence · calls")]
+  end
+
+  pg[("PlanetScale<br/>Postgres")]
+  ext["SES email · APNs / FCM push<br/>OpenRouter transcripts"]
+  sites["Linked sites"]
+  klipy["KLIPY<br/>GIFs and stickers"]
+
+  clients -- "HTTPS + WebSocket" --> tunnel
+  tunnel --> webpod & api & gateway
+  api & gateway --> pg
+  api <--> valkey <--> gateway
+  api -- "call control" --> sfu
+  clients <-->|audio| sfu
+  clients -- "presigned upload" --> r2
+  clients -- "signed download" --> cdn --> r2
+  api -- "unfurl" --> embed --> sites
+  api --> ext
+  clients --> klipy
+```
+
+- **API** owns accounts, spaces, channels and messages. Messages are written
+  to Postgres with an outbox.
+- **Gateway** is the same Rust binary run with `--gateway`. It holds one
+  WebSocket per tab or app and pushes live messages, typing, presence and call
+  rosters. Valkey fans events out across pods.
+- **Voice** audio goes straight between clients and Cloudflare's SFU. It never
+  passes through AWS.
+- **Files** upload straight to R2 with presigned URLs. The API checks them and
+  strips their metadata, and the CDN Worker serves them through signed,
+  expiring links.
+- **Link previews** are fetched by the Embed Worker on Cloudflare, so links
+  people post are never fetched from inside the cluster.
+
 ## Development
 
 You'll need Node.js 24, npm 11+, Docker Compose, Rust 1.94, and AWS CLI access to
