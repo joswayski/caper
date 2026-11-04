@@ -25,6 +25,8 @@ const floorPlane = (x, y, z) =>
   `matrix(${fixed(CA * UNIT)},${fixed(SA * SE * UNIT)},${fixed(-SA * UNIT)},${fixed(CA * SE * UNIT)},${point(x, y, z)})`;
 const frontPlane = (x, y, z) =>
   `matrix(${fixed(CA * UNIT)},${fixed(SA * SE * UNIT)},0,${fixed(CE * UNIT)},${point(x, y, z)})`;
+// Screen angle of the x axis, so text can run along the floor's edges.
+const EDGE_ANGLE = (Math.atan2(SA * SE, CA) * 180) / Math.PI;
 const escape = (text) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;");
 const shade = (hex, amount) => {
   const n = parseInt(hex.slice(1), 16);
@@ -112,27 +114,22 @@ const standingLogo = (name, x, y, z, height, depth = 0.26) => {
   layers.push(`<g transform="${frontPlane(x, y, z)}">${logo(name, height)}</g>`);
   return layers.join("");
 };
-const shadow = (x, y, z, rx, ry) =>
-  `<ellipse transform="${floorPlane(x, y, z)}" rx="${rx}" ry="${ry}" fill="#000" opacity="0.35"/>`;
-
 // Models. Each draws itself centred on grid point (x, y) and returns its footprint for edge planning.
 const models = {
-  pedestal(node) {
-    const palette = palettes[node.palette];
+  // One or more logos standing on the floor, side by side.
+  logos(node) {
     const names = [node.logo].flat();
-    const height = node.logoHeight ?? 1.6;
-    const gap = 0.3;
+    const height = node.logoHeight ?? 1.7;
+    const gap = 0.35;
     const widths = names.map((name) => logoWidth(name, height));
-    const total = widths.reduce((sum, w) => sum + w, 0) + gap * (names.length - 1);
-    const w = Math.max(2.6, total + 0.8);
-    let svg = prism(node.x - w / 2, node.y - 0.9, w, 1.8, 0.3, FLOOR, palette);
-    svg += shadow(node.x, node.y + 0.05, FLOOR + 0.3, total / 2 + 0.1, 0.26);
-    let left = node.x - total / 2;
-    names.forEach((name, index) => {
-      svg += standingLogo(name, left + widths[index] / 2, node.y, FLOOR + 0.3, height, node.depth);
-      left += widths[index] + gap;
-    });
-    return svg;
+    let left = node.x - (widths.reduce((sum, w) => sum + w, 0) + gap * (names.length - 1)) / 2;
+    return names
+      .map((name, index) => {
+        const svg = standingLogo(name, left + widths[index] / 2, node.y, FLOOR, height, node.depth);
+        left += widths[index] + gap;
+        return svg;
+      })
+      .join("");
   },
   monitor({ x, y }) {
     let svg = prism(x - 0.7, y - 0.6, 1.4, 0.9, 0.07, FLOOR, palettes.client);
@@ -203,23 +200,6 @@ ${bars.map(([u, v, w, fill]) => `<rect x="${u}" y="${v}" width="${w}" height="0.
 <ellipse cx="${fixed(tx)}" cy="${fixed(ty + 1.5)}" rx="${fixed(top - 4)}" ry="${fixed(top * SE - 3)}" fill="#6E2E1C"/>
 <g transform="${frontPlane(x, y + 0.92, FLOOR + 0.35)}">${logo("cloudflare", 0.62, "#F1EDE4")}</g>`;
   },
-  globe(node) {
-    let svg = prism(node.x - 1.1, node.y - 0.8, 2.2, 1.6, 0.28, FLOOR, palettes[node.palette]);
-    const [cx, cy] = project(node.x, node.y, FLOOR + 0.28 + 0.95);
-    const r = 0.92 * UNIT;
-    grow([cx - r, cy - r]);
-    grow([cx + r, cy + r]);
-    svg += shadow(node.x, node.y, FLOOR + 0.28, 0.85, 0.5);
-    svg += `<circle cx="${fixed(cx)}" cy="${fixed(cy)}" r="${fixed(r)}" fill="url(#globe)"/>
-<g fill="none" stroke="#F3F4F5" stroke-opacity="0.42" stroke-width="1.1">
-<ellipse cx="${fixed(cx)}" cy="${fixed(cy)}" rx="${fixed(r * 0.38)}" ry="${fixed(r)}"/>
-<ellipse cx="${fixed(cx)}" cy="${fixed(cy)}" rx="${fixed(r * 0.78)}" ry="${fixed(r)}"/>
-<ellipse cx="${fixed(cx)}" cy="${fixed(cy)}" rx="${fixed(r)}" ry="${fixed(r * 0.3)}"/>
-<path d="M${fixed(cx - r * 0.86)},${fixed(cy - r * 0.5)}H${fixed(cx + r * 0.86)}M${fixed(cx - r * 0.86)},${fixed(cy + r * 0.5)}H${fixed(cx + r * 0.86)}"/>
-<line x1="${fixed(cx)}" y1="${fixed(cy - r)}" x2="${fixed(cx)}" y2="${fixed(cy + r)}"/>
-</g>`;
-    return svg;
-  },
   cube({ x, y }) {
     const s = 1.5;
     let svg = prism(x - s / 2, y - s / 2, s, s, s, FLOOR, palettes.ses);
@@ -230,223 +210,182 @@ ${bars.map(([u, v, w, fill]) => `<rect x="${u}" y="${v}" width="${w}" height="0.
 
 const R0 = -6.2;
 const [R1, R2, R3] = [2.2, 9.4, 16.6];
+// Columns: clients, the two Cloudflare columns, AWS, Valkey, PlanetScale.
+const [C, A, B, K, V, P] = [1.6, 10.6, 16.4, 24.6, 30.1, 36.5];
+// Edge labels between clients and Cloudflare sit in the gap between the two zones.
+const GAP = 6.2;
 const zones = [
-  { name: "CLIENTS", x: 0, y: 0, w: 6.4, d: 21.4, accent: "#F1EDE4" },
+  { name: "CLIENTS", x: -1.2, y: 0, w: 5.8, d: 21.4, accent: "#F1EDE4" },
   { name: "CLOUDFLARE", x: 7.8, y: 0, w: 11.6, d: 21.4, accent: "#D9734F" },
   { name: "AWS · K3S", x: 21, y: 0, w: 11.8, d: 21.4, accent: "#8FAA66" },
-  { name: "PLANETSCALE", x: 34.2, y: R2 - 3.4, w: 4.6, d: 6.8, accent: "#9AA0A4", above: true },
-  { name: "THIRD-PARTY SERVICES", x: 0, y: -9.4, w: 33.6, d: 6.4, accent: "#9AA0A4", above: true },
+  { name: "PLANETSCALE", x: 34.2, y: R2 - 3.4, w: 4.6, d: 6.8, accent: "#9AA0A4" },
+  { name: "THIRD-PARTY SERVICES", x: -1.2, y: -9.4, w: 34.8, d: 6.4, accent: "#9AA0A4", above: true },
 ];
 
+// A label is [title, detail], or [detail] alone when the logo already names the service.
 const nodes = [
-  { model: "monitor", x: 3.2, y: R1, label: ["Web", "browser app"] },
-  { model: "phones", x: 3.2, y: R2, label: ["iOS · Android", "native apps"] },
-  { model: "laptop", x: 3.2, y: R3, label: ["Desktop", "macOS · Windows · Linux"] },
+  { model: "monitor", x: C, y: R1, label: ["Web", "browser app"] },
+  { model: "phones", x: C, y: R2, label: ["iOS · Android", "native apps"] },
+  { model: "laptop", x: C, y: R3, label: ["Desktop", "macOS · Windows · Linux"] },
+  { model: "logos", x: A, y: R1, logo: "cloudflare", logoHeight: 1.9, label: ["Realtime SFU / TURN", "voice calls"] },
   {
-    model: "pedestal",
-    x: 10.6,
-    y: R1,
-    palette: "cloudflare",
-    logo: "cloudflare",
-    logoHeight: 1.9,
-    label: ["Realtime SFU / TURN", "voice calls"],
-  },
-  {
-    model: "pedestal",
-    x: 10.6,
+    model: "logos",
+    x: A,
     y: R2,
-    palette: "cloudflare",
     logo: "tunnel",
-    logoHeight: 1.35,
+    logoHeight: 1.45,
     depth: 0.85,
     label: ["Cloudflare Tunnel", "caper.chat ingress"],
   },
+  { model: "logos", x: A, y: R3, logo: "workers", label: ["CDN Worker", "cdn.caper.chat"] },
+  { model: "logos", x: B, y: R1, logo: "workers", label: ["Embed Worker", "link previews"] },
+  { model: "bucket", x: B, y: R3, label: ["R2", "uploads"] },
+  { model: "logos", x: K, y: R1, logo: "rust", label: ["Rust API", "accounts · spaces · messages"] },
+  { model: "logos", x: K, y: R2, logo: "rust", label: ["Rust gateway", "live WebSocket"] },
+  { model: "logos", x: K, y: R3, logo: "tanstack", label: ["Web server", "TanStack Start"] },
+  { model: "logos", x: V, y: R3, logo: "valkey", label: ["Valkey", "fanout · presence · calls"] },
+  { model: "logos", x: P, y: R2, logo: "planetscale", label: ["PlanetScale", "Postgres"] },
+  { model: "logos", x: C, y: R0, logo: "klipy", logoHeight: 0.95, label: ["GIFs · stickers"] },
   {
-    model: "pedestal",
-    x: 10.6,
-    y: R3,
-    palette: "cloudflare",
-    logo: "workers",
-    label: ["CDN Worker", "cdn.caper.chat"],
-  },
-  {
-    model: "pedestal",
-    x: 16.4,
-    y: R1,
-    palette: "cloudflare",
-    logo: "workers",
-    label: ["Embed Worker", "link previews"],
-  },
-  { model: "bucket", x: 16.4, y: R3, label: ["R2", "uploads"] },
-  {
-    model: "pedestal",
-    x: 24.6,
-    y: R1,
-    palette: "aws",
-    logo: "rust",
-    label: ["Rust API", "accounts · spaces · messages"],
-  },
-  { model: "pedestal", x: 24.6, y: R2, palette: "aws", logo: "rust", label: ["Rust gateway", "live WebSocket"] },
-  { model: "pedestal", x: 24.6, y: R3, palette: "aws", logo: "tanstack", label: ["Web server", "TanStack Start"] },
-  { model: "pedestal", x: 30.1, y: R3, palette: "aws", logo: "valkey", label: ["Valkey", "fanout · presence · calls"] },
-  { model: "pedestal", x: 36.5, y: R2, palette: "neutral", logo: "planetscale", label: ["PlanetScale", "Postgres"] },
-  {
-    model: "pedestal",
-    x: 3.2,
+    model: "logos",
+    x: B,
     y: R0,
-    palette: "neutral",
-    logo: "klipy",
-    logoHeight: 0.85,
-    label: ["KLIPY", "GIFs · stickers"],
+    logo: ["x", "youtube", "tiktok", "instagram"],
+    logoHeight: 1.05,
+    label: ["Linked sites", "fetched for previews"],
   },
-  { model: "globe", x: 16.4, y: R0, palette: "neutral", label: ["Linked sites", "X · YouTube · TikTok…"] },
   { model: "cube", x: 24.4, y: R0, label: ["Amazon SES", "sign-in email"] },
-  {
-    model: "pedestal",
-    x: 28.6,
-    y: R0,
-    palette: "neutral",
-    logo: ["apple", "firebase"],
-    logoHeight: 1.15,
-    label: ["APNs / FCM", "push"],
-  },
-  {
-    model: "pedestal",
-    x: 32.6,
-    y: R0,
-    palette: "neutral",
-    logo: "openrouter",
-    logoHeight: 1.3,
-    label: ["OpenRouter", "transcripts"],
-  },
+  { model: "logos", x: 28.6, y: R0, logo: ["apple", "firebase"], logoHeight: 1.25, label: ["APNs / FCM", "push"] },
+  { model: "logos", x: 32.6, y: R0, logo: "openrouter", logoHeight: 1.35, label: ["OpenRouter", "transcripts"] },
 ];
 
 // Edges run on the floor through grid waypoints. `both` puts an arrow at each end; `arrow: false` at neither.
 const edges = [
   {
     path: [
-      [6.4, R1],
-      [9.3, R1],
+      [3.2, R1],
+      [A - 1.1, R1],
     ],
     both: true,
-    label: [7.85, R1, "voice audio"],
+    label: [GAP, R1, "voice audio"],
   },
   {
     path: [
-      [6.4, R2],
-      [9.3, R2],
+      [3.1, R2],
+      [A - 1, R2],
     ],
-    label: [7.85, R2, "HTTPS · WebSocket"],
+    label: [GAP, R2, "HTTPS · WebSocket"],
   },
   {
     path: [
-      [6.4, R3],
-      [9.3, R3],
+      [3.1, R3],
+      [A - 1, R3],
     ],
-    label: [7.85, R3, "signed download"],
+    label: [GAP + 0.5, R3, "signed download"],
   },
   {
     path: [
-      [6.4, R3 + 3.9],
-      [16.4, R3 + 3.9],
-      [16.4, R3 + 1.05],
+      [4.9, R3],
+      [4.9, R3 + 3.9],
+      [B, R3 + 3.9],
+      [B, R3 + 1.05],
     ],
-    label: [7.85, R3 + 3.9, "direct upload"],
+    label: [GAP, R3 + 3.9, "direct upload"],
   },
   {
     path: [
-      [11.9, R3],
-      [15.35, R3],
-    ],
-  },
-  {
-    path: [
-      [3.2, R1 - 0.6],
-      [3.2, R0 + 0.9],
-    ],
-    label: [3.2, -1.5, "GIF search"],
-  },
-  {
-    path: [
-      [16.4, R1 - 0.9],
-      [16.4, R0 + 0.9],
+      [A + 1, R3],
+      [B - 1.1, R3],
     ],
   },
   {
     path: [
-      [11.9, R2],
-      [23.3, R2],
+      [C, R1 - 0.6],
+      [C, R0 + 0.4],
+    ],
+    label: [C, -2.3, "GIF search"],
+  },
+  {
+    path: [
+      [B, R1 - 0.6],
+      [B, R0 + 0.4],
     ],
   },
   {
     path: [
-      [22, R1 + 0.3],
+      [A + 1, R2],
+      [K - 1, R2],
+    ],
+  },
+  {
+    path: [
+      [22, R1 - 0.1],
       [22, R3],
     ],
     arrow: false,
   },
   {
     path: [
-      [22, R1 + 0.3],
-      [23.3, R1 + 0.3],
+      [22, R1 - 0.1],
+      [K - 1, R1 - 0.1],
     ],
   },
   {
     path: [
       [22, R3],
-      [23.3, R3],
+      [K - 1, R3],
     ],
   },
   {
     path: [
-      [23.3, R1 - 0.4],
-      [17.7, R1 - 0.4],
+      [K - 1, R1 - 0.4],
+      [B + 1, R1 - 0.4],
     ],
     label: [20.5, R1 - 0.4, "unfurl"],
   },
   {
     path: [
-      [24, R1 - 0.9],
-      [24, -1.3],
-      [10.6, -1.3],
-      [10.6, R1 - 0.9],
+      [K - 0.4, R1 - 0.6],
+      [K - 0.4, -1.3],
+      [A, -1.3],
+      [A, R1 - 0.6],
     ],
     label: [13.6, -1.3, "call control"],
   },
   {
     path: [
-      [25.9, R1 + 0.4],
-      [30.9, R1 + 0.4],
-      [30.9, R3 - 0.9],
+      [K + 1, R1 - 0.1],
+      [V + 0.8, R1 - 0.1],
+      [V + 0.8, R3 - 0.6],
     ],
     both: true,
   },
   {
     path: [
-      [25.9, R2 + 0.3],
-      [29.3, R2 + 0.3],
-      [29.3, R3 - 0.9],
+      [K + 1, R2 - 0.1],
+      [V - 0.8, R2 - 0.1],
+      [V - 0.8, R3 - 0.6],
     ],
     both: true,
   },
   {
     path: [
-      [25.9, R1 - 0.3],
-      [36.5, R1 - 0.3],
-      [36.5, R2 - 0.9],
+      [K + 1, R1 - 0.45],
+      [P, R1 - 0.45],
+      [P, R2 - 0.6],
     ],
-    label: [33.5, R1 - 0.3, "SQL · outbox"],
+    label: [33.5, R1 - 0.45, "SQL · outbox"],
   },
   {
     path: [
-      [25.9, R2 - 0.3],
-      [35.2, R2 - 0.3],
+      [K + 1, R2 - 0.45],
+      [P - 1, R2 - 0.45],
     ],
   },
   {
     path: [
-      [25.2, R1 - 0.9],
-      [25.2, -2.3],
+      [K + 0.6, R1 - 0.6],
+      [K + 0.6, -2.3],
     ],
     arrow: false,
   },
@@ -460,12 +399,13 @@ const edges = [
   ...[24.4, 28.6, 32.6].map((x) => ({
     path: [
       [x, -2.3],
-      [x, R0 + (x === 24.4 ? 0.8 : 0.95)],
+      [x, R0 + (x === 24.4 ? 0.8 : 0.4)],
     ],
   })),
 ];
 
 const layers = { zones: [], edges: [], models: [], labels: [] };
+const pills = [];
 const all = [Infinity, Infinity, -Infinity, -Infinity];
 const include = (box) => {
   all[0] = Math.min(all[0], box[0]);
@@ -480,7 +420,7 @@ for (const zone of zones) {
   const grid = [];
   for (let gx = Math.ceil(x); gx < x + w; gx++) grid.push(`M${point(gx, y, FLOOR)}L${point(gx, y + d, FLOOR)}`);
   for (let gy = Math.ceil(y); gy < y + d; gy++) grid.push(`M${point(x, gy, FLOOR)}L${point(x + w, gy, FLOOR)}`);
-  const [lx, ly] = zone.above ? project(x + 0.3, y, FLOOR) : project(x, y + d, 0);
+  const [lx, ly] = zone.above ? project(x + 0.3, y, FLOOR) : project(x + 0.3, y + d, 0);
   layers.zones.push(
     prism(x, y, w, d, FLOOR, 0, { top: "#17191C", left: "#111315", right: "#0E0F11" }),
     `<path d="${grid.join("")}" stroke="#202327" stroke-width="1" fill="none"/>`,
@@ -492,7 +432,7 @@ for (const zone of zones) {
     ]
       .map((p) => point(...p, FLOOR))
       .join(" ")}" fill="none" stroke="${zone.accent}" stroke-opacity="0.45" stroke-width="1.2"/>`,
-    `<text class="halo" x="${fixed(lx + (zone.above ? 0 : 4))}" y="${fixed(zone.above ? ly - 9 : ly + 20)}" font-size="12.5" font-weight="700" letter-spacing="0.12em" fill="${zone.accent}">${escape(zone.name)}</text>`,
+    `<text class="halo" transform="translate(${fixed(lx)},${fixed(ly)}) rotate(${fixed(EDGE_ANGLE)})" y="${zone.above ? -9 : 20}" font-size="12.5" font-weight="700" letter-spacing="0.12em" fill="${zone.accent}">${escape(zone.name)}</text>`,
   );
   include(bounds);
 }
@@ -505,6 +445,7 @@ for (const edge of edges) {
     const [lx, ly, text] = edge.label;
     const [px, py] = project(lx, ly, FLOOR);
     const width = text.length * 6.3 + 18;
+    pills.push({ name: text, box: [px - width / 2, py - 10, px + width / 2, py + 10] });
     layers.labels.push(
       `<rect x="${fixed(px - width / 2)}" y="${fixed(py - 10)}" width="${fixed(width)}" height="20" rx="10" fill="#0C0D0F" stroke="#34383B"/>`,
       `<text x="${fixed(px)}" y="${fixed(py + 4)}" text-anchor="middle" font-size="11.5" font-weight="500" fill="#C9C4BA">${escape(text)}</text>`,
@@ -520,15 +461,20 @@ for (const node of nodes) {
   include(box);
   const [, , , bottom] = box;
   const [cx] = project(node.x, node.y, FLOOR);
-  const [title, detail] = node.label;
-  const half = Math.max(title.length * 4.1, detail.length * 3.3) + 4;
-  const labelBox = [cx - half, bottom + 6, cx + half, bottom + 42];
+  const [title, detail] = node.label.length === 2 ? node.label : [null, node.label[0]];
+  const half = Math.max((title ?? "").length * 4.1, detail.length * 3.3) + 4;
+  const top = title ? 0 : -16;
+  const labelBox = [cx - half, bottom + 6, cx + half, bottom + 42 + top];
   include(labelBox);
+  if (title) {
+    layers.labels.push(
+      `<text class="halo" x="${fixed(cx)}" y="${fixed(bottom + 22)}" text-anchor="middle" font-size="14.5" font-weight="700" fill="#F3F4F5">${escape(title)}</text>`,
+    );
+  }
   layers.labels.push(
-    `<text class="halo" x="${fixed(cx)}" y="${fixed(bottom + 22)}" text-anchor="middle" font-size="14.5" font-weight="700" fill="#F3F4F5">${escape(title)}</text>`,
-    `<text class="halo" x="${fixed(cx)}" y="${fixed(bottom + 38)}" text-anchor="middle" font-size="12" font-weight="500" fill="#9AA0A4">${escape(detail)}</text>`,
+    `<text class="halo" x="${fixed(cx)}" y="${fixed(bottom + 38 + top)}" text-anchor="middle" font-size="12" font-weight="500" fill="#9AA0A4">${escape(detail)}</text>`,
   );
-  placed.push({ name: title, depth: node.x * SA + node.y * CA, svg, box, labelBox });
+  placed.push({ name: title ?? detail, depth: node.x * SA + node.y * CA, svg, box, labelBox });
 }
 layers.models = placed.sort((a, b) => a.depth - b.depth).map((model) => model.svg);
 
@@ -537,6 +483,10 @@ for (const a of placed) {
   for (const b of placed) {
     if (a !== b && overlaps(a.labelBox, b.box)) console.warn(`Label "${a.name}" covers the "${b.name}" model`);
     if (a.name < b.name && overlaps(a.labelBox, b.labelBox)) console.warn(`Labels "${a.name}" and "${b.name}" overlap`);
+  }
+  for (const pill of pills) {
+    if (overlaps(pill.box, a.box)) console.warn(`Edge label "${pill.name}" covers the "${a.name}" model`);
+    if (overlaps(pill.box, a.labelBox)) console.warn(`Edge label "${pill.name}" covers the "${a.name}" label`);
   }
 }
 
@@ -561,7 +511,6 @@ text{font-family:Satoshi,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 <defs>
 ${[...defined.values()].join("\n")}
 <linearGradient id="bucket" x1="0" x2="1"><stop offset="0" stop-color="#C9603F"/><stop offset="1" stop-color="#853823"/></linearGradient>
-<radialGradient id="globe" cx="0.35" cy="0.3" r="0.8"><stop offset="0" stop-color="#7A8085"/><stop offset="1" stop-color="#26292C"/></radialGradient>
 <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,1L9,5L0,9Z" fill="#F1EDE4"/></marker>
 </defs>
 <rect width="${width}" height="${height}" rx="16" fill="#0C0D0F"/>
