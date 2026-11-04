@@ -1167,8 +1167,8 @@ struct CaperApp {
     window_state: Option<window_state::WindowState>,
     zoom_factor: Option<f32>,
     zoom_notice_until: f64,
-    /// When files were first dragged over the window, for the drop overlay's animation.
-    file_drop_since: Option<f64>,
+    /// The drag over the window, for the drop overlay's animation.
+    file_drop: Option<file_drop::Open>,
     /// The `parity-file-drop` fixture shows the overlay without a drag.
     file_drop_fixture: bool,
     worker: Worker,
@@ -1590,7 +1590,7 @@ impl CaperApp {
             window_state: None,
             zoom_factor: None,
             zoom_notice_until: 0.0,
-            file_drop_since: None,
+            file_drop: None,
             file_drop_fixture: false,
             worker,
             voice,
@@ -10753,13 +10753,12 @@ impl CaperApp {
             self.file_drop_fixture || context.input(|input| !input.raw.hovered_files.is_empty());
         // Files dragged over a dialog or modal must not offer the hidden composer.
         if !self.can_attach() || !hovering || self.conversation_covered() {
-            self.file_drop_since = None;
+            self.file_drop = None;
             return;
         }
         if self.attachment_drop_root(context).as_deref() != root {
             return;
         }
-        let since = *self.file_drop_since.get_or_insert(now);
         let (mut title, detail) = file_drop::text(
             self.channel_name(),
             self.selected_direct.is_some(),
@@ -10768,11 +10767,16 @@ impl CaperApp {
         if root.is_some() {
             title = "Attach to thread".into();
         }
-        let index = self.daily_icon.as_ref().map_or(0, |icon| icon.index);
+        let fixture = self.file_drop_fixture;
+        let open = self.file_drop.get_or_insert_with(|| {
+            file_drop::Open::new(now, avatar_images::BRANDING.len(), fixture)
+        });
+        let index = open.character;
         let moving = file_drop::paint(
             context,
             conversation,
-            (now - since) as f32,
+            &open.plan,
+            now - open.since,
             (
                 format!("bytes://caper-branding-v1/{index}.svg"),
                 avatar_images::BRANDING[index],
@@ -50172,10 +50176,10 @@ mod tests {
         };
         // It fades in from the moment the drag arrives.
         hover(&mut app, &context, vec![file.clone()], 1.0);
-        assert_eq!(app.file_drop_since, Some(1.0));
+        assert_eq!(app.file_drop.as_ref().map(|open| open.since), Some(1.0));
         let output = hover(&mut app, &context, vec![file.clone()], 2.0);
         assert!(has_text(&output, &title) && has_text(&output, &detail));
-        assert_eq!(app.file_drop_since, Some(1.0));
+        assert_eq!(app.file_drop.as_ref().map(|open| open.since), Some(1.0));
         // The animation keeps the frames coming while the drag stays.
         assert_eq!(
             output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
@@ -50183,7 +50187,7 @@ mod tests {
         );
         let output = hover(&mut app, &context, vec![], 3.0);
         assert!(!has_text(&output, &title));
-        assert!(app.file_drop_since.is_none());
+        assert!(app.file_drop.is_none());
 
         // Nowhere to attach: no overlay.
         app.uploads = None;

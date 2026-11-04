@@ -1688,7 +1688,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
         if (dropping.value && canAttach) {
             val (_, detail) = FileDrop.text(channel.name, channel.direct, files.size)
-            FileDropOverlay("Attach to thread", detail, caperBrandingResources[LocalBrandAvatar.current])
+            FileDropOverlay("Attach to thread", detail)
         }
     }
 }
@@ -2004,7 +2004,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
         if (dropping.value && canAttach) {
             val (title, detail) = FileDrop.text(channel.name, channel.direct, state.drafts.size)
-            FileDropOverlay(title, detail, caperBrandingResources[LocalBrandAvatar.current])
+            FileDropOverlay(title, detail)
         }
     }
 }

@@ -4530,6 +4530,11 @@ private struct ChatView: View {
                 }
                 chat.addAttachments(items.map(\.file), to: target)
                 fileDropTarget = nil
+                #if os(macOS)
+                // Back to the message once the new tile is in, rather than the
+                // tile's Remove button and its focus ring.
+                DispatchQueue.main.async { composerAutocomplete.restoreFocus() }
+                #endif
                 return true
             } isTargeted: {
                 fileDropTargeted = $0
@@ -5135,6 +5140,11 @@ private struct NativeThreadView: View {
                 }
                 chat.addAttachments(items.map(\.file), to: target)
                 fileDropTarget = nil
+                #if os(macOS)
+                // Back to the message once the new tile is in, rather than the
+                // tile's Remove button and its focus ring.
+                DispatchQueue.main.async { composerAutocomplete.restoreFocus() }
+                #endif
                 return true
             } isTargeted: {
                 fileDropTargeted = $0

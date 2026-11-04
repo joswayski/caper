@@ -67,34 +67,20 @@
   height: 128px;
   margin-bottom: 8px;
 }
-/* Resting pose; the keyframes only describe the way in. */
+/* DropOverlay places the cards and the character every frame (drop.ts). */
 .chat-drop-file {
-  --x: 0px;
-  --y: 0px;
-  --turn: 0deg;
   position: absolute;
   left: 50%;
   bottom: 30px;
   width: 54px;
   height: 66px;
   margin-left: -27px;
-  transform: translate(var(--x), var(--y)) rotate(var(--turn));
+  opacity: 0;
   transform-origin: 50% 100%;
-  animation: chat-drop-fan var(--motion-slow) var(--ease-out) 60ms backwards;
+  will-change: transform;
 }
-.chat-drop-file[data-position="0"] {
-  --x: -46px;
-  --y: 10px;
-  --turn: -16deg;
-  z-index: 1;
-}
-.chat-drop-file[data-position="1"] {
-  --y: -26px;
-}
+.chat-drop-file[data-position="0"],
 .chat-drop-file[data-position="2"] {
-  --x: 46px;
-  --y: 10px;
-  --turn: 16deg;
   z-index: 1;
 }
 .chat-drop-file > span {
@@ -107,14 +93,6 @@
   border-radius: var(--radius);
   background: var(--surface-raised);
   color: var(--text-muted);
-  transform-origin: 50% 100%;
-  animation: chat-drop-sway 2.4s ease-in-out 480ms infinite alternate;
-}
-.chat-drop-file[data-position="1"] > span {
-  animation-delay: 780ms;
-}
-.chat-drop-file[data-position="2"] > span {
-  animation-direction: alternate-reverse;
 }
 /* A folded corner on each card. */
 .chat-drop-file > span::after {
@@ -137,15 +115,15 @@
   width: 76px;
   height: 76px;
   margin-left: -38px;
-  animation: chat-drop-rise var(--motion-slow) var(--ease-out) 120ms backwards;
+  opacity: 0;
+  transform-origin: 50% 100%;
+  will-change: transform;
 }
 .chat-drop-character img {
   display: block;
   width: 100%;
   height: 100%;
   filter: drop-shadow(0 4px 6px rgb(0 0 0 / 35%));
-  transform-origin: 50% 100%;
-  animation: chat-drop-hop 1.6s ease-in-out 500ms infinite;
 }
 @keyframes chat-drop-card-in {
   from {
@@ -153,44 +131,9 @@
     translate: 0 10px;
   }
 }
-@keyframes chat-drop-fan {
-  from {
-    opacity: 0;
-    transform: translate(0, 24px) rotate(var(--turn));
-  }
-}
-@keyframes chat-drop-sway {
-  to {
-    transform: rotate(4deg) translateY(-3px);
-  }
-}
-@keyframes chat-drop-rise {
-  from {
-    opacity: 0;
-    transform: translateY(28px);
-  }
-}
-/* A small hop with a squash on landing. */
-@keyframes chat-drop-hop {
-  0%,
-  60%,
-  100% {
-    transform: translateY(0) scale(1);
-  }
-  25% {
-    transform: translateY(-9px) scale(0.97, 1.03);
-  }
-  52% {
-    transform: translateY(0) scale(1.05, 0.95);
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .chat-drop,
-  .chat-drop-card,
-  .chat-drop-file,
-  .chat-drop-file > span,
-  .chat-drop-character,
-  .chat-drop-character img {
+  .chat-drop-card {
     animation: none;
   }
 }

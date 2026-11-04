@@ -2697,19 +2697,29 @@ yet verified.
 #### File drop overlay
 
 Dragging files over a channel or DM conversation that accepts uploads covers it
-with a drop overlay on every client: today's Caper character (the wordmark's
-daily branding art) hops in front of three neutral file cards (image, document,
-video Lucide glyphs) that fan out behind it, on a surface card with a dashed
+with a drop overlay on every client: a random Caper character (one of the 800
+branding illustrations, picked anew on each open) hops in front of three
+neutral file cards (image, document, video Lucide glyphs) that drift apart
+behind it, on a surface card with a dashed
 terracotta outline. Its title is `Attach to #channel` (`Attach to Name` in a DM)
 and its detail counts the remaining slots (`Up to 10 files…`, `7 more files…`,
 `10 files attached. Remove one to add another.`). Every client's tests run
 `shared/messages/drop-cases.json`. Dropping adds the files as drafts, exactly
 like the attach button; nothing uploads until the person sends. Only drags
 carrying files open it; text and link drags are ignored. The overlay never takes
-input. Motion is shared: a 140 ms fade, the card rising 10 px, the cards fanning
-from the middle with a 420 ms overshoot, the character rising, then a 1.6 s hop
-and a 2.4 s card sway. Reduced motion (web `prefers-reduced-motion`, Apple
-Reduce Motion, Android "Remove animations") shows the resting pose.
+input. Motion is shared and seeded: each open picks a random seed, and every
+client derives the same motion from it (mulberry32; `drop.ts` `dropPlan`/
+`dropPose`, checked against `shared/messages/drop-motion-cases.json`). After a
+140 ms fade and the card rising 10 px, the cards spread from the middle over
+1.3–1.9 s each (staggered, ease-out cubic) to a resting pose jittered by up to
+3 px/3°, then float on two slow (4–9 s) sine waves per axis so they never move
+in lockstep. The character rises, then hops on gravity arcs 5–12 px high with a
+small rebound, irregular pauses (some quick double hops), and damped-spring
+squash and stretch on crouch, take-off and landing, with a slow 2° tilt.
+Reduced motion (web `prefers-reduced-motion`, Apple Reduce Motion, Android
+"Remove animations") shows the seed's resting pose. Parity fixtures use
+character 0 and seed 0. After a drop on macOS the composer takes focus back,
+so the new tile's Remove button is not left focused with its ring.
 
 - Web: `DropOverlay.tsx` over `.chat-panel` or `.chat-thread-panel`. A file
   dropped elsewhere in the app is refused instead of the browser navigating

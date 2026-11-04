@@ -50,19 +50,23 @@ import chat.caper.android.ui.SurfaceRaised
 import chat.caper.android.ui.Terracotta
 import chat.caper.android.ui.TextMuted
 import chat.caper.android.ui.Text as TextColor
+import kotlin.random.Random
 
 private val cardShape = RoundedCornerShape(8.dp)
 
 /**
- * Covers the conversation while files are dragged over it: today's Caper character
- * hops in front of three file cards that fan out behind it. It never takes input.
+ * Covers the conversation while files are dragged over it: a random Caper character hops
+ * in front of three file cards that drift apart behind it. Each open picks a new character
+ * and a new seed for the motion. It never takes input.
  */
-@Composable internal fun FileDropOverlay(title: String, detail: String, @DrawableRes character: Int, modifier: Modifier = Modifier) {
+@Composable internal fun FileDropOverlay(title: String, detail: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    // System "Remove animations" shows the resting pose, without the hop or sway.
+    // System "Remove animations" shows the resting pose, without the hops or drift.
     val still = remember {
         android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
     }
+    val character = remember { caperBrandingResources.random() }
+    val plan = remember { FileDrop.plan(Random.nextInt()) }
     var elapsed by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(still) {
         if (still) return@LaunchedEffect
@@ -70,10 +74,11 @@ private val cardShape = RoundedCornerShape(8.dp)
         while (true) withFrameNanos { elapsed = (it - start) / 1e9f }
     }
     // Read only in graphics layers and draw blocks, so frames redraw without recomposing.
-    val motion = remember(still) { DropMotion(still) { elapsed } }
+    val time = { if (still) 1f else elapsed }
+    val settle = { progress: Float -> if (still) 1f else progress }
     Box(
         modifier.fillMaxSize()
-            .drawBehind { drawRect(Blackout.copy(alpha = 0.82f * motion.settle(FileDrop.progress(motion.time(), 0f, 0.14f)))) }
+            .drawBehind { drawRect(Blackout.copy(alpha = 0.82f * settle(FileDrop.progress(time(), 0f, 0.14f)))) }
             .padding(16.dp)
             .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
         contentAlignment = Alignment.Center,
@@ -81,8 +86,8 @@ private val cardShape = RoundedCornerShape(8.dp)
         Column(
             Modifier
                 .graphicsLayer {
-                    alpha = motion.settle(FileDrop.progress(motion.time(), 0f, 0.12f))
-                    translationY = 10.dp.toPx() * (1f - FileDrop.easeOut(motion.settle(FileDrop.progress(motion.time(), 0f, 0.26f))))
+                    alpha = settle(FileDrop.progress(time(), 0f, 0.12f))
+                    translationY = 10.dp.toPx() * (1f - FileDrop.easeOut(settle(FileDrop.progress(time(), 0f, 0.26f))))
                 }
                 .widthIn(max = 360.dp)
                 .shadow(24.dp, cardShape)
@@ -98,7 +103,7 @@ private val cardShape = RoundedCornerShape(8.dp)
                 .padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 26.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            DropArt(motion, character)
+            DropArt({ FileDrop.pose(plan, elapsed.toDouble(), still) }, character)
             Spacer(Modifier.height(14.dp))
             Text(title, color = TextColor, fontSize = 18.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
             Spacer(Modifier.height(6.dp))
@@ -107,35 +112,20 @@ private val cardShape = RoundedCornerShape(8.dp)
     }
 }
 
-/** Seconds since the drag arrived; with animations off, the resting pose. */
-private class DropMotion(private val still: Boolean, private val elapsed: () -> Float) {
-    fun time() = if (still) 0.5f else elapsed()
-    fun settle(progress: Float) = if (still) 1f else progress
-    fun sway(delay: Float) = if (still) 0f else FileDrop.sway(time(), delay)
-    fun hop() = if (still) Triple(0f, 1f, 1f) else FileDrop.hop(time())
-}
-
 /** A 176×128dp stage: the middle card first, behind the other two, then the character in front. */
-@Composable private fun DropArt(motion: DropMotion, @DrawableRes character: Int) {
+@Composable private fun DropArt(pose: () -> FileDrop.Pose, @DrawableRes character: Int) {
     Box(Modifier.size(176.dp, 128.dp).clearAndSetSemantics {}) {
         listOf(1 to R.drawable.lucide_file_text, 0 to R.drawable.lucide_image, 2 to R.drawable.lucide_film).forEach { (index, icon) ->
-            val (x, y, turn) = FileDrop.poses[index]
             Box(
                 Modifier
                     .graphicsLayer {
-                        // Each card slides out and up from the middle at its resting turn.
-                        val fan = motion.settle(FileDrop.progress(motion.time(), 0.06f, 0.26f))
-                        val spread = FileDrop.easeOut(fan)
-                        val swayed = when (index) {
-                            0 -> motion.sway(0.48f)
-                            1 -> motion.sway(0.78f)
-                            else -> 1f - motion.sway(0.48f)
-                        }
+                        val card = pose().cards[index]
                         transformOrigin = TransformOrigin(0.5f, 1f)
-                        rotationZ = turn + 4f * swayed
-                        alpha = fan
-                        translationX = (88f + x * spread - 27f).dp.toPx()
-                        translationY = (98f + 24f + (y - 24f) * spread - 3f * swayed - 66f).dp.toPx()
+                        rotationZ = card.turn.toFloat()
+                        alpha = card.opacity.toFloat()
+                        // The card's bottom edge sits 98dp down the stage.
+                        translationX = (88f + card.x.toFloat() - 27f).dp.toPx()
+                        translationY = (98f + card.y.toFloat() - 66f).dp.toPx()
                     }
                     .size(54.dp, 66.dp)
                     .background(SurfaceRaised, cardShape)
@@ -147,15 +137,14 @@ private class DropMotion(private val still: Boolean, private val elapsed: () -> 
             painterResource(character), null,
             Modifier
                 .graphicsLayer {
-                    val rise = motion.settle(FileDrop.progress(motion.time(), 0.12f, 0.26f))
-                    val lifted = FileDrop.easeOut(rise)
-                    val (lift, squashX, squashY) = motion.hop()
+                    val caper = pose().character
                     transformOrigin = TransformOrigin(0.5f, 1f)
-                    scaleX = squashX
-                    scaleY = squashY
-                    alpha = rise
+                    scaleX = caper.scaleX.toFloat()
+                    scaleY = caper.scaleY.toFloat()
+                    rotationZ = caper.turn.toFloat()
+                    alpha = caper.opacity.toFloat()
                     translationX = (88f - 38f).dp.toPx()
-                    translationY = (128f + 4f + 28f * (1f - lifted) + lift - 76f).dp.toPx()
+                    translationY = (128f + 4f + caper.y.toFloat() - 76f).dp.toPx()
                 }
                 .size(76.dp),
         )

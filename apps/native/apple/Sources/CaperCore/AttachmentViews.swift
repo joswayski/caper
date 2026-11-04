@@ -2727,62 +2727,144 @@ struct DroppedAttachment: Transferable, Sendable {
     }
 }
 
-/// The drop overlay's motion, as on web (chat.css `.chat-drop*`), Android
-/// and Rust desktop (`file_drop.rs`): times in seconds since the drag arrived.
+/// The drop overlay's motion, as on web (`apps/web/src/chat/drop.ts`), Android
+/// and Rust desktop (`file_drop.rs`). Each open picks a random seed, so the cards
+/// drift and the character hops differently every time; every client derives
+/// the same motion from a seed (shared/messages/drop-motion-cases.json). Times
+/// are seconds since the drag arrived; lengths are points.
 enum FileDropMotion {
     /// Resting pose per card, left to right: offset and turn in degrees.
     static let poses: [(x: Double, y: Double, turn: Double)] = [(-46, 10, -16), (0, -26, 0), (46, 10, 16)]
+    static let gravity = 420.0
+    static let crouch = 0.12
 
-    /// Decelerates without overshooting, like the shared `--ease-out` entrances.
-    static func easeOut(_ t: Double) -> Double {
-        let t = min(max(t, 0), 1)
-        return t >= 1 ? 1 : 1 - pow(2, -10 * t)
+    /// mulberry32: small, and identical on every client's integer arithmetic.
+    struct Random {
+        var state: UInt32
+        init(seed: UInt32) { state = seed }
+        mutating func next() -> Double {
+            state = state &+ 0x6D2B_79F5
+            var t = (state ^ (state >> 15)) &* (1 | state)
+            t = (t &+ ((t ^ (t >> 7)) &* (61 | t))) ^ t
+            return Double(t ^ (t >> 14)) / 4_294_967_296
+        }
     }
 
-    static func easeInOut(_ t: Double) -> Double {
-        let t = min(max(t, 0), 1)
-        return t * t * (3 - 2 * t)
+    struct Card {
+        /// Offset from the resting pose, so no two opens rest the same way.
+        var jitter: (x: Double, y: Double, turn: Double)
+        var delay: Double
+        var duration: Double
+        /// Two (period, phase) waves each for x, y and turn.
+        var waves: [Double]
+    }
+
+    struct Plan {
+        var cards: [Card]
+        var tilt: (period: Double, phase: Double)
+        var hops: [(start: Double, height: Double)]
+
+        init(seed: UInt32) {
+            var random = Random(seed: seed)
+            func spread(_ size: Double) -> Double { (random.next() * 2 - 1) * size }
+            cards = poses.map { _ in
+                let jitter = (x: spread(3), y: spread(3), turn: spread(3))
+                let delay = 0.04 + random.next() * 0.14
+                let duration = 1.3 + random.next() * 0.6
+                let waves = (0..<6).flatMap { _ in [4 + random.next() * 5, random.next() * 2 * .pi] }
+                return Card(jitter: jitter, delay: delay, duration: duration, waves: waves)
+            }
+            let period = 5 + random.next() * 3
+            tilt = (period, random.next() * 2 * .pi)
+            hops = []
+            var start = 0.75 + random.next() * 0.5
+            for _ in 0..<32 {
+                let height = 5 + random.next() * 7
+                let quick = random.next() < 0.25
+                let pause = random.next()
+                hops.append((start, height))
+                start += crouch + air(height) + air(height * 0.2) + (quick ? 0.06 + pause * 0.1 : 0.7 + pause * 1.8)
+            }
+        }
+    }
+
+    struct Pose {
+        /// Offset from the stage's bottom centre, turn in degrees, and opacity.
+        var cards: [(x: Double, y: Double, turn: Double, opacity: Double)]
+        /// How far below its resting place, squash, turn and opacity.
+        var character: (y: Double, scaleX: Double, scaleY: Double, turn: Double, opacity: Double)
+    }
+
+    /// Seconds in the air for a hop `height` high.
+    static func air(_ height: Double) -> Double { 2 * (2 * height / gravity).squareRoot() }
+
+    /// A damped spring's response `elapsed` after a kick, peaking near `size`.
+    static func spring(_ size: Double, _ elapsed: Double) -> Double {
+        elapsed <= 0 ? 0 : size * exp(-6 * elapsed) * sin(16 * elapsed) / 0.6
     }
 
     static func progress(_ elapsed: Double, delay: Double, duration: Double) -> Double {
         min(max((elapsed - delay) / duration, 0), 1)
     }
 
-    /// 0 to 1 and back over 2.4 s each way, after the cards have fanned out.
-    static func sway(_ elapsed: Double, delay: Double) -> Double {
-        guard elapsed >= delay else { return 0 }
-        let phase = ((elapsed - delay) / 2.4).truncatingRemainder(dividingBy: 2)
-        return easeInOut(phase < 1 ? phase : 2 - phase)
-    }
+    static func easeOutCubic(_ t: Double) -> Double { 1 - pow(1 - t, 3) }
 
-    /// The character's hop over 1.6 s: lift, and horizontal/vertical squash.
-    static func hop(_ elapsed: Double) -> (lift: Double, x: Double, y: Double) {
-        guard elapsed >= 0.5 else { return (0, 1, 1) }
-        let t = ((elapsed - 0.5) / 1.6).truncatingRemainder(dividingBy: 1)
-        let frames: [(at: Double, lift: Double, x: Double, y: Double)] =
-            [(0, 0, 1, 1), (0.25, -9, 0.97, 1.03), (0.52, 0, 1.05, 0.95), (0.6, 0, 1, 1), (1, 0, 1, 1)]
-        let next = frames.firstIndex { $0.at > t } ?? frames.count - 1
-        let from = frames[next - 1], to = frames[next]
-        let k = easeInOut((t - from.at) / (to.at - from.at))
-        return (from.lift + (to.lift - from.lift) * k, from.x + (to.x - from.x) * k, from.y + (to.y - from.y) * k)
+    /// Where everything is `elapsed` seconds in; `still` is the reduced-motion resting pose.
+    static func pose(_ plan: Plan, _ elapsed: Double, still: Bool = false) -> Pose {
+        let t = still ? 0 : elapsed
+        func wave(_ waves: [Double], _ at: Int) -> Double {
+            0.6 * sin(2 * .pi * t / waves[at] + waves[at + 1]) + 0.4 * sin(2 * .pi * t / waves[at + 2] + waves[at + 3])
+        }
+        let cards = plan.cards.enumerated().map { index, card in
+            let rest = poses[index]
+            let out = easeOutCubic(still ? 1 : progress(t, delay: card.delay, duration: card.duration))
+            let drift = still ? 0 : out
+            return (x: (rest.x + card.jitter.x) * out + 2.5 * wave(card.waves, 0) * drift,
+                    // Each card slides out and up from just below the middle.
+                    y: 24 + (rest.y + card.jitter.y - 24) * out + 3.5 * wave(card.waves, 4) * drift,
+                    turn: rest.turn + card.jitter.turn + 2.5 * wave(card.waves, 8) * drift,
+                    opacity: still ? 1 : progress(t, delay: card.delay, duration: 0.3))
+        }
+        let rise = still ? 1 : easeOutCubic(progress(t, delay: 0.08, duration: 0.5))
+        var lift = 0.0, squash = 0.0
+        if !still {
+            for hop in plan.hops {
+                let since = t - hop.start
+                if since < 0 { break }
+                let up = air(hop.height), rebound = air(hop.height * 0.2), flying = since - crouch
+                if flying >= 0 && flying < up {
+                    lift = gravity / 2 * flying * (up - flying)
+                } else if flying >= up && flying < up + rebound {
+                    lift = gravity / 2 * (flying - up) * (up + rebound - flying)
+                }
+                // Crouch, spring up, land, and settle after the rebound; higher hops squash more.
+                let size = hop.height / 9
+                squash += spring(-0.05 * size, since) + spring(0.09 * size, flying)
+                    + spring(-0.1 * size, flying - up) + spring(-0.035 * size, flying - up - rebound)
+            }
+        }
+        let turn = still ? 0 : 2 * sin(2 * .pi * t / plan.tilt.period + plan.tilt.phase) * rise
+        return Pose(cards: cards,
+                    character: (y: 28 * (1 - rise) - lift, scaleX: 1 - 0.8 * squash, scaleY: 1 + squash,
+                                turn: turn, opacity: still ? 1 : progress(t, delay: 0.08, duration: 0.2)))
     }
 }
 
-/// Covers the conversation while files are dragged over it: today's Caper
-/// character hops in front of three file cards that fan out behind it.
+/// Covers the conversation while files are dragged over it: a random Caper
+/// character hops in front of three file cards that drift apart behind it.
+/// Each open picks a new character and a new seed for the motion.
 struct FileDropOverlay: View {
     let title: String
     let detail: String
-    @AppStorage("daily-dock-icon-index-v1") private var dailyIndex = 0
-    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var start = Date()
-    private let fixture = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
+    private static let fixture = ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity"
+    @State private var character = Self.fixture ? 0 : Int.random(in: 0..<CaperDailyIcon.count)
+    @State private var plan = FileDropMotion.Plan(seed: Self.fixture ? 0 : UInt32.random(in: .min ... .max))
 
     var body: some View {
         TimelineView(.animation(paused: reduceMotion)) { timeline in
-            // Reduced motion shows the resting pose, without the hop or sway.
-            let elapsed: Double = reduceMotion ? 0.5 : timeline.date.timeIntervalSince(start)
+            let elapsed = timeline.date.timeIntervalSince(start)
             let rest = reduceMotion
             let pop: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0, duration: 0.26)
             let scrim: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0, duration: 0.14)
@@ -2790,7 +2872,7 @@ struct FileDropOverlay: View {
             ZStack {
                 CaperTheme.blackout.opacity(0.82 * scrim)
                 VStack(spacing: 6) {
-                    art(elapsed, rest: rest).padding(.bottom, 8)
+                    art(FileDropMotion.pose(plan, elapsed, still: rest)).padding(.bottom, 8)
                     Text(title).font(CaperTheme.font(18, weight: .bold)).foregroundStyle(CaperTheme.text)
                     Text(detail).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                 }
@@ -2802,61 +2884,36 @@ struct FileDropOverlay: View {
                 .overlay(Rectangle().stroke(CaperTheme.terracotta, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])).padding(9.75))
                 .shadow(color: .black.opacity(0.45), radius: 24, y: 18)
                 .opacity(shown)
-                .offset(y: 10 * (1 - FileDropMotion.easeOut(pop)))
+                .offset(y: 10 * (1 - FileDropMotion.easeOutCubic(pop)))
                 .padding(16)
             }
         }
         .allowsHitTesting(false)
         .accessibilityElement(children: .combine)
-        .onAppear(perform: refresh)
-        .onChange(of: scenePhase) { _, phase in if phase == .active { refresh() } }
-        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { _ in refresh() }
     }
 
-    private func refresh() {
-        if !fixture { dailyIndex = CaperDailyIcon.current() }
-    }
-
-    private func art(_ elapsed: Double, rest: Bool) -> some View {
-        let fan: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0.06, duration: 0.26)
-        let spread = FileDropMotion.easeOut(fan)
-        let rise: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0.12, duration: 0.26)
-        let lifted = FileDropMotion.easeOut(rise)
-        let hop = rest ? (lift: 0.0, x: 1.0, y: 1.0) : FileDropMotion.hop(elapsed)
-        let characterBottom: Double = 128 + 4 + 28 * (1 - lifted) + hop.lift
-        return ZStack {
-            // The middle card first, behind the other two. Each slides out and
-            // up from the middle at its resting turn.
+    /// A 176×128 stage: the middle card first, behind the other two, then the character in front.
+    private func art(_ pose: FileDropMotion.Pose) -> some View {
+        ZStack {
             ForEach([1, 0, 2], id: \.self) { index in
-                let pose = FileDropMotion.poses[index]
-                let swayed: Double = rest ? 0 : sway(card: index, elapsed)
-                let turn: Double = pose.turn + 4 * swayed
-                let x: Double = 88 + pose.x * spread
-                // The card's bottom edge, less half its 66-point height.
-                let bottom: Double = 98 + 24 + (pose.y - 24) * spread - 3 * swayed
+                let card = pose.cards[index]
                 DropFileCard(symbol: ["photo", "doc.text", "film"][index])
-                    .rotationEffect(.degrees(turn), anchor: .bottom)
-                    .opacity(fan)
-                    .position(x: x, y: bottom - 33)
+                    .rotationEffect(.degrees(card.turn), anchor: .bottom)
+                    .opacity(card.opacity)
+                    // The card's bottom edge sits 98 points down the stage; less half its 66-point height.
+                    .position(x: 88 + card.x, y: 98 + card.y - 33)
             }
-            Image("caper-branding-\(fixture ? 0 : dailyIndex)", bundle: caperResourceBundle)
+            let character = pose.character
+            Image("caper-branding-\(self.character)", bundle: caperResourceBundle)
                 .renderingMode(.original).resizable().scaledToFit()
                 .frame(width: 76, height: 76)
-                .scaleEffect(x: hop.x, y: hop.y, anchor: .bottom)
-                .opacity(rise)
-                .position(x: 88, y: characterBottom - 38)
+                .scaleEffect(x: character.scaleX, y: character.scaleY, anchor: .bottom)
+                .rotationEffect(.degrees(character.turn), anchor: .bottom)
+                .opacity(character.opacity)
+                .position(x: 88, y: 128 + 4 + character.y - 38)
         }
         .frame(width: 176, height: 128)
         .accessibilityHidden(true)
-    }
-
-    /// The left and middle cards sway out of step; the right card mirrors the left.
-    private func sway(card index: Int, _ elapsed: Double) -> Double {
-        switch index {
-        case 0: return FileDropMotion.sway(elapsed, delay: 0.48)
-        case 1: return FileDropMotion.sway(elapsed, delay: 0.78)
-        default: return 1 - FileDropMotion.sway(elapsed, delay: 0.48)
-        }
     }
 }
 

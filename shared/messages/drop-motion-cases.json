@@ -1,0 +1,227 @@
+{
+  "description": "The file drop overlay's motion for one seed. Every client's tests must produce these poses (within 1e-4). See apps/web/src/chat/drop.ts and docs/media.md#file-drop-overlay.",
+  "random": {
+    "seed": 1,
+    "values": [0.627074, 0.002736, 0.527447]
+  },
+  "seed": 2026,
+  "cases": [
+    {
+      "elapsed": 0,
+      "still": false,
+      "cards": [
+        {
+          "x": 0,
+          "y": 24,
+          "turn": -15.033055,
+          "opacity": 0
+        },
+        {
+          "x": 0,
+          "y": 24,
+          "turn": -2.989611,
+          "opacity": 0
+        },
+        {
+          "x": 0,
+          "y": 24,
+          "turn": 15.012254,
+          "opacity": 0
+        }
+      ],
+      "character": {
+        "y": 28,
+        "scaleX": 1,
+        "scaleY": 1,
+        "turn": 0,
+        "opacity": 0
+      }
+    },
+    {
+      "elapsed": 0.25,
+      "still": false,
+      "cards": [
+        {
+          "x": -11.39746,
+          "y": 20.835483,
+          "turn": -14.596237,
+          "opacity": 0.411378
+        },
+        {
+          "x": 0.465677,
+          "y": 8.786357,
+          "turn": -3.406601,
+          "opacity": 0.60488
+        },
+        {
+          "x": 7.042804,
+          "y": 21.61639,
+          "turn": 14.780779,
+          "opacity": 0.339102
+        }
+      ],
+      "character": {
+        "y": 8.049888,
+        "scaleX": 1,
+        "scaleY": 1,
+        "turn": 0.19151,
+        "opacity": 0.85
+      }
+    },
+    {
+      "elapsed": 1,
+      "still": false,
+      "cards": [
+        {
+          "x": -44.398288,
+          "y": 11.264579,
+          "turn": -14.659044,
+          "opacity": 1
+        },
+        {
+          "x": 2.4401,
+          "y": -22.304576,
+          "turn": -2.616057,
+          "opacity": 1
+        },
+        {
+          "x": 37.758354,
+          "y": 12.398268,
+          "turn": 13.78552,
+          "opacity": 1
+        }
+      ],
+      "character": {
+        "y": 0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "turn": 1.668314,
+        "opacity": 1
+      }
+    },
+    {
+      "elapsed": 1.32,
+      "still": false,
+      "cards": [
+        {
+          "x": -46.416128,
+          "y": 9.697132,
+          "turn": -15.504706,
+          "opacity": 1
+        },
+        {
+          "x": 3.047397,
+          "y": -25.738632,
+          "turn": -1.939851,
+          "opacity": 1
+        },
+        {
+          "x": 42.377755,
+          "y": 11.047484,
+          "turn": 13.872834,
+          "opacity": 1
+        }
+      ],
+      "character": {
+        "y": -9.747731,
+        "scaleX": 0.944281,
+        "scaleY": 1.069648,
+        "turn": 1.951463,
+        "opacity": 1
+      }
+    },
+    {
+      "elapsed": 3.5,
+      "still": false,
+      "cards": [
+        {
+          "x": -46.153193,
+          "y": 6.641779,
+          "turn": -15.381626,
+          "opacity": 1
+        },
+        {
+          "x": 4.296583,
+          "y": -27.644988,
+          "turn": -1.969769,
+          "opacity": 1
+        },
+        {
+          "x": 43.594939,
+          "y": 5.078818,
+          "turn": 17.284058,
+          "opacity": 1
+        }
+      ],
+      "character": {
+        "y": 0,
+        "scaleX": 1.000001,
+        "scaleY": 0.999999,
+        "turn": -1.264338,
+        "opacity": 1
+      }
+    },
+    {
+      "elapsed": 12,
+      "still": false,
+      "cards": [
+        {
+          "x": -46.937221,
+          "y": 8.448625,
+          "turn": -16.626695,
+          "opacity": 1
+        },
+        {
+          "x": 3.547989,
+          "y": -24.207034,
+          "turn": -2.242576,
+          "opacity": 1
+        },
+        {
+          "x": 44.255191,
+          "y": 8.198461,
+          "turn": 15.416068,
+          "opacity": 1
+        }
+      ],
+      "character": {
+        "y": -0.245104,
+        "scaleX": 1.006451,
+        "scaleY": 0.991936,
+        "turn": 1.583083,
+        "opacity": 1
+      }
+    },
+    {
+      "elapsed": 5,
+      "still": true,
+      "cards": [
+        {
+          "x": -46.267554,
+          "y": 8.850977,
+          "turn": -15.033055,
+          "opacity": 1
+        },
+        {
+          "x": 2.525198,
+          "y": -25.609628,
+          "turn": -2.989611,
+          "opacity": 1
+        },
+        {
+          "x": 43.482269,
+          "y": 7.24483,
+          "turn": 15.012254,
+          "opacity": 1
+        }
+      ],
+      "character": {
+        "y": 0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "turn": 0,
+        "opacity": 1
+      }
+    }
+  ]
+}
