@@ -155,10 +155,34 @@ pub fn decode_still(
             );
         }
     }
-    if stream.display_p3 {
+    if stream.display_p3 || colr_is_display_p3(bytes) {
         display_p3_to_srgb(&mut image);
     }
     Some(image)
+}
+
+/// Whether a HEIF file's first colour box (`colr`) is Display P3: nclx
+/// primaries 12, or an ICC profile described as Display P3. FFmpeg reports
+/// only the nclx primaries; iPhone photos often carry the profile instead.
+pub fn colr_is_display_p3(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(256 * 1024)];
+    let Some(at) = head.windows(4).position(|window| window == b"colr") else {
+        return false;
+    };
+    let Some(start) = at.checked_sub(4) else {
+        return false;
+    };
+    let size = u32::from_be_bytes(head[start..at].try_into().unwrap()) as usize;
+    let Some(colr) = head.get(at + 4..start + size) else {
+        return false;
+    };
+    match colr.get(..4) {
+        Some(b"nclx") => colr.get(4..6) == Some(&[0, 12]),
+        Some(b"prof" | b"rICC") => {
+            crate::avif::primaries(Some(&colr[4..])) == Some(crate::avif::Primaries::DisplayP3)
+        }
+        _ => false,
+    }
 }
 
 /// Display P3 to sRGB in place: both use the sRGB transfer curve, so only the
@@ -968,6 +992,50 @@ mod tests {
         assert_eq!((video.width, video.height), (3024, 4032));
         assert!(video.display_p3);
         assert!(!video.hdr);
+    }
+
+    #[test]
+    fn heif_colour_boxes_say_whether_a_photo_is_display_p3() {
+        let colr = |payload: &[u8]| {
+            let mut bytes = b"\0\0\0\x10ftypheic\0\0\0\0".to_vec();
+            bytes.extend(((8 + payload.len()) as u32).to_be_bytes());
+            bytes.extend(b"colr");
+            bytes.extend(payload);
+            bytes
+        };
+        // An ICC v4 profile whose only tag is an `mluc` description.
+        let icc = |name: &str| {
+            let text: Vec<u8> = name.encode_utf16().flat_map(u16::to_be_bytes).collect();
+            let mut tag = b"mluc\0\0\0\0".to_vec();
+            tag.extend(1_u32.to_be_bytes());
+            tag.extend(12_u32.to_be_bytes());
+            tag.extend(b"enUS");
+            tag.extend((text.len() as u32).to_be_bytes());
+            tag.extend(28_u32.to_be_bytes());
+            tag.extend(&text);
+            let mut profile = vec![0; 128];
+            profile.extend(1_u32.to_be_bytes());
+            profile.extend(b"desc");
+            profile.extend(144_u32.to_be_bytes());
+            profile.extend((tag.len() as u32).to_be_bytes());
+            profile.extend(tag);
+            profile
+        };
+        let with = |kind: &[u8], body: &[u8]| colr(&[kind, body].concat());
+        assert!(colr_is_display_p3(&with(
+            b"nclx",
+            &[0, 12, 0, 13, 0, 1, 0x80]
+        )));
+        assert!(!colr_is_display_p3(&with(
+            b"nclx",
+            &[0, 1, 0, 13, 0, 1, 0x80]
+        )));
+        assert!(colr_is_display_p3(&with(b"prof", &icc("Display P3"))));
+        assert!(!colr_is_display_p3(&with(
+            b"prof",
+            &icc("sRGB IEC61966-2.1")
+        )));
+        assert!(!colr_is_display_p3(b"\0\0\0\x10ftypheic\0\0\0\0"));
     }
 
     #[test]

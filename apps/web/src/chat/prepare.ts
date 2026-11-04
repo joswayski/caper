@@ -6,6 +6,7 @@ import type { ChatAttachmentKind } from "./types.ts";
 import { encodeIndexedPng, exactPalette } from "./png.ts";
 import { stripMetadata } from "./metadata.ts";
 import { encodeAvif } from "./avif.ts";
+import { decodeBitmap, heicFallback } from "./heic.ts";
 import { encodeLosslessWebp, iccProfile, pngBitDepth, pngChunks, webpWithIcc } from "./webp.ts";
 import type { HdrTransfer } from "./hdr.ts";
 import {
@@ -404,7 +405,7 @@ async function prepareImage(file: File, contentType: string, settings: Compressi
     source === "lossless"
       ? { colorSpaceConversion: "none", premultiplyAlpha: "none", imageOrientation: "from-image" }
       : { imageOrientation: "from-image" };
-  const bitmap = await createImageBitmap(file, options).catch(() => undefined);
+  const bitmap = await decodeBitmap(file, options);
   if (!bitmap) return base;
   try {
     const original = { width: bitmap.width, height: bitmap.height };
@@ -484,7 +485,7 @@ async function prepareEditedImage(
     source === "lossless"
       ? { colorSpaceConversion: "none", premultiplyAlpha: "none", imageOrientation: "from-image" }
       : { imageOrientation: "from-image" };
-  const bitmap = await createImageBitmap(file, options).catch(() => undefined);
+  const bitmap = await decodeBitmap(file, options);
   if (!bitmap) throw new EditFailed();
   try {
     await loadEditFont(edit);
@@ -913,8 +914,8 @@ export async function editableKind(file: File): Promise<"image" | "video" | unde
   if (!editableImageType(type) || typeof createImageBitmap === "undefined") return;
   const head = new Uint8Array(await file.slice(0, 256 * 1024).arrayBuffer());
   if ((type === "image/png" && pngIsAnimated(head)) || (type === "image/webp" && webpInfo(head)?.animated)) return;
-  // Only some browsers decode these.
-  if (["image/heic", "image/heif", "image/tiff"].includes(type)) {
+  // Only some browsers decode these; HEIC also decodes through libheif.
+  if (type === "image/tiff" || (isHeic(type) && !heicFallback())) {
     const bitmap = await createImageBitmap(file).catch(() => undefined);
     if (!bitmap) return;
     bitmap.close();

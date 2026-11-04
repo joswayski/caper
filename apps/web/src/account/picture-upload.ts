@@ -3,6 +3,7 @@
 // The server applies the picture when the upload completes.
 import { cropPixels, loadEditFont, paintEdit, type AttachmentEdit } from "../chat/edit.ts";
 import { encode, surface, type Context2D, type Surface } from "../chat/prepare.ts";
+import { decodeBitmap } from "../chat/heic.ts";
 import {
   browserTransport,
   cancelUpload,
@@ -52,10 +53,10 @@ interface Decoded {
   close: () => void;
 }
 
-/** EXIF orientation applied; HEIC and other formats only where the browser can decode them. */
+/** EXIF orientation applied; HEIC everywhere (libheif where the browser cannot), other formats where the browser can. */
 async function decode(file: Blob): Promise<Decoded> {
   if (typeof createImageBitmap !== "undefined") {
-    const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" }).catch(() => undefined);
+    const bitmap = await decodeBitmap(file, { imageOrientation: "from-image" });
     if (bitmap) return { source: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() };
   }
   // Some browsers decode more formats (or SVG) through an image element than createImageBitmap.

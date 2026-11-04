@@ -1723,7 +1723,9 @@ Rules shared by every client:
   `ASSET_AVIF_QUALITY` when `imageFormat` is `avif`, else (or when AVIF
   encoding fails, or for HDR/other colour spaces) as lossy WebP at
   `ASSET_IMAGE_QUALITY`, and kept only when at least 10% smaller. HEIC is
-  always converted (browsers cannot show it). Re-encoding applies the EXIF
+  always converted (most browsers cannot show it). Browsers that cannot
+  decode HEIC themselves (Chrome, Firefox) use libheif instead, as does the
+  web editor and picture upload (see the encoder table). Re-encoding applies the EXIF
   orientation and drops EXIF/XMP/GPS. A missing `imageFormat` (older API)
   means WebP.
 - **Originals that upload unchanged lose their metadata losslessly:** JPEG
@@ -1823,7 +1825,7 @@ open-source Chromium builds without H.264 keep the original file.
 
 | Platform | Photos (AVIF) | Lossless | Video and HDR | Size cost |
 | --- | --- | --- | --- | --- |
-| Web | libavif 1.0.1 + aom 3.7.0 WASM (`@jsquash/avif` 2.1.1), single-threaded worker, speed 9 (≈3 s per 12 MP here) | `@jsquash/webp` 1.5.0 worker; indexed PNG | Mediabunny/WebCodecs H.264; HDR tone mapped on WebGL2 | 3.5 MB WASM (1.1 MB gzipped), fetched only when a photo is encoded |
+| Web | libavif 1.0.1 + aom 3.7.0 WASM (`@jsquash/avif` 2.1.1), single-threaded worker, speed 9 (≈3 s per 12 MP here) | `@jsquash/webp` 1.5.0 worker; indexed PNG | Mediabunny/WebCodecs H.264; HDR tone mapped on WebGL2 | 3.5 MB WASM (1.1 MB gzipped), fetched only when a photo is encoded. HEIC where the browser cannot decode it: libheif 1.23 + libde265 WASM (`libheif-js` 1.23.5, LGPL-3.0, its own worker chunk; joins iPhone tile grids, applies rotation, Display P3 converted to sRGB), 2 MB (0.7 MB gzipped), fetched only for such a HEIC |
 | Android | libavif 1.4.2 + aom 3.15.1 JNI built from pinned sources (`prepare-avif.sh`), speed 8, `tune=ssim`; AOMedia decoder shows AVIF on API 26–30 | Bitmap lossless WebP; indexed PNG | Media3 Transformer H.264; HDR tone mapped with OpenGL | +1.8 MB download per ABI (3.75 MB installed) |
 | Apple | libavif 1.4.2 + aom 3.15.1 static XCFramework from [joswayski/libavif-apple](https://github.com/joswayski/libavif-apple) (built from pinned sources, Neon on arm64, SSE/AVX on x86_64), speed 6, `tune=ssim`; ImageIO decodes | libwebp 1.6.0 lossless; indexed PNG | AVAssetWriter H.264 at the shared size and bitrate; HDR to BT.709 via AVVideoComposition | ≈4.3 MB uncompressed per arm64 slice (estimate) |
 | Desktop (Windows, Linux) | rav1e 0.8.1 + avif-serialize, speed 10, quantizer 55 for quality 85; x86 assembly when nasm is present (1.4 s vs 4.6 s per 14 MP) | libwebp 1.6.0 lossless (`webpx`); indexed PNG | Bundled FFmpeg 9.0.2: Windows' Media Foundation H.264 encoder (hardware on most PCs), else x264 `veryfast`; HDR tone mapped with zimg (Hable, as on web) | ≈2.4 MB uncompressed (1 MB gzipped), plus FFmpeg ≈16.6 MB (6.1 MB gzipped) |
@@ -1856,6 +1858,11 @@ Follow-ups:
   and a 3992×2992 tiled phone HEIC became upright AVIF matching libheif's
   decode; r1 left both as HEIC. Not run on Windows or with photos from a
   physical iPhone.
+- Web HEIC in Chromium (2026-11-04): headless Chromium cannot decode HEIC
+  natively; `prepareFile` turned the same grid into upright 400×500 AVIF
+  (quadrants as libheif shows them, sRGB) and the 3992×2992 photo into 2.7 MB
+  AVIF in 5.4 s. Desktop and web both read Display P3 from an nclx box or an
+  ICC profile. Not run in Firefox or with photos from a physical iPhone.
 - Server metadata stripping regression checks use real FFmpeg/ExifTool on
   synthetic geotagged fixtures plus a disposable Postgres and fake R2. Live R2,
   Apple picker/share workflows and physical native-device checks remain separate.

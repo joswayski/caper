@@ -19,6 +19,7 @@ import {
   useRole,
 } from "@floating-ui/react";
 import Slider from "../components/Slider.tsx";
+import { decodeBitmap } from "./heic.ts";
 import {
   EDIT_COLORS,
   FULL_CROP,
@@ -65,7 +66,7 @@ const CROP_HANDLES: CropHandle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 
 async function loadPicture(file: Blob, kind: "image" | "video"): Promise<Picture | undefined> {
   let full: ImageBitmap | undefined;
-  if (kind === "image") full = await createImageBitmap(file, { imageOrientation: "from-image" }).catch(() => undefined);
+  if (kind === "image") full = await decodeBitmap(file, { imageOrientation: "from-image" });
   else full = await videoFrame(file);
   if (!full) return;
   const edge = Math.max(full.width, full.height);
