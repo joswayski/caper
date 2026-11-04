@@ -175,6 +175,19 @@ jobs:
       - name: Install Rosetta for the Intel build on Apple silicon
         if: matrix.target == 'macos-x64' && runner.arch == 'ARM64'
         run: /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null || sudo -n softwareupdate --install-rosetta --agree-to-license
+      - name: Create the iPhone 16 simulator the iOS suites target
+        # The Xcode 27 image ships the iPhone 16 device type but no device, and
+        # iOS 27 runtimes refuse it ("Incompatible device"); like the
+        # self-hosted Mac, use the newest runtime that still runs iPhone 16.
+        if: matrix.platform == 'ios' && runner.environment != 'self-hosted'
+        run: |
+          set -euo pipefail
+          if ! xcrun simctl list devices available | grep -q '^ *iPhone 16 ('; then
+            for runtime in $(xcrun simctl list runtimes available | sed -n 's/^iOS .* - \(com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]*\)$/\1/p' | sort -t- -k2,2nr -k3,3nr); do
+              xcrun simctl create 'iPhone 16' com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime" 2>/dev/null && break
+            done
+          fi
+          xcrun simctl list devices available | grep '^ *iPhone 16 ('
       - name: Build and package Apple development client
         env:
           PLATFORM: ${{ matrix.platform }}
