@@ -226,16 +226,18 @@ const LABEL_AHEAD = 0.6;
 const R0 = -7.2;
 const [R1, R2, R3] = [2.2, 9.4, 16.6];
 // Columns: clients, the two Cloudflare columns and its centre (Tunnel), AWS, data stores.
-const [C, A, B, T, K, P] = [1.8, 11.2, 16.4, 13.6, 24.6, 35.4];
+const [C, A, B, T, K, P] = [1.8, 11.2, 16.4, 13.6, 24.6, 36.6];
 // Buses: where clients merge, where Cloudflare fans out, the tunnel's AWS fan-out, and the shared data line.
 // Client rows; the phones share the middle row with the trunk.
 const [WEB, PHONES, DESKTOP] = [2.8, R2, 17.4];
-const [IN, OUT, HOSTS, TO_KV, TO_PG] = [5, 8.6, 22, 30.6, 31.4];
+const [IN, OUT, HOSTS, MERGE, SPLIT] = [5, 8.6, 22, 28.8, 31.6];
+// The data line crosses between the API and gateway rows.
+const DATA_ROW = (R1 + R2) / 2;
 const zones = [
   { name: "CLIENTS", x: -2, y: 0, w: 7.6, d: 22.4, accent: "#F1EDE4" },
   { name: "CLOUDFLARE · EDGE", x: 7.8, y: 0, w: 11.6, d: 22.4, accent: "#D9734F" },
   { name: "AWS · K3S", x: 20.6, y: 0, w: 9.2, d: 22.4, accent: "#8FAA66" },
-  { name: "DATA", x: P - 3.2, y: 0, w: 6.4, d: R2 + 3.8, accent: "#9AA0A4" },
+  { name: "DATA", x: P - 4.2, y: 0, w: 8.4, d: R2 + 3.8, accent: "#9AA0A4" },
   { name: "THIRD-PARTY SERVICES", x: -2, y: -10.4, w: 34.2, d: 6.4, accent: "#8DB8DC", above: true },
 ];
 
@@ -396,36 +398,36 @@ const edges = [
     ],
     label: [13.6, -1.3, "call control"],
   },
-  // The API writes messages and their outbox to Postgres and publishes the outbox to Valkey; the gateway
-  // subscribes to Valkey for live events (and keeps presence and calls there) and reads Postgres to replay.
+  // The API and the gateway both use Postgres and Valkey: their lines merge, cross into Data as one, and split.
   {
     path: [
-      [K + 1, R1 - 0.6],
-      [P - 1, R1 - 0.6],
-    ],
-  },
-  {
-    path: [
-      [K + 1, R2 - 0.6],
-      [TO_PG, R2 - 0.6],
-      [TO_PG, R1 - 0.6],
+      [K + 1, R1 - 0.3],
+      [MERGE, R1 - 0.3],
+      [MERGE, R2],
+      [K + 1, R2],
     ],
     arrow: false,
   },
   {
     path: [
-      [K + 1, R2 + 0.25],
-      [P - 0.9, R2 + 0.25],
+      [MERGE, DATA_ROW],
+      [SPLIT, DATA_ROW],
     ],
-    both: true,
+    arrow: false,
   },
   {
     path: [
-      [K + 1, R1 + 0.25],
-      [TO_KV, R1 + 0.25],
-      [TO_KV, R2 + 0.25],
+      [SPLIT, DATA_ROW],
+      [SPLIT, R1 - 0.3],
+      [P - 1, R1 - 0.3],
     ],
-    arrow: false,
+  },
+  {
+    path: [
+      [SPLIT, DATA_ROW],
+      [SPLIT, R2],
+      [P - 0.9, R2],
+    ],
   },
   {
     path: [
@@ -454,8 +456,8 @@ const junctions = [
   [OUT, R2],
   [OUT, R3],
   [HOSTS, R2],
-  [TO_PG, R1 - 0.6],
-  [TO_KV, R2 + 0.25],
+  [MERGE, DATA_ROW],
+  [SPLIT, DATA_ROW],
   [K + 0.6, -2.3],
 ];
 
@@ -560,12 +562,12 @@ const font = (weight) =>
 const lettering = read("apps/web/public/caper-wordmark-letters.svg", "utf8").match(/<path[^>]+\/>/)[0];
 
 const pad = 40;
-const header = 76;
+const header = 48;
 const [minX, minY, maxX, maxY] = all;
 const width = Math.ceil(maxX - minX + pad * 2);
 const height = Math.ceil(maxY - minY + pad * 2 + header);
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Caper architecture: web, iOS, Android and desktop clients reach the Rust API, Rust gateway and web server on AWS through Cloudflare Tunnel; voice audio flows through Cloudflare's Realtime SFU, files through R2 and the CDN Worker, link previews through the Embed Worker; data lives in PlanetScale Postgres with Valkey for fanout; the API uses Amazon SES, APNs/FCM and OpenRouter, and clients search GIFs on KLIPY.">
-<style>${font(500)}${font(700)}${font(900)}
+<style>${font(500)}${font(700)}
 text{font-family:Satoshi,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 .halo{paint-order:stroke;stroke:#0C0D0F;stroke-width:4px;stroke-linejoin:round}
 .backdrop{fill:#0C0D0F;stroke:#34383B;stroke-opacity:.35}
@@ -583,7 +585,7 @@ ${[...defined.values()].join("\n")}
 </defs>
 <rect width="${width}" height="${height}" rx="16" fill="#0C0D0F"/>
 <g transform="translate(${pad},${pad - 6}) scale(0.1)"><g transform="translate(-20,-17)">${lettering}</g></g>
-<text x="${pad + 114}" y="${pad + 18}" font-size="31" font-weight="900" letter-spacing="-0.01em" fill="#F3F4F5">architecture</text>
+
 <g transform="translate(${fixed(pad - minX)},${fixed(pad + header - minY)})">
 ${layers.zones.join("\n")}
 <g filter="url(#shadow-blur)" opacity="0.4">${shadows.join("")}</g>
