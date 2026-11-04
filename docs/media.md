@@ -3355,8 +3355,8 @@ prefix, keyword and substring matches, preferring shorter names within a rank. N
 selecting any spelling still sends the same Unicode emoji. Existing reactions
 need no migration. The browser fixture checks all three search spellings,
 dash-separated accessible names/image alt text, and Unicode persistence.
-Message-body emoji are unchanged. Custom uploads, frequently used/top-five lists,
-and a skin-tone selector are deferred. Message text does not currently convert
+Message-body emoji are unchanged. Custom uploads and frequently used/top-five
+lists are deferred. Message text does not currently convert
 `:name:` shortcodes into emoji. Dashes are not a restriction on future custom
 emoji, but uploads alone will not enable them. Custom reactions need an
 authorized emoji catalog, stable asset
