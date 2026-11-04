@@ -15,20 +15,6 @@ All builds are on the [latest release](https://github.com/joswayski/caper/releas
 
 Desktop apps update themselves; phone apps update through TestFlight and Google Play.
 
-## What works today
-
-- Spaces with text and voice channels, private channels and invite links ([invites](docs/media.md#invite-links))
-- Direct messages and a Notifications inbox for unread messages, mentions, replies, reactions and invitations ([notifications](docs/notifications.md))
-- Threads, pins, forwarding, editing and deleting messages
-- File and media attachments, with an editor to crop, draw and add text ([uploads](docs/media.md#uploads-and-attachments))
-- Link previews for X, TikTok, YouTube, Instagram and most other sites, with video playing in Caper ([link embeds](docs/media.md#link-embeds); live once the embed Worker is deployed)
-- Voice messages with automatic transcripts ([voice messages](docs/media.md#voice-messages-and-ai))
-- GIFs and stickers from KLIPY in every composer, once the API has a KLIPY key ([GIFs](docs/media.md#gifs-and-stickers-klipy))
-- Profile pictures and space icons ([pictures](docs/media.md#custom-profile-pictures-and-space-icons-october-14-2026))
-- `@feedback` in any conversation to reach the Caper team ([feedback](docs/media.md#feedback-in-place))
-
-Per-feature details, rollout state and validation gaps live in [docs/media.md](docs/media.md).
-
 ## Architecture
 
 ![Caper architecture: clients reach the Rust API, gateway and web server on AWS through Cloudflare Tunnel; voice, files and link previews run on Cloudflare; data lives in PlanetScale Postgres with Valkey for fanout](docs/architecture.svg)
@@ -46,9 +32,19 @@ Per-feature details, rollout state and validation gaps live in [docs/media.md](d
 - **Link previews** are fetched by the Embed Worker on Cloudflare, so links
   people post are never fetched from inside the cluster.
 
-The diagram is generated: edit the layout in
-[scripts/generate-architecture-diagram.mjs](scripts/generate-architecture-diagram.mjs)
-and run `node scripts/generate-architecture-diagram.mjs`.
+## What works today
+
+- Spaces with text and voice channels, private channels and invite links ([invites](docs/media.md#invite-links))
+- Direct messages and a Notifications inbox for unread messages, mentions, replies, reactions and invitations ([notifications](docs/notifications.md))
+- Threads, pins, forwarding, editing and deleting messages
+- File and media attachments, with an editor to crop, draw and add text ([uploads](docs/media.md#uploads-and-attachments))
+- Link previews for X, TikTok, YouTube, Instagram and most other sites, with video playing in Caper ([link embeds](docs/media.md#link-embeds); live once the embed Worker is deployed)
+- Voice messages with automatic transcripts ([voice messages](docs/media.md#voice-messages-and-ai))
+- GIFs and stickers from KLIPY in every composer, once the API has a KLIPY key ([GIFs](docs/media.md#gifs-and-stickers-klipy))
+- Profile pictures and space icons ([pictures](docs/media.md#custom-profile-pictures-and-space-icons-october-14-2026))
+- `@feedback` in any conversation to reach the Caper team ([feedback](docs/media.md#feedback-in-place))
+
+Per-feature details, rollout state and validation gaps live in [docs/media.md](docs/media.md).
 
 ## Development
 
