@@ -442,8 +442,8 @@ pub enum Kind {
 
 /// Whether a picked file can be edited before sending: stills the `image`
 /// codecs decode, without animation (GIF and animated WebP/PNG would lose
-/// every frame but the first), and videos when FFmpeg can re-encode them.
-/// HEIC and AVIF do not decode here (`compress`), so they upload unchanged.
+/// every frame but the first), HEIC and AVIF stills, which the bundled FFmpeg
+/// decodes (`compress::decode`), and videos when FFmpeg can re-encode them.
 pub fn editable(path: &Path) -> Option<Kind> {
     let name = path.file_name()?.to_string_lossy().into_owned();
     let mut head = Vec::new();
@@ -455,13 +455,18 @@ pub fn editable(path: &Path) -> Option<Kind> {
     editable_kind(&name, &head, crate::ffmpeg::binary().is_some())
 }
 
-pub fn editable_kind(name: &str, head: &[u8], videos: bool) -> Option<Kind> {
+pub fn editable_kind(name: &str, head: &[u8], ffmpeg: bool) -> Option<Kind> {
     let content_type = crate::compress::content_type_for(name, head);
     match content_type.as_str() {
         "image/jpeg" | "image/bmp" | "image/tiff" => Some(Kind::Image),
         "image/png" if !crate::compress::png_is_animated(head) => Some(Kind::Image),
         "image/webp" if still_webp(head) => Some(Kind::Image),
-        video if video.starts_with("video/") && videos => Some(Kind::Video),
+        "image/heic" | "image/heif" | "image/avif"
+            if ffmpeg && crate::compress::heif_still(head).is_some() =>
+        {
+            Some(Kind::Image)
+        }
+        video if video.starts_with("video/") && ffmpeg => Some(Kind::Video),
         _ => None,
     }
 }
@@ -1104,10 +1109,18 @@ mod tests {
         );
         assert_eq!(editable_kind("party.gif", b"GIF89a", false), None);
         assert_eq!(editable_kind("logo.svg", b"<svg", false), None);
+        let heic = b"\0\0\0\x18ftypheic\0\0\0\0mif1heic";
         assert_eq!(
-            editable_kind("IMG_2.HEIC", b"\0\0\0\x18ftypheic", false),
-            None
+            editable_kind("IMG_2.HEIC", heic, false),
+            None,
+            "needs FFmpeg"
         );
+        assert_eq!(editable_kind("IMG_2.HEIC", heic, true), Some(Kind::Image));
+        let avif = b"\0\0\0\x1cftypavif\0\0\0\0avifmif1miaf";
+        assert_eq!(editable_kind("photo.avif", avif, true), Some(Kind::Image));
+        // Animated AVIF would lose every frame but the first.
+        let avis = b"\0\0\0\x1cftypavis\0\0\0\0avisavifmsf1";
+        assert_eq!(editable_kind("moving.avif", avis, true), None);
         assert_eq!(editable_kind("notes.pdf", b"%PDF", true), None);
         assert_eq!(
             editable_kind("voice.m4a", b"\0\0\0\x18ftypM4A ", true),

@@ -1844,8 +1844,16 @@ absent `status` means ready.
 
 Follow-ups:
 
-- Desktop still uploads HEIC unchanged and cannot edit HEIC/AVIF. The bundled
-  FFmpeg decodes AVIF inline images/spoiler previews and AVIF/HEIC full-size images.
+- Desktop decodes HEIC and AVIF with the bundled FFmpeg (r2 or later, whose
+  `xstack` joins the tile grids iPhone cameras save HEIC photos as), converts
+  Display P3 to sRGB, and then converts HEIC like web, at any quality. HEIC
+  still uploads unchanged when no FFmpeg is found or the photo exceeds the
+  50-megapixel compression bound. Validated (2026-11-04) on Linux with the r2
+  release: a generated iPhone-style grid
+  (`apps/native/desktop/tests/fixtures/iphone-grid.heic`, run by `build.sh`)
+  and a 3992×2992 tiled phone HEIC became upright AVIF matching libheif's
+  decode; r1 left both as HEIC. Not run on Windows or with photos from a
+  physical iPhone.
 - Server metadata stripping regression checks use real FFmpeg/ExifTool on
   synthetic geotagged fixtures plus a disposable Postgres and fake R2. Live R2,
   Apple picker/share workflows and physical native-device checks remain separate.
@@ -2055,7 +2063,7 @@ server sees an ordinary upload, and cancelled reservations already exist.
 | Web | `AttachmentEditor.tsx` (loaded on demand), full-window dialog; Back closes it on phones | Canvas at full resolution, then the existing encoders | Mediabunny/WebCodecs: rotate, crop and resize, then the overlay in `process`; HDR through `hdr-video.ts` with the tone-mapped frame drawn turned and cropped. Shown only where the browser encodes H.264 (open-source Chromium has no encoder) |
 | Android | `AttachmentEditor.kt`, a full-screen Compose dialog; Compose has no colour picker, so the custom swatch opens a small hue and saturation/value picker | `EditPainter` (android.graphics) on the decoded crop region at native size, then the existing encoders | Media3: `ScaleAndRotateTransformation`, `Crop`, `Presentation`, then a `BitmapOverlay` of the marks; HDR needs Android 10+ to tone map. Like the existing transcode, portrait output may carry rotation metadata. AVIF is editable from Android 12 and HEIC from 9; TIFF is not (no platform decoder) |
 | Apple | `AttachmentEditor.swift`: a full-screen cover on iPhone/iPad, a window overlay on Mac (inside the profile popover there); the system `ColorPicker` | `AttachmentEditRenderer` (CoreGraphics/CoreText) at native size, then the existing encoders | The existing BT.709 composition (the HDR tone map) read as BGRA, each frame turned, cropped, scaled and overlaid with Core Image, written through a pixel-buffer adaptor |
-| Rust desktop | `attachment_editor.rs`, a full-window egui modal with egui's colour picker | `attachment_edit.rs` on the decoded original at native size: tiny-skia strokes, Satoshi Bold through ab_glyph, then the existing encoders. HEIC and AVIF are not editable (the desktop pipeline does not decode them) | FFmpeg filter graph: `transpose`/flips, `crop`, then scale or the HDR tone map. Marks need `overlay` with a PNG input (`-f png_pipe`), which the bundled trimmed FFmpeg 9.0.2 lacks, so Draw and Text are disabled for videos (with an explanation) until joswayski/ffmpeg-desktop enables the `overlay` filter, `png` decoder and `png_pipe` demuxer; the app checks the binary and uses them once present. Videos show a frame from 1 s in, the desktop poster rule |
+| Rust desktop | `attachment_editor.rs`, a full-window egui modal with egui's colour picker | `attachment_edit.rs` on the decoded original at native size: tiny-skia strokes, Satoshi Bold through ab_glyph, then the existing encoders. HEIC and AVIF stills decode through the bundled FFmpeg; an edited AVIF is re-encoded as a photo | FFmpeg filter graph: `transpose`/flips, `crop`, then scale or the HDR tone map. Marks need `overlay` with a PNG input (`-f png_pipe`), which the bundled trimmed FFmpeg 9.0.2 lacks, so Draw and Text are disabled for videos (with an explanation) until joswayski/ffmpeg-desktop enables the `overlay` filter, `png` decoder and `png_pipe` demuxer; the app checks the binary and uses them once present. Videos show a frame from 1 s in, the desktop poster rule |
 
 Validation (October 17, 2026): `npm run check` passes and `npm test`
 passes apart from three tests outside this change (`noise-assets` fails the
@@ -2397,7 +2405,7 @@ static FFmpeg built from pinned sources by
 [joswayski/ffmpeg-desktop](https://github.com/joswayski/ffmpeg-desktop)
 (FFmpeg 9.0.2, x264, dav1d 1.5.4, zimg 3.0.6; GPL-2.0-or-later, run as a
 separate program so the app stays Apache-2.0). `build.sh` and `build.ps1`
-download its `ffmpeg-9.0.2-r1` release, check the zip's SHA-256 and package
+download its `ffmpeg-9.0.2-r2` release, check the zip's SHA-256 and package
 `ffmpeg` (`ffmpeg.exe`) beside the app, with its licences, `SOURCES.txt` and
 build recipe in `ffmpeg-licenses/` (`/usr/share/doc/caper-desktop/` in the
 .deb). That repo's CI smoke-tests the app's exact commands on Linux and on a
@@ -2415,7 +2423,8 @@ app uses it to:
   the signed CDN URL through a loopback range proxy (`media_proxy.rs`, bound to
   127.0.0.1 with an unguessable per-video token). Seeking restarts both
   decoders at the new time;
-- decode AVIF and HEIC originals for the full-size viewer.
+- decode AVIF and HEIC stills (including iPhone tile grids) for uploads, the
+  attachment editor, profile pictures and the full-size viewer.
 
 It is found beside the executable (`/usr/lib/caper-desktop` for the .deb) or
 at `CAPER_FFMPEG`. Without it (a development build), videos upload unchanged
@@ -2586,7 +2595,7 @@ npx wrangler deploy --env staging
 | Web (desktop and mobile layouts) | Yes: Upload a file on desktop; attach drawer (Photos and videos, Files, and Camera on touch devices), clipboard files/images, and drag and drop with an overlay | Images, video, audio, file cards; images and videos open in the in-app viewer |
 | Apple (iOS and macOS) | Yes: attach drawer with the photo library and camera on iPhone/iPad (Upload a file on macOS), file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
 | Android | Yes: attach drawer with the photo library and camera (system photo picker without library access), document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
-| Rust desktop (Windows, Linux) | Yes: Upload a file opening the file dialog (Win32; XDG desktop portal on Linux), clipboard files/images, and drag and drop with an overlay, up to 10. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+| Rust desktop (Windows, Linux) | Yes: Upload a file opening the file dialog (Win32; XDG desktop portal on Linux), clipboard files/images, and drag and drop with an overlay, up to 10. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC decoded by the bundled FFmpeg and always converted). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
 
 #### Attach drawer (October 19, 2026)
 

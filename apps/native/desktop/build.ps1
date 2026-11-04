@@ -36,13 +36,13 @@ if ((Get-FileHash (Join-Path $Root 'apps\web\public\audio\dpdfnet8-v2\dpdfnet8_4
 # Caper's trimmed static FFmpeg (joswayski/ffmpeg-desktop, GPL-2.0-or-later),
 # run as a separate program to compress videos, play them in the app and decode
 # AVIF/HEIC originals. That repo's CI smoke-tests the app's exact commands.
-$FfmpegRelease = 'ffmpeg-9.0.2-r1'
+$FfmpegRelease = 'ffmpeg-9.0.2-r2'
 $FfmpegArchive = Join-Path $Native "target\ffmpeg-desktop-windows-x64-$FfmpegRelease.zip"
 $FfmpegExtract = Join-Path $Native "target\ffmpeg-desktop-windows-x64-$FfmpegRelease"
 if (-not (Test-Path $FfmpegArchive)) {
   Invoke-WebRequest "https://github.com/joswayski/ffmpeg-desktop/releases/download/$FfmpegRelease/ffmpeg-desktop-windows-x64.zip" -OutFile $FfmpegArchive -MaximumRetryCount 6 -RetryIntervalSec 5
 }
-if ((Get-FileHash $FfmpegArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '851f16be048d3348e635c42711a1b7868303372e8538d56202766a92bb1b84ad') {
+if ((Get-FileHash $FfmpegArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'd5a188de00effc18ad9f87c63fa0eaafcbd50fd97df59699de47222fce57fbb6') {
   throw 'FFmpeg download hash mismatch'
 }
 Remove-Item $FfmpegExtract -Recurse -Force -ErrorAction SilentlyContinue

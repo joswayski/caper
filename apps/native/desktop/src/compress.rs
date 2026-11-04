@@ -12,7 +12,8 @@
 //!   asks for it (`imageFormat` "avif", see `avif`), else lossy WebP at
 //!   `imageQuality` (libwebp); AVIF falls back to WebP, and WebP to JPEG, on
 //!   any failure. Scaled to `imageMaxEdge`, kept only when at least 10%
-//!   smaller. HEIC does not decode here and uploads as is.
+//!   smaller. HEIC (decoded by the bundled FFmpeg) converts the same way at
+//!   any quality and size, since most clients cannot show it.
 //! - Video, GIF, SVG, AVIF, audio and other files upload unchanged, except
 //!   that JPEG, PNG and MP4/QuickTime originals lose their metadata
 //!   (`metadata`).
@@ -194,7 +195,9 @@ pub enum StillClass {
     Lossless,
     /// JPEG, lossy WebP: AVIF or lossy WebP at the server quality.
     Photo,
-    /// GIF, SVG, AVIF, HEIC, animated PNG/WebP, anything else.
+    /// HEIC/HEIF: photos most clients cannot show, so always converted.
+    Heic,
+    /// GIF, SVG, AVIF, animated PNG/WebP, anything else.
     Unchanged,
 }
 
@@ -203,6 +206,7 @@ pub fn classify(content_type: &str, bytes: &[u8]) -> StillClass {
         "image/png" if !png_is_animated(bytes) => StillClass::Lossless,
         "image/bmp" | "image/tiff" => StillClass::Lossless,
         "image/jpeg" => StillClass::Photo,
+        "image/heic" | "image/heif" => StillClass::Heic,
         "image/webp" => match webp_bitstream(bytes) {
             Some(WebpBitstream::Lossless) => StillClass::Lossless,
             Some(WebpBitstream::Lossy) => StillClass::Photo,
@@ -317,22 +321,23 @@ pub enum StillEncoding {
 }
 
 /// Which encoder a still gets for these settings. Lossless sources never get
-/// a lossy encoder, whatever their colour count.
+/// a lossy encoder, whatever their colour count; HEIC is converted even at
+/// quality 100.
 pub fn still_encoding(
     class: StillClass,
     settings: &Compression,
     colors_within_palette: bool,
 ) -> StillEncoding {
+    let lossy =
+        class == StillClass::Heic || (class == StillClass::Photo && settings.image_quality < 100);
     match class {
         StillClass::Lossless if palette_limit(settings) > 0 && colors_within_palette => {
             StillEncoding::Palette
         }
         StillClass::Lossless => StillEncoding::LosslessWebp,
-        StillClass::Photo if settings.image_quality < 100 && settings.image_format == "avif" => {
-            StillEncoding::Avif
-        }
-        StillClass::Photo if settings.image_quality < 100 => StillEncoding::LossyWebp,
-        StillClass::Photo | StillClass::Unchanged => StillEncoding::None,
+        _ if lossy && settings.image_format == "avif" => StillEncoding::Avif,
+        _ if lossy => StillEncoding::LossyWebp,
+        _ => StillEncoding::None,
     }
 }
 
@@ -359,8 +364,42 @@ struct Decoded {
     rotated: bool,
 }
 
-/// Decode within memory limits and apply the EXIF orientation.
+/// The type of a HEIF-family still from its `ftyp` brands: HEIC or AVIF.
+/// `None` for anything else, including HEIF image sequences.
+pub fn heif_still(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.get(4..8) != Some(b"ftyp") {
+        return None;
+    }
+    let size = u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
+    let brands = bytes.get(8..size.min(bytes.len()))?;
+    let avif = brands
+        .get(8..)
+        .unwrap_or_default()
+        .chunks_exact(4)
+        .any(|brand| brand == b"avif");
+    match brands.get(..4)? {
+        b"avif" => Some("image/avif"),
+        b"heic" | b"heix" => Some("image/heic"),
+        b"mif1" if avif => Some("image/avif"),
+        b"mif1" => Some("image/heic"),
+        _ => None,
+    }
+}
+
+/// Decode within memory limits and apply the EXIF orientation. HEIC and
+/// AVIF go through the bundled FFmpeg, which returns them upright in sRGB.
 fn decode(bytes: &[u8]) -> Option<Decoded> {
+    decode_with_image(bytes).or_else(|| {
+        let image = crate::ffmpeg::decode_still(bytes, heif_still(bytes)?, None)?;
+        Some(Decoded {
+            image: DynamicImage::ImageRgba8(image),
+            icc: None,
+            rotated: false,
+        })
+    })
+}
+
+fn decode_with_image(bytes: &[u8]) -> Option<Decoded> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
@@ -453,10 +492,11 @@ fn lossless_candidate(
 /// or every encoder failed.
 fn photo_candidate(
     image: &DynamicImage,
+    class: StillClass,
     icc: Option<&[u8]>,
     settings: &Compression,
 ) -> Option<(Vec<u8>, &'static str)> {
-    let encoding = still_encoding(StillClass::Photo, settings, false);
+    let encoding = still_encoding(class, settings, false);
     if encoding == StillEncoding::None {
         return None;
     }
@@ -535,10 +575,12 @@ pub fn prepare_image(
                     rotated || keep_lossless(content_type, original_size, bytes.len() as u64)
                 })
                 .map(|(bytes, encoded)| (bytes, encoded, source.clone())),
-            StillClass::Photo => {
+            StillClass::Photo | StillClass::Heic => {
                 let resized = scaled(&source, settings.image_max_edge);
-                photo_candidate(&resized, icc.as_deref(), settings)
-                    .filter(|(bytes, _)| keep_photo(original_size, bytes.len() as u64))
+                photo_candidate(&resized, class, icc.as_deref(), settings)
+                    .filter(|(bytes, _)| {
+                        class == StillClass::Heic || keep_photo(original_size, bytes.len() as u64)
+                    })
                     .map(|(bytes, encoded)| (bytes, encoded, resized))
             }
             StillClass::Unchanged => None,
@@ -608,7 +650,11 @@ pub fn prepare_edited_image(
     edit: &crate::attachment_edit::Edit,
 ) -> Result<PreparedImage, String> {
     let failed = || crate::attachment_edit::FAILED.to_owned();
-    let class = classify(content_type, bytes);
+    let class = match classify(content_type, bytes) {
+        // AVIF uploads keep their bytes, but an edited one is a new photo.
+        StillClass::Unchanged if content_type == "image/avif" => StillClass::Photo,
+        class => class,
+    };
     if class == StillClass::Unchanged {
         return Err(failed());
     }
@@ -618,12 +664,12 @@ pub fn prepare_edited_image(
     // Pixels are written as RGB: a profile for another colour model is dropped.
     let icc = icc.filter(|icc| rgb_profile(Some(icc)));
     let source = match class {
-        StillClass::Photo => scaled(&rendered, settings.image_max_edge),
+        StillClass::Photo | StillClass::Heic => scaled(&rendered, settings.image_max_edge),
         _ => rendered,
     };
     let candidate = match class {
         StillClass::Lossless => lossless_candidate(&source, icc.as_deref(), settings),
-        _ => photo_candidate(&source, icc.as_deref(), settings),
+        _ => photo_candidate(&source, class, icc.as_deref(), settings),
     };
     let (bytes, encoded_type) = match candidate {
         Some((bytes, encoded_type)) => (bytes, encoded_type),
@@ -1133,9 +1179,42 @@ mod tests {
             ),
             StillClass::Unchanged
         );
-        for unchanged in ["image/gif", "image/svg+xml", "image/avif", "image/heic"] {
+        for unchanged in ["image/gif", "image/svg+xml", "image/avif"] {
             assert_eq!(classify(unchanged, b""), StillClass::Unchanged);
         }
+        assert_eq!(classify("image/heic", b""), StillClass::Heic);
+    }
+
+    #[test]
+    fn heif_stills_are_told_apart_by_their_brands() {
+        let ftyp = |major: &[u8], compatible: &[&[u8]]| {
+            let mut bytes = ((16 + 4 * compatible.len()) as u32).to_be_bytes().to_vec();
+            bytes.extend(b"ftyp");
+            bytes.extend(major);
+            bytes.extend([0; 4]);
+            compatible.iter().for_each(|brand| bytes.extend(*brand));
+            // The next box must not be read as a brand.
+            bytes.extend(b"\0\0\0\x08avif");
+            bytes
+        };
+        assert_eq!(
+            heif_still(&ftyp(b"heic", &[b"mif1", b"heic"])),
+            Some("image/heic")
+        );
+        assert_eq!(
+            heif_still(&ftyp(b"mif1", &[b"mif1", b"heic"])),
+            Some("image/heic")
+        );
+        assert_eq!(
+            heif_still(&ftyp(b"mif1", &[b"mif1", b"avif"])),
+            Some("image/avif")
+        );
+        assert_eq!(heif_still(&ftyp(b"avif", &[b"mif1"])), Some("image/avif"));
+        // Sequences (animated AVIF, HEIC bursts) and videos are not stills.
+        for major in [b"avis", b"msf1", b"hevc", b"isom", b"qt  "] {
+            assert_eq!(heif_still(&ftyp(major, &[b"mif1"])), None);
+        }
+        assert_eq!(heif_still(b"\xff\xd8\xff\xe0"), None);
     }
 
     #[test]
@@ -1218,6 +1297,22 @@ mod tests {
         assert_eq!(
             still_encoding(StillClass::Photo, &lossy_off, false),
             StillEncoding::None
+        );
+        // HEIC converts even then: most clients cannot show the original.
+        assert_eq!(
+            still_encoding(StillClass::Heic, &lossy_off, false),
+            StillEncoding::LossyWebp
+        );
+        assert_eq!(
+            still_encoding(
+                StillClass::Heic,
+                &Compression {
+                    image_format: "avif".into(),
+                    ..lossy_off.clone()
+                },
+                false
+            ),
+            StillEncoding::Avif
         );
         assert_eq!(
             still_encoding(lossless, &lossy_off, false),
@@ -1652,6 +1747,50 @@ mod tests {
         let prepared = prepare_image("photo.jpg", original.clone(), "image/jpeg", &off);
         assert_eq!(prepared.content_type, "image/jpeg");
         assert_eq!(prepared.bytes, original);
+    }
+
+    #[test]
+    #[ignore = "needs CAPER_FFMPEG with HEIC tile grids (the bundled release binary)"]
+    fn iphone_heic_photos_convert_upright_for_upload() {
+        // A 500x400 grid of 256 tiles turned a quarter anticlockwise, tagged
+        // Display P3, as iPhones save photos (joswayski/ffmpeg-desktop
+        // `test/heic_grid.py`).
+        let heic = include_bytes!("../tests/fixtures/iphone-grid.heic").to_vec();
+        // Quality 100 keeps other photos as they are; HEIC converts anyway.
+        let settings = Compression {
+            image_quality: 100,
+            ..Compression::default()
+        };
+        let prepared = prepare_image("IMG_0001.HEIC", heic.clone(), "image/heic", &settings);
+        assert_eq!(prepared.content_type, "image/webp");
+        assert_eq!(prepared.name, "IMG_0001.webp");
+        assert_eq!((prepared.width, prepared.height), (Some(400), Some(500)));
+        assert!(prepared.thumbnail.is_some());
+        let decoded = image::load_from_memory(&prepared.bytes).unwrap().to_rgb8();
+        // Upright, as libheif shows it: green, white / red, blue.
+        for ((x, y), expected) in [
+            ((50, 50), [0, 1, 0]),
+            ((350, 50), [1, 1, 1]),
+            ((50, 450), [1, 0, 0]),
+            ((350, 450), [0, 0, 1]),
+        ] {
+            let pixel = decoded.get_pixel(x, y).0;
+            assert!(
+                pixel
+                    .iter()
+                    .zip(expected)
+                    .all(|(value, high)| (*value > 150) == (high == 1)),
+                "({x}, {y}): {pixel:?}"
+            );
+        }
+        let avif = Compression {
+            image_format: "avif".into(),
+            ..settings
+        };
+        assert_eq!(
+            prepare_image("IMG_0001.HEIC", heic, "image/heic", &avif).content_type,
+            "image/avif"
+        );
     }
 
     #[test]

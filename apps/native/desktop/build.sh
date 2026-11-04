@@ -32,13 +32,13 @@ echo '7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631  '"$root/
 # Caper's trimmed static FFmpeg (joswayski/ffmpeg-desktop, GPL-2.0-or-later),
 # run as a separate program to compress videos, play them in the app and decode
 # AVIF/HEIC originals. That repo's CI smoke-tests the app's exact commands.
-ffmpeg_release=ffmpeg-9.0.2-r1
+ffmpeg_release=ffmpeg-9.0.2-r2
 ffmpeg_archive="$CARGO_TARGET_DIR/ffmpeg-desktop-linux-x64-$ffmpeg_release.zip"
 ffmpeg_dir="$CARGO_TARGET_DIR/ffmpeg-desktop-linux-x64-$ffmpeg_release"
 if [[ ! -f "$ffmpeg_archive" ]]; then
   curl -fL --retry 6 --retry-delay 5 --retry-all-errors -o "$ffmpeg_archive" "https://github.com/joswayski/ffmpeg-desktop/releases/download/$ffmpeg_release/ffmpeg-desktop-linux-x64.zip"
 fi
-echo '5f054de67d70281f3aeb69d2c9f6beb5d4f99f1a4e38a795ee1a017e710e5ba5  '"$ffmpeg_archive" | sha256sum --check --status
+echo 'adeede9c943a94f7d32b682057c7e59a6bce2ab8da8335c4d70288faada3b7ab  '"$ffmpeg_archive" | sha256sum --check --status
 rm -rf "$ffmpeg_dir"
 python3 -m zipfile -e "$ffmpeg_archive" "$ffmpeg_dir"
 chmod 0755 "$ffmpeg_dir/ffmpeg"
@@ -49,6 +49,7 @@ cargo fmt --manifest-path "$native/Cargo.toml" --package caper-desktop --package
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine
 CAPER_FFMPEG="$ffmpeg_dir/ffmpeg" cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop avif_originals_decode_for_inline_and_spoiler_display -- --ignored
+CAPER_FFMPEG="$ffmpeg_dir/ffmpeg" cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop iphone_heic_photos_convert_upright_for_upload -- --ignored
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop native_inference_is_finite_and_owns_fresh_state -- --ignored
 cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-desktop --all-targets --no-deps -- -D warnings
 cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine --all-targets --no-deps -- -D warnings

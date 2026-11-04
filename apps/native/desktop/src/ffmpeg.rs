@@ -75,6 +75,9 @@ pub fn command(binary: &Path) -> Command {
     command
 }
 
+/// Decoded stills larger than this (RGBA bytes) are refused.
+const MAX_STILL_BYTES: usize = 512 * 1024 * 1024;
+
 /// Decode an AVIF/HEIC still at the caller's display bound. The container
 /// needs seeking, so use the same disposable scratch files as video uploads.
 pub fn decode_image(
@@ -82,6 +85,24 @@ pub fn decode_image(
     content_type: &str,
     max_edge: u32,
 ) -> Option<eframe::egui::ColorImage> {
+    let image = decode_still(bytes, content_type, Some(max_edge))?;
+    let size = [image.width() as usize, image.height() as usize];
+    Some(eframe::egui::ColorImage::from_rgba_unmultiplied(
+        size,
+        image.as_raw(),
+    ))
+}
+
+/// Decode an AVIF/HEIC still upright as sRGB RGBA, at most `max_edge` on its
+/// long side (`None`: full size). iPhone photos are tile grids, which FFmpeg
+/// joins (`xstack`), crops and turns in a filtergraph of its own that refuses
+/// `-vf`, so FFmpeg decodes at full size and scaling happens here. Display P3
+/// colours are converted to sRGB, as browsers draw them.
+pub fn decode_still(
+    bytes: &[u8],
+    content_type: &str,
+    max_edge: Option<u32>,
+) -> Option<image::RgbaImage> {
     let binary = binary()?;
     let extension = match content_type {
         "image/avif" => "avif",
@@ -91,26 +112,92 @@ pub fn decode_image(
     let scratch = crate::uploads::Scratch::new(extension);
     std::fs::write(scratch.path(), bytes).ok()?;
     let stream = probe(binary, scratch.path()).ok()?.video?;
-    let [width, height] = crate::player::output_size(
-        stream.width,
-        stream.height,
-        eframe::egui::vec2(max_edge as f32, max_edge as f32),
-    );
+    let (width, height) = (stream.width as usize, stream.height as usize);
+    if width == 0
+        || height == 0
+        || width > 16_384
+        || height > 16_384
+        || width.checked_mul(height)?.checked_mul(4)? > MAX_STILL_BYTES
+    {
+        return None;
+    }
     let output = command(binary)
         .args(["-loglevel", "error", "-i"])
         .arg(scratch.path())
         .args([
             "-frames:v",
             "1",
-            "-vf",
-            &format!("scale={width}:{height}:flags=lanczos,format=rgba"),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "pipe:1",
         ])
-        .args(["-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])
         .stderr(Stdio::null())
         .output()
         .ok()?;
-    (output.status.success() && output.stdout.len() == width * height * 4)
-        .then(|| eframe::egui::ColorImage::from_rgba_unmultiplied([width, height], &output.stdout))
+    if !output.status.success() || output.stdout.len() != width * height * 4 {
+        return None;
+    }
+    let mut image = image::RgbaImage::from_raw(stream.width, stream.height, output.stdout)?;
+    if let Some(edge) = max_edge {
+        let [width, height] = crate::player::output_size(
+            stream.width,
+            stream.height,
+            eframe::egui::vec2(edge as f32, edge as f32),
+        );
+        if [width, height] != [stream.width as usize, stream.height as usize] {
+            image = image::imageops::resize(
+                &image,
+                width as u32,
+                height as u32,
+                image::imageops::FilterType::Lanczos3,
+            );
+        }
+    }
+    if stream.display_p3 {
+        display_p3_to_srgb(&mut image);
+    }
+    Some(image)
+}
+
+/// Display P3 to sRGB in place: both use the sRGB transfer curve, so only the
+/// primaries change (in linear light); colours outside sRGB are clipped.
+pub fn display_p3_to_srgb(image: &mut image::RgbaImage) {
+    const MATRIX: [[f32; 3]; 3] = [
+        [1.224_94, -0.224_94, 0.0],
+        [-0.042_057, 1.042_057, 0.0],
+        [-0.019_638, -0.078_636, 1.098_274],
+    ];
+    const STEPS: usize = 4096;
+    let linear: Vec<f32> = (0..256)
+        .map(|value| {
+            let value = value as f32 / 255.0;
+            if value <= 0.040_45 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        })
+        .collect();
+    let encoded: Vec<u8> = (0..=STEPS)
+        .map(|step| {
+            let value = step as f32 / STEPS as f32;
+            let value = if value <= 0.003_130_8 {
+                value * 12.92
+            } else {
+                1.055 * value.powf(1.0 / 2.4) - 0.055
+            };
+            (value * 255.0).round() as u8
+        })
+        .collect();
+    for pixel in image.pixels_mut() {
+        let [r, g, b] = [0, 1, 2].map(|channel| linear[usize::from(pixel[channel])]);
+        for (channel, row) in MATRIX.iter().enumerate() {
+            let value = (row[0] * r + row[1] * g + row[2] * b).clamp(0.0, 1.0);
+            pixel[channel] = encoded[(value * STEPS as f32).round() as usize];
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -132,6 +219,8 @@ pub struct VideoStream {
     pub fps: Option<f32>,
     /// BT.2100 PQ or HLG.
     pub hdr: bool,
+    /// Display P3 primaries (`smpte432`), as iPhone photos are tagged.
+    pub display_p3: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -161,6 +250,14 @@ pub fn parse_probe(log: &str) -> Probe {
                     .and_then(|degrees| degrees.parse::<f32>().ok())
                     .map_or(0, |degrees| degrees.round() as i32);
             }
+        } else if line.starts_with("Stream group #")
+            && let Some((_, details)) = line.split_once(": Tile Grid: ")
+            && let Some(grid) = parse_video(details)
+        {
+            // A HEIC tile grid (iPhone photos): the picture is the grid, not
+            // a tile or the thumbnail, and its rotation follows this line.
+            probe.video = Some(grid);
+            rotation = 0;
         } else if line.starts_with("Stream #")
             && let Some((_, details)) = line.split_once(": Video: ")
             && probe.video.is_none()
@@ -246,6 +343,7 @@ fn parse_video(details: &str) -> Option<VideoStream> {
             .iter()
             .find_map(|field| field.strip_suffix(" fps")?.parse().ok()),
         hdr,
+        display_p3: fields.iter().any(|field| field.contains("smpte432")),
     })
 }
 
@@ -853,6 +951,57 @@ mod tests {
 
     const EFFICIENT: &str = "  Duration: 00:00:03.00, start: 0.000000, bitrate: 2076 kb/s
   Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1280x720 [SAR 1:1 DAR 16:9], 1994 kb/s, 30 fps, 30 tbr, 15360 tbn (default)";
+
+    #[test]
+    fn probe_reads_an_iphone_heic_tile_grid() {
+        // FFmpeg 9 (Caper's r2 build) on an iPhone-style HEIC; a thumbnail
+        // stream after the grid must not replace it.
+        let probe = parse_probe(
+            "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'IMG_0001.HEIC':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream group #0:0[0x1]: Tile Grid: hevc (Main) (hvc1 / 0x31637668), yuv420p(tv, bt709/smpte432/iec61966-2-1), 4032x3024 [SAR 1:1 DAR 4:3] (default)
+    Side data:
+      Display Matrix: rotation of 90.00 degrees
+  Stream #0:48[0x31]: Video: hevc (Main) (hvc1 / 0x31637668), yuv420p(tv, bt709/smpte432/iec61966-2-1), 320x240, 1 fps, 1 tbr, 1 tbn",
+        );
+        let video = probe.video.unwrap();
+        assert_eq!((video.width, video.height), (3024, 4032));
+        assert!(video.display_p3);
+        assert!(!video.hdr);
+    }
+
+    #[test]
+    fn display_p3_converts_to_srgb() {
+        // Expected values from the CSS Color 4 matrices through XYZ.
+        let mut image = image::RgbaImage::from_fn(4, 1, |x, _| {
+            image::Rgba(
+                [
+                    [128, 128, 128, 255],
+                    [200, 100, 50, 255],
+                    [30, 180, 90, 9],
+                    [255, 0, 0, 255],
+                ][x as usize],
+            )
+        });
+        display_p3_to_srgb(&mut image);
+        let expected = [
+            [128, 128, 128, 255],
+            [215, 93, 31, 255],
+            [0, 183, 78, 9],
+            [255, 0, 0, 255],
+        ];
+        for (pixel, expected) in image.pixels().zip(expected) {
+            assert!(
+                pixel
+                    .0
+                    .iter()
+                    .zip(expected)
+                    .all(|(got, want)| got.abs_diff(want) <= 1),
+                "{:?} != {expected:?}",
+                pixel.0
+            );
+        }
+    }
 
     #[test]
     fn probe_reads_size_rotation_hdr_bitrate_and_audio() {

@@ -1552,7 +1552,7 @@ impl Zoom {
 pub(crate) fn decode_original(bytes: &[u8], content_type: &str) -> Option<image::RgbaImage> {
     use image::ImageDecoder;
     if matches!(content_type, "image/avif" | "image/heic" | "image/heif") {
-        return decode_ffmpeg_pixels(bytes, content_type);
+        return crate::ffmpeg::decode_still(bytes, content_type, None);
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -1673,47 +1673,6 @@ fn color_image(image: image::RgbaImage) -> egui::ColorImage {
         [image.width() as usize, image.height() as usize],
         image.as_raw(),
     )
-}
-
-/// Clipboard originals need full-resolution, straight-alpha pixels rather than
-/// the bounded, premultiplied display image returned by ffmpeg::decode_image.
-fn decode_ffmpeg_pixels(bytes: &[u8], content_type: &str) -> Option<image::RgbaImage> {
-    let binary = crate::ffmpeg::binary()?;
-    let extension = match content_type {
-        "image/avif" => "avif",
-        "image/heic" | "image/heif" => "heic",
-        _ => return None,
-    };
-    let scratch = crate::uploads::Scratch::new(extension);
-    std::fs::write(scratch.path(), bytes).ok()?;
-    let probe = crate::ffmpeg::probe(binary, scratch.path()).ok()?;
-    let stream = probe.video?;
-    let [width, height] = [stream.width as usize, stream.height as usize];
-    if width == 0
-        || height == 0
-        || width > 16_384
-        || height > 16_384
-        || width.checked_mul(height)?.checked_mul(4)? > MAX_ANIMATION_BYTES
-    {
-        return None;
-    }
-    let output = crate::ffmpeg::command(binary)
-        .args(["-loglevel", "error", "-i"])
-        .arg(scratch.path())
-        .args([
-            "-frames:v",
-            "1",
-            "-vf",
-            &format!("scale={width}:{height}:flags=lanczos,format=rgba"),
-        ])
-        .args(["-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() || output.stdout.len() != width * height * 4 {
-        return None;
-    }
-    image::RgbaImage::from_raw(width as u32, height as u32, output.stdout)
 }
 
 #[cfg(test)]
