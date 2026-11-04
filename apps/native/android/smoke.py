@@ -598,7 +598,8 @@ def main() -> None:
     while submit is not None and submit.get("clickable") != "true":
         submit = parents.get(submit)
     assert submit is not None and submit.get("enabled") == "false"
-    enter_first_field("fixture_owner")
+    # Save stays disabled until the draft differs from the saved profile.
+    enter_first_field("fixture_owner_smoke")
     fixture(
         {
             "failure": {
@@ -611,7 +612,7 @@ def main() -> None:
     )
     tap(text="Save profile")
     profile_error = capture("caper-android-profile-error", "Your profile could not be saved. Please try again.")
-    assert find(profile_error, text="fixture_owner") is not None, "Rejected save must retain the edit"
+    assert find(profile_error, text="fixture_owner_smoke") is not None, "Rejected save must retain the edit"
     assert find(profile_error, text="Save profile") is not None, "Rejected save must keep the form open"
     assert sum(1 for node in nodes(profile_error) if node.get("text") == "Edit profile") == 1
     tap(text="Save profile")
