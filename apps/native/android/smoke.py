@@ -677,7 +677,11 @@ def main() -> None:
     assert find(hierarchy(), description="Back to Browse") is not None, "Vertical scrolling stays in chat"
     time.sleep(1)  # Let the list's overscroll settle before the next touch.
     drag_until(width // 4, width - 10, int(middle), description="Close navigation")
-    drag_until(width * 3 // 4, 10, int(middle), description="Back to Browse")
+    # The Channels/DMs divider is a vertical resize handle at mid-height that drawer swipes
+    # deliberately ignore (#726), so close the drawer from just below it.
+    divider = find(hierarchy(), description="Channels and direct messages divider")
+    close_y = bounds(divider)[3] + 120 if divider is not None else int(middle)
+    drag_until(width * 3 // 4, 10, close_y, description="Back to Browse")
     tap(description="#general options")
     tap(text="Members")
     wait_for(description="Close member list")
