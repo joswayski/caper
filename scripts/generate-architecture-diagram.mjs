@@ -221,28 +221,28 @@ ${bars.map(([u, v, w, fill]) => `<rect x="${u}" y="${v}" width="${w}" height="0.
 
 // Corner radius of the zone slabs, in grid units.
 const ZONE_RADIUS = 0.7;
-// Labels centre on the floor this far in front of their model, which reads as "under it" in perspective.
-const LABEL_AHEAD = 1;
+// Labels start on the floor this far in front of their model's front edge, so a row of labels lines up.
+const LABEL_AHEAD = 0.6;
 const R0 = -7.2;
 const [R1, R2, R3] = [2.2, 9.4, 16.6];
-// Columns: clients, the two Cloudflare columns and its centre (Tunnel), AWS, Valkey, PlanetScale.
-const [C, A, B, T, K, V, P] = [1.8, 10.6, 16.4, 13.6, 24.6, 30.1, 37.7];
+// Columns: clients, the two Cloudflare columns and its centre (Tunnel), AWS, data stores.
+const [C, A, B, T, K, P] = [1.8, 11.2, 16.4, 13.6, 24.6, 35.4];
 // Buses: where clients merge, where Cloudflare fans out, the tunnel's AWS fan-out, and the shared data line.
-// Client rows, spread around the trunk on the middle row.
-const [WEB, PHONES, DESKTOP] = [3.4, R2 + 1.3, 17.9];
-const [IN, OUT, HOSTS, DATA] = [5, 8.6, 22, 27.2];
+// Client rows; the phones share the middle row with the trunk.
+const [WEB, PHONES, DESKTOP] = [2.8, R2, 17.4];
+const [IN, OUT, HOSTS, TO_KV, TO_PG] = [5, 8.6, 22, 30.6, 31.4];
 const zones = [
   { name: "CLIENTS", x: -2, y: 0, w: 7.6, d: 22.4, accent: "#F1EDE4" },
   { name: "CLOUDFLARE · EDGE", x: 7.8, y: 0, w: 11.6, d: 22.4, accent: "#D9734F" },
-  { name: "AWS · K3S", x: 20.6, y: 0, w: 13.6, d: 22.4, accent: "#8FAA66" },
-  { name: "PLANETSCALE", x: P - 2.3, y: R2 - 3.4, w: 4.6, d: 6.8, accent: "#9AA0A4" },
+  { name: "AWS · K3S", x: 20.6, y: 0, w: 9.2, d: 22.4, accent: "#8FAA66" },
+  { name: "DATA", x: P - 3.2, y: 0, w: 6.4, d: R2 + 3.8, accent: "#9AA0A4" },
   { name: "THIRD-PARTY SERVICES", x: -2, y: -10.4, w: 34.2, d: 6.4, accent: "#8DB8DC", above: true },
 ];
 
 // A label is [title, detail], or [detail] alone when the logo already names the service.
 const nodes = [
   { model: "monitor", x: C, y: WEB, label: ["Web", "browser app"] },
-  // Just below the trunk, so the phones visibly join the bus instead of running straight into the Tunnel.
+
   { model: "phones", x: C, y: PHONES, label: ["iOS · Android", "native apps"] },
   { model: "laptop", x: C, y: DESKTOP, label: ["Desktop", "macOS · Windows · Linux"] },
   { model: "logos", x: A, y: R1, logo: "cloudflare", logoHeight: 1.9, label: ["Realtime SFU / TURN", "voice calls"] },
@@ -261,8 +261,8 @@ const nodes = [
   { model: "logos", x: K, y: R1, logo: "rust", label: ["Rust API", "accounts · spaces · messages"] },
   { model: "logos", x: K, y: R2, logo: "rust", label: ["Rust gateway", "live WebSocket"] },
   { model: "logos", x: K, y: R3, logo: "tanstack", label: ["Web server", "TanStack Start"] },
-  { model: "logos", x: V, y: R3, logo: "valkey", label: ["Valkey", "fanout · presence · calls"] },
-  { model: "logos", x: P, y: R2, logo: "planetscale", label: ["Postgres", "durable data"] },
+  { model: "logos", x: P, y: R2, logo: "valkey", label: ["Valkey", "ElastiCache · live state"] },
+  { model: "logos", x: P, y: R1, logo: "planetscale", label: ["Postgres", "PlanetScale · durable data"] },
   { model: "logos", x: C, y: R0, logo: "klipy", logoHeight: 0.95, label: ["GIFs · stickers"] },
   {
     model: "logos",
@@ -396,36 +396,36 @@ const edges = [
     ],
     label: [13.6, -1.3, "call control"],
   },
-  // The API and the gateway share one data line, which splits to Postgres and Valkey.
+  // The API writes messages and their outbox to Postgres and publishes the outbox to Valkey; the gateway
+  // subscribes to Valkey for live events (and keeps presence and calls there) and reads Postgres to replay.
   {
     path: [
-      [K + 1, R1 - 0.1],
-      [DATA, R1 - 0.1],
-      [DATA, R2],
+      [K + 1, R1 - 0.6],
+      [P - 1, R1 - 0.6],
+    ],
+  },
+  {
+    path: [
+      [K + 1, R2 - 0.6],
+      [TO_PG, R2 - 0.6],
+      [TO_PG, R1 - 0.6],
     ],
     arrow: false,
   },
   {
     path: [
-      [K + 1, R2],
-      [DATA, R2],
+      [K + 1, R2 + 0.25],
+      [P - 0.9, R2 + 0.25],
+    ],
+    both: true,
+  },
+  {
+    path: [
+      [K + 1, R1 + 0.25],
+      [TO_KV, R1 + 0.25],
+      [TO_KV, R2 + 0.25],
     ],
     arrow: false,
-  },
-  {
-    path: [
-      [DATA, R2],
-      [P - 1, R2],
-    ],
-    label: [32.4, R2, "SQL · outbox"],
-  },
-  {
-    path: [
-      [DATA, R2],
-      [DATA, R3],
-      [V - 0.9, R3],
-    ],
-    label: [DATA, R2 + 3.6, "pub/sub"],
   },
   {
     path: [
@@ -450,12 +450,12 @@ const edges = [
 ];
 // Dots where a branch joins or leaves a bus.
 const junctions = [
-  [IN, PHONES],
   [IN, R2],
   [OUT, R2],
   [OUT, R3],
   [HOSTS, R2],
-  [DATA, R2],
+  [TO_PG, R1 - 0.6],
+  [TO_KV, R2 + 0.25],
   [K + 0.6, -2.3],
 ];
 
@@ -516,14 +516,15 @@ for (const [x, y] of junctions) {
   );
 }
 
+// How far each model reaches toward the viewer from its grid point.
+const FRONT = { monitor: 0.35, phones: 0.1, laptop: 0.85, bucket: 1.05 };
 const placed = [];
 for (const node of nodes) {
   bounds = [Infinity, Infinity, -Infinity, -Infinity];
   const svg = models[node.model](node);
   const box = [...bounds];
   include(box);
-  const [, , , bottom] = box;
-  const [cx] = project(node.x, node.y + LABEL_AHEAD, FLOOR);
+  const [cx, bottom] = project(node.x, node.y + (FRONT[node.model] ?? 0) + LABEL_AHEAD, FLOOR);
   const [title, detail] = node.label.length === 2 ? node.label : [null, node.label[0]];
   const half = Math.max((title ?? "").length * 4.2, detail.length * 3.35) + 2;
   const top = title ? 0 : -16;
@@ -559,12 +560,12 @@ const font = (weight) =>
 const lettering = read("apps/web/public/caper-wordmark-letters.svg", "utf8").match(/<path[^>]+\/>/)[0];
 
 const pad = 40;
-const header = 84;
+const header = 76;
 const [minX, minY, maxX, maxY] = all;
 const width = Math.ceil(maxX - minX + pad * 2);
 const height = Math.ceil(maxY - minY + pad * 2 + header);
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Caper architecture: web, iOS, Android and desktop clients reach the Rust API, Rust gateway and web server on AWS through Cloudflare Tunnel; voice audio flows through Cloudflare's Realtime SFU, files through R2 and the CDN Worker, link previews through the Embed Worker; data lives in PlanetScale Postgres with Valkey for fanout; the API uses Amazon SES, APNs/FCM and OpenRouter, and clients search GIFs on KLIPY.">
-<style>${font(500)}${font(700)}
+<style>${font(500)}${font(700)}${font(900)}
 text{font-family:Satoshi,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 .halo{paint-order:stroke;stroke:#0C0D0F;stroke-width:4px;stroke-linejoin:round}
 .backdrop{fill:#0C0D0F;stroke:#34383B;stroke-opacity:.35}
@@ -582,8 +583,7 @@ ${[...defined.values()].join("\n")}
 </defs>
 <rect width="${width}" height="${height}" rx="16" fill="#0C0D0F"/>
 <g transform="translate(${pad},${pad - 6}) scale(0.1)"><g transform="translate(-20,-17)">${lettering}</g></g>
-<text x="${pad + 122}" y="${pad + 13}" font-size="22" font-weight="700" fill="#F3F4F5">Architecture</text>
-<text x="${pad}" y="${pad + 46}" font-size="13" font-weight="500" fill="#9AA0A4">Control traffic runs on AWS. Voice audio, files and link previews stay on Cloudflare.</text>
+<text x="${pad + 114}" y="${pad + 18}" font-size="31" font-weight="900" letter-spacing="-0.01em" fill="#F3F4F5">architecture</text>
 <g transform="translate(${fixed(pad - minX)},${fixed(pad + header - minY)})">
 ${layers.zones.join("\n")}
 <g filter="url(#shadow-blur)" opacity="0.4">${shadows.join("")}</g>
