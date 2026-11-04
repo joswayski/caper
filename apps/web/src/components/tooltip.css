@@ -18,3 +18,8 @@
   line-height: 1.35;
   text-wrap: pretty;
 }
+
+/* A quick handoff keeps the label fully visible instead of flashing each entrance. */
+.top-layer-tooltip:popover-open[data-instant] {
+  animation: none;
+}

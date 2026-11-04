@@ -13,7 +13,7 @@ import "./tooltip.css";
 
 // Pointers wait briefly before a tooltip appears, so sweeping across a row of
 // controls doesn't flash each label. Once one is showing (or just was), the
-// next opens at once. Only one tooltip is visible at a time.
+// next opens at once, without replaying its entrance. Only one is visible at a time.
 const SHOW_DELAY_MS = 300;
 const WARM_MS = 300;
 let closeOpenTooltip: (() => void) | undefined;
@@ -105,6 +105,10 @@ export default function Tooltip({
     anchorRef.current = anchor;
     const tooltip = tooltipRef.current;
     if (!tooltip) return;
+    if (!tooltip.matches(":popover-open")) {
+      const warm = !!closeOpenTooltip || performance.now() - lastHiddenAt < WARM_MS;
+      tooltip.toggleAttribute("data-instant", warm);
+    }
     if (closeOpenTooltip !== close) closeOpenTooltip?.();
     closeOpenTooltip = close;
     if (!tooltip.matches(":popover-open")) tooltip.showPopover();

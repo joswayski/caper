@@ -7,6 +7,7 @@
 // Focus only on avatar borders with VOICE_TEST_AVATARS=1.
 // Focus on the connected account bar and call card links with VOICE_TEST_DOCK=1.
 // Focus on click-time/shared timers with VOICE_TEST_TIMERS=1.
+// Focus on tooltip animation handoffs with VOICE_TEST_TOOLTIPS=1 (requires desktop hover).
 // Check live channels (call card and room cards in the list, row joins, phone strip) with VOICE_TEST_REDESIGN=1.
 // Check space-rail voice badges across navigation and connection states with VOICE_TEST_RAIL=1.
 // Serve an interactive, explicitly simulated preview with VOICE_TEST_PREVIEW=1.
@@ -570,7 +571,56 @@ try {
   wait(
     `document.querySelector('#chat-message:not(:disabled)') && document.querySelector('.channel-join[aria-disabled="false"]')`,
   );
-  if (process.env.VOICE_TEST_RAIL === "1") {
+  if (process.env.VOICE_TEST_TOOLTIPS === "1") {
+    assert.ok(evaluate(`return matchMedia('(hover: hover)').matches;`), "Use VOICE_TEST_CHROME for desktop hover");
+    const tooltip = () =>
+      evaluate(`return [...document.querySelectorAll('.top-layer-tooltip:popover-open')].map(el => ({
+        text: el.textContent, animation: getComputedStyle(el).animationName, opacity: getComputedStyle(el).opacity
+      }));`);
+    browser("hover", '[aria-label="Input Options"]');
+    wait(`document.querySelector('.top-layer-tooltip:popover-open')?.textContent === 'Input Options'`);
+    assert.equal(tooltip()[0].animation, "caper-rise-in", "The first tooltip still arrives gently");
+    for (const label of ["Output Options", "User Settings", "Input Options"]) {
+      browser("hover", `[aria-label="${label}"]`);
+      assert.deepEqual(tooltip(), [{ text: label, animation: "none", opacity: "1" }], "Handoffs never fade in");
+    }
+    // A brief gap after hiding still belongs to the same hover sequence.
+    browser("press", "Escape");
+    browser("hover", '[aria-label="Output Options"]');
+    assert.deepEqual(tooltip(), [{ text: "Output Options", animation: "none", opacity: "1" }]);
+    // Let the warm interval expire, then revisit a trigger previously opened instantly.
+    browser("mouse", "move", "5", "5");
+    browser("wait", "700");
+    browser("hover", '[aria-label="Input Options"]');
+    wait(`document.querySelector('.top-layer-tooltip:popover-open')?.textContent === 'Input Options'`);
+    assert.equal(tooltip()[0].animation, "caper-rise-in", "A new hover sequence restores the entrance");
+    click("Input Options");
+    assert.deepEqual(tooltip(), [], "Opening the menu dismisses its tooltip");
+    click("Output Options");
+    wait(`document.querySelector('[aria-label="Output Options panel"]:popover-open')`);
+    assert.deepEqual(tooltip(), [], "Switching menus leaves no stale tooltip");
+    browser("press", "Escape");
+    browser("mouse", "move", "5", "5");
+    browser("wait", "700");
+    browser("press", "Tab");
+    wait(`document.querySelector('.top-layer-tooltip:popover-open')`);
+    browser("press", "Shift+Tab");
+    assert.deepEqual(
+      tooltip(),
+      [{ text: "Output Options", animation: "none", opacity: "1" }],
+      "Keyboard handoff is instant too",
+    );
+    browser("press", "Escape");
+    browser("set", "media", "reduced-motion");
+    browser("mouse", "move", "5", "5");
+    browser("wait", "700");
+    browser("hover", '[aria-label="Input Options"]');
+    wait(`document.querySelector('.top-layer-tooltip:popover-open')`);
+    assert.equal(tooltip()[0].animation, "none", "Reduced motion still disables the first entrance");
+    console.log(
+      "PASS: cold/warm tooltip entrances, brief gaps, cooldown reset, menu switches, keyboard and reduced motion.",
+    );
+  } else if (process.env.VOICE_TEST_RAIL === "1") {
     evaluate(`voiceFixture.activeSpaces = ['otherSpace12']; voiceFixture.showSpaces();`);
     const other = '.space-rail button[aria-label^="Other test space"]';
     const own = '.space-rail button[aria-label^="Test space"]';
