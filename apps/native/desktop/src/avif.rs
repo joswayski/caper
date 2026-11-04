@@ -84,7 +84,9 @@ fn icc_description(icc: &[u8]) -> Option<String> {
             let start = be32(tag, 24)?;
             let text = tag.get(start..start.checked_add(length)?)?;
             let units: Vec<u16> = text
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
                 .collect();
             Some(String::from_utf16_lossy(&units))

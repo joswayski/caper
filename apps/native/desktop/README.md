@@ -101,7 +101,7 @@ HTTP redirects are disabled.
 
 ## Build dependencies
 
-The workspace pins Rust **1.94.0** and eframe **0.33.3** in its independent
+The workspace pins Rust **1.99.1** and eframe **0.33.3** in its independent
 `Cargo.lock`. Builds default to `CARGO_BUILD_JOBS=2` for 4 GB runners.
 
 Ubuntu 24.04 build host:
@@ -114,7 +114,7 @@ sudo apt-get install -y build-essential pkg-config libwayland-dev \
   libxkbcommon-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
   libdbus-1-dev dbus-x11 libglib2.0-dev libasound2-dev clang-21 lld-21 \
   libgtk-3-dev libwebkit2gtk-4.1-dev
-rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
 ./apps/native/desktop/build.sh
 ```
 
@@ -122,7 +122,7 @@ Windows Server 2025 / Windows 11 build host:
 
 1. Install Visual Studio 2022 or newer Build Tools with **Desktop development with C++**
    and a Windows 10/11 SDK.
-2. Install rustup and the stable `1.94.0-x86_64-pc-windows-msvc` toolchain.
+2. Install rustup and the stable `1.99.1-x86_64-pc-windows-msvc` toolchain.
 3. Install NSIS 3.11 (`choco install nsis --version=3.11 -y`).
 4. Open the x64 Visual Studio developer environment, then run
    `powershell -ExecutionPolicy Bypass -File apps/native/desktop/build.ps1`.

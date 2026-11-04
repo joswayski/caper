@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
-          toolchain: 1.94.0
+          toolchain: 1.99.1
           components: rustfmt, clippy
           # Pull requests restore main's cache but do not upload their own.
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
-          toolchain: 1.94.0
+          toolchain: 1.99.1
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install media privacy tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libimage-exiftool-perl util-linux
@@ -124,7 +124,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
-          toolchain: 1.94.0
+          toolchain: 1.99.1
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --locked -p caper-api tests::shared -- --ignored
 
@@ -166,7 +166,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
-          toolchain: 1.94.0
+          toolchain: 1.99.1
           components: rustfmt, clippy
           cache-workspaces: apps/native/updater
           # Pull requests restore main's cache but do not upload their own.

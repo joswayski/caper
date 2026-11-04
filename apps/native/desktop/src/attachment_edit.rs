@@ -258,7 +258,7 @@ pub fn strokes_touched(
             let reach = radius + line * edge / 2.0;
             let (mut ax, mut ay) = (points[0] * width, points[1] * height);
             let mut nearest = (px - ax).hypot(py - ay);
-            for pair in points[2..].chunks_exact(2) {
+            for pair in points[2..].as_chunks::<2>().0 {
                 if nearest <= reach {
                     break;
                 }

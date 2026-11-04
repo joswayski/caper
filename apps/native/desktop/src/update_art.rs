@@ -33,7 +33,7 @@ fn shine(ui: &egui::Ui, response: &egui::Response) {
     }
     // Preserve the button's own keyboard focus indication.
     if !response.has_focus() {
-        for (width, alpha) in [(4.0, 31), (1.0, 191)] {
+        for (width, alpha) in [(4.0, 31), (1.0_f32, 191)] {
             let stroke = egui::epaint::PathStroke::new_uv(width, move |_, point| {
                 let t = ((point.x - rect.left()) / rect.width()).clamp(0.0, 1.0) * 4.0;
                 let index = (t as usize).min(3);

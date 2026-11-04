@@ -371,7 +371,7 @@ pub fn paint(
             painter.rect_stroke(
                 card,
                 8.0,
-                Stroke::new(1.0, crate::BORDER),
+                Stroke::new(1.0_f32, crate::BORDER),
                 egui::StrokeKind::Inside,
             );
             let dashed = card.shrink(9.75);
@@ -383,7 +383,7 @@ pub fn paint(
                     dashed.left_bottom(),
                     dashed.left_top(),
                 ],
-                Stroke::new(1.5, crate::TERRACOTTA),
+                Stroke::new(1.5_f32, crate::TERRACOTTA),
                 5.0,
                 4.0,
             ));

@@ -724,17 +724,15 @@ impl Media {
                 return ImageState::Ready(texture.id());
             }
             Some(Entry::Loading { .. }) => return ImageState::Loading,
+            // Retry once when the refresh produced a different URL.
             Some(Entry::Failed {
                 url: failed,
                 awaiting_refresh,
                 ..
-            }) => {
-                // Retry once when the refresh produced a different URL.
-                if !(*awaiting_refresh && url.is_some() && url != failed.as_deref()) {
-                    return ImageState::Failed;
-                }
+            }) if !(*awaiting_refresh && url.is_some() && url != failed.as_deref()) => {
+                return ImageState::Failed;
             }
-            None => {}
+            Some(Entry::Failed { .. }) | None => {}
         }
         // Without a URL (pending uploads, unsigned CDN) only a cached or local
         // image can show; nothing is recorded so a later URL still loads.

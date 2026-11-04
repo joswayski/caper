@@ -44,7 +44,7 @@ All builds are on the [latest release](https://github.com/joswayski/caper/releas
 
 ## Development
 
-You'll need Node.js 24, npm 11+, Docker Compose and Rust 1.94.
+You'll need Node.js 24, npm 11+, Docker Compose and Rust 1.99.
 
 ```bash
 npm ci

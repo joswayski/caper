@@ -375,7 +375,9 @@ pub fn heif_still(bytes: &[u8]) -> Option<&'static str> {
     let avif = brands
         .get(8..)
         .unwrap_or_default()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|brand| brand == b"avif");
     match brands.get(..4)? {
         b"avif" => Some("image/avif"),

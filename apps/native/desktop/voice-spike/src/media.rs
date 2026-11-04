@@ -2678,12 +2678,19 @@ mod tests {
             libwebrtc::audio_stream::native::NativeAudioStream::new(track, 48_000, 1);
         let mut processor = ProcessedVoice::new();
         let speech = captured
-            .chunks_exact(480)
+            .as_chunks::<480>()
+            .0
+            .iter()
             .position(|frame| frame.iter().any(|v| v.unsigned_abs() > 500))
             .unwrap();
         let mut reference_processor = ProcessedVoice::new();
         let mut processed_peak = 0;
-        for frame in captured[speech * 480..].chunks_exact(480).take(100) {
+        for frame in captured[speech * 480..]
+            .as_chunks::<480>()
+            .0
+            .iter()
+            .take(100)
+        {
             let (_, enhanced) = reference_processor
                 .process(
                     frame,
@@ -2703,7 +2710,12 @@ mod tests {
         route.set_input_processing(175, 0).unwrap();
         capture_control.set_live_recording(true).unwrap();
         let epoch = capture_control.live_epoch().unwrap();
-        for frame in captured[speech * 480..].chunks_exact(480).take(100) {
+        for frame in captured[speech * 480..]
+            .as_chunks::<480>()
+            .0
+            .iter()
+            .take(100)
+        {
             let input = AudioFrame {
                 data: frame.to_vec().into(),
                 sample_rate: 48_000,

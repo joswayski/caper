@@ -625,7 +625,7 @@ impl Editor {
         let painter = ui.painter_at(rect);
         painter.line_segment(
             [top.left_bottom(), top.right_bottom()],
-            Stroke::new(1.0, BORDER),
+            Stroke::new(1.0_f32, BORDER),
         );
         let close = Rect::from_center_size(
             egui::pos2(top.left() + 16.0 + 18.0, top.center().y),
@@ -797,7 +797,7 @@ impl Editor {
         // each chosen in place (again to go back to viewing), then Remove.
         painter.line_segment(
             [options.left_top(), options.right_top()],
-            Stroke::new(1.0, BORDER),
+            Stroke::new(1.0_f32, BORDER),
         );
         let (group, buttons, dividers) = preview_tool_layout(
             tools.center().x,
@@ -809,14 +809,14 @@ impl Editor {
             group,
             8.0,
             SURFACE,
-            Stroke::new(1.0, BORDER),
+            Stroke::new(1.0_f32, BORDER),
             egui::StrokeKind::Inside,
         );
         for x in dividers {
             ui.painter().vline(
                 x + 0.5,
                 group.shrink2(egui::vec2(0.0, 12.0)).y_range(),
-                Stroke::new(1.0, BORDER),
+                Stroke::new(1.0_f32, BORDER),
             );
         }
         for (tool, button) in buttons {
@@ -1397,7 +1397,7 @@ impl Editor {
             rect,
             8.0,
             Color32::from_black_alpha(90),
-            Stroke::new(1.0, Color32::from_white_alpha(140)),
+            Stroke::new(1.0_f32, Color32::from_white_alpha(140)),
             egui::StrokeKind::Outside,
         );
         let id = egui::Id::new("attachment-editor-text");
@@ -1476,7 +1476,7 @@ impl Editor {
         painter.rect_stroke(
             frame,
             0.0,
-            Stroke::new(1.5, Color32::from_white_alpha(230)),
+            Stroke::new(1.5_f32, Color32::from_white_alpha(230)),
             egui::StrokeKind::Middle,
         );
         // Inside moves the frame; corners and edges resize it, on top.
@@ -1708,14 +1708,14 @@ impl Editor {
         let color = Color32::from_rgb(red, green, blue);
         if draw && self.erasing {
             ui.painter()
-                .circle_stroke(preview.center(), value / 2.0, Stroke::new(1.5, MUTED));
+                .circle_stroke(preview.center(), value / 2.0, Stroke::new(1.5_f32, MUTED));
         } else if draw {
             ui.painter()
                 .circle_filled(preview.center(), value / 2.0, color);
             ui.painter().circle_stroke(
                 preview.center(),
                 value / 2.0 + 0.5,
-                Stroke::new(1.0, BORDER),
+                Stroke::new(1.0_f32, BORDER),
             );
         } else {
             ui.painter().text(
@@ -1928,7 +1928,7 @@ fn paint_spoiler_cover(
         badge,
         8.0,
         BLACKOUT.gamma_multiply(0.9 * opacity),
-        Stroke::new(1.0, BORDER.gamma_multiply(opacity)),
+        Stroke::new(1.0_f32, BORDER.gamma_multiply(opacity)),
         egui::StrokeKind::Inside,
     );
     let left = badge.center().x - content / 2.0;
@@ -2053,7 +2053,9 @@ fn paint_marks(painter: &egui::Painter, layout: &Layout, marks: &[Mark]) {
             Mark::Stroke { width, points, .. } => {
                 let line = *width as f32 * layout.edge;
                 let points: Vec<Pos2> = points
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|pair| layout.screen(pair[0], pair[1]))
                     .collect();
                 if points.len() > 1 {
@@ -2118,19 +2120,19 @@ fn brush_diameter(points: f32, edge: f32) -> f32 {
 fn paint_brush(painter: &egui::Painter, at: Pos2, diameter: f32, color: [u8; 3]) {
     let radius = diameter / 2.0;
     let [red, green, blue] = color;
-    let edge = Stroke::new(1.0, BLACKOUT.gamma_multiply(0.7));
+    let edge = Stroke::new(1.0_f32, BLACKOUT.gamma_multiply(0.7));
     painter.circle_filled(
         at,
         radius - 1.0,
         Color32::from_rgb(red, green, blue).gamma_multiply(0.3),
     );
     painter.circle_stroke(at, radius + 0.5, edge);
-    painter.circle_stroke(at, radius - 0.75, Stroke::new(1.5, Color32::WHITE));
+    painter.circle_stroke(at, radius - 0.75, Stroke::new(1.5_f32, Color32::WHITE));
     painter.circle_stroke(at, radius - 2.0, edge);
 }
 
 fn paint_handle(painter: &egui::Painter, at: Pos2, handle: Handle) {
-    let stroke = Stroke::new(3.0, TEXT);
+    let stroke = Stroke::new(3.0_f32, TEXT);
     let length = 18.0;
     let (ax, ay) = handle.anchor();
     // Corners are L-shaped brackets; edges a short bar along the edge.
@@ -2183,7 +2185,7 @@ fn icon_button(
         ui.painter().rect_stroke(
             rect,
             8.0,
-            Stroke::new(1.0, TERRACOTTA),
+            Stroke::new(1.0_f32, TERRACOTTA),
             egui::StrokeKind::Inside,
         );
     }
@@ -2278,7 +2280,7 @@ fn tool_button_toned(
             rect,
             8.0,
             SURFACE,
-            Stroke::new(1.0, TERRACOTTA),
+            Stroke::new(1.0_f32, TERRACOTTA),
             egui::StrokeKind::Inside,
         );
     } else if hot {
@@ -2346,7 +2348,7 @@ fn action_button(ui: &mut egui::Ui, rect: Rect, icon: NavIcon, label: &str) -> e
         8.0,
         if hot { RAISED } else { SURFACE },
         Stroke::new(
-            1.0,
+            1.0_f32,
             if response.has_focus() {
                 TERRACOTTA
             } else {
@@ -2399,19 +2401,22 @@ fn swatch(
         rect.width() / 2.0,
         Color32::from_rgb(red, green, blue),
     );
-    ui.painter()
-        .circle_stroke(rect.center(), rect.width() / 2.0, Stroke::new(1.0, BORDER));
+    ui.painter().circle_stroke(
+        rect.center(),
+        rect.width() / 2.0,
+        Stroke::new(1.0_f32, BORDER),
+    );
     if selected || response.has_focus() {
         ui.painter().circle_stroke(
             rect.center(),
             rect.width() / 2.0 + 3.5,
-            Stroke::new(2.0, TERRACOTTA),
+            Stroke::new(2.0_f32, TERRACOTTA),
         );
     } else if response.hovered() {
         ui.painter().circle_stroke(
             rect.center(),
             rect.width() / 2.0 + 3.0,
-            Stroke::new(1.0, ACTION),
+            Stroke::new(1.0_f32, ACTION),
         );
     }
     response.widget_info(|| {
@@ -2439,7 +2444,7 @@ fn eraser_button(ui: &mut egui::Ui, rect: Rect, selected: bool) -> egui::Respons
         rect,
         8.0,
         Stroke::new(
-            1.0,
+            1.0_f32,
             if selected || response.has_focus() {
                 TERRACOTTA
             } else {
@@ -2494,12 +2499,12 @@ fn custom_swatch(ui: &mut egui::Ui, rect: Rect, color: [u8; 3], selected: bool) 
         } else {
             BLACKOUT
         },
-        Stroke::new(1.0, BLACKOUT),
+        Stroke::new(1.0_f32, BLACKOUT),
     );
     if selected || response.has_focus() {
-        painter.circle_stroke(centre, radius + 3.5, Stroke::new(2.0, TERRACOTTA));
+        painter.circle_stroke(centre, radius + 3.5, Stroke::new(2.0_f32, TERRACOTTA));
     } else if response.hovered() {
-        painter.circle_stroke(centre, radius + 3.0, Stroke::new(1.0, ACTION));
+        painter.circle_stroke(centre, radius + 3.0, Stroke::new(1.0_f32, ACTION));
     }
     response.widget_info(|| {
         egui::WidgetInfo::selected(
@@ -3074,7 +3079,7 @@ mod tests {
         assert_eq!(mesh_opacity(&output, &cover, picture), Some(1.0));
         let shape = spoiler_badge(&output, picture).expect("the badge");
         assert_eq!(shape.fill, BLACKOUT.gamma_multiply(0.9));
-        assert_eq!(shape.stroke, Stroke::new(1.0, BORDER));
+        assert_eq!(shape.stroke, Stroke::new(1.0_f32, BORDER));
         assert_eq!(shape.corner_radius, egui::CornerRadius::same(8));
         assert!(spoiler_text_over(&output, shape.rect));
         assert!(picture.contains_rect(shape.rect));

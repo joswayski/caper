@@ -513,7 +513,9 @@ fn read_pcm(mut stdout: impl Read, sender: SyncSender<Vec<f32>>) {
         let usable = filled / 8 * 8;
         if usable > 0 {
             let samples = bytes[..usable]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|sample| f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]))
                 .collect();
             if sender.send(samples).is_err() {

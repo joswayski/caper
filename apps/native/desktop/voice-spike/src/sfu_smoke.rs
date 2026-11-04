@@ -210,7 +210,9 @@ async fn generated_speech_public_sfu_two_native_sessions() {
     assert!(
         speech
             .stdout
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .any(|v| i16::from_le_bytes([v[0], v[1]]).unsigned_abs() > 500)
     );
 

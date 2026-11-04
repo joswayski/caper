@@ -1411,7 +1411,11 @@ fn icon_button(
         },
     );
     if response.has_focus() {
-        painter.circle_stroke(rect.center(), rect.width() / 2.0, Stroke::new(1.5, BORDER));
+        painter.circle_stroke(
+            rect.center(),
+            rect.width() / 2.0,
+            Stroke::new(1.5_f32, BORDER),
+        );
     }
     paint_icon(
         &painter,

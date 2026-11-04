@@ -9981,7 +9981,7 @@ impl CaperApp {
             .show(context, |ui| {
                 egui::Frame::new()
                     .fill(SURFACE)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .corner_radius(8)
                     .inner_margin(14)
                     .shadow(egui::Shadow {
@@ -10583,7 +10583,7 @@ impl CaperApp {
             .show(context, |ui| {
                 egui::Frame::new()
                     .fill(SURFACE)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .corner_radius(8)
                     .inner_margin(12)
                     .show(ui, |ui| {
@@ -10617,7 +10617,7 @@ impl CaperApp {
             .frame(
                 egui::Frame::new()
                     .fill(SURFACE)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .corner_radius(8)
                     .inner_margin(16),
             )
@@ -10763,8 +10763,11 @@ impl CaperApp {
                         egui::vec2(ui.available_width(), 11.0),
                         egui::Sense::hover(),
                     );
-                    ui.painter()
-                        .hline(rule.x_range(), rule.center().y, Stroke::new(1.0, BORDER));
+                    ui.painter().hline(
+                        rule.x_range(),
+                        rule.center().y,
+                        Stroke::new(1.0_f32, BORDER),
+                    );
                 });
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical()
@@ -12276,7 +12279,7 @@ impl CaperApp {
                         outline.push(outline[0]);
                         ui.painter().extend(egui::Shape::dashed_line(
                             &outline,
-                            Stroke::new(1.0, BORDER),
+                            Stroke::new(1.0_f32, BORDER),
                             3.0,
                             3.0,
                         ));
@@ -12285,7 +12288,7 @@ impl CaperApp {
                             ui.painter().rect_stroke(
                                 rect,
                                 12.0,
-                                Stroke::new(1.0, TERRACOTTA_BRIGHT),
+                                Stroke::new(1.0_f32, TERRACOTTA_BRIGHT),
                                 egui::StrokeKind::Inside,
                             );
                         }
@@ -12320,7 +12323,7 @@ impl CaperApp {
                             12.0,
                             if join.hovered() { RAISED } else { SURFACE },
                             Stroke::new(
-                                1.0,
+                                1.0_f32,
                                 if join.has_focus() {
                                     TERRACOTTA_BRIGHT
                                 } else {
@@ -12511,7 +12514,7 @@ impl CaperApp {
                 ui.painter().hline(
                     (ui.max_rect().left() - 12.0)..=(ui.max_rect().right() + 12.0),
                     header.response.rect.bottom(),
-                    Stroke::new(1.0, BORDER),
+                    Stroke::new(1.0_f32, BORDER),
                 );
                 let divider_height = if self.account.is_some() { 12.0 } else { 0.0 };
                 let pane_height = (ui.available_height() - divider_height).max(0.0);
@@ -12785,7 +12788,7 @@ impl CaperApp {
                         }
                         for invitation in invitations {
                             egui::Frame::new()
-                                .stroke(Stroke::new(1.0, BORDER))
+                                .stroke(Stroke::new(1.0_f32, BORDER))
                                 .corner_radius(8)
                                 .inner_margin(10)
                                 .show(ui, |ui| {
@@ -12831,7 +12834,7 @@ impl CaperApp {
                 ui.painter().with_clip_rect(ui.clip_rect().expand2(egui::vec2(12.0, 0.0))).hline(
                     (divider_rect.left() - 12.0)..=(divider_rect.right() + 12.0),
                     divider_rect.center().y,
-                    Stroke::new(1.0, BORDER),
+                    Stroke::new(1.0_f32, BORDER),
                 );
                 if divider.dragged() && pane_height > 0.0 {
                     self.sidebar_channels_fraction = ((channels_height + divider.drag_delta().y)
@@ -13281,7 +13284,7 @@ impl CaperApp {
                     // ⊘, painted: the bundled fonts have no glyph for it.
                     let (icon, _) =
                         ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                    let stroke = Stroke::new(1.2, MUTED);
+                    let stroke = Stroke::new(1.2_f32, MUTED);
                     ui.painter().circle_stroke(icon.center(), 5.0, stroke);
                     ui.painter().line_segment(
                         [
@@ -13921,7 +13924,7 @@ impl CaperApp {
                 .frame(
                     egui::Frame::new()
                         .fill(SURFACE)
-                        .stroke(Stroke::new(1.0, BORDER))
+                        .stroke(Stroke::new(1.0_f32, BORDER))
                         .corner_radius(8)
                         .inner_margin(5)
                         .shadow(ui.style().visuals.popup_shadow),
@@ -14128,7 +14131,7 @@ impl CaperApp {
                 });
                 egui::Frame::new()
                     .fill(LIVE_CARD)
-                    .stroke(Stroke::new(1.0, LIVE_CARD_BORDER))
+                    .stroke(Stroke::new(1.0_f32, LIVE_CARD_BORDER))
                     .corner_radius(10)
                     .inner_margin(12)
                     .show(ui, |ui| {
@@ -14525,7 +14528,7 @@ impl CaperApp {
             let shown = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::CLICK), |ui| {
                 egui::Frame::new()
                     .fill(ROOM_CARD)
-                    .stroke(Stroke::new(1.0, ROOM_CARD_BORDER))
+                    .stroke(Stroke::new(1.0_f32, ROOM_CARD_BORDER))
                     .corner_radius(10)
                     .inner_margin(egui::Margin::symmetric(10, 8))
                     .show(ui, |ui| {
@@ -14655,7 +14658,7 @@ impl CaperApp {
                             person.picture(),
                         );
                         // The card's color parts overlapping faces.
-                        avatar_ring(ui, rect, picture, 1.0, Stroke::new(2.0, ROOM_CARD));
+                        avatar_ring(ui, rect, picture, 1.0, Stroke::new(2.0_f32, ROOM_CARD));
                     }
                     if room.people.len() > 3 && !crowded {
                         let text = ui.painter().layout_no_wrap(
@@ -14817,7 +14820,7 @@ impl CaperApp {
                 ui.set_max_height(max_height);
                 egui::Frame::new()
                     .fill(SURFACE)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .corner_radius(if touch {
                         CornerRadius {
                             nw: 12,
@@ -14936,7 +14939,7 @@ impl CaperApp {
                                         rect,
                                         8.0,
                                         fill,
-                                        Stroke::new(1.0, border),
+                                        Stroke::new(1.0_f32, border),
                                         egui::StrokeKind::Inside,
                                     );
                                     ui.painter().text(
@@ -15028,7 +15031,7 @@ impl CaperApp {
             }
             egui::Frame::new()
                 .fill(BLACKOUT)
-                .stroke(Stroke::new(1.0, BORDER))
+                .stroke(Stroke::new(1.0_f32, BORDER))
                 .corner_radius(8)
                 .inner_margin(10)
                 .show(ui, |ui| {
@@ -15095,7 +15098,7 @@ impl CaperApp {
         ui.painter().hline(
             strip.response.rect.x_range(),
             strip.response.rect.bottom(),
-            Stroke::new(1.0, VOICE_STRIP_BORDER),
+            Stroke::new(1.0_f32, VOICE_STRIP_BORDER),
         );
     }
 
@@ -15315,7 +15318,7 @@ impl CaperApp {
         ui.painter().rect_stroke(
             rect,
             6.0,
-            Stroke::new(1.0, BORDER),
+            Stroke::new(1.0_f32, BORDER),
             egui::StrokeKind::Inside,
         );
         let content = rect.shrink(5.0);
@@ -15840,7 +15843,7 @@ impl CaperApp {
         ui.add_space(24.0);
         egui::Frame::new()
             .fill(BLACKOUT)
-            .stroke(Stroke::new(1.0, BORDER))
+            .stroke(Stroke::new(1.0_f32, BORDER))
             .corner_radius(8)
             .inner_margin(16)
             .show(ui, |ui| {
@@ -15932,7 +15935,7 @@ impl CaperApp {
             egui::Frame::new()
                 .fill(BLACKOUT)
                 .stroke(Stroke::new(
-                    1.0,
+                    1.0_f32,
                     if latest {
                         Color32::from_rgb(83, 99, 63)
                     } else {
@@ -16119,7 +16122,7 @@ impl CaperApp {
             && !self.presence_snapshots.contains_key(&detail.space.id);
         let frame = egui::Frame::new().fill(SIDEBAR);
         let frame = if overlay {
-            frame.corner_radius(16).stroke(Stroke::new(1.0, BORDER))
+            frame.corner_radius(16).stroke(Stroke::new(1.0_f32, BORDER))
         } else {
             frame
         };
@@ -16129,7 +16132,7 @@ impl CaperApp {
             let bounds = ui.max_rect();
             if !overlay {
                 ui.painter()
-                    .vline(bounds.left(), bounds.y_range(), Stroke::new(1.0, BORDER));
+                    .vline(bounds.left(), bounds.y_range(), Stroke::new(1.0_f32, BORDER));
             }
             let (heading, _) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), 44.0),
@@ -16168,7 +16171,7 @@ impl CaperApp {
                 );
             }
             ui.painter()
-                .hline(heading.x_range(), heading.bottom(), Stroke::new(1.0, BORDER));
+                .hline(heading.x_range(), heading.bottom(), Stroke::new(1.0_f32, BORDER));
             let mut focus_search = false;
             if !demo && !self.member_search_open {
                 let search_rect = close.translate(egui::vec2(-32.0, 0.0));
@@ -16444,7 +16447,7 @@ impl CaperApp {
             ui.painter().hline(
                 heading.response.rect.x_range(),
                 heading.response.rect.bottom(),
-                Stroke::new(1.0, BORDER),
+                Stroke::new(1.0_f32, BORDER),
             );
             egui::ScrollArea::vertical()
                 .id_salt("feedback-inbox")
@@ -16722,7 +16725,7 @@ impl CaperApp {
         ui.painter().hline(
             heading.response.rect.x_range(),
             heading.response.rect.bottom(),
-            Stroke::new(1.0, BORDER),
+            Stroke::new(1.0_f32, BORDER),
         );
         // Inset like the channel composer, on the panel's own surface.
         let composer_frame = egui::Frame::new()
@@ -16915,7 +16918,7 @@ impl CaperApp {
                     editor
                 }).inner;
                 let mut output = editor.inner;
-                ui.painter().rect_stroke(editor.response.rect, 8.0, Stroke::new(1.0, if output.response.has_focus() { TERRACOTTA } else { BORDER }), egui::StrokeKind::Inside);
+                ui.painter().rect_stroke(editor.response.rect, 8.0, Stroke::new(1.0_f32, if output.response.has_focus() { TERRACOTTA } else { BORDER }), egui::StrokeKind::Inside);
                 let text = draft.0.clone();
                 if pick.is_some() { self.pick_files(ui.ctx(), Some(root.clone())); }
                 if record { self.start_voice_recording(ui.ctx(), Some(root.clone())); self.dictate_recording(); }
@@ -16950,7 +16953,7 @@ impl CaperApp {
             ui.painter().hline(
                 note.response.rect.x_range(),
                 note.response.rect.top(),
-                Stroke::new(1.0, BORDER),
+                Stroke::new(1.0_f32, BORDER),
             );
         }
         let displacement_id = ui.id().with(("thread-displacement", &root));
@@ -17018,7 +17021,7 @@ impl CaperApp {
                                         ui.painter().hline(
                                             ui.available_rect_before_wrap().x_range(),
                                             label.rect.center().y,
-                                            Stroke::new(1.0, BORDER),
+                                            Stroke::new(1.0_f32, BORDER),
                                         );
                                     });
                                 });
@@ -17216,7 +17219,7 @@ impl CaperApp {
             ui.painter().hline(
                 heading.response.rect.x_range(),
                 heading.response.rect.bottom(),
-                Stroke::new(1.0, BORDER),
+                Stroke::new(1.0_f32, BORDER),
             );
             if narrow {
                 self.voice_strip(ui);
@@ -17525,7 +17528,7 @@ impl CaperApp {
                     ui.painter().rect_stroke(
                         editor.response.rect,
                         8.0,
-                        Stroke::new(1.0, if response.has_focus() { TERRACOTTA } else { BORDER }),
+                        Stroke::new(1.0_f32, if response.has_focus() { TERRACOTTA } else { BORDER }),
                         egui::StrokeKind::Inside,
                     );
                     if self.draft != before {
@@ -18041,7 +18044,7 @@ impl CaperApp {
             .show(ui, |ui| {
                 let panel = egui::Frame::new()
                     .fill(SURFACE)
-                    .stroke(Stroke::new(1.0, BORDER.gamma_multiply(0.7)))
+                    .stroke(Stroke::new(1.0_f32, BORDER.gamma_multiply(0.7)))
                     .corner_radius(8)
                     .inner_margin(egui::Margin::symmetric(12, 10))
                     .show(ui, |ui| {
@@ -18301,7 +18304,7 @@ impl CaperApp {
             ui.painter().vline(
                 shown.response.rect.left() + 1.0,
                 shown.response.rect.y_range(),
-                Stroke::new(2.0, TERRACOTTA),
+                Stroke::new(2.0_f32, TERRACOTTA),
             );
             ui.add_space(6.0);
         }
@@ -18726,7 +18729,7 @@ impl CaperApp {
                 })
                 .show(ui, |ui| {
                     egui::Frame::new()
-                        .stroke(Stroke::new(1.0, BORDER))
+                        .stroke(Stroke::new(1.0_f32, BORDER))
                         .corner_radius(8)
                         .inner_margin(12)
                         .show(ui, |ui| {
@@ -18875,7 +18878,7 @@ impl CaperApp {
                         actions_rect,
                         8.0,
                         SURFACE,
-                        Stroke::new(1.0, BORDER),
+                        Stroke::new(1.0_f32, BORDER),
                         egui::StrokeKind::Inside,
                     );
                     for (emoji, mine, response) in &quick {
@@ -18889,7 +18892,7 @@ impl CaperApp {
                                     RAISED
                                 },
                                 if *mine || response.has_focus() {
-                                    Stroke::new(1.0, TERRACOTTA)
+                                    Stroke::new(1.0_f32, TERRACOTTA)
                                 } else {
                                     Stroke::NONE
                                 },
@@ -18927,7 +18930,7 @@ impl CaperApp {
                                 5.0,
                                 RAISED,
                                 if open || button.has_focus() {
-                                    Stroke::new(1.0, TERRACOTTA)
+                                    Stroke::new(1.0_f32, TERRACOTTA)
                                 } else {
                                     Stroke::NONE
                                 },
@@ -19543,7 +19546,7 @@ impl CaperApp {
             .frame(
                 egui::Frame::popup(&context.style())
                     .fill(SURFACE)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .corner_radius(8)
                     .inner_margin(0),
             )
@@ -19910,7 +19913,7 @@ impl CaperApp {
                                             egui::pos2(x, rect.bottom()),
                                             egui::pos2(x + rect.height(), rect.top()),
                                         ],
-                                        Stroke::new(1.0, Color32::from_white_alpha(12)),
+                                        Stroke::new(1.0_f32, Color32::from_white_alpha(12)),
                                     );
                                     x += 12.0;
                                 }
@@ -20155,7 +20158,7 @@ impl CaperApp {
             rect,
             radius,
             Stroke::new(
-                1.0,
+                1.0_f32,
                 if response.hovered() && clickable {
                     MUTED
                 } else {
@@ -20478,7 +20481,7 @@ impl CaperApp {
                 painter.rect_stroke(
                     rect,
                     8.0,
-                    Stroke::new(1.0, if draft.error.is_some() { ERROR } else { BORDER }),
+                    Stroke::new(1.0_f32, if draft.error.is_some() { ERROR } else { BORDER }),
                     egui::StrokeKind::Inside,
                 );
                 if draft.error.is_some() {
@@ -20946,7 +20949,7 @@ impl CaperApp {
             .frame(
                 egui::Frame::popup(&chip.ctx.style())
                     .fill(SURFACE)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .corner_radius(8)
                     .inner_margin(10),
             );
@@ -21184,7 +21187,10 @@ impl CaperApp {
                             } else {
                                 Color32::TRANSPARENT
                             })
-                            .stroke(Stroke::new(1.0, if active { TERRACOTTA } else { BORDER }))
+                            .stroke(Stroke::new(
+                                1.0_f32,
+                                if active { TERRACOTTA } else { BORDER },
+                            ))
                             .corner_radius(8)
                             .min_size(egui::vec2(0.0, 32.0)),
                         );
@@ -21470,7 +21476,7 @@ impl CaperApp {
                                     rect.left_bottom() + egui::vec2(2.0, 0.0),
                                     rect.right_bottom() - egui::vec2(2.0, 0.0),
                                 ],
-                                Stroke::new(2.0, TERRACOTTA),
+                                Stroke::new(2.0_f32, TERRACOTTA),
                             );
                         }
                     }
@@ -21862,7 +21868,7 @@ impl CaperApp {
                 .show(ui.ctx(), |ui| {
                     egui::Frame::new()
                         .fill(COMPOSER)
-                        .stroke(Stroke::new(1.0, BORDER))
+                        .stroke(Stroke::new(1.0_f32, BORDER))
                         .corner_radius(8)
                         .inner_margin(4)
                         .show(ui, |ui| {
@@ -22213,7 +22219,7 @@ impl CaperApp {
             .show(context, |ui| {
                 egui::Frame::new()
                     .fill(SURFACE)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .corner_radius(8)
                     .inner_margin(16)
                     .show(ui, |ui| {
@@ -22432,7 +22438,7 @@ impl CaperApp {
                                     ui.painter().hline(
                                         (x.min - 16.0)..=(x.max + 16.0),
                                         top,
-                                        Stroke::new(1.0, BORDER),
+                                        Stroke::new(1.0_f32, BORDER),
                                     );
                                     // Item spacing is added before widgets, not spaces.
                                     ui.add_space(12.0);
@@ -22901,7 +22907,7 @@ impl CaperApp {
             shell.response.rect,
             8.0,
             Stroke::new(
-                1.0,
+                1.0_f32,
                 if output.response.has_focus() {
                     TERRACOTTA
                 } else {
@@ -23401,7 +23407,7 @@ impl CaperApp {
                 ui.set_height(dialog_height.min(available.y));
                 egui::Frame::new()
                     .fill(SURFACE)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .corner_radius(8)
                     .show(ui, |ui| {
                         ui.set_width(width.min(available.x));
@@ -24502,7 +24508,7 @@ impl CaperApp {
                                         rect,
                                         8.0,
                                         Stroke::new(
-                                            if selected { 2.0 } else { 1.0 },
+                                            if selected { 2.0 } else { 1.0_f32 },
                                             if selected { TERRACOTTA } else { BORDER },
                                         ),
                                         egui::StrokeKind::Inside,
@@ -24941,13 +24947,13 @@ impl CaperApp {
         }
         if mascot && (dropping || response.has_focus()) {
             ui.painter()
-                .circle_stroke(rect.center(), side / 2.0, Stroke::new(2.0, TERRACOTTA));
+                .circle_stroke(rect.center(), side / 2.0, Stroke::new(2.0_f32, TERRACOTTA));
         } else if !mascot && (!space_icon || dropping || response.has_focus()) {
             ui.painter().rect_stroke(
                 rect,
                 corner,
                 Stroke::new(
-                    if dropping { 2.0 } else { 1.0 },
+                    if dropping { 2.0 } else { 1.0_f32 },
                     if dropping || response.has_focus() {
                         TERRACOTTA
                     } else if hovered {
@@ -25065,7 +25071,7 @@ impl CaperApp {
                 ui.painter().rect_stroke(
                     badge.shrink(1.0),
                     9.0,
-                    Stroke::new(2.0, TERRACOTTA),
+                    Stroke::new(2.0_f32, TERRACOTTA),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -25515,7 +25521,7 @@ impl CaperApp {
             let was_copied = copied.as_ref().is_some_and(|(code, _)| *code == link.code);
             let (copy, revoke) = egui::Frame::new()
                 .fill(RAISED)
-                .stroke(Stroke::new(1.0, BORDER))
+                .stroke(Stroke::new(1.0_f32, BORDER))
                 .corner_radius(8)
                 .inner_margin(egui::Margin::symmetric(12, 10))
                 .show(ui, |ui| {
@@ -25639,7 +25645,7 @@ impl CaperApp {
         if let Some(preview) = self.invite_join.preview.clone() {
             egui::Frame::new()
                 .fill(RAISED)
-                .stroke(Stroke::new(1.0, BORDER))
+                .stroke(Stroke::new(1.0_f32, BORDER))
                 .corner_radius(8)
                 .inner_margin(egui::Margin::symmetric(14, 12))
                 .show(ui, |ui| {
@@ -26040,7 +26046,7 @@ impl CaperApp {
         ui.painter().hline(
             bar.response.rect.x_range(),
             bar.response.rect.top(),
-            Stroke::new(1.0, BORDER),
+            Stroke::new(1.0_f32, BORDER),
         );
     }
 
@@ -26344,7 +26350,7 @@ fn resend_countdown(wait: Duration) -> (String, Duration) {
 
 fn login_error_frame(ui: &mut egui::Ui, error: &str) {
     egui::Frame::new()
-        .stroke(Stroke::new(1.0, TERRACOTTA))
+        .stroke(Stroke::new(1.0_f32, TERRACOTTA))
         .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(12, 14))
         .show(ui, |ui| {
@@ -26481,11 +26487,15 @@ fn corner_button(
     }
     match progress {
         None => {
-            painter.circle_stroke(center, CORNER_RADIUS - 0.5, Stroke::new(1.0, CORNER_EDGE));
+            painter.circle_stroke(
+                center,
+                CORNER_RADIUS - 0.5,
+                Stroke::new(1.0_f32, CORNER_EDGE),
+            );
         }
         Some(progress) => {
             let radius = CORNER_RADIUS - 1.0;
-            painter.circle_stroke(center, radius, Stroke::new(2.0, RING_TRACK));
+            painter.circle_stroke(center, radius, Stroke::new(2.0_f32, RING_TRACK));
             let top = -std::f32::consts::FRAC_PI_2;
             let (start, sweep) = match progress {
                 TileProgress::Known(fraction) => {
@@ -26514,7 +26524,7 @@ fn corner_button(
                 radius,
                 start,
                 sweep,
-                Stroke::new(2.0, TERRACOTTA_BRIGHT),
+                Stroke::new(2.0_f32, TERRACOTTA_BRIGHT),
             );
         }
     }
@@ -26525,7 +26535,11 @@ fn corner_button(
         TEXT,
     );
     if response.has_focus() {
-        painter.circle_stroke(center, CORNER_RADIUS + 2.0, Stroke::new(2.0, TERRACOTTA));
+        painter.circle_stroke(
+            center,
+            CORNER_RADIUS + 2.0,
+            Stroke::new(2.0_f32, TERRACOTTA),
+        );
     }
     let label = label.to_owned();
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
@@ -26574,7 +26588,7 @@ fn tile_retry_button(ui: &egui::Ui, tile: egui::Rect, id: egui::Id, label: &str)
         ON_ACTION,
     );
     if response.has_focus() {
-        painter.circle_stroke(rect.center(), 17.0, Stroke::new(2.0, TERRACOTTA));
+        painter.circle_stroke(rect.center(), 17.0, Stroke::new(2.0_f32, TERRACOTTA));
     }
     let label = label.to_owned();
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
@@ -26607,7 +26621,7 @@ fn spoiler_badge(ui: &egui::Ui, bounds: egui::Rect, instruction: bool, emphasize
         rect,
         8,
         BLACKOUT,
-        Stroke::new(1.0, if emphasized { MUTED } else { BORDER }),
+        Stroke::new(1.0_f32, if emphasized { MUTED } else { BORDER }),
         egui::StrokeKind::Inside,
     );
     let y = rect.top() + 14.0;
@@ -26648,7 +26662,7 @@ fn spoiler_hide_button(ui: &egui::Ui, bounds: egui::Rect, id: egui::Id) -> egui:
         8,
         BLACKOUT,
         Stroke::new(
-            1.0,
+            1.0_f32,
             if response.hovered() || response.has_focus() {
                 MUTED
             } else {
@@ -26887,7 +26901,7 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> ChipClicks {
     painter.rect_stroke(
         rect,
         8.0,
-        Stroke::new(1.0, if chip.error { ERROR } else { BORDER }),
+        Stroke::new(1.0_f32, if chip.error { ERROR } else { BORDER }),
         egui::StrokeKind::Inside,
     );
     if chip.removable {
@@ -27130,7 +27144,7 @@ fn device_picker_with_icon(
         rect,
         8.0,
         RAISED.gamma_multiply(fade),
-        Stroke::new(1.0, border.gamma_multiply(fade)),
+        Stroke::new(1.0_f32, border.gamma_multiply(fade)),
         egui::StrokeKind::Inside,
     );
     let chevron = egui::Rect::from_center_size(
@@ -27284,7 +27298,7 @@ fn settings_switch(
         ui.painter().rect_stroke(
             rect.expand(3.0),
             15.0,
-            Stroke::new(1.0, TERRACOTTA_BRIGHT),
+            Stroke::new(1.0_f32, TERRACOTTA_BRIGHT),
             egui::StrokeKind::Outside,
         );
     } else if hovered {
@@ -27292,7 +27306,7 @@ fn settings_switch(
             rect.expand(3.0),
             15.0,
             Stroke::new(
-                3.0,
+                3.0_f32,
                 if *value {
                     Color32::from_rgba_unmultiplied(182, 77, 50, 46)
                 } else {
@@ -27483,7 +27497,7 @@ fn voice_text_button(
         rect,
         8.0,
         fill,
-        Stroke::new(1.0, border),
+        Stroke::new(1.0_f32, border),
         egui::StrokeKind::Inside,
     );
     paint_icon(
@@ -27927,13 +27941,13 @@ fn place_live_timer(ui: &egui::Ui, text: &str, right: f32, y: f32, size: f32, sh
 /// The speaking ring of design H: a 2px gap in the `background`'s color,
 /// then 2px of voice green.
 fn speaking_ring(ui: &egui::Ui, rect: egui::Rect, picture: bool, background: Color32) {
-    avatar_ring(ui, rect, picture, 1.0, Stroke::new(2.0, background));
+    avatar_ring(ui, rect, picture, 1.0, Stroke::new(2.0_f32, background));
     avatar_ring(
         ui,
         rect,
         picture,
         3.0,
-        Stroke::new(2.0, VOICE_SESSION_GREEN),
+        Stroke::new(2.0_f32, VOICE_SESSION_GREEN),
     );
 }
 
@@ -27972,7 +27986,7 @@ fn call_toggle(
         8.0,
         fill,
         Stroke::new(
-            1.0,
+            1.0_f32,
             if pressed {
                 Color32::TRANSPARENT
             } else {
@@ -28100,7 +28114,7 @@ fn strip_call_faces(
         if speaking[index] {
             speaking_ring(ui, rect, picture, VOICE_STRIP);
         } else {
-            avatar_ring(ui, rect, picture, 1.0, Stroke::new(2.0, VOICE_STRIP));
+            avatar_ring(ui, rect, picture, 1.0, Stroke::new(2.0_f32, VOICE_STRIP));
         }
         label(
             rect,
@@ -28114,7 +28128,7 @@ fn strip_call_faces(
         if speaking[faces..].iter().any(|speaking| *speaking) {
             speaking_ring(ui, rect, false, VOICE_STRIP);
         } else {
-            avatar_ring(ui, rect, false, 1.0, Stroke::new(2.0, VOICE_STRIP));
+            avatar_ring(ui, rect, false, 1.0, Stroke::new(2.0_f32, VOICE_STRIP));
         }
         ui.painter().text(
             rect.center(),
@@ -28544,7 +28558,12 @@ fn paint_row_state(
     };
     painter.rect_filled(rect, 6.0, fill);
     if active && focused {
-        painter.rect_stroke(rect, 6.0, Stroke::new(1.0, MUTED), egui::StrokeKind::Inside);
+        painter.rect_stroke(
+            rect,
+            6.0,
+            Stroke::new(1.0_f32, MUTED),
+            egui::StrokeKind::Inside,
+        );
     }
 }
 
@@ -28743,7 +28762,7 @@ fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str
             ],
             false,
             Color32::TRANSPARENT,
-            Stroke::new(1.1, MUTED.gamma_multiply(0.75)),
+            Stroke::new(1.1_f32, MUTED.gamma_multiply(0.75)),
         ));
     for (position, angle) in [(source, angle), (target, -angle)] {
         egui::Image::new(egui::include_image!("../../../../shared/reply-socket.svg"))
@@ -28787,7 +28806,7 @@ fn admin_badge(ui: &mut egui::Ui) {
         );
     let frame = egui::Frame::new()
         .fill(PIN_GOLD.gamma_multiply(0.1))
-        .stroke(Stroke::new(1.0, PIN_GOLD.gamma_multiply(0.55)))
+        .stroke(Stroke::new(1.0_f32, PIN_GOLD.gamma_multiply(0.55)))
         .corner_radius(4)
         .inner_margin(egui::Margin::symmetric(4, 1))
         .shadow(egui::epaint::Shadow {
@@ -28955,7 +28974,7 @@ fn feedback_row(
             button_rect,
             8.0,
             if lit { RAISED } else { SURFACE },
-            Stroke::new(1.0, if lit { TERRACOTTA } else { BORDER }),
+            Stroke::new(1.0_f32, if lit { TERRACOTTA } else { BORDER }),
             egui::StrokeKind::Inside,
         );
         paint_icon(
@@ -28973,7 +28992,7 @@ fn feedback_row(
         ui.painter().rect_stroke(
             rect.shrink2(egui::vec2(8.0, 1.0)),
             8.0,
-            Stroke::new(1.0, TERRACOTTA_BRIGHT),
+            Stroke::new(1.0_f32, TERRACOTTA_BRIGHT),
             egui::StrokeKind::Inside,
         );
     }
@@ -29013,7 +29032,7 @@ fn message_row<R>(
             ui.painter().rect_stroke(
                 response.rect.expand(2.0),
                 corner,
-                Stroke::new(2.0, TERRACOTTA),
+                Stroke::new(2.0_f32, TERRACOTTA),
                 egui::StrokeKind::Outside,
             );
         }
@@ -29095,7 +29114,7 @@ fn message_row<R>(
                                         ui.painter().hline(
                                             name.rect.x_range(),
                                             name.rect.bottom(),
-                                            Stroke::new(1.0, TEXT),
+                                            Stroke::new(1.0_f32, TEXT),
                                         );
                                     }
                                     profile_response(ui, name, 4.0);
@@ -30133,7 +30152,7 @@ impl CaperApp {
             ui.painter().rect_stroke(
                 rect,
                 8.0,
-                Stroke::new(1.0, BORDER),
+                Stroke::new(1.0_f32, BORDER),
                 egui::StrokeKind::Inside,
             );
             let mut row = ui.new_child(
@@ -30211,7 +30230,7 @@ impl CaperApp {
                             .min_size(egui::vec2(note_width - 8.0, send_size))
                             .corner_radius(8.0)
                             .fill(Color32::TRANSPARENT)
-                            .stroke(Stroke::new(1.0, BORDER)),
+                            .stroke(Stroke::new(1.0_f32, BORDER)),
                     )
                     .on_hover_text(if send_on_stop {
                         "Stop and send as a voice message"
@@ -30373,7 +30392,7 @@ impl CaperApp {
             painter.rect_stroke(
                 rect,
                 8.0,
-                Stroke::new(1.0, BORDER),
+                Stroke::new(1.0_f32, BORDER),
                 egui::StrokeKind::Inside,
             );
             let play = egui::Rect::from_center_size(
@@ -30394,7 +30413,7 @@ impl CaperApp {
             };
             painter.circle_filled(play.center(), 16.0, fill);
             if button.has_focus() {
-                painter.circle_stroke(play.center(), 18.0, Stroke::new(1.5, TERRACOTTA));
+                painter.circle_stroke(play.center(), 18.0, Stroke::new(1.5_f32, TERRACOTTA));
             }
             paint_icon(
                 &painter,
@@ -30543,7 +30562,7 @@ fn voice_transcript(ui: &mut egui::Ui, attachment: &model::Attachment) {
                     ui.painter().hline(
                         toggle.rect.shrink2(egui::vec2(4.0, 0.0)).x_range(),
                         toggle.rect.bottom() - 2.0,
-                        Stroke::new(1.0, TEXT),
+                        Stroke::new(1.0_f32, TEXT),
                     );
                 }
                 if toggle.clicked() {
@@ -30553,8 +30572,11 @@ fn voice_transcript(ui: &mut egui::Ui, attachment: &model::Attachment) {
             }
         });
     let rect = frame.response.rect;
-    ui.painter()
-        .vline(rect.left() + 1.0, rect.y_range(), Stroke::new(2.0, BORDER));
+    ui.painter().vline(
+        rect.left() + 1.0,
+        rect.y_range(),
+        Stroke::new(2.0_f32, BORDER),
+    );
 }
 
 /// The player id of a staged recording: stable while it stays staged.
@@ -30732,7 +30754,10 @@ fn stop_button(
             ui.painter().rect_stroke(
                 rect.expand(7.0 * grow),
                 8.0 + 7.0 * grow,
-                Stroke::new(2.0, TERRACOTTA_BRIGHT.gamma_multiply(0.55 * (1.0 - grow))),
+                Stroke::new(
+                    2.0_f32,
+                    TERRACOTTA_BRIGHT.gamma_multiply(0.55 * (1.0 - grow)),
+                ),
                 egui::StrokeKind::Middle,
             );
             ui.ctx().request_repaint();
@@ -30744,8 +30769,12 @@ fn stop_button(
         };
         ui.painter().rect_filled(rect, 8.0, fill);
         if response.has_focus() {
-            ui.painter()
-                .rect_stroke(rect, 8.0, Stroke::new(2.0, TEXT), egui::StrokeKind::Inside);
+            ui.painter().rect_stroke(
+                rect,
+                8.0,
+                Stroke::new(2.0_f32, TEXT),
+                egui::StrokeKind::Inside,
+            );
         }
     }
     let glyph = if enabled {
@@ -30799,7 +30828,7 @@ fn voice_chip(
     painter.rect_stroke(
         rect,
         8.0,
-        Stroke::new(1.0, if error.is_some() { ERROR } else { BORDER }),
+        Stroke::new(1.0_f32, if error.is_some() { ERROR } else { BORDER }),
         egui::StrokeKind::Inside,
     );
     let play = egui::Rect::from_center_size(
@@ -30963,7 +30992,7 @@ fn file_card(
     painter.rect_stroke(
         rect,
         8.0,
-        Stroke::new(1.0, BORDER),
+        Stroke::new(1.0_f32, BORDER),
         egui::StrokeKind::Inside,
     );
     let icon = egui::Rect::from_min_size(rect.min + egui::vec2(13.0, 16.0), egui::vec2(20.0, 20.0));
@@ -31489,7 +31518,7 @@ fn rich_text_rows(
                     egui::TextFormat {
                         color: if hot { LINK_ACTIVE } else { LINK },
                         underline: if hot {
-                            Stroke::new(1.0, LINK_ACTIVE)
+                            Stroke::new(1.0_f32, LINK_ACTIVE)
                         } else {
                             Stroke::NONE
                         },
@@ -31681,7 +31710,7 @@ fn rich_text_rows(
                 ui.painter().rect_stroke(
                     rect.expand(1.0),
                     2.0,
-                    Stroke::new(1.0, LINK_ACTIVE),
+                    Stroke::new(1.0_f32, LINK_ACTIVE),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -31933,14 +31962,14 @@ fn external_link(
             ui.painter().hline(
                 rect.left()..=rect.left() + text_size.x,
                 rect.bottom() - 0.5,
-                Stroke::new(2.0, color.gamma_multiply(0.7)),
+                Stroke::new(2.0_f32, color.gamma_multiply(0.7)),
             );
         }
         if response.has_focus() {
             ui.painter().rect_stroke(
                 rect.expand(3.0),
                 2.0,
-                Stroke::new(2.0, TERRACOTTA),
+                Stroke::new(2.0_f32, TERRACOTTA),
                 egui::StrokeKind::Outside,
             );
         }
@@ -32245,7 +32274,7 @@ fn people_field(
         .show(ui.ctx(), |ui| {
             egui::Frame::new()
                 .fill(COMPOSER)
-                .stroke(Stroke::new(1.0, BORDER))
+                .stroke(Stroke::new(1.0_f32, BORDER))
                 .corner_radius(8)
                 .inner_margin(4)
                 .show(ui, |ui| {
@@ -32294,7 +32323,7 @@ fn new_messages_divider(ui: &mut egui::Ui) {
         );
         ui.painter().line_segment(
             [rect.left_center(), rect.right_center()],
-            Stroke::new(1.0, TERRACOTTA),
+            Stroke::new(1.0_f32, TERRACOTTA),
         );
         ui.label(RichText::new("New messages").size(10.0).color(TERRACOTTA));
     });
@@ -32317,7 +32346,7 @@ fn date_divider(ui: &mut egui::Ui, label: &str) {
                 ui.allocate_exact_size(egui::vec2(rule_width, 1.0), egui::Sense::hover());
             ui.painter().line_segment(
                 [rect.left_center(), rect.right_center()],
-                Stroke::new(1.0, BORDER),
+                Stroke::new(1.0_f32, BORDER),
             );
         };
         rule(ui);
@@ -32348,7 +32377,7 @@ fn paint_space_tile(
         rect,
         corner,
         SURFACE,
-        Stroke::new(1.0, BORDER),
+        Stroke::new(1.0_f32, BORDER),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
@@ -32493,9 +32522,9 @@ fn avatar(
             rect,
             shown,
             1.5,
-            Stroke::new(3.0, CAPER.gamma_multiply(0.2)),
+            Stroke::new(3.0_f32, CAPER.gamma_multiply(0.2)),
         );
-        avatar_ring(ui, rect, shown, -1.0, Stroke::new(2.0, CAPER));
+        avatar_ring(ui, rect, shown, -1.0, Stroke::new(2.0_f32, CAPER));
     }
     rect
 }
@@ -32873,16 +32902,16 @@ fn configure(context: &egui::Context) {
     style.visuals.window_fill = SURFACE;
     style.visuals.extreme_bg_color = COMPOSER;
     style.visuals.widgets.inactive.bg_fill = RAISED;
-    style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
+    style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER);
     style.visuals.widgets.inactive.corner_radius = CornerRadius::same(7);
     style.visuals.widgets.hovered.bg_fill = COMPOSER;
-    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, TERRACOTTA_BRIGHT);
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, TERRACOTTA_BRIGHT);
     style.visuals.widgets.hovered.corner_radius = CornerRadius::same(7);
     style.visuals.widgets.active.bg_fill = Color32::from_rgb(57, 35, 30);
-    style.visuals.widgets.active.bg_stroke = Stroke::new(1.0, TERRACOTTA_BRIGHT);
+    style.visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, TERRACOTTA_BRIGHT);
     style.visuals.widgets.active.corner_radius = CornerRadius::same(7);
     style.visuals.widgets.open.bg_fill = COMPOSER;
-    style.visuals.widgets.open.bg_stroke = Stroke::new(1.0, TERRACOTTA_BRIGHT);
+    style.visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, TERRACOTTA_BRIGHT);
     style.visuals.widgets.open.corner_radius = CornerRadius::same(7);
     // Plain buttons and menu items fill with these, not `bg_fill`; egui's
     // grays (60/70) were lighter than every token around them.
@@ -32893,14 +32922,14 @@ fn configure(context: &egui::Context) {
     style.visuals.selection.bg_fill = TERRACOTTA;
     // egui also frames a focused TextEdit with this stroke; `focus_frame`
     // repaints that frame terracotta. Selected text stays readable on the fill.
-    style.visuals.selection.stroke = Stroke::new(1.0, TEXT);
+    style.visuals.selection.stroke = Stroke::new(1.0_f32, TEXT);
     style.visuals.override_text_color = Some(TEXT);
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
     style.spacing.button_padding = egui::vec2(10.0, 7.0);
     style.spacing.interact_size.y = 36.0;
     style.visuals.window_corner_radius = CornerRadius::same(8);
     // Menus and windows use the shared border and 8px corners, not egui's grey.
-    style.visuals.window_stroke = Stroke::new(1.0, BORDER);
+    style.visuals.window_stroke = Stroke::new(1.0_f32, BORDER);
     style.visuals.menu_corner_radius = CornerRadius::same(8);
     context.set_style(style);
 }
@@ -32965,7 +32994,7 @@ fn login_action(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response
         rect,
         7.0,
         fill,
-        Stroke::new(1.0, border),
+        Stroke::new(1.0_f32, border),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
@@ -32976,7 +33005,7 @@ fn login_action(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response
         label,
     );
     let center = egui::pos2(rect.right() - 22.0, rect.center().y);
-    let stroke = Stroke::new(1.5, label);
+    let stroke = Stroke::new(1.5_f32, label);
     ui.painter().line_segment(
         [
             egui::pos2(center.x - 9.0, center.y),
@@ -33089,7 +33118,7 @@ fn focus_frame(ui: &egui::Ui, response: &egui::Response) {
         ui.painter().rect_stroke(
             response.rect.expand(visuals.expansion),
             visuals.corner_radius,
-            Stroke::new(1.0, TERRACOTTA),
+            Stroke::new(1.0_f32, TERRACOTTA),
             egui::StrokeKind::Inside,
         );
     }
@@ -33299,7 +33328,7 @@ fn toned_rounded(
         ] {
             state.weak_bg_fill = fill;
             state.bg_fill = fill;
-            state.bg_stroke = Stroke::new(1.0, border);
+            state.bg_stroke = Stroke::new(1.0_f32, border);
             state.fg_stroke.color = text;
             state.corner_radius = CornerRadius::same(radius);
             // No 1px growth on hover: the color change is the feedback.
@@ -33594,7 +33623,7 @@ fn navigation_toggle(ui: &mut egui::Ui, icon: NavIcon, text: &str) -> egui::Resp
     ui.painter().rect_stroke(
         rect,
         6.0,
-        Stroke::new(1.0, BORDER),
+        Stroke::new(1.0_f32, BORDER),
         egui::StrokeKind::Inside,
     );
     let color = if hover { TEXT } else { MUTED };
@@ -42156,7 +42185,7 @@ mod tests {
                     if points[0].x == points[1].x
                         && points[0].x > 340.0
                         && points[1].y <= 54.0
-                        && *stroke == egui::Stroke::new(1.0, super::BORDER))),
+                        && *stroke == egui::Stroke::new(1.0_f32, super::BORDER))),
             "no divider sets voice apart from Pins and Members"
         );
         // Independent values from the current web CSS: 54px fixed header,
@@ -48871,7 +48900,7 @@ mod tests {
         );
         assert_eq!(
             section_format(&hovered, LINKED, "www.example.com/notes").underline,
-            egui::Stroke::new(1.0, super::LINK_ACTIVE)
+            egui::Stroke::new(1.0_f32, super::LINK_ACTIVE)
         );
         assert!(hovered.shapes.iter().any(|shape| matches!(
             &shape.shape, egui::epaint::Shape::Rect(rect)

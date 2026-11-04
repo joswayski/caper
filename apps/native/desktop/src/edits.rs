@@ -662,7 +662,7 @@ impl CaperApp {
 fn dialog_frame(context: &egui::Context) -> egui::Frame {
     egui::Frame::popup(&context.style())
         .fill(SURFACE)
-        .stroke(egui::Stroke::new(1.0, BORDER))
+        .stroke(egui::Stroke::new(1.0_f32, BORDER))
         .corner_radius(8)
         .inner_margin(24)
 }
@@ -707,7 +707,7 @@ fn comparison(ui: &mut egui::Ui, before: &MessageVersion, after: &MessageVersion
             column.colored_label(MUTED, version_label(version));
             egui::Frame::new()
                 .fill(RAISED)
-                .stroke(egui::Stroke::new(1.0, BORDER))
+                .stroke(egui::Stroke::new(1.0_f32, BORDER))
                 .corner_radius(8)
                 .inner_margin(8)
                 .show(column, |ui| {

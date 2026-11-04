@@ -768,7 +768,7 @@ impl Picker {
                                 rect.left_bottom() + egui::vec2(2.0, 0.0),
                                 rect.right_bottom() - egui::vec2(2.0, 0.0),
                             ],
-                            egui::Stroke::new(2.0, crate::TERRACOTTA),
+                            egui::Stroke::new(2.0_f32, crate::TERRACOTTA),
                         );
                     }
                     if response.clicked() {
@@ -866,7 +866,7 @@ impl Picker {
                                         ui.painter().rect_stroke(
                                             rect,
                                             8.0,
-                                            egui::Stroke::new(1.0, crate::TERRACOTTA),
+                                            egui::Stroke::new(1.0_f32, crate::TERRACOTTA),
                                             egui::StrokeKind::Inside,
                                         );
                                     }
@@ -949,7 +949,7 @@ type Source<'a> = (&'a str, bool);
 /// the GIF's first frame.
 fn tile_sources(tile: &Tile, playing: bool) -> Vec<Source<'_>> {
     let gif = tile.gif.as_deref().map(|url| (url, true));
-    let webp = Some((tile.url.as_str(), true)).filter(|_| tile.gif.as_deref() != Some(&tile.url));
+    let webp = (tile.gif.as_deref() != Some(&tile.url)).then_some((tile.url.as_str(), true));
     let still = tile.still.as_deref().map(|url| (url, false));
     if playing {
         [gif, webp, still]
@@ -1128,7 +1128,7 @@ pub fn button(ui: &mut egui::Ui, size: f32) -> egui::Response {
     ui.painter().rect_stroke(
         badge,
         3.0,
-        egui::Stroke::new(1.4, color),
+        egui::Stroke::new(1.4_f32, color),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(

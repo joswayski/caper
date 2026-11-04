@@ -59,7 +59,7 @@ pub fn default_slider<T: Numeric>(
     let y = response.rect.center().y + 6.0;
     ui.painter().line_segment(
         [egui::pos2(x, y), egui::pos2(x, y + 4.0)],
-        egui::Stroke::new(2.0, ui.visuals().weak_text_color()),
+        egui::Stroke::new(2.0_f32, ui.visuals().weak_text_color()),
     );
     response
 }

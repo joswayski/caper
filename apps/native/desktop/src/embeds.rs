@@ -282,7 +282,7 @@ fn card(
     });
     let frame = egui::Frame::new()
         .fill(SURFACE)
-        .stroke(Stroke::new(1.0, BORDER))
+        .stroke(Stroke::new(1.0_f32, BORDER))
         .corner_radius(8)
         .inner_margin(egui::Margin {
             left: 12,
@@ -381,7 +381,7 @@ pub fn composer_card(ui: &mut egui::Ui, media: &mut Media, embed: &Embed, arriva
                 // Room on the right for the remove button over the corner.
                 let card = egui::Frame::new()
                     .fill(RAISED)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0_f32, BORDER))
                     .corner_radius(8)
                     .inner_margin(egui::Margin {
                         left: 8,
@@ -457,7 +457,7 @@ pub fn composer_card(ui: &mut egui::Ui, media: &mut Media, embed: &Embed, arriva
                     rect,
                     8,
                     RAISED,
-                    Stroke::new(1.0, BORDER),
+                    Stroke::new(1.0_f32, BORDER),
                     egui::StrokeKind::Inside,
                 );
                 paint_icon(
@@ -483,7 +483,7 @@ fn clicked(response: &egui::Response, label: &str, shown: &mut Shown) -> bool {
         response.ctx.layer_painter(response.layer_id).rect_stroke(
             response.rect.expand(2.0),
             8,
-            Stroke::new(2.0, crate::TERRACOTTA_BRIGHT),
+            Stroke::new(2.0_f32, crate::TERRACOTTA_BRIGHT),
             egui::StrokeKind::Outside,
         );
     }
@@ -1045,7 +1045,7 @@ fn tile(
     painter.rect_stroke(
         rect,
         radius,
-        Stroke::new(1.0, if hot { MUTED } else { BORDER }),
+        Stroke::new(1.0_f32, if hot { MUTED } else { BORDER }),
         egui::StrokeKind::Inside,
     );
 }

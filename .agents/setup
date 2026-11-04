@@ -179,7 +179,7 @@ if ((npm_major < 11)); then
   hash -r
 fi
 
-step "installing Rust 1.94.0"
+step "installing Rust 1.99.1"
 if [[ -f "$HOME/.cargo/env" ]]; then
   # shellcheck disable=SC1091
   source "$HOME/.cargo/env"
@@ -190,7 +190,7 @@ if ! command -v rustup >/dev/null 2>&1; then
   # shellcheck disable=SC1091
   source "$HOME/.cargo/env"
 fi
-rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
 
 step "installing JavaScript dependencies"
 npm ci

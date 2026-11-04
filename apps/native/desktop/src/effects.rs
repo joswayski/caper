@@ -169,7 +169,9 @@ pub fn speaker_test_pcm() -> Option<Vec<i16>> {
     let stereo: Vec<f32> = UniformSourceIterator::new(decoder, 2, 48_000).collect();
     Some(
         stereo
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| ((pair[0] + pair[1]) / 2.0 * 32_767.0).clamp(-32_768.0, 32_767.0) as i16)
             .collect(),
     )
