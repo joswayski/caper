@@ -78,8 +78,7 @@ class MentionCardUiTest {
         compose.onNodeWithText("That account was not found.").assertIsDisplayed()
         compose.onNodeWithContentDescription("Open conversation").assertIsEnabled()
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        compose.waitForIdle()
-        compose.onNodeWithText("Maya Fixture").assertDoesNotExist()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Maya Fixture").fetchSemanticsNodes().isEmpty() }
 
         compose.runOnIdle { text.config[SemanticsActions.CustomActions].last().action() }
         compose.onNodeWithText("You").assertIsDisplayed()

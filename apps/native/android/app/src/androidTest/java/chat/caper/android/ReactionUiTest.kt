@@ -149,8 +149,7 @@ class ReactionUiTest {
         compose.onNodeWithText("Copy text").assertIsEnabled()
         // The sheet holds window focus; Espresso.pressBack targets the unfocused activity root.
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        compose.waitForIdle()
-        compose.onNodeWithText("Message actions").assertDoesNotExist()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Message actions").fetchSemanticsNodes().isEmpty() }
         compose.runOnIdle {
             state.value = state.value.copy(reactionSaves = mapOf("${message.id}:🚀" to ReactionSaveUi("🚀", true, false, "Simulated save failure")))
         }
@@ -179,7 +178,7 @@ class ReactionUiTest {
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
         compose.onNodeWithText("Message actions").assertIsDisplayed()
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        compose.onNodeWithText("Message actions").assertDoesNotExist()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Message actions").fetchSemanticsNodes().isEmpty() }
     }
 
     @Test fun pressAndHoldShowsWhoReactedWithoutToggling() {
@@ -252,8 +251,8 @@ class ReactionUiTest {
         compose.onNodeWithText("Fixture Reactor").assertIsDisplayed()
         compose.runOnIdle { assertEquals(3, loads) }
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        compose.waitForIdle()
-        compose.onNodeWithText("Reactions").assertDoesNotExist()
+        // The sheet animates away before it leaves the hierarchy.
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Reactions").fetchSemanticsNodes().isEmpty() }
 
         // TalkBack's custom action opens the same sheet; removing every reaction closes it.
         val chip = compose.onNodeWithContentDescription("❤️ reaction, 1").fetchSemanticsNode()
@@ -273,8 +272,7 @@ class ReactionUiTest {
         compose.onNodeWithText("Fixture Reactor").assertIsDisplayed()
         compose.runOnIdle { assertEquals(null, submitted) }
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        compose.waitForIdle()
-        compose.onNodeWithText("Reactions").assertDoesNotExist()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Reactions").fetchSemanticsNodes().isEmpty() }
     }
 
     private fun assertClipboard(expected: String) {
