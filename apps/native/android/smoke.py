@@ -894,17 +894,9 @@ def main() -> None:
     assert not any(live.search(node.get("text", "") + node.get("content-desc", "")) for node in nodes(voice_ready)), (
         "No room is live: no voice cards or counts"
     )
-    # Web's mute and deafen work before joining, without starting a call.
-    tap(description="Mute microphone")
-    muted = wait_for(description="Unmute microphone")
-    assert find(muted, description="Leave voice") is None, "Pre-join mute must not start voice"
-    tap(description="Deafen audio")
-    wait_for(description="Undeafen audio")
-    tap(description="Undeafen audio")
-    restored = wait_for(description="Deafen audio")
-    assert find(restored, description="Unmute microphone") is not None, "Undeafen keeps an explicit mute"
-    tap(description="Unmute microphone")
-    wait_for(description="Mute microphone")
+    # Phones keep mute and deafen in the call card, not the account bar (#730).
+    for shortcut in ("Mute microphone", "Deafen audio"):
+        assert find(voice_ready, description=shortcut) is None, f"{shortcut!r} is not an account-bar shortcut on phones"
     adb("shell", "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS")
     tap(description=join)
     deny = "com.android.permissioncontroller:id/permission_deny_button"
