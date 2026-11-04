@@ -221,27 +221,34 @@ ${bars.map(([u, v, w, fill]) => `<rect x="${u}" y="${v}" width="${w}" height="0.
 
 // Corner radius of the zone slabs, in grid units.
 const ZONE_RADIUS = 0.7;
+// Labels centre on the floor this far in front of their model, which reads as "under it" in perspective.
+const LABEL_AHEAD = 1;
 const R0 = -7.2;
 const [R1, R2, R3] = [2.2, 9.4, 16.6];
-// Columns: clients, the two Cloudflare columns, AWS, Valkey, PlanetScale.
-const [C, A, B, K, V, P] = [1.6, 10.6, 16.4, 24.6, 30.1, 36.5];
+// Columns: clients, the two Cloudflare columns and its centre (Tunnel), AWS, Valkey, PlanetScale.
+const [C, A, B, T, K, V, P] = [1.8, 10.6, 16.4, 13.6, 24.6, 30.1, 37.7];
+// Buses: where clients merge, where Cloudflare fans out, the tunnel's AWS fan-out, and the shared data line.
+// Client rows, spread around the trunk on the middle row.
+const [WEB, PHONES, DESKTOP] = [3.4, R2 + 1.3, 17.9];
+const [IN, OUT, HOSTS, DATA] = [5, 8.6, 22, 27.2];
 const zones = [
-  { name: "CLIENTS", x: -1.2, y: 0, w: 5.8, d: 21.4, accent: "#F1EDE4" },
-  { name: "CLOUDFLARE", x: 7.8, y: 0, w: 11.6, d: 21.4, accent: "#D9734F" },
-  { name: "AWS · K3S", x: 21, y: 0, w: 11.8, d: 21.4, accent: "#8FAA66" },
-  { name: "PLANETSCALE", x: 34.2, y: R2 - 3.4, w: 4.6, d: 6.8, accent: "#9AA0A4" },
-  { name: "THIRD-PARTY SERVICES", x: -1.2, y: -10.4, w: 33.4, d: 6.4, accent: "#9AA0A4", above: true },
+  { name: "CLIENTS", x: -2, y: 0, w: 7.6, d: 22.4, accent: "#F1EDE4" },
+  { name: "CLOUDFLARE · EDGE", x: 7.8, y: 0, w: 11.6, d: 22.4, accent: "#D9734F" },
+  { name: "AWS · K3S", x: 20.6, y: 0, w: 13.6, d: 22.4, accent: "#8FAA66" },
+  { name: "PLANETSCALE", x: P - 2.3, y: R2 - 3.4, w: 4.6, d: 6.8, accent: "#9AA0A4" },
+  { name: "THIRD-PARTY SERVICES", x: -2, y: -10.4, w: 34.2, d: 6.4, accent: "#8DB8DC", above: true },
 ];
 
 // A label is [title, detail], or [detail] alone when the logo already names the service.
 const nodes = [
-  { model: "monitor", x: C, y: R1, label: ["Web", "browser app"] },
-  { model: "phones", x: C, y: R2, label: ["iOS · Android", "native apps"] },
-  { model: "laptop", x: C, y: R3, label: ["Desktop", "macOS · Windows · Linux"] },
+  { model: "monitor", x: C, y: WEB, label: ["Web", "browser app"] },
+  // Just below the trunk, so the phones visibly join the bus instead of running straight into the Tunnel.
+  { model: "phones", x: C, y: PHONES, label: ["iOS · Android", "native apps"] },
+  { model: "laptop", x: C, y: DESKTOP, label: ["Desktop", "macOS · Windows · Linux"] },
   { model: "logos", x: A, y: R1, logo: "cloudflare", logoHeight: 1.9, label: ["Realtime SFU / TURN", "voice calls"] },
   {
     model: "logos",
-    x: A,
+    x: T,
     y: R2,
     logo: "tunnel",
     logoHeight: 1.45,
@@ -256,7 +263,7 @@ const nodes = [
   { model: "logos", x: K, y: R3, logo: "tanstack", label: ["Web server", "TanStack Start"] },
   { model: "logos", x: V, y: R3, logo: "valkey", label: ["Valkey", "fanout · presence · calls"] },
   { model: "logos", x: P, y: R2, logo: "planetscale", label: ["Postgres", "durable data"] },
-  { model: "logos", x: 1.7, y: R0, logo: "klipy", logoHeight: 0.95, label: ["GIFs · stickers"] },
+  { model: "logos", x: C, y: R0, logo: "klipy", logoHeight: 0.95, label: ["GIFs · stickers"] },
   {
     model: "logos",
     x: B,
@@ -271,36 +278,35 @@ const nodes = [
 ];
 
 // Edges run on the floor through grid waypoints. `both` puts an arrow at each end; `arrow: false` at neither.
-// Edges run on the floor through grid waypoints. `both` puts an arrow at each end; `arrow: false` at neither.
-// Every client uses the same Cloudflare entry points, so the clients merge into one trunk that fans out there.
+// Every client uses the same Cloudflare entry points, so the clients merge into one trunk that fans out there;
+// the trunk runs straight through the Tunnel and the gateway to Postgres along the middle row.
 // Edges into the third-party row stop just below its labels.
 const LABELLED = R0 + 2.9;
-const [IN, OUT, TRUNK] = [4.2, 8.6, (R2 + R3) / 2];
 const edges = [
-  ...[R1, R2, R3].map((y) => ({
+  ...[WEB, PHONES, DESKTOP].map((y) => ({
     path: [
-      [3.1, y],
+      [C + 1.5, y],
       [IN, y],
     ],
     arrow: false,
   })),
   {
     path: [
-      [IN, R1],
-      [IN, R3],
+      [IN, WEB],
+      [IN, DESKTOP],
     ],
     arrow: false,
   },
   {
     path: [
-      [1.7, 0],
-      [1.7, LABELLED],
+      [C, 0],
+      [C, LABELLED],
     ],
   },
   {
     path: [
-      [IN, TRUNK],
-      [OUT, TRUNK],
+      [IN, R2],
+      [OUT, R2],
     ],
     arrow: false,
   },
@@ -320,7 +326,7 @@ const edges = [
   {
     path: [
       [OUT, R2],
-      [A - 1, R2],
+      [T - 1, R2],
     ],
   },
   {
@@ -351,26 +357,26 @@ const edges = [
   },
   {
     path: [
-      [A + 1, R2],
+      [T + 1, R2],
       [K - 1, R2],
     ],
   },
   {
     path: [
-      [22, R1 - 0.1],
-      [22, R3],
+      [HOSTS, R1 - 0.1],
+      [HOSTS, R3],
     ],
     arrow: false,
   },
   {
     path: [
-      [22, R1 - 0.1],
+      [HOSTS, R1 - 0.1],
       [K - 1, R1 - 0.1],
     ],
   },
   {
     path: [
-      [22, R3],
+      [HOSTS, R3],
       [K - 1, R3],
     ],
   },
@@ -390,35 +396,36 @@ const edges = [
     ],
     label: [13.6, -1.3, "call control"],
   },
+  // The API and the gateway share one data line, which splits to Postgres and Valkey.
   {
     path: [
       [K + 1, R1 - 0.1],
-      [V + 0.8, R1 - 0.1],
-      [V + 0.8, R3 - 0.6],
+      [DATA, R1 - 0.1],
+      [DATA, R2],
     ],
-    both: true,
+    arrow: false,
   },
   {
     path: [
-      [K + 1, R2 - 0.1],
-      [V - 0.8, R2 - 0.1],
-      [V - 0.8, R3 - 0.6],
+      [K + 1, R2],
+      [DATA, R2],
     ],
-    both: true,
+    arrow: false,
   },
   {
     path: [
-      [K + 1, R1 - 0.45],
-      [P, R1 - 0.45],
-      [P, R2 - 0.6],
+      [DATA, R2],
+      [P - 1, R2],
     ],
-    label: [33.5, R1 - 0.45, "SQL · outbox"],
+    label: [32.4, R2, "SQL · outbox"],
   },
   {
     path: [
-      [K + 1, R2 - 0.45],
-      [P - 1, R2 - 0.45],
+      [DATA, R2],
+      [DATA, R3],
+      [V - 0.9, R3],
     ],
+    label: [DATA, R2 + 3.6, "pub/sub"],
   },
   {
     path: [
@@ -440,6 +447,16 @@ const edges = [
       [x, LABELLED],
     ],
   })),
+];
+// Dots where a branch joins or leaves a bus.
+const junctions = [
+  [IN, PHONES],
+  [IN, R2],
+  [OUT, R2],
+  [OUT, R3],
+  [HOSTS, R2],
+  [DATA, R2],
+  [K + 0.6, -2.3],
 ];
 
 const layers = { zones: [], edges: [], models: [], labels: [] };
@@ -493,6 +510,12 @@ for (const edge of edges) {
   }
 }
 
+for (const [x, y] of junctions) {
+  layers.edges.push(
+    `<ellipse transform="${floorPlane(x, y, FLOOR)}" rx="0.17" ry="0.17" fill="#F1EDE4" stroke="#0C0D0F" stroke-width="0.06"/>`,
+  );
+}
+
 const placed = [];
 for (const node of nodes) {
   bounds = [Infinity, Infinity, -Infinity, -Infinity];
@@ -500,7 +523,7 @@ for (const node of nodes) {
   const box = [...bounds];
   include(box);
   const [, , , bottom] = box;
-  const [cx] = project(node.x, node.y, FLOOR);
+  const [cx] = project(node.x, node.y + LABEL_AHEAD, FLOOR);
   const [title, detail] = node.label.length === 2 ? node.label : [null, node.label[0]];
   const half = Math.max((title ?? "").length * 4.2, detail.length * 3.35) + 2;
   const top = title ? 0 : -16;
