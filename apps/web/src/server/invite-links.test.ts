@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { createMemoryHistory, createRootRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { test, vi } from "vitest";
+import InvitePage from "../spaces/InvitePage";
+import type { InvitePageState } from "../spaces/invite-server";
 import { androidAssetLinks, appleAppSiteAssociation } from "./app-links.ts";
 import {
   appInviteUrl,
@@ -20,6 +25,52 @@ import {
   signedInPath,
   SpacesApiError,
 } from "../spaces/client.ts";
+
+test("invite HTML contains the resolved content and session action without waiting for browser effects", () => {
+  const router = createRouter({
+    routeTree: createRootRoute(),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+    isServer: true,
+  });
+  const ready: Extract<InvitePageState, { status: "ready" }> = {
+    status: "ready",
+    preview: {
+      code: "AbCdE12345",
+      space: { name: "Test space" },
+      inviter: { username: "host", displayName: "Test host" },
+      channel: { name: "introductions" },
+      memberCount: 7,
+      expiresAt: "2026-01-01T00:00:00Z",
+    },
+    account: null,
+    expiry: "Expires in 1 minute",
+  };
+  const account = { id: "visitor", username: "visitor", displayName: "Visitor" };
+  const states: Array<[InvitePageState, string]> = [
+    [ready, "Sign in to join"],
+    [{ ...ready, account }, "Join space"],
+    [{ ...ready, account: { ...account, username: null } }, "Finish your profile to join"],
+    [{ ...ready, account, preview: { ...ready.preview, alreadyMember: true } }, "Open space"],
+    [{ status: "invalid" }, "This invite link is invalid or has expired."],
+    [{ status: "unavailable" }, "Invites are unavailable."],
+  ];
+  for (const [state, action] of states) {
+    const html = renderToStaticMarkup(
+      createElement(RouterContextProvider, {
+        router,
+        children: createElement(InvitePage, { code: ready.preview.code, state }),
+      }),
+    );
+    assert.ok(html.includes(action), action);
+    assert.doesNotMatch(html, /Loading invite/);
+    if (state.status === "ready") {
+      for (const text of ["Test space", "Test host", "#introductions", "7 members"])
+        assert.ok(html.includes(text), text);
+      // The server's label survives hydration even if the clock has crossed a boundary.
+      assert.equal(html.includes("Expires in 1 minute"), !state.preview.alreadyMember);
+    }
+  }
+});
 
 test("invite codes come from full, scheme-less or bare pasted links", () => {
   for (const input of [

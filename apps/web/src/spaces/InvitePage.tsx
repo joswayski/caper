@@ -1,49 +1,22 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { type Account, getAccount } from "../account/client";
+import { useState } from "react";
 import { primaryButtonClass, Spinner } from "../account/controls";
 import AdminBadge from "../chat/AdminBadge";
 import "../chat/chat.css";
 import Avatar from "../components/Avatar";
 import SpaceIcon from "../components/SpaceIcon";
 import Wordmark from "../components/Wordmark";
-import {
-  appInviteUrl,
-  invitedSpacePath,
-  inviteExpiry,
-  type InvitePreview,
-  joinInvite,
-  previewInvite,
-  SpacesApiError,
-} from "./client";
+import { appInviteUrl, invitedSpacePath, joinInvite, SpacesApiError } from "./client";
 import { friendlyError } from "./errors";
-
-type State =
-  | { status: "loading" }
-  | { status: "invalid" }
-  | { status: "unavailable" }
-  | { status: "ready"; preview: InvitePreview; account: Account | null };
+import type { InvitePageState } from "./invite-server";
 
 /** The public landing page for `caper.chat/invite/<code>`, like Discord's invite page. */
-export default function InvitePage({ code }: { code: string }) {
+export default function InvitePage({ code, state: loadedState }: { code: string; state: InvitePageState }) {
   const navigate = useNavigate();
-  const [state, setState] = useState<State>({ status: "loading" });
+  const [invalid, setInvalid] = useState(false);
+  const state: InvitePageState = invalid ? { status: "invalid" } : loadedState;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-
-  useEffect(() => {
-    let current = true;
-    setState({ status: "loading" });
-    void Promise.all([previewInvite(code), getAccount().catch(() => null)])
-      .then(([preview, account]) => current && setState({ status: "ready", preview, account }))
-      .catch((reason) => {
-        if (!current) return;
-        setState({ status: reason instanceof SpacesApiError && reason.status === 404 ? "invalid" : "unavailable" });
-      });
-    return () => {
-      current = false;
-    };
-  }, [code]);
 
   const join = async () => {
     if (pending || state.status !== "ready") return;
@@ -56,7 +29,7 @@ export default function InvitePage({ code }: { code: string }) {
       const joined = await joinInvite(code);
       await navigate({ href: invitedSpacePath(joined.space.id, joined.channelId) });
     } catch (reason) {
-      if (reason instanceof SpacesApiError && reason.status === 404) setState({ status: "invalid" });
+      if (reason instanceof SpacesApiError && reason.status === 404) setInvalid(true);
       else setError(friendlyError(reason));
       setPending(false);
     }
@@ -66,11 +39,6 @@ export default function InvitePage({ code }: { code: string }) {
     <main className="grid min-h-dvh place-items-start justify-items-center px-6 pt-[clamp(48px,10vh,96px)] pb-12 max-[480px]:px-5 max-[480px]:pt-8">
       <section className="w-full max-w-[440px]">
         <Wordmark />
-        {state.status === "loading" && (
-          <p className="mt-14 flex items-center gap-3 text-content-muted" role="status">
-            <Spinner /> Loading invite…
-          </p>
-        )}
         {(state.status === "invalid" || state.status === "unavailable") && (
           <>
             <h1 className="mt-14 mb-4 text-[clamp(2rem,6vw,2.6rem)] leading-[1.1] font-bold tracking-[-.05em]">
@@ -123,7 +91,7 @@ export default function InvitePage({ code }: { code: string }) {
             </div>
             <p className="mt-3 text-[.85rem] text-content-muted">
               {state.preview.memberCount} {state.preview.memberCount === 1 ? "member" : "members"}
-              {!state.preview.alreadyMember && <> · {inviteExpiry(state.preview.expiresAt)}</>}
+              {!state.preview.alreadyMember && <> · {state.expiry}</>}
             </p>
             {error && (
               <p className="mt-6 rounded-control border border-terracotta px-3.5 py-3 leading-[1.5]" role="alert">
