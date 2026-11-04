@@ -127,15 +127,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Hosted Apple-silicon fallback: the Xcode 27 image matches the
-          # self-hosted Mac (macOS 27, Xcode 27.1) the parity suites are written
-          # against; macos-15 lays out differently and stopped acquiring jobs.
-          - os: xcode-27
+          # Not xcode-27: on that hosted macOS 27 image XCUITest sees the app
+          # as disabled and cannot give its fields keyboard focus.
+          - os: macos-15
             platform: macos
             target: macos-arm64
           - os: macos-15-intel
             platform: macos
             target: macos-x64
+          # The Xcode 27 image matches the self-hosted Mac and TestFlight
+          # (Xcode 27.1); hosted macos-15 stopped acquiring jobs on November 4.
           - os: xcode-27
             platform: ios
             target: ios-simulator-arm64
@@ -184,7 +185,7 @@ jobs:
           set -euo pipefail
           if ! xcrun simctl list devices available | grep -q '^ *iPhone 16 ('; then
             for runtime in $(xcrun simctl list runtimes available | sed -n 's/^iOS .* - \(com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]*\)$/\1/p' | sort -t- -k2,2nr -k3,3nr); do
-              xcrun simctl create 'iPhone 16' com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime" 2>/dev/null && break
+              xcrun simctl create 'iPhone 16' com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime" >/dev/null 2>&1 && break
             done
           fi
           xcrun simctl list devices available | grep '^ *iPhone 16 ('
@@ -231,7 +232,7 @@ jobs:
         # dialog close buttons, and clicking it opens System Settings. Privacy
         # alerts such as "Allow Python to find devices on local networks?" (from
         # the build's Python steps) sit over the app window until answered and
-        # keep keyboard focus from it; hosted macOS 27 runners show that one too.
+        # keep keyboard focus from it; hosted runners can show that one too.
         if: matrix.platform == 'macos'
         run: |
           osascript -e 'quit app "System Settings"' 2>/dev/null || true

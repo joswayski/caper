@@ -84,6 +84,11 @@ final class AvatarTests: XCTestCase {
 
     @MainActor
     func testAvatarsRenderColoredPixelsRatherThanBlankOrTemplateImages() throws {
+        #if !(os(macOS) && arch(x86_64))
+        // A cold simulator compiles its render pipeline on the first render and can
+        // time out ("image provider timed out"), returning a blank first image.
+        _ = ImageRenderer(content: Avatar(name: "Warm-up", size: 64, avatarID: 1)).cgImage
+        #endif
         for index in [0, 31, 32, 799] {
             #if os(macOS) && arch(x86_64)
             // Hosted Intel Macs crash inside Metal when ImageRenderer starts.
