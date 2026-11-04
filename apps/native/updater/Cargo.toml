@@ -22,7 +22,7 @@ tar = "0.4"
 # Private (0700 on Unix), randomly named folders for the relocated updater and
 # the download, so another local user cannot pre-create or swap them.
 tempfile = "3"
-zip = { version = "2.4", default-features = false, features = ["deflate"] }
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
