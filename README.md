@@ -32,17 +32,15 @@ All builds are on the [latest release](https://github.com/joswayski/caper/releas
 
 ## Features
 
-- Spaces with text and voice channels, private channels and invite links ([invites](docs/media.md#invite-links))
-- Direct messages and a Notifications inbox for unread messages, mentions, replies, reactions and invitations ([notifications](docs/notifications.md))
+- Spaces with text and voice channels, private channels and invite links
+- Direct messages and a Notifications inbox for unread messages, mentions, replies, reactions and invitations
 - Threads, pins, forwarding, editing and deleting messages
-- File and media attachments, with an editor to crop, draw and add text ([uploads](docs/media.md#uploads-and-attachments))
-- Link previews for X, TikTok, YouTube, Instagram and most other sites, with video playing in Caper ([link embeds](docs/media.md#link-embeds))
-- Voice messages with automatic transcripts ([voice messages](docs/media.md#voice-messages-and-ai))
-- GIFs and stickers from [KLIPY](https://klipy.com) in every composer ([GIFs](docs/media.md#gifs-and-stickers-klipy))
-- Profile pictures and space icons ([pictures](docs/media.md#custom-profile-pictures-and-space-icons-october-14-2026))
-- `@feedback` in any conversation to reach the Caper team ([feedback](docs/media.md#feedback-in-place))
-
-Per-feature details, rollout state and validation gaps live in [docs/media.md](docs/media.md).
+- File and media attachments, with an editor to crop, draw and add text
+- Link previews for X, TikTok, YouTube, Instagram and most other sites, with video playing in Caper
+- Voice messages with automatic transcripts
+- GIFs and stickers from [KLIPY](https://klipy.com) in every composer
+- Profile pictures and space icons
+- `@feedback` in any conversation to reach the Caper team
 
 ## Development
 
