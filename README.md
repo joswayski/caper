@@ -38,7 +38,7 @@ All builds are on the [latest release](https://github.com/joswayski/caper/releas
 - File and media attachments, with an editor to crop, draw and add text ([uploads](docs/media.md#uploads-and-attachments))
 - Link previews for X, TikTok, YouTube, Instagram and most other sites, with video playing in Caper ([link embeds](docs/media.md#link-embeds))
 - Voice messages with automatic transcripts ([voice messages](docs/media.md#voice-messages-and-ai))
-- GIFs and stickers from KLIPY in every composer, once the API has a KLIPY key ([GIFs](docs/media.md#gifs-and-stickers-klipy))
+- GIFs and stickers from [KLIPY](https://klipy.com) in every composer ([GIFs](docs/media.md#gifs-and-stickers-klipy))
 - Profile pictures and space icons ([pictures](docs/media.md#custom-profile-pictures-and-space-icons-october-14-2026))
 - `@feedback` in any conversation to reach the Caper team ([feedback](docs/media.md#feedback-in-place))
 
