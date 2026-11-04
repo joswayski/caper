@@ -40,7 +40,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 /** [mentionCount]: unread messages that @mention or reply to the reader. */
 @Serializable data class UnreadChannel(val id: String, val lastSeq: String, val readSeq: String? = null, val unreadCount: Int? = null, val mentionCount: Int? = null)
 @Serializable data class UnreadSpace(val id: String, val channels: List<UnreadChannel>)
-@Serializable data class UnreadSpaces(val spaces: List<UnreadSpace>, val feedbackWaiting: Int = 0)
+@Serializable data class UnreadSpaces(val spaces: List<UnreadSpace>, val feedbackWaiting: Int = 0, val badgeCount: Int? = null)
 @Serializable data class SpaceVoiceActivity(val spaceIds: List<String>)
 @Serializable data class Channel(
     val id: String,

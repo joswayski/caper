@@ -18,7 +18,7 @@ Desktop apps update themselves; phone apps update through TestFlight and Google 
 ## What works today
 
 - Spaces with text and voice channels, private channels and invite links ([invites](docs/media.md#invite-links))
-- Direct messages and notifications ([notifications](docs/notifications.md))
+- Direct messages and a Notifications inbox for unread messages, mentions, replies, reactions and invitations ([notifications](docs/notifications.md))
 - Threads, pins, forwarding, editing and deleting messages
 - File and media attachments, with an editor to crop, draw and add text ([uploads](docs/media.md#uploads-and-attachments))
 - Link previews for X, TikTok, YouTube, Instagram and most other sites, with video playing in Caper ([link embeds](docs/media.md#link-embeds); live once the embed Worker is deployed)

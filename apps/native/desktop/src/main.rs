@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod activity;
 mod api;
 mod app_badge;
 mod app_link;
@@ -425,6 +426,7 @@ enum NavIcon {
     Chevron,
     ArrowLeft,
     Close,
+    Check,
     More,
     Plus,
     Settings,
@@ -1279,6 +1281,7 @@ struct CaperApp {
     privacy_error: Option<String>,
     /// Account notification levels and mutes, shared by phone and desktop.
     notifications: notifications::Notifications,
+    activity: activity::Inbox,
     selected_direct: Option<String>,
     directs_refreshed: Instant,
     /// A burst of live notifications coalesces into one unread refresh.
@@ -1678,6 +1681,7 @@ impl CaperApp {
             privacy_saving: false,
             privacy_error: None,
             notifications: notifications::Notifications::default(),
+            activity: activity::Inbox::default(),
             selected_direct: None,
             directs_refreshed: now - Duration::from_secs(15),
             unread_refresh_due: None,
@@ -4180,6 +4184,54 @@ impl CaperApp {
                 Event::Profiles { epoch, event } if epoch == self.account_epoch => {
                     self.profile_event(event);
                 }
+                Event::ActivityReacted {
+                    epoch,
+                    request,
+                    result: Err(error),
+                } if epoch == self.account_epoch && request == self.activity.reaction_request => {
+                    self.activity.error = Some(error);
+                }
+                Event::ActivitySent {
+                    epoch,
+                    mut send,
+                    result,
+                } if epoch == self.account_epoch => {
+                    self.profile_send_cancel = None;
+                    let person = send.person.clone();
+                    let media = self.activity.media.contains_key(&person);
+                    let draft = self.profile_drafts.entry(person.clone()).or_default();
+                    draft.sending = false;
+                    draft.status = None;
+                    if !media && !send.voice_only {
+                        draft.files = send.files.clone();
+                    }
+                    match result {
+                        Ok(()) => {
+                            if let Some(media) = self.activity.media.remove(&person) {
+                                media.share.send();
+                            }
+                            if media || send.voice_only {
+                                draft.retry_id = None;
+                                draft.error = None;
+                                draft.voice_retry = None;
+                            } else {
+                                self.profile_drafts.remove(&person);
+                            }
+                        }
+                        Err(error) => {
+                            draft.error = Some(error.message);
+                            if send.voice_only {
+                                send.retrying = error.uncertain;
+                                draft.voice_retry = Some(send);
+                            } else {
+                                draft.retry_id = error.uncertain.then_some(send.client_id);
+                                if !error.uncertain {
+                                    self.activity.media.remove(&person);
+                                }
+                            }
+                        }
+                    }
+                }
                 Event::ProfileStatus {
                     epoch,
                     person,
@@ -4332,6 +4384,45 @@ impl CaperApp {
                         None => {}
                     }
                 }
+                Event::ActivityLoaded {
+                    epoch,
+                    request,
+                    more,
+                    result,
+                } if epoch == self.account_epoch => {
+                    self.activity.finish(request, more, result);
+                }
+                Event::ActivityRead {
+                    epoch,
+                    navigation,
+                    item,
+                    open,
+                    result,
+                } if epoch == self.account_epoch => {
+                    self.activity.reading = None;
+                    match result {
+                        Ok(read) => {
+                            self.unread_revision += 1;
+                            self.activity.unread_count = read.unread_count;
+                            if let Some(row) = self.activity.expanded.get_mut(&item.id) {
+                                row.unread = false;
+                            }
+                            for row in &mut self.activity.items {
+                                if row.id == item.id {
+                                    row.unread = false;
+                                }
+                            }
+                            if self.activity.unread_only {
+                                self.activity.items.retain(|row| row.unread);
+                            }
+                            self.unread_refresh_due = Some(Instant::now());
+                            if open && navigation == self.navigation && self.activity.shown {
+                                self.open_activity_item(item);
+                            }
+                        }
+                        Err(error) => self.activity.error = Some(error),
+                    }
+                }
                 Event::FeedbackLoaded {
                     epoch,
                     request,
@@ -4346,6 +4437,7 @@ impl CaperApp {
                     self.feedback.action_error = Some(error);
                 }
                 Event::NotificationActivity { epoch } if epoch == self.account_epoch => {
+                    self.activity.refreshed = None;
                     if self.unread_refresh_due.is_none() {
                         self.unread_refresh_due = Some(Instant::now() + Duration::from_secs(1));
                     }
@@ -4474,6 +4566,9 @@ impl CaperApp {
                     {
                         self.unread_spaces = unread.spaces;
                         self.feedback_waiting = unread.feedback_waiting;
+                        if let Some(count) = unread.badge_count {
+                            self.activity.unread_count = count;
+                        }
                     }
                     self.mark_selected_channel_read();
                 }
@@ -5370,6 +5465,7 @@ impl CaperApp {
         self.worker.showing(None);
         self.worker.send(Command::StopNotifications);
         self.account_epoch += 1;
+        self.activity = activity::Inbox::default();
         if let Some(cancel) = self.profile_send_cancel.take() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -6661,7 +6757,7 @@ impl CaperApp {
     /// Narrow Browse slides over the conversation, which is then not being read.
     /// The feedback inbox covers it too.
     fn browse_covers_conversation(&self) -> bool {
-        (self.narrow_layout && self.navigation_open) || self.feedback_open
+        (self.narrow_layout && self.navigation_open) || self.feedback_open || self.activity.shown
     }
 
     fn mark_selected_direct_read(&mut self) {
@@ -10340,6 +10436,7 @@ impl CaperApp {
             self.onboarding_page(context);
         } else if self.needs_first_space() {
             self.first_space_page(context);
+            self.activity_dialog(context);
         } else {
             // Before the page, like the media viewer: the editor is modal
             // and takes the keys it uses.
@@ -10363,6 +10460,7 @@ impl CaperApp {
             let dialog_was_open = self.dialog.is_some();
             self.shell(context);
             if !self.updates.has_available() {
+                self.activity_dialog(context);
                 self.pins_dialog(context);
                 if self.picture_edit.gallery.is_none() {
                     self.dialogs(context, dialog_was_open);
@@ -10881,6 +10979,10 @@ impl CaperApp {
                         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                             self.wordmark(ui);
                             ui.add_space(58.0);
+                            if ui.button("Notifications").clicked() {
+                                self.activity.shown = true;
+                                self.load_activity(false);
+                            }
                             ui.label(black("Name your space").size(40.0));
                             ui.add_space(20.0);
                             ui.label(
@@ -12900,6 +13002,18 @@ impl CaperApp {
                     }
                 });
             });
+            let label = if self.activity.unread_count > 0 {
+                format!("Notifications · {}", self.activity.unread_count)
+            } else {
+                "Notifications".into()
+            };
+            if ui
+                .add_sized([ui.available_width(), 32.0], egui::Button::new(label))
+                .clicked()
+            {
+                self.activity.shown = true;
+                self.load_activity(false);
+            }
             // The Caper team's inbox sits with the DMs, for team members only.
             if self.feedback_team() {
                 let active = self.feedback_selected();
@@ -16421,7 +16535,7 @@ impl CaperApp {
         // Once per pass, for pills in the channel and in thread replies.
         // Pins draws these above its overlay instead. The picker too: drawn
         // by both panes, its focused search field read each keystroke twice.
-        if !self.showing_pins {
+        if !self.showing_pins && !self.activity.shown {
             self.emoji_picker(ui.ctx());
             self.mention_card(ui.ctx());
             self.reactors_window(ui.ctx());
@@ -21215,7 +21329,10 @@ impl CaperApp {
             return;
         };
         let profile = target.is_some();
-        if !profile && (!self.selected_is_joined() || self.session.is_none()) {
+        if !profile
+            && self.activity.reacting.is_none()
+            && (!self.selected_is_joined() || self.session.is_none())
+        {
             self.reaction_picker = None;
             return;
         }
@@ -21253,7 +21370,7 @@ impl CaperApp {
         }
         let shown = window
             // Above the Pins overlay, as its sublayer, when opened from a pin.
-            .order(if profile || self.showing_pins {
+            .order(if profile || self.showing_pins || self.activity.shown {
                 egui::Order::Foreground
             } else {
                 egui::Order::Middle
@@ -21393,7 +21510,13 @@ impl CaperApp {
         if let Some(emoji) = selected {
             match &target {
                 Some(target) => self.insert_composer_emoji(context, target, &emoji),
-                None => self.set_reaction(&message, &emoji, true),
+                None => {
+                    if let Some(item) = self.activity.reacting.take() {
+                        self.react_to_activity(item, emoji);
+                    } else {
+                        self.set_reaction(&message, &emoji, true);
+                    }
+                }
             }
             close_requested = true;
         }
@@ -21406,6 +21529,7 @@ impl CaperApp {
     fn close_emoji_picker(&mut self, context: &egui::Context, refocus: bool) {
         self.emoji_picker_shown = None;
         self.emoji_picker_rect = None;
+        self.activity.reacting = None;
         if let Some(target) = self.composer_emoji.take().map(|(target, _)| target) {
             if let EmojiTarget::Profile(_) = target
                 && let Some(card) = &mut self.mention_card
@@ -21484,6 +21608,7 @@ impl CaperApp {
             .input(|input| input.pointer.interact_pos());
         self.gif_picker = None;
         self.reaction_picker = None;
+        self.activity.reacting = None;
         self.reaction_search.clear();
         self.reaction_category = 0;
         self.reaction_search_focus = true;
@@ -22574,7 +22699,11 @@ impl CaperApp {
             .profile_picker
             .as_ref()
             .is_some_and(|(id, _)| id == person);
-        let can_send = draft.ready() && !busy && !pending_picker && self.token.is_some();
+        let can_send = (draft.ready() || self.activity.media.contains_key(person))
+            && !draft.sending
+            && !busy
+            && !pending_picker
+            && self.token.is_some();
         // Voice messages go wherever the card can upload files.
         let (has_voice, full) = (
             draft.has_voice(),
@@ -22642,8 +22771,16 @@ impl CaperApp {
                                                 .id(id)
                                                 .layouter(&mut layouter)
                                                 .hint_text(
-                                                    RichText::new(format!("Message @{username}"))
-                                                        .color(Color32::from_rgb(142, 149, 152)),
+                                                    RichText::new(
+                                                        self.activity
+                                                            .targets
+                                                            .get(person)
+                                                            .map_or_else(
+                                                                || format!("Message @{username}"),
+                                                                activity::Item::reply_label,
+                                                            ),
+                                                    )
+                                                    .color(Color32::from_rgb(142, 149, 152)),
                                                 )
                                                 .desired_width(f32::INFINITY)
                                                 .min_size(egui::vec2(0.0, 42.0))
@@ -22815,7 +22952,11 @@ impl CaperApp {
                 api::Api::new(self.api_base.as_str()),
             )
         {
-            draft.upload_files(&api, token, (person, username), settings, ui.ctx());
+            if let Some(item) = self.activity.targets.get(person) {
+                draft.upload_activity_files(&api, token, item, settings, ui.ctx());
+            } else {
+                draft.upload_files(&api, token, (person, username), settings, ui.ctx());
+            }
         }
         self.profile_drafts.insert(person.to_owned(), draft);
         if let Some(retry) = voice_retry {
@@ -27061,7 +27202,9 @@ fn settings_switch(
         ui.vertical(|ui| {
             ui.set_width((ui.available_width() - 58.0).max(1.0));
             ui.label(RichText::new(label).size(14.0));
-            ui.label(RichText::new(description).size(12.0).color(MUTED));
+            if !description.is_empty() {
+                ui.label(RichText::new(description).size(12.0).color(MUTED));
+            }
         });
         ui.allocate_exact_size(egui::vec2(42.0, 24.0), egui::Sense::hover())
             .0
@@ -27425,6 +27568,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::MessageCircle => egui::include_image!("../resources/icons/message-circle.svg"),
         NavIcon::Thread => egui::include_image!("../resources/icons/thread.svg"),
         NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
+        NavIcon::Check => egui::include_image!("../resources/icons/check.svg"),
         NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
         NavIcon::Plus => egui::include_image!("../resources/icons/plus.svg"),
         NavIcon::Settings => egui::include_image!("../resources/icons/settings.svg"),
@@ -29030,6 +29174,16 @@ impl CaperApp {
         draft.voice_retry = None;
         draft.status = Some("Sending voice message…".into());
         self.profile_send_cancel = Some(send.cancel.clone());
+        if let Some(item) = self.activity.targets.get(&send.person).cloned() {
+            self.worker.send(Command::SendActivity {
+                epoch: self.account_epoch,
+                item,
+                token,
+                send,
+                gif: None,
+            });
+            return;
+        }
         self.worker.send(Command::SendProfile {
             epoch: self.account_epoch,
             person: send.person.clone(),
@@ -29351,7 +29505,15 @@ impl CaperApp {
             .as_ref()
             .is_some_and(|recording| match &recording.profile {
                 // A card's recording ends with its card.
-                Some((person, _)) => card.as_ref() != Some(person),
+                Some((person, _)) => {
+                    card.as_ref() != Some(person)
+                        && !(self.activity.shown
+                            && self
+                                .activity
+                                .expanded
+                                .values()
+                                .any(|item| item.draft_key() == *person))
+                }
                 None => {
                     channel.as_ref() != Some(&recording.channel)
                         || recording.root.as_ref().is_some_and(|root| {
@@ -36657,7 +36819,8 @@ mod tests {
         output: &egui::FullOutput,
         label: &str,
     ) -> egui::FullOutput {
-        let position = text_position(output, label);
+        // Popups draw above navigation, which can contain the same label.
+        let position = last_text_position(output, label);
         render(app, context, vec![egui::Event::PointerMoved(position)]);
         render(app, context, vec![])
     }
@@ -44500,6 +44663,112 @@ mod tests {
             assert!(selected(&output, feedback_label));
             assert!(!selected(&output, "general"), "the report is a visit");
         }
+    }
+
+    #[test]
+    fn notifications_cover_chat_without_changing_draft_or_conversation() {
+        let (context, mut app) = fixture("parity-desktop");
+        app.draft = "Unsent draft".into();
+        let channel = app.selected_channel.clone();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, text_position(&output, "Notifications"));
+        assert!(app.activity.shown);
+        assert!(
+            app.browse_covers_conversation(),
+            "covered chat and thread must not advance read cursors"
+        );
+        let output = render(&mut app, &context, vec![]);
+        let labels = texts(&output);
+        for label in [
+            "All",
+            "DMs",
+            "Mentions",
+            "Threads",
+            "Reactions",
+            "Invitations",
+            "Unread only (0)",
+            "No notifications match these filters.",
+        ] {
+            assert!(labels.contains(&label), "missing {label}");
+        }
+        assert!(!labels.contains(&"Refresh"));
+        assert_eq!(app.selected_channel, channel);
+        assert_eq!(app.draft, "Unsent draft");
+        // Loading rows after an empty page must grow the scroll viewport,
+        // rather than retaining a one-row-high area inside the modal.
+        app.activity.items = (1..=4)
+            .map(|index| {
+                serde_json::from_value(serde_json::json!({
+                    "id":format!("m:{index}"),"kind":"message","actorName":"Maya",
+                    "body":format!("Notification {index}"),"createdAt":"2026-11-04T12:00:00Z",
+                    "unread":false
+                }))
+                .unwrap()
+            })
+            .collect();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text)
+                if text.galley.job.text == "Notification 4"
+                && shape.clip_rect.contains_rect(text.galley.rect.translate(text.pos.to_vec2())))
+            }),
+            "all four compact rows should be visible without scrolling"
+        );
+        click_at(&mut app, &context, text_position(&output, "Done"));
+        assert!(!app.activity.shown);
+        assert_eq!(app.selected_channel, channel);
+        assert_eq!(app.draft, "Unsent draft");
+    }
+
+    #[test]
+    fn notification_inline_composer_survives_poll_and_never_opens_or_reads_chat() {
+        let (context, mut app) = fixture("parity-desktop");
+        app.draft = "Keep chat draft".into();
+        let channel = app.selected_channel.clone();
+        let row: crate::activity::Item = serde_json::from_value(serde_json::json!({
+            "id":"opaque:reply", "kind":"mention", "actorName":"Maya", "body":"Notification with reply",
+            "createdAt":"2026-11-04T12:00:00Z", "unread":true,
+            "channelId":"channel00001", "channelName":"general", "messageId":"Message00000001"
+        })).unwrap();
+        let key = row.draft_key();
+        app.activity.shown = true;
+        app.activity.refreshed = Some(Instant::now());
+        app.activity.items = vec![row.clone()];
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, text_position(&output, "Reply"));
+        assert!(app.activity.expanded.contains_key(&row.id));
+        app.profile_drafts.entry(key.clone()).or_default().text = "Independent reply".into();
+        app.activity.finish(
+            app.activity.request,
+            false,
+            Ok(crate::activity::Page {
+                items: vec![],
+                next_cursor: None,
+                unread_count: 0,
+            }),
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Reply in #general"));
+        click_at(&mut app, &context, text_position(&output, "React"));
+        assert_eq!(
+            app.activity.reacting.as_ref().map(|item| &item.id),
+            Some(&row.id)
+        );
+        assert!(app.composer_emoji.is_none(), "React is not Insert emoji");
+        app.close_emoji_picker(&context, false);
+        let output = render(&mut app, &context, vec![]);
+        click_at(&mut app, &context, text_position(&output, "Close reply"));
+        assert!(!app.activity.expanded.contains_key(&row.id));
+        assert_eq!(app.profile_drafts[&key].text, "Independent reply");
+        assert_eq!(app.selected_channel, channel);
+        assert_eq!(app.draft, "Keep chat draft");
+        assert!(app.activity.reading.is_none());
+        assert!(app.activity.shown);
     }
 
     #[test]

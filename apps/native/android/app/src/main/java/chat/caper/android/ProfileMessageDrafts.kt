@@ -131,24 +131,56 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         writable(conversation)
         require(if (id != null) conversation.peer.id == id else conversation.peer.username.equals(username, ignoreCase = true)) { "Direct message recipient mismatch." }
         conversations[person] = conversation
+        uploadFiles(person, conversation.id, token, keys, request) { writable(conversation) }
+        conversation
+    }
+
+    /** Exact existing conversation only: never start or accept a DM from inbox actions. */
+    suspend fun activityDestination(item: ActivityItem, token: String, blocked: () -> Set<String>): String {
+        val request = epoch
+        require(item.canReply) { "This notification cannot be replied to." }
+        item.conversationId?.let { id ->
+            val direct = api.directConversations(token).conversations.firstOrNull { it.id == id }
+            if (request != epoch) throw CancellationException("Signed out.")
+            check(direct != null && !direct.incoming && !direct.blocked && direct.peer.id !in blocked()) {
+                "This conversation is not available for replies. Open it to review access or requests."
+            }
+        }
+        return requireNotNull(item.conversationId ?: item.channelId)
+    }
+
+    suspend fun uploadActivity(item: ActivityItem, token: String, blocked: () -> Set<String>,
+        keys: Set<String> = get(item.draftKey).files.map { it.key }.toSet(),
+        request: Long = epoch,
+    ): String = uploadLocks.getOrPut(item.draftKey) { Mutex() }.withLock {
+        if (request != epoch) throw CancellationException("Signed out.")
+        val channel = activityDestination(item, token, blocked)
+        if (request != epoch) throw CancellationException("Signed out.")
+        uploadFiles(item.draftKey, channel, token, keys, request) {
+            if (request != epoch) throw CancellationException("Signed out.")
+        }
+        channel
+    }
+
+    private suspend fun uploadFiles(person: String, channel: String, token: String, keys: Set<String>, request: Long, writable: () -> Unit) {
         keys.forEach { key ->
             val file = get(person).files.find { it.key == key } ?: return@forEach
             val stale = file.uploadedAt?.let { System.currentTimeMillis() - it >= 23 * 60 * 60 * 1000L } == true
             // Never replace the attachments in an uncertain send's exact retry payload.
             if (file.attachment != null && (!stale || get(person).uncertain)) return@forEach
             val source = prepared[key] ?: error("Remove files that could not be prepared first.")
-            writable(conversation)
+            writable()
             updateFile(person, key) { it.copy(attachment = null, error = null, progress = 0f) }
             file.attachment?.let { api.cancelAsset(token, it.id) }
             try {
-                val attachment = uploader.upload(token, conversation.id, source) { progress ->
+                val attachment = uploader.upload(token, channel, source) { progress ->
                     if (request == epoch && prepared[key] === source) updateFile(person, key) { it.copy(progress = progress) }
                 }
                 if (request != epoch || prepared[key] !== source || get(person).files.none { it.key == key }) {
                     api.cancelAsset(token, attachment.id)
                     throw CancellationException("Draft replaced.")
                 }
-                try { writable(conversation) } catch (error: Throwable) {
+                try { writable() } catch (error: Throwable) {
                     api.cancelAsset(token, attachment.id)
                     throw error
                 }
@@ -159,7 +191,6 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
                 throw error
             }
         }
-        conversation
     }
 
     suspend fun send(
@@ -169,6 +200,19 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         gif: KlipyGif? = null,
         gifQuery: String = "",
     ): Pair<DirectConversation, ChatMessage>? {
+        val result = sendResolved(person, id, username, token, session, directs, blocked, gif, gifQuery, null) ?: return null
+        return requireNotNull(result.first) to result.second
+    }
+
+    suspend fun sendActivity(item: ActivityItem, token: String, session: suspend () -> Pair<String, ChatAuthor>,
+        blocked: () -> Set<String>, gif: KlipyGif? = null, gifQuery: String = "",
+    ): ChatMessage? = sendResolved(item.draftKey, null, "", token, session, { emptyList() }, blocked, gif, gifQuery, item)?.second
+
+    private suspend fun sendResolved(
+        person: String, id: String?, username: String, token: String,
+        session: suspend () -> Pair<String, ChatAuthor>, directs: () -> List<DirectConversation>, blocked: () -> Set<String>,
+        gif: KlipyGif?, gifQuery: String, activity: ActivityItem?,
+    ): Pair<DirectConversation?, ChatMessage>? {
         val draft = get(person)
         if ((gif != null && !draft.editable) || (gif == null && !draft.canSend)) return null
         val media = draft.pendingGif ?: gif
@@ -191,16 +235,26 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
             val (capability, author) = session()
             current()
             uploading = media == null && draft.files.isNotEmpty()
-            val conversation = upload(person, id, username, token, directs, blocked, keys = if (media != null) emptySet() else draft.files.map { it.key }.toSet())
+            val keys = if (media != null) emptySet() else draft.files.map { it.key }.toSet()
+            val conversation = if (activity == null) upload(person, id, username, token, directs, blocked, keys = keys) else null
+            val channel = if (activity != null) uploadActivity(activity, token, blocked, keys) else requireNotNull(conversation).id
             uploading = false
             writable(conversation)
-            if (draft.uncertain) check(tracker.retrying(conversation.id, author) != null) { "The conversation changed. The previous send is still unconfirmed." }
-            operation = tracker.begin(conversation.id, author, if (media != null) "" else draft.text, if (media != null) emptyList() else get(person).files.map { requireNotNull(it.attachment).id },
+            if (draft.uncertain) check(tracker.retrying(channel, author) != null) { "The conversation changed. The previous send is still unconfirmed." }
+            val quote = if (activity != null && activity.threadRootId == null && !draft.uncertain) {
+                val original = api.history(token, channel, around = activity.messageId).messages.firstOrNull { it.id == activity.messageId }
+                current()
+                check(original != null && original.deletedAt == null) { "The original message is no longer available." }
+                MessageReply(original.id, original.author, original.content.text, original.content.attachments.isNotEmpty(), original.threadRootId)
+            } else null
+            operation = tracker.begin(channel, author, if (media != null) "" else draft.text, if (media != null) emptyList() else get(person).files.map { requireNotNull(it.attachment).id },
+                threadRootId = activity?.threadRootId, replyTo = quote,
                 spoilerAttachmentIds = if (media != null) emptyList() else get(person).files.filter { it.spoiler }.map { requireNotNull(it.attachment).id }, gif = media) {}
-            val message = api.sendMessage(token, capability, conversation.id, author, operation.id, operation.text, operation.attachmentIds,
+            val message = api.sendMessage(token, capability, channel, author, operation.id, operation.text, operation.attachmentIds,
+                threadRootId = operation.threadRootId, replyToId = operation.replyTo?.id,
                 spoilerAttachmentIds = operation.spoilerAttachmentIds, gif = operation.gif)
             current()
-            tracker.confirm(message)
+            check(tracker.confirm(message) != null) { "Could not confirm delivery. Retry sends the same message safely." }
             if (media == null) draft.files.forEach { prepared.remove(it.key) }
             // A voice message waiting for Retry stays with the person.
             if (media != null) update(person) { it.copy(sending = false, uncertain = false, pendingGif = null, pendingGifQuery = "", error = null) }
@@ -240,7 +294,8 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
     ): Pair<DirectConversation, ChatMessage>? {
         if (!voice.voice || person in voices || !get(person).editable) return null
         voices[person] = WaitingVoice(key, voice)
-        return deliverVoice(person, id, username, token, session, directs, blocked)
+        val result = deliverVoice(person, id, username, token, session, directs, blocked) ?: return null
+        return requireNotNull(result.first) to result.second
     }
 
     /** Sends the waiting voice message again: the same upload, and the same message once a send may have arrived. */
@@ -250,7 +305,20 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         directs: () -> List<DirectConversation>, blocked: () -> Set<String>,
     ): Pair<DirectConversation, ChatMessage>? {
         if (person !in voices || get(person).sending) return null
-        return deliverVoice(person, id, username, token, session, directs, blocked)
+        val result = deliverVoice(person, id, username, token, session, directs, blocked) ?: return null
+        return requireNotNull(result.first) to result.second
+    }
+
+    suspend fun activityVoice(item: ActivityItem, token: String, session: suspend () -> Pair<String, ChatAuthor>,
+        blocked: () -> Set<String>, recording: Pair<String, PreparedAttachment>? = null,
+    ): Pair<DirectConversation?, ChatMessage>? {
+        val person = item.draftKey
+        if (recording != null) {
+            if (!recording.second.voice || person in voices || !get(person).editable) return null
+            voices[person] = WaitingVoice(recording.first, recording.second)
+        }
+        if (person !in voices || get(person).sending) return null
+        return deliverVoice(person, null, "", token, session, { emptyList() }, blocked, item)
     }
 
     /** The working-copy key of [person]'s waiting voice message, if one waits. */
@@ -270,7 +338,8 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         person: String, id: String?, username: String, token: String,
         session: suspend () -> Pair<String, ChatAuthor>,
         directs: () -> List<DirectConversation>, blocked: () -> Set<String>,
-    ): Pair<DirectConversation, ChatMessage>? {
+        activity: ActivityItem? = null,
+    ): Pair<DirectConversation?, ChatMessage>? {
         val waiting = voices[person] ?: return null
         val request = epoch
         fun current() { if (request != epoch) throw CancellationException("Signed out.") }
@@ -278,25 +347,28 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         try {
             val (capability, author) = session()
             current()
-            val conversation = upload(person, id, username, token, directs, blocked, keys = emptySet(), request = request)
+            val conversation = if (activity == null) upload(person, id, username, token, directs, blocked, keys = emptySet(), request = request) else null
+            val channel = if (activity != null) activityDestination(activity, token, blocked) else requireNotNull(conversation).id
+            current()
             // Once a send may have arrived, a retry repeats it exactly: same conversation, file and ID.
-            if (waiting.clientMessageId != null) check(waiting.conversationId == conversation.id) {
+            if (waiting.clientMessageId != null) check(waiting.conversationId == channel) {
                 "The conversation changed. The previous voice message is still unconfirmed."
             }
             val stale = waiting.clientMessageId == null && System.currentTimeMillis() - waiting.uploadedAt >= 23 * 60 * 60 * 1000L
             if (waiting.attachment == null || stale) {
                 waiting.attachment?.let { api.cancelAsset(token, it.id) }
                 waiting.attachment = null
-                waiting.attachment = uploader.upload(token, conversation.id, waiting.file)
+                waiting.attachment = uploader.upload(token, channel, waiting.file)
                 waiting.uploadedAt = System.currentTimeMillis()
                 current()
             }
             val attachment = requireNotNull(waiting.attachment)
             val clientMessageId = waiting.clientMessageId ?: UUID.randomUUID().also {
                 waiting.clientMessageId = it
-                waiting.conversationId = conversation.id
+                waiting.conversationId = channel
             }
-            val send = suspend { api.sendMessage(token, capability, conversation.id, author, clientMessageId, "", listOf(attachment.id)) }
+            val send = suspend { api.sendMessage(token, capability, channel, author, clientMessageId, "", listOf(attachment.id),
+                threadRootId = activity?.threadRootId, replyToId = if (activity?.threadRootId == null) activity?.messageId else null) }
             // Retried once after a lost response, like the composers' sends.
             val message = try { send() } catch (error: IOException) {
                 if (error is ApiException) throw error

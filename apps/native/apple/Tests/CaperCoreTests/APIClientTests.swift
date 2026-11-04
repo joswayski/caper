@@ -70,6 +70,78 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    func testActivityInboxEncodesCursorAndAcknowledgesOnlyExplicitIDs() async throws {
+        let api = client()
+        var requests = 0
+        MockURLProtocol.handler = { request in
+            requests += 1
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/notifications/inbox")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            XCTAssertEqual(query.first { $0.name == "filter" }?.value, "mentions")
+            XCTAssertEqual(query.first { $0.name == "unread" }?.value, "true")
+            XCTAssertEqual(query.first { $0.name == "cursor" }?.value, "opaque+/=&?")
+            XCTAssertFalse(request.url!.absoluteString.contains("+"))
+            return (200, Data(#"{"items":[],"nextCursor":"opaque+/=&?","unreadCount":17}"#.utf8))
+        }
+        let page = try await api.activityInbox(filter: .mentions, unread: true, cursor: "opaque+/=&?")
+        XCTAssertEqual(page.unreadCount, 17)
+        XCTAssertEqual(page.nextCursor, "opaque+/=&?")
+        XCTAssertEqual(requests, 1)
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/notifications/inbox/read")
+            let body = try JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: [String]]
+            XCTAssertEqual(body, ["ids": ["opaque:/item+1"]])
+            return (200, Data(#"{"unreadCount":16}"#.utf8))
+        }
+        let read = try await api.readActivity(ids: ["opaque:/item+1"])
+        XCTAssertEqual(read.unreadCount, 16)
+    }
+
+    @MainActor
+    func testActivityPollingRevalidatesOlderPagesAndReadOnlyAcknowledgesOneItem() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "me", username: "me", displayName: "Me")
+        XCTAssertTrue(model.activityUnreadOnly)
+        model.activityUnreadOnly = false
+        func page(_ ids: [String], cursor: String, date: String = "2026-11-04T12:00:00Z") throws -> Data {
+            let items = ids.map { id in
+                ["id": id, "kind": "reaction", "actorId": "person", "actorName": "Person", "body": "Preview",
+                 "createdAt": date, "unread": true] as [String: Any]
+            }
+            return try JSONSerialization.data(withJSONObject: ["items": items, "nextCursor": cursor, "unreadCount": 4])
+        }
+        let pages = [try page(["removed", "kept"], cursor: "page2"), try page(["older"], cursor: "page3"),
+                     try page(["new", "kept"], cursor: "newpage2"), try page(["displaced"], cursor: "newpage3"),
+                     try page(["past"], cursor: "page4", date: "2026-11-04T11:59:59Z")]
+        var gets = 0
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET", "Opening and polling never acknowledge entries")
+            defer { gets += 1 }
+            return (200, pages[gets])
+        }
+        await model.loadActivity(reset: true)
+        await model.loadActivity(reset: false)
+        await model.loadActivity(reset: true, poll: true)
+        XCTAssertEqual(model.activityItems.map(\.id), ["new", "kept", "displaced", "past"],
+                       "Refresh crosses timestamp ties and a removed oldest row without leaving a gap")
+        XCTAssertEqual(model.activityCursor, "page4")
+        XCTAssertEqual(model.activityUnread, 4)
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/notifications/inbox/read")
+            let body = try JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: [String]]
+            XCTAssertEqual(body, ["ids": ["kept"]])
+            return (200, Data(#"{"unreadCount":3}"#.utf8))
+        }
+        let success = await model.readActivity(model.activityItems[1])
+        XCTAssertTrue(success)
+        XCTAssertEqual(model.activityItems.map(\.unread), [true, false, true, true])
+        XCTAssertEqual(model.activityUnread, 3)
+    }
+
     func testDirectRecipientLookupReturnsPersonWithoutCreatingConversation() async throws {
         let api = client()
         var requests = 0
@@ -2543,6 +2615,64 @@ final class APIClientTests: XCTestCase {
             _ = try await api.createDirectMessage(username: "jordan")
             XCTFail("Expected a refusal")
         } catch let error as APIError { XCTAssertEqual(error.localizedDescription, "Forbidden.", "other errors keep the server's text") }
+    }
+
+    @MainActor
+    func testActivityRepliesQuoteOrUseExistingThreadWithoutNavigationOrReadAndRetryExactly() async throws {
+        for thread in [nil, "Thread000000001"] as [String?] {
+            let model = AppModel(api: client())
+            model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")
+            model.chat.draft = "Keep the active draft"
+            let item = ActivityItem(id: "opaque:inbox", kind: "mention", actorId: "actor0000001", actorName: "actor",
+                avatarId: nil, body: "Original", createdAt: "2026-11-04T12:00:00Z", unread: true,
+                spaceId: "space0000001", spaceName: "Space", channelId: "channel00001", channelName: "general",
+                conversationId: nil, messageId: "Message00000001", threadRootId: thread, emoji: nil)
+            let original = ChatMessage(id: item.messageId!, channelId: item.channelId!, seq: "1",
+                author: ChatAuthor(id: item.actorId, name: "actor", isGuest: false), content: ChatContent(version: 1, type: "text", text: "Original"),
+                createdAt: item.createdAt, clientMessageId: UUID().uuidString.lowercased())
+            var bodies: [Data] = []
+            MockURLProtocol.handler = { request in
+                let path = request.url!.path
+                if path == "/api/chat/session" {
+                    return (200, Data(#"{"token":"chat","author":{"id":"owner0000001","name":"Owner","isGuest":false}}"#.utf8))
+                }
+                XCTAssertEqual(path, "/api/chat/channels/channel00001/messages", "No DM creation, navigation, or read acknowledgement")
+                if request.httpMethod == "GET" {
+                    XCTAssertNil(thread)
+                    return (200, try JSONEncoder().encode(ChatHistory(space: nil, channel: HistoryIdentity(id: item.channelId!, name: "general"),
+                        messages: [original], cursor: "1", hasMore: false)))
+                }
+                let data = try XCTUnwrap(requestBodyData(request))
+                bodies.append(data)
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                XCTAssertEqual(body["threadRootId"] as? String, thread)
+                XCTAssertEqual(body["replyToId"] as? String, thread == nil ? item.messageId : nil)
+                if bodies.count == 1 { return (503, Data(#"{"error":"Try again"}"#.utf8)) }
+                var sent = ChatMessage(id: "Message00000002", channelId: item.channelId!, seq: "2",
+                    author: ChatAuthor(id: "owner0000001", name: "Owner", isGuest: false), content: ChatContent(version: 1, type: "text", text: "Reply"),
+                    createdAt: item.createdAt, clientMessageId: try XCTUnwrap(body["clientMessageId"] as? String))
+                sent.threadRootId = thread
+                sent.replyTo = thread == nil ? MessageReply(message: original) : nil
+                return (200, try JSONEncoder().encode(sent))
+            }
+            let draft = model.activityDraft(item)
+            draft.text = "Reply"
+            model.activityExpanded[item.id] = item
+            model.activityItems = []
+            XCTAssertEqual(model.activityVisibleItems.map(\.id), [item.id], "Polling/filtering cannot unmount the drafting row")
+            XCTAssertFalse(draft === model.profileMessageDraft(personID: item.actorId))
+            let first = await model.sendActivityReply(item)
+            XCTAssertFalse(first)
+            XCTAssertNotNil(draft.pending)
+            let second = await model.sendActivityReply(item)
+            XCTAssertTrue(second)
+            XCTAssertEqual(bodies.count, 2)
+            XCTAssertEqual(try JSONSerialization.jsonObject(with: XCTUnwrap(bodies.first)) as? NSDictionary,
+                           try JSONSerialization.jsonObject(with: XCTUnwrap(bodies.last)) as? NSDictionary)
+            XCTAssertEqual(model.chat.draft, "Keep the active draft")
+            XCTAssertNil(model.selectedDirectMessageID)
+            XCTAssertTrue(model.activityExpanded[item.id]?.unread == true)
+        }
     }
 
     @MainActor

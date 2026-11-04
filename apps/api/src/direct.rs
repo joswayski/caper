@@ -61,6 +61,7 @@ pub(crate) async fn conversations(pool: &PgPool, user: i64) -> Result<Vec<Value>
                     AND m.deleted_at IS NULL AND author.user_id<>$1
                     AND (m.thread_root_id IS NULL OR m.broadcast)
                     AND d.accepted_at IS NOT NULL
+                    AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$1 AND ir.item_id='m:' || m.id)
                     AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=u.id AND b.deleted_at IS NULL)),
                 'status',CASE WHEN d.accepted_at IS NOT NULL THEN 'accepted' WHEN d.requested_by=$1 THEN 'outgoing' ELSE 'incoming' END,
                 'blocked',EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=u.id AND b.deleted_at IS NULL))

@@ -54,6 +54,21 @@ class CaperApi(
     )
     suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
+    internal suspend fun activityInbox(token: String, filter: ActivityFilter, unread: Boolean, cursor: String?, through: ActivityItem? = null): ActivityPage {
+        val query = "filter=${filter.wire}&unread=$unread" + (cursor?.let { "&cursor=${java.net.URLEncoder.encode(it, "UTF-8")}" } ?: "")
+        var page: ActivityPage = get("/api/notifications/inbox?$query", token)
+        val items = page.items.toMutableList()
+        // Revalidate the loaded window so arrivals cannot leave gaps between pages.
+        while (through != null && page.nextCursor != null && items.isNotEmpty() && items.none { it.id == through.id } &&
+            java.time.Instant.parse(items.last().createdAt) >= java.time.Instant.parse(through.createdAt)) {
+            page = activityInbox(token, filter, unread, page.nextCursor)
+            items += page.items
+        }
+        return page.copy(items = items.distinctBy { it.id })
+    }
+    suspend fun readActivity(token: String, ids: List<String>): ActivityRead = post(
+        "/api/notifications/inbox/read", buildJsonObject { putJsonArray("ids") { ids.forEach { add(it) } } }, token,
+    )
     suspend fun unreadSpaces(token: String): UnreadSpaces = get("/api/spaces/unread", token)
     suspend fun spaceVoiceActivity(token: String): SpaceVoiceActivity = get("/api/spaces/voice-activity", token)
     suspend fun unreadThreads(token: String, channel: String): UnreadThreads =

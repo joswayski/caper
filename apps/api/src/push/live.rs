@@ -206,7 +206,14 @@ pub(crate) async fn read(
                  END
                  -- The feedback team, visiting where it was asked for.
                  OR (n.kind='feedback' AND (s.id IS NULL OR NOT s.demo)
-                   AND public.feedback_access(ch.id,n.user_id)))) END AS eligible,
+                   AND public.feedback_access(ch.id,n.user_id)))) END
+                AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir
+                  WHERE ir.user_id=n.user_id AND ir.item_id=CASE
+                    WHEN n.message_id IS NOT NULL THEN 'm:' || n.message_id
+                    WHEN n.kind='direct.request' THEN 'd:' || n.channel_id || ':' || extract(epoch FROM n.created_at)::text
+                    WHEN n.kind='space.invitation' THEN 's:' || n.space_id || ':' || extract(epoch FROM n.created_at)::text
+                    WHEN n.kind='channel.invitation' THEN 'c:' || n.channel_id || ':' || extract(epoch FROM n.created_at)::text
+                  END) AS eligible,
                 ns.default_level AS account_level,COALESCE(ns.paused_until>now(),false) AS paused,
                 co.level AS channel_level,COALESCE(co.muted_until>now(),false) AS channel_muted,
                 so.level AS space_level,COALESCE(so.muted_until>now(),false) AS space_muted

@@ -3758,6 +3758,408 @@ async fn deleting_a_message_takes_back_its_delivered_pushes(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn notification_inbox_reconciles_badges_reads_reactions_and_access(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let outsider = person(&pool, "outsider").await;
+    register(&h, &bob, &bob.token, "fcm", "inbox-bob").await;
+    let (space_id, space_external) = space(&pool, &alice, &[&bob]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob]).await;
+    let secret = channel(&pool, space_id, "secret", true, &[&alice]).await;
+    let root = send(&h, &bob, &general, "My post", None).await;
+    let message = send(&h, &alice, &general, "Hello", None).await;
+    let reply = send(&h, &alice, &general, "A reply", Some(&root)).await;
+    let mention = send(&h, &alice, &general, "@bob take a look", None).await;
+    send(&h, &alice, &secret, "Must not leak", None).await;
+    sqlx::query("INSERT INTO public.message_reactions(message_id,emoji,user_id) SELECT id,'🎉',$2 FROM public.messages WHERE external_id=$1")
+        .bind(&root).bind(alice.id).execute(&pool).await.unwrap();
+    // Own reactions never appear, and inbox does not depend on push expansion.
+    sqlx::query("INSERT INTO public.message_reactions(message_id,emoji,user_id) SELECT id,'👍',$2 FROM public.messages WHERE external_id=$1")
+        .bind(&root).bind(bob.id).execute(&pool).await.unwrap();
+    let request = direct(&h, &outsider, "bob").await;
+    let inbox = |query: &str| format!("/api/notifications/inbox{query}");
+    let (_, first) = call(
+        &h.app,
+        "GET",
+        &inbox("?unread=true"),
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(first["unreadCount"], 5, "{first}");
+    assert_eq!(first["items"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        call(
+            &h.app,
+            "GET",
+            "/api/spaces/unread",
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .1["badgeCount"],
+        5
+    );
+    let find = |message: &str| {
+        first["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["messageId"] == message)
+            .unwrap()
+            .clone()
+    };
+    let reply_item = find(&reply);
+    assert_eq!(reply_item["threadRootId"], root);
+    assert_eq!(reply_item["kind"], "reply");
+    for (filter, expected) in [
+        ("threads", "reply"),
+        ("mentions", "mention"),
+        ("reactions", "reaction"),
+        ("invitations", "direct.request"),
+        ("dms", "direct.request"),
+    ] {
+        let (status, result) = call(
+            &h.app,
+            "GET",
+            &inbox(&format!("?filter={filter}")),
+            Some(&bob.token),
+            None,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        assert_eq!(result["items"].as_array().unwrap().len(), 1, "{result}");
+        assert_eq!(result["items"][0]["kind"], expected);
+        assert_eq!(result["unreadCount"], 5, "filter must not change the total");
+    }
+    // Acknowledging a reply must not silently advance the whole channel.
+    let read = call(
+        &h.app,
+        "POST",
+        "/api/notifications/inbox/read",
+        Some(&bob.token),
+        None,
+        json!({"ids":[reply_item["id"]]}),
+    )
+    .await;
+    assert_eq!(read.0, StatusCode::OK, "{:?}", read);
+    assert_eq!(read.1["unreadCount"], 4);
+    assert_eq!(
+        call(
+            &h.app,
+            "GET",
+            &format!("/api/chat/channels/{general}/threads/unread"),
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .1["threads"],
+        json!([])
+    );
+    let (_, read_history) = call(
+        &h.app,
+        "GET",
+        &inbox("?filter=threads"),
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(read_history["items"][0]["unread"], false);
+    assert_eq!(
+        call(
+            &h.app,
+            "GET",
+            &inbox("?filter=threads&unread=true"),
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .1["items"],
+        json!([])
+    );
+    let (_, read_messages) = call(
+        &h.app,
+        "POST",
+        "/api/notifications/inbox/read",
+        Some(&bob.token),
+        None,
+        json!({"ids":[find(&message)["id"],find(&mention)["id"]]}),
+    )
+    .await;
+    assert_eq!(read_messages["unreadCount"], 2);
+    assert_eq!(
+        call(
+            &h.app,
+            "GET",
+            "/api/spaces/unread",
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .1["spaces"],
+        json!([])
+    );
+    // Account isolation, including an attempt to acknowledge someone else's IDs.
+    let (_, outside) = call(
+        &h.app,
+        "GET",
+        &inbox(""),
+        Some(&outsider.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(outside["items"], json!([]));
+    let (_, outside) = call(
+        &h.app,
+        "POST",
+        "/api/notifications/inbox/read",
+        Some(&outsider.token),
+        None,
+        json!({"ids":[reply_item["id"]]}),
+    )
+    .await;
+    assert_eq!(outside["unreadCount"], 0);
+    assert_eq!(
+        call(&h.app, "GET", &inbox(""), None, None, Value::Null)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    // Request reads only acknowledge attention; they never accept consent.
+    let request_item = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["conversationId"] == request)
+        .unwrap();
+    assert_eq!(
+        call(
+            &h.app,
+            "POST",
+            "/api/notifications/inbox/read",
+            Some(&bob.token),
+            None,
+            json!({"ids":[request_item["id"]]})
+        )
+        .await
+        .1["unreadCount"],
+        1
+    );
+    let (_, directs) = call(
+        &h.app,
+        "GET",
+        "/api/dms",
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(directs["conversations"][0]["status"], "incoming");
+    // Even expansion after the reads must not resurrect delayed OS alerts.
+    expand(&h).await;
+    let events = live::read(&pool, bob.id, 0, i64::MAX, h.workers.cdn.as_deref())
+        .await
+        .unwrap();
+    assert!(events.len() >= 3, "messages and request were expanded");
+    assert!(
+        events.iter().all(|(_, event)| event.is_none()),
+        "{events:?}"
+    );
+    deliver(&h).await;
+    assert!(
+        h.fcm.take().is_empty(),
+        "read inbox items must not push later"
+    );
+    // Removing a reaction withdraws it, including from history.
+    sqlx::query("UPDATE public.message_reactions SET deleted_at=now() WHERE user_id=$1")
+        .bind(alice.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &h.app,
+            "GET",
+            &inbox("?filter=reactions"),
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .1["items"],
+        json!([])
+    );
+    assert_eq!(
+        call(
+            &h.app,
+            "GET",
+            "/api/spaces/unread",
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .1["badgeCount"],
+        0
+    );
+    // A newly arriving reply survives old acknowledgements, then a normal thread read clears it.
+    send(&h, &alice, &general, "Another reply", Some(&root)).await;
+    assert_eq!(
+        call(
+            &h.app,
+            "GET",
+            &inbox("?unread=true"),
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .1["unreadCount"],
+        1
+    );
+    call(
+        &h.app,
+        "PUT",
+        &format!("/api/chat/channels/{general}/messages/{root}/thread/read"),
+        Some(&bob.token),
+        None,
+        json!({"seq":"999"}),
+    )
+    .await;
+    assert_eq!(
+        call(
+            &h.app,
+            "GET",
+            &inbox("?unread=true"),
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .1["unreadCount"],
+        0
+    );
+    // Read history still must disappear immediately after membership is revoked.
+    sqlx::query(
+        "UPDATE public.space_members SET deleted_at=now() WHERE space_id=$1 AND user_id=$2",
+    )
+    .bind(space_id)
+    .bind(bob.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_, revoked) = call(
+        &h.app,
+        "GET",
+        &inbox(""),
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert!(
+        !revoked["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["spaceId"] == space_external)
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn notification_inbox_pages_equal_timestamps_without_skipping_after_reads(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let (space_id, _) = space(&pool, &alice, &[&bob]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob]).await;
+    let seed = send(&h, &alice, &general, "A message", None).await;
+    // Forty-five different messages deliberately share a timestamp. Read the
+    // seed normally so only these copies contribute to the unread page.
+    sqlx::query("INSERT INTO public.channel_reads(channel_id,user_id,seq) SELECT channel_id,$2,channel_seq FROM public.messages WHERE external_id=$1")
+        .bind(&seed).bind(bob.id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,created_at)
+        SELECT lpad(n::text,15,'0'),m.channel_id,m.session_id,gen_random_uuid(),m.request_hash,m.channel_seq+n,m.payload,now()
+        FROM public.messages m CROSS JOIN generate_series(1,45) n WHERE m.external_id=$1")
+        .bind(&seed).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE public.channels SET last_seq=last_seq+45 WHERE external_id=$1")
+        .bind(&general)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, first) = call(
+        &h.app,
+        "GET",
+        "/api/notifications/inbox?unread=true",
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["unreadCount"], 45);
+    let rows = first["items"].as_array().unwrap();
+    assert_eq!(rows.len(), 40);
+    let ids: Vec<_> = rows.iter().map(|row| row["id"].clone()).collect();
+    call(
+        &h.app,
+        "POST",
+        "/api/notifications/inbox/read",
+        Some(&bob.token),
+        None,
+        json!({"ids":ids}),
+    )
+    .await;
+    sqlx::query("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,created_at)
+        SELECT 'newarrival00001',m.channel_id,m.session_id,gen_random_uuid(),m.request_hash,m.channel_seq+46,m.payload,now()
+        FROM public.messages m WHERE m.external_id=$1")
+        .bind(&seed).execute(&pool).await.unwrap();
+    let mut next =
+        reqwest::Url::parse("http://localhost/api/notifications/inbox?unread=true").unwrap();
+    next.query_pairs_mut()
+        .append_pair("cursor", first["nextCursor"].as_str().unwrap());
+    let (status, second) = call(
+        &h.app,
+        "GET",
+        &format!("{}?{}", next.path(), next.query().unwrap()),
+        Some(&bob.token),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["unreadCount"], 6);
+    let older = second["items"].as_array().unwrap();
+    assert_eq!(older.len(), 5);
+    assert!(older.iter().all(|row| !ids.contains(&row["id"])));
+    assert_eq!(second["nextCursor"], Value::Null);
+    assert_eq!(
+        call(
+            &h.app,
+            "GET",
+            "/api/notifications/inbox?cursor=bad",
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
 async fn icon_badge_counts_messages_and_consent_not_events_or_deliveries(pool: PgPool) {
     let h = harness(&pool).await;
     let alice = person(&pool, "alice").await;

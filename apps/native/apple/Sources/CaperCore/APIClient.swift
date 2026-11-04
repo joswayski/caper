@@ -248,6 +248,20 @@ public actor APIClient {
     public func markDirectMessageRead(id: String, seq: String) async throws {
         let _: Empty = try await request("api/dms/\(try pathID(id))/read", method: "POST", body: ReadInput(seq: seq))
     }
+    /// Account-wide activity; listing never acknowledges unread entries.
+    func activityInbox(filter: ActivityFilter, unread: Bool, cursor: String?) async throws -> ActivityPage {
+        var query = URLComponents()
+        query.queryItems = [URLQueryItem(name: "filter", value: filter.rawValue), URLQueryItem(name: "unread", value: String(unread))]
+        if let cursor { query.queryItems?.append(URLQueryItem(name: "cursor", value: cursor)) }
+        // '+' is legal in URL query syntax but form parsers decode it as a space.
+        return try await request("api/notifications/inbox?" + (query.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B"))
+    }
+
+    func readActivity(ids: [String]) async throws -> ActivityRead {
+        struct Input: Encodable { let ids: [String] }
+        return try await request("api/notifications/inbox/read", method: "POST", body: Input(ids: ids))
+    }
+
     /// The feedback team's inbox (or its archived threads), newest first; 404
     /// for everyone else.
     public func feedbackReports(before: String? = nil, archived: Bool = false) async throws -> FeedbackReportsPage {

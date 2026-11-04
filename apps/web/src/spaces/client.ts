@@ -182,6 +182,46 @@ export function listUnreadSpaces() {
   return request<{ spaces: UnreadSpace[]; feedbackWaiting?: number; badgeCount?: number }>("/api/spaces/unread");
 }
 
+export type InboxFilter = "all" | "dms" | "mentions" | "threads" | "reactions" | "invitations";
+
+export interface InboxItem {
+  id: string;
+  kind: "message" | "mention" | "reply" | "reaction" | "direct.request" | "space.invitation" | "channel.invitation";
+  actorId: string;
+  actorName: string;
+  avatarId: number | null;
+  body: string;
+  createdAt: string;
+  unread: boolean;
+  spaceId: string | null;
+  spaceName: string | null;
+  channelId: string | null;
+  channelName: string | null;
+  conversationId: string | null;
+  messageId: string | null;
+  threadRootId: string | null;
+  emoji: string | null;
+}
+
+export function listInbox(filter: InboxFilter, unread: boolean, cursor?: string) {
+  const query = new URLSearchParams({ filter, unread: String(unread) });
+  if (cursor) query.set("cursor", cursor);
+  return request<{ items: InboxItem[]; unreadCount: number; nextCursor: string | null }>(
+    `/api/notifications/inbox?${query}`,
+    { signal: AbortSignal.timeout(10_000) },
+  );
+}
+
+export async function readInbox(ids: string[]) {
+  const result = await request<{ unreadCount: number }>("/api/notifications/inbox/read", {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  unreadChanged();
+  return result;
+}
+
 export async function readChannel(spaceId: string, channelId: string, seq: string) {
   await request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/read`, {
     method: "POST",

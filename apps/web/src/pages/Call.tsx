@@ -485,6 +485,8 @@ interface CallProps {
    * stays read-only: no guest chat session, microphone model downloads, or sounds.
    */
   engaged?: boolean;
+  /** A covering inbox must not mark the conversation underneath as read. */
+  chatReadActive?: boolean;
   onChatOnlineChange?: (online: boolean) => void;
   /** People the composer's `@` can suggest; undefined until loaded. */
   mentionMembers?: MentionCandidate[];
@@ -526,6 +528,7 @@ export default function Call({
   onHistoryChange,
   embedded = false,
   engaged = true,
+  chatReadActive = true,
   onChatOnlineChange,
   mentionMembers,
   mentionDirectory,
@@ -2226,7 +2229,7 @@ export default function Call({
               directPeer={channel?.directPeer}
               team={!!channel?.team}
               onReadCursor={onReadCursor}
-              readActive={engaged && !browsing}
+              readActive={engaged && !browsing && chatReadActive}
               readOnly={!channelJoined}
               composerNotice={channelActions}
               composerBanner={

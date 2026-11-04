@@ -21,6 +21,58 @@ over the original October 6 proposal and phased roadmap. Implementation is not
 production/device acceptance; see the validation boundary and rollout below and
 [media.md](media.md#mobile-push-phase-1-direct-apns-and-fcm).
 
+## Notifications inbox (November 4, 2026)
+
+The Notifications entry on web, Android, Apple and Rust desktop opens an
+account-wide inbox. All, DMs, Mentions, Threads, Reactions and Invitations filters
+work with an Unread only toggle, individual Mark read actions and paginated
+history. Opening a row navigates to its exact message/thread or existing
+invitation/request consent UI. Listing does not mark anything read, and marking
+an invitation read never accepts it. The underlying chat does not advance read
+markers while covered by the inbox.
+Unread only is a switch with the account-wide count beside its label. Each unread
+row has a compact check button beside its date; opening the message remains a
+separate action. Reply expands the existing compact composer inside the row;
+React opens the reaction picker without navigating. Replies in a thread stay in
+that thread; other replies quote the original message in its channel or existing
+DM. Inline actions never create a DM, accept a request or acknowledge a notification.
+The composer reuses attachment, GIF, emoji and voice support. Account-scoped
+drafts survive collapse and filtering; expanded rows stay available during live
+refresh. Entrances honor reduced-motion settings.
+Row headings show the actor's name without message-kind badges. Reactions identify
+the emoji and say it was a reaction to your message, above the original preview;
+invitations and message requests also retain their action descriptions.
+The open inbox updates automatically on activity signals and every 15 seconds,
+including after loading older pages. Refresh revalidates through the oldest
+loaded row, so arrivals, removals and reads elsewhere do not leave stale rows or
+gaps between pages. There is no manual Refresh button; errors offer Retry.
+
+- `GET /api/notifications/inbox?filter=all&unread=true&cursor=…` returns
+  `{items,nextCursor,unreadCount}`. Filters are `all`, `dms`, `mentions`, `threads`,
+  `reactions`, `invitations`; omitted `unread` includes read history. Pages contain
+  up to 40 rows, newest first; the opaque cursor preserves timestamp ties.
+  `unreadCount` is account-wide, not the filtered-page count.
+- `POST /api/notifications/inbox/read` takes `{ids:[…]}` (1–100 IDs) and returns
+  `{unreadCount}`. Only accessible IDs are acknowledged. This never advances
+  a conversation past other messages or grants membership.
+- Rows derive from accessible messages, participated threads, active reactions
+  to your own messages and pending invitations/requests, not the best-effort
+  push queue. Notification levels, OS permissions and provider setup do not
+  hide activity. Existing mute/block/access rules apply. Deleted sources,
+  removed reactions and revoked access disappear, including from history.
+- Reactions count as unread until explicitly acknowledged; simply reading the
+  conversation does not acknowledge a reaction. Existing reactions can therefore
+  add to the badge when this inbox first becomes available. No new reaction OS
+  pushes are sent. Message acknowledgements also clear matching channel/thread
+  unread contributions and suppress delayed live/phone alerts for those items.
+- Additive migration `202611040001_notification_inbox.sql` retains per-account
+  acknowledgements; startup grants the runtime role SELECT/INSERT, never DELETE.
+  Deploy the API before new clients. No new infrastructure or provider secrets
+  are needed. Keep the migration ledger on rollback; do not drop retained reads.
+
+See [the validation record](media.md#notifications-inbox-november-4-2026) for
+executed checks and remaining device limits.
+
 ## App-icon badges
 
 `GET /api/spaces/unread` includes `badgeCount`: the number of unread messages
@@ -29,16 +81,20 @@ mentions in unjoined channels, and replies in participated threads. A message
 counts once, even if it is both broadcast and mentioned. Thread read markers
 clear replies; reading the channel alone does not clear participated threads.
 Pending message requests and unexpired space/private-channel invitations each
-add one. Own/deleted messages, blocked authors, revoked access, your own notes,
-edits and reactions do not add to the count. Muted conversations contribute
-only direct mentions; alert level, DND and OS permission do not affect it.
+add one. Active reactions from other accounts to your messages also add one
+until acknowledged in Notifications. Own/deleted messages, blocked authors,
+revoked access, your own notes and edits do not add to the count. Muted
+conversations contribute only direct mentions; alert level, DND and OS permission
+do not affect it.
 Feedback reports accessible only through team visit permissions remain in the
 separate feedback inbox count, not this badge.
 
 Counts are snapshots, never increments per delivered push. Opening the app
 does not mark everything read. Successful reads refresh the count; logout and
 expired sessions clear it, while transient fetch failures retain it. Older
-servers may omit the field. No schema migration or new provider secret is needed.
+servers may omit the field. The inbox adds a read-receipt migration, but no new
+provider secret is needed. Its unread total is the badge total, so every badge
+contribution can be found in Notifications.
 
 | Client | Implementation and limits |
 | --- | --- |

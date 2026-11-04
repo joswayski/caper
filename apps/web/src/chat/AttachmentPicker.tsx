@@ -212,7 +212,7 @@ export default function AttachmentPicker({
         />
       ))}
       {open && !disabled && (
-        <FloatingPortal>
+        <FloatingPortal root={refs.domReference.current?.closest<HTMLElement>("dialog") ?? undefined}>
           {drawer ? (
             <FloatingOverlay lockScroll className="chat-actions-overlay chat-attach-overlay">
               {panel}

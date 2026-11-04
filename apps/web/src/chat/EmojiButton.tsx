@@ -33,6 +33,7 @@ export default function EmojiButton({
   returnFocus,
   onSendGif,
   gifDisabled,
+  label,
 }: {
   disabled?: boolean;
   onSelect: (emoji: string) => void;
@@ -41,6 +42,7 @@ export default function EmojiButton({
   returnFocus?: RefObject<HTMLElement | null>;
   onSendGif?: (gif: ChatGif, query: string) => void;
   gifDisabled?: boolean;
+  label?: string;
 }) {
   const [open, setOpenState] = useState(false);
   const [drawer, setDrawer] = useState(false);
@@ -77,12 +79,12 @@ export default function EmojiButton({
         ref={refs.setFloating}
         className={`chat-reaction-picker${drawer ? " chat-reaction-picker-drawer" : ""}`}
         style={drawer ? undefined : floatingStyles}
-        aria-label={drawer ? "Emojis, GIFs and stickers" : "Insert emoji"}
+        aria-label={label ?? (drawer ? "Emojis, GIFs and stickers" : "Insert emoji")}
         {...getFloatingProps()}
       >
         {drawer && <div className="chat-drawer-handle" aria-hidden="true" />}
         <div className="chat-reaction-picker-heading">
-          <strong>{drawer ? "Emojis, GIFs & stickers" : "Insert emoji"}</strong>
+          <strong>{label ?? (drawer ? "Emojis, GIFs & stickers" : "Insert emoji")}</strong>
           <button type="button" aria-label="Close emoji picker" onClick={() => setOpen(false)}>
             <X size={16} />
           </button>
@@ -131,8 +133,8 @@ export default function EmojiButton({
           ref={refs.setReference}
           type="button"
           className="chat-composer-tool"
-          aria-label={drawer ? "Emojis, GIFs and stickers" : "Insert emoji"}
-          title={drawer ? "Emojis, GIFs and stickers" : "Emoji"}
+          aria-label={label ?? (drawer ? "Emojis, GIFs and stickers" : "Insert emoji")}
+          title={label ?? (drawer ? "Emojis, GIFs and stickers" : "Emoji")}
           aria-expanded={open}
           disabled={disabled}
           onMouseEnter={preloadReactionPicker}
@@ -149,7 +151,7 @@ export default function EmojiButton({
           <Smile size={18} aria-hidden="true" />
         </button>
         {open && (
-          <FloatingPortal root={refs.domReference.current?.closest<HTMLElement>(".live-scene") ?? undefined}>
+          <FloatingPortal root={refs.domReference.current?.closest<HTMLElement>("dialog, .live-scene") ?? undefined}>
             {drawer ? (
               <FloatingOverlay lockScroll className="chat-actions-overlay">
                 {panel}

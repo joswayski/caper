@@ -281,9 +281,12 @@ import kotlinx.coroutines.launch
     loadMedia: (suspend (chat.caper.android.data.KlipyKind, String, Int, chat.caper.android.data.KlipyAdRequest?) -> chat.caper.android.data.KlipyPage)? = null,
     mediaAvailable: Boolean = false,
     sendMedia: (chat.caper.android.model.KlipyGif, chat.caper.android.data.KlipyKind, String) -> Boolean = { _, _, _ -> false },
+    placeholder: String = "Message @$username",
+    voiceKey: String = username,
+    sendLabel: String = "Send to @$username",
 ) {
     var field by remember { mutableStateOf(TextFieldValue(draft.text, TextRange(draft.text.length))) }
-    val recorder = rememberVoiceRecorder(username, rememberVoiceStop(
+    val recorder = rememberVoiceRecorder(voiceKey, rememberVoiceStop(
         stage = { stageVoice?.invoke(it) ?: it.file.delete() },
         send = { recordVoice?.invoke(it) ?: it.file.delete() },
     ))
@@ -308,7 +311,7 @@ import kotlinx.coroutines.launch
                         value.copy(text = limitedText, selection = TextRange(value.selection.start.coerceAtMost(limitedText.length), value.selection.end.coerceAtMost(limitedText.length)), composition = null)
                     }
                     field = limited; text(limited.text)
-                }, Modifier.weight(1f).attachmentPaste(editable && uploadsEnabled, add), placeholder = { Text("Message @$username", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
+                }, Modifier.weight(1f).attachmentPaste(editable && uploadsEnabled, add), placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
                 keyboardAttachment = keyboardAttachment.takeIf { editable && uploadsEnabled },
                 visualTransformation = MentionVisualTransformation(MentionSource(listOf(MentionCandidate(username, username)), specials = false, feedback = true)),
                 leadingIcon = {
@@ -336,7 +339,7 @@ import kotlinx.coroutines.launch
             )
             FilledIconButton(
                 send,
-                Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = if (draft.uncertain) "Retry send" else "Send to @$username" },
+                Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = if (draft.uncertain) "Retry send" else sendLabel },
                 enabled = writable && draft.canSend, shape = MaterialTheme.shapes.small,
                 colors = IconButtonDefaults.filledIconButtonColors(
                     containerColor = Action, contentColor = OnAction,

@@ -31,6 +31,7 @@ pub(super) async fn list(
           SELECT v.id,max(m.channel_seq) AS seq,count(*) AS unread_count
           FROM (SELECT channel_id,channel_seq,session_id,thread_root_id,broadcast FROM public.messages
                 WHERE forward_source_id IS NULL AND deleted_at IS NULL
+                  AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$1 AND ir.item_id='m:' || messages.id)
                   AND payload->'content'->'mentions' @> jsonb_build_array(jsonb_build_object('type','user','id',$2::text))
                 OFFSET 0) m
           JOIN visible v ON v.id=m.channel_id AND m.channel_seq>v.read_seq
@@ -56,6 +57,7 @@ pub(super) async fn list(
           JOIN public.users author ON author.id=cs.user_id AND author.deleted_at IS NULL
           WHERE v.joined AND m.channel_id=v.id AND m.channel_seq>v.read_seq AND m.deleted_at IS NULL
             AND (m.thread_root_id IS NULL OR m.broadcast) AND cs.user_id<>$1
+            AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$1 AND ir.item_id='m:' || m.id)
             AND NOT EXISTS(SELECT 1 FROM public.user_blocks b
                  WHERE b.blocker_id=$1 AND b.blocked_id=cs.user_id AND b.deleted_at IS NULL)
         ) latest ON true

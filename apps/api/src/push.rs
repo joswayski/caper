@@ -27,6 +27,7 @@ mod credentials;
 mod delivery;
 mod expansion;
 mod fcm;
+mod inbox;
 pub(crate) mod live;
 mod retraction;
 mod settings;
@@ -773,6 +774,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/push/config", get(config))
         .route("/api/push/devices", post(register).delete(unregister))
         .merge(settings::routes())
+        .merge(inbox::routes())
 }
 
 fn unavailable() -> ApiError {

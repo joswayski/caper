@@ -243,6 +243,34 @@ impl Draft {
         settings: &Compression,
         context: &egui::Context,
     ) {
+        self.upload_files_to(api, token, (person, username, None), settings, context);
+    }
+
+    pub fn upload_activity_files(
+        &mut self,
+        api: &Api,
+        token: &str,
+        item: &crate::activity::Item,
+        settings: &Compression,
+        context: &egui::Context,
+    ) {
+        self.upload_files_to(
+            api,
+            token,
+            (&item.draft_key(), &item.actor_name, Some(item.clone())),
+            settings,
+            context,
+        );
+    }
+
+    fn upload_files_to(
+        &mut self,
+        api: &Api,
+        token: &str,
+        (person, username, target): (&str, &str, Option<crate::activity::Item>),
+        settings: &Compression,
+        context: &egui::Context,
+    ) {
         if !self.editable() {
             return;
         }
@@ -272,12 +300,19 @@ impl Draft {
             }));
             context.request_repaint();
             let (api, token, context) = (api.clone(), token.to_owned(), context.clone());
+            let target = target.clone();
             std::thread::spawn(move || {
-                let uploaded = send
-                    .run_inner(&api, &token, &|_| {}, true)
-                    .map(|direct| {
+                let destination = if let Some(item) = &target {
+                    send.run_activity(&api, &token, &|_| {}, item, None, true)
+                        .map(|()| item.channel().unwrap().to_owned())
+                } else {
+                    send.run_inner(&api, &token, &|_| {}, true)
+                        .map(|direct| direct.id)
+                };
+                let uploaded = destination
+                    .map(|channel| {
                         (
-                            direct.id,
+                            channel,
                             send.files[0].attachment.clone().expect("uploaded file"),
                             std::time::Instant::now(),
                         )
@@ -428,6 +463,59 @@ impl Send {
                 uncertain: retrying,
             });
         }
+        self.deliver(api, token, status, (&direct.id, None, None), upload_only)?;
+        Ok(direct)
+    }
+
+    pub fn run_activity(
+        &mut self,
+        api: &Api,
+        token: &str,
+        status: &dyn Fn(String),
+        item: &crate::activity::Item,
+        gif: Option<&crate::klipy::Gif>,
+        upload_only: bool,
+    ) -> Result<(), Failure> {
+        if self.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(Failure {
+                message: "Send cancelled.".into(),
+                uncertain: self.retrying,
+            });
+        }
+        let channel = item.destination(api, token).map_err(|message| Failure {
+            message,
+            uncertain: self.retrying,
+        })?;
+        self.deliver(api, token, status, (&channel, Some(item), gif), upload_only)
+    }
+
+    fn deliver(
+        &mut self,
+        api: &Api,
+        token: &str,
+        status: &dyn Fn(String),
+        (channel, item, gif): (
+            &str,
+            Option<&crate::activity::Item>,
+            Option<&crate::klipy::Gif>,
+        ),
+        upload_only: bool,
+    ) -> Result<(), Failure> {
+        let retrying = self.retrying;
+        let cancelled = || {
+            if self.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                Err(Failure {
+                    message: "Send cancelled.".into(),
+                    uncertain: retrying,
+                })
+            } else {
+                Ok(())
+            }
+        };
+        let lookup_failure = |error: crate::api::ApiError| Failure {
+            uncertain: retrying,
+            message: error.to_string(),
+        };
         cancelled()?;
         let session = if upload_only {
             None
@@ -445,7 +533,7 @@ impl Send {
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
                 if let Some(Ok((destination, attachment, completed))) = upload.result.get()
-                    && destination == &direct.id
+                    && destination == channel
                 {
                     file.attachment = Some(attachment.clone());
                     file.uploaded_at = Some(*completed);
@@ -500,7 +588,7 @@ impl Send {
                 uploads::upload(
                     api,
                     token,
-                    &direct.id,
+                    channel,
                     prepared,
                     Arc::new(|_| {}),
                     self.cancel.clone(),
@@ -514,7 +602,7 @@ impl Send {
         }
         cancelled()?;
         if upload_only {
-            return Ok(direct);
+            return Ok(());
         }
         let session = session.expect("explicit send session");
         status("Sending…".into());
@@ -533,14 +621,14 @@ impl Send {
             .send(
                 Some(token),
                 &session.token,
-                &direct.id,
+                channel,
                 &self.client_id,
                 &self.text,
                 &ids,
                 &spoiler_ids,
-                (None, false),
-                None,
-                None,
+                (item.and_then(|item| item.thread_root_id.as_deref()), false),
+                item.and_then(|item| item.quote_id()),
+                gif,
                 false,
             )
             .map_err(|error| Failure {
@@ -549,9 +637,13 @@ impl Send {
                 uncertain: error.status.is_none_or(|status| status.is_server_error()),
                 message: error.to_string(),
             })?;
-        if message.channel_id != direct.id
+        if message.channel_id != channel
             || message.client_message_id != self.client_id
             || message.author.id != session.author.id
+            || message.thread_root_id.as_deref()
+                != item.and_then(|item| item.thread_root_id.as_deref())
+            || message.reply_to.as_ref().map(|quote| quote.id.as_str())
+                != item.and_then(|item| item.quote_id())
         {
             return Err(Failure {
                 message: "Could not confirm message delivery. Retry sends the same message safely."
@@ -559,7 +651,7 @@ impl Send {
                 uncertain: true,
             });
         }
-        Ok(direct)
+        Ok(())
     }
 }
 
@@ -932,6 +1024,81 @@ mod tests {
             file.preview.get().is_none(),
             "no decode is attempted for other files"
         );
+    }
+
+    #[test]
+    fn inbox_reply_targets_original_channel_and_retries_quote_or_thread_exactly() {
+        for thread in [None, Some("Thread000000001")] {
+            let item: crate::activity::Item = serde_json::from_value(json!({
+                "id":"opaque:inbox", "kind":"mention", "actorName":"Other actor", "body":"Original",
+                "createdAt":"2026-11-04T12:00:00Z", "unread":true, "channelId":"channel00001",
+                "messageId":"Message00000001", "threadRootId":thread,
+            }))
+            .unwrap();
+            let mut operation = operation(Vec::new());
+            let client_id = operation.client_id.clone();
+            let (api, requests) = server(move |_| {
+                let mut sent = json!({"id":"Message00000002","channelId":"channel00001","seq":"2",
+                    "createdAt":"2026-11-04T12:00:00Z","clientMessageId":client_id,
+                    "author":{"id":"owner","name":"Owner","isGuest":false},
+                    "content":{"version":1,"type":"text","text":"Receipt 🎉"}});
+                if let Some(thread) = thread {
+                    sent["threadRootId"] = json!(thread);
+                } else {
+                    sent["replyTo"] = json!({"id":"Message00000001","author":{"id":"other","name":"Other","isGuest":false},
+                    "text":"Original","hasAttachments":false});
+                }
+                vec![
+                    (200, json!({"token":"chat","author":{"id":"owner","name":"Owner","isGuest":false}}).to_string()),
+                    (503, json!({"error":"Acknowledgement lost"}).to_string()),
+                    (200, sent.to_string()),
+                ]
+            });
+            assert!(
+                operation
+                    .run_activity(&api, "account", &|_| {}, &item, None, false)
+                    .unwrap_err()
+                    .uncertain
+            );
+            operation.retrying = true;
+            operation
+                .run_activity(&api, "account", &|_| {}, &item, None, false)
+                .unwrap();
+            let seen = requests.join().unwrap();
+            assert_eq!(
+                seen.len(),
+                3,
+                "no DM lookup/creation, navigation or read requests"
+            );
+            assert_eq!(
+                seen[1].line,
+                "POST /api/chat/channels/channel00001/messages HTTP/1.1"
+            );
+            assert_eq!(seen[1].body, seen[2].body);
+            let body: Value = serde_json::from_slice(&seen[1].body).unwrap();
+            assert_eq!(body["threadRootId"], json!(thread));
+            assert_eq!(
+                body["replyToId"],
+                json!(thread.is_none().then_some("Message00000001"))
+            );
+        }
+    }
+
+    #[test]
+    fn inbox_missing_dm_is_never_created_by_actor() {
+        let item: crate::activity::Item = serde_json::from_value(json!({
+            "id":"opaque:inbox", "kind":"reaction", "actorName":"Other", "body":"Original",
+            "createdAt":"2026-11-04T12:00:00Z", "unread":true, "conversationId":"dm0000000002", "messageId":"Message00000001"
+        })).unwrap();
+        let (api, requests) = server(|_| vec![(200, json!({"conversations":[]}).to_string())]);
+        assert!(
+            operation(Vec::new())
+                .run_activity(&api, "account", &|_| {}, &item, None, false)
+                .is_err()
+        );
+        let seen = requests.join().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].line, "GET /api/dms HTTP/1.1");
     }
 
     #[test]

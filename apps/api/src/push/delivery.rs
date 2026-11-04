@@ -214,7 +214,14 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                 co.level AS channel_level, COALESCE(co.muted_until > now(), false) AS channel_muted,
                 so.level AS space_level, COALESCE(so.muted_until > now(), false) AS space_muted,
                 COALESCE(m.created_at,n.created_at) AS message_at,
-                COALESCE(ch.space_id IS NULL AND COALESCE(r.seq, 0) >= m.channel_seq,false) AS read,
+                COALESCE(ch.space_id IS NULL AND COALESCE(r.seq, 0) >= m.channel_seq,false)
+                OR EXISTS(SELECT 1 FROM public.notification_inbox_reads ir
+                  WHERE ir.user_id=n.user_id AND ir.item_id=CASE
+                    WHEN n.message_id IS NOT NULL THEN 'm:' || n.message_id
+                    WHEN n.kind='direct.request' THEN 'd:' || n.channel_id || ':' || extract(epoch FROM n.created_at)::text
+                    WHEN n.kind='space.invitation' THEN 's:' || n.space_id || ':' || extract(epoch FROM n.created_at)::text
+                    WHEN n.kind='channel.invitation' THEN 'c:' || n.channel_id || ':' || extract(epoch FROM n.created_at)::text
+                  END) AS read,
                 n.kind, COALESCE(m.external_id,'') AS message_id, COALESCE(m.payload,'{}'::jsonb) AS message,
                 COALESCE(ch.external_id,'') AS channel_id, COALESCE(ch.name,'') AS channel_name,
                 s.external_id AS space_id, s.name AS space_name,

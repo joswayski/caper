@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useState, useSyncExternalStore, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useState, useSyncExternalStore, type RefObject } from "react";
 import { Send } from "lucide-react";
 import AttachmentPicker from "./AttachmentPicker.tsx";
-import { getAccount } from "../account/client.ts";
+import { getAccount, getRememberedAccount } from "../account/client.ts";
 import { createDirectConversation, directStatus, listDirectConversations } from "../spaces/client.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
 import { apiError, forgetAccountSession, sharedAccountSession } from "./client.ts";
@@ -46,7 +46,16 @@ type FilesCommand = {
   attachmentIds: string[];
   spoilerAttachmentIds: string[];
 };
-type MessageCommand = FilesCommand | { clientMessageId: string; text: ""; gif: ChatGif; query: string };
+type MessageCommand = (FilesCommand | { clientMessageId: string; text: ""; gif: ChatGif; query: string }) & {
+  replyToId?: string;
+  threadRootId?: string;
+};
+export interface InboxReplyTarget {
+  accountId: string;
+  channelId: string;
+  messageId: string;
+  threadRootId?: string;
+}
 /** A voice message sends on its own: only its attachment, never the typed text. */
 export function voiceCommand(attachmentId: string, clientMessageId: string = crypto.randomUUID()): FilesCommand {
   return { clientMessageId, text: "", attachmentIds: [attachmentId], spoilerAttachmentIds: [] };
@@ -132,7 +141,9 @@ async function postDirectMessage(
     !isChatMessage(message) ||
     message.channelId !== channelId ||
     message.clientMessageId !== command.clientMessageId ||
-    message.author.id !== account.id
+    message.author.id !== account.id ||
+    message.threadRootId !== command.threadRootId ||
+    message.replyTo?.id !== command.replyToId
   )
     throw new Error("The chat service returned an invalid confirmation.");
 }
@@ -150,6 +161,7 @@ export default function ProfileComposer({
   inputRef: input,
   onSent,
   onStateChange,
+  replyTarget,
 }: {
   personId: string;
   username: string;
@@ -157,20 +169,45 @@ export default function ProfileComposer({
   inputRef: RefObject<ComposerInput | null>;
   onSent: () => void;
   onStateChange: (state: { picking: boolean; sending: boolean }) => void;
+  /** Replies stay in the original conversation; never resolve or accept a DM. */
+  replyTarget?: InboxReplyTarget;
 }) {
+  const draftKey = replyTarget
+    ? `inbox:${replyTarget.accountId}:${replyTarget.channelId}:${replyTarget.messageId}`
+    : personId;
+  const inputId = useId();
+  const assertAccount = () => {
+    if (replyTarget && getRememberedAccount()?.id !== replyTarget.accountId)
+      throw new Error("Your account changed. Reopen Notifications before replying.");
+  };
+  const conversation = async () => {
+    if (!replyTarget) return resolveConversation(personId, username);
+    const account = await getAccount();
+    if (account?.id !== replyTarget.accountId)
+      throw new Error("Your account changed. Reopen Notifications before replying.");
+    return { id: replyTarget.channelId };
+  };
+  const targeted = (command: MessageCommand): MessageCommand => ({
+    ...command,
+    ...(replyTarget?.threadRootId
+      ? { threadRootId: replyTarget.threadRootId }
+      : replyTarget
+        ? { replyToId: replyTarget.messageId }
+        : {}),
+  });
   const draft = useSyncExternalStore(
     subscribe,
-    () => drafts.get(personId) ?? emptyDraft,
+    () => drafts.get(draftKey) ?? emptyDraft,
     () => emptyDraft,
   );
   const sending = useSyncExternalStore(
     subscribe,
-    () => pending.has(personId),
+    () => pending.has(draftKey),
     () => false,
   );
   const voice = useSyncExternalStore(
     subscribe,
-    () => voices.get(personId),
+    () => voices.get(draftKey),
     () => undefined,
   );
   const [error, setError] = useState<string>();
@@ -182,40 +219,41 @@ export default function ProfileComposer({
   const [choosingFile, setChoosingFile] = useState(false);
   const locked = sending || !!draft.command;
   const saveVoice = (next: ProfileVoice | undefined) => {
-    if (next) voices.set(personId, next);
-    else voices.delete(personId);
+    if (next) voices.set(draftKey, next);
+    else voices.delete(draftKey);
     notify();
   };
   /** Uploads the recording to the DM as recorded and sends it alone; typed text
    * and files stay in the card. Without a recording, retries the kept one. */
   const sendVoice = async (recording?: VoiceRecording) => {
-    if (pending.has(personId)) return;
+    if (pending.has(draftKey)) return;
     if (recording) {
-      voices.get(personId)?.upload?.release(true);
+      voices.get(draftKey)?.upload?.release(true);
       saveVoice({ recording });
     }
-    if (!voices.get(personId)) return;
-    pending.add(personId);
+    if (!voices.get(draftKey)) return;
+    pending.add(draftKey);
     notify();
     setError(undefined);
     try {
       const account = await getAccount();
-      if (!account?.username || !account.displayName) throw new Error("Sign in to send a direct message.");
-      const conversation = await resolveConversation(personId, username);
-      let entry = voices.get(personId);
+      if (!account?.username || !account.displayName) throw new Error("Sign in to send a message.");
+      const destination = await conversation();
+      let entry = voices.get(draftKey);
       if (!entry) return;
-      if (entry.channelId && entry.channelId !== conversation.id)
+      if (entry.channelId && entry.channelId !== destination.id)
         throw new Error("The conversation changed. Discard the voice message and record it again.");
-      const upload = entry.upload ?? AttachmentUpload.voice(conversation.id, entry.recording);
-      entry = { ...entry, upload, channelId: conversation.id, error: undefined };
+      const upload = entry.upload ?? AttachmentUpload.voice(destination.id, entry.recording);
+      entry = { ...entry, upload, channelId: destination.id, error: undefined };
       saveVoice(entry);
       const session = await sharedAccountSession(account.id, account.displayName);
-      const command = entry.command ?? voiceCommand((await upload.ensure()).id);
-      if (voices.get(personId)?.upload !== upload) return;
+      const command = entry.command ?? targeted(voiceCommand((await upload.ensure()).id));
+      assertAccount();
+      if (voices.get(draftKey)?.upload !== upload) return;
       entry = { ...entry, command };
       saveVoice(entry);
       try {
-        await postDirectMessage(conversation.id, account, session, command);
+        await postDirectMessage(destination.id, account, session, command);
       } catch (reason) {
         if (isFinal(reason)) entry = { ...entry, command: undefined };
         saveVoice(entry);
@@ -223,14 +261,15 @@ export default function ProfileComposer({
       }
       upload.release();
       saveVoice(undefined);
+      assertAccount();
       onSent();
     } catch (reason) {
-      const latest = voices.get(personId);
+      const latest = voices.get(draftKey);
       const message = reason instanceof UploadError ? reason.message : failure(reason);
       if (latest) saveVoice({ ...latest, error: message });
       else setError(message);
     } finally {
-      pending.delete(personId);
+      pending.delete(draftKey);
       notify();
     }
   };
@@ -250,7 +289,7 @@ export default function ProfileComposer({
       error: voice?.error,
       onRetry: () => void sendVoice(),
       onDiscard: () => {
-        const discarded = voices.get(personId);
+        const discarded = voices.get(draftKey);
         // An uncertain send may have arrived, so only an unsent upload is cancelled.
         discarded?.upload?.release(!discarded.command);
         saveVoice(undefined);
@@ -263,12 +302,12 @@ export default function ProfileComposer({
   });
 
   const save = (next: ProfileDraft) => {
-    if (next.text || next.files.length || next.command) drafts.set(personId, next);
-    else drafts.delete(personId);
+    if (next.text || next.files.length || next.command) drafts.set(draftKey, next);
+    else drafts.delete(draftKey);
     notify();
   };
   const suggestions = useComposerSuggestions({
-    id: "profile",
+    id: inputId,
     draft: draft.text,
     input,
     specialMentions: false,
@@ -295,33 +334,45 @@ export default function ProfileComposer({
   useLayoutEffect(() => {
     const element = input.current;
     if (!element) return;
-    element.style.height = "0px";
-    element.style.height = `${element.scrollHeight + element.offsetHeight - element.clientHeight}px`;
+    const resize = () => {
+      element.style.height = "0px";
+      element.style.height = `${element.scrollHeight + element.offsetHeight - element.clientHeight}px`;
+    };
+    resize();
+    let width = element.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (element.clientWidth === width) return;
+      width = element.clientWidth;
+      resize();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
   }, [draft.text]);
 
   const restoreFocus = () => requestAnimationFrame(() => input.current?.focus());
   const updateFile = (key: string, change: Partial<ProfileFile>) => {
-    const latest = drafts.get(personId);
+    const latest = drafts.get(draftKey);
     if (!latest?.files.some((file) => file.key === key)) return;
     save({ ...latest, files: latest.files.map((file) => (file.key === key ? { ...file, ...change } : file)) });
   };
   const ensureFile = (key: string): Promise<ChatAttachment> => {
-    const item = drafts.get(personId)?.files.find((file) => file.key === key);
+    const item = drafts.get(draftKey)?.files.find((file) => file.key === key);
     if (!item || !settings) return Promise.reject(new Error("File uploads are unavailable. Your draft is kept."));
     if (item.upload) return item.upload.ensure();
     if (item.preparing) return item.preparing;
     const preparing = (async () => {
       try {
-        const conversation = await resolveConversation(personId, username);
-        const latest = drafts.get(personId);
+        const destination = await conversation();
+        assertAccount();
+        const latest = drafts.get(draftKey);
         const file = latest?.files.find((file) => file.key === key);
         if (!latest || !file) throw new Error("Upload cancelled.");
-        if (latest.channelId && latest.channelId !== conversation.id)
+        if (latest.channelId && latest.channelId !== destination.id)
           throw new Error("The conversation changed. Remove the files and try again.");
-        save({ ...latest, channelId: conversation.id });
+        save({ ...latest, channelId: destination.id });
         const upload = file.voice
-          ? AttachmentUpload.voice(conversation.id, file.voice, (state) => updateFile(key, state))
-          : new AttachmentUpload(conversation.id, file.file, settings, (state) => updateFile(key, state));
+          ? AttachmentUpload.voice(destination.id, file.voice, (state) => updateFile(key, state))
+          : new AttachmentUpload(destination.id, file.file, settings, (state) => updateFile(key, state));
         updateFile(key, { upload });
         // Upload owns its errors; an aborted, superseded edit must not overwrite
         // the replacement upload's state through this resolution error handler.
@@ -338,8 +389,8 @@ export default function ProfileComposer({
   };
   useEffect(() => {
     const refresh = () => {
-      const latest = drafts.get(personId);
-      if (document.visibilityState !== "visible" || pending.has(personId) || latest?.command || !settings) return;
+      const latest = drafts.get(draftKey);
+      if (document.visibilityState !== "visible" || pending.has(draftKey) || latest?.command || !settings) return;
       for (const file of latest?.files ?? [])
         if (file.error || file.upload?.stale) void ensureFile(file.key).catch(() => {});
     };
@@ -350,7 +401,7 @@ export default function ProfileComposer({
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [personId, settings]);
+  }, [draftKey, settings]);
   const addFiles = (files: File[]) => {
     if (locked || !settings || !files.length) return;
     const room = MAX_ATTACHMENTS - draft.files.length;
@@ -364,7 +415,7 @@ export default function ProfileComposer({
     for (const item of added) {
       void ensureFile(item.key).catch(() => {});
       void editableKind(item.file).then((editable) => {
-        const latest = drafts.get(personId);
+        const latest = drafts.get(draftKey);
         if (!editable || !latest?.files.some((file) => file.key === item.key)) return;
         save({ ...latest, files: latest.files.map((file) => (file.key === item.key ? { ...file, editable } : file)) });
       });
@@ -372,8 +423,8 @@ export default function ProfileComposer({
     restoreFocus();
   };
   const stageVoice = (recording: VoiceRecording) => {
-    const latest = drafts.get(personId) ?? emptyDraft;
-    if (pending.has(personId) || latest.command || latest.files.some((item) => item.voice)) return;
+    const latest = drafts.get(draftKey) ?? emptyDraft;
+    if (pending.has(draftKey) || latest.command || latest.files.some((item) => item.voice)) return;
     if (latest.files.length >= MAX_ATTACHMENTS) {
       setError(`You can attach up to ${MAX_ATTACHMENTS} files.`);
       return;
@@ -399,9 +450,9 @@ export default function ProfileComposer({
   const editing: DraftEditing = {
     source: (key) => draft.files.find((item) => item.key === key)?.file,
     save: (key, edit, preview) => {
-      const latest = drafts.get(personId);
+      const latest = drafts.get(draftKey);
       const item = latest?.files.find((file) => file.key === key);
-      if (!latest || !item || latest.command || pending.has(personId)) return;
+      if (!latest || !item || latest.command || pending.has(draftKey)) return;
       if (item.localUrl) URL.revokeObjectURL(item.localUrl);
       if (item.thumbnailUrl) URL.revokeObjectURL(item.thumbnailUrl);
       const url = (blob: Blob | undefined) => blob && URL.createObjectURL(blob);
@@ -429,7 +480,7 @@ export default function ProfileComposer({
   };
   /** Sends the draft, or `gif` on its own, keeping the draft. */
   const submit = async (gif?: { gif: ChatGif; query: string }) => {
-    if (pending.has(personId)) return;
+    if (pending.has(draftKey)) return;
     if (gif && draft.command) {
       setError("Retry or edit the unsent message first.");
       return;
@@ -439,43 +490,47 @@ export default function ProfileComposer({
       setError("Messages must be 4,000 characters or fewer.");
       return;
     }
-    pending.add(personId);
+    pending.add(draftKey);
     notify();
     setError(undefined);
     setStatus("Sending…");
     try {
       const account = await getAccount();
-      if (!account?.username || !account.displayName) throw new Error("Sign in to send a direct message.");
-      const conversation = await resolveConversation(personId, username);
-      if (draft.channelId && draft.channelId !== conversation.id)
+      if (!account?.username || !account.displayName) throw new Error("Sign in to send a message.");
+      const destination = await conversation();
+      if (draft.channelId && draft.channelId !== destination.id)
         throw new Error("The conversation changed. Remove the files and try again.");
       const session = await sharedAccountSession(account.id, account.displayName);
       // An uncertain POST must retry its exact asset IDs, even after expiry.
       if (!draft.command && !gif) await Promise.all(draft.files.map((item) => ensureFile(item.key)));
-      const latest = drafts.get(personId) ?? draft;
+      const latest = drafts.get(draftKey) ?? draft;
       const command =
         draft.command ??
-        (gif
-          ? { clientMessageId: crypto.randomUUID(), text: "" as const, ...gif }
-          : {
-              clientMessageId: crypto.randomUUID(),
-              text: draft.text,
-              attachmentIds: latest.files.map((item) => item.attachment!.id),
-              spoilerAttachmentIds: latest.files.filter((item) => item.spoiler).map((item) => item.attachment!.id),
-            });
-      save({ ...latest, channelId: conversation.id, command });
+        targeted(
+          gif
+            ? { clientMessageId: crypto.randomUUID(), text: "" as const, ...gif }
+            : {
+                clientMessageId: crypto.randomUUID(),
+                text: draft.text,
+                attachmentIds: latest.files.map((item) => item.attachment!.id),
+                spoilerAttachmentIds: latest.files.filter((item) => item.spoiler).map((item) => item.attachment!.id),
+              },
+        );
+      assertAccount();
+      save({ ...latest, channelId: destination.id, command });
       setStatus("Sending…");
       try {
-        await postDirectMessage(conversation.id, account, session, command);
+        await postDirectMessage(destination.id, account, session, command);
       } catch (reason) {
-        if (isFinal(reason)) save({ ...(drafts.get(personId) ?? latest), command: undefined });
+        if (isFinal(reason)) save({ ...(drafts.get(draftKey) ?? latest), command: undefined });
         throw reason;
       }
       if ("gif" in command) {
         // A GIF goes on its own; the typed draft and its files stay.
-        save({ ...(drafts.get(personId) ?? latest), command: undefined });
+        save({ ...(drafts.get(draftKey) ?? latest), command: undefined });
         if (klipy) shareKlipy(klipy, command.gif, command.query);
         setStatus(undefined);
+        assertAccount();
         onSent();
         return;
       }
@@ -486,17 +541,18 @@ export default function ProfileComposer({
       }
       save({ text: "", files: [] });
       setStatus(undefined);
+      assertAccount();
       onSent();
     } catch (reason) {
       // Keep completed uploads and the idempotent command, not just the text.
       setStatus(undefined);
       setError(
-        drafts.get(personId)?.files.some((item) => item.error)
+        drafts.get(draftKey)?.files.some((item) => item.error)
           ? undefined // The upload tray owns this failure and its retry guidance.
           : failure(reason),
       );
     } finally {
-      pending.delete(personId);
+      pending.delete(draftKey);
       notify();
     }
   };
@@ -594,20 +650,20 @@ export default function ProfileComposer({
           onPickingChange={setChoosingFile}
           onRestoreFocus={() => input.current?.focus()}
         />
-        <label className="sr-only" htmlFor="profile-message">
-          Message @{username}
+        <label className="sr-only" htmlFor={inputId}>
+          {replyTarget ? "Reply to notification" : `Message @${username}`}
         </label>
         {suggestions.popup}
         <MentionTextarea
-          id="profile-message"
+          id={inputId}
           ref={input}
-          people={[{ id: personId, username, displayName: username }]}
+          people={replyTarget ? [] : [{ id: personId, username, displayName: username }]}
           rows={1}
           value={draft.text}
           disabled={locked}
-          placeholder={`Message @${username}`}
+          placeholder={replyTarget ? "Write a reply…" : `Message @${username}`}
           enterKeyHint="send"
-          aria-describedby="profile-composer-hint"
+          aria-describedby={`${inputId}-hint`}
           {...suggestions.textarea}
           onValueChange={(value, input) => {
             save({ ...draft, text: value });
@@ -632,7 +688,7 @@ export default function ProfileComposer({
             }
           }}
         />
-        <span id="profile-composer-hint" className="sr-only">
+        <span id={`${inputId}-hint`} className="sr-only">
           Enter to send. Shift+Enter for a new line. Your draft is kept if you close this card.
         </span>
         <div className="chat-composer-tools">
@@ -647,7 +703,7 @@ export default function ProfileComposer({
           <button
             type="submit"
             className="chat-composer-send"
-            aria-label={draft.command ? "Retry send" : `Send to @${username}`}
+            aria-label={draft.command ? "Retry send" : replyTarget ? "Send reply" : `Send to @${username}`}
             title="Send"
             disabled={!canSend}
           >

@@ -45,6 +45,202 @@ public final class AppModel {
     public var invitations: [Space] = []
     public var notificationInvitation: Space?
     public var notificationChannelInvitation: ChannelInvitation?
+    var activityItems: [ActivityItem] = []
+    var activityFilter: ActivityFilter = .all
+    var activityUnreadOnly = true
+    var activityUnread = 0
+    var activityCursor: String?
+    var activityLoading = false
+    var activityError: String?
+    var activityReading: String?
+    var activityShown = false
+    private var activityRequest = 0
+    private var activityReactionRequest = 0
+    var activityExpanded: [String: ActivityItem] = [:]
+    var activityVisibleItems: [ActivityItem] {
+        (activityItems + activityExpanded.values.filter { expanded in !activityItems.contains { $0.id == expanded.id } })
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func canReplyToActivity(_ item: ActivityItem) -> Bool {
+        guard item.canReply else { return false }
+        if let id = item.conversationId, let direct = directMessages.first(where: { $0.id == id }) {
+            return direct.status != .incoming && !direct.blocked && !blockedIDs.contains(direct.peer.id)
+        }
+        return true // The server checks membership again before every upload/write.
+    }
+
+    private func activityDestination(_ item: ActivityItem) async throws -> String {
+        let attempt = generation
+        guard account != nil, item.canReply, let channel = item.conversationId ?? item.channelId else { throw CancellationError() }
+        if let id = item.conversationId {
+            let directs = try await api.directMessages()
+            guard generation == attempt else { throw CancellationError() }
+            guard let direct = directs.first(where: { $0.id == id }), direct.status != .incoming,
+                  !direct.blocked, !blockedIDs.contains(direct.peer.id) else {
+                throw UserFacingError(message: "This conversation is not available for replies. Open it to review access or requests.")
+            }
+        }
+        return channel
+    }
+
+    func activityDraft(_ item: ActivityItem) -> ProfileMessageDraft {
+        let draft = profileMessageDraft(personID: item.draftKey)
+        draft.prepareUploads = { [weak self, weak draft] in
+            guard let self, let draft else { throw CancellationError() }
+            let channel = try await self.activityDestination(item)
+            try draft.checkActive()
+            _ = try await draft.upload(channelID: channel, api: self.api)
+        }
+        return draft
+    }
+
+    /// The same independent draft/upload/retry model as profile cards, without DM
+    /// creation or navigation. Reading history here does not acknowledge messages.
+    func sendActivityReply(_ item: ActivityItem, gif: ChatGif? = nil, query: String = "") async -> Bool {
+        let draft = activityDraft(item)
+        guard let account, item.canReply, (gif == nil ? draft.canSend : draft.editable) else { return false }
+        let attempt = generation
+        draft.sending = true; draft.error = nil
+        var attemptedSend = false
+        defer { draft.sending = false; draft.progress = nil }
+        do {
+            try await draft.awaitUploads()
+            let channel = try await activityDestination(item)
+            let session = try await api.chatSession(name: account.displayName ?? "")
+            try draft.checkActive()
+            guard generation == attempt, session.author.id == account.id, !session.author.isGuest else { throw CancellationError() }
+            if draft.pending == nil {
+                let quote: MessageReply?
+                if item.threadRootId == nil {
+                    let page = try await api.history(channelID: channel, around: item.messageId)
+                    guard let original = page.messages.first(where: { $0.id == item.messageId }), !original.isDeleted else {
+                        throw UserFacingError(message: "The original message is no longer available.")
+                    }
+                    quote = MessageReply(message: original)
+                } else { quote = nil }
+                var attachments: [ChatAttachment] = []
+                if gif == nil { attachments = try await draft.upload(channelID: channel, api: api) }
+                try draft.checkActive()
+                guard generation == attempt else { throw CancellationError() }
+                draft.pending = PendingMessage(id: UUID().uuidString.lowercased(), text: gif == nil ? draft.text : "",
+                    attachments: attachments, threadRootId: item.threadRootId, replyTo: quote, gif: gif)
+            }
+            let command = draft.pending!
+            draft.progress = "Sending…"; attemptedSend = true
+            let message = try await api.send(channelID: channel, sessionToken: session.token, clientMessageID: command.id,
+                text: command.text, attachmentIDs: command.attachmentIDs, spoilerAttachmentIDs: command.attachments.filter(\.spoiler).map(\.id),
+                threadRootId: command.threadRootId, replyToId: command.replyTo?.id, gif: command.gif)
+            try draft.checkActive()
+            guard generation == attempt else { throw CancellationError() }
+            guard MessageValidation.acceptsResponse(message, channelID: channel, command: command, authorID: account.id),
+                  (message.content.attachments ?? []).map(\.id) == command.attachmentIDs else {
+                throw APIError(status: 502, message: "The chat service returned an invalid message.")
+            }
+            if let media = command.gif {
+                draft.pending = nil
+                if let klipy = chat.klipy { KlipyShare.send(media, query: query, configuration: klipy) }
+            } else { draft.clear() }
+            // Gateway delivery updates timelines; no navigation or read acknowledgement.
+            return true
+        } catch {
+            guard generation == attempt, !draft.discarded else { return false }
+            if attemptedSend, let refusal = error as? APIError, [400, 401, 403, 404, 409, 413, 422].contains(refusal.status) { draft.pending = nil }
+            draft.error = draft.pending == nil ? FriendlyError.message(for: error)
+                : "Send outcome is unknown. Retry Send safely resends the same message. \(FriendlyError.message(for: error))"
+            return false
+        }
+    }
+
+    func reactToActivity(_ item: ActivityItem, emoji: String) async {
+        guard let account, item.canReply, let message = item.messageId else { return }
+        let attempt = generation
+        activityReactionRequest += 1
+        let request = activityReactionRequest
+        activityError = nil
+        do {
+            let channel = try await activityDestination(item)
+            let session = try await api.chatSession(name: account.displayName ?? "")
+            guard generation == attempt, session.author.id == account.id else { return }
+            _ = try await api.setReaction(channelID: channel, messageID: message, sessionToken: session.token, emoji: emoji, active: true)
+        } catch { if generation == attempt && request == activityReactionRequest { activityError = FriendlyError.message(for: error) } }
+    }
+
+    func loadActivity(reset: Bool, poll: Bool = false) async {
+        if poll && activityLoading { return }
+        guard account != nil, activityReading == nil, reset || (!activityLoading && activityCursor != nil) else { return }
+        let attempt = generation
+        activityRequest += 1
+        let request = activityRequest
+        let filter = activityFilter; let unread = activityUnreadOnly
+        let cursor = reset ? nil : activityCursor
+        let oldest = poll ? activityItems.last : nil
+        activityLoading = true; activityError = nil
+        if reset && !poll { activityItems = []; activityCursor = nil }
+        defer { if generation == attempt && request == activityRequest { activityLoading = false } }
+        do {
+            var page = try await api.activityInbox(filter: filter, unread: unread, cursor: cursor)
+            var rows = page.items
+            // Refresh through the oldest loaded row, including displaced pages.
+            while let oldest, let next = page.nextCursor, let last = rows.last,
+                  !rows.contains(where: { $0.id == oldest.id }),
+                  let lastDate = FeedbackInbox.parseDate(last.createdAt), let oldestDate = FeedbackInbox.parseDate(oldest.createdAt),
+                  lastDate >= oldestDate {
+                guard generation == attempt, request == activityRequest, !Task.isCancelled else { return }
+                page = try await api.activityInbox(filter: filter, unread: unread, cursor: next)
+                rows += page.items
+            }
+            guard generation == attempt, request == activityRequest, filter == activityFilter, unread == activityUnreadOnly else { return }
+            var ids = Set<String>()
+            activityItems = ((reset ? [] : activityItems) + rows).filter { ids.insert($0.id).inserted }
+            activityCursor = page.nextCursor
+            activityUnread = page.unreadCount
+            updateApplicationBadge(page.unreadCount)
+        } catch {
+            if generation == attempt && request == activityRequest { activityError = FriendlyError.message(for: error) }
+        }
+    }
+
+    func readActivity(_ item: ActivityItem) async -> Bool {
+        guard account != nil, activityReading == nil else { return false }
+        let attempt = generation
+        activityReading = item.id; activityError = nil
+        activityRequest += 1; activityLoading = false; unreadRevision += 1
+        defer { if generation == attempt { activityReading = nil } }
+        do {
+            let result = try await api.readActivity(ids: [item.id])
+            guard generation == attempt else { return false }
+            unreadRevision += 1
+            activityUnread = result.unreadCount; updateApplicationBadge(result.unreadCount)
+            if let index = activityItems.firstIndex(where: { $0.id == item.id }) { activityItems[index].unread = false }
+            activityExpanded[item.id]?.unread = false
+            if activityUnreadOnly { activityItems.removeAll { $0.id == item.id } }
+            return true
+        } catch {
+            if generation == attempt { activityError = FriendlyError.message(for: error) }
+            return false
+        }
+    }
+
+    func openActivity(_ item: ActivityItem) async -> Bool {
+        guard let route = item.route else { activityError = "This notification is no longer available."; return false }
+        let attempt = generation; let navigation = navigationGeneration
+        guard await readActivity(item), activityShown, generation == attempt, navigationGeneration == navigation else { return false }
+        error = nil; navigationError = nil
+        await open(route)
+        guard generation == attempt else { return false }
+        if let failure = error ?? navigationError { activityError = failure; return false }
+        if !item.kind.hasSuffix("invitation"), let channel = item.conversationId ?? item.channelId, chat.channelID != channel {
+            activityError = "This conversation is no longer available."; return false
+        }
+        if !item.kind.hasSuffix("invitation"), let id = item.messageId, let channel = item.conversationId ?? item.channelId {
+            let root = item.threadRootId == id ? nil : item.threadRootId
+            guard chat.channelID == channel, await chat.goToMessage(id: id, channelID: channel, threadRootID: root) else {
+                activityError = chat.jumpError ?? "Couldn’t open this message. Try again."; return false
+            }
+        }
+        return true
+    }
     /// Other people's newest names and pictures from the live `profiles`
     /// feed, applied over every retained copy of them (your own come from `account`).
     public private(set) var profileUpdates = ProfileDirectory()
@@ -250,7 +446,7 @@ public final class AppModel {
     public var narrowLayout = false {
         didSet { if narrowLayout != oldValue { markSelectedDirectRead() } }
     }
-    private var browseCoversConversation: Bool { narrowLayout && navigationOpen }
+    private var browseCoversConversation: Bool { activityShown || (narrowLayout && navigationOpen) }
     public private(set) var unreadSpaces: [UnreadSpace] = []
     public private(set) var feedbackWaiting: Int = 0
     public func channelUnread(_ id: String) -> Bool { unreadSpaces.contains { $0.channels.contains { $0.id == id } } }
@@ -668,6 +864,7 @@ public final class AppModel {
         directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
         profileMessageDrafts.values.forEach { $0.discard() }
         profileMessageDrafts = [:]
+        activityExpanded = [:]
         stopProfileUpdates()
         account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
         notificationInvitation = nil; notificationChannelInvitation = nil
@@ -992,8 +1189,8 @@ public final class AppModel {
     /// `recording` is nil to retry the voice message kept by a failed attempt,
     /// which reuses its upload and, once a POST may have reached the server,
     /// the same client message id.
-    func sendProfileVoice(_ recording: VoiceRecording?, to person: MentionCardPerson) async -> Bool {
-        let draft = profileMessageDraft(personID: person.id)
+    func sendProfileVoice(_ recording: VoiceRecording?, to person: MentionCardPerson, activity: ActivityItem? = nil) async -> Bool {
+        let draft = activity.map { activityDraft($0) } ?? profileMessageDraft(personID: person.id)
         if let recording {
             guard draft.canRecordVoice, let prepared = PreparedAttachment.voice(recording) else {
                 AttachmentStaging.remove(recording.fileURL)
@@ -1002,7 +1199,7 @@ public final class AppModel {
             guard draft.stageVoice(prepared) else { return false }
         }
         guard let account, !person.isSelf, person.username != nil, draft.voice != nil, !draft.sending, !draft.discarded else { return false }
-        guard !blockedIDs.contains(person.id) else {
+        guard activity != nil || !blockedIDs.contains(person.id) else {
             draft.error = DirectMessageErrors.message(code: "dm_blocked")
             return false
         }
@@ -1011,12 +1208,26 @@ public final class AppModel {
         var attemptedSend = false
         defer { draft.sending = false; draft.progress = nil }
         do {
-            let conversation = try await profileDestination(person: person, draft: draft)
-            replaceDirectMessage(conversation)
+            let conversation: DirectMessageConversation?
+            let channel: String
+            if let activity { conversation = nil; channel = try await activityDestination(activity) }
+            else {
+                let direct = try await profileDestination(person: person, draft: draft)
+                replaceDirectMessage(direct); conversation = direct; channel = direct.id
+            }
             let session = try await api.chatSession(name: account.displayName ?? "")
             try draft.checkActive()
             guard generation == attempt, session.author.id == account.id, !session.author.isGuest, let voice = draft.voice else { throw CancellationError() }
             if voice.command == nil {
+                var quote: MessageReply?
+                if let activity, activity.threadRootId == nil {
+                    let page = try await api.history(channelID: channel, around: activity.messageId)
+                    guard let original = page.messages.first(where: { $0.id == activity.messageId }), !original.isDeleted else {
+                        throw UserFacingError(message: "The original message is no longer available.")
+                    }
+                    quote = MessageReply(message: original)
+                }
+                try draft.checkActive()
                 var attachment = voice.attachment
                 // Renew an upload older than the unsent-asset cleanup, as text sends do.
                 if let old = attachment, voice.uploadedAt.map({ Date().timeIntervalSince($0) >= 23 * 60 * 60 }) ?? true {
@@ -1024,7 +1235,7 @@ public final class AppModel {
                     attachment = nil
                 }
                 if attachment == nil {
-                    let uploaded = try await AttachmentUploader.upload(voice.prepared, channelID: conversation.id, api: api) { _ in }
+                    let uploaded = try await AttachmentUploader.upload(voice.prepared, channelID: channel, api: api) { _ in }
                     guard !draft.discarded, draft.voice != nil else {
                         await api.cancelAsset(id: uploaded.id)
                         throw CancellationError()
@@ -1034,22 +1245,26 @@ public final class AppModel {
                 }
                 try draft.checkActive()
                 guard let attachment else { throw CancellationError() }
-                draft.updateVoice({ $0.command = PendingMessage(id: UUID().uuidString.lowercased(), text: "", attachments: [attachment]) }, api: api)
+                draft.updateVoice({ $0.command = PendingMessage(id: UUID().uuidString.lowercased(), text: "", attachments: [attachment],
+                    threadRootId: activity?.threadRootId, replyTo: quote) }, api: api)
             }
             guard let command = draft.voice?.command else { throw CancellationError() }
             attemptedSend = true
-            let message = try await api.send(channelID: conversation.id, sessionToken: session.token, clientMessageID: command.id,
-                                             text: command.text, attachmentIDs: command.attachmentIDs)
+            let message = try await api.send(channelID: channel, sessionToken: session.token, clientMessageID: command.id,
+                                             text: command.text, attachmentIDs: command.attachmentIDs,
+                                             threadRootId: command.threadRootId, replyToId: command.replyTo?.id)
             try draft.checkActive()
             guard generation == attempt else { throw CancellationError() }
-            guard MessageValidation.acceptsResponse(message, channelID: conversation.id, command: command, authorID: account.id),
+            guard MessageValidation.acceptsResponse(message, channelID: channel, command: command, authorID: account.id),
                   (message.content.attachments ?? []).map(\.id) == command.attachmentIDs else {
                 throw APIError(status: 502, message: "The chat service returned an invalid message.")
             }
             draft.finishVoice()
-            chat.receiveProfileMessage(message)
-            invalidateNavigation(channelID: conversation.id)
-            await select(directMessage: conversation)
+            if let conversation {
+                chat.receiveProfileMessage(message)
+                invalidateNavigation(channelID: conversation.id)
+                await select(directMessage: conversation)
+            }
             return generation == attempt
         } catch {
             guard generation == attempt, !draft.discarded else { return false }
@@ -1436,7 +1651,8 @@ public final class AppModel {
         guard generation == attempt, unreadRevision == revision, account?.id == accountID, phase != .signedOut else { return }
         unreadSpaces = snapshot.spaces
         feedbackWaiting = snapshot.feedbackWaiting
-        if let count = snapshot.badgeCount { updateApplicationBadge(count) }
+        if let count = snapshot.badgeCount { updateApplicationBadge(count); activityUnread = count }
+        if activityShown { await loadActivity(reset: true, poll: true) }
         markSelectedChannelRead()
     }
 
@@ -2609,6 +2825,10 @@ extension AppModel {
     }
 
     private func clearNotificationState() {
+        activityRequest += 1; activityItems = []; activityCursor = nil; activityUnread = 0
+        activityLoading = false; activityReading = nil; activityError = nil
+        activityShown = false
+        activityFilter = .all; activityUnreadOnly = true
         voiceActivitySpaceIDs = []
         unreadSpaces = []; feedbackWaiting = 0; channelReads = [:]; unreadRevision += 1
         unreadVisitToken = UUID(); unreadVisit = nil; unreadVisitReady = false
@@ -3616,7 +3836,7 @@ public final class ChatModel {
         return await goToMessage(id: reference.id, channelID: channelID, threadRootID: reference.threadRootId)
     }
 
-    private func goToMessage(id: String, channelID: String, threadRootID: String?) async -> Bool {
+    func goToMessage(id: String, channelID: String, threadRootID: String?) async -> Bool {
         guard !loading, !jumpingToMessage, channelID == self.channelID else { return false }
         let requestGeneration = generation
         historyAnchorRequest += 1

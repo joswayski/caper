@@ -132,7 +132,7 @@ export default function GifButton({
         <span aria-hidden="true">GIF</span>
       </button>
       {open && (
-        <FloatingPortal root={refs.domReference.current?.closest<HTMLElement>(".live-scene") ?? undefined}>
+        <FloatingPortal root={refs.domReference.current?.closest<HTMLElement>("dialog, .live-scene") ?? undefined}>
           {drawer ? (
             <FloatingOverlay lockScroll className="chat-actions-overlay">
               {panel}

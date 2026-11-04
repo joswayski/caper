@@ -41,6 +41,16 @@ export function Dialog({
       ref={ref}
       className={`space-dialog ${width === "wide" ? "space-dialog-wide" : ""}`}
       aria-labelledby={titleId}
+      onKeyDownCapture={(event) => {
+        // Floating pickers stop bubbling Escape but not the native dialog's
+        // default cancel. Prevent that before the picker dismisses itself.
+        if (
+          event.key === "Escape" &&
+          event.target instanceof Element &&
+          event.target.closest("[data-floating-ui-focusable]")
+        )
+          event.preventDefault();
+      }}
       onKeyDown={dialogKeyDown}
       onCancel={(event) => {
         event.preventDefault();

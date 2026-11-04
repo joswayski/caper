@@ -30,6 +30,46 @@ class CaperApiTest {
 
     @After fun close() { server.close() }
 
+    @Test fun `notification inbox encodes opaque cursors and only acknowledges explicit ids`() = runTest {
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        server.enqueue(MockResponse().setBody("""{"items":[],"nextCursor":"opaque+/=&?","unreadCount":17}"""))
+        val page = api.activityInbox("account-secret", ActivityFilter.Mentions, true, "opaque+/=&?")
+        assertEquals(17, page.unreadCount)
+        assertEquals("opaque+/=&?", page.nextCursor)
+        val get = server.takeRequest()
+        assertEquals("GET", get.method)
+        assertEquals("/api/notifications/inbox?filter=mentions&unread=true&cursor=opaque%2B%2F%3D%26%3F", get.path)
+        assertEquals("Bearer account-secret", get.headers["Authorization"])
+        assertEquals(1, server.requestCount)
+        server.enqueue(MockResponse().setBody("""{"unreadCount":16}"""))
+        assertEquals(16, api.readActivity("account-secret", listOf("opaque:/item+1")).unreadCount)
+        val read = server.takeRequest()
+        assertEquals("POST", read.method)
+        assertEquals("/api/notifications/inbox/read", read.path)
+        assertEquals("{\"ids\":[\"opaque:/item+1\"]}", read.body.readUtf8())
+        assertEquals("Bearer account-secret", read.headers["Authorization"])
+    }
+
+    @Test fun `notification refresh fills displaced pages and crosses a removed oldest row`() = runTest {
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        fun item(id: String, date: String = "2026-11-04T12:00:00Z") = ActivityItem(
+            id = id, kind = "message", actorId = "actor", actorName = "Person", body = id, createdAt = date, unread = true)
+        fun page(items: List<ActivityItem>, cursor: String) = MockResponse().setBody(
+            Json.encodeToString(ActivityPage.serializer(), ActivityPage(items, cursor, 4)))
+        val oldest = item("oldest")
+        for (removed in listOf(false, true)) {
+            server.enqueue(page(listOf(item("new"), item("kept")), "page2"))
+            server.enqueue(page(listOf(item("displaced")), "page3"))
+            val tail = if (removed) item("past", "2026-11-04T11:59:59Z") else oldest
+            server.enqueue(page(listOf(tail), "page4"))
+            val result = api.activityInbox("account", ActivityFilter.All, true, null, through = oldest)
+            assertEquals(listOf("new", "kept", "displaced", tail.id), result.items.map { it.id })
+            assertEquals("page4", result.nextCursor)
+            assertEquals(4, result.unreadCount)
+            repeat(3) { assertEquals("GET", server.takeRequest().method) }
+        }
+    }
+
     @Test fun `direct recipient lookup returns a person without creating a conversation`() = runTest {
         val api = CaperApi(baseUrl = server.url("/").toString())
         server.enqueue(MockResponse().setBody("""{"id":"account00002","username":"mira","displayName":"Mira","avatarId":2}"""))

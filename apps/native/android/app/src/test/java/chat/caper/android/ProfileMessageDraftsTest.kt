@@ -51,6 +51,57 @@ class ProfileMessageDraftsTest {
             "createdAt":"2026-10-11T12:00:00Z","clientMessageId":${body.getValue("clientMessageId")}}""")
     }
 
+    @Test fun `inbox sends quote or existing thread with exact retry and keeps other drafts`() = runTest {
+        for (thread in listOf(null, "Thread000000001")) {
+            val item = ActivityItem("opaque:inbox", "mention", peer, "maya", body = "Original", createdAt = "2026-11-04T12:00:00Z",
+                unread = true, channelId = "channel00001", messageId = "Message00000001", threadRootId = thread)
+            composer.text(peer, "Keep profile draft")
+            composer.text(item.draftKey, "Reply")
+            val bodies = mutableListOf<String>()
+            val paths = mutableListOf<String>()
+            val original = """{"id":"Message00000001","channelId":"channel00001","seq":"1","author":{"id":"$peer","name":"Maya","isGuest":false},
+                "content":{"version":1,"type":"text","text":"Original"},"createdAt":"2026-11-04T12:00:00Z","clientMessageId":"${java.util.UUID.randomUUID()}"}"""
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    paths += request.path.orEmpty()
+                    if (request.method == "GET") return MockResponse().setBody("""{"messages":[$original],"cursor":"1","hasMore":false}""")
+                    val raw = request.body.clone().readUtf8()
+                    bodies += raw
+                    val body = Json.parseToJsonElement(raw).jsonObject
+                    if (bodies.size == 1) return MockResponse().setResponseCode(503)
+                    val quote = if (thread == null) """, "replyTo":{"id":"Message00000001","author":{"id":"$peer","name":"Maya","isGuest":false},"text":"Original","hasAttachments":false}""" else ""
+                    val root = if (thread != null) ", \"threadRootId\":\"$thread\"" else ""
+                    return MockResponse().setBody("""{"id":"Message00000002","channelId":"channel00001","seq":"2",
+                        "author":{"id":"${author.id}","name":"Jose","isGuest":false},"content":{"version":1,"type":"text","text":"Reply"},
+                        "createdAt":"2026-11-04T12:00:00Z","clientMessageId":${body.getValue("clientMessageId")}$quote$root}""")
+                }
+            }
+            assertNull(composer.sendActivity(item, "account-token", { "chat-token" to author }, { emptySet() }))
+            assertTrue(composer[item.draftKey].uncertain)
+            assertNotNull(composer.sendActivity(item, "account-token", { "chat-token" to author }, { emptySet() }))
+            assertEquals(2, bodies.size)
+            assertEquals(bodies.first(), bodies.last())
+            val payload = Json.parseToJsonElement(bodies.first()).jsonObject
+            assertEquals(thread?.let { JsonPrimitive(it) }, payload["threadRootId"])
+            assertEquals(if (thread == null) JsonPrimitive(item.messageId) else null, payload["replyToId"])
+            assertTrue(paths.all { it.startsWith("/api/chat/channels/channel00001/messages") })
+            assertEquals("Keep profile draft", composer[peer].text)
+            assertEquals(listOf(item.id), ActivityInboxState(expanded = mapOf(item.id to item)).visibleItems.map { it.id })
+        }
+    }
+
+    @Test fun `inbox never accepts requests or creates a direct conversation`() = runTest {
+        val item = ActivityItem("opaque:reaction", "reaction", peer, "maya", body = "Original", createdAt = "now",
+            unread = true, conversationId = direct.id, messageId = "Message00000001")
+        composer.text(item.draftKey, "Keep this reply")
+        server.enqueue(MockResponse().setBody("""{"conversations":[{"id":"${direct.id}","peer":{"id":"$peer","username":"maya","displayName":"Maya"},"lastSeq":"0","readSeq":"0","status":"incoming"}]}"""))
+        assertNull(composer.sendActivity(item, "account-token", { "chat-token" to author }, { emptySet() }))
+        assertEquals("GET", request().method)
+        assertEquals(1, server.requestCount)
+        assertEquals("Keep this reply", composer[item.draftKey].text)
+        for (kind in listOf("direct.request", "space.invitation", "channel.invitation")) assertFalse(item.copy(kind = kind).canReply)
+    }
+
     @Test fun `picker media sends alone and preserves the profile draft`() = runTest {
         val gif = KlipyGif(kind = "sticker", slug = "wave", width = 100, height = 100, gif = "https://media.klipy.com/wave.gif")
         composer.text(peer, "Keep my text")

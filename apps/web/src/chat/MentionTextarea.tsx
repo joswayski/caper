@@ -244,10 +244,16 @@ export default function MentionTextarea({
     Object.defineProperties(field, {
       value: { configurable: true, get: () => source.current },
       disabled: { configurable: true, get: () => !!current.current.disabled },
-      selectionStart: { configurable: true, get: () => sourceOffset(source.current, editor.state.selection.from) },
+      // React restores focus using these native-style setters when an overlay closes.
+      selectionStart: {
+        configurable: true,
+        get: () => sourceOffset(source.current, editor.state.selection.from),
+        set: (start: number) => field.setSelectionRange(start, Math.max(start, field.selectionEnd)),
+      },
       selectionEnd: {
         configurable: true,
         get: () => sourceOffset(source.current, editor.state.selection.to, !editor.state.selection.empty),
+        set: (end: number) => field.setSelectionRange(Math.min(field.selectionStart, end), end),
       },
     });
     field.setSelectionRange = (start, end) => {

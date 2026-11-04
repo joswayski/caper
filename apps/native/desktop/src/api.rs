@@ -256,6 +256,51 @@ impl Api {
         self.request(Method::GET, "api/dms", Some(token), None, None)
     }
 
+    pub fn activity(
+        &self,
+        token: &str,
+        filter: crate::activity::Filter,
+        unread: bool,
+        cursor: Option<&str>,
+        through: Option<&crate::activity::Item>,
+    ) -> Result<crate::activity::Page, ApiError> {
+        let mut page: crate::activity::Page = self.request(
+            Method::GET,
+            &crate::activity::path(filter, unread, cursor),
+            Some(token),
+            None,
+            None,
+        )?;
+        // Refresh the loaded window, including rows displaced into later pages.
+        while let (Some(oldest), Some(next), Some(last)) =
+            (through, page.next_cursor.as_deref(), page.items.last())
+        {
+            if page.items.iter().any(|item| item.id == oldest.id)
+                || chrono::DateTime::parse_from_rfc3339(&last.created_at)
+                    .ok()
+                    .zip(chrono::DateTime::parse_from_rfc3339(&oldest.created_at).ok())
+                    .is_none_or(|(last, oldest)| last < oldest)
+            {
+                break;
+            }
+            let next = self.activity(token, filter, unread, Some(next), None)?;
+            page.items.extend(next.items);
+            page.next_cursor = next.next_cursor;
+            page.unread_count = next.unread_count;
+        }
+        Ok(page)
+    }
+
+    pub fn read_activity(&self, token: &str, id: &str) -> Result<crate::activity::Read, ApiError> {
+        self.request(
+            Method::POST,
+            "api/notifications/inbox/read",
+            Some(token),
+            None,
+            Some(json!({"ids": [id]})),
+        )
+    }
+
     /// `GET /api/feedback[?before=<cursor>]`: the Caper team's inbox, newest
     /// first. Everyone else gets 404.
     /// `archived` lists only archived threads' reports.

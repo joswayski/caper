@@ -13,6 +13,7 @@ import {
 import {
   ArrowLeft,
   Ban,
+  Bell,
   BellOff,
   ChevronDown,
   ChevronsDownUp,
@@ -68,6 +69,8 @@ import SidebarSections from "./SidebarSections";
 import MemberPresence from "./MemberPresence";
 import SpacesLoading from "./SpacesLoading";
 import FeedbackInbox from "./FeedbackInbox";
+import NotificationsInbox from "./NotificationsInbox";
+import type { InboxItem } from "./client";
 import { InviteLinkManager, JoinInviteLinkForm } from "./InviteLinks";
 import { block, refreshBlocks, unblock, useBlockedIds } from "./blocks";
 import { DirectNotificationItems, LevelNotificationItems } from "./NotificationMenu";
@@ -1770,6 +1773,9 @@ export default function Spaces({
   const [invitations, setInvitations] = useState<Space[]>(initialSpaceList?.invitations ?? []);
   const [unreadSpaces, setUnreadSpaces] = useState<UnreadSpace[]>([]);
   const [feedbackWaiting, setFeedbackWaiting] = useState(0);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [badgeCount, setBadgeCount] = useState(0);
+  const inboxFocus = useRef<FocusTarget | undefined>(undefined);
   const unreadRevision = useRef(0);
   const channelReads = useRef(new Map<string, string>());
   const unreadAccount = useRef(account?.id);
@@ -1783,7 +1789,10 @@ export default function Spaces({
       if (unreadAccount.current === accountId && unreadRevision.current === revision) {
         setUnreadSpaces(result.spaces);
         setFeedbackWaiting(result.feedbackWaiting ?? 0);
-        if (result.badgeCount !== undefined) setApplicationBadge(result.badgeCount);
+        if (result.badgeCount !== undefined) {
+          setApplicationBadge(result.badgeCount);
+          setBadgeCount(result.badgeCount);
+        }
       }
     } catch (error) {
       if (
@@ -1801,6 +1810,8 @@ export default function Spaces({
     channelReads.current.clear();
     setUnreadSpaces([]);
     setFeedbackWaiting(0);
+    setBadgeCount(0);
+    setInboxOpen(false);
     // Background tabs still need to update their title and installed-app icon.
     const refresh = () => void refreshUnread();
     // Let read callbacks finish updating local cursors before starting a snapshot.
@@ -3067,6 +3078,65 @@ export default function Spaces({
     choose(space.id, undefined, replace);
   };
 
+  const openInboxItem = async (item: InboxItem) => {
+    const accountId = account?.id;
+    if (item.kind === "space.invitation" && item.spaceId) {
+      const result = await listSpaces();
+      if (unreadAccount.current !== accountId) return;
+      const invite = result.invitations?.find((space) => space.id === item.spaceId);
+      if (!invite) throw new Error("This invitation is no longer available.");
+      setInvitations(result.invitations ?? []);
+      if (detail) setRailInvitation(invite);
+      else choose(invite.id);
+    } else if (item.kind === "channel.invitation" && item.spaceId && item.channelId) {
+      const next = await getSpace(item.spaceId);
+      if (unreadAccount.current !== accountId) return;
+      const invite = next.channelInvitations?.find((entry) => entry.channel.id === item.channelId);
+      if (!invite) throw new Error("This invitation is no longer available.");
+      if (detail?.space.id === item.spaceId) setChannelInvitation(invite);
+      else {
+        notificationInvite.current = item.channelId;
+        navigation.current.forget(item.spaceId);
+        choose(item.spaceId);
+      }
+    } else {
+      if (item.conversationId) {
+        const result = await listDirectConversations();
+        if (unreadAccount.current !== accountId) return;
+        if (!result.conversations.some((row) => row.id === item.conversationId))
+          throw new Error("This conversation is no longer available.");
+        setDirects(result.conversations);
+        choose(detail?.space.id || undefined, undefined, false, item.conversationId);
+      } else if (item.spaceId && item.channelId) choose(item.spaceId, item.channelId);
+      const channelId = item.conversationId ?? item.channelId;
+      if (item.messageId && channelId) {
+        const target = { id: item.messageId, channelId, threadRootId: item.threadRootId ?? undefined };
+        inboxFocus.current = target;
+        setFocusMessage(target);
+      }
+      setNavigationOpen(false);
+    }
+    setInboxOpen(false);
+  };
+  const inboxEntry = account && !embedded && (
+    <button className="notifications-entry" type="button" aria-haspopup="dialog" onClick={() => setInboxOpen(true)}>
+      <Bell aria-hidden="true" />
+      Notifications
+      {badgeCount > 0 && (
+        <small aria-label={`${badgeCount} unread notifications`}>{badgeCount > 99 ? "99+" : badgeCount}</small>
+      )}
+    </button>
+  );
+  const inboxPanel = inboxOpen && account && (
+    <NotificationsInbox
+      key={account.id}
+      accountId={account.id}
+      onClose={() => setInboxOpen(false)}
+      onOpen={openInboxItem}
+      onCount={setBadgeCount}
+    />
+  );
+
   if (loading) return <SpacesLoading />;
   if (invitation)
     return (
@@ -3114,6 +3184,8 @@ export default function Spaces({
       <main className="spaces-empty">
         <section>
           <Wordmark />
+          {inboxEntry}
+          {inboxPanel}
           {notice && <p role="status">{notice}</p>}
           {invitations.length > 0 && (
             <div className="pending-space-invites">
@@ -3400,6 +3472,7 @@ export default function Spaces({
           )}
         </header>
       )}
+      {inboxEntry}
       <SidebarSections
         resizable={!detail.space.demo}
         directs={
@@ -3716,9 +3789,11 @@ export default function Spaces({
 
   return (
     <>
+      {inboxPanel}
       <Call
         embedded={embedded}
         engaged={engaged}
+        chatReadActive={!inboxOpen}
         onChatOnlineChange={onChatOnlineChange}
         channel={
           visitView
@@ -3838,7 +3913,7 @@ export default function Spaces({
         focusMessage={focusMessage}
         // Reports focus the conversation; actual replies still reveal their thread.
         // Forwarded conversations retain their explicit source-thread behavior.
-        focusThread={!visit}
+        focusThread={!visit && focusMessage !== inboxFocus.current}
         // A reply from the team answers the report in the inbox.
         onSent={
           visitView

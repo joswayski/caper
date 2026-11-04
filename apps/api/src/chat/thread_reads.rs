@@ -42,6 +42,7 @@ async fn list(
            SELECT reply.thread_root_id AS root_id,reply.channel_seq,author.user_id=$2 AS mine,
                   reply.deleted_at IS NULL AND author.user_id<>$2
                     AND EXISTS(SELECT 1 FROM public.users u WHERE u.id=author.user_id AND u.deleted_at IS NULL)
+                    AND NOT EXISTS(SELECT 1 FROM public.notification_inbox_reads ir WHERE ir.user_id=$2 AND ir.item_id='m:' || reply.id)
                     AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$2
                                    AND b.blocked_id=author.user_id AND b.deleted_at IS NULL) AS counts
            FROM public.messages reply JOIN public.chat_sessions author ON author.id=reply.session_id

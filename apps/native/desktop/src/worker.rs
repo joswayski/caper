@@ -18,6 +18,23 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub enum Command {
+    LoadActivity {
+        epoch: u64,
+        request: u64,
+        token: String,
+        filter: crate::activity::Filter,
+        unread: bool,
+        cursor: Option<String>,
+        through: Option<crate::activity::Item>,
+        more: bool,
+    },
+    ReadActivity {
+        epoch: u64,
+        navigation: u64,
+        token: String,
+        item: crate::activity::Item,
+        open: bool,
+    },
     AvatarHistory {
         epoch: u64,
         request: Instant,
@@ -40,6 +57,21 @@ pub enum Command {
         person: String,
         token: String,
         send: Box<crate::profile_dm::Send>,
+    },
+    SendActivity {
+        epoch: u64,
+        item: crate::activity::Item,
+        token: String,
+        send: Box<crate::profile_dm::Send>,
+        gif: Option<crate::klipy::Gif>,
+    },
+    ReactActivity {
+        epoch: u64,
+        request: u64,
+        item: crate::activity::Item,
+        token: String,
+        name: String,
+        emoji: String,
     },
     WhatsNew,
     Forward {
@@ -630,6 +662,19 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    ActivityLoaded {
+        epoch: u64,
+        request: u64,
+        more: bool,
+        result: Result<crate::activity::Page, String>,
+    },
+    ActivityRead {
+        epoch: u64,
+        navigation: u64,
+        item: crate::activity::Item,
+        open: bool,
+        result: Result<crate::activity::Read, String>,
+    },
     AvatarHistory {
         epoch: u64,
         request: Instant,
@@ -655,6 +700,16 @@ pub enum Event {
         person: String,
         send: Box<crate::profile_dm::Send>,
         result: Result<DirectConversation, crate::profile_dm::Failure>,
+    },
+    ActivitySent {
+        epoch: u64,
+        send: Box<crate::profile_dm::Send>,
+        result: Result<(), crate::profile_dm::Failure>,
+    },
+    ActivityReacted {
+        epoch: u64,
+        request: u64,
+        result: Result<(), String>,
     },
     WhatsNew(Result<crate::whats_new::Snapshot, String>),
     OpenNotification {
@@ -1381,6 +1436,7 @@ fn manage(
                 let refresh_badge = matches!(
                     command,
                     Command::ReadDirect { .. }
+                        | Command::ReadActivity { .. }
                         | Command::ReadChannel { .. }
                         | Command::ThreadUnread { read: Some(_), .. }
                         | Command::Account { .. }
@@ -1540,6 +1596,68 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             }
             return;
         }
+        Command::SendActivity {
+            epoch,
+            item,
+            token,
+            send: mut operation,
+            gif,
+        } => {
+            let person = operation.person.clone();
+            let result = operation.run_activity(
+                api,
+                &token,
+                &|status| {
+                    send(
+                        events,
+                        context,
+                        Event::ProfileStatus {
+                            epoch,
+                            person: person.clone(),
+                            status,
+                        },
+                    );
+                },
+                &item,
+                gif.as_ref(),
+                false,
+            );
+            Event::ActivitySent {
+                epoch,
+                send: operation,
+                result,
+            }
+        }
+        Command::ReactActivity {
+            epoch,
+            request,
+            item,
+            token,
+            name,
+            emoji,
+        } => {
+            let result = (|| {
+                let channel = item.destination(api, &token)?;
+                let session = api
+                    .chat_session(Some(&token), &name)
+                    .map_err(|error| error.to_string())?;
+                api.react(
+                    Some(&token),
+                    &session.token,
+                    &channel,
+                    item.message_id.as_deref().unwrap(),
+                    &emoji,
+                    true,
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            })();
+            Event::ActivityReacted {
+                epoch,
+                request,
+                result,
+            }
+        }
         Command::SendProfile {
             epoch,
             person,
@@ -1695,6 +1813,41 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .map(|value| value.conversations)
                 .map_err(|error| error.to_string()),
         },
+        Command::LoadActivity {
+            epoch,
+            request,
+            token,
+            filter,
+            unread,
+            cursor,
+            through,
+            more,
+        } => Event::ActivityLoaded {
+            epoch,
+            request,
+            more,
+            result: api
+                .activity(&token, filter, unread, cursor.as_deref(), through.as_ref())
+                .map_err(|error| error.to_string()),
+        },
+        Command::ReadActivity {
+            epoch,
+            navigation,
+            token,
+            item,
+            open,
+        } => {
+            let result = api
+                .read_activity(&token, &item.id)
+                .map_err(|error| error.to_string());
+            Event::ActivityRead {
+                epoch,
+                navigation,
+                item,
+                open,
+                result,
+            }
+        }
         Command::LoadFeedback {
             epoch,
             request,
@@ -2784,6 +2937,111 @@ mod tests {
                 _ => panic!("expected unread result"),
             }
         }
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn activity_inbox_loads_and_acknowledges_opaque_ids_without_accepting_invitations() {
+        let (api, worker, bodies) = serve(vec![
+            (
+                "GET /api/notifications/inbox?filter=invitations&unread=true&cursor=a%2B%2F%3D%26%3F",
+                "200 OK",
+                r#"{"items":[],"nextCursor":"opaque","unreadCount":7}"#,
+            ),
+            (
+                "POST /api/notifications/inbox/read",
+                "200 OK",
+                r#"{"unreadCount":6}"#,
+            ),
+        ]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        super::execute(
+            &api,
+            super::Command::LoadActivity {
+                epoch: 4,
+                request: 8,
+                token: "account".into(),
+                filter: crate::activity::Filter::Invitations,
+                unread: true,
+                cursor: Some("a+/=&?".into()),
+                through: None,
+                more: true,
+            },
+            &sender,
+            &eframe::egui::Context::default(),
+        );
+        assert!(
+            matches!(receiver.recv().unwrap(), super::Event::ActivityLoaded { epoch: 4, request: 8, more: true, result: Ok(page) } if page.unread_count == 7)
+        );
+        let item = serde_json::from_value(serde_json::json!({
+            "id": "opaque:/item+1", "kind": "space.invitation", "actorName": "Test",
+            "body": "Invitation", "createdAt": "now", "unread": true, "spaceId": "space0000001"
+        }))
+        .unwrap();
+        super::execute(
+            &api,
+            super::Command::ReadActivity {
+                epoch: 4,
+                navigation: 3,
+                token: "account".into(),
+                item,
+                open: false,
+            },
+            &sender,
+            &eframe::egui::Context::default(),
+        );
+        assert!(
+            matches!(receiver.recv().unwrap(), super::Event::ActivityRead { epoch: 4, navigation: 3, open: false, result: Ok(read), .. } if read.unread_count == 6)
+        );
+        worker.join().unwrap();
+        assert_eq!(
+            bodies.lock().unwrap().as_slice(),
+            [r#"{"ids":["opaque:/item+1"]}"#]
+        );
+    }
+
+    #[test]
+    fn notification_refresh_crosses_displaced_pages_and_a_removed_oldest_row() {
+        let (api, worker, _) = serve(vec![
+            (
+                "GET /api/notifications/inbox?filter=all&unread=true",
+                "200 OK",
+                r#"{"items":[{"id":"new","kind":"message","actorName":"Person","body":"New","createdAt":"2026-11-04T12:00:00Z","unread":true}],"nextCursor":"page2","unreadCount":3}"#,
+            ),
+            (
+                "GET /api/notifications/inbox?filter=all&unread=true&cursor=page2",
+                "200 OK",
+                r#"{"items":[{"id":"displaced","kind":"message","actorName":"Person","body":"Displaced","createdAt":"2026-11-04T12:00:00Z","unread":true}],"nextCursor":"page3","unreadCount":3}"#,
+            ),
+            (
+                "GET /api/notifications/inbox?filter=all&unread=true&cursor=page3",
+                "200 OK",
+                r#"{"items":[{"id":"past","kind":"message","actorName":"Person","body":"Past","createdAt":"2026-11-04T11:59:59Z","unread":true}],"nextCursor":"page4","unreadCount":3}"#,
+            ),
+        ]);
+        let oldest = serde_json::from_value(serde_json::json!({
+            "id":"removed", "kind":"message", "actorName":"Person", "body":"Removed",
+            "createdAt":"2026-11-04T12:00:00Z", "unread":true
+        }))
+        .unwrap();
+        let page = api
+            .activity(
+                "account",
+                crate::activity::Filter::All,
+                true,
+                None,
+                Some(&oldest),
+            )
+            .unwrap();
+        assert_eq!(
+            page.items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["new", "displaced", "past"]
+        );
+        assert_eq!(page.next_cursor.as_deref(), Some("page4"));
+        assert_eq!(page.unread_count, 3);
         worker.join().unwrap();
     }
 

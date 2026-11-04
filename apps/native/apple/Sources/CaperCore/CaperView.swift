@@ -160,6 +160,7 @@ private struct FirstSpaceView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 Wordmark()
+                ActivityInboxEntry(model: model)
                 Text("Name your space").font(CaperTheme.font(28, weight: .bold)).padding(.top, 20)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Choose something you will recognize easily. You can always change it later!")
@@ -1585,6 +1586,7 @@ private struct ChannelSidebar: View {
                 .onHover { directHeadingHovered = $0 }
                 #endif
                 VStack(spacing: 2) {
+                    ActivityInboxEntry(model: model)
                     if model.isFeedbackTeam {
                         FeedbackRow(model: model, narrow: narrow, rowHeight: directRowHeight)
                         if !narrow && model.showingFeedback {
@@ -6173,10 +6175,11 @@ private struct MentionPillInteraction: ViewModifier {
 }
 
 /// Profile composition has its own per-person draft; only Send opens a DM.
-private struct MentionCardView: View {
+struct MentionCardView: View {
     @Bindable var model: AppModel
     @Bindable var draft: ProfileMessageDraft
     let person: MentionCardPerson
+    private let activity: ActivityItem?
     /// Shows the host's block confirmation once the card has closed.
     let requestBlock: (BlockTarget) -> Void
     let close: () -> Void
@@ -6218,8 +6221,19 @@ private struct MentionCardView: View {
         self.model = model
         self.draft = model.profileMessageDraft(person: person)
         self.person = person
+        self.activity = nil
         self.requestBlock = requestBlock
         self.close = close
+    }
+
+    init(model: AppModel, activity: ActivityItem) {
+        self.model = model
+        self.draft = model.activityDraft(activity)
+        self.activity = activity
+        self.person = MentionCardPerson(id: activity.actorId, username: activity.actorName,
+                                       displayName: nil, avatarId: activity.avatarId, isSelf: false)
+        self.requestBlock = { _ in }
+        self.close = {}
     }
 
     var body: some View {
@@ -6316,7 +6330,7 @@ private struct MentionCardView: View {
         }
     }
 
-    private var profileCard: some View {
+    private var profileContents: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 // Identity, then Open conversation and Close at the end, as on web.
@@ -6424,6 +6438,13 @@ private struct MentionCardView: View {
             if pending == nil && !draft.preventsImplicitDismissal { close() }
         })
         #endif
+    }
+
+    private var profileCard: some View {
+        Group {
+            if activity != nil { composer }
+            else { profileContents }
+        }
         .interactiveDismissDisabled(draft.preventsImplicitDismissal)
         .photosPicker(isPresented: $showingPhotos, selection: $photoItems,
                       maxSelectionCount: max(1, AttachmentPolicy.maxAttachments - draft.files.count),
@@ -6496,13 +6517,17 @@ private struct MentionCardView: View {
         .accessibilityIdentifier("mention-card")
     }
 
-    private var canMessage: Bool { !person.isSelf && !blocked && person.username != nil }
+    private var canMessage: Bool {
+        if let activity { return model.canReplyToActivity(activity) }
+        return !person.isSelf && !blocked && person.username != nil
+    }
+    private var composerPlaceholder: String { activity?.replyLabel ?? "Message @\(person.username ?? person.title)" }
 
     /// The channel composer's shell: Attach, the field, Emoji and Send in one
     /// box, with staged files (image thumbnails included) above it.
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if model.directMessages.contains(where: { $0.peer.id == person.id && $0.status == .incoming }) {
+            if activity == nil && model.directMessages.contains(where: { $0.peer.id == person.id && $0.status == .incoming }) {
                 Text("Open the conversation and accept this message request before replying.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             }
@@ -6557,11 +6582,11 @@ private struct MentionCardView: View {
                 .accessibilityIdentifier("mention-card-files")
                 ZStack(alignment: .topLeading) {
                     if draft.text.isEmpty {
-                        Text("Message @\(person.username ?? person.title)").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                        Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                             .lineLimit(1).padding(.leading, 5).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
                     }
                     NativeMessageComposer(text: Binding(get: { draft.text }, set: { if draft.editable { draft.text = $0 } }),
-                                          placeholder: "Message @\(person.username ?? person.title)", controller: autocomplete, mentions: .empty,
+                                          placeholder: composerPlaceholder, controller: autocomplete, mentions: .empty,
                                           submit: { send() }, editable: draft.editable && pending == nil,
                                           accessibilityID: "mention-card-composer", pasteAttachments: uploadsAvailable ? pasteAttachments : nil,
                                           highlightSource: MentionSource(members: person.username.map { [.member(id: person.id, username: $0, displayName: person.title)] } ?? [], specials: false))
@@ -6571,7 +6596,7 @@ private struct MentionCardView: View {
                 ComposerEmojiButton(controller: autocomplete, enabled: draft.editable && pending == nil,
                                     configuration: model.chat.klipy, presenting: { showingGifPicker = $0; updateDialogState() },
                                     send: { gif, query in
-                    Task { if await model.sendProfileGif(to: person, gif: gif, query: query) { close() } }
+                    sendGif(gif, query: query)
                 })
                 #else
                 Button {
@@ -6589,7 +6614,7 @@ private struct MentionCardView: View {
                     ComposerGifButton(configuration: klipy, enabled: draft.editable && pending == nil, controller: autocomplete,
                                       accessibilityID: "mention-card-gif", presenting: { showingGifPicker = $0; updateDialogState() },
                                       send: { gif, query in
-                        Task { if await model.sendProfileGif(to: person, gif: gif, query: query) { close() } }
+                        sendGif(gif, query: query)
                     })
                 }
                 #endif
@@ -6659,24 +6684,39 @@ private struct MentionCardView: View {
 
     private func send() {
         guard draft.canSend, pending == nil, !draft.presentingDialog else { return }
-        Task { if await model.sendProfileMessage(to: person) { close() } }
+        Task {
+            guard !draft.discarded else { return }
+            if let activity { _ = await model.sendActivityReply(activity) }
+            else if await model.sendProfileMessage(to: person) { close() }
+        }
+    }
+
+    private func sendGif(_ gif: ChatGif, query: String) {
+        Task {
+            guard !draft.discarded else { return }
+            if let activity { _ = await model.sendActivityReply(activity, gif: gif, query: query) }
+            else if await model.sendProfileGif(to: person, gif: gif, query: query) { close() }
+        }
     }
 
     /// The card's microphone: a voice message goes to this person's DM on
     /// its own, and success closes the card into the DM as Send does.
     private var voiceTarget: VoiceTarget {
         let model = model, person = person, close = close, draft = draft
-        let incoming = model.directMessages.contains { $0.peer.id == person.id && $0.status == .incoming }
+        let incoming = activity == nil && model.directMessages.contains { $0.peer.id == person.id && $0.status == .incoming }
         let sendsOnStop = VoiceMessageSettings.shared.sendOnStop
         let ready = sendsOnStop ? draft.canRecordVoice : draft.canStageVoice
         let reason: String
         if !uploadsAvailable { reason = "File uploads are unavailable" }
         else if draft.files.contains(where: { $0.voiceDurationMs != nil }) { reason = VoiceMessage.oneVoicePerMessage }
         else { reason = "Send or retry the current message first." }
-        return VoiceTarget(owner: VoiceComposerID(profilePersonID: person.id),
+        return VoiceTarget(owner: VoiceComposerID(profilePersonID: activity?.draftKey ?? person.id),
                            enabled: uploadsAvailable && canMessage && !incoming && ready && pending == nil && !draft.presentingDialog,
                            unavailableReason: reason, identifier: "mention-card-voice",
-                           send: { recording in if await model.sendProfileVoice(recording, to: person) { close() } },
+                           send: { recording in
+                               guard !draft.discarded else { AttachmentStaging.remove(recording.fileURL); return }
+                               if await model.sendProfileVoice(recording, to: person, activity: activity), activity == nil { close() }
+                           },
                            stage: { recording in _ = draft.stageVoice(recording) })
     }
 
@@ -6707,7 +6747,10 @@ private struct MentionCardView: View {
 
     private func retryVoice() {
         guard draft.voice != nil, !draft.sending, pending == nil, !draft.presentingDialog else { return }
-        Task { if await model.sendProfileVoice(nil, to: person) { close() } }
+        Task {
+            guard !draft.discarded else { return }
+            if await model.sendProfileVoice(nil, to: person, activity: activity), activity == nil { close() }
+        }
     }
 
     private var emojiPicker: some View {
@@ -7750,7 +7793,7 @@ private struct ComposerExpressionPicker: View {
 }
 #endif
 
-private struct ReactionPicker: View {
+struct ReactionPicker: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var category = "smileys_people"

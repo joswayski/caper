@@ -42,6 +42,149 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val api = CaperApi()
+    private val activityMutable = MutableStateFlow(ActivityInboxState())
+    internal val activityInbox: StateFlow<ActivityInboxState> = activityMutable
+    private var activityRequest = 0L
+    private var activityReactionRequest = 0L
+    private var activityShown = false
+    internal fun setActivityVisible(visible: Boolean) { activityShown = visible }
+    private val activityTargets = mutableMapOf<String, ActivityItem>()
+
+    internal fun toggleActivityReply(item: ActivityItem) {
+        if (!item.canReply) return
+        activityTargets[item.draftKey] = item
+        val expanded = activityMutable.value.expanded
+        activityMutable.value = activityMutable.value.copy(expanded = if (item.id in expanded) expanded - item.id else expanded + (item.id to item))
+    }
+
+    internal fun sendActivityReply(item: ActivityItem, gif: KlipyGif? = null, kind: KlipyKind? = null, query: String = ""): Boolean {
+        val token = accountToken ?: return false
+        if (!item.canReply || gif != null && mutable.value.klipy == null) return false
+        val draft = profileDrafts[item.draftKey]
+        if (if (gif == null) !draft.canSend else !draft.editable) return false
+        val request = accountGeneration
+        val media = draft.pendingGif ?: gif
+        val config = mutable.value.klipy
+        val shareQuery = if (draft.pendingGif != null) draft.pendingGifQuery else query
+        viewModelScope.launch {
+            val result = profileDrafts.sendActivity(item, token, profileChatSession(request),
+                blocked = { mutable.value.blockedIds }, gif = gif, gifQuery = query)
+            if (request != accountGeneration || result == null) return@launch
+            if (media == null) draft.files.forEach { discardDraftFiles(it.key) }
+            else if (config != null) klipy.share(config, kind ?: if (media.sticker) KlipyKind.STICKERS else KlipyKind.GIFS,
+                media.slug, shareQuery, klipyUserAgent)
+            // Gateway updates the timeline. Do not navigate or acknowledge the inbox.
+        }
+        return true
+    }
+
+    internal fun reactToActivity(item: ActivityItem, emoji: String) {
+        val token = accountToken ?: return
+        if (!item.canReply) return
+        val request = accountGeneration
+        val reactionRequest = ++activityReactionRequest
+        activityMutable.value = activityMutable.value.copy(error = null)
+        viewModelScope.launch {
+            try {
+                val channel = profileDrafts.activityDestination(item, token) { mutable.value.blockedIds }
+                val (session, _) = profileChatSession(request)()
+                if (request != accountGeneration) return@launch
+                api.setReaction(token, session, channel, requireNotNull(item.messageId), emoji, true)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) {
+                if (request == accountGeneration && reactionRequest == activityReactionRequest)
+                    activityMutable.value = activityMutable.value.copy(error = message(error))
+            }
+        }
+    }
+
+    private suspend fun uploadProfileFiles(person: String, id: String?, username: String, token: String, keys: Set<String>) {
+        val target = activityTargets[person]
+        if (target != null) profileDrafts.uploadActivity(target, token, { mutable.value.blockedIds }, keys)
+        else profileDrafts.upload(person, id, username, token,
+            directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds }, keys = keys)
+    }
+
+    internal fun filterActivity(filter: ActivityFilter, unreadOnly: Boolean) {
+        activityMutable.value = activityMutable.value.copy(filter = filter, unreadOnly = unreadOnly)
+        loadActivity()
+    }
+
+    internal fun loadActivity(more: Boolean = false, poll: Boolean = false) {
+        val token = accountToken ?: return
+        val current = activityMutable.value
+        if (current.reading != null || poll && current.loading || more && (current.loading || current.cursor == null)) return
+        val epoch = accountGeneration; val request = ++activityRequest
+        activityMutable.value = current.copy(loading = true, error = null,
+            items = if (more || poll) current.items else emptyList(), cursor = if (more || poll) current.cursor else null)
+        viewModelScope.launch {
+            try {
+                val page = api.activityInbox(token, current.filter, current.unreadOnly, if (more) current.cursor else null,
+                    through = if (poll) current.items.lastOrNull() else null)
+                if (epoch != accountGeneration || request != activityRequest) return@launch
+                val items = (if (more) current.items else emptyList()) + page.items
+                activityMutable.value = activityMutable.value.copy(items = items.distinctBy { it.id },
+                    cursor = page.nextCursor, unreadCount = page.unreadCount, loading = false)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) {
+                if (epoch == accountGeneration && request == activityRequest)
+                    activityMutable.value = activityMutable.value.copy(loading = false, error = message(error))
+            }
+        }
+    }
+
+    internal fun readActivity(item: ActivityItem, open: Boolean = false, onOpened: () -> Unit = {}) {
+        val token = accountToken ?: return
+        if (activityMutable.value.reading != null) return
+        val epoch = accountGeneration; val navigation = generation; val opening = conversationOpeningRevision
+        ++activityRequest; ++unreadRevision
+        activityMutable.value = activityMutable.value.copy(reading = item.id, loading = false, error = null)
+        viewModelScope.launch {
+            try {
+                val result = api.readActivity(token, listOf(item.id))
+                if (epoch != accountGeneration) return@launch
+                ++unreadRevision
+                activityMutable.value = activityMutable.value.copy(unreadCount = result.unreadCount,
+                    expanded = activityMutable.value.expanded.mapValues { (_, row) -> if (row.id == item.id) row.copy(unread = false) else row },
+                    items = activityMutable.value.items.map { if (it.id == item.id) it.copy(unread = false) else it }
+                        .filter { !activityMutable.value.unreadOnly || it.unread })
+                if (open && activityShown && navigation == generation && opening == conversationOpeningRevision) {
+                    val channel = item.conversationId ?: item.channelId
+                    require(item.spaceId != null || item.conversationId != null) { "This notification is no longer available." }
+                    if (!item.kind.endsWith("invitation") && mutable.value.selectedChannel?.id != channel) {
+                        if (item.conversationId != null && mutable.value.directConversations.none { it.id == channel }) {
+                            val conversations = api.directConversations(token).conversations
+                            if (epoch != accountGeneration || navigation != generation || opening != conversationOpeningRevision || !activityShown) return@launch
+                            require(conversations.any { it.id == channel }) { "This conversation is no longer available." }
+                            mutable.value = mutable.value.copy(directConversations = conversations)
+                        } else if (item.spaceId != null) {
+                            val detail = api.space(token, item.spaceId)
+                            val spaces = if (mutable.value.spaces.none { it.id == item.spaceId }) api.spaces(token) else null
+                            if (epoch != accountGeneration || navigation != generation || opening != conversationOpeningRevision || !activityShown) return@launch
+                            require(detail.channels.any { it.id == channel }) { "This channel is no longer available." }
+                            if (spaces != null) mutable.value = mutable.value.copy(spaces = spaces.spaces, invitations = spaces.invitations, limits = spaces.limits)
+                            require(mutable.value.spaces.any { it.id == item.spaceId }) { "This space is no longer available." }
+                        }
+                    }
+                    if (item.messageId != null && channel != null && !item.kind.endsWith("invitation")) {
+                        if (mutable.value.selectedChannel?.id == channel) {
+                            goToMessage(channel, item.messageId, item.threadRootId?.takeIf { it != item.messageId },
+                                onFailed = { mutable.value = mutable.value.copy(error = mutable.value.messageContextError) }, onLoaded = {})
+                        } else {
+                            pendingFocus = FeedbackTarget(channel, item.spaceId, item.messageId, item.threadRootId)
+                            openFromNotification(item.conversationId, item.spaceId, item.channelId, item.kind)
+                        }
+                    } else openFromNotification(item.conversationId, item.spaceId, item.channelId, item.kind)
+                    onOpened()
+                }
+            } catch (error: CancellationException) { throw error }
+            catch (error: Throwable) {
+                if (epoch == accountGeneration) activityMutable.value = activityMutable.value.copy(error = message(error))
+            } finally {
+                if (epoch == accountGeneration) activityMutable.value = activityMutable.value.copy(reading = null)
+            }
+        }
+    }
     internal val whatsNew = WhatsNewClient(application, api)
     internal fun refreshWhatsNew() { viewModelScope.launch { whatsNew.refresh() } }
     private val tokens = TokenStore(application)
@@ -339,6 +482,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val token = accountToken
         VoiceCallService.stop(getApplication())
         ++accountGeneration
+        ++activityRequest; activityMutable.value = ActivityInboxState()
+        activityTargets.clear()
+        activityShown = false
         ++spaceAccessGeneration
         invalidate()
         presenceSnapshots.clear()
@@ -820,8 +966,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = accountGeneration
         val navigation = generation
         val directNavigation = conversationOpeningRevision
+        val activity = activityTargets[person]
         deliverProfileVoice(person, key, request, navigation, directNavigation, done) {
-            profileDrafts.sendVoice(person, id, username, token, key, prepared, session = profileChatSession(request),
+            if (activity != null) profileDrafts.activityVoice(activity, token, profileChatSession(request),
+                { mutable.value.blockedIds }, key to prepared)
+            else profileDrafts.sendVoice(person, id, username, token, key, prepared, session = profileChatSession(request),
                 directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
         }
     }
@@ -833,8 +982,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = accountGeneration
         val navigation = generation
         val directNavigation = conversationOpeningRevision
+        val activity = activityTargets[person]
         deliverProfileVoice(person, key, request, navigation, directNavigation, done) {
-            profileDrafts.retryVoice(person, id, username, token, session = profileChatSession(request),
+            if (activity != null) profileDrafts.activityVoice(activity, token, profileChatSession(request), { mutable.value.blockedIds })
+            else profileDrafts.retryVoice(person, id, username, token, session = profileChatSession(request),
                 directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
         }
     }
@@ -848,7 +999,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** The recording's copy goes once it is sent or dropped; one that failed waits for Retry or Discard. */
     private fun deliverProfileVoice(
         person: String, key: String, request: Long, navigation: Long, directNavigation: Long, done: () -> Unit,
-        attempt: suspend () -> Pair<DirectConversation, ChatMessage>?,
+        attempt: suspend () -> Pair<DirectConversation?, ChatMessage>?,
     ) {
         viewModelScope.launch {
             try {
@@ -858,7 +1009,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     if (profileDrafts[person].error == directMessageError(DM_BLOCKED)) { refreshBlocks(); refreshDirectConversations() }
                     return@launch
                 }
-                profileMessageSent(result.first, result.second, navigation, directNavigation, done)
+                result.first?.let { profileMessageSent(it, result.second, navigation, directNavigation, done) }
             } finally {
                 if (profileDrafts.voiceKey(person) != key) discardDraftFiles(key)
             }
@@ -1345,6 +1496,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { api.unreadSpaces(token) }.onSuccess {
                 if (account == accountGeneration && revision == unreadRevision) {
                     mutable.value = mutable.value.copy(unreadSpaces = it.spaces, feedbackWaiting = it.feedbackWaiting)
+                    it.badgeCount?.let { count -> activityMutable.value = activityMutable.value.copy(unreadCount = count) }
+                    if (activityShown) loadActivity(poll = true)
                     CaperNotifications.reconcileReadChannels(getApplication(), it.spaces.flatMap { space -> space.channels.map { channel -> channel.id } }.toSet(), snapshotStartedAt)
                     if (!mutable.value.messagesLoading) mutable.value.selectedChannel?.id?.let { id -> markConversationRead(id, durableReplayCursor) }
                 }
@@ -1375,7 +1528,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun threadReplyVisible(channel: String, root: String, seq: String) {
         val current = mutable.value
         val thread = current.thread ?: return
-        if (!foreground || !conversationVisible || current.screen != SessionScreen.Home || current.visit != null ||
+        if (!foreground || !conversationVisible || activityShown || current.screen != SessionScreen.Home || current.visit != null ||
             current.selectedChannel?.id != channel || thread.rootId != root || thread.loading || thread.hasNewer) return
         val unread = current.unreadThreads[root] ?: return
         if (seq.toBigInteger() < unread.toBigInteger()) return
@@ -1411,7 +1564,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val current = mutable.value
         // A visit never marks anything read: the team member is not in the conversation.
         if (current.visit != null) return
-        if (!foreground || !conversationVisible || current.selectedChannel?.id != id || current.selectedDirect?.incoming == true) return
+        if (!foreground || !conversationVisible || activityShown || current.selectedChannel?.id != id || current.selectedDirect?.incoming == true) return
         // An older window (jumped to a reply or search result) is not the latest, for channels and DMs alike.
         if (current.hasNewerMessages) return
         if (current.selectedDirectId == id) { markDirectRead(id, seq); return }
@@ -2385,8 +2538,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = accountGeneration
         uploadJobs[key] = viewModelScope.launch {
             try {
-                profileDrafts.upload(person, id, username, token,
-                    directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds }, keys = setOf(key))
+                uploadProfileFiles(person, id, username, token, setOf(key))
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -2552,8 +2704,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val (id, username) = profileRecipients[person] ?: return@launch
                 val token = accountToken ?: return@launch
-                profileDrafts.upload(person, id, username, token,
-                    directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds }, keys = setOf(key))
+                uploadProfileFiles(person, id, username, token, setOf(key))
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {

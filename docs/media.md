@@ -10717,3 +10717,74 @@ Validation:
   the targeted DM/invite suites and field audit above passed.
 - Docker has no running daemon in this orb; the web image's application build
   stage was checked directly by `npm run check`, not by building the image.
+
+## Notifications inbox (November 4, 2026)
+
+Web, Android, Apple and Rust desktop now expose an account-wide Notifications
+inbox. It includes messages, mentions, replies in participated threads, reactions
+to your messages and pending invitations/DM requests. Filters, unread-only mode,
+pagination and individual acknowledgements share the same authenticated API.
+The badge total is the inbox's unfiltered unread count, not a push-delivery count.
+See [the HTTP, read and rollout contract](notifications.md#notifications-inbox-november-4-2026).
+
+Validation uses disposable local Postgres/Valkey and explicitly labelled fixture
+accounts; no production data was read or changed:
+
+- `npm run check` passes; `npm test` passes all 804 web/shared tests after merging
+  current main. The inline composer uses the shared rich-text input contract;
+  React focus restoration supports its selection setters. The regression covers
+  picker dismissal and draft preservation, and desktop/narrow browser checks
+  verified rendering and sending after that integration.
+- `cargo test --workspace` and warnings-denied workspace Clippy pass. All 21
+  opt-in push database tests pass, including inbox access isolation, exact thread
+  targets, consent preservation, selective reads, removed sources, revoked
+  membership, timestamp-tied pagination and delayed-alert suppression. The
+  restricted-runtime-role migration/grants regression also passes.
+- Browser interactions exercised filters, unread/history, individual reads,
+  empty/error states and opening a reply in its actual thread against the local
+  API. Desktop and narrow layouts were inspected; narrow Chromium is not a
+  physical phone or mobile Safari check.
+- Xcode macOS core tests pass (599 tests), and macOS plus unsigned iOS simulator
+  builds pass. The macOS inbox was rendered against the local API and inspected
+  in empty/history and expanded-reply states. Physical signed iOS and Android,
+  Windows rendering and real APNs/FCM delivery are separate acceptance checks,
+  not implied by this.
+- Android Kotlin compilation and all 609 JVM tests pass after preparing the
+  pinned native fonts. No emulator or physical Android device was used.
+- Rust desktop builds and passes 806 tests (21 existing opt-in tests skipped).
+  A final targeted layout regression passes after giving newly loaded rows room
+  to appear. The Linux inbox was rendered and inspected in empty/history states
+  using the existing labelled client fixture against the local inbox API.
+  First-party Clippy passes with `--no-deps`; including vendored WebRTC fails
+  on 34 existing dependency lints, including missing safety documentation.
+- Automatic refresh now revalidates the loaded page window every 15 seconds,
+  including after pagination, without discarding older loaded rows or retaining
+  stale read/deleted rows. Web and native regression checks cover displaced page
+  boundaries; web checks also cover failed-continuation recovery. Existing live
+  activity signals can refresh sooner; this is not instant delivery for every
+  reaction. There is no manual Refresh control; errors retain Retry.
+- Compact timestamp-adjacent read controls and the unread-only switch/count
+  were rendered and inspected on desktop/narrow Chromium, macOS and Linux.
+  An explicitly labelled browser fixture exercised pointer hover/read actions,
+  keyboard switching to history, empty/error states and automatic arrivals.
+  Android and iOS control refinements are build-verified, not device-rendered.
+- The follow-up removes message-kind labels and empty-state instructions and
+  shrinks the native switches. Against the local API, Chromium navigation from
+  Reactions highlights the original message; navigation from Threads opens the
+  original thread, highlights the reply and exposes its composer. These are
+  executed navigation checks, not a simulated click handler.
+- Separate Reply/React actions now work inline on every client. Chromium against
+  the local API sent quoted and thread replies, added a reaction, retained the
+  inbox after sending, and navigated to the original message on row click. macOS
+  sent an inline thread reply without dismissing the sheet. Desktop/narrow web
+  and macOS/Linux expanded composers were rendered and inspected. Regression tests
+  cover exact destinations, stable uncertain-send retry IDs, draft isolation,
+  retained expanded rows, account changes and nested picker dismissal.
+- Attachment upload/send targeting was exercised with explicitly mocked browser
+  responses, not live object storage. GIF picker opening/dismissal was exercised;
+  live GIF results and storage delivery remain unverified because providers are
+  not configured locally. This work does not establish physical-device microphone
+  capture or delivery for inline voice messages.
+- No Docker daemon is available; application build stages are validated directly.
+  The additive read-receipt migration must reach the API before new clients;
+  no new provider credentials or infrastructure are required.

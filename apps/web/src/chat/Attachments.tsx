@@ -752,7 +752,7 @@ function DraftAttachmentTile({
         )}
       </li>
       {open && (
-        <FloatingPortal>
+        <FloatingPortal root={returnFocus.current?.closest<HTMLElement>("dialog") ?? undefined}>
           <FloatingFocusManager context={context} returnFocus={returnFocus}>
             <div
               ref={refs.setFloating}

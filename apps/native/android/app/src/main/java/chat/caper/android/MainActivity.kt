@@ -1088,6 +1088,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 ) { HorizontalDivider(Modifier.fillMaxWidth().padding(horizontal = 16.dp), color = Border) }
                 Column(Modifier.weight(1f - clampedShare).verticalScroll(rememberScrollState())) {
                 Spacer(Modifier.height(6.dp))
+                ActivityInboxEntry(viewModel) { closeNavigation?.invoke() }
                 // Feedback team only: the `@feedback` inbox, beside the DMs.
                 if (state.account.feedbackTeam) {
                     val feedbackSelected = state.feedbackShown || state.visit != null
@@ -3904,6 +3905,7 @@ internal fun counterTone(count: Int): Color = when {
     val allowed = limits != null && state.spaces.count { it.ownerId == state.account?.id } < limits.ownedSpaces &&
         state.spaces.count { !it.demo } < limits.totalSpaces
     AuthFrame {
+        ActivityInboxEntry(viewModel) {}
         Text("Name your space", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp))
         Text("Choose something you will recognize easily. You can always change it later!", color = TextMuted, fontSize = 12.sp)
