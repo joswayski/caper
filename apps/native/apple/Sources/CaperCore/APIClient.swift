@@ -577,6 +577,14 @@ public actor APIClient {
     /// attach control" (503 when storage is not configured).
     public func assetUsage() async throws -> AssetUsage { try await request("api/assets/usage") }
 
+    /// Speech to text for the draft; the server keeps neither the audio nor the text.
+    public func dictate(audio: Data, contentType: String) async throws -> String {
+        struct Dictation: Decodable { let text: String }
+        let result: Dictation = try await perform("api/dictation", method: "POST", body: audio,
+                                                  extraHeaders: ["content-type": contentType], timeout: 180)
+        return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public func createAsset(_ input: AssetCreateInput) async throws -> AssetReservation {
         let reservation: AssetReservation = try await request("api/assets", method: "POST", body: input)
         guard Self.validAssetID(reservation.id) else { throw APIError(status: 502, message: "The upload service returned an invalid response.") }
@@ -781,9 +789,10 @@ public actor APIClient {
         try await perform(path, method: method, body: try encoder.encode(body), extraHeaders: extraHeaders)
     }
 
-    private func perform<T: Decodable>(_ path: String, method: String, body: Data?, extraHeaders: [String: String]) async throws -> T {
+    private func perform<T: Decodable>(_ path: String, method: String, body: Data?, extraHeaders: [String: String],
+                                       timeout: TimeInterval = 25) async throws -> T {
         guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else { throw URLError(.badURL) }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = method
         request.httpBody = body
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "content-type") }

@@ -4141,6 +4141,18 @@ public final class ChatModel {
         }
     }
 
+    /// The words in a dictation recording (`POST /api/dictation`). Throws the
+    /// reason to show; the recording file stays with the caller.
+    public func dictate(_ recording: VoiceRecording) async throws -> String {
+        let audio: Data
+        do { audio = try Data(contentsOf: recording.fileURL) }
+        catch { throw APIError(status: 400, message: VoiceMessage.recordingFailed) }
+        do { return try await api.dictate(audio: audio, contentType: VoiceMessage.uploadContentType) }
+        catch let error as APIError { throw APIError(status: error.status, message: VoiceMessage.dictationError(status: error.status)) }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw APIError(status: 0, message: VoiceMessage.dictationError(status: nil)) }
+    }
+
     /// Sends a recorded voice message on its own (the voice-message contract): the
     /// composer's text and files stay untouched, a reply target is honoured.
     /// The pending row appears at once with the local recording; the upload

@@ -278,40 +278,99 @@ struct VoiceTarget {
     let identifier: String
     let send: @MainActor (VoiceRecording) async -> Void
     let stage: @MainActor (VoiceRecording) -> Void
+    /// Dictation: the recording's words (`POST /api/dictation`), and putting
+    /// them in the draft at its caret (false when the draft would be too long).
+    /// Without both, a tap or click records a voice message.
+    var transcribe: (@MainActor (VoiceRecording) async throws -> String)? = nil
+    var insert: (@MainActor (String) -> Bool)? = nil
 
-    @MainActor static func chat(_ chat: ChatModel, inThread: Bool) -> VoiceTarget {
+    var dictates: Bool { transcribe != nil && insert != nil }
+
+    @MainActor static func chat(_ chat: ChatModel, inThread: Bool, controller: ComposerAutocompleteController? = nil) -> VoiceTarget {
         let sendsOnStop = VoiceMessageSettings.shared.sendOnStop
         let reason: String
         if !chat.canAttach { reason = chat.attachUnavailableReason }
         else if chat.attachmentFiles(inThread: inThread).contains(where: \.isVoice) { reason = VoiceMessage.oneVoicePerMessage }
         else if sendsOnStop { reason = "Send or dismiss the pending message first." }
         else { reason = "You can attach up to \(AttachmentPolicy.maxAttachments) files." }
+        var transcribe: (@MainActor (VoiceRecording) async throws -> String)?
+        var insert: (@MainActor (String) -> Bool)?
+        if let controller {
+            transcribe = { recording in try await chat.dictate(recording) }
+            insert = { words in controller.dictateAction?(words) ?? false }
+        }
         return VoiceTarget(owner: VoiceComposerID(chat: chat, inThread: inThread),
                            enabled: sendsOnStop ? chat.canRecordVoice(inThread: inThread) : chat.canStageVoice(inThread: inThread),
                            unavailableReason: reason,
                            identifier: inThread ? "thread-voice" : "composer-voice",
                            send: { await chat.sendVoice($0, inThread: inThread) },
-                           stage: { chat.stageVoice($0, inThread: inThread) })
+                           stage: { chat.stageVoice($0, inThread: inThread) },
+                           transcribe: transcribe, insert: insert)
     }
 
-    /// Stop (or a released hold, or the 10:00 limit): stage or send.
-    @MainActor static func finish(_ target: VoiceTarget) async {
+    /// Done or Stop (or a released hold, or the 10:00 limit): a dictation is
+    /// transcribed into the draft; a voice message (or `asVoice`, the
+    /// dictation bar's "Voice note") is staged or sent.
+    @MainActor static func finish(_ target: VoiceTarget, asVoice: Bool = false) async {
         let recorder = VoiceMessageRecorder.shared
+        let dictating = recorder.dictating && !asVoice && target.dictates
         guard recorder.isRecording(target.owner), let recording = await recorder.finish() else { return }
+        if dictating { transcribe(recording, for: target) } else { await keep(recording, for: target) }
+    }
+
+    @MainActor static func keep(_ recording: VoiceRecording, for target: VoiceTarget) async {
         switch VoiceMessage.finish(sendsOnStop: VoiceMessageSettings.shared.sendOnStop) {
         case .send: await target.send(recording)
         case .stage: target.stage(recording)
         }
     }
+
+    /// Transcribes and inserts; a failure keeps the audio for Retry or "Keep as voice note".
+    @MainActor static func transcribe(_ recording: VoiceRecording, for target: VoiceTarget) {
+        guard let transcribe = target.transcribe, let insert = target.insert else { return }
+        let recorder = VoiceMessageRecorder.shared
+        recorder.dictation?.task?.cancel()
+        let fail = { (reason: String) in
+            guard recorder.dictation?.recording == recording else { return }
+            recorder.dictation = VoiceDictation(target: target, recording: recording, error: reason)
+        }
+        var dictation = VoiceDictation(target: target, recording: recording)
+        dictation.task = Task { @MainActor in
+            do {
+                let words = try await transcribe(recording)
+                guard !Task.isCancelled, recorder.dictation?.recording == recording else { return }
+                if words.isEmpty { fail("No words heard.") }
+                else if insert(words) {
+                    recorder.dictation = nil
+                    AttachmentStaging.remove(recording.fileURL)
+                } else { fail("Messages must be 4,000 characters or fewer.") }
+            } catch {
+                guard !Task.isCancelled else { return }
+                fail((error as? APIError)?.message ?? VoiceMessage.dictationError(status: nil))
+            }
+        }
+        recorder.dictation = dictation
+    }
+
+    /// Cancel (while transcribing) or Discard (after a failure): the audio goes.
+    @MainActor static func dropDictation() {
+        let recorder = VoiceMessageRecorder.shared
+        guard let dictation = recorder.dictation else { return }
+        dictation.task?.cancel()
+        recorder.dictation = nil
+        AttachmentStaging.remove(dictation.recording.fileURL)
+    }
 }
 
-/// The composer's microphone ("Record voice message"), a tool button beside
-/// Emoji. A click or tap records hands-free until Stop: on the Mac the row
-/// becomes the recording bar with Discard and Stop; on iPhone and iPad the
-/// microphone itself becomes a pulsing terracotta Stop and the keyboard
-/// closes. Touch layouts can also press and hold: release stops, and sliding
-/// up to the lock keeps recording hands-free. VoiceOver activates it to start
-/// and again to stop.
+/// The composer's microphone ("Dictate"), a tool button beside Emoji. A
+/// click or tap dictates hands-free until Done: on the Mac the row becomes the
+/// recording bar with Discard, "Voice note" and Done; on iPhone and iPad the
+/// microphone itself becomes a pulsing terracotta Done and the keyboard
+/// closes. Done transcribes the speech into the draft at its caret; "Voice
+/// note" keeps the recording as a voice message instead. Touch layouts can
+/// also press and hold for a voice message: release stops, and sliding up to
+/// the lock keeps recording hands-free. VoiceOver activates it to start and
+/// again to stop.
 struct VoiceRecordButton: View {
     let target: VoiceTarget
     var height: CGFloat = 42
@@ -328,15 +387,19 @@ struct VoiceRecordButton: View {
         self.height = height
     }
 
-    init(chat: ChatModel, inThread: Bool, height: CGFloat = 42) {
-        self.init(target: .chat(chat, inThread: inThread), height: height)
+    init(chat: ChatModel, inThread: Bool, height: CGFloat = 42, controller: ComposerAutocompleteController? = nil) {
+        self.init(target: .chat(chat, inThread: inThread, controller: controller), height: height)
     }
+
+    private var label: String { target.dictates ? VoiceMessage.dictateLabel : VoiceMessage.recordLabel }
+    /// No new recording while this composer's last dictation is still transcribing or failed.
+    private var enabled: Bool { target.enabled && recorder.dictation?.target.owner != owner }
 
     var body: some View {
         ZStack {
             #if os(iOS)
             if recorder.isActive(owner) && recorder.handsFree {
-                VoiceStopButton(height: height) { stop() }
+                VoiceStopButton(height: height, done: recorder.dictating) { stop() }
                     .accessibilityIdentifier("\(target.identifier)-stop")
             } else {
                 holdableMicrophone
@@ -344,9 +407,9 @@ struct VoiceRecordButton: View {
             #else
             Button { begin(handsFree: true) } label: { microphone }
                 .buttonStyle(.plain)
-                .disabled(!target.enabled)
-                .help(target.enabled ? VoiceMessage.recordLabel : target.unavailableReason)
-                .accessibilityLabel(VoiceMessage.recordLabel)
+                .disabled(!enabled)
+                .help(target.enabled ? label : target.unavailableReason)
+                .accessibilityLabel(label)
                 .accessibilityHint(target.enabled ? "" : target.unavailableReason)
                 .accessibilityIdentifier("\(target.identifier)-record")
                 .modifier(ControlPointer())
@@ -364,10 +427,10 @@ struct VoiceRecordButton: View {
     }
 
     private func begin(handsFree: Bool) {
-        guard target.enabled else { return }
+        guard enabled else { return }
         let target = target
         Task {
-            await VoiceMessageRecorder.shared.start(for: target.owner, handsFree: handsFree) {
+            await VoiceMessageRecorder.shared.start(for: target.owner, handsFree: handsFree, dictating: target.dictates) {
                 // 10:00: stop, then stage or send, on every platform.
                 Task { @MainActor in await VoiceTarget.finish(target) }
             }
@@ -379,9 +442,15 @@ struct VoiceRecordButton: View {
         Task { await VoiceTarget.finish(target) }
     }
 
+    /// A released hold: always a voice message.
+    private func stopVoice() {
+        let target = target
+        Task { await VoiceTarget.finish(target, asVoice: true) }
+    }
+
     #if os(iOS)
     private var holdableMicrophone: some View {
-        let enabled = target.enabled
+        let enabled = enabled
         let active = recorder.isActive(owner)
         return CaperIcon(name: "mic", size: 18)
             .foregroundStyle(active ? CaperTheme.text : CaperTheme.muted)
@@ -406,8 +475,8 @@ struct VoiceRecordButton: View {
                 }
             }
             .accessibilityElement()
-            .accessibilityLabel(VoiceMessage.recordLabel)
-            .accessibilityHint(enabled ? "Records until you stop. You can also hold to record and release to stop." : target.unavailableReason)
+            .accessibilityLabel(label)
+            .accessibilityHint(enabled ? (target.dictates ? "Dictates until you’re done. Hold to record a voice message instead." : "Records until you stop. You can also hold to record and release to stop.") : target.unavailableReason)
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { begin(handsFree: true) }
             .accessibilityIdentifier("\(target.identifier)-record")
@@ -422,10 +491,14 @@ struct VoiceRecordButton: View {
                     let start = Date()
                     pressStart = start; locked = false
                     begin(handsFree: false)
-                    // Still down after a tap's length: show what releasing and sliding do.
+                    // Still down after a tap's length: a voice message. Show what
+                    // releasing and sliding do.
                     Task { @MainActor in
                         try? await Task.sleep(for: .seconds(VoiceMessage.tapThreshold))
-                        if pressStart == start, !locked, recorder.isActive(owner), !recorder.handsFree { recorder.holding = true }
+                        if pressStart == start, !locked, recorder.isActive(owner), !recorder.handsFree {
+                            VoiceMessageRecorder.haptic()
+                            recorder.holding = true; recorder.dictating = false
+                        }
                     }
                 }
                 guard !locked, recorder.isActive(owner), !recorder.handsFree else { return }
@@ -434,7 +507,7 @@ struct VoiceRecordButton: View {
                 if VoiceMessage.locksBySliding(translation: lift) {
                     locked = true
                     VoiceMessageRecorder.haptic()
-                    recorder.lift = 0; recorder.holding = false; recorder.handsFree = true
+                    recorder.lift = 0; recorder.holding = false; recorder.handsFree = true; recorder.dictating = false
                 }
             }
             .onEnded { _ in
@@ -449,7 +522,7 @@ struct VoiceRecordButton: View {
                 switch VoiceMessage.release(pressDuration: Date().timeIntervalSince(start), recordedMs: recorded, locked: wasLocked) {
                 case .discard: recorder.cancel()
                 case .handsFree: goHandsFree()
-                case .stop: stop()
+                case .stop: stopVoice()
                 }
             }
     }
@@ -470,18 +543,20 @@ struct VoiceStopButton: View {
     var height: CGFloat = 42
     var width: CGFloat = 36
     var square: CGFloat = 30
+    /// Dictating: a check ("Done, insert text") instead of the square.
+    var done = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
+            Image(systemName: done ? "checkmark" : "stop.fill").font(.system(size: done ? 14 : 12, weight: .bold))
                 .frame(width: square, height: square)
                 .frame(width: width, height: height)
                 .contentShape(Rectangle())
         }
         .buttonStyle(VoiceStopStyle(square: square))
-        .help(VoiceMessage.stopLabel)
-        .accessibilityLabel(VoiceMessage.stopLabel)
+        .help(done ? VoiceMessage.doneLabel : VoiceMessage.stopLabel)
+        .accessibilityLabel(done ? VoiceMessage.doneLabel : VoiceMessage.stopLabel)
     }
 }
 
@@ -592,8 +667,9 @@ struct VoiceComposerCover: ViewModifier {
         self.target = target; self.height = height; self.restoreFocus = restoreFocus
     }
 
-    init(chat: ChatModel, inThread: Bool, height: CGFloat = 42, restoreFocus: (() -> Void)? = nil) {
-        self.init(target: .chat(chat, inThread: inThread), height: height, restoreFocus: restoreFocus)
+    init(chat: ChatModel, inThread: Bool, height: CGFloat = 42, controller: ComposerAutocompleteController? = nil,
+         restoreFocus: (() -> Void)? = nil) {
+        self.init(target: .chat(chat, inThread: inThread, controller: controller), height: height, restoreFocus: restoreFocus)
     }
 
     func body(content: Content) -> some View {
@@ -620,10 +696,12 @@ struct VoiceComposerCover: ViewModifier {
     }
 }
 
-/// The recording bar: `[trash]  ● 0:07  live bars  [Stop]` on the Mac
-/// (Return stops, Escape discards). On touch devices it shows Discard, the
-/// timer and live bars, with the microphone beside it turned into Stop once
-/// the finger lifts; while held, Discard steps out (releasing stops).
+/// The recording bar: `[trash]  ● 0:07  live bars  [Voice note] [Done]` on
+/// the Mac while dictating, `[Stop]` for a voice message (Return stops,
+/// Escape discards). On touch devices it shows Discard, the timer, live bars
+/// and, while dictating, "Voice note", with the microphone beside it turned
+/// into Done (or Stop) once the finger lifts; while held, Discard steps out
+/// (releasing stops).
 struct VoiceRecordingBar: View {
     let target: VoiceTarget
     var height: CGFloat = 42
@@ -635,24 +713,26 @@ struct VoiceRecordingBar: View {
             discard.opacity(recorder.holding ? 0 : 1).disabled(recorder.holding)
             VoiceRecordingTimer(elapsedMs: recorder.elapsedMs)
             VoiceLiveBars()
+            if recorder.dictating { asVoiceNote }
         }
-        .padding(.trailing, 12)
+        .padding(.trailing, recorder.dictating ? 4 : 12)
         .frame(maxWidth: .infinity, minHeight: height, maxHeight: height)
         .background(CaperTheme.composer)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Recording voice message")
+        .accessibilityLabel(recorder.dictating ? "Dictating" : "Recording voice message")
         .accessibilityIdentifier("\(target.identifier)-recording")
         #else
         HStack(spacing: 10) {
             discard.keyboardShortcut(.cancelAction)
             VoiceRecordingTimer(elapsedMs: recorder.elapsedMs)
             VoiceLiveBars()
-            VoiceStopButton(height: height, width: 42, square: 32) {
+            if recorder.dictating { asVoiceNote }
+            VoiceStopButton(height: height, width: 42, square: 32, done: recorder.dictating) {
                 let target = target
                 Task { await VoiceTarget.finish(target) }
             }
             .keyboardShortcut(.defaultAction)
-            .help("\(VoiceMessage.stopLabel) (Return)")
+            .help("\(recorder.dictating ? VoiceMessage.doneLabel : VoiceMessage.stopLabel) (Return)")
             .accessibilityIdentifier("\(target.identifier)-stop")
         }
         .padding(.leading, 4)
@@ -661,9 +741,32 @@ struct VoiceRecordingBar: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Recording voice message")
+        .accessibilityLabel(recorder.dictating ? "Dictating" : "Recording voice message")
         .accessibilityIdentifier("\(target.identifier)-recording")
         #endif
+    }
+
+    /// Dictating: stop now and keep the recording as a voice message.
+    private var asVoiceNote: some View {
+        Button {
+            let target = target
+            Task { await VoiceTarget.finish(target, asVoice: true) }
+        } label: {
+            HStack(spacing: 6) {
+                CaperIcon(name: "audio-lines", size: 14)
+                Text(VoiceMessage.asVoiceNoteLabel).font(CaperTheme.font(12, weight: .bold))
+            }
+            .foregroundStyle(CaperTheme.text)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help(VoiceMessageSettings.shared.sendOnStop ? "Stop and send as a voice message" : "Stop and keep as a voice message")
+        .accessibilityIdentifier("\(target.identifier)-as-note")
+        .modifier(ControlPointer())
     }
 
     private var discard: some View {
@@ -672,8 +775,8 @@ struct VoiceRecordingBar: View {
                 .frame(width: 36, height: 36).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(VoiceMessage.discardLabel)
-        .accessibilityLabel(VoiceMessage.discardLabel)
+        .help(recorder.dictating ? VoiceMessage.discardDictationLabel : VoiceMessage.discardLabel)
+        .accessibilityLabel(recorder.dictating ? VoiceMessage.discardDictationLabel : VoiceMessage.discardLabel)
         .accessibilityIdentifier("\(target.identifier)-discard")
         .modifier(ControlPointer())
     }
@@ -756,6 +859,48 @@ struct VoiceComposerNotice: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("\(identifier)-notice")
         }
+        if let dictation = recorder.dictation, dictation.target.owner == owner {
+            if let error = dictation.error {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(VoiceMessage.dictationFailed(error))
+                        .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        action("Retry", id: "retry") { VoiceTarget.transcribe(dictation.recording, for: dictation.target) }
+                        if dictation.target.enabled {
+                            action(VoiceMessageSettings.shared.sendOnStop ? "Send as voice note" : "Keep as voice note", id: "keep") {
+                                recorder.dictation = nil
+                                Task { await VoiceTarget.keep(dictation.recording, for: dictation.target) }
+                            }
+                        }
+                        action("Discard", id: "discard-dictation") { VoiceTarget.dropDictation() }
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("\(identifier)-dictation-failed")
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(VoiceMessage.transcribing).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                    action("Cancel", id: "cancel-dictation") { VoiceTarget.dropDictation() }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("\(identifier)-transcribing")
+            }
+        }
+    }
+
+    private func action(_ title: String, id: String, perform: @escaping () -> Void) -> some View {
+        Button(action: perform) {
+            Text(title).font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.text)
+                .padding(.horizontal, 8).frame(height: 26)
+                .background(RoundedRectangle(cornerRadius: 8).fill(CaperTheme.raised))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("\(identifier)-\(id)")
+        .modifier(ControlPointer())
     }
 }
 

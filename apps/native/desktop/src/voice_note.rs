@@ -48,6 +48,37 @@ pub const NO_MICROPHONE: &str =
 
 /// A level on the perceptual scale the waveforms use: dBFS in [-50, 0]
 /// mapped linearly to [0, 1]. `amplitude` is RMS as a fraction of full scale.
+/// The dictated words to insert between `before` and `after` (the draft
+/// either side of the caret), spaced from the words around them.
+pub fn dictation_text(before: &str, after: &str, words: &str) -> String {
+    let mut text = words.trim().to_owned();
+    if text.is_empty() {
+        return text;
+    }
+    if before.chars().last().is_some_and(|c| !c.is_whitespace()) {
+        text.insert(0, ' ');
+    }
+    if after
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace() && !".,!?;:)".contains(c))
+    {
+        text.push(' ');
+    }
+    text
+}
+
+/// Why a dictation (`POST /api/dictation`) failed, by status (`None`: no answer).
+pub fn dictation_error(status: Option<u16>) -> &'static str {
+    match status {
+        None => "Check your connection and try again.",
+        Some(429) => "You’ve dictated a lot this hour. Try again later.",
+        Some(413) => "Dictation is limited to 10 minutes.",
+        Some(503) => "Dictation isn’t available right now.",
+        Some(_) => "Transcription failed. Try again.",
+    }
+}
+
 pub fn perceptual(amplitude: f32) -> f32 {
     if amplitude <= 0.0 || !amplitude.is_finite() {
         return 0.0;
@@ -448,6 +479,26 @@ fn start_failure(error: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dictated_words_go_in_at_the_caret_spaced_from_their_neighbours() {
+        assert_eq!(dictation_text("", "", "  hello there "), "hello there");
+        assert_eq!(dictation_text("see you", "", "at five"), " at five");
+        assert_eq!(dictation_text("see you ", "", "at five"), "at five");
+        assert_eq!(dictation_text("", "tomorrow", "see you"), "see you ");
+        assert_eq!(
+            dictation_text("ok", ", thanks", "sounds good"),
+            " sounds good"
+        );
+        assert_eq!(dictation_text("a", "b", " \n"), "");
+        assert!(dictation_error(Some(429)).contains("this hour"));
+        assert!(dictation_error(Some(413)).contains("10 minutes"));
+        assert_eq!(
+            dictation_error(Some(502)),
+            "Transcription failed. Try again."
+        );
+        assert!(dictation_error(None).contains("connection"));
+    }
 
     #[test]
     fn perceptual_levels_map_minus_fifty_to_zero_db_onto_zero_to_one() {

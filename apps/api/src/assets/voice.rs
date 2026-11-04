@@ -4,7 +4,11 @@
 //! transcript that finishes after sending reaches clients as a
 //! `message.attachments` update.
 use super::{Assets, Row, invalid, original_key, privacy::VOICE_CONTENT_TYPE};
-use crate::{ApiError, ai::Ai, pictures::Purpose};
+use crate::{
+    ApiError,
+    ai::{Ai, Call},
+    pictures::Purpose,
+};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -189,39 +193,7 @@ async fn run(assets: &Assets, ai: &Ai, job: i64, asset: i64) -> Result<(), ()> {
             json!({"asset": external_id, "durationMs": duration_ms}),
         )
         .await;
-    for call in &calls {
-        let recorded = sqlx::query(
-            "INSERT INTO public.ai_calls (job_id, task, provider, model, succeeded, http_status, latency_ms, input, output, error, cost_usd)
-             VALUES ($1, $2, 'openrouter', $3, $4, $5, $6, $7, $8, $9, $10::float8::numeric)",
-        )
-        .bind(job)
-        .bind(TASK)
-        .bind(&call.model)
-        .bind(call.succeeded)
-        .bind(call.http_status.and_then(|v| i16::try_from(v).ok()))
-        .bind(call.latency_ms)
-        .bind(&call.input)
-        .bind(&call.output)
-        .bind(&call.error)
-        .bind(call.cost_usd)
-        .execute(&assets.pool)
-        .await;
-        if recorded.is_err() {
-            tracing::warn!(
-                event_name = "ai_call_log_failed",
-                "an AI call was not recorded"
-            );
-        }
-        tracing::info!(
-            event_name = "ai_call",
-            task = TASK,
-            model = %call.model,
-            succeeded = call.succeeded,
-            latency_ms = call.latency_ms,
-            cost_usd = call.cost_usd,
-            "AI call"
-        );
-    }
+    record_calls(&assets.pool, Some(job), TASK, &calls).await;
     let text = text.ok_or(())?;
     let text: String = text.trim().chars().take(MAX_TRANSCRIPT_CHARS).collect();
     store(&assets.pool, asset, "ready", Some(&text)).await
@@ -253,9 +225,47 @@ async fn download(assets: &Assets, external_id: &str) -> Result<Vec<u8>, ()> {
     Ok(bytes)
 }
 
+/// Records each provider attempt in `ai_calls` (`job` is absent for requests
+/// answered straight away, such as dictation) and logs it.
+pub(crate) async fn record_calls(pool: &PgPool, job: Option<i64>, task: &str, calls: &[Call]) {
+    for call in calls {
+        let recorded = sqlx::query(
+            "INSERT INTO public.ai_calls (job_id, task, provider, model, succeeded, http_status, latency_ms, input, output, error, cost_usd)
+             VALUES ($1, $2, 'openrouter', $3, $4, $5, $6, $7, $8, $9, $10::float8::numeric)",
+        )
+        .bind(job)
+        .bind(task)
+        .bind(&call.model)
+        .bind(call.succeeded)
+        .bind(call.http_status.and_then(|v| i16::try_from(v).ok()))
+        .bind(call.latency_ms)
+        .bind(&call.input)
+        .bind(&call.output)
+        .bind(&call.error)
+        .bind(call.cost_usd)
+        .execute(pool)
+        .await;
+        if recorded.is_err() {
+            tracing::warn!(
+                event_name = "ai_call_log_failed",
+                "an AI call was not recorded"
+            );
+        }
+        tracing::info!(
+            event_name = "ai_call",
+            task,
+            model = %call.model,
+            succeeded = call.succeeded,
+            latency_ms = call.latency_ms,
+            cost_usd = call.cost_usd,
+            "AI call"
+        );
+    }
+}
+
 /// 16 kHz mono FLAC: lossless at the rate speech models use, and accepted by
 /// every transcription provider.
-async fn speech_audio(audio: &[u8]) -> Result<Vec<u8>, ()> {
+pub(crate) async fn speech_audio(audio: &[u8]) -> Result<Vec<u8>, ()> {
     let directory = tempfile::tempdir().map_err(|_| ())?;
     let input = directory.path().join("voice.m4a");
     let output = directory.path().join("speech.flac");

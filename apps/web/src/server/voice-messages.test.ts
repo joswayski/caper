@@ -18,6 +18,8 @@ import {
   attachmentLabel,
   attachmentsExcerpt,
   decodeWaveform,
+  dictationInsert,
+  dictationText,
   encodeWaveform,
   formatVoiceDuration,
   isVoiceAttachment,
@@ -32,6 +34,7 @@ import {
   resampleWaveform,
   setVoiceSendOnStop,
   spokenDuration,
+  transcribeVoice,
   transcriptView,
   voiceContentType,
   voiceFilename,
@@ -474,7 +477,60 @@ test("the profile card's DM composer offers the microphone and sends a voice mes
   assert.match(html, /<form data-attach="true" data-voice="true"/);
   assert.match(
     html,
-    /aria-label="Record voice message"[^>]*disabled=""/,
+    /aria-label="Dictate"[^>]*disabled=""/,
     "the microphone waits for upload settings, like the attach button",
   );
+});
+
+test("dictated words go in at the caret, spaced from the words around them", () => {
+  assert.equal(dictationText("", "", "  hello there "), "hello there");
+  assert.equal(dictationText("see you", "", "at five"), " at five");
+  assert.equal(dictationText("see you ", "", "at five"), "at five");
+  assert.equal(dictationText("", "tomorrow", "see you"), "see you ");
+  assert.equal(dictationText("ok", ", thanks", "sounds good"), " sounds good");
+  assert.equal(dictationText("a", "b", "   "), "");
+  const replaced: [number, number, string][] = [];
+  const input = {
+    value: "meet at  please",
+    selectionStart: 8,
+    selectionEnd: 8,
+    replaceText: (start: number, end: number, text: string) => (replaced.push([start, end, text]), true),
+  };
+  // Spaces on both sides already: just the words.
+  assert.ok(dictationInsert(input, "noon"));
+  assert.deepEqual(replaced, [[8, 8, "noon"]]);
+  assert.ok(dictationInsert({ ...input, value: "hi", selectionStart: 0, selectionEnd: 2 }, "hello"));
+  assert.deepEqual(replaced[1], [0, 2, "hello"]);
+});
+
+test("dictation posts the recording as is and explains each failure", async (t) => {
+  const recording: VoiceRecording = {
+    blob: new Blob([new Uint8Array([1, 2, 3])], { type: "audio/webm" }),
+    contentType: "audio/webm",
+    durationMs: 1_500,
+    waveform: "AQID",
+  };
+  const calls: [string, RequestInit][] = [];
+  let reply = new Response(JSON.stringify({ text: " hello " }), { status: 200 });
+  const fetcher = vi.fn(async (url: string, init: RequestInit) => (calls.push([url, init]), reply));
+  vi.stubGlobal("fetch", fetcher);
+  t.onTestFinished(() => {
+    vi.unstubAllGlobals();
+  });
+  assert.equal(await transcribeVoice(recording), "hello");
+  assert.equal(calls[0][0], "/api/dictation");
+  assert.equal(calls[0][1].method, "POST");
+  assert.equal(calls[0][1].body, recording.blob);
+  assert.deepEqual(calls[0][1].headers, { "content-type": "audio/webm" });
+  for (const [status, message] of [
+    [429, /dictated a lot/],
+    [413, /10 minutes/],
+    [503, /isn't available/],
+    [502, /Try again/],
+  ] as const) {
+    reply = new Response(JSON.stringify({ error: "x" }), { status });
+    await assert.rejects(transcribeVoice(recording), message);
+  }
+  fetcher.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+  await assert.rejects(transcribeVoice(recording), /connection/);
 });

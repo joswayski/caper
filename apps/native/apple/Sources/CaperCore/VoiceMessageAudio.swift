@@ -94,6 +94,12 @@ final class VoiceMessageRecorder {
     /// Recording continues without a finger on the microphone (a tap, a hold
     /// slid up to the lock, or the Mac's click): the bar shows Discard and Stop.
     var handsFree = false
+    /// The recording is dictation (a tap or click): Done inserts its words.
+    /// A hold, the lock or "Voice note" makes it a voice message.
+    var dictating = false
+    /// A finished dictation being transcribed, or one that failed (its audio
+    /// kept for Retry or "Keep as voice note").
+    var dictation: VoiceDictation?
 
     /// The processed recording; nil while the plain recorder is the fallback.
     @ObservationIgnored private var capture: ProcessedVoiceCapture?
@@ -140,7 +146,8 @@ final class VoiceMessageRecorder {
     /// cancelled meanwhile. `onLimit` runs once the 10-minute limit is reached;
     /// the caller then finishes and sends.
     @discardableResult
-    func start(for owner: VoiceComposerID, handsFree: Bool = true, onLimit: @escaping () -> Void) async -> Bool {
+    func start(for owner: VoiceComposerID, handsFree: Bool = true, dictating: Bool = false,
+               onLimit: @escaping () -> Void) async -> Bool {
         cancel()
         generation += 1
         let attempt = generation
@@ -151,6 +158,7 @@ final class VoiceMessageRecorder {
         VoiceMessagePlayer.shared.stop()
         let permitted: Bool
         self.handsFree = handsFree
+        self.dictating = dictating
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: permitted = true
         case .notDetermined:
@@ -360,7 +368,7 @@ final class VoiceMessageRecorder {
         capture = nil
         recorder = nil; onLimit = nil
         phase = .idle; owner = nil
-        elapsedMs = 0; levels = []; readings = []; lastReading = 0; pendingLevel = 0; lift = 0; holding = false; handsFree = false
+        elapsedMs = 0; levels = []; readings = []; lastReading = 0; pendingLevel = 0; lift = 0; holding = false; handsFree = false; dictating = false
         stopObservingInterruptions()
         stopObservingEngine()
         endSession()
@@ -454,6 +462,14 @@ final class VoiceMessageRecorder {
 }
 
 /// What the uploaded file is, whichever path writes it.
+/// A dictation after recording stopped: transcribing (no error) or failed.
+struct VoiceDictation {
+    let target: VoiceTarget
+    let recording: VoiceRecording
+    var error: String?
+    var task: Task<Void, Never>?
+}
+
 private enum VoiceMessageFile {
     static var settings: [String: Any] {
         [

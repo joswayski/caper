@@ -21,6 +21,7 @@ import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 
@@ -254,6 +255,24 @@ class CaperApi(
 
     /** Succeeds only when uploads are configured; anything else hides the attach control. */
     suspend fun assetUsage(token: String): AssetUsage = get("/api/assets/usage", token)
+
+    /** Speech to text for the draft (`POST /api/dictation`); the server keeps neither the audio nor the text. */
+    suspend fun dictate(token: String, recording: java.io.File, contentType: String = "audio/mp4"): String {
+        val request = Request.Builder().url("$baseUrl/api/dictation")
+            .header("Authorization", "Bearer $token")
+            .post(recording.asRequestBody(contentType.toMediaType()))
+            .build()
+        // Transcribing a long recording can take a while.
+        val slow = client.newBuilder().callTimeout(java.time.Duration.ofSeconds(180)).build()
+        return slow.newCall(request).awaitDecoded { response ->
+            val text = response.body.string()
+            if (!response.isSuccessful) {
+                val detail = runCatching { json.decodeFromString<ErrorBody>(text) }.getOrNull()
+                throw ApiException(response.code, detail?.error ?: "Request failed (${response.code}).", detail?.code)
+            }
+            json.decodeFromString<DictationResult>(text).text.trim()
+        }
+    }
 
     /**
      * Reserves one upload of the bytes this device will store (after compression): their exact

@@ -1662,7 +1662,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         viewModel.sendVoice(it.file, it.durationMs, it.waveform, threadRootId = thread.rootId, broadcast = broadcast)
                         broadcast = false
                     },
-                ))
+                ),
+                    transcribe = viewModel::dictate,
+                    insert = { words -> dictateAtSelection(draft, words)?.let { draft = it; true } ?: false })
                 val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null, stagedVoice = files.any { it.voice })
                 val broadcastChecked = pending?.broadcast ?: broadcast
                 // The label toggles too, as one checkbox control.
@@ -1962,7 +1964,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 val recorder = rememberVoiceRecorder(target, rememberVoiceStop(
                     stage = { viewModel.stageVoice(it.file, it.durationMs, it.waveform, target) },
                     send = { viewModel.sendVoice(it.file, it.durationMs, it.waveform) },
-                ))
+                ),
+                    transcribe = viewModel::dictate,
+                    insert = { words -> dictateAtSelection(draft, words)?.let { updateDraft(it); viewModel.setTyping(true); true } ?: false })
                 val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null, stagedVoice = state.drafts.any { it.voice })
                 VoiceRecordingNotice(recorder)
                 val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
@@ -3434,6 +3438,12 @@ internal fun attachDisabledReason(state: AppUiState, target: AttachmentDraftTarg
     !state.uploadsEnabled || state.chatAuthorId == null || state.messagesLoading || (target?.threadRootId != null && state.thread?.loading == true) -> "Checking file uploads…"
     state.attachmentDrafts[target].orEmpty().size >= AttachmentPolicy.MAX_ATTACHMENTS -> "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files."
     else -> null
+}
+
+/** Dictated words over the field's selection, spaced from the words around them; null when too long. */
+internal fun dictateAtSelection(value: TextFieldValue, words: String): TextFieldValue? {
+    val text = VoiceMessages.dictationText(value.text.substring(0, value.selection.min), value.text.substring(value.selection.max), words)
+    return if (text.isEmpty()) null else insertEmojiAtSelection(value, text)
 }
 
 /** Replaces the field's selection (or inserts at the caret), within the 4,000-character limit. */

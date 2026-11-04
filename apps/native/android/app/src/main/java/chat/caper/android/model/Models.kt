@@ -441,6 +441,8 @@ data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore
 )
 @Serializable data class ChatRoom(val id: String, val name: String, val direct: Boolean = false)
 @Serializable data class ChatSession(val token: String, val author: ChatAuthor)
+/** `POST /api/dictation`. */
+@Serializable data class DictationResult(val text: String = "")
 @Serializable data class ErrorBody(val error: String? = null, val code: String? = null, val attemptsRemaining: Int? = null)
 @Serializable data class MemberList(val members: List<Member>, val invitations: List<Member> = emptyList())
 @Serializable data class PresenceMember(val userId: String, val status: String)

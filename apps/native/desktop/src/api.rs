@@ -1116,6 +1116,39 @@ impl Api {
         Ok(serde_json::from_value(usage["compression"].clone()).unwrap_or_default())
     }
 
+    /// Speech to text for the draft (`POST /api/dictation`): the server keeps
+    /// neither the audio nor the text.
+    pub fn dictate(
+        &self,
+        token: &str,
+        audio: Vec<u8>,
+        content_type: &str,
+    ) -> Result<String, ApiError> {
+        let url = self
+            .base
+            .join("api/dictation")
+            .map_err(|_| invalid("Invalid Caper endpoint."))?;
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(token)
+            .header("content-type", content_type)
+            // Transcribing a long recording can take a while.
+            .timeout(Duration::from_secs(180))
+            .body(audio)
+            .send()
+            .map_err(|_| ApiError {
+                status: None,
+                message: "Could not reach Caper. Check your connection and try again.".into(),
+                attempts_remaining: None,
+                code: None,
+            })?;
+        let body: Value = checked(response)?
+            .json()
+            .map_err(|_| invalid("Caper returned an invalid response."))?;
+        Ok(body["text"].as_str().unwrap_or_default().trim().to_owned())
+    }
+
     /// Fresh signed URLs for visible attachments; ids the caller cannot see
     /// are omitted, and malformed entries are skipped.
     pub fn attachment_urls(

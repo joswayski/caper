@@ -49,6 +49,30 @@ object VoiceMessages {
     /** How far a live bar may fall from the one before: to 35% of it at most. */
     const val LIVE_FALL = 0.65f
 
+    /** The microphone: a tap dictates into the draft; holding records a voice message. */
+    const val DICTATE_LABEL = "Dictate"
+    const val DONE_LABEL = "Done, insert text"
+    const val AS_VOICE_NOTE = "Voice note"
+    const val TRANSCRIBING = "Transcribing…"
+
+    /** The words to insert between [before] and [after] (the draft either side of the caret), spaced from their neighbours. */
+    fun dictationText(before: String, after: String, words: String): String {
+        var text = words.trim()
+        if (text.isEmpty()) return ""
+        if (before.isNotEmpty() && !before.last().isWhitespace()) text = " $text"
+        if (after.isNotEmpty() && !after.first().isWhitespace() && after.first() !in ".,!?;:)") text = "$text "
+        return text
+    }
+
+    /** Why a dictation failed, by HTTP status (null: no answer). */
+    fun dictationError(status: Int?): String = when (status) {
+        null -> "Check your connection and try again."
+        429 -> "You’ve dictated a lot this hour. Try again later."
+        413 -> "Dictation is limited to 10 minutes."
+        503 -> "Dictation isn’t available right now."
+        else -> "Transcription failed. Try again."
+    }
+
     /** What stopping a recording does: stage it in the composer (the default) or send it at once. */
     enum class StopAction { STAGE, SEND }
 

@@ -166,6 +166,7 @@ import kotlinx.coroutines.delay
             if (current()) viewModel.sendProfileVoice(person, null, item.actorName, recording.file, recording.durationMs, recording.waveform) {}
             else recording.file.delete()
         },
+        dictate = viewModel::dictate,
         retryVoice = { if (current()) viewModel.retryProfileVoice(person, null, item.actorName) {} },
         discardVoice = { if (current()) viewModel.discardProfileVoice(person) },
     )

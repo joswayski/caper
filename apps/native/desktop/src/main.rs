@@ -977,6 +977,34 @@ struct VoiceRecording {
     /// Recorded in a profile card's quick-message composer: the person's ID
     /// and username. `channel` and `root` are then unused.
     profile: Option<(String, String)>,
+    /// Dictation (the microphone's click): Done inserts its words into the
+    /// draft. Otherwise, or after "Voice note", it is a voice message.
+    dictate: bool,
+    /// The dictation bar's "Voice note": keep this one as a voice message.
+    as_voice: bool,
+}
+
+/// A finished dictation: transcribing, or failed with its audio kept for
+/// Retry or "Keep as voice note".
+struct Dictation {
+    key: u64,
+    /// Where it was recorded (its recorder is gone).
+    recording: VoiceRecording,
+    prepared: std::sync::Arc<uploads::Prepared>,
+    error: Option<String>,
+    /// The server's answer, inserted on the next frame.
+    answer: Option<Result<String, Option<u16>>>,
+}
+
+impl Dictation {
+    /// The composer the words go into.
+    fn target(&self) -> EmojiTarget {
+        match (&self.recording.profile, &self.recording.root) {
+            (Some((person, _)), _) => EmojiTarget::Profile(person.clone()),
+            (None, Some(root)) => EmojiTarget::Thread(root.clone()),
+            (None, None) => EmojiTarget::Channel,
+        }
+    }
 }
 
 impl VoiceRecording {
@@ -990,6 +1018,8 @@ impl VoiceRecording {
             meter: voice_note::LiveMeter::default(),
             fixed_elapsed: None,
             profile: None,
+            dictate: false,
+            as_voice: false,
         }
     }
 
@@ -1524,6 +1554,8 @@ struct CaperApp {
     voice_recording: Option<VoiceRecording>,
     /// Recorded voice messages uploading, failed, or waiting to send.
     voice_sends: Vec<VoiceSend>,
+    /// The last dictation, while it transcribes or after it failed.
+    dictation: Option<Dictation>,
     /// The one voice message playing (or paused) anywhere in the app.
     voice_playback: Option<VoicePlayback>,
     /// Editing a draft's file before it is sent, while open.
@@ -1857,6 +1889,7 @@ impl CaperApp {
             inline_videos: BTreeMap::new(),
             voice_recording: None,
             voice_sends: Vec::new(),
+            dictation: None,
             voice_playback: None,
             attachment_editor: None,
             opened_files: Vec::new(),
@@ -4966,6 +4999,16 @@ impl CaperApp {
                 Event::AssetUsage { token, settings } if self.token.as_ref() == Some(&token) => {
                     self.uploads = settings;
                     self.uploads_pending = false;
+                }
+                Event::Dictated { key, result } => {
+                    // Inserted on the next frame, which has the editor's caret.
+                    if let Some(dictation) = self
+                        .dictation
+                        .as_mut()
+                        .filter(|dictation| dictation.key == key)
+                    {
+                        dictation.answer = Some(result);
+                    }
                 }
                 Event::Klipy { token, config } if self.token.as_ref() == Some(&token) => {
                     self.klipy = config;
@@ -16875,7 +16918,7 @@ impl CaperApp {
                 ui.painter().rect_stroke(editor.response.rect, 8.0, Stroke::new(1.0, if output.response.has_focus() { TERRACOTTA } else { BORDER }), egui::StrokeKind::Inside);
                 let text = draft.0.clone();
                 if pick.is_some() { self.pick_files(ui.ctx(), Some(root.clone())); }
-                if record { self.start_voice_recording(ui.ctx(), Some(root.clone())); }
+                if record { self.start_voice_recording(ui.ctx(), Some(root.clone())); self.dictate_recording(); }
                 if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, editor.response.rect, &mut output) {
                     self.thread_drafts.entry(root.clone()).or_default().0 = value;
                 }
@@ -17462,6 +17505,7 @@ impl CaperApp {
                             }
                             if record {
                                 self.start_voice_recording(ui.ctx(), None);
+                                self.dictate_recording();
                             }
                             (editor, choose_emoji, choose_gif)
                         });
@@ -22692,6 +22736,7 @@ impl CaperApp {
                 egui::FontId::proportional(13.6),
             )
         };
+        self.dictation_status(ui, &EmojiTarget::Profile(person.to_owned()));
         // Recording replaces the field; the typed text waits untouched.
         if self.recording_for_profile(person) {
             self.voice_recording_bar(ui, 42.0);
@@ -22716,6 +22761,7 @@ impl CaperApp {
             && self.token.is_some()
             && self.uploads.is_some()
             && self.voice_recording.is_none()
+            && self.dictation.is_none()
             && self.gif_picker.is_none()
             && !has_voice
             && !full
@@ -22967,6 +23013,7 @@ impl CaperApp {
         }
         if record {
             self.start_profile_voice_recording(ui.ctx(), person, username);
+            self.dictate_recording();
         }
         send || (enter && can_send)
     }
@@ -27522,6 +27569,7 @@ fn carries_identities(event: &Event) -> bool {
             | Event::VoiceChecked { .. }
             | Event::AssetUsage { .. }
             | Event::Klipy { .. }
+            | Event::Dictated { .. }
             | Event::AttachmentUrls { .. }
             | Event::Upload { .. }
             | Event::Gateway(
@@ -29226,13 +29274,27 @@ impl CaperApp {
         self.voice_recording = None;
     }
 
-    /// Send or Enter: stop, then upload and send once encoded.
+    /// The microphone's click dictates: Done inserts the words.
+    fn dictate_recording(&mut self) {
+        if let Some(recording) = &mut self.voice_recording {
+            recording.dictate = true;
+        }
+    }
+
+    /// Done, Stop or Enter: stop, then transcribe a dictation, or upload and
+    /// send (or stage) a voice message once encoded.
     fn finish_voice_recording(&mut self) {
+        self.stop_voice_recording(false);
+    }
+
+    /// `as_voice`: the dictation bar's "Voice note".
+    fn stop_voice_recording(&mut self, as_voice: bool) {
         if let Some(recording) = &mut self.voice_recording
             && recording.started.is_some()
             && !recording.sending
         {
             recording.sending = true;
+            recording.as_voice |= as_voice;
             if let Some(recorder) = &recording.recorder {
                 recorder.finish();
             }
@@ -29264,6 +29326,201 @@ impl CaperApp {
                     return;
                 };
                 let prepared = std::sync::Arc::new(*prepared);
+                if recording.dictate && !recording.as_voice {
+                    self.draft_keys += 1;
+                    self.dictation = Some(Dictation {
+                        key: self.draft_keys,
+                        recording,
+                        prepared,
+                        error: None,
+                        answer: None,
+                    });
+                    self.send_dictation();
+                } else {
+                    self.keep_voice(recording, prepared);
+                }
+            }
+        }
+    }
+
+    /// Transcribes the dictation (again, for Retry).
+    fn send_dictation(&mut self) {
+        let Some(dictation) = &mut self.dictation else {
+            return;
+        };
+        let uploads::Body::Memory(audio) = &dictation.prepared.body else {
+            dictation.error = Some(voice_note::dictation_error(Some(400)).into());
+            return;
+        };
+        let Some(token) = self.token.clone() else {
+            dictation.error = Some(voice_note::dictation_error(Some(401)).into());
+            return;
+        };
+        dictation.error = None;
+        self.draft_keys += 1;
+        dictation.key = self.draft_keys;
+        self.worker.send(Command::Dictate {
+            token,
+            key: dictation.key,
+            audio: audio.clone(),
+            content_type: dictation.prepared.content_type.clone(),
+        });
+    }
+
+    /// The words came back: they go in at the draft's caret.
+    fn dictated(&mut self, context: &egui::Context) {
+        let Some(result) = self
+            .dictation
+            .as_mut()
+            .and_then(|dictation| dictation.answer.take())
+        else {
+            return;
+        };
+        let Some(dictation) = &self.dictation else {
+            return;
+        };
+        let target = dictation.target();
+        let here = dictation.recording.profile.is_some()
+            || self.selected_channel.as_deref() == Some(dictation.recording.channel.as_str());
+        let failure = match result {
+            Err(status) => Some(voice_note::dictation_error(status).to_owned()),
+            Ok(words) if words.trim().is_empty() => Some("No words heard.".to_owned()),
+            Ok(_) if !here => Some("Open the conversation again to insert them.".to_owned()),
+            Ok(words) => (!self.insert_dictation(context, &target, &words))
+                .then(|| "Messages can be at most 4,000 characters.".to_owned()),
+        };
+        match failure {
+            Some(error) => {
+                if let Some(dictation) = &mut self.dictation {
+                    dictation.error = Some(error);
+                }
+            }
+            None => self.dictation = None,
+        }
+    }
+
+    /// Inserts dictated words over the composer's selection, spaced from
+    /// the words around them. False when the draft would be too long.
+    fn insert_dictation(
+        &mut self,
+        context: &egui::Context,
+        target: &EmojiTarget,
+        words: &str,
+    ) -> bool {
+        let id = target.editor();
+        let state = egui::TextEdit::load_state(context, id);
+        let text = match target {
+            EmojiTarget::Channel => Some(&mut self.draft),
+            EmojiTarget::Thread(root) => {
+                Some(&mut self.thread_drafts.entry(root.clone()).or_default().0)
+            }
+            EmojiTarget::Profile(person) => self
+                .profile_drafts
+                .get_mut(person)
+                .filter(|draft| draft.editable())
+                .map(|draft| &mut draft.text),
+        };
+        let Some(text) = text else {
+            return false;
+        };
+        let length = text.chars().count();
+        let (start, end) = state
+            .as_ref()
+            .and_then(|state| state.cursor.char_range())
+            .map_or((length, length), |range| {
+                let [a, b] = range.sorted_cursors();
+                (a.index.min(length), b.index.min(length))
+            });
+        let before: String = text.chars().take(start).collect();
+        let after: String = text.chars().skip(end).collect();
+        let spaced = voice_note::dictation_text(&before, &after, words);
+        let token = emoji::Token {
+            start,
+            end,
+            query: String::new(),
+        };
+        let Some((value, caret)) = emoji::insert(text, &token, &spaced) else {
+            return false;
+        };
+        *text = value;
+        if let Some(mut state) = state {
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(caret),
+                )));
+            state.store(context, id);
+        }
+        true
+    }
+
+    /// Transcribing (Cancel) or failed (Retry, Keep as voice note, Discard),
+    /// above the composer the dictation came from.
+    fn dictation_status(&mut self, ui: &mut egui::Ui, target: &EmojiTarget) {
+        let Some(dictation) = self
+            .dictation
+            .as_ref()
+            .filter(|dictation| dictation.target() == *target)
+        else {
+            return;
+        };
+        if !matches!(target, EmojiTarget::Profile(_))
+            && self.selected_channel.as_deref() != Some(dictation.recording.channel.as_str())
+        {
+            return;
+        }
+        let error = dictation.error.clone();
+        let keep = self.voice_note_blocked(&dictation.recording).is_none();
+        let keep_label = if self.voice_send_on_stop {
+            "Send as voice note"
+        } else {
+            "Keep as voice note"
+        };
+        let (mut retry, mut as_voice, mut drop) = (false, false, false);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            match &error {
+                Some(error) => {
+                    ui.label(
+                        RichText::new(format!("Couldn’t insert your words. {error}"))
+                            .size(12.0)
+                            .color(ERROR),
+                    );
+                    retry = ui.small_button("Retry").clicked();
+                    if keep {
+                        as_voice = ui.small_button(keep_label).clicked();
+                    }
+                    drop = ui.small_button("Discard").clicked();
+                }
+                None => {
+                    ui.add(egui::Spinner::new().size(12.0).color(MUTED));
+                    ui.label(RichText::new("Transcribing…").size(12.0).color(MUTED));
+                    drop = ui.small_button("Cancel").clicked();
+                }
+            }
+        });
+        ui.add_space(6.0);
+        if retry {
+            self.send_dictation();
+        } else if as_voice {
+            if let Some(dictation) = self.dictation.take() {
+                self.keep_voice(dictation.recording, dictation.prepared);
+            }
+        } else if drop {
+            // A late answer for a dropped dictation matches no key.
+            self.dictation = None;
+        }
+    }
+
+    /// A stopped voice message: staged in its composer by default, or sent
+    /// on its own with "send as soon as I stop".
+    fn keep_voice(
+        &mut self,
+        recording: VoiceRecording,
+        prepared: std::sync::Arc<uploads::Prepared>,
+    ) {
+        {
+            {
                 // By default a stopped recording waits in the composer.
                 if !self.voice_send_on_stop {
                     match recording.profile {
@@ -29498,6 +29755,7 @@ impl CaperApp {
     /// player's clock. A recording, upload or player belongs to the open
     /// conversation; leaving it discards them.
     fn poll_voice(&mut self, context: &egui::Context) {
+        self.dictated(context);
         let channel = self.selected_channel.clone();
         let card = self
             .mention_card
@@ -29799,6 +30057,8 @@ impl CaperApp {
             (false, self.attach_unavailable_reason())
         } else if self.voice_recording.is_some() {
             (false, "Finish the current voice message first")
+        } else if self.dictation.is_some() {
+            (false, "Finish the current dictation first")
         } else if self.gif_picker.is_some() {
             (false, "Close the GIF picker first")
         } else if staged.clone().any(|file| file.voice().is_some()) {
@@ -29810,16 +30070,39 @@ impl CaperApp {
         }
     }
 
+    /// Why a recording can't become a voice message (the dictation bar's
+    /// "Voice note"): one per message, within the attachment limit.
+    fn voice_note_blocked(&self, recording: &VoiceRecording) -> Option<&'static str> {
+        if let Some((person, _)) = &recording.profile {
+            let draft = self.profile_drafts.get(person)?;
+            return (draft.has_voice() || draft.files.len() >= uploads::MAX_ATTACHMENTS)
+                .then_some("Remove the voice message to record another");
+        }
+        let mut staged = self.draft_files.iter().filter(|file| {
+            file.channel == recording.channel && file.thread_root_id == recording.root
+        });
+        let staged_voice = staged.clone().any(|file| file.voice().is_some());
+        (staged_voice || staged.nth(uploads::MAX_ATTACHMENTS - 1).is_some())
+            .then_some("Remove the voice message to record another")
+    }
+
     /// How many status rows [`Self::voice_send_status`] shows.
     fn voice_status_rows(&self, root: Option<&str>) -> f32 {
-        self.voice_sends
-            .iter()
-            .filter(|send| {
-                Some(&send.channel) == self.selected_channel.as_ref()
-                    && send.root.as_deref() == root
-                    && (send.uploading || send.error.is_some())
-            })
-            .count() as f32
+        let dictation = self.dictation.as_ref().is_some_and(|dictation| {
+            dictation.recording.profile.is_none()
+                && dictation.recording.root.as_deref() == root
+                && self.selected_channel.as_deref() == Some(dictation.recording.channel.as_str())
+        });
+        f32::from(u8::from(dictation))
+            + self
+                .voice_sends
+                .iter()
+                .filter(|send| {
+                    Some(&send.channel) == self.selected_channel.as_ref()
+                        && send.root.as_deref() == root
+                        && (send.uploading || send.error.is_some())
+                })
+                .count() as f32
     }
 
     /// `[trash] ● 0:07 ▁▃▅▇▅ [send]` in place of the composer's input row.
@@ -29830,13 +30113,17 @@ impl CaperApp {
         };
         let started = recording.started.is_some() || recording.recorder.is_none();
         let sending = recording.sending;
+        let recording_as_voice = recording.as_voice;
         let elapsed = recording.elapsed();
         let levels: Vec<f32> = recording.meter.bars.iter().copied().collect();
         let pending = recording.meter.pending();
         let scroll = recording.scroll(Instant::now());
         let send_on_stop = self.voice_send_on_stop;
+        let dictating = recording.dictate;
+        let note_blocked = self.voice_note_blocked(recording);
         let mut discard = false;
         let mut send = false;
+        let mut as_voice = false;
         let progress =
             motion::entrance(ui.ctx(), egui::Id::new("voice-recording-bar"), motion::FAST);
         let width = ui.available_width();
@@ -29855,8 +30142,16 @@ impl CaperApp {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             row.spacing_mut().item_spacing.x = 8.0;
-            discard =
-                drawn_icon_button(&mut row, NavIcon::Trash, "Discard voice message").clicked();
+            discard = drawn_icon_button(
+                &mut row,
+                NavIcon::Trash,
+                if dictating {
+                    "Discard dictation"
+                } else {
+                    "Discard voice message"
+                },
+            )
+            .clicked();
             let (dot, _) = row.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
             // The dot is steady; Stop carries the live pulse.
             let live = started && !sending;
@@ -29875,12 +30170,16 @@ impl CaperApp {
                     )
                 });
             let send_size = 32.0;
-            let meter_width = (row.available_width() - send_size - 8.0).max(0.0);
+            // Dictating: "Voice note" keeps this recording as a voice message.
+            let note_width = if dictating { 96.0 } else { 0.0 };
+            let meter_width = (row.available_width() - send_size - 8.0 - note_width).max(0.0);
             let (meter, _) = row.allocate_exact_size(
                 egui::vec2(meter_width, (height - 16.0).max(8.0)),
                 egui::Sense::hover(),
             );
-            let note = if sending {
+            let note = if sending && dictating && !recording_as_voice {
+                Some("Transcribing…")
+            } else if sending {
                 Some(if send_on_stop {
                     "Sending…"
                 } else {
@@ -29903,9 +30202,42 @@ impl CaperApp {
                 }
                 None => paint_live_levels(row.painter(), meter, &levels, pending, scroll),
             }
-            // Stop stages the recording (or sends it, with the setting on).
-            send =
-                stop_button(&mut row, started && !sending, "Stop recording", send_size).clicked();
+            if dictating {
+                let enabled = started && !sending && note_blocked.is_none();
+                let response = row
+                    .add_enabled(
+                        enabled,
+                        egui::Button::new(bold("Voice note").size(12.0).color(TEXT))
+                            .min_size(egui::vec2(note_width - 8.0, send_size))
+                            .corner_radius(8.0)
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::new(1.0, BORDER)),
+                    )
+                    .on_hover_text(if send_on_stop {
+                        "Stop and send as a voice message"
+                    } else {
+                        "Stop and keep as a voice message"
+                    });
+                let response = match note_blocked {
+                    Some(reason) => response.on_disabled_hover_text(reason),
+                    None => response,
+                };
+                as_voice = response.clicked();
+            }
+            // Done inserts the words; Stop stages the recording (or sends it,
+            // with the setting on).
+            send = stop_button(
+                &mut row,
+                started && !sending,
+                if dictating {
+                    "Done, insert text"
+                } else {
+                    "Stop recording"
+                },
+                send_size,
+                dictating,
+            )
+            .clicked();
         });
         if !self.conversation_covered() {
             if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
@@ -29919,6 +30251,8 @@ impl CaperApp {
         }
         if discard {
             self.discard_voice_recording();
+        } else if as_voice {
+            self.stop_voice_recording(true);
         } else if send {
             self.finish_voice_recording();
         }
@@ -29926,6 +30260,10 @@ impl CaperApp {
 
     /// Voice messages of this composer still uploading or failed, above it.
     fn voice_send_status(&mut self, ui: &mut egui::Ui, root: Option<&str>) {
+        let target = root.map_or(EmojiTarget::Channel, |root| {
+            EmojiTarget::Thread(root.to_owned())
+        });
+        self.dictation_status(ui, &target);
         let channel = self.selected_channel.clone();
         let rows: Vec<_> = self
             .voice_sends
@@ -30237,10 +30575,11 @@ fn fixture_recording(mut bar: VoiceRecording) -> VoiceRecording {
     bar
 }
 
-/// The composer's microphone, beside Emoji. True when it was clicked.
+/// The composer's microphone ("Dictate"), beside Emoji. True when it was
+/// clicked: it dictates, and the bar's "Voice note" keeps a voice message.
 fn mic_button(ui: &mut egui::Ui, enabled: bool, unavailable: &str, size: f32) -> bool {
     ui.add_enabled_ui(enabled, |ui| {
-        drawn_icon_button_sized(ui, NavIcon::Mic, "Record voice message", size)
+        drawn_icon_button_sized(ui, NavIcon::Mic, "Dictate", size)
     })
     .inner
     .on_disabled_hover_text(unavailable)
@@ -30368,7 +30707,14 @@ fn paint_waveform(painter: &egui::Painter, rect: egui::Rect, waveform: Option<&s
 }
 
 /// The square glyph of a Stop button.
-fn stop_button(ui: &mut egui::Ui, enabled: bool, label: &str, size: f32) -> egui::Response {
+/// `done`: dictating, a check ("Done, insert text") instead of the square.
+fn stop_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    label: &str,
+    size: f32,
+    done: bool,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(size, size),
         if enabled {
@@ -30402,15 +30748,25 @@ fn stop_button(ui: &mut egui::Ui, enabled: bool, label: &str, size: f32) -> egui
                 .rect_stroke(rect, 8.0, Stroke::new(2.0, TEXT), egui::StrokeKind::Inside);
         }
     }
-    ui.painter().rect_filled(
-        egui::Rect::from_center_size(rect.center(), egui::vec2(size * 0.34, size * 0.34)),
-        2.0,
-        if enabled {
-            TEXT
-        } else {
-            MUTED.gamma_multiply(0.5)
-        },
-    );
+    let glyph = if enabled {
+        TEXT
+    } else {
+        MUTED.gamma_multiply(0.5)
+    };
+    if done {
+        paint_icon(
+            ui.painter(),
+            egui::Rect::from_center_size(rect.center(), egui::vec2(size * 0.5, size * 0.5)),
+            NavIcon::Check,
+            glyph,
+        );
+    } else {
+        ui.painter().rect_filled(
+            egui::Rect::from_center_size(rect.center(), egui::vec2(size * 0.34, size * 0.34)),
+            2.0,
+            glyph,
+        );
+    }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
     response.on_hover_text(label)
 }
@@ -51503,7 +51859,7 @@ mod tests {
         assert!(app.voice_recording.is_none());
         assert_eq!(app.draft, "TEST FIXTURE draft text waits while recording");
         let output = render(&mut app, &context, vec![]);
-        assert!(node_bounds(&output, "Record voice message").is_some());
+        assert!(node_bounds(&output, "Dictate").is_some());
         assert!(
             texts(&output)
                 .iter()
@@ -51618,6 +51974,52 @@ mod tests {
     }
 
     #[test]
+    fn a_click_dictates_into_the_draft_and_a_failure_can_become_a_voice_message() {
+        let (context, mut app) = fixture("parity-attachments");
+        let files = app.draft_files.len();
+        app.draft = "see you".into();
+        let dictate = |app: &mut CaperApp| {
+            app.start_voice_recording(&context, None);
+            app.dictate_recording();
+            app.voice_recorder_event(voice_note::RecorderEvent::Started);
+            app.finish_voice_recording();
+            let prepared = voice_note::prepare(&[1000; 48_000], None).unwrap();
+            app.voice_recorder_event(voice_note::RecorderEvent::Ready(Box::new(prepared)));
+            assert!(app.voice_sends.is_empty(), "dictation uploads nothing");
+            app.dictation.as_ref().unwrap().key
+        };
+        let key = dictate(&mut app);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Transcribing…"));
+        assert!(!app.mic_state(None).0, "one dictation at a time");
+        app.dictation.as_mut().unwrap().answer = Some(Ok("at five".into()));
+        app.poll_voice(&context);
+        assert!(app.dictation.is_none());
+        assert_eq!(app.draft, "see you at five");
+        assert_eq!(app.draft_files.len(), files, "no voice message was staged");
+        // A failure keeps the audio: Keep as voice note stages it after all.
+        let stale = key;
+        dictate(&mut app);
+        app.dictation.as_mut().unwrap().answer = Some(Err(Some(503)));
+        app.poll_voice(&context);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            texts(&output)
+                .contains(&"Couldn’t insert your words. Dictation isn’t available right now.")
+        );
+        assert_ne!(app.dictation.as_ref().unwrap().key, stale);
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Keep as voice note"),
+        );
+        assert!(app.dictation.is_none());
+        assert_eq!(app.draft_files.len(), files + 1);
+        assert!(app.draft_files.last().unwrap().voice().is_some());
+        assert_eq!(app.draft, "see you at five");
+    }
+
+    #[test]
     fn failed_voice_uploads_retry_or_discard_and_leaving_cancels_them() {
         let (context, mut app) = fixture("parity-attachments");
         app.voice_send_on_stop = true;
@@ -51675,7 +52077,7 @@ mod tests {
             .unwrap()
             .nodes
             .iter()
-            .filter(|(_, node)| node.label() == Some("Record voice message"))
+            .filter(|(_, node)| node.label() == Some("Dictate"))
             .filter_map(|(_, node)| node.bounds())
             .collect();
         assert_eq!(mics.len(), 2, "the channel composer's and the card's");
@@ -51692,9 +52094,14 @@ mod tests {
             .unwrap();
         click(&mut app, &context, card_mic);
         assert!(app.recording_for_profile("fixture-alex"));
+        assert!(
+            app.voice_recording.as_ref().unwrap().dictate,
+            "a click dictates"
+        );
         assert!(!app.recording_in(None), "the channel composer is untouched");
         let output = render(&mut app, &context, vec![]);
-        assert!(node_bounds(&output, "Discard voice message").is_some());
+        assert!(node_bounds(&output, "Discard dictation").is_some());
+        assert!(node_bounds(&output, "Done, insert text").is_some());
         assert!(
             !texts(&output).contains(&typed),
             "the bar replaces the field"

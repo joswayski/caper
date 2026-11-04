@@ -159,6 +159,9 @@ enum ComposerAutocomplete {
     var formatAction: ((String) -> Void)?
     var acceptAction: ((Int) -> Void)?
     var insertAction: ((String) -> Void)?
+    /// Puts dictated words at the caret, spaced from the words around them;
+    /// false when the draft would pass the length limit.
+    var dictateAction: ((String) -> Bool)?
     var restoreFocusAction: (() -> Void)?
     var requestFocusAction: (() -> Bool)?
     func update(_ match: ComposerAutocompleteMatch?) {
@@ -649,6 +652,7 @@ struct NativeMessageTextEditor: UIViewRepresentable {
             parent.controller.update(match)
             parent.controller.acceptAction = { [weak self] index in self?.accept(index) }
             parent.controller.insertAction = { [weak self, selection = textView.selectedRange] emoji in self?.insert(emoji, selection: selection) }
+            parent.controller.dictateAction = { [weak self] in self?.dictate($0) ?? false }
             parent.controller.restoreFocusAction = { [weak self] in
                 guard let self, self.parent.editable else { return }
                 (self.view as? ComposerTextView)?.touched()
@@ -684,6 +688,16 @@ struct NativeMessageTextEditor: UIViewRepresentable {
             view.text = result.text; view.selectedRange = result.selection; parent.text = result.text
             highlight(view)
             parent.controller.update(nil)
+        }
+        func dictate(_ words: String) -> Bool {
+            guard parent.editable, let view else { return false }
+            let selection = view.selectedRange
+            let text = VoiceMessage.dictationText(in: view.text, selection: selection, words: words)
+            guard !text.isEmpty, let result = EmojiAutocomplete.inserting(text, in: view.text, selection: selection) else { return false }
+            view.text = result.text; view.selectedRange = result.selection; parent.text = result.text
+            highlight(view)
+            parent.controller.update(nil)
+            return true
         }
         func handle(_ key: String) {
             guard parent.controller.match != nil, view?.markedTextRange == nil else { return }
@@ -896,6 +910,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
             let match = dismissed || view.window?.firstResponder !== view ? nil : ComposerAutocomplete.match(text: view.string, selection: view.selectedRange(), markedText: view.hasMarkedText(), mentions: parent.mentions)
             parent.controller.update(match); parent.controller.acceptAction = { [weak self] in self?.accept($0) }
             parent.controller.insertAction = { [weak self, selection = view.selectedRange()] in self?.insert($0, selection: selection) }
+            parent.controller.dictateAction = { [weak self] in self?.dictate($0) ?? false }
             parent.controller.restoreFocusAction = { [weak self] in
                 guard let self, self.parent.editable, let view = self.view else { return }
                 view.window?.makeFirstResponder(view)
@@ -927,6 +942,16 @@ struct NativeMessageTextEditor: NSViewRepresentable {
             view.string = result.text; view.setSelectedRange(result.selection); parent.text = result.text
             highlight(view)
             parent.controller.update(nil)
+        }
+        @MainActor func dictate(_ words: String) -> Bool {
+            guard parent.editable, let view else { return false }
+            let selection = view.selectedRange()
+            let text = VoiceMessage.dictationText(in: view.string, selection: selection, words: words)
+            guard !text.isEmpty, let result = EmojiAutocomplete.inserting(text, in: view.string, selection: selection) else { return false }
+            view.string = result.text; view.setSelectedRange(result.selection); parent.text = result.text
+            highlight(view)
+            parent.controller.update(nil)
+            return true
         }
         @MainActor func handle(_ event: NSEvent) -> Bool {
             guard let view, !view.hasMarkedText() else { return false }

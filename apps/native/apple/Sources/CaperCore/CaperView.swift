@@ -4121,9 +4121,9 @@ private struct ChatView: View {
                 }
                 #if os(iOS)
                 // The held microphone stays put while the bar covers the field.
-                .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight))
+                .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight, controller: composerAutocomplete))
                 #endif
-                VoiceRecordButton(chat: chat, inThread: false, height: composerMinHeight).padding(.trailing, 2)
+                VoiceRecordButton(chat: chat, inThread: false, height: composerMinHeight, controller: composerAutocomplete).padding(.trailing, 2)
             }
             ComposerEmbedPreview(chat: chat)
         }
@@ -4517,7 +4517,7 @@ private struct ChatView: View {
             #endif
             #if os(macOS)
             // Clicking the microphone replaces this row with the recording bar.
-            .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight,
+            .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight, controller: composerAutocomplete,
                                          restoreFocus: { composerAutocomplete.restoreFocus() }))
             #endif
             }
@@ -5123,9 +5123,9 @@ private struct NativeThreadView: View {
                             #endif
                         }
                         #if os(iOS)
-                        .modifier(VoiceComposerCover(chat: chat, inThread: true))
+                        .modifier(VoiceComposerCover(chat: chat, inThread: true, controller: composerAutocomplete))
                         #endif
-                        VoiceRecordButton(chat: chat, inThread: true).padding(.trailing, 2)
+                        VoiceRecordButton(chat: chat, inThread: true, controller: composerAutocomplete).padding(.trailing, 2)
                     }
                         // Clipped too: the fill's square corners showed outside the rounded border.
                         .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -5139,7 +5139,8 @@ private struct NativeThreadView: View {
                 .modifier(VoiceLockLayer())
                 #endif
                 #if os(macOS)
-                .modifier(VoiceComposerCover(chat: chat, inThread: true, restoreFocus: { composerAutocomplete.restoreFocus() }))
+                .modifier(VoiceComposerCover(chat: chat, inThread: true, controller: composerAutocomplete,
+                                             restoreFocus: { composerAutocomplete.restoreFocus() }))
                 #endif
                 if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,
                    !chat.sending, chat.error != nil || chat.sendRejected {
@@ -6707,7 +6708,9 @@ struct MentionCardView: View {
                                guard !draft.discarded else { AttachmentStaging.remove(recording.fileURL); return }
                                if await model.sendProfileVoice(recording, to: person, activity: activity), activity == nil { close() }
                            },
-                           stage: { recording in _ = draft.stageVoice(recording) })
+                           stage: { recording in _ = draft.stageVoice(recording) },
+                           transcribe: { try await model.chat.dictate($0) },
+                           insert: { [autocomplete] in autocomplete.dictateAction?($0) ?? false })
     }
 
     /// A staged file's square, or a staged voice note's chip.

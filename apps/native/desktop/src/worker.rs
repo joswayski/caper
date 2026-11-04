@@ -302,6 +302,13 @@ pub enum Command {
     Klipy {
         token: String,
     },
+    /// `POST /api/dictation`: the words in a recording, for the draft.
+    Dictate {
+        token: String,
+        key: u64,
+        audio: std::sync::Arc<[u8]>,
+        content_type: String,
+    },
     RefreshAttachmentUrls {
         token: String,
         ids: Vec<String>,
@@ -898,6 +905,11 @@ pub enum Event {
     Klipy {
         token: String,
         config: Option<crate::klipy::Config>,
+    },
+    /// The words, or the HTTP status of a failure (`None`: no answer).
+    Dictated {
+        key: u64,
+        result: Result<String, Option<u16>>,
     },
     AttachmentUrls {
         token: String,
@@ -1741,6 +1753,17 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         Command::AssetUsage { token } => Event::AssetUsage {
             settings: api.asset_usage(&token).ok(),
             token,
+        },
+        Command::Dictate {
+            token,
+            key,
+            audio,
+            content_type,
+        } => Event::Dictated {
+            key,
+            result: api
+                .dictate(&token, audio.to_vec(), &content_type)
+                .map_err(|error| error.status.map(|status| status.as_u16())),
         },
         Command::Klipy { token } => Event::Klipy {
             config: api

@@ -2426,6 +2426,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
      * the local recording while it uploads (uncompressed, with `voice`, its duration and
      * [waveform]) and sends; a failed upload offers Retry like any pending file.
      */
+    /** The words in a dictation [recording]; throws an [IOException] whose message is the reason to show. */
+    internal suspend fun dictate(recording: File): String {
+        val token = accountToken ?: throw IOException(VoiceMessages.dictationError(401))
+        return try { api.dictate(token, recording, VoiceMessages.UPLOAD_TYPE) }
+        catch (error: ApiException) { throw IOException(VoiceMessages.dictationError(error.status)) }
+        catch (error: kotlinx.coroutines.CancellationException) { throw error }
+        catch (_: Exception) { throw IOException(VoiceMessages.dictationError(null)) }
+    }
+
     fun sendVoice(recording: File, durationMs: Long, waveform: String?, threadRootId: String? = null, broadcast: Boolean = false) {
         val state = mutable.value
         val channel = state.selectedChannel?.takeIf { it.joined }

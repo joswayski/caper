@@ -437,4 +437,25 @@ final class VoiceMessageTests: XCTestCase {
         transcribed.spoiler = true
         XCTAssertEqual(VoiceMessage.excerptFallback(hasAttachments: true, hasVoice: true, attachments: [transcribed]), "Voice message")
     }
+
+    func testDictatedWordsGoInAtTheCaretSpacedFromTheirNeighbours() {
+        XCTAssertEqual(VoiceMessage.dictationText(before: "", after: "", words: "  hello there "), "hello there")
+        XCTAssertEqual(VoiceMessage.dictationText(before: "see you", after: "", words: "at five"), " at five")
+        XCTAssertEqual(VoiceMessage.dictationText(before: "see you ", after: "", words: "at five"), "at five")
+        XCTAssertEqual(VoiceMessage.dictationText(before: "", after: "tomorrow", words: "see you"), "see you ")
+        XCTAssertEqual(VoiceMessage.dictationText(before: "ok", after: ", thanks", words: "sounds good"), " sounds good")
+        XCTAssertEqual(VoiceMessage.dictationText(before: "a", after: "b", words: " \n"), "")
+        // UTF-16 selections: the emoji counts two, and a selection is replaced.
+        XCTAssertEqual(VoiceMessage.dictationText(in: "👋hi", selection: NSRange(location: 2, length: 0), words: "oh"), " oh ")
+        XCTAssertEqual(VoiceMessage.dictationText(in: "say hi", selection: NSRange(location: 4, length: 2), words: "hello"), "hello")
+        XCTAssertEqual(VoiceMessage.dictationText(in: "x", selection: NSRange(location: 9, length: 3), words: "y"), " y")
+    }
+
+    func testDictationFailuresExplainThemselves() {
+        XCTAssertTrue(VoiceMessage.dictationError(status: 429).contains("this hour"))
+        XCTAssertTrue(VoiceMessage.dictationError(status: 413).contains("10 minutes"))
+        XCTAssertTrue(VoiceMessage.dictationError(status: 503).contains("isn’t available"))
+        XCTAssertEqual(VoiceMessage.dictationError(status: 502), "Transcription failed. Try again.")
+        XCTAssertTrue(VoiceMessage.dictationError(status: nil).contains("connection"))
+    }
 }

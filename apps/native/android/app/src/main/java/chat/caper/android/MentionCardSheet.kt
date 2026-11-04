@@ -196,6 +196,7 @@ import kotlinx.coroutines.launch
                                 recording.file, recording.durationMs, recording.waveform)
                             else recording.file.delete()
                         },
+                        dictate = viewModel::dictate,
                         retryVoice = { viewModel.retryProfileVoice(person, card.id, card.username, onMessageSent ?: onDismiss) },
                         discardVoice = { viewModel.discardProfileVoice(person) },
                     )
@@ -275,6 +276,8 @@ import kotlinx.coroutines.launch
     recordVoice: ((VoiceRecording) -> Unit)? = null,
     /** Stages a recording among the card's files (the default), sent with the text by Send. */
     stageVoice: ((VoiceRecording) -> Unit)? = null,
+    /** Speech to text: a tap on the mic dictates into the field; null records voice messages only. */
+    dictate: (suspend (java.io.File) -> String)? = null,
     retryVoice: () -> Unit = {},
     discardVoice: () -> Unit = {},
     keyboardAttachment: ((android.net.Uri) -> kotlinx.coroutines.Job?)? = null,
@@ -289,7 +292,10 @@ import kotlinx.coroutines.launch
     val recorder = rememberVoiceRecorder(voiceKey, rememberVoiceStop(
         stage = { stageVoice?.invoke(it) ?: it.file.delete() },
         send = { recordVoice?.invoke(it) ?: it.file.delete() },
-    ))
+    ), transcribe = dictate, insert = { words ->
+        if (!(writable && draft.editable)) false
+        else dictateAtSelection(field, words)?.let { field = it; text(it.text); true } ?: false
+    })
     // One staged recording per message, and one unsent voice message waits at a time.
     val voiceBlocked = if (draft.voice != null) "Retry or discard the voice message that didn’t send first."
         else voiceRecordBlocked(pendingMessage = false, stagedVoice = draft.files.any { it.voice })

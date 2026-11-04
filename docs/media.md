@@ -1562,9 +1562,34 @@ by side where space permits.
 
 ## Voice messages and AI
 
-Voice messages are recorded from the composer's microphone button and play inline
-with the sender's waveform. Transcripts appear under them Slack-style (three
-lines, then "View transcript").
+The composer's microphone does two things. A tap or click **dictates**: the
+speech is transcribed by the AI layer and the words are inserted at the caret, to
+edit and send as text. Holding it on a touch screen records a **voice message**,
+which plays inline with the sender's waveform. Transcripts appear under voice
+messages Slack-style (three lines, then "View transcript").
+
+### Dictation
+
+`POST /api/dictation` (signed in) takes the raw recording as the body, in any
+container ffmpeg reads, up to 8 MiB and 10 minutes (its own body limit; the rest
+of the API keeps 256 KiB). It converts to 16 kHz mono FLAC, runs
+`AI_TRANSCRIBE_MODELS` in order and answers `{"text": …}`. Nothing is kept: not
+the audio, and not the text, which only lives in the draft. `ai_calls` records
+each attempt with task `dictate`, no job, and the transcript replaced by its
+length. Each account may dictate 120 times an hour (on `space_invite_limits`,
+429 past it); without a provider it answers 503.
+
+Every client shows the same bar while dictating: discard, timer, live levels,
+**Voice note** and a pulsing terracotta **Done** check (Enter is Done, Escape
+discards; on iPhone/iPad and Android the microphone itself becomes Done). Done
+shows "Transcribing…" with Cancel above the composer, then inserts the words
+over the selection, adding a space where they touch a word. "Voice note" keeps
+the recording as a voice message instead, so people who only tap still find
+voice messages. A failed transcription keeps the audio: "Couldn't insert your
+words." with Retry, "Keep as voice note" (or "Send as voice note" with the
+setting on) and Discard. A staged voice message only disables "Voice note" and
+holds; dictation still works. The fixture (`scripts/native-parity-fixture.mjs`)
+answers dictation with "TEST FIXTURE dictated words".
 
 ### Flow
 
@@ -1620,14 +1645,14 @@ changing them needs only an API restart.
 
 ### Recording and sending
 
-Tapping or clicking the microphone records hands-free: a bar with discard, a
-recording dot and timer, live levels and a terracotta Stop that pulses once a
-second while the microphone is live (Enter stops, Escape discards; on iPhone/iPad
-the microphone itself becomes Stop). Recording starts on touch down, but a touch
-counts as a tap until held for 300 ms. Held longer, a hint ("Release to add ·
+A voice message comes from holding the microphone on a touch screen, or from the
+dictation bar's "Voice note". Recording starts on touch down, but a touch counts
+as a tap (dictation) until held for 300 ms. Held longer it becomes a voice
+message with a haptic tick (unless one is already staged), and a hint ("Release to add ·
 Slide up to lock", or "Release to send" with the setting on) appears with a lock
 pill above the microphone; releasing stops, and sliding up 72 pt/dp/px locks the
-recording hands-free. There is no slide-to-cancel: a released hold is staged, and
+recording hands-free with a terracotta Stop that pulses once a second. There is
+no slide-to-cancel: a released hold is staged, and
 a locked one has Discard. When a hands-free recording continues after the finger
 lifts, touch layouts close the keyboard. Recordings under a second are dropped and
 10:00 stops automatically.
@@ -1679,14 +1704,15 @@ when processing can't start, logging one line without audio.
 
 | Platform | Record | Play + transcript |
 | --- | --- | --- |
-| Web desktop and mobile layout | MediaRecorder of the call's processed microphone (browser processing during a call or as fallback); click/tap, plus hold on touch | Player, seek, one at a time, 3-line transcript |
-| Android | Processed AudioRecord to AAC/M4A (MediaRecorder fallback); tap or hold | Media3 player, transcript |
-| iOS / macOS | Processed AVAudioEngine to AAC/M4A (AVAudioRecorder fallback); tap/hold (iOS), click (macOS) | AVPlayer, transcript |
-| Desktop (Windows, Linux) | Call-processed audio to bundled FFmpeg AAC/M4A (WAV fallback); click | Bundled FFmpeg audio-only player |
+| Web desktop and mobile layout | MediaRecorder of the call's processed microphone (browser processing during a call or as fallback); click/tap dictates, hold on touch or "Voice note" records | Player, seek, one at a time, 3-line transcript |
+| Android | Processed AudioRecord to AAC/M4A (MediaRecorder fallback); tap dictates, hold records | Media3 player, transcript |
+| iOS / macOS | Processed AVAudioEngine to AAC/M4A (AVAudioRecorder fallback); tap dictates and hold records (iOS), click dictates (macOS) | AVPlayer, transcript |
+| Desktop (Windows, Linux) | Call-processed audio to bundled FFmpeg AAC/M4A (WAV fallback); click dictates | Bundled FFmpeg audio-only player |
 
-The ignored Postgres test `voice_messages_store_aac_and_deliver_transcripts`
-exercises the full server path against a fake provider; watch the first
-production voice messages in `ai_calls`.
+The ignored Postgres tests `voice_messages_store_aac_and_deliver_transcripts`
+and `dictation_returns_text_and_keeps_none_of_it` exercise the full server paths
+against a fake provider; watch the first production voice messages and
+dictations in `ai_calls`.
 
 ## GIFs and stickers (KLIPY)
 

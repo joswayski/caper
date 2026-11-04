@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { ChevronUp, LockKeyhole, Mic, Square, Trash2 } from "lucide-react";
+import { AudioLines, Check, ChevronUp, LockKeyhole, Mic, Square, Trash2 } from "lucide-react";
+import type { ComposerInput } from "./MentionTextarea.tsx";
 import {
   HOLD_TAP_MS,
   LIVE_BAR_MS,
@@ -7,8 +8,10 @@ import {
   liveBarLevel,
   liveBarShape,
   loudness,
+  dictationInsert,
   startVoiceRecording,
   stopVoicePlayback,
+  transcribeVoice,
   formatVoiceDuration,
   VoiceRecordingError,
   type VoiceRecorder,
@@ -54,20 +57,27 @@ const haptic = () => {
 };
 
 type Phase = "idle" | "starting" | "recording";
+/** What stopping does: insert the words into the draft, or keep the voice message. */
+type Intent = "dictate" | "voice";
+/** A dictation being transcribed, or one that failed and still holds its audio. */
+type Dictation = { recording: VoiceRecording; error?: string };
 /** Hands-free (tap or click, then Stop); a touch still down but not yet a
  * hold, shown like hands-free so a tap never flashes the hold hints; or
  * press-and-hold (release stops, slide up locks). */
 type Mode = "free" | "press" | "hold";
 
 /**
- * The composer's microphone. A tap or click records hands-free: the input row
- * becomes the recording bar (discard, timer and live level) and the microphone
- * itself turns into a pulsing Stop (Enter stops and Escape discards). Touch
- * layouts can also press and hold: release stops, and sliding up locks the
- * recording hands-free. Once the finger lifts from a hands-free recording the
- * keyboard closes, so nothing types into the hidden field. Stopping stages the
- * recording in the composer, or sends it when the person chose "Send voice
- * messages as soon as I stop recording".
+ * The composer's microphone. A tap or click dictates: the input row becomes the
+ * recording bar (discard, timer, live level, "Voice note" and a pulsing
+ * Done), and Done (or Enter) transcribes the speech and inserts the words at
+ * the caret. "Voice note" keeps the recording as a voice message instead;
+ * Escape discards. Touch layouts can also press and hold for a voice message,
+ * as in WhatsApp and Telegram: release stops, and sliding up locks the
+ * recording hands-free (then Stop ends it). Once the finger lifts from a
+ * hands-free recording the keyboard closes, so nothing types into the hidden
+ * field. A voice message is staged in the composer, or sent when the person
+ * chose "Send voice messages as soon as I stop recording". A failed
+ * transcription keeps the audio: retry, or keep it as a voice message.
  */
 export function useVoiceRecorder({
   voice,
@@ -76,10 +86,13 @@ export function useVoiceRecorder({
 }: {
   voice: VoiceComposer | undefined;
   disabled: boolean;
-  returnFocus?: RefObject<HTMLElement | null>;
+  /** The draft: focus returns here and dictated words are inserted at its caret. */
+  returnFocus?: RefObject<ComposerInput | null>;
 }): { button: ReactNode; bar: ReactNode; notice: ReactNode; active: boolean } {
   const [phase, setPhase] = useState<Phase>("idle");
   const [mode, setMode] = useState<Mode>("free");
+  const [intent, setIntent] = useState<Intent>("dictate");
+  const [dictation, setDictation] = useState<Dictation>();
   const [elapsed, setElapsed] = useState(0);
   /** How far a hold has slid up (negative px); the lock follows it. */
   const [lift, setLift] = useState(0);
@@ -92,6 +105,8 @@ export function useVoiceRecorder({
     y: number;
     downAt: number;
     released: boolean;
+    /** Down for longer than a tap: a voice message. */
+    held: boolean;
     locked: boolean;
     timer: ReturnType<typeof setTimeout>;
   }>(undefined);
@@ -100,6 +115,9 @@ export function useVoiceRecorder({
   const bars = useRef(new LiveBars());
   /** The press that ends in this click was handled by the pointer, so the click is not a toggle. */
   const pressed = useRef(false);
+  const transcribing = useRef<AbortController>(undefined);
+  const intentRef = useRef(intent);
+  intentRef.current = intent;
   const onRecorded = useRef(voice?.onRecorded);
   onRecorded.current = voice?.onRecorded;
 
@@ -129,29 +147,50 @@ export function useVoiceRecorder({
     [reset],
   );
 
+  const insert = useCallback(async (recording: VoiceRecording) => {
+    transcribing.current?.abort();
+    const abort = new AbortController();
+    transcribing.current = abort;
+    setDictation({ recording });
+    try {
+      const text = await transcribeVoice(recording, abort.signal);
+      if (abort.signal.aborted) return;
+      const input = returnFocus?.current;
+      if (!text) setDictation({ recording, error: "No words heard." });
+      else if (!input || !dictationInsert(input, text))
+        setDictation({ recording, error: "Messages must be 4,000 characters or fewer." });
+      else setDictation(undefined);
+    } catch (cause) {
+      if (abort.signal.aborted) return;
+      setDictation({ recording, error: cause instanceof Error ? cause.message : "Transcription failed. Try again." });
+    }
+  }, []);
+
   const finish = useCallback(
-    async (focus: boolean) => {
+    async (focus: boolean, as: Intent) => {
       const current = recorder.current;
       if (!current) return;
       reset(focus);
       try {
         const recording = await current.stop();
         if (!recording) setHint("Too short to keep. Record for at least a second.");
+        else if (as === "dictate") void insert(recording);
         else onRecorded.current?.(recording);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Recording failed. Try again.");
       }
     },
-    [reset],
+    [reset, insert],
   );
 
   const start = async (next: Mode) => {
-    if (phase !== "idle" || disabled || !voice || voice.blockedReason) return;
+    if (phase !== "idle" || disabled || !voice || dictation) return;
     stopVoicePlayback();
     setError(undefined);
     setHint(undefined);
     const id = ++session.current;
     setMode(next);
+    setIntent("dictate");
     setPhase("starting");
     bars.current = new LiveBars();
     setElapsed(0);
@@ -166,7 +205,7 @@ export function useVoiceRecorder({
           setElapsed((shown) => (Math.floor(shown / 1000) === Math.floor(next / 1000) ? shown : next));
         },
         onLimit: () => {
-          if (session.current === id) void finish(false);
+          if (session.current === id) void finish(false, intentRef.current);
         },
       });
       // Discarded or unmounted while the microphone was starting (for example
@@ -250,29 +289,33 @@ export function useVoiceRecorder({
     if (phase === "idle" || mode !== "free") return;
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") discard();
-      else if (event.key === "Enter" && !event.isComposing) void finish(true);
+      else if (event.key === "Enter" && !event.isComposing) void finish(true, intent);
       else return;
       event.preventDefault();
       event.stopPropagation();
     };
     window.addEventListener("keydown", keydown, true);
     return () => window.removeEventListener("keydown", keydown, true);
-  }, [phase, mode, discard, finish]);
+  }, [phase, mode, intent, discard, finish]);
 
   // Leaving the conversation never leaves the microphone on.
   useEffect(
     () => () => {
       session.current++;
       recorder.current?.cancel();
+      transcribing.current?.abort();
     },
     [],
   );
+
   useEffect(() => {
     if (disabled && phase !== "idle") discard(false);
   }, [disabled]);
 
   const active = phase !== "idle";
-  const blocked = disabled || !!voice?.sending || !!voice?.blockedReason;
+  // A staged voice message only blocks recording another: dictation still works.
+  const blocked = disabled || !!voice?.sending || !!dictation;
+  const voiceBlocked = voice?.blockedReason;
   const releaseLabel = voice?.sendOnStop ? "Release to send" : "Release to add";
   // The finger is off the screen and the recording carries on: close the
   // keyboard so typing can't reach the field hidden under the bar.
@@ -281,8 +324,9 @@ export function useVoiceRecorder({
     <button
       type="button"
       className="chat-composer-tool chat-voice-mic"
-      aria-label="Record voice message"
-      title={voice.blockedReason ?? "Record voice message"}
+      aria-label="Dictate"
+      aria-description={voiceBlocked ? undefined : "Hold to record a voice message"}
+      title="Dictate"
       data-recording={active || undefined}
       disabled={blocked}
       onPointerDown={(event) => {
@@ -298,10 +342,17 @@ export function useVoiceRecorder({
           y: event.clientY,
           downAt: performance.now(),
           released: false,
+          held: false,
           locked: false,
-          // Still down after a tap's length: show what releasing and sliding do.
+          // Still down after a tap's length: a voice message. Show what
+          // releasing and sliding do. Without room for one it stays dictation.
           timer: setTimeout(() => {
-            if (hold.current?.id === id && !hold.current.released) setMode("hold");
+            const current = hold.current;
+            if (current?.id !== id || current.released || voiceBlocked) return;
+            current.held = true;
+            haptic();
+            setMode("hold");
+            setIntent("voice");
           }, HOLD_TAP_MS),
         };
         setLift(0);
@@ -309,7 +360,7 @@ export function useVoiceRecorder({
       }}
       onPointerMove={(event) => {
         const current = hold.current;
-        if (!current || current.id !== event.pointerId || current.released) return;
+        if (!current || current.id !== event.pointerId || current.released || !current.held) return;
         const dy = Math.min(0, event.clientY - current.y);
         setLift(dy);
         if (dy < -LOCK_PX) {
@@ -331,12 +382,12 @@ export function useVoiceRecorder({
         current.released = true;
         clearTimeout(current.timer);
         setLift(0);
-        // A tap (or a release before the microphone started) keeps recording
-        // hands-free until Stop; releasing a real hold stops.
-        if (performance.now() - current.downAt < HOLD_TAP_MS || !recorder.current) {
+        // A tap (or a release before the microphone started) dictates
+        // hands-free until Done; releasing a real hold stops the voice message.
+        if (!current.held || !recorder.current) {
           setMode("free");
           dismissKeyboard();
-        } else void finish(false);
+        } else void finish(false, "voice");
       }}
       onPointerCancel={() => {
         // The browser took the touch: keep recording hands-free rather than lose it.
@@ -371,13 +422,15 @@ export function useVoiceRecorder({
   const time = formatVoiceDuration(elapsed, "floor");
   // For diagnostics: the call's processing status, or why the browser's is used.
   const processing = recorder.current?.processing;
+  const dictating = intent === "dictate";
   const bar = !active ? null : (
     <div
       className="chat-voice-recorder"
       data-mode={mode}
+      data-intent={intent}
       data-processing={processing}
       role="group"
-      aria-label="Recording voice message"
+      aria-label={dictating ? "Dictating" : "Recording voice message"}
     >
       {mode === "hold" && (
         <span className="chat-voice-release" aria-hidden="true">
@@ -387,7 +440,7 @@ export function useVoiceRecorder({
       <button
         type="button"
         className="chat-voice-discard"
-        aria-label="Discard voice message"
+        aria-label={dictating ? "Discard dictation" : "Discard voice message"}
         title="Discard (Esc)"
         onClick={() => discard()}
       >
@@ -398,16 +451,35 @@ export function useVoiceRecorder({
         {phase === "starting" ? "Starting…" : time}
       </span>
       <canvas ref={meter} className="chat-voice-levels" aria-hidden="true" />
+      {dictating && (
+        <button
+          type="button"
+          className="chat-voice-as-note"
+          title={
+            voiceBlocked ??
+            (voice?.sendOnStop ? "Stop and send as a voice message" : "Stop and keep as a voice message")
+          }
+          disabled={phase !== "recording" || !!voiceBlocked}
+          onClick={() => void finish(!touchLayout(), "voice")}
+        >
+          <AudioLines size={14} aria-hidden="true" />
+          Voice note
+        </button>
+      )}
       <button
         ref={stop}
         type="button"
         className="chat-voice-stop"
-        aria-label="Stop recording"
-        title={voice?.sendOnStop ? "Stop and send (Enter)" : "Stop (Enter)"}
+        aria-label={dictating ? "Done, insert text" : "Stop recording"}
+        title={dictating ? "Insert text (Enter)" : voice?.sendOnStop ? "Stop and send (Enter)" : "Stop (Enter)"}
         disabled={phase !== "recording"}
-        onClick={() => void finish(!touchLayout())}
+        onClick={() => void finish(!touchLayout(), intent)}
       >
-        <Square size={12} fill="currentColor" aria-hidden="true" />
+        {dictating ? (
+          <Check size={16} strokeWidth={2.5} aria-hidden="true" />
+        ) : (
+          <Square size={12} fill="currentColor" aria-hidden="true" />
+        )}
       </button>
     </div>
   );
@@ -438,6 +510,43 @@ export function useVoiceRecorder({
         <p className="chat-voice-status" role="status">
           <span className="chat-spinner" aria-hidden="true" />
           Sending voice message…
+        </p>
+      )}
+      {dictation && !dictation.error && (
+        <p className="chat-voice-status" role="status">
+          <span className="chat-spinner" aria-hidden="true" />
+          Transcribing…
+          <button
+            type="button"
+            onClick={() => {
+              transcribing.current?.abort();
+              setDictation(undefined);
+            }}
+          >
+            Cancel
+          </button>
+        </p>
+      )}
+      {dictation?.error && (
+        <p className="chat-inline-error" role="alert">
+          Couldn't insert your words. {dictation.error}
+          <button type="button" onClick={() => void insert(dictation.recording)}>
+            Retry
+          </button>
+          {!voiceBlocked && (
+            <button
+              type="button"
+              onClick={() => {
+                setDictation(undefined);
+                onRecorded.current?.(dictation.recording);
+              }}
+            >
+              {voice?.sendOnStop ? "Send as voice note" : "Keep as voice note"}
+            </button>
+          )}
+          <button type="button" onClick={() => setDictation(undefined)}>
+            Discard
+          </button>
         </p>
       )}
       {hint && !error && (

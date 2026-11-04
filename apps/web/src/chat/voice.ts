@@ -1,6 +1,7 @@
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context.ts";
 import { callAudio, type CallAudio } from "../media/call-audio.ts";
 import { captureMicrophone, type Microphone, type NoiseSuppression } from "../media/microphone.ts";
+import type { ComposerInput } from "./MentionTextarea.tsx";
 import type { ChatAttachment } from "./types.ts";
 
 /** Voice messages: recording, the uploaded waveform, playback and transcripts.
@@ -11,8 +12,8 @@ import type { ChatAttachment } from "./types.ts";
 export const MAX_VOICE_MS = 600_000;
 /** Shorter recordings are treated as a tap and never uploaded. */
 export const MIN_VOICE_MS = 1_000;
-/** On touch layouts a press held at least this long is press-and-hold (release
- * stops); a shorter tap keeps recording hands-free until Stop. */
+/** On touch layouts a press held at least this long records a voice message
+ * (release stops); a shorter tap dictates hands-free until Done. */
 export const HOLD_TAP_MS = 300;
 export const WAVEFORM_SLICES = 64;
 /** How often the input level is sampled while recording (50 Hz). */
@@ -296,6 +297,48 @@ export function releaseVoicePlayback(element: HTMLMediaElement) {
 export function stopVoicePlayback() {
   playing?.pause();
   playing = undefined;
+}
+
+/** The words to insert between `before` and `after`, spaced from neighbouring words. */
+export function dictationText(before: string, after: string, words: string): string {
+  let text = words.trim();
+  if (!text) return "";
+  if (before && !/\s$/.test(before)) text = ` ${text}`;
+  if (after && !/^[\s.,!?;:)]/.test(after)) text = `${text} `;
+  return text;
+}
+
+/** Inserts dictated words over the draft's selection; false when the draft would be too long. */
+export function dictationInsert(
+  input: Pick<ComposerInput, "value" | "selectionStart" | "selectionEnd" | "replaceText">,
+  words: string,
+): boolean {
+  const { value, selectionStart: start, selectionEnd: end } = input;
+  return input.replaceText(start, end, dictationText(value.slice(0, start), value.slice(end), words));
+}
+
+/** Speech to text for the draft (`POST /api/dictation`); the API keeps neither the audio nor the text. */
+export async function transcribeVoice(recording: VoiceRecording, signal?: AbortSignal): Promise<string> {
+  const response = await fetch("/api/dictation", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": recording.contentType || "application/octet-stream" },
+    body: recording.blob,
+    signal,
+  }).catch((cause: unknown) => {
+    if (signal?.aborted) throw cause;
+    throw new Error("Check your connection and try again.");
+  });
+  const body = (await response.json().catch(() => undefined)) as { text?: unknown } | undefined;
+  if (!response.ok) throw new Error(dictationError(response.status));
+  return typeof body?.text === "string" ? body.text.trim() : "";
+}
+
+export function dictationError(status: number): string {
+  if (status === 429) return "You've dictated a lot this hour. Try again later.";
+  if (status === 413) return "Dictation is limited to 10 minutes.";
+  if (status === 503) return "Dictation isn't available right now.";
+  return "Transcription failed. Try again.";
 }
 
 export class VoiceRecordingError extends Error {

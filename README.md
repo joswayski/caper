@@ -37,7 +37,7 @@ All builds are on the [latest release](https://github.com/joswayski/caper/releas
 - Threads, pins, forwarding, editing and deleting messages
 - File and media attachments, with an editor to crop, draw and add text
 - Link previews for X, TikTok, YouTube, Instagram and most other sites, with video playing in Caper
-- Voice messages with automatic transcripts
+- Voice messages with automatic transcripts, and AI dictation into any composer
 - GIFs and stickers from [KLIPY](https://klipy.com) in every composer
 - Profile pictures and space icons
 - `@feedback` in any conversation to reach the Caper team

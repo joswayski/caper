@@ -25,9 +25,10 @@ public enum VoiceMessage {
     public static let minimumDurationMs = 1_000
     /// Recording stops (and sends) at 10:00; the server accepts 1...600000.
     public static let maximumDurationMs = 600_000
-    /// A touch released sooner was a tap: recording carries on hands-free
-    /// until Stop. Held longer, releasing stops. Until a touch has been down
-    /// this long it looks like a tap, so a tap never flashes the hold hints.
+    /// A touch released sooner was a tap: dictation carries on hands-free
+    /// until Done. Held longer it is a voice message and releasing stops.
+    /// Until a touch has been down this long it looks like a tap, so a tap
+    /// never flashes the hold hints.
     public static let tapThreshold: TimeInterval = 0.3
     /// Sliding a held recording this far up (points) locks it hands-free.
     public static let lockDistance: Double = 72
@@ -35,6 +36,14 @@ public enum VoiceMessage {
     public static let stopLabel = "Stop recording"
     public static let discardLabel = "Discard voice message"
     public static let recordLabel = "Record voice message"
+    /// The microphone: a tap or click dictates; on touch, holding records a voice message.
+    public static let dictateLabel = "Dictate"
+    public static let dictateHint = "Hold to record a voice message"
+    public static let doneLabel = "Done, insert text"
+    public static let discardDictationLabel = "Discard dictation"
+    /// Dictating: stop and keep the recording as a voice message instead.
+    public static let asVoiceNoteLabel = "Voice note"
+    public static let transcribing = "Transcribing…"
     /// The microphone's tooltip/label while a voice message is already staged.
     public static let oneVoicePerMessage = "Remove the voice message to record another"
     public static let permissionDenied = "Microphone access is needed to record voice messages"
@@ -136,6 +145,38 @@ public enum VoiceMessage {
         if locked || pressDuration < tapThreshold { return .handsFree }
         return keeps(durationMs: recordedMs) ? .stop : .discard
     }
+
+    /// The words to insert between `before` and `after` (the draft either
+    /// side of the caret), spaced from the words around them.
+    public static func dictationText(before: String, after: String, words: String) -> String {
+        var text = words.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return "" }
+        if let last = before.last, !last.isWhitespace { text = " " + text }
+        if let first = after.first, !first.isWhitespace, !".,!?;:)".contains(first) { text += " " }
+        return text
+    }
+
+    /// `dictationText` around a UTF-16 selection of `draft`.
+    public static func dictationText(in draft: String, selection: NSRange, words: String) -> String {
+        let text = draft as NSString
+        let start = min(max(0, selection.location), text.length)
+        let end = min(text.length, start + max(0, selection.length))
+        return dictationText(before: text.substring(to: start), after: text.substring(from: end), words: words)
+    }
+
+    /// Why a dictation (`POST /api/dictation`) failed, by status (nil: no answer).
+    public static func dictationError(status: Int?) -> String {
+        switch status {
+        case nil: return "Check your connection and try again."
+        case 429: return "You’ve dictated a lot this hour. Try again later."
+        case 413: return "Dictation is limited to 10 minutes."
+        case 503: return "Dictation isn’t available right now."
+        default: return "Transcription failed. Try again."
+        }
+    }
+
+    /// The line above a failed dictation, whose audio stays for Retry.
+    public static func dictationFailed(_ reason: String) -> String { "Couldn’t insert your words. \(reason)" }
 
     /// What a stopped recording (Stop, a released hold or the 10:00 limit)
     /// becomes: staged in the composer by default, sent alone with the setting on.

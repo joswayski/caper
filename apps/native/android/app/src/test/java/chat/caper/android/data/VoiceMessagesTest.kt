@@ -276,4 +276,21 @@ class VoiceMessagesTest {
         assertEquals("Attachment", VoiceMessages.excerptLabel(emptyList(), hasAttachments = true))
         assertEquals("Message", VoiceMessages.excerptLabel(emptyList()))
     }
+
+    @Test fun `dictated words go in at the caret, spaced from the words around them`() {
+        assertEquals("hello there", VoiceMessages.dictationText("", "", "  hello there "))
+        assertEquals(" at five", VoiceMessages.dictationText("see you", "", "at five"))
+        assertEquals("at five", VoiceMessages.dictationText("see you ", "", "at five"))
+        assertEquals("see you ", VoiceMessages.dictationText("", "tomorrow", "see you"))
+        assertEquals(" sounds good", VoiceMessages.dictationText("ok", ", thanks", "sounds good"))
+        assertEquals("", VoiceMessages.dictationText("a", "b", " \n"))
+    }
+
+    @Test fun `dictation failures explain themselves`() {
+        assertTrue(VoiceMessages.dictationError(429).contains("this hour"))
+        assertTrue(VoiceMessages.dictationError(413).contains("10 minutes"))
+        assertTrue(VoiceMessages.dictationError(503).contains("isn’t available"))
+        assertEquals("Transcription failed. Try again.", VoiceMessages.dictationError(502))
+        assertTrue(VoiceMessages.dictationError(null).contains("connection"))
+    }
 }

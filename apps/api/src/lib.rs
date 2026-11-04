@@ -63,6 +63,7 @@ mod auth;
 mod channel_media;
 mod chat;
 mod db;
+mod dictation;
 mod direct;
 mod email;
 mod embeds;
@@ -751,6 +752,8 @@ pub struct AppState {
     database: Option<PgPool>,
     chat: Option<chat::Chat>,
     assets: Option<assets::Assets>,
+    /// Speech to text; absent without an AI provider.
+    ai: Option<ai::Ai>,
     events: watch::Sender<()>,
     room_events: Arc<std::sync::Mutex<HashMap<Option<String>, watch::Sender<()>>>>,
     room_interest: Arc<Notify>,
@@ -797,6 +800,7 @@ impl AppState {
             database,
             chat: None,
             assets: None,
+            ai: None,
             events,
             room_events: Arc::new(std::sync::Mutex::new(HashMap::new())),
             room_interest: Arc::new(Notify::new()),
@@ -839,6 +843,7 @@ impl AppState {
     pub fn enable_assets(&mut self, environment: &RuntimeEnvironment) -> Result<(), String> {
         self.assets = assets::Assets::from_env(self.database.as_ref(), environment)?;
         let ai = ai::Ai::from_env(environment)?;
+        self.ai.clone_from(&ai);
         if let Some(assets) = self.assets.as_mut() {
             assets.enable_transcripts(ai.is_some());
         }
@@ -1176,6 +1181,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         ))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
+        .merge(dictation::routes(state.clone()))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &axum::http::Request<axum::body::Body>| {

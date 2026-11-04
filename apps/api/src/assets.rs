@@ -52,7 +52,7 @@ mod multipart;
 mod privacy;
 mod voice;
 
-pub(crate) use voice::spawn_transcriber;
+pub(crate) use voice::{record_calls, spawn_transcriber, speech_audio};
 
 type HmacSha256 = Hmac<Sha256>;
 

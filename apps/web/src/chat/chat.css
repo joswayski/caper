@@ -5985,6 +5985,42 @@ a.chat-draft-preview {
     background: var(--terracotta-bright);
   }
 }
+/* Dictating: keep this recording as a voice message instead of inserting text. */
+.chat-voice-recorder .chat-voice-as-note {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  margin-left: auto;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chat-voice-recorder .chat-voice-as-note + .chat-voice-stop {
+  margin-left: 0;
+}
+.chat-voice-recorder .chat-voice-as-note:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+@media (hover: hover) {
+  .chat-voice-recorder .chat-voice-as-note:hover:not(:disabled) {
+    background: var(--surface-hover);
+  }
+}
+@media (pointer: coarse) {
+  .chat-voice-recorder .chat-voice-as-note {
+    height: 40px;
+  }
+}
 .chat-voice-recorder .chat-voice-stop:disabled {
   color: var(--text-muted);
   background: var(--surface-raised);

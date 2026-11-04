@@ -604,15 +604,15 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       let bytes = 0;
       const chunks = [];
       const assetPut = /^\/api\/assets\/([^/]+)\/fixture-(upload|preview)$/.exec(path);
+      // Recordings go up whole, like asset parts; everything else stays small.
+      const audio = assetPut || path === "/api/dictation";
       for await (const chunk of request) {
         bytes += chunk.length;
-        // Voice recordings go up whole; everything else stays small.
-        if (bytes > (assetPut ? 8 * 1024 * 1024 : 256 * 1024))
-          return reject(response, 413, "Fixture request too large.");
+        if (bytes > (audio ? 8 * 1024 * 1024 : 256 * 1024)) return reject(response, 413, "Fixture request too large.");
         chunks.push(chunk);
       }
       const method = request.method;
-      const body = chunks.length && !assetPut ? JSON.parse(Buffer.concat(chunks)) : {};
+      const body = chunks.length && !audio ? JSON.parse(Buffer.concat(chunks)) : {};
       if (path === "/health") return json(response, 200, { fixture: true });
       if (path === "/__fixture/push-devices" && method === "GET")
         return json(response, 200, { devices: state.pushDevices, requests: state.pushRequests });
@@ -976,6 +976,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const link = embedLinks(String(body.url ?? ""))[0];
         await new Promise((resolve) => setTimeout(resolve, 150));
         return json(response, 200, { embed: link ? fixtureEmbed(link) : null });
+      }
+      if (path === "/api/dictation" && method === "POST") {
+        if (!user) return reject(response, 401, "Sign in required.");
+        if (!bytes) return reject(response, 400, "empty recording");
+        // Long enough to see "Transcribing…".
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        return json(response, 200, { text: "TEST FIXTURE dictated words" });
       }
       if (path === "/api/klipy")
         return user
