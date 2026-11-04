@@ -166,6 +166,46 @@ class EmbedsTest {
         assertEquals(emptyList<ChatEmbed>(), mergeMessages(listOf(live), listOf(edited), mutableMapOf()).single().content.embeds)
     }
 
+    @Test fun `a send carries the composer's card, never when removed, through retries and re-uploads`() {
+        val author = ChatAuthor("author", "A", false)
+        val tracker = PendingSendTracker()
+        val first = tracker.begin("channel00001", author, "https://x.com/a", listOf("file"), embeds = listOf(card)) {}
+        assertEquals(listOf(card), first.embeds)
+        assertEquals("a retry keeps it", listOf(card), tracker.begin("channel00001", author, "edited") {}.embeds)
+        assertEquals("a re-upload keeps it", listOf(card), tracker.replaceAttachments(first.id, listOf("fresh"))!!.embeds)
+        tracker.clear()
+        val removed = tracker.begin("channel00001", author, "https://x.com/a", suppressEmbeds = true, embeds = listOf(card)) {}
+        assertEquals(emptyList<ChatEmbed>(), removed.embeds)
+        tracker.clear()
+        assertEquals(emptyList<ChatEmbed>(), tracker.begin("channel00001", author, "https://x.com/a") {}.embeds)
+    }
+
+    @Test fun `a confirmed send keeps its card until the server's event replaces or removes it`() {
+        val author = ChatAuthor("author", "A", false)
+        val tracker = PendingSendTracker()
+        val pending = tracker.begin("channel00001", author, "https://x.com/a", embeds = listOf(card)) {}
+        val sent = message.copy(clientMessageId = pending.id.toString())
+        assertSame("matching leaves the send pending", pending, tracker.matching(sent))
+        val confirmed = withPendingEmbeds(sent, tracker.confirm(sent)!!.embeds)
+        assertEquals(listOf(card), confirmed.content.embeds)
+        assertNull(tracker.matching(sent))
+        // The server's own cards or suppressEmbeds win over the composer's.
+        assertEquals(listOf(other), withPendingEmbeds(sent.copy(content = sent.content.copy(embeds = listOf(other))), listOf(card)).content.embeds)
+        assertEquals(emptyList<ChatEmbed>(), withPendingEmbeds(sent.copy(content = sent.content.copy(suppressEmbeds = true)), listOf(card)).content.embeds)
+        // A gateway copy or refetch without cards yet keeps them.
+        val loaded = mergeMessages(listOf(confirmed), listOf(sent), mutableMapOf())
+        assertEquals(listOf(card), loaded.single().content.embeds)
+        assertEquals("an identical event changes nothing", confirmed, withEmbeds(confirmed, update(1, card, messageId = sent.id)))
+        assertEquals("the server's cards replace it", listOf(other), withEmbeds(confirmed, update(1, other, messageId = sent.id)).content.embeds)
+        val removed = withEmbeds(confirmed, update(1, messageId = sent.id))
+        assertEquals("an empty event removes it", emptyList<ChatEmbed>(), removed.content.embeds)
+        assertEquals("and a later copy without cards keeps none", emptyList<ChatEmbed>(), mergeMessages(listOf(removed), listOf(sent), mutableMapOf()).single().content.embeds)
+        // An event that came before the message was loaded wins over the composer's card.
+        val unseen = linkedMapOf<String, EmbedsUpdate>()
+        cacheUnseenEmbeds(unseen, update(1, messageId = sent.id))
+        assertEquals(emptyList<ChatEmbed>(), mergeMessages(emptyList(), listOf(confirmed), mutableMapOf(), unseenEmbeds = unseen).single().content.embeds)
+    }
+
     @Test fun `the composer previews the first link that will get a card`() {
         assertEquals("https://a.com", previewLink("look https://a.com and https://b.com"))
         assertEquals("written <like this>, a link gets no card", "https://b.com", previewLink("<https://a.com> then https://b.com"))

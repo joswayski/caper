@@ -90,8 +90,9 @@ private val EmbedMediaShape = RoundedCornerShape(6.dp)
 
 /**
  * A message's link preview cards (docs/media.md "Link embeds"), drawn from blocks in order;
- * unknown blocks were skipped when parsed. Cards that arrive while the row is on screen settle
- * in; ones already there when it appears do not.
+ * unknown blocks were skipped when parsed. Cards that arrive while the row is on screen fade in;
+ * ones already there when it appears (history, a row scrolled back into view, a send that
+ * carried its composer card) do not.
  */
 @Composable internal fun MessageEmbeds(embeds: List<ChatEmbed>) {
     // What the row showed when it first appeared, so only cards added since then animate.
@@ -99,7 +100,7 @@ private val EmbedMediaShape = RoundedCornerShape(6.dp)
     if (embeds.isEmpty()) return
     Column(Modifier.padding(top = 6.dp).widthIn(max = 432.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         embeds.forEach { embed ->
-            key(embed.url) { EmbedCard(embed, if (embed.url in shown) Modifier else Modifier.entrance(MOTION_BASE, dy = 4.dp)) }
+            key(embed.url) { EmbedCard(embed, if (embed.url in shown) Modifier else Modifier.entrance(MOTION_FAST)) }
         }
     }
 }

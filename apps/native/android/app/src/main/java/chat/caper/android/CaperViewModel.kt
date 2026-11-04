@@ -2106,6 +2106,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         unchanged: () -> Boolean = { true }, accepted: () -> Unit = {},
         /** The composer's link card was removed: sent with `suppressEmbeds`. */
         suppressEmbeds: Boolean = false,
+        /** The composer's loaded card for [text], shown on the pending row and until the server's cards arrive. */
+        embeds: List<ChatEmbed> = emptyList(),
     ): Boolean {
         if (uploadSend?.isActive == true) return false
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
@@ -2129,11 +2131,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     current.pendingMessage != null || !current.canParticipate) return@launch
                 val ready = current.attachmentDrafts[target].orEmpty()
                 if (ready.map { it.key } != keys || ready.any { it.attachment == null || it.error != null }) return@launch
-                if (sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds = suppressEmbeds)) accepted()
+                if (sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds = suppressEmbeds, embeds = embeds)) accepted()
             }
             return false
         }
-        return sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds = suppressEmbeds)
+        return sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds = suppressEmbeds, embeds = embeds)
     }
 
     /**
@@ -2141,7 +2143,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
      * recording is sent on its own instead of the composer's files, which stay where they are.
      * A [gif] goes alone too.
      */
-    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean, voice: VoiceSend? = null, gif: KlipyGif? = null, suppressEmbeds: Boolean = false): Boolean {
+    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean, voice: VoiceSend? = null, gif: KlipyGif? = null, suppressEmbeds: Boolean = false, embeds: List<ChatEmbed> = emptyList()): Boolean {
         if (mutable.value.pendingMessage?.let { it.error == null || it.rejected } == true) return false
         if (mutable.value.pendingMessage?.let { it.threadRootId != threadRootId } == true) return false
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
@@ -2156,7 +2158,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope.launch {
                 val session = createChatSession(accountRequest)
                 if (request != generation || accountRequest != accountGeneration || mutable.value.selectedChannel?.id != channel.id) return@launch
-                if (session != null && chatAuthor != null) send(text, confirmed, threadRootId, broadcast, suppressEmbeds = suppressEmbeds)
+                if (session != null && chatAuthor != null) send(text, confirmed, threadRootId, broadcast, suppressEmbeds = suppressEmbeds, embeds = embeds)
                 else fail(IllegalStateException("Chat session is unavailable."))
             }
             return true
@@ -2173,7 +2175,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (retry == null && text.isBlank() && files.isEmpty() && gif == null) return false
         val request = generation
-        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], files.filter { it.spoiler }.map { it.id }, gif = gif, suppressEmbeds = suppressEmbeds, confirmed = confirmed)
+        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], files.filter { it.spoiler }.map { it.id }, gif = gif, suppressEmbeds = suppressEmbeds, embeds = embeds, confirmed = confirmed)
         if (retry == null) {
             pendingDrafts = drafts
             // A recording uploads only once it is sending, before the message itself.
@@ -2190,7 +2192,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         mutable.value = mutable.value.copy(replyTargets = mutable.value.replyTargets - (threadRootId ?: "channel"), pendingMessage = PendingMessageUi(
             operation.id.toString(), operation.text, author, Instant.now().toString(), attachments = files,
-            threadRootId = operation.threadRootId, broadcast = operation.broadcast, replyTo = operation.replyTo, gif = operation.gif,
+            threadRootId = operation.threadRootId, broadcast = operation.broadcast, replyTo = operation.replyTo, gif = operation.gif, embeds = operation.embeds,
         ))
         viewModelScope.launch {
             try {
@@ -2965,7 +2967,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (message.threadRootId != null) refreshThreadUnread()
         val messages = authoritativeMessages()
         val isNew = messages.none { it.id == message.id }
-        mutable.value = mutable.value.copy(messages = projectMessages(mergeTimelinePins(mergeMessages(messages, listOf(message), unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds))))
+        // The send this confirms keeps the card its row already showed until the server's own arrive.
+        val shown = pendingSends.matching(message)?.let { withPendingEmbeds(message, it.embeds) } ?: message
+        mutable.value = mutable.value.copy(messages = projectMessages(mergeTimelinePins(mergeMessages(messages, listOf(shown), unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds))))
         if (isNew) {
             // Web chimes for someone else's new message in the open conversation.
             // Never for a blocked author or an incoming request.

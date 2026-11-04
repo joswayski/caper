@@ -1968,7 +1968,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         val sent = draft.text
                         viewModel.setTyping(false)
                         val clear = { updateDraft(TextFieldValue("")) }
-                        if (viewModel.send(sent, unchanged = { draft.text == sent }, accepted = clear, suppressEmbeds = preview.removed(sent))) clear()
+                        // The card shown for this draft rides on the pending row, so it already has its final height.
+                        val card = preview.embed?.takeIf { sent == draft.text }
+                        if (viewModel.send(sent, unchanged = { draft.text == sent }, accepted = clear, suppressEmbeds = preview.removed(sent), embeds = listOfNotNull(card))) clear()
                     }
                 }
                 fun submit() {
@@ -2469,7 +2471,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Column(Modifier.arrival(arrivals, pending.clientMessageId)) {
                     pending.replyTo?.let { ReplyContext(it, state, pending.clientMessageId) }
                     MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped,
-                        avatarAsset = pending.author?.avatarAsset, avatarUrl = pending.author?.avatarUrl, gif = pending.gif)
+                        avatarAsset = pending.author?.avatarAsset, avatarUrl = pending.author?.avatarUrl, gif = pending.gif, embeds = pending.embeds)
                     Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
                 }
             }

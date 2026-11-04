@@ -796,6 +796,8 @@ data class PendingMessageUi(
     val replyTo: MessageReply? = null,
     /** A GIF sent on its own (never with files), shown straight from KLIPY until confirmed. */
     val gif: KlipyGif? = null,
+    /** The composer's card the send carried, drawn like a sent message's until confirmed. */
+    val embeds: List<ChatEmbed> = emptyList(),
 )
 
 /** A regular composer and each of its threads own independent files and upload errors. */

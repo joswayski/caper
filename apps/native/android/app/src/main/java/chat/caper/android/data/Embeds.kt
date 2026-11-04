@@ -35,6 +35,15 @@ internal fun withEmbeds(message: ChatMessage, revision: Int, embeds: List<ChatEm
 internal fun withEmbeds(message: ChatMessage, update: EmbedsUpdate): ChatMessage =
     if (message.id != update.messageId || message.channelId != update.channelId) message else withEmbeds(message, update.revision, update.embeds)
 
+/**
+ * A confirmed send with the [pending] cards its sender already saw, while the server unfurls its own:
+ * only when it has none yet and was not sent with `suppressEmbeds`. Its `message.embeds` event
+ * replaces them, or removes them when it carries none.
+ */
+internal fun withPendingEmbeds(message: ChatMessage, pending: List<ChatEmbed>): ChatMessage =
+    if (pending.isEmpty() || message.content.embeds.isNotEmpty() || message.content.suppressEmbeds) message
+    else withEmbeds(message, message.revision, pending)
+
 /** A replay or refetch of the same revision may carry cards [message] lacks (it missed the event): take them. */
 internal fun sameRevisionEmbeds(message: ChatMessage, candidate: ChatMessage): ChatMessage =
     if (candidate.id != message.id || candidate.content.embeds.isEmpty()) message

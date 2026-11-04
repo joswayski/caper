@@ -1,5 +1,6 @@
 package chat.caper.android.data
 
+import chat.caper.android.model.ChatEmbed
 import chat.caper.android.model.ChatMessage
 import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.KlipyGif
@@ -22,6 +23,8 @@ internal data class PendingSend(
     val gif: KlipyGif? = null,
     /** The composer's link card was removed; retries keep that. */
     val suppressEmbeds: Boolean = false,
+    /** The composer's loaded card for this text, shown until the server's cards arrive; never with [suppressEmbeds]. */
+    val embeds: List<ChatEmbed> = emptyList(),
 )
 
 /** Retains an idempotency key only while the server outcome is unknown. */
@@ -31,21 +34,25 @@ internal class PendingSendTracker {
     fun begin(
         channel: String, author: ChatAuthor, text: String, attachmentIds: List<String> = emptyList(),
         threadRootId: String? = null, broadcast: Boolean = false, replyTo: MessageReply? = null,
-        spoilerAttachmentIds: List<String> = emptyList(), gif: KlipyGif? = null, suppressEmbeds: Boolean = false, confirmed: () -> Unit,
+        spoilerAttachmentIds: List<String> = emptyList(), gif: KlipyGif? = null, suppressEmbeds: Boolean = false, embeds: List<ChatEmbed> = emptyList(), confirmed: () -> Unit,
     ): PendingSend =
         retrying(channel, author)
-            ?: PendingSend(channel, author, text, UUID.randomUUID(), confirmed, attachmentIds, threadRootId, broadcast, replyTo, spoilerAttachmentIds, gif, suppressEmbeds).also { pending = it }
+            ?: PendingSend(channel, author, text, UUID.randomUUID(), confirmed, attachmentIds, threadRootId, broadcast, replyTo, spoilerAttachmentIds, gif, suppressEmbeds,
+                if (suppressEmbeds) emptyList() else embeds).also { pending = it }
 
     /** The unknown-outcome send a new attempt must repeat, if any. */
     fun retrying(channel: String, author: ChatAuthor): PendingSend? =
         pending?.takeIf { it.channel == channel && it.author.id == author.id && it.author.isGuest == author.isGuest }
 
-    fun confirm(message: ChatMessage): PendingSend? = pending?.takeIf {
+    fun confirm(message: ChatMessage): PendingSend? = matching(message)?.also { pending = null }
+
+    /** The pending send [message] confirms, if any, without settling it. */
+    fun matching(message: ChatMessage): PendingSend? = pending?.takeIf {
         it.id.toString() == message.clientMessageId && it.channel == message.channelId &&
             it.threadRootId == message.threadRootId && it.broadcast == message.broadcast &&
             it.replyTo?.id == message.replyTo?.id &&
             it.author.id == message.author.id && it.author.isGuest == message.author.isGuest
-    }?.also { pending = null }
+    }
 
     fun definitiveFailure(id: UUID) {
         if (pending?.id == id) pending = null
