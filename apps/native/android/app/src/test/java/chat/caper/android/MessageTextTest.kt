@@ -15,8 +15,12 @@ class MessageTextTest {
         val opened = mutableListOf<String>()
         val annotated = messageText(text, spans, listOf(maya), linkRanges(text, spans.map { it.start until it.end }), openLink = { opened += it })
         assertEquals(text, annotated.text.replace("\uFFFD", ""))
-        assertEquals(2, annotated.getStringAnnotations("androidx.compose.foundation.text.inlineContent", 0, annotated.length).size)
+        val icons = annotated.getStringAnnotations("androidx.compose.foundation.text.inlineContent", 0, annotated.length)
+        assertEquals(listOf(ChainLinkInline, ChainLinkInline), icons.map { it.item })
         val links = annotated.getLinkAnnotations(0, annotated.length).sortedBy { it.start }
+        assertEquals(icons.map { it.start }, links.filter { it.item is LinkAnnotation.Url }.map { it.start })
+        assertEquals(listOf("\uFFFDhttps://a.com/(", "\uFFFDwww.b.org"),
+            links.filter { it.item is LinkAnnotation.Url }.map { annotated.text.substring(it.start, it.end) })
         assertEquals(listOf("mention:maya", "https://a.com/(", "mention:maya", "https://www.b.org"), links.map {
             when (val item = it.item) {
                 is LinkAnnotation.Url -> item.url

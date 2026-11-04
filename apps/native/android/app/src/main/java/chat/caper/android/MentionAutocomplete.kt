@@ -219,29 +219,66 @@ internal fun draftMentionSpans(text: String, source: MentionSource): List<Mentio
     }
 }
 
-/** Project the wire draft into styled text; Compose keeps selection and IME in source offsets. */
+internal const val DraftLinkPill = "draft-link-pill"
+// An em of visual space for the painted icon; the joiner keeps it with the URL.
+// Neither character enters TextFieldValue, the clipboard, undo history or sent data.
+internal const val DraftLinkPrefix = "\u2003\u2060"
+
+/** Source UTF-16 → visible formatting → decorative spacing; never rewrite the editor value. */
 internal class MentionVisualTransformation(private val source: MentionSource) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
         val formatted = chat.caper.android.data.formattedMessage(text.text)
-        val styled = AnnotatedString.Builder(formatted.text)
+        val projected = AnnotatedString.Builder(formatted.text)
+        for (span in text.spanStyles) {
+            projected.addStyle(span.item, formatted.displayed(span.start), formatted.displayed(span.end))
+        }
         var offset = 0
         for (run in formatted.runs) {
-            if (run.bold || run.italic) styled.addStyle(SpanStyle(
+            if (run.bold || run.italic) projected.addStyle(SpanStyle(
                 fontWeight = if (run.bold) androidx.compose.ui.text.font.FontWeight.Bold else null,
                 fontStyle = if (run.italic) androidx.compose.ui.text.font.FontStyle.Italic else null,
             ), offset, offset + run.text.length)
             offset += run.text.length
         }
-        val mentions = draftMentionSpans(formatted.text, source)
-        for (span in mentions) {
-            styled.addStyle(SpanStyle(background = Terracotta.copy(alpha = 0.24f)), span.start, span.end)
+        val visible = projected.toAnnotatedString()
+        val mentions = draftMentionSpans(visible.text, source)
+        val links = linkRanges(visible.text, mentions.map { it.start until it.end })
+        // This map is in projected coordinates, not source coordinates. Compose the
+        // maps below so hidden delimiters keep the formatter's caret affinity.
+        val linkMapping = object : OffsetMapping {
+            override fun originalToTransformed(offset: Int) =
+                offset + links.count { it.start <= offset } * DraftLinkPrefix.length
+
+            override fun transformedToOriginal(offset: Int): Int {
+                var removed = 0
+                for (link in links) {
+                    val start = link.start + removed
+                    if (offset <= start) break
+                    removed += (offset - start).coerceAtMost(DraftLinkPrefix.length)
+                    if (offset < start + DraftLinkPrefix.length) break
+                }
+                return offset - removed
+            }
         }
-        for (link in linkRanges(formatted.text, mentions.map { it.start until it.end })) {
-            styled.addStyle(SpanStyle(color = LinkBlue, background = LinkBlue.copy(alpha = 0.14f)), link.start, link.end)
+        val styled = AnnotatedString.Builder()
+        var cursor = 0
+        for (link in links) {
+            styled.append(visible.subSequence(cursor, link.start))
+            val start = styled.length
+            styled.append(DraftLinkPrefix)
+            styled.append(visible.subSequence(link.start, link.end))
+            styled.addStringAnnotation(DraftLinkPill, link.href, start, styled.length)
+            styled.addStyle(SpanStyle(color = LinkBlue), start, styled.length)
+            cursor = link.end
+        }
+        styled.append(visible.subSequence(cursor, visible.length))
+        for (span in mentions) {
+            styled.addStyle(SpanStyle(background = Terracotta.copy(alpha = 0.24f)),
+                linkMapping.originalToTransformed(span.start), linkMapping.originalToTransformed(span.end))
         }
         return TransformedText(styled.toAnnotatedString(), object : OffsetMapping {
-            override fun originalToTransformed(offset: Int) = formatted.displayed(offset)
-            override fun transformedToOriginal(offset: Int) = formatted.original(offset)
+            override fun originalToTransformed(offset: Int) = linkMapping.originalToTransformed(formatted.displayed(offset))
+            override fun transformedToOriginal(offset: Int) = formatted.original(linkMapping.transformedToOriginal(offset))
         })
     }
 }

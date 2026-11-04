@@ -11,30 +11,43 @@ const session = process.env.LINK_TEST_SESSION ?? `links-${process.pid}`;
 const artifacts = process.env.LINK_TEST_ARTIFACTS && resolve(process.env.LINK_TEST_ARTIFACTS);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
 function browser(...args) {
+  // Drive the editor's selection, not a DOM-only contenteditable replacement.
+  if (args[0] === "fill" && args[1] === "#chat-message") {
+    browser("click", args[1]);
+    browser("press", "Control+a");
+    browser("press", "Backspace");
+    const lines = args[2].split("\n");
+    for (const [index, line] of lines.entries()) {
+      if (index) browser("press", "Shift+Enter");
+      if (line) browser("type", args[1], line);
+    }
+    return;
+  }
   const result = JSON.parse(
     execFileSync("agent-browser", ["--session", session, ...args, "--json"], { encoding: "utf8", timeout: 60000 }),
   );
   assert.ok(result.success, result.error);
+  if (args[0] === "press") {
+    browser("eval", "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  }
   return result.data;
 }
 const evaluate = (code) => browser("eval", `(async () => { ${code} })()`).result;
 const draft = "Join us 🙂 https://caper.chat/invite/AbCd1234, or www.Example.org/Notes.";
 const draftLinks = ["https://caper.chat/invite/AbCd1234", "www.Example.org/Notes"];
 const marks = () =>
-  evaluate("return [...document.querySelectorAll('.chat-mention-input-mirror mark')].map(el => el.textContent);");
+  evaluate(`return [...document.querySelectorAll('.chat-draft-link, .chat-draft-mention')].reduce((marks, el) => {
+    if (el.matches('.chat-link-start, .chat-draft-mention')) marks.push(el.textContent);
+    else marks[marks.length - 1] += el.textContent;
+    return marks;
+  }, []);`);
 try {
   browser("open", origin.href);
-  browser("set", "viewport", "1440", "1000", "2");
-  browser("wait", '.experimental-note a[aria-label="Jose on X"]');
-  const xStyle = () =>
-    evaluate(`const style = getComputedStyle(document.querySelector('a[aria-label="Jose on X"]'));
-    return [style.color, style.backgroundColor, style.boxShadow];`);
-  const neutralX = ["rgb(243, 244, 245)", "rgba(0, 0, 0, 0)", "none"];
-  assert.deepEqual(xStyle(), neutralX, "the X logo is neutral, not a highlighted URL");
-  if (artifacts) browser("screenshot", ".experimental-note", `${artifacts}/homepage-contact.png`);
-  browser("hover", 'a[aria-label="Jose on X"]');
-  assert.deepEqual(xStyle(), neutralX, "the X logo stays neutral on hover");
-  if (artifacts) browser("screenshot", ".experimental-note", `${artifacts}/homepage-contact-hover.png`);
+  browser("wait", ".experimental-note");
+  // Let homepage hydration finish before mounting the independent test root.
+  browser("wait", "--load", "networkidle");
+  // Homepage contact chips have their own styling; they are not message links.
+  assert.equal(evaluate(`return !!document.querySelector('.experimental-note a.chat-link');`), false);
   browser("set", "viewport", "1000", "640", "2");
   evaluate(`
     const source = await (await fetch('/src/chat/Composer.tsx')).text();
@@ -64,23 +77,25 @@ try {
     }
     createRoot(mount).render(React.createElement(Fixture));
   `);
-  browser("wait", "#link-fixture textarea");
-  browser("fill", "#link-fixture textarea", draft);
+  browser("wait", "#chat-message");
+  browser("fill", "#chat-message", draft);
   assert.deepEqual(marks(), draftLinks, "both invitation and ordinary draft URLs highlight");
   assert.equal(
     evaluate(`return [...document.querySelectorAll('.chat-draft-link')].every(mark => {
     const style = getComputedStyle(mark);
-    return style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.borderRadius === '4px'
-      && style.boxShadow !== 'none' && style.padding === '0px' && style.color === 'rgb(105, 207, 255)';
+    return style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.color === 'rgb(105, 207, 255)';
+  }) && [...document.querySelectorAll('.chat-draft-link.chat-link-start')].every(mark => {
+    const style = getComputedStyle(mark), icon = getComputedStyle(mark, '::before');
+    return style.borderTopLeftRadius === '4px' && icon.maskImage !== 'none' && parseFloat(icon.width) > 0;
   });`),
     true,
-    "draft URLs have baby-blue text and rounded backgrounds without moving glyphs",
+    "draft URLs have blue text, rounded backgrounds and decorative leading chains",
   );
   assert.deepEqual(
-    evaluate(`const style = getComputedStyle(document.querySelector('#link-fixture textarea'));
+    evaluate(`const style = getComputedStyle(document.querySelector('#chat-message'));
     return [style.color, style.caretColor];`),
-    ["rgba(0, 0, 0, 0)", "rgb(243, 244, 245)"],
-    "the native caret stays visible without duplicate foreground text",
+    ["rgb(243, 244, 245)", "rgb(243, 244, 245)"],
+    "the editable text and caret are visible without a separate mirror",
   );
   browser("press", "Enter");
   browser("wait", "#sent a");
@@ -115,7 +130,7 @@ try {
     true,
     "sent links retain the browser context menu",
   );
-  browser("fill", "#link-fixture textarea", draft);
+  browser("fill", "#chat-message", draft);
   if (artifacts) browser("screenshot", "#link-fixture", `${artifacts}/links-desktop.png`);
   if (evaluate("return matchMedia('(hover: hover)').matches;")) {
     const before = evaluate("return getComputedStyle(document.querySelector('#sent a')).backgroundColor;");
@@ -129,40 +144,72 @@ try {
   assert.equal(evaluate("return document.documentElement.scrollWidth <= innerWidth;"), true);
   assert.equal(
     evaluate(`
-    return [...document.querySelectorAll('.chat-link-end')].every(tail => {
-      const range = document.createRange(); range.selectNodeContents(tail.firstChild);
-      const text = range.getBoundingClientRect(), icon = tail.querySelector('svg').getBoundingClientRect();
-      return icon.left >= text.right && icon.top >= text.top && icon.bottom <= text.bottom;
+    return [...document.querySelectorAll('.chat-link-start')].every(start => {
+      const range = document.createRange(); range.selectNodeContents(start.lastChild);
+      const text = range.getBoundingClientRect(), icon = start.querySelector('svg');
+      if (icon) {
+        const bounds = icon.getBoundingClientRect();
+        return bounds.right <= text.left && Math.abs(bounds.bottom - text.bottom) < 5;
+      }
+      const bounds = start.getBoundingClientRect(), style = getComputedStyle(start, '::before');
+      return text.left - bounds.left >= parseFloat(style.width) && text.top >= bounds.top - 1
+        && text.bottom <= bounds.bottom + 1;
     });
   `),
     true,
-    "icons stay beside the final URL character on wrapped lines",
+    "icons stay beside the first URL character on wrapped lines",
   );
   if (artifacts) browser("screenshot", `${artifacts}/links-narrow.png`);
-  browser("fill", "#link-fixture textarea", "plain text, no link");
+  browser("fill", "#chat-message", "plain text, no link");
   assert.deepEqual(marks(), [], "removing a link clears its highlight");
   assert.equal(
-    evaluate("return getComputedStyle(document.querySelector('#link-fixture textarea')).color;"),
+    evaluate("return getComputedStyle(document.querySelector('#chat-message')).color;"),
     "rgb(243, 244, 245)",
-    "plain drafts return to native text painting",
+    "plain drafts retain their normal text color",
   );
   const mixed = "🙂 @feedback\nhttps://example.org/Notes";
-  browser("fill", "#link-fixture textarea", mixed);
+  browser("fill", "#chat-message", mixed);
   browser("press", "Control+a");
   browser("press", "Control+c");
   browser("press", "Backspace");
   assert.deepEqual(marks(), []);
   browser("press", "Control+v");
-  assert.equal(evaluate("return document.querySelector('#link-fixture textarea').value;"), mixed);
+  assert.equal(evaluate("return document.querySelector('#chat-message').value;"), mixed);
   assert.deepEqual(marks(), ["@feedback", "https://example.org/Notes"], "pasted links and mentions coexist");
+  // Start a separate edit after the rich editor's 500ms undo grouping window.
+  browser("wait", "600");
   browser("press", "Home");
   browser("press", "Delete");
   assert.deepEqual(marks(), ["@feedback"], "editing away a URL prefix removes only its highlight");
   browser("press", "Control+z");
   assert.deepEqual(marks(), ["@feedback", "https://example.org/Notes"], "native undo restores the highlight");
-  browser("fill", "#link-fixture textarea", draft);
+  const styledLink = "https://example.org/Notes";
+  browser("fill", "#chat-message", styledLink);
+  browser("press", "Control+a");
+  browser("press", "Control+b");
+  assert.equal(evaluate("return document.querySelector('#chat-message').value;"), `**${styledLink}**`);
+  assert.equal(evaluate("return document.querySelector('#chat-message').textContent;"), styledLink);
+  assert.equal(evaluate("return document.querySelectorAll('#chat-message .chat-link-start').length;"), 1);
+  assert.equal(evaluate("return !!document.querySelector('#chat-message strong .chat-link-start');"), true);
+  if (artifacts) browser("screenshot", `${artifacts}/links-formatted.png`);
+  browser("press", "Control+c");
+  browser("press", "Backspace");
+  browser("press", "Control+v");
+  assert.equal(
+    evaluate("return document.querySelector('#chat-message').value;"),
+    styledLink,
+    "formatted links copy visible text without delimiters or icons",
+  );
+  browser("fill", "#chat-message", "https://example.org/🙂/Notes");
+  assert.deepEqual(marks(), ["https://example.org/🙂/Notes"]);
+  assert.equal(
+    evaluate("return document.querySelectorAll('#chat-message .chat-link-start').length;"),
+    1,
+    "emoji decoration does not duplicate the leading icon",
+  );
+  browser("fill", "#chat-message", draft);
   console.log(
-    "PASS: neutral X logo, highlighted draft URLs, exact send payload, all-URL blue pills, decorative icons, context-menu allowance, and wrapping",
+    "PASS: highlighted draft URLs, exact send payload, all-URL blue pills, decorative icons, context-menu allowance, and wrapping",
   );
 } finally {
   if (!process.env.LINK_TEST_KEEP) browser("close");

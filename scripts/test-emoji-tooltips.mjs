@@ -21,7 +21,7 @@ const evaluate = (code) => browser("eval", `(async () => { ${code} })()`).result
 const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 let socket;
 let command;
-const value = () => evaluate("return document.querySelector('#emoji-fixture textarea').value;");
+const value = () => evaluate("return document.querySelector('#chat-message').value;");
 const tooltip = () => evaluate("return document.querySelector('.chat-emoji-tooltip')?.textContent ?? null;");
 const point = (emoji) =>
   evaluate(`
@@ -29,16 +29,26 @@ const point = (emoji) =>
   const r = span.getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2};
 `);
 const restore = (text) => {
-  browser("fill", "#emoji-fixture textarea", text);
+  browser("click", "#chat-message");
+  browser("press", "Control+a");
+  browser("press", "Backspace");
+  for (const [index, line] of text.split("\n").entries()) {
+    if (index) browser("press", "Shift+Enter");
+    if (line) browser("type", "#chat-message", line);
+  }
   assert.equal(value(), text);
 };
 
 try {
   browser("open", origin.href);
   browser("set", "viewport", "1280", "900", "2");
+  browser("wait", ".experimental-note");
+  browser("wait", "--load", "networkidle");
   evaluate(`
-    const {default: React} = await import('/node_modules/.vite/deps/react.js');
-    const {default: {createRoot}} = await import('/node_modules/.vite/deps/react-dom_client.js');
+    const source = await (await fetch('/src/chat/Composer.tsx')).text();
+    const reactPath = source.match(/from "([^"]+react[.]js[^"]*)"/)[1];
+    const {default: React} = await import(reactPath);
+    const {default: {createRoot}} = await import(reactPath.replace('/react.js', '/react-dom_client.js'));
     const {default: Composer} = await import('/src/chat/Composer.tsx');
     await import('/src/chat/chat.css');
     await import('/src/motion.css');
@@ -56,7 +66,7 @@ try {
         onResize: resize => { resize(); },
       }))));
   `);
-  browser("wait", "#emoji-fixture textarea");
+  browser("wait", "#chat-message");
   const endpoint = browser("get", "cdp-url").cdpUrl;
   const targets = await (await fetch(`http://${new URL(endpoint).host}/json/list`)).json();
   const target = targets.find((item) => item.type === "page" && item.url.startsWith(origin.origin));
@@ -92,7 +102,7 @@ try {
   assert.equal(value(), "🎎");
   assert.equal(
     evaluate(
-      "return document.querySelector('#emoji-fixture textarea').getAttribute('aria-describedby') === 'chat-composer-hint ' + document.querySelector('.chat-emoji-tooltip').id;",
+      "return document.querySelector('#chat-message').getAttribute('aria-describedby') === 'chat-composer-hint ' + document.querySelector('.chat-emoji-tooltip').id;",
     ),
     true,
   );
@@ -150,5 +160,5 @@ try {
   );
 } finally {
   socket?.close();
-  browser("close");
+  if (!process.env.EMOJI_TEST_KEEP) browser("close");
 }

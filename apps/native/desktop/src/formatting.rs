@@ -649,57 +649,77 @@ mod tests {
 
     #[test]
     fn native_editor_deletes_visible_graphemes_and_undo_restores_source() {
-        let context = egui::Context::default();
-        crate::configure(&context);
-        let id = egui::Id::new("visible-edit-test");
-        let mut text = "**a👩‍💻b**".to_owned();
-        let frame = |text: &mut String, events| {
-            context.run(
-                egui::RawInput {
-                    events,
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        prepare(ui, text, id, true);
-                        let mut output = egui::TextEdit::multiline(text).id(id).show(ui);
-                        composer_controls(ui, text, &mut output, true);
-                        output.response.request_focus();
-                    });
-                },
-            )
-        };
-        let key = |key, modifiers| {
-            vec![egui::Event::Key {
-                key,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers,
-            }]
-        };
-        frame(&mut text, vec![]);
-        let mut state = egui::TextEdit::load_state(&context, id).unwrap();
-        state
-            .cursor
-            .set_char_range(Some(egui::text::CCursorRange::one(
-                egui::text::CCursor::new(6),
-            )));
-        state.store(&context, id);
-        frame(&mut text, key(egui::Key::Backspace, egui::Modifiers::NONE));
-        assert_eq!(text, "**ab**");
-        frame(&mut text, key(egui::Key::Z, egui::Modifiers::COMMAND));
-        assert_eq!(text, "**a👩‍💻b**");
-        frame(&mut text, key(egui::Key::A, egui::Modifiers::COMMAND));
-        let output = frame(&mut text, vec![egui::Event::Copy]);
-        assert!(output.platform_output.commands.iter().any(
-            |command| matches!(command, egui::OutputCommand::CopyText(value) if value == "a👩‍💻b")
+        for original in ["**a👩‍💻b**", "**https://example.com/a👩‍💻b**"] {
+            let context = egui::Context::default();
+            crate::configure(&context);
+            let id = egui::Id::new("visible-edit-test");
+            let mut text = original.to_owned();
+            let frame = |text: &mut String, events| {
+                context.run(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            prepare(ui, text, id, true);
+                            let mut layouter =
+                                |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
+                                    crate::draft_layout(
+                                        ui,
+                                        text.as_str(),
+                                        width,
+                                        &[],
+                                        crate::mentions::Specials::default(),
+                                        egui::FontId::proportional(13.6),
+                                    )
+                                };
+                            let background = ui.painter().add(egui::Shape::Noop);
+                            let mut output = egui::TextEdit::multiline(text)
+                                .id(id)
+                                .desired_width(140.0)
+                                .frame(false)
+                                .layouter(&mut layouter)
+                                .show(ui);
+                            crate::paint_draft_links(ui, &output, background);
+                            composer_controls(ui, text, &mut output, true);
+                            output.response.request_focus();
+                        });
+                    },
+                )
+            };
+            let key = |key, modifiers| {
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }]
+            };
+            frame(&mut text, vec![]);
+            let mut state = egui::TextEdit::load_state(&context, id).unwrap();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(original.chars().count() - 3),
+                )));
+            state.store(&context, id);
+            frame(&mut text, key(egui::Key::Backspace, egui::Modifiers::NONE));
+            assert_eq!(text, original.replace("👩‍💻", ""));
+            frame(&mut text, key(egui::Key::Z, egui::Modifiers::COMMAND));
+            assert_eq!(text, original);
+            frame(&mut text, key(egui::Key::A, egui::Modifiers::COMMAND));
+            let output = frame(&mut text, vec![egui::Event::Copy]);
+            assert!(output.platform_output.commands.iter().any(
+            |command| matches!(command, egui::OutputCommand::CopyText(value) if value == &projection(original).0)
         ));
-        frame(&mut text, vec![egui::Event::Text("new".into())]);
-        assert_eq!(text, "**new**");
-        frame(&mut text, key(egui::Key::A, egui::Modifiers::COMMAND));
-        frame(&mut text, key(egui::Key::Backspace, egui::Modifiers::NONE));
-        assert_eq!(text, "");
+            frame(&mut text, vec![egui::Event::Text("new".into())]);
+            assert_eq!(text, "**new**");
+            frame(&mut text, key(egui::Key::A, egui::Modifiers::COMMAND));
+            frame(&mut text, key(egui::Key::Backspace, egui::Modifiers::NONE));
+            assert_eq!(text, "");
+        }
     }
 
     #[test]

@@ -35,6 +35,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
+import chat.caper.android.draftLinkPills
 import chat.caper.android.entrance
 import chat.caper.android.KeyboardAttachmentInput
 import chat.caper.android.MOTION_FAST
@@ -99,6 +100,7 @@ import kotlin.math.roundToInt
     var pending by remember { mutableStateOf<Job?>(null) }
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
+    val transformed = remember(value.annotatedString, visualTransformation) { visualTransformation.filter(value.annotatedString) }
     fun format(marker: String) {
         if (!enabled || readOnly || value.composition != null) return
         val result = toggleFormat(value.text, value.selection.min, value.selection.max, marker)
@@ -112,10 +114,11 @@ import kotlin.math.roundToInt
     DisposableEffect(value.text) { onDispose { pending?.cancel() } }
     fun at(point: Offset): Triple<Int, Int, String>? {
         val result = layout ?: return null
-        val mapping = visualTransformation.filter(value.annotatedString).offsetMapping
+        if (result.layoutInput.text.text != transformed.text.text) return null
         return ranges.firstOrNull { range ->
-            (mapping.originalToTransformed(range.first) until mapping.originalToTransformed(range.second))
-                .any { result.getBoundingBox(it).contains(point) }
+            (range.first until range.second).any {
+                result.getBoundingBox(transformed.offsetMapping.originalToTransformed(it)).contains(point)
+            }
         }
     }
     CompositionLocalProvider(androidx.compose.ui.platform.LocalClipboard provides visibleClipboard) {
@@ -159,7 +162,7 @@ import kotlin.math.roundToInt
                     OutlinedTextFieldDefaults.DecorationBox(
                         value = value.text, innerTextField = {
                             Box(Modifier.heightIn(max = textHeight).verticalScroll(scroll)) {
-                                Box(Modifier.pointerInput(ranges, enabled) {
+                                Box(Modifier.pointerInput(ranges, enabled, transformed.text) {
                                     var target: Triple<Int, Int, String>? = null
                                     var origin: Offset? = null
                                     fun hide() { pending?.cancel(); name = null; target = null }
@@ -191,7 +194,7 @@ import kotlin.math.roundToInt
                                     } finally { hide() }
                                 }) {
                                     Column {
-                                        inner()
+                                        Box(Modifier.draftLinkPills { layout }) { inner() }
                                         if (enabled && !readOnly && focused && value.composition == null && !value.selection.collapsed) {
                                             Surface(color = Surface, shape = MaterialTheme.shapes.small) {
                                                 Row {

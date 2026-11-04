@@ -16721,7 +16721,9 @@ impl CaperApp {
                                         .max_height(editor_height - 20.0)
                                         .min_scrolled_height(28.0)
                                         .auto_shrink([false, true])
-                                        .show(ui, |ui| egui::TextEdit::multiline(&mut draft.0)
+                                        .show(ui, |ui| {
+                                            let background = ui.painter().add(egui::Shape::Noop);
+                                            let output = egui::TextEdit::multiline(&mut draft.0)
                                             .id(composer_id).desired_rows(1).desired_width(f32::INFINITY).char_limit(4000)
                                             .min_size(egui::vec2(0.0, 28.0))
                                             .vertical_align(egui::Align::Center)
@@ -16730,7 +16732,10 @@ impl CaperApp {
                                             .frame(false)
                                             .layouter(&mut layouter)
                                             .hint_text(RichText::new("Reply to thread…").color(MUTED))
-                                            .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui)).inner
+                                            .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui);
+                                            paint_draft_links(ui, &output, background);
+                                            output
+                                        }).inner
                                 }).inner
                             }).inner;
                             if gif_shown {
@@ -17255,6 +17260,7 @@ impl CaperApp {
                         hint.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - 8.0).max(1.0));
                         let hint = emoji::layout_job(ui, hint);
                         formatting::prepare(ui, draft, composer_id, true);
+                        let background = ui.painter().add(egui::Shape::Noop);
                         let mut output = egui::TextEdit::multiline(draft)
                             .id(composer_id)
                             .layouter(&mut layouter)
@@ -17268,6 +17274,7 @@ impl CaperApp {
                             .hint_text(hint.clone())
                             .frame(false)
                             .char_limit(4_000).show(ui);
+                        paint_draft_links(ui, &output, background);
                         formatting::composer_controls(ui, draft, &mut output, true);
                         if draft.is_empty() {
                             let position = egui::pos2(output.galley_pos.x, output.response.rect.center().y - hint.size().y / 2.0);
@@ -22630,7 +22637,8 @@ impl CaperApp {
                                         .auto_shrink([false, true])
                                         .show(ui, |ui| {
                                             formatting::prepare(ui, &draft.text, id, editable);
-                                            egui::TextEdit::multiline(&mut draft.text)
+                                            let background = ui.painter().add(egui::Shape::Noop);
+                                            let output = egui::TextEdit::multiline(&mut draft.text)
                                                 .id(id)
                                                 .layouter(&mut layouter)
                                                 .hint_text(
@@ -22649,7 +22657,9 @@ impl CaperApp {
                                                 .margin(egui::vec2(4.0, 10.0))
                                                 .frame(false)
                                                 .char_limit(4_000)
-                                                .show(ui)
+                                                .show(ui);
+                                            paint_draft_links(ui, &output, background);
+                                            output
                                         })
                                         .inner
                                 })
@@ -30523,6 +30533,7 @@ enum Run {
 
 /// Styled glyphs over the wire draft. Hidden delimiters occupy zero width but retain
 /// one galley character per source scalar, preserving egui's editing coordinates.
+/// Link icon gutters add layout space, never characters to the editable buffer.
 fn draft_layout(
     ui: &egui::Ui,
     text: &str,
@@ -30549,18 +30560,43 @@ fn draft_layout(
         .filter(|run| !run.hidden)
         .flat_map(|run| run.range.clone())
         .collect();
-    let ranges: Vec<_> = mentions::draft_highlights(&visible, people, specials)
-        .into_iter()
-        .map(|range| source_indices[range.start]..source_indices[range.end - 1] + 1)
-        .collect();
+    let ranges = mentions::draft_highlights(&visible, people, specials);
+    // Detect links/mentions in displayed text, including URLs crossing style
+    // boundaries, then map their byte ranges back to the unchanged wire draft.
+    // Delimiters outside those spans still need their own zero-width glyphs.
+    let mut runs = Vec::new();
+    let mut written = 0;
+    for run in message_runs(&visible, &ranges) {
+        let range = match &run {
+            Run::Plain(range) | Run::Pill(range, _) | Run::Link(range, _) => range,
+        };
+        let source = source_indices[range.start]..source_indices[range.end - 1] + 1;
+        if written < source.start {
+            runs.push(Run::Plain(written..source.start));
+        }
+        written = source.end;
+        runs.push(match run {
+            Run::Plain(_) => Run::Plain(source),
+            Run::Pill(_, index) => Run::Pill(source, index),
+            Run::Link(_, href) => Run::Link(source, href),
+        });
+    }
+    if written < text.len() {
+        runs.push(Run::Plain(written..text.len()));
+    }
     if text.is_empty() {
         job.append(text, 0.0, plain.clone());
     }
-    for run in message_runs(text, &ranges) {
+    for run in &runs {
+        let mut gap = if matches!(run, Run::Link(..)) {
+            LINK_ICON_SPACE
+        } else {
+            0.0
+        };
         let (range, background, color) = match run {
             Run::Plain(range) => (range, Color32::TRANSPARENT, plain.color),
             Run::Pill(range, _) => (range, TERRACOTTA.gamma_multiply(0.24), plain.color),
-            Run::Link(range, _) => (range, LINK.gamma_multiply(0.14), LINK),
+            Run::Link(range, _) => (range, Color32::TRANSPARENT, LINK),
         };
         for style in &styles {
             let start = range.start.max(style.range.start);
@@ -30587,11 +30623,122 @@ fn draft_layout(
                     format.font_id.family = egui::FontFamily::Name("Satoshi Bold".into());
                 }
                 format.italics = style.italic;
-                job.append(&text[start..end], 0.0, format);
+                job.append(&text[start..end], gap, format);
+                gap = 0.0;
             }
         }
     }
-    ui.fonts_mut(|fonts| fonts.layout_job(job))
+    let starts: Vec<_> = draft_link_ranges(&job)
+        .iter()
+        .map(|range| range.start)
+        .collect();
+    layout_inline_links(ui, job, &starts)
+}
+
+/// Link ranges in galley scalar coordinates, not wire byte offsets: each hidden
+/// ASCII delimiter became a three-byte zero-width glyph. A link may contain
+/// several styled sections; only its first visible section has the icon gutter.
+fn draft_link_ranges(job: &egui::text::LayoutJob) -> Vec<std::ops::Range<usize>> {
+    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut offset = 0;
+    let mut in_link = false;
+    for section in &job.sections {
+        let end = offset + job.text[section.byte_range.clone()].chars().count();
+        if section.leading_space == LINK_ICON_SPACE {
+            ranges.push(offset..end);
+            in_link = true;
+        } else if in_link && section.format.color == LINK {
+            ranges
+                .last_mut()
+                .expect("link start precedes continuation")
+                .end = end;
+        } else {
+            in_link = false;
+        }
+        offset = end;
+    }
+    ranges
+}
+
+/// egui drops section leading space at a wrap boundary. Restore it when a
+/// URL starts a row, moving the whole row (including its cursor geometry).
+/// The width budget leaves room for this correction without overflowing.
+fn layout_inline_links(
+    ui: &egui::Ui,
+    mut job: egui::text::LayoutJob,
+    starts: &[usize],
+) -> std::sync::Arc<egui::Galley> {
+    if starts.is_empty() {
+        return ui.fonts_mut(|fonts| fonts.layout_job(job));
+    }
+    job.wrap.max_width = (job.wrap.max_width - LINK_ICON_SPACE).max(1.0);
+    let mut galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+    let galley_mut = std::sync::Arc::make_mut(&mut galley);
+    let mut offset = 0;
+    for row in &mut galley_mut.rows {
+        // A formatted URL can have zero-width opening delimiters before its
+        // first visible glyph on this row. They must not hide a lost gutter.
+        if let Some((index, first)) = row
+            .glyphs
+            .iter()
+            .enumerate()
+            .find(|(_, glyph)| glyph.chr != '\u{200b}')
+            && starts.contains(&(offset + index))
+        {
+            let missing = (LINK_ICON_SPACE - row.pos.x - first.pos.x).max(0.0);
+            // Shift glyphs and their mesh together: egui's caret/selection
+            // uses row-local x offsets, not just the placed row's origin.
+            let inner = std::sync::Arc::make_mut(&mut row.row);
+            for glyph in &mut inner.glyphs {
+                glyph.pos.x += missing;
+            }
+            inner.size.x += missing;
+            inner.visuals.mesh.translate(egui::vec2(missing, 0.0));
+            inner.visuals.mesh_bounds = inner
+                .visuals
+                .mesh_bounds
+                .translate(egui::vec2(missing, 0.0));
+            galley_mut.rect = galley_mut.rect.union(row.rect());
+            galley_mut.mesh_bounds = galley_mut
+                .mesh_bounds
+                .union(row.visuals.mesh_bounds.translate(row.pos.to_vec2()));
+        }
+        offset += row.char_count_including_newline();
+    }
+    galley
+}
+
+/// Reserve `background` before showing the TextEdit so the rounded fill stays
+/// behind native text selection and the caret. No link hit target in drafts:
+/// clicks, drag selection, keyboard editing and IME remain TextEdit's own.
+fn paint_draft_links(
+    ui: &egui::Ui,
+    output: &egui::text_edit::TextEditOutput,
+    background: egui::layers::ShapeIdx,
+) {
+    let painter = ui.painter().with_clip_rect(output.text_clip_rect);
+    let mut shapes = Vec::new();
+    // The URL sections were identified by the layouter after mention matching.
+    for range in draft_link_ranges(&output.galley.job) {
+        let rects = inline_link_rects(&output.galley, range);
+        for rect in &rects {
+            shapes.push(egui::Shape::rect_filled(
+                rect.translate(output.galley_pos.to_vec2())
+                    .expand2(egui::vec2(2.0, 1.0)),
+                4,
+                LINK.gamma_multiply(0.10),
+            ));
+        }
+        if let Some(first) = rects.first() {
+            paint_icon(
+                &painter,
+                inline_link_icon(*first).translate(output.galley_pos.to_vec2()),
+                NavIcon::Link,
+                LINK,
+            );
+        }
+    }
+    painter.set(background, egui::Shape::Vec(shapes));
 }
 
 /// Message text split for drawing: resolved mentions first, then links found
@@ -30623,8 +30770,23 @@ fn message_runs(text: &str, pills: &[std::ops::Range<usize>]) -> Vec<Run> {
 /// Inline emoji are drawn a little larger than the text around them, as the
 /// color emoji fonts other clients use are.
 const INLINE_EMOJI_SCALE: f32 = 1.2;
-/// 11px external-link vector plus 2px breathing room on either side.
+/// 11px chain-link vector plus 2px breathing room on either side.
 const LINK_ICON_SPACE: f32 = 15.0;
+
+fn inline_link_rects(galley: &egui::Galley, range: std::ops::Range<usize>) -> Vec<egui::Rect> {
+    let mut rects = pill_rects(galley, range);
+    if let Some(first) = rects.first_mut() {
+        first.min.x -= LINK_ICON_SPACE;
+    }
+    rects
+}
+
+fn inline_link_icon(first: egui::Rect) -> egui::Rect {
+    egui::Rect::from_center_size(
+        egui::pos2(first.left() + LINK_ICON_SPACE / 2.0, first.center().y),
+        egui::vec2(11.0, 11.0),
+    )
+}
 
 /// Message text in the 14px message style; see `rich_text`.
 fn message_body(
@@ -30650,11 +30812,11 @@ fn linked_text(ui: &mut egui::Ui, message: &str, text: &str) {
 }
 
 /// Message text with resolved mentions drawn as pills and links drawn
-/// baby-blue and underlined. Pills are one weight bolder, primary
-/// text color and a terracotta background (24%, or 32% while hovered or
-/// focused) with 2px side padding. egui `LayoutJob` backgrounds are plain
-/// rectangles, so pills have square corners rather than the 4px corners other
-/// clients draw.
+/// baby-blue with a leading chain icon and rounded fill. Mention pills are
+/// one weight bolder, primary text color and a terracotta background (24%,
+/// or 32% while hovered or focused) with 2px side padding. Their egui
+/// `LayoutJob` backgrounds are plain rectangles; links use a rounded painter
+/// background instead.
 ///
 /// The text stays one selectable label, so wrapping and drag-selection are
 /// unchanged. Person pills and links get click targets on top of it from the
@@ -30782,7 +30944,6 @@ fn rich_text_rows(
         job.wrap.overflow_character = Some('…');
     }
     let mut after_pill = false;
-    let mut after_link = false;
     for run in &runs {
         let (range, format, is_pill) = match run {
             Run::Plain(range) => (range, plain.clone(), false),
@@ -30807,7 +30968,7 @@ fn rich_text_rows(
         };
         // Pills keep 2px on either side for their background.
         let mut gap = if is_pill || after_pill { 2.0 } else { 0.0 };
-        if after_link {
+        if matches!(run, Run::Link(..)) {
             gap += LINK_ICON_SPACE;
         }
         // Emoji are laid out as invisible glyphs and drawn in color below.
@@ -30845,18 +31006,17 @@ fn rich_text_rows(
             append_formatted(&mut job, text, start..range.end, gap, &format, &styles);
         }
         after_pill = is_pill;
-        after_link = matches!(run, Run::Link(..));
     }
-    // LayoutSection::leading_space reserves room before the following text,
-    // without adding a character to selection/copy or shifting mention ranges.
-    // Leave the same gutter at the right edge: a wrapping boundary may discard
-    // that leading space, and a final URL has no following section at all.
     let (position, galley, response) = if linked {
-        ui.scope(|ui| {
-            ui.set_max_width((ui.available_width() - LINK_ICON_SPACE).max(1.0));
-            egui::Label::new(job).layout_in_ui(ui)
-        })
-        .inner
+        job.wrap.max_width = ui.available_width();
+        let starts: Vec<_> = runs
+            .iter()
+            .filter_map(|run| match run {
+                Run::Link(range, _) => Some(text[..range.start].chars().count()),
+                _ => None,
+            })
+            .collect();
+        egui::Label::new(layout_inline_links(ui, job, &starts)).layout_in_ui(ui)
     } else {
         egui::Label::new(job).layout_in_ui(ui)
     };
@@ -30868,15 +31028,12 @@ fn rich_text_rows(
     };
     if ui.is_rect_visible(response.rect) {
         // Paint behind the selectable galley. Wrapped URLs get one rounded
-        // background per line, with the icon inside the final piece.
+        // background per line, with the icon inside the first piece.
         for run in &runs {
             let Run::Link(range, _) = run else { continue };
             let id = ui.make_persistent_id(("message-link-hot", message, range.start));
             let hot = ui.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
-            let mut rects = pill_rects(&galley, characters(range));
-            if let Some(last) = rects.last_mut() {
-                last.max.x += LINK_ICON_SPACE;
-            }
+            let rects = inline_link_rects(&galley, characters(range));
             for rect in rects {
                 let rect = rect
                     .translate(position.to_vec2())
@@ -30958,24 +31115,18 @@ fn rich_text_rows(
         let id = ui.make_persistent_id(("message-link", message, index));
         let hot_id = ui.make_persistent_id(("message-link-hot", message, range.start));
         let mut hot = false;
-        let mut rects = pill_rects(&galley, characters(range));
-        if let Some(last) = rects.last_mut() {
-            last.max.x += LINK_ICON_SPACE;
-            let icon = egui::Rect::from_center_size(
-                egui::pos2(last.right() - LINK_ICON_SPACE / 2.0, last.center().y),
-                egui::vec2(11.0, 11.0),
-            )
-            .translate(position.to_vec2());
+        let rects = inline_link_rects(&galley, characters(range));
+        if let Some(first) = rects.first() {
+            let icon = inline_link_icon(*first).translate(position.to_vec2());
             let was_hot = ui
                 .data(|data| data.get_temp::<bool>(hot_id))
                 .unwrap_or(false);
             paint_icon(
                 ui.painter(),
                 icon,
-                NavIcon::ExternalLink,
+                NavIcon::Link,
                 if was_hot { LINK_ACTIVE } else { LINK },
             );
-            ui.expand_to_include_rect(last.translate(position.to_vec2()));
         }
         for (row, rect) in rects.into_iter().enumerate() {
             let rect = rect.translate(position.to_vec2());
@@ -31034,12 +31185,6 @@ fn rich_text_rows(
             .rows
             .last()
             .map(|row| row.rect().translate(position.to_vec2()))
-            .map(|mut row| {
-                if after_link {
-                    row.max.x += LINK_ICON_SPACE;
-                }
-                row
-            })
             .filter(|row| row.right() + 4.0 + size.x <= ui.max_rect().right())
             .map_or_else(
                 || ui.allocate_exact_size(size, egui::Sense::hover()).0,
@@ -47671,6 +47816,106 @@ mod tests {
     }
 
     #[test]
+    fn formatted_draft_links_keep_complete_pills_and_source_scalar_ranges() {
+        let cases: &[(&str, &[&str])] = &[
+            ("**www.**example.com/path", &["www.example.com/path"]),
+            (
+                "語 **_https://example.com/a_b_**",
+                &["https://example.com/a_b"],
+            ),
+            (
+                "**bold 🙂** https://example.net/end",
+                &["https://example.net/end"],
+            ),
+            (
+                "**https://example.com/one** (_www.example.org/two_)",
+                &["https://example.com/one", "www.example.org/two"],
+            ),
+        ];
+        for width in [90.0, 300.0] {
+            for &(text, expected) in cases {
+                let context = egui::Context::default();
+                super::configure(&context);
+                let _ = context.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let galley = super::draft_layout(
+                            ui,
+                            text,
+                            width,
+                            &[],
+                            mentions::Specials::default(),
+                            egui::FontId::proportional(13.6),
+                        );
+                        assert_eq!(galley.text().chars().count(), text.chars().count());
+                        assert_eq!(
+                            galley.text().replace('\u{200b}', ""),
+                            crate::formatting::projection(text).0
+                        );
+                        let ranges = super::draft_link_ranges(&galley.job);
+                        assert_eq!(ranges.len(), expected.len(), "{text}");
+                        assert_eq!(
+                            galley
+                                .job
+                                .sections
+                                .iter()
+                                .filter(|section| section.leading_space == super::LINK_ICON_SPACE)
+                                .count(),
+                            expected.len(),
+                            "one icon per URL, not per style section"
+                        );
+                        for (range, expected) in ranges.into_iter().zip(expected) {
+                            let selection = egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(range.start),
+                                egui::text::CCursor::new(range.end),
+                            );
+                            assert_eq!(
+                                crate::formatting::copied_text(text, selection),
+                                *expected,
+                                "complete URL across formatting sections"
+                            );
+                            let rects = super::inline_link_rects(&galley, range.clone());
+                            assert!(
+                                rects[0].left() >= -0.1,
+                                "leading icon gutter survives hidden delimiters and wrapping"
+                            );
+                            assert!(rects.iter().all(|rect| rect.right() <= width + 0.1));
+                            let caret = galley.pos_from_cursor(egui::text::CCursor {
+                                index: range.start,
+                                prefer_next_row: true,
+                            });
+                            assert!(
+                                (caret.left() - rects[0].left() - super::LINK_ICON_SPACE).abs()
+                                    < 0.1
+                            );
+                        }
+                        if text.starts_with("**www.") {
+                            let sections: Vec<_> = galley
+                                .job
+                                .sections
+                                .iter()
+                                .filter(|section| {
+                                    section.format.color == super::LINK
+                                        && !galley.job.text[section.byte_range.clone()]
+                                            .contains('\u{200b}')
+                                })
+                                .collect();
+                            assert_eq!(sections.len(), 2);
+                            assert_eq!(
+                                sections[0].format.font_id.family,
+                                egui::FontFamily::Name("Satoshi Bold".into())
+                            );
+                            assert_eq!(
+                                sections[1].format.font_id.family,
+                                egui::FontFamily::Proportional
+                            );
+                        }
+                    });
+                });
+            }
+        }
+    }
+
+    #[test]
     fn draft_links_highlight_and_preserve_cursor_metrics() {
         let context = egui::Context::default();
         let text = "Join HTTPS://Caper.Example/invite/AbC or www.Example.com/Path.";
@@ -47690,10 +47935,7 @@ mod tests {
                     .job
                     .sections
                     .iter()
-                    .filter(|section| {
-                        section.format.underline != egui::Stroke::NONE
-                            || section.format.background != egui::Color32::TRANSPARENT
-                    })
+                    .filter(|section| section.leading_space == super::LINK_ICON_SPACE)
                     .map(|section| {
                         assert_eq!(section.format.color, super::LINK);
                         &text[section.byte_range.clone()]
@@ -47712,6 +47954,122 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[test]
+    fn draft_link_gutters_keep_wrapped_carets_and_plain_text_editing() {
+        for width in [90.0, 140.0, 300.0, 600.0] {
+            let context = egui::Context::default();
+            egui_extras::install_image_loaders(&context);
+            let original =
+                "https://example.com/start\n語 (www.example.org/path), https://example.net/end";
+            let mut draft = original.to_owned();
+            let id = egui::Id::new("draft-link-test");
+            let mut draw = |events| {
+                context.run(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            ui.set_width(width);
+                            let mut layouter =
+                                |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
+                                    super::draft_layout(
+                                        ui,
+                                        text.as_str(),
+                                        width,
+                                        &[],
+                                        mentions::Specials::default(),
+                                        egui::FontId::proportional(13.6),
+                                    )
+                                };
+                            let background = ui.painter().add(egui::Shape::Noop);
+                            let output = egui::TextEdit::multiline(&mut draft)
+                                .id(id)
+                                .frame(false)
+                                .desired_width(width)
+                                .layouter(&mut layouter)
+                                .show(ui);
+                            super::paint_draft_links(ui, &output, background);
+                            output.response.request_focus();
+                            let galley = &output.galley;
+                            let mut offset = 0;
+                            for row in &galley.rows {
+                                for (index, glyph) in row.glyphs.iter().enumerate() {
+                                    let cursor = egui::text::CCursor {
+                                        index: offset + index,
+                                        prefer_next_row: true,
+                                    };
+                                    let position = galley.pos_from_cursor(cursor).center();
+                                    assert!(
+                                        (position.x - glyph.pos.x - row.pos.x).abs() < 0.1,
+                                        "caret follows shifted glyph"
+                                    );
+                                    assert_eq!(
+                                        galley.cursor_from_pos(position.to_vec2()).index,
+                                        cursor.index
+                                    );
+                                }
+                                offset += row.char_count_including_newline();
+                            }
+                            assert_eq!(offset, galley.text().chars().count());
+                            for run in message_runs(galley.text(), &[]) {
+                                let Run::Link(range, _) = run else { continue };
+                                let chars = galley.text()[..range.start].chars().count()
+                                    ..galley.text()[..range.end].chars().count();
+                                let rects = super::inline_link_rects(galley, chars);
+                                assert!(
+                                    rects[0].left() >= -0.1,
+                                    "leading icon is not clipped at a wrap"
+                                );
+                                assert!(rects.iter().all(|rect| rect.right() <= width + 0.1));
+                            }
+                        });
+                    },
+                )
+            };
+            let output = draw(vec![]);
+            let background_index = output
+                .shapes
+                .iter()
+                .position(|shape| {
+                    matches!(&shape.shape,
+                        egui::Shape::Vec(shapes) if shapes.iter().any(|shape| matches!(shape,
+                            egui::Shape::Rect(rect) if rect.fill == super::LINK.gamma_multiply(0.10)
+                                && rect.corner_radius == egui::CornerRadius::same(4)
+                        ))
+                    )
+                })
+                .expect("rounded draft link fill");
+            let text_index = output
+                .shapes
+                .iter()
+                .position(|shape| {
+                    matches!(&shape.shape,
+                        egui::Shape::Text(text) if text.galley.text() == original
+                    )
+                })
+                .unwrap();
+            assert!(
+                background_index < text_index,
+                "fill stays behind text/selection/caret"
+            );
+            let mut state = egui::TextEdit::load_state(&context, id).unwrap();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(original.chars().count()),
+                )));
+            state.store(&context, id);
+            let copied_output = draw(vec![egui::Event::Copy]);
+            assert_eq!(copied(&copied_output), [original]);
+            let replaced = draw(vec![egui::Event::Text("www.replaced.example".into())]);
+            assert!(opened_url(&replaced).is_none(), "draft URLs never navigate");
+            assert_eq!(draft, "www.replaced.example");
+        }
     }
 
     #[test]
@@ -47770,20 +48128,21 @@ mod tests {
                     continue;
                 };
                 let chars = text[..range.start].chars().count()..text[..range.end].chars().count();
-                let rects = super::pill_rects(&shape.galley, chars.clone());
-                let last = rects.last().unwrap().translate(shape.pos.to_vec2());
-                let icon = egui::pos2(last.right() + super::LINK_ICON_SPACE / 2.0, last.center().y);
+                let rects = super::inline_link_rects(&shape.galley, chars.clone());
+                let first = rects.first().unwrap().translate(shape.pos.to_vec2());
+                let icon_rect = super::inline_link_icon(first);
+                let icon = icon_rect.center();
                 assert!(
-                    icon.x + 5.5 <= width,
-                    "final/wrapped icon stays inside the panel"
+                    icon.x - 5.5 >= 0.0 && icon.x + 5.5 <= width,
+                    "leading/wrapped icon stays inside the panel"
                 );
-                if range.end < text.len() {
-                    let next = super::pill_rects(&shape.galley, chars.end..chars.end + 1)[0]
-                        .translate(shape.pos.to_vec2());
+                if chars.start > 0 {
+                    let previous = super::pill_rects(&shape.galley, chars.start - 1..chars.start)
+                        [0]
+                    .translate(shape.pos.to_vec2());
                     assert!(
-                        next.top() >= last.bottom()
-                            || next.left() >= last.right() + super::LINK_ICON_SPACE - 0.5,
-                        "punctuation cannot overlap the icon"
+                        !previous.intersects(icon_rect),
+                        "punctuation cannot overlap the icon: width={width}, link={href}, previous={previous:?}, first={first:?}"
                     );
                 }
                 draw(vec![

@@ -200,10 +200,17 @@ export default function MentionTextarea({
                 Decoration.inline(position, position + segment.text.length, { class: "chat-draft-mention" }),
               );
             for (const part of linkSegments(segment.text)) {
-              if (part.href)
+              if (part.href) {
                 decorations.push(
-                  Decoration.inline(position, position + part.text.length, { class: "chat-draft-link" }),
+                  Decoration.inline(position, position + part.text.length, {
+                    class: "chat-draft-link",
+                    spellcheck: "false",
+                  }),
+                  // Reserve decorative icon space on the first character, without
+                  // adding a document position, clipboard character or keyboard stop.
+                  Decoration.inline(position, position + Array.from(part.text)[0].length, { class: "chat-link-start" }),
                 );
+              }
               position += part.text.length;
             }
           }

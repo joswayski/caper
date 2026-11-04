@@ -41,17 +41,68 @@ class MentionAutocompleteTest {
     private val everyone = MessageMention("everyone")
     private val here = MessageMention("here")
 
-    @Test fun `draft URLs and mentions highlight without changing text or offsets`() {
+    @Test fun `draft URL decorations are visual only and every source offset round trips`() {
         val text = "🙂 @Maya HTTPS://Caper.chat/invite/AbCd www.Example.org/Path?q=Case."
         val styled = MentionVisualTransformation(space(person("maya"))).filter(androidx.compose.ui.text.AnnotatedString(text))
-        assertEquals(text, styled.text.text)
-        assertEquals(listOf("@Maya", "HTTPS://Caper.chat/invite/AbCd", "www.Example.org/Path?q=Case"),
-            styled.text.spanStyles.map { text.substring(it.start, it.end) })
-        assertTrue(styled.text.spanStyles.drop(1).all { it.item.color == chat.caper.android.ui.LinkBlue })
+        assertEquals(text, styled.text.text.replace(DraftLinkPrefix, ""))
+        val links = styled.text.getStringAnnotations(DraftLinkPill, 0, styled.text.length)
+        assertEquals(listOf("https://Caper.chat/invite/AbCd", "https://www.Example.org/Path?q=Case"), links.map { it.item })
+        assertEquals(listOf(DraftLinkPrefix + "HTTPS://Caper.chat/invite/AbCd", DraftLinkPrefix + "www.Example.org/Path?q=Case"),
+            links.map { styled.text.text.substring(it.start, it.end) })
+        assertEquals("@Maya", styled.text.spanStyles.last().let { styled.text.text.substring(it.start, it.end) })
+        assertTrue(styled.text.spanStyles.take(2).all { it.item.color == chat.caper.android.ui.LinkBlue })
         for (offset in 0..text.length) {
-            assertEquals(offset, styled.offsetMapping.originalToTransformed(offset))
-            assertEquals(offset, styled.offsetMapping.transformedToOriginal(offset))
+            assertEquals(offset, styled.offsetMapping.transformedToOriginal(styled.offsetMapping.originalToTransformed(offset)))
         }
+        links.forEach { link ->
+            val original = styled.offsetMapping.transformedToOriginal(link.start)
+            for (offset in link.start..link.start + DraftLinkPrefix.length) {
+                assertEquals(original, styled.offsetMapping.transformedToOriginal(offset))
+            }
+        }
+    }
+
+    @Test fun `URL offset maps remain monotone through typing deletion Unicode and adjacent mentions`() {
+        val transformation = MentionVisualTransformation(space(person("maya")))
+        listOf("", "https://", "https://a.co", "https://a.co\nwww.b.org", "🙂 https://a.co/👩‍💻 @maya",
+            "https://a.co/(@maya) www.b.org.", "**https://a.co** _www.b.org_", "עברית https://a.co 中文").forEach { text ->
+            // Every typed prefix, including a URL becoming valid/invalid, gets fresh mappings.
+            for (length in 0..text.length) {
+                val input = text.take(length)
+                val projection = chat.caper.android.data.formattedMessage(input)
+                val rendered = transformation.filter(androidx.compose.ui.text.AnnotatedString(input))
+                val forward = (0..input.length).map(rendered.offsetMapping::originalToTransformed)
+                val reverse = (0..rendered.text.length).map(rendered.offsetMapping::transformedToOriginal)
+                assertEquals(forward.sorted(), forward)
+                assertEquals(reverse.sorted(), reverse)
+                assertTrue(forward.all { it in 0..rendered.text.length })
+                assertTrue(reverse.all { it in 0..input.length })
+                // Hidden delimiters collapse to the formatter's canonical source caret;
+                // decorative spacing must not change that affinity.
+                forward.forEachIndexed { source, display ->
+                    assertEquals(projection.original(projection.displayed(source)), reverse[display])
+                }
+                assertEquals(projection.text, rendered.text.text.replace(DraftLinkPrefix, ""))
+            }
+        }
+    }
+
+    @Test fun `draft transformation preserves formatting annotations composition and selected source text`() {
+        val text = "https://a.co @maya www.b.org"
+        val original = androidx.compose.ui.text.AnnotatedString.Builder(text).apply {
+            addStyle(androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold), 0, text.length)
+        }.toAnnotatedString()
+        val value = TextFieldValue(original, TextRange(8, 12), TextRange(8, 12))
+        val rendered = MentionVisualTransformation(space(person("maya"))).filter(value.annotatedString)
+        assertEquals(text, value.text)
+        assertEquals(TextRange(8, 12), value.selection)
+        assertEquals(TextRange(8, 12), value.composition)
+        val selectedStart = rendered.offsetMapping.originalToTransformed(value.selection.start)
+        val selectedEnd = rendered.offsetMapping.originalToTransformed(value.selection.end)
+        assertEquals("a.co", rendered.text.text.substring(selectedStart, selectedEnd))
+        assertTrue(rendered.text.spanStyles.any { it.item.fontWeight == androidx.compose.ui.text.font.FontWeight.Bold })
+        val mention = rendered.text.spanStyles.last()
+        assertEquals("@maya", rendered.text.text.substring(mention.start, mention.end))
     }
 
     @Test fun `draft highlights preserve text and offsets and use conversation scope`() {

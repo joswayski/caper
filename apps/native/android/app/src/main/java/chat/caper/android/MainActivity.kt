@@ -3568,12 +3568,15 @@ internal fun messageText(
     val renderedLinks = links.map { it.copy(start = formatted.displayed(it.start), end = formatted.displayed(it.end)) }
     var cursor = 0
     renderedLinks.forEach { link ->
-        append(rendered.substring(cursor, link.end))
-        appendInlineContent(ExternalLinkInline)
+        append(rendered.substring(cursor, link.start))
+        appendInlineContent(ChainLinkInline)
+        append(rendered.substring(link.start, link.end))
         cursor = link.end
     }
     append(rendered.substring(cursor))
-    fun renderedOffset(offset: Int) = offset + renderedLinks.count { it.end <= offset }
+    // Boundaries sit before an icon at that offset: a URL owns its leading icon,
+    // while the preceding formatting run/mention never absorbs it.
+    fun renderedOffset(offset: Int) = offset + renderedLinks.count { it.start < offset }
     fun displayed(offset: Int) = renderedOffset(formatted.displayed(offset))
     mentions.forEach { span ->
         // With [entries], a person's pill is a link (focusable, Enter-activatable; 32% while hovered, focused or pressed).
@@ -3600,11 +3603,11 @@ internal fun messageText(
 private val MentionPill = SpanStyle(color = Text, fontWeight = FontWeight.Medium, background = Terracotta.copy(alpha = 0.24f))
 private val MentionPillActive = SpanStyle(background = Terracotta.copy(alpha = 0.32f))
 private val MentionPillLink = TextLinkStyles(MentionPill, focusedStyle = MentionPillActive, hoveredStyle = MentionPillActive, pressedStyle = MentionPillActive)
-internal const val ExternalLinkInline = "external-link"
-@Composable internal fun messageInlineContent() = mapOf(ExternalLinkInline to InlineTextContent(
-    Placeholder(14.sp, 12.sp, PlaceholderVerticalAlign.TextCenter),
+internal const val ChainLinkInline = "chain-link"
+@Composable internal fun messageInlineContent() = mapOf(ChainLinkInline to InlineTextContent(
+    Placeholder(16.sp, 12.sp, PlaceholderVerticalAlign.TextCenter),
 ) {
-    Icon(painterResource(R.drawable.lucide_external_link), null, Modifier.fillMaxSize().padding(start = 3.dp), tint = LinkBlue)
+    Icon(painterResource(R.drawable.lucide_link), null, Modifier.fillMaxSize().padding(end = 4.dp), tint = LinkBlue)
 })
 private val MessageLinkActive = SpanStyle(color = LinkBlueActive, textDecoration = TextDecoration.Underline)
 internal val MessageLink = TextLinkStyles(

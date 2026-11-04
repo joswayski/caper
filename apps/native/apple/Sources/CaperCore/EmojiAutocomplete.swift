@@ -263,13 +263,13 @@ struct SuggestionRow: ViewModifier {
 }
 
 #if os(iOS) || os(macOS)
-private extension NSAttributedString.Key {
+extension NSAttributedString.Key {
     static let composerDelimiter = NSAttributedString.Key("CaperComposerDelimiter")
 }
 
 /// TextKit keeps the original string (and native selection/IME/undo coordinates),
 /// but recognized Markdown delimiters have no drawn glyph or advance.
-private final class ComposerGlyphs: NSObject, NSLayoutManagerDelegate {
+final class ComposerGlyphs: NSObject, NSLayoutManagerDelegate {
     func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
                        properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
                        characterIndexes charIndexes: UnsafePointer<Int>, font: PlatformComposerFont,
@@ -290,13 +290,15 @@ private final class ComposerGlyphs: NSObject, NSLayoutManagerDelegate {
 }
 
 #if os(iOS)
-private typealias PlatformComposerFont = UIFont
+typealias PlatformComposerFont = UIFont
 #else
-private typealias PlatformComposerFont = NSFont
+typealias PlatformComposerFont = NSFont
 #endif
 
 /// Attribute-only rendering preserves the wire draft and native editing transactions.
-@MainActor private func highlightDraft(_ storage: NSTextStorage, source: MentionSource) {
+/// First-character kerning reserves space for the drawing-only URL icon; the
+/// glyph delegate independently hides delimiters in the same source coordinates.
+@MainActor func highlightDraft(_ storage: NSTextStorage, source: MentionSource) {
     let projection = MessageFormatting.projection(storage.string)
     let visible = projection.runs.map(\.text).joined()
     let ranges = MentionAutocomplete.draftHighlights(in: visible, source: source).map { range in
@@ -305,12 +307,10 @@ private typealias PlatformComposerFont = NSFont
     }
     #if os(iOS)
     let color = UIColor(CaperTheme.terracotta).withAlphaComponent(0.24)
-    let linkColor = UIColor(CaperTheme.link).withAlphaComponent(0.14)
     let textColor = UIColor(CaperTheme.text)
     let linkTextColor = UIColor(CaperTheme.link)
     #else
     let color = NSColor(CaperTheme.terracotta).withAlphaComponent(0.24)
-    let linkColor = NSColor(CaperTheme.link).withAlphaComponent(0.14)
     let textColor = NSColor(CaperTheme.text)
     let linkTextColor = NSColor(CaperTheme.link)
     #endif
@@ -318,6 +318,8 @@ private typealias PlatformComposerFont = NSFont
     storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: storage.length))
     storage.removeAttribute(.obliqueness, range: NSRange(location: 0, length: storage.length))
     storage.removeAttribute(.composerDelimiter, range: NSRange(location: 0, length: storage.length))
+    storage.removeAttribute(.draftLink, range: NSRange(location: 0, length: storage.length))
+    storage.removeAttribute(.kern, range: NSRange(location: 0, length: storage.length))
     storage.addAttribute(.foregroundColor, value: textColor, range: NSRange(location: 0, length: storage.length))
     let baseFont = PlatformComposerFont(name: "Satoshi-Regular", size: 14) ?? PlatformComposerFont.systemFont(ofSize: 14)
     storage.addAttribute(.font, value: baseFont, range: NSRange(location: 0, length: storage.length))
@@ -341,7 +343,9 @@ private typealias PlatformComposerFont = NSFont
         let range = NSRange(location: offset, length: segment.text.utf16.count)
         offset += range.length
         if segment.href != nil, !ranges.contains(where: { NSIntersectionRange($0, range).length > 0 }) {
-            storage.addAttributes([.backgroundColor: linkColor, .foregroundColor: linkTextColor], range: range)
+            storage.addAttributes([.draftLink: range.location, .foregroundColor: linkTextColor], range: range)
+            storage.addAttribute(.kern, value: DraftLinkLayoutManager.iconAdvance,
+                                 range: NSRange(location: range.location, length: 1))
         }
     }
     for range in ranges { storage.addAttribute(.backgroundColor, value: color, range: range) }
@@ -540,8 +544,12 @@ struct NativeMessageTextEditor: UIViewRepresentable {
     @Environment(\.isEnabled) private var isEnabled
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
-        let view = ComposerTextView(); view.delegate = context.coordinator
-        view.layoutManager.delegate = view.composerGlyphs
+        let storage = NSTextStorage()
+        let layout = DraftLinkLayoutManager(); storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true; layout.addTextContainer(container)
+        let view = ComposerTextView(frame: .zero, textContainer: container); view.delegate = context.coordinator
+        layout.delegate = view.composerGlyphs
         let touchDown = TouchDownObserver(target: nil, action: nil)
         touchDown.cancelsTouchesInView = false; touchDown.delaysTouchesEnded = false
         touchDown.touched = { [weak view] in view?.touched() }
@@ -665,6 +673,8 @@ struct NativeMessageTextEditor: UIViewRepresentable {
             view.typingAttributes.removeValue(forKey: .obliqueness)
             view.typingAttributes[.font] = UIFont(name: "Satoshi-Regular", size: 14)
             view.typingAttributes.removeValue(forKey: .backgroundColor)
+            view.typingAttributes.removeValue(forKey: .draftLink)
+            view.typingAttributes.removeValue(forKey: .kern)
             view.typingAttributes[.foregroundColor] = UIColor(CaperTheme.text)
             highlighting = false
         }
@@ -779,6 +789,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); let view = ComposerTextView()
+        view.textContainer?.replaceLayoutManager(DraftLinkLayoutManager())
         view.layoutManager?.delegate = view.composerGlyphs
         scroll.documentView = view; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         view.delegate = context.coordinator; view.drawsBackground = false; view.textColor = NSColor(CaperTheme.text)
@@ -830,7 +841,9 @@ struct NativeMessageTextEditor: NSViewRepresentable {
         // invalidates SwiftUI's layout, which measures again, without end.
         var attributes: [NSAttributedString.Key: Any] = [:]
         if let font = view.font { attributes[.font] = font }
-        let storage = view.textStorage.map { NSTextStorage(attributedString: $0) } ?? NSTextStorage(string: view.string, attributes: attributes)
+        // Include the icon's reserved width and hide delimiters just as in the live editor.
+        let storage = view.textStorage.map { NSTextStorage(attributedString: $0) }
+            ?? NSTextStorage(string: view.string, attributes: attributes)
         let layout = NSLayoutManager(); storage.addLayoutManager(layout)
         layout.delegate = view.composerGlyphs
         let container = NSTextContainer(size: NSSize(width: width.isFinite ? max(40, width - 16) : CGFloat.greatestFiniteMagnitude,
@@ -903,6 +916,8 @@ struct NativeMessageTextEditor: NSViewRepresentable {
             view.typingAttributes[.font] = NSFont(name: "Satoshi-Regular", size: 14)
             view.typingAttributes.removeValue(forKey: .backgroundColor)
             view.typingAttributes.removeValue(forKey: .toolTip)
+            view.typingAttributes.removeValue(forKey: .draftLink)
+            view.typingAttributes.removeValue(forKey: .kern)
             view.typingAttributes[.foregroundColor] = NSColor(CaperTheme.text)
             highlighting = false
         }

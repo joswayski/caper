@@ -5947,20 +5947,21 @@ extension MessageLinks {
             if let href = run.href, let url = URL(string: href) {
                 part.link = url
                 part.foregroundColor = CaperTheme.link
-                let icon = Text(Image(systemName: "arrow.up.right.square"))
+                let icon = Text(Image(systemName: "link"))
                     .font(.system(size: 10))
+                    .kerning(3)
                     .foregroundColor(CaperTheme.link)
                     .accessibilityLabel(Text(""))
                 if #available(iOS 18.0, macOS 15.0, *) {
                     let attribute = MessageLinkAttribute(id: UUID())
-                    rendered = rendered + Text(part).underline(false).customAttribute(attribute)
-                        + icon.customAttribute(attribute)
+                    rendered = rendered + icon.customAttribute(attribute)
+                        + Text(part).underline(false).customAttribute(attribute)
                 } else {
                     // iOS 17/macOS 14: native attributed backgrounds preserve
                     // wrapping/actions, but have square corners, no padding or
                     // glow, and cannot include the decorative image attachment.
                     part.backgroundColor = CaperTheme.link.opacity(0.10)
-                    rendered = rendered + Text(part).underline(false) + icon
+                    rendered = rendered + icon + Text(part).underline(false)
                 }
             } else {
                 rendered = rendered + Text(part)

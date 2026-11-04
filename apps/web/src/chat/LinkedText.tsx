@@ -1,4 +1,4 @@
-import { ExternalLink } from "lucide-react";
+import { Link } from "lucide-react";
 import { linkSegments } from "./links.ts";
 import FormattedText from "./FormattedText.tsx";
 import { formattedRuns } from "./formatting.ts";
@@ -13,8 +13,8 @@ export default function LinkedText({ text, formatted = true }: { text: string; f
     <>
       {linkSegments(text).map((segment, index) => {
         if (!segment.href) return segment.text;
-        // Keep the icon with the URL's last code point, even when the URL wraps.
-        const last = Array.from(segment.text).at(-1)!;
+        // Keep the decorative chain with the URL's first character when wrapping.
+        const first = Array.from(segment.text)[0];
         return (
           <a
             key={index}
@@ -25,11 +25,11 @@ export default function LinkedText({ text, formatted = true }: { text: string; f
             // The row opens message actions on click/long-press; a link only navigates.
             onClick={(event) => event.stopPropagation()}
           >
-            {segment.text.slice(0, -last.length)}
-            <span className="chat-link-end">
-              {last}
-              <ExternalLink aria-hidden="true" />
+            <span className="chat-link-start">
+              <Link aria-hidden="true" />
+              {first}
             </span>
+            {segment.text.slice(first.length)}
           </a>
         );
       })}

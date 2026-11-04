@@ -794,15 +794,22 @@ button.chat-reply-source {
   text-underline-offset: 2px;
   overflow-wrap: anywhere;
 }
-.chat-link-end {
+.chat-link-start {
   white-space: nowrap;
 }
-.chat-link-end svg {
+.chat-link-start svg,
+.chat-draft-link.chat-link-start::before {
   display: inline-block;
-  width: 0.75em;
-  height: 0.75em;
-  margin-left: 2px;
-  vertical-align: -0.05em;
+  width: 0.95em;
+  height: 0.95em;
+  margin-right: 0.22em;
+  vertical-align: -0.13em;
+}
+.chat-draft-link.chat-link-start::before {
+  content: "";
+  background: currentcolor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/%3E%3Cpath d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/%3E%3C/svg%3E")
+    center / contain no-repeat;
 }
 @media (hover: hover) and (prefers-reduced-motion: no-preference) {
   .call-page a.chat-link {
@@ -2345,9 +2352,16 @@ button.chat-mention-card-avatar {
   background: color-mix(in srgb, var(--link) 14%, transparent);
   border-radius: 4px;
   box-decoration-break: clone;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--link) 14%, transparent),
-    0 0 6px color-mix(in srgb, var(--link) 8%, transparent);
+  padding: 1px 3px 1px 0;
+}
+.chat-rich-input .chat-draft-link.chat-link-start {
+  padding: 1px 0 1px 3px;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.chat-rich-input .chat-link-start + .chat-draft-link {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
 @media (forced-colors: active) {
   .chat-rich-input {

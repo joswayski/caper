@@ -21,6 +21,13 @@ const session = `emoji-${process.pid}`;
 const artifacts = process.env.EMOJI_TEST_ARTIFACTS && resolve(process.env.EMOJI_TEST_ARTIFACTS);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
 function browser(...args) {
+  if (args[0] === "fill" && args[1] === "#chat-message") {
+    browser("click", args[1]);
+    browser("press", "Control+a");
+    browser("press", "Backspace");
+    if (args[2]) browser("type", args[1], args[2]);
+    return;
+  }
   const result = JSON.parse(
     execFileSync("agent-browser", ["--session", session, ...args, "--json"], { encoding: "utf8", timeout: 60_000 }),
   );
