@@ -5569,9 +5569,12 @@ private struct MessageRow: View {
                         .help("More actions")
                         .accessibilityLabel("Message options")
                 }.padding(3)
-                    .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                    .background {
+                        // Only the shell casts a shadow, not each emoji and hover highlight.
+                        RoundedRectangle(cornerRadius: 8).fill(CaperTheme.surface)
+                            .shadow(color: .black.opacity(0.2), radius: 6, y: 4)
+                    }
                     .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(CaperTheme.border, lineWidth: 1).allowsHitTesting(false) }
-                    .shadow(color: .black.opacity(0.2), radius: 6, y: 4)
                     .opacity(controlsHovered || quickReactionFocused != nil || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
                     .allowsHitTesting(controlsHovered || quickReactionFocused != nil || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
                     .padding(.trailing, 15).padding(.top, message.replyTo == nil || message.isDeleted ? 3 : max(0, actionsTop - 3))
