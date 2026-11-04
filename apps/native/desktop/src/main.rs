@@ -1366,6 +1366,8 @@ struct CaperApp {
     typing_edited: Instant,
     typing_pulse: Instant,
     presence: BTreeMap<String, String>,
+    presence_snapshots: BTreeMap<String, BTreeMap<String, String>>,
+    presence_pending: Option<Instant>,
     member_search: String,
     member_search_open: bool,
     members_visible: bool,
@@ -1737,6 +1739,8 @@ impl CaperApp {
             typing_edited: now,
             typing_pulse: now,
             presence: BTreeMap::new(),
+            presence_snapshots: BTreeMap::new(),
+            presence_pending: None,
             member_search: String::new(),
             member_search_open: false,
             members_visible: true,
@@ -5338,6 +5342,9 @@ impl CaperApp {
 
     fn reset_account_state(&mut self) {
         self.reset_direct_lookup();
+        self.presence.clear();
+        self.presence_snapshots.clear();
+        self.presence_pending = None;
         self.worker.showing(None);
         self.worker.send(Command::StopNotifications);
         self.account_epoch += 1;
@@ -7207,7 +7214,13 @@ impl CaperApp {
                             .map(|detail| detail.space.id.as_str());
                 if space_changed {
                     self.voice_join_request += 1;
-                    self.presence.clear();
+                    self.presence = prepared
+                        .detail
+                        .as_ref()
+                        .and_then(|detail| self.presence_snapshots.get(&detail.space.id))
+                        .cloned()
+                        .unwrap_or_default();
+                    self.presence_pending = Some(Instant::now());
                     self.member_search.clear();
                     self.member_search_open = false;
                 }
@@ -7294,6 +7307,7 @@ impl CaperApp {
                     if error.space_access_denied {
                         if let Some(space) = &self.selected_space {
                             self.voice.revoke_space(space);
+                            self.presence_snapshots.remove(space);
                         }
                         self.selected_space = None;
                         self.detail = None;
@@ -7662,7 +7676,9 @@ impl CaperApp {
                 self.live = if online { "Live".into() } else { detail };
                 if !online {
                     self.typers.clear();
-                    self.presence.clear();
+                    if self.live != "Connecting…" {
+                        self.presence_pending = None;
+                    }
                 }
             }
             GatewayEvent::Message {
@@ -7908,6 +7924,8 @@ impl CaperApp {
                     .into_iter()
                     .map(|Presence { user_id, status }| (user_id, status))
                     .collect();
+                self.presence_snapshots.insert(space, self.presence.clone());
+                self.presence_pending = None;
             }
             GatewayEvent::Resync {
                 generation,
@@ -9627,6 +9645,8 @@ impl CaperApp {
     /// navigation, dialogs, member lists and (outside a DM) its channel.
     fn forget_open_space(&mut self, id: &str) {
         self.voice.revoke_space(id);
+        self.presence_snapshots.remove(id);
+        self.presence_pending = None;
         self.invalidate_navigation_cache();
         self.spaces.retain(|space| space.id != id);
         self.dialog = None;
@@ -15849,6 +15869,10 @@ impl CaperApp {
             )
         });
         let demo = detail.space.demo;
+        let presence_loading = self
+            .presence_pending
+            .is_some_and(|started| started.elapsed() < Duration::from_secs(10))
+            && !self.presence_snapshots.contains_key(&detail.space.id);
         let frame = egui::Frame::new().fill(SIDEBAR);
         let frame = if overlay {
             frame.corner_radius(16).stroke(Stroke::new(1.0, BORDER))
@@ -15937,6 +15961,14 @@ impl CaperApp {
             );
             return;
         }
+        if presence_loading {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+            ui.horizontal(|ui| {
+                ui.add_space(16.0);
+                ui.label(RichText::new("Loading members…").size(11.0).color(MUTED));
+            });
+            return;
+        }
         let query = self.member_search.trim().to_lowercase();
         let members: Vec<_> = members.into_iter().filter(|member| member.display_name.to_lowercase().contains(&query) || member.username.to_lowercase().contains(&query)).collect();
         egui::ScrollArea::vertical()
@@ -16001,6 +16033,9 @@ impl CaperApp {
                 });
                 let response = ui.interact(row.response.rect, ui.id().with(("member-profile", &member.id)), egui::Sense::click())
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
+                let response = if self.live != "Live" || self.presence_pending.is_some() {
+                    response.on_hover_text("Last known status; reconnecting")
+                } else { response };
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open profile for {}", member.display_name)));
                 if response.hovered() || response.has_focus() {
                     ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, SURFACE_HOVER));
@@ -55769,15 +55804,23 @@ mod tests {
     }
 
     #[test]
-    fn presence_survives_same_space_navigation_and_clears_across_spaces() {
+    fn presence_survives_navigation_without_leaking_between_spaces() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-desktop"),
         );
-        app.presence.insert("member".into(), "online".into());
+        app.gateway(GatewayEvent::Presence {
+            generation: app.generation,
+            space: app.selected_space.clone().unwrap(),
+            members: vec![model::Presence {
+                user_id: "member".into(),
+                status: "online".into(),
+            }],
+        });
         let detail = app.detail.clone();
+        let original_detail = detail.clone();
         app.select_channel("same-space".into(), false);
         app.accept_navigation(
             app.generation,
@@ -55809,6 +55852,46 @@ mod tests {
             }),
         );
         assert!(app.presence.is_empty());
+        assert!(app.presence_pending.is_some());
+        app.navigate(NavigationTarget {
+            space: original_detail
+                .as_ref()
+                .map(|detail| detail.space.id.clone()),
+            channel: Some("same-space".into()),
+        });
+        app.accept_navigation(
+            app.generation,
+            app.navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: original_detail,
+                conversation: Some((history("same-space"), Ok(session()))),
+            }),
+        );
+        app.gateway(GatewayEvent::Status {
+            generation: app.generation,
+            channel: "same-space".into(),
+            online: false,
+            detail: "Connecting…".into(),
+        });
+        assert_eq!(
+            app.presence.get("member").map(String::as_str),
+            Some("online")
+        );
+        app.gateway(GatewayEvent::Presence {
+            generation: app.generation,
+            space: app.selected_space.clone().unwrap(),
+            members: vec![model::Presence {
+                user_id: "member".into(),
+                status: "offline".into(),
+            }],
+        });
+        assert_eq!(
+            app.presence.get("member").map(String::as_str),
+            Some("offline")
+        );
+        app.logout();
+        assert!(app.presence.is_empty());
+        assert!(app.presence_snapshots.is_empty());
     }
 
     #[test]

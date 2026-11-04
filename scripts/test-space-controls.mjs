@@ -27,12 +27,15 @@ function fixture() {
     debugEnabled: new URL(location.href).searchParams.has("debug"),
   };
   const space = { id: "space1234567", name: "Disposable UI fixture", ownerId: account.id };
+  const otherSpace = { ...space, id: "space7654321", name: "Second UI fixture" };
+  const multipleSpaces = new URL(location.href).searchParams.has("multiSpace");
   const channel = {
     id: "channel12345",
     spaceId: space.id,
     name: "fixture-channel",
     private: !new URL(location.href).searchParams.has("publicChannel"),
   };
+  const otherChannel = { ...channel, id: "channel54321", spaceId: otherSpace.id, name: "second-channel" };
   const members = [
     { ...account, owner: true },
     ...Array.from({ length: 29 }, (_, index) => ({
@@ -102,7 +105,7 @@ function fixture() {
                   type: "snapshot",
                   members: (request.allMembers ? members.map((m) => m.id) : request.userIds).map((userId, index) => ({
                     userId,
-                    status: ["online", "idle", "offline"][index % 3],
+                    status: request.spaceId === otherSpace.id ? "offline" : ["online", "idle", "offline"][index % 3],
                   })),
                 }
               : { type: "snapshot", participants: [], revision: 1 };
@@ -174,10 +177,19 @@ function fixture() {
       });
     if (path === "/api/spaces")
       return Response.json({
-        spaces: deletedSpace ? [] : [space],
+        spaces: deletedSpace ? [] : multipleSpaces ? [space, otherSpace] : [space],
         limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 },
       });
     if (path.endsWith("/members")) return Response.json({ members: [{ ...account, owner: true }] });
+    if (path === `/api/spaces/${otherSpace.id}`)
+      return Response.json({
+        space: otherSpace,
+        channels: [otherChannel],
+        members,
+        channelMembers: otherChannel.private ? { [otherChannel.id]: [account.id] } : {},
+      });
+    if (path.includes(otherChannel.id) && path.endsWith("/messages"))
+      return Response.json({ space: otherSpace, channel: otherChannel, messages: [], cursor: "0", hasMore: false });
     if (path === `/api/spaces/${space.id}`)
       return Response.json({
         space,
@@ -625,7 +637,10 @@ function testMembers() {
   for (const width of [1280, 390]) {
     for (const privateChannel of [false, true]) {
       browser("set", "viewport", String(width), "844", "2");
-      browser("open", `${url}?space=space1234567&channel=channel12345${privateChannel ? "" : "&publicChannel"}`);
+      browser(
+        "open",
+        `${url}?space=space1234567&channel=channel12345&multiSpace${privateChannel ? "" : "&publicChannel"}`,
+      );
       wait('!!document.querySelector(".chat-heading")');
       if (!evaluate('!!document.querySelector(".space-member-presence")')) {
         browser("click", 'summary[aria-label="#fixture-channel options"]');
@@ -652,10 +667,58 @@ function testMembers() {
               ["Offline", 10],
             ],
       );
-      const subscription = evaluate(
+      screenshot(`roster-${width}-${privateChannel ? "private" : "public"}`);
+      {
+        const geometry = () =>
+          evaluate(
+            '[...document.querySelectorAll(".member-roster li")].map(n => [n.textContent, n.getBoundingClientRect().y])',
+          );
+        const originalGeometry = geometry();
+        evaluate("spaceControlFixture.holdPresence = true");
+        if (width === 390) {
+          closeMembers();
+          openBrowse();
+        }
+        browser("click", '[aria-label="Second UI fixture"]');
+        wait(
+          'document.querySelector(".space-rail [aria-current=page]")?.getAttribute("aria-label") === "Second UI fixture"',
+        );
+        if (width === 390) {
+          closeBrowse();
+          toggleMembers();
+        }
+        wait('document.querySelector(".member-roster [role=status]")?.textContent === "Loading members…"');
+        assert.equal(evaluate('document.querySelectorAll(".member-roster li").length'), 0);
+        screenshot(`roster-${width}-first-visit-loading`);
+        evaluate('spaceControlFixture.setPresence("offline")');
+        wait('document.querySelectorAll(".member-roster li").length === 30');
+        if (width === 390) {
+          closeMembers();
+          openBrowse();
+        }
+        browser("click", '[aria-label="Disposable UI fixture"]');
+        wait(
+          'document.querySelector(".space-rail [aria-current=page]")?.getAttribute("aria-label") === "Disposable UI fixture"',
+        );
+        if (width === 390) {
+          closeBrowse();
+          toggleMembers();
+        }
+        assert.deepEqual(
+          geometry(),
+          originalGeometry,
+          "Returning restores row positions before any presence snapshot arrives",
+        );
+        assert.equal(
+          evaluate('document.querySelector(".member-roster").textContent.includes("Status unavailable")'),
+          false,
+        );
+        screenshot(`roster-${width}-returning-pending`);
+        evaluate("spaceControlFixture.holdPresence = false");
+      }
+      const currentSubscription = evaluate(
         'Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence" && s.allMembers).id',
       );
-      screenshot(`roster-${width}-${privateChannel ? "private" : "public"}`);
       browser("click", '[aria-label="Search members"]');
       assert.equal(evaluate('document.activeElement.getAttribute("aria-label")'), "Filter members");
       browser("fill", '[aria-label="Filter members"]', " MEMBER_28 ");
@@ -677,15 +740,17 @@ function testMembers() {
       );
       assert.equal(
         evaluate("Object.values(spaceControlFixture.subscriptions).find(s => s.allMembers).id"),
-        subscription,
+        currentSubscription,
         "Filtering must not resubscribe",
       );
       assert.equal(evaluate('document.querySelector(".member-presence-heading .section-count").textContent'), "30");
       evaluate('spaceControlFixture.setPresence("offline")');
       wait('[...document.querySelectorAll(".member-roster .presence-dot")].every(n => n.dataset.status === "offline")');
       evaluate("spaceControlFixture.disconnect()");
-      wait('document.querySelectorAll(".member-roster [data-status=unknown]").length === 30');
-      screenshot(`roster-${width}-unavailable`);
+      wait(
+        '[...document.querySelectorAll(".member-roster .presence-dot")].filter(n => n.getAttribute("aria-label") === "Offline (last known; reconnecting)").length === 30',
+      );
+      screenshot(`roster-${width}-reconnecting`);
       assert.ok(evaluate("document.documentElement.scrollWidth <= innerWidth"));
     }
   }

@@ -40,6 +40,7 @@ describe("memberGroups", () => {
         root.render(
           createElement(MemberPresence, {
             spaceId: "space",
+            snapshots: new Map(),
             members,
             onMessagePerson: async () => {},
             onBlockAuthor: () => {},
@@ -50,7 +51,8 @@ describe("memberGroups", () => {
       );
       const rows = (label: string) =>
         [...host.querySelectorAll(`section[aria-label="${label}"] strong`)].map((el) => el.textContent);
-      expect(rows("Status unavailable")).toEqual(["ANA", "BO", "CY", "DEE"]);
+      expect(rows("Status unavailable")).toEqual([]);
+      expect(host.querySelector('[role="status"]')?.textContent).toBe("Loading members…");
       const update = vi.mocked(watchPresence).mock.calls.at(-1)![2];
       await act(async () =>
         update([
@@ -73,9 +75,78 @@ describe("memberGroups", () => {
       expect(rows("Online")).toEqual(["ANA", "BO", "DEE"]);
       expect(host.querySelector('section[aria-label="Offline"]')).toBeNull();
       await act(async () => vi.mocked(watchPresence).mock.calls.at(-1)![3]!(false));
+      expect(rows("Online")).toEqual(["ANA", "BO", "DEE"]);
+      expect(host.querySelector('[aria-label="Online (last known; reconnecting)"]')).not.toBeNull();
+      await act(async () =>
+        vi.mocked(watchPresence).mock.calls.at(-1)![4]!(Object.assign(new Error("Denied"), { status: 403 })),
+      );
       expect(rows("Status unavailable")).toEqual(["ANA", "BO", "CY", "DEE"]);
     } finally {
       await act(async () => root.unmount());
+    }
+  });
+
+  it("restores each space without regrouping, fences late snapshots, and clears another account's cache", async () => {
+    vi.useFakeTimers();
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    const snapshots = new Map();
+    const render = (spaceId: string, accountId = "account") =>
+      act(async () =>
+        root.render(
+          createElement(MemberPresence, {
+            spaceId,
+            snapshots,
+            accountId,
+            members,
+            onMessagePerson: async () => {},
+            onBlockAuthor: () => {},
+            profileSpaces: () => [],
+            onClose: () => {},
+          }),
+        ),
+      );
+    const rows = (label: string) =>
+      [...host.querySelectorAll(`section[aria-label="${label}"] strong`)].map((el) => el.textContent);
+    try {
+      await render("a");
+      const oldUpdate = vi.mocked(watchPresence).mock.calls.at(-1)![2];
+      await act(async () => oldUpdate(members.map((m) => ({ userId: m.id, status: "online" }))));
+      await render("b");
+      expect(host.textContent).toContain("Loading members…");
+      expect(rows("Online")).toEqual([]);
+      await act(async () =>
+        vi
+          .mocked(watchPresence)
+          .mock.calls.at(-1)![2](members.map((m) => ({ userId: m.id, status: "offline" }))),
+      );
+      expect(rows("Offline")).toHaveLength(4);
+      await render("a");
+      await act(async () => vi.mocked(watchPresence).mock.calls.at(-1)![3]!(false));
+      expect(rows("Online")).toEqual(["ANA", "BO", "CY", "DEE"]);
+      expect(rows("Status unavailable")).toEqual([]);
+      expect(host.textContent).not.toContain("Loading members…");
+      await act(async () => vi.advanceTimersByTime(10_000));
+      expect(rows("Online")).toHaveLength(4);
+      await act(async () => oldUpdate([]));
+      expect(rows("Online")).toHaveLength(4);
+      await act(async () =>
+        vi
+          .mocked(watchPresence)
+          .mock.calls.at(-1)![2]([{ userId: "ana", status: "offline" }]),
+      );
+      expect(rows("Offline")).toEqual(["ANA"]);
+      expect(rows("Status unavailable")).toEqual(["BO", "CY", "DEE"]);
+      await render("b", "another-account");
+      expect(host.textContent).toContain("Loading members…");
+      expect(rows("Offline")).toEqual([]);
+      await act(async () => vi.advanceTimersByTime(9_999));
+      expect(host.textContent).toContain("Loading members…");
+      await act(async () => vi.advanceTimersByTime(1));
+      expect(rows("Status unavailable")).toHaveLength(4);
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
     }
   });
 
@@ -98,6 +169,7 @@ describe("memberGroups", () => {
         root.render(
           createElement(MemberPresence, {
             spaceId: "space",
+            snapshots: new Map(),
             members: roster,
             channel: { name: "private", memberIds: [roster[150].id] },
             onMessagePerson: async () => {},

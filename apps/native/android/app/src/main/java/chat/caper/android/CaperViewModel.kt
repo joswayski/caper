@@ -52,6 +52,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var chatToken: String? = null
     private var chatAuthor: ChatAuthor? = null
     private var gateway: GatewayClient? = null
+    private val presenceSnapshots = mutableMapOf<String, Map<String, String>>()
+    private var presenceTimeout: Job? = null
     /** The account-wide profiles feed: open while signed in, home and in the foreground. */
     private var profileFeed: ProfileFeedClient? = null
     private var profileFeedAccount = -1L
@@ -339,6 +341,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         ++accountGeneration
         ++spaceAccessGeneration
         invalidate()
+        presenceSnapshots.clear()
         // Signing out gives up every conversation's staged files.
         mutable.value.attachmentDrafts.values.flatten().forEach { abandonDraft(it) }
         mutable.value = mutable.value.copy(attachmentDrafts = emptyMap(), attachmentErrors = emptyMap(), pictureSaves = emptyMap())
@@ -566,6 +569,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun removeUnavailableSpace(id: String) {
         VoiceCallService.stopIfSpace(getApplication(), id)
+        presenceSnapshots.remove(id)
         conversationHistories.entries.removeAll { it.value.space?.id == id }
         ++spaceAccessGeneration
         closeChannel(clearPending = true)
@@ -2857,6 +2861,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun openGateway(channel: String, cursor: String, request: Long, participating: Boolean = true) {
         durableReplayCursor = cursor
         markConversationRead(channel, cursor)
+        val presenceSpace = mutable.value.selectedSpace?.takeIf { participating && !it.space.demo }?.space?.id
+        val cachedPresence = presenceSpace?.let { presenceSnapshots[it] }
+        mutable.value = mutable.value.copy(presence = cachedPresence.orEmpty(), presenceLoading = presenceSpace != null && cachedPresence == null, presenceLive = false)
+        presenceTimeout?.cancel()
+        presenceTimeout = viewModelScope.launch {
+            delay(10_000)
+            if (generation == request) mutable.value = mutable.value.copy(presenceLoading = false)
+        }
         val connection = GatewayClient(
             baseUrl = api.baseUrl, token = accountToken, channelId = channel, initialCursor = cursor,
             // Profile and space changes come from the account-wide [profileFeed], not per conversation.
@@ -2875,7 +2887,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             onEdit = { value -> viewModelScope.launch { if (generation == request) receiveEdit(value) } },
             onTyping = { author, active, revision -> viewModelScope.launch { if (participating && generation == request) receiveTyping(author, active, revision) } },
             onPresence = { snapshot -> viewModelScope.launch {
-                if (participating && generation == request) mutable.value = mutable.value.copy(presence = snapshot.members.associate { it.userId to it.status })
+                if (participating && generation == request) {
+                    val statuses = snapshot.members.associate { it.userId to it.status }
+                    if (presenceSpace != null) presenceSnapshots[presenceSpace] = statuses
+                    presenceTimeout?.cancel()
+                    mutable.value = mutable.value.copy(presence = statuses, presenceLoading = false, presenceLive = true)
+                }
             } },
             onMedia = { channelId, people, sessionStartedAt -> viewModelScope.launch {
                 if (participating && generation == request && (channelId.isEmpty() && mutable.value.selectedSpace?.space?.demo == true ||
@@ -2907,7 +2924,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         gateway = connection
         gatewayStatus = viewModelScope.launch {
             connection.status.collect { status -> if (generation == request) mutable.value = mutable.value.copy(gateway = status,
-                presence = if (status == GatewayStatus.LIVE) mutable.value.presence else emptyMap()) }
+                presenceLive = mutable.value.presenceLive && status == GatewayStatus.LIVE,
+                presenceLoading = mutable.value.presenceLoading && status != GatewayStatus.ERROR) }
         }
         connection.start()
         if (participating) watchVisiblePresence()
@@ -3856,8 +3874,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         forwardSnapshots.clear()
         editSnapshots.clear()
         pinSnapshotCursor = null
+        presenceTimeout?.cancel(); presenceTimeout = null
         mutable.value = mutable.value.copy(
-            selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
+            selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(), presenceLoading = false, presenceLive = false,
             channelVisitUnread = null,
             visit = null, feedbackShown = false,
             thread = null, threadOnlyRows = emptySet(), replyTargets = emptyMap(), composerFocusRequest = null,

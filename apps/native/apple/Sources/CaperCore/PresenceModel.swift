@@ -7,12 +7,15 @@ public final class PresenceModel {
     public var online = false
     public var error: String?
     public private(set) var statuses: [String: PresenceStatus] = [:]
+    public private(set) var loading = false
+    private var snapshots: [String: [String: PresenceStatus]] = [:]
+    @ObservationIgnored private var loadingTimeout: Task<Void, Never>?
 
     private let api: APIClient
     @ObservationIgnored private lazy var gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, message in
         guard let self, self.spaceID != nil else { return }
-        self.online = state == .connected
-        if state != .connected { self.statuses = [:] }
+        if state != .connected { self.online = false }
+        if state == .reconnecting { self.loading = false }
         if state == .connected, let message { self.error = message }
     }
     private var subscriptionID: String?
@@ -43,7 +46,14 @@ public final class PresenceModel {
         let previous = subscriptionID
         subscriptionID = nil
         self.spaceID = spaceID
-        statuses = [:]; online = false; error = nil
+        statuses = snapshots[spaceID] ?? [:]; online = false; error = nil
+        loading = snapshots[spaceID] == nil
+        loadingTimeout?.cancel()
+        loadingTimeout = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            guard let self, self.generation == attempt else { return }
+            self.loading = false
+        }
         if let previous { await gateway.unsubscribe(previous) }
         await subscribe(generation: attempt)
     }
@@ -52,6 +62,8 @@ public final class PresenceModel {
         generation += 1
         let previous = subscriptionID
         subscriptionID = nil; spaceID = nil; members = []; statuses = [:]
+        snapshots = [:]; loading = false
+        loadingTimeout?.cancel(); loadingTimeout = nil
         query = ""; online = false; error = nil
         if let previous { await gateway.unsubscribe(previous) }
     }
@@ -71,6 +83,8 @@ public final class PresenceModel {
     func receive(_ event: [String: Any], generation attempt: Int) {
         guard generation == attempt else { return }
         if event["type"] as? String == "subscription.error" {
+            if let spaceID { snapshots[spaceID] = nil }
+            loadingTimeout?.cancel(); loading = false
             statuses = [:]; online = false
             error = event["error"] as? String ?? "Member presence is unavailable."
             return
@@ -86,6 +100,8 @@ public final class PresenceModel {
             }
             next[id] = status
         }
+        loadingTimeout?.cancel(); loading = false
+        if let spaceID { snapshots[spaceID] = next }
         statuses = next; online = true; error = nil
     }
 }

@@ -628,6 +628,8 @@ data class AppUiState(
     val refreshError: String? = null,
     val typingAuthors: List<ChatAuthor> = emptyList(),
     val presence: Map<String, String> = emptyMap(),
+    val presenceLoading: Boolean = false,
+    val presenceLive: Boolean = false,
     val voiceRosters: Map<String, List<Participant>> = emptyMap(),
     val voiceSessionStartedAt: Map<String, Long> = emptyMap(),
     val deniedVoiceChannels: Set<String> = emptySet(),

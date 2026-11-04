@@ -1258,6 +1258,7 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
         }
         if (detail.space.demo) Text("General is open to everyone. People in voice appear in the channel sidebar.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp, lineHeight = 16.sp)
         else if (members.isEmpty()) Text("No members to show.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
+        else if (state.presenceLoading) Text("Loading members…", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
         else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
             @Composable fun MemberRow(member: Member, quiet: Boolean, ring: Color) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
@@ -1265,7 +1266,7 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
                     .padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box {
                         Avatar(member.displayName, 30.dp, avatarId = member.avatarId, avatarAsset = member.avatarAsset, avatarUrl = member.avatarUrl)
-                        PresenceDot(state.presence[member.id], state.gateway == GatewayStatus.LIVE, ring, Modifier.align(Alignment.BottomEnd))
+                        PresenceDot(state.presence[member.id], state.presenceLive, ring, Modifier.align(Alignment.BottomEnd))
                     }
                     Spacer(Modifier.width(10.dp))
                     Text(member.displayName, color = if (quiet) TextMuted else Text, fontSize = 12.sp,
@@ -1333,7 +1334,7 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
     Box {
         Avatar(name, 30.dp, avatarId = state.account?.avatarId, avatarAsset = state.account?.avatarAsset, avatarUrl = state.account?.avatarUrl)
         PresenceDot(if (accountPresence) state.presence[state.account?.id] else local,
-            live = !accountPresence || state.gateway == GatewayStatus.LIVE, SurfaceRaised, Modifier.align(Alignment.BottomEnd))
+            live = !accountPresence || state.presenceLive, SurfaceRaised, Modifier.align(Alignment.BottomEnd))
     }
 }
 

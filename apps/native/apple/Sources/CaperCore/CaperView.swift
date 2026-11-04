@@ -3100,6 +3100,8 @@ private struct MemberPresenceView: View {
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             } else if model.detail?.members.isEmpty != false {
                 Text("No members to show.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            } else if presence.loading {
+                Text("Loading members…").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             } else {
                 if presence.visibleMembers.isEmpty {
                     Text("No matching members.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -1893,6 +1894,11 @@ export default function Spaces({
     members: detailSnapshot.members.map((member) => withLatestProfile(member, account, profiles)),
   };
   const navigation = useRef(createSpaceNavigation());
+  // Keep roster snapshots across panel unmounts, but never across accounts.
+  const presenceSnapshots = useMemo(
+    () => new Map<string, Record<string, "online" | "idle" | "offline">>(),
+    [account?.id],
+  );
   // Names, usernames, pictures and space names/icons changed elsewhere arrive
   // live; people are applied where they render (see `profiles` above).
   useEffect(() => {
@@ -3850,6 +3856,7 @@ export default function Spaces({
             : (onClose) => (
                 <MemberPresence
                   spaceId={detail.space.id}
+                  snapshots={presenceSnapshots}
                   members={detail.members}
                   channel={
                     channel.private && detail.channelMembers?.[channel.id]

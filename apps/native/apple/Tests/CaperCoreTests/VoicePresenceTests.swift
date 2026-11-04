@@ -100,6 +100,7 @@ final class PresenceTests: XCTestCase {
         let presence = PresenceModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
         let members = (0..<151).map { Member(id: "member-\($0)", username: "user\($0)", displayName: "Member \($0)", owner: false) }
         await presence.watch(spaceID: "space-a", members: members)
+        XCTAssertTrue(presence.loading)
         XCTAssertEqual(presence.visibleMembers.count, 151)
         presence.receive(["type": "snapshot", "members": [
             ["userId": "member-25", "status": "online"],
@@ -130,6 +131,16 @@ final class PresenceTests: XCTestCase {
         XCTAssertTrue(presence.statuses.isEmpty, "statuses must not carry over to another space")
         presence.receive(["type": "snapshot", "members": [["userId": "member-25", "status": "online"]]], generation: 1)
         XCTAssertTrue(presence.statuses.isEmpty, "late old-space snapshots must be fenced")
+        await presence.watch(spaceID: "space-a", members: members)
+        XCTAssertFalse(presence.loading)
+        XCTAssertFalse(presence.online)
+        XCTAssertEqual(presence.statuses["member-25"], .offline)
+        presence.receive(["type": "snapshot", "members": [["userId": "member-25", "status": "idle"]]], generation: 3)
+        XCTAssertEqual(presence.statuses, ["member-25": .idle])
+        await presence.stop()
+        await presence.watch(spaceID: "space-a", members: members)
+        XCTAssertTrue(presence.loading)
+        XCTAssertTrue(presence.statuses.isEmpty)
         await presence.stop()
     }
 }

@@ -727,12 +727,14 @@ export function watchPresence(
   userIds: string[] | "all",
   onMembers: (members: PresenceMember[]) => void,
   onLive?: (online: boolean) => void,
+  onError?: (error: GatewayError) => void,
 ) {
   if (userIds !== "all" && userIds.length > 100) throw new Error("Presence subscriptions support at most 100 users.");
   const subscription = appGateway().subscribe(
     { kind: "presence", spaceId, ...(userIds === "all" ? { allMembers: true } : { userIds: [...userIds] }) },
     {
       status: onLive,
+      error: onError,
       event: (value) => {
         if (!value || typeof value !== "object") throw new Error("Invalid presence snapshot.");
         const event = value as { type?: unknown; members?: unknown };

@@ -23,6 +23,7 @@ export function memberGroups(members: Member[], channelMemberIds?: readonly stri
 /** One space-scoped subscription; filtering never changes who has live presence. */
 export default function MemberPresence({
   spaceId,
+  snapshots,
   members,
   channel,
   demo,
@@ -33,6 +34,7 @@ export default function MemberPresence({
   onClose,
 }: {
   spaceId: string;
+  snapshots: Map<string, Record<string, Status>>;
   members: Member[];
   /** A private channel: its readers lead the list in their own group. */
   channel?: { name: string; memberIds: readonly string[] };
@@ -47,8 +49,18 @@ export default function MemberPresence({
   const [query, setQuery] = useState("");
   const searchButton = useRef<HTMLButtonElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
-  const [statuses, setStatuses] = useState<Record<string, Status>>({});
+  const [presence, setPresence] = useState<{ spaceId: string; accountId?: string; statuses?: Record<string, Status> }>({
+    spaceId,
+    accountId,
+    statuses: snapshots.get(spaceId),
+  });
   const [live, setLive] = useState(false);
+  const statuses =
+    presence.accountId !== accountId
+      ? undefined
+      : presence.spaceId === spaceId
+        ? presence.statuses
+        : snapshots.get(spaceId);
   const [profile, setProfile] = useState<MentionCardTarget>();
   const filter = query.trim().toLocaleLowerCase();
   const visible = members.filter(
@@ -75,29 +87,49 @@ export default function MemberPresence({
 
   useEffect(() => {
     setLive(false);
-    setStatuses({});
+    if (presence.accountId !== accountId) snapshots.clear();
+    setPresence({ spaceId, accountId, statuses: snapshots.get(spaceId) });
     if (demo) return;
     let active = true;
+    let received = false;
+    const unavailable = () => {
+      if (!active) return;
+      snapshots.delete(spaceId);
+      setLive(false);
+      setPresence({ spaceId, accountId, statuses: {} });
+    };
+    // A stalled first subscription must eventually leave the loading state.
+    const timeout = setTimeout(() => {
+      if (!snapshots.has(spaceId)) unavailable();
+    }, 10_000);
     const stop = watchPresence(
       spaceId,
       "all",
       (values) => {
-        if (active) setStatuses(Object.fromEntries(values.map((value) => [value.userId, value.status])));
+        if (!active) return;
+        clearTimeout(timeout);
+        const statuses = Object.fromEntries(values.map((value) => [value.userId, value.status]));
+        snapshots.set(spaceId, statuses);
+        received = true;
+        setLive(true);
+        setPresence({ spaceId, accountId, statuses });
       },
       (connected) => {
         if (!active) return;
-        setLive(connected);
-        if (!connected) setStatuses({});
+        if (!connected) received = false;
+        setLive(connected && received);
       },
+      unavailable,
     );
     return () => {
       active = false;
+      clearTimeout(timeout);
       stop();
     };
-  }, [spaceId, demo]);
+  }, [spaceId, demo, accountId, snapshots]);
 
   const row = (member: Member) => {
-    const status = statuses[member.id];
+    const status = statuses?.[member.id];
     return (
       <li key={member.id} className={status === "offline" ? "member-offline" : undefined}>
         <button
@@ -115,7 +147,7 @@ export default function MemberPresence({
         >
           <span className="member-presence-avatar">
             <Avatar person={member} name={member.displayName} />
-            <PresenceDot status={status} live={live} />
+            <PresenceDot status={status} live={presence.spaceId === spaceId && live} />
           </span>
           <strong title={member.displayName}>{member.displayName}</strong>
         </button>
@@ -127,7 +159,7 @@ export default function MemberPresence({
   const presenceGroups = (members: Member[]) =>
     (["Online", "Offline", "Status unavailable"] as const).map((label) => {
       const grouped = members.filter((member) => {
-        const status = statuses[member.id];
+        const status = statuses?.[member.id];
         return label === "Online"
           ? status === "online" || status === "idle"
           : label === "Offline"
@@ -208,7 +240,11 @@ export default function MemberPresence({
             </p>
           )
         )}
-        {inChannel ? (
+        {!demo && statuses === undefined && visible.length > 0 ? (
+          <p className="member-presence-connecting" role="status">
+            Loading members…
+          </p>
+        ) : inChannel ? (
           <>
             {inChannel.length > 0 && (
               <section className="member-group member-group-channel" aria-label={`In #${channel!.name}`}>
