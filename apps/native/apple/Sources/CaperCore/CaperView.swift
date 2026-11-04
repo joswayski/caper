@@ -8100,6 +8100,8 @@ private struct PendingMessageRow: View {
                     MessageAttachmentsView(attachments: pending.attachments, chat: nil).opacity(0.7)
                 }
                 if let gif = pending.gif { MessageGifView(gif: gif).opacity(0.7) }
+                // The composer's card, where the confirmed row draws it, so confirming keeps the height.
+                MessageEmbedsView(embeds: pending.embeds)
                 if let error {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(uploadFailed ? error : "\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")

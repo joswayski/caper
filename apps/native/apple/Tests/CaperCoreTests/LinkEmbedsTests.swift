@@ -366,12 +366,107 @@ final class LinkEmbedsTests: XCTestCase {
         await chat.send()
         let sent = try XCTUnwrap(EmbedURLProtocol.requests.last { $0.method == "POST" && $0.path == "/api/chat/channels/\(channelID)/messages" })
         XCTAssertEqual(json(sent.body)?["suppressEmbeds"] as? Bool, true)
+        XCTAssertEqual(chat.pendingMessage?.suppressEmbeds, true)
+        XCTAssertEqual(chat.pendingMessage?.embeds, [], "a removed card never rides on the pending row")
 
         // A cleared draft starts over: the same link gets its card again.
         chat.draft = ""
         chat.draft = "read https://news.example/story"
         XCTAssertEqual(chat.composerLinkPreview?.site.domain, "news.example")
         await chat.stop()
+    }
+
+    /// The composer's card rides on the pending command and the message the
+    /// gateway confirms, until that revision's `message.embeds` settles it.
+    @MainActor
+    func testGatewayConfirmationKeepsTheComposerCardUntilItsEvent() async throws {
+        EmbedURLProtocol.handler = { try answer($0) }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        let generation = chat.eventGeneration
+        chat.draft = "read https://news.example/story"
+        await chat.loadComposerLinkPreview()
+        let shown = try XCTUnwrap(chat.composerLinkPreview)
+
+        await chat.send()
+        let pending = try XCTUnwrap(chat.pendingMessage, "the send failed, so the command stays pending")
+        XCTAssertEqual(pending.embeds, [shown])
+        XCTAssertFalse(pending.suppressEmbeds)
+        let sent = try XCTUnwrap(EmbedURLProtocol.requests.last { $0.method == "POST" && $0.path == "/api/chat/channels/\(channelID)/messages" })
+        XCTAssertNil(json(sent.body)?["embeds"], "the card is local only")
+
+        let created: [String: Any] = [
+            "id": "Message00000002", "channelId": channelID, "seq": "2", "createdAt": "now", "clientMessageId": pending.id,
+            "author": ["id": "self", "name": "Me", "isGuest": false] as [String: Any],
+            "content": ["version": 1, "type": "text", "text": "read https://news.example/story"] as [String: Any],
+        ]
+        chat.receive(["type": "message.created", "seq": "2", "message": created], generation: generation, channelID: channelID)
+        XCTAssertNil(chat.pendingMessage)
+        XCTAssertEqual(chat.messages.last?.id, "Message00000002")
+        XCTAssertEqual(chat.messages.last?.content.embeds, [shown])
+
+        // A replay of the same revision without cards keeps them.
+        chat.receive(["type": "message.created", "seq": "2", "message": created], generation: generation, channelID: channelID)
+        XCTAssertEqual(chat.messages.last?.content.embeds, [shown])
+
+        // The server's event settles the cards; an empty one removes them.
+        chat.receive(event("Message00000002"), generation: generation, channelID: channelID)
+        XCTAssertEqual(chat.messages.last?.content.embeds, [shown])
+        chat.receive(event("Message00000002", embeds: [Any]()), generation: generation, channelID: channelID)
+        XCTAssertNil(chat.messages.last?.content.embeds)
+        chat.receive(["type": "message.created", "seq": "2", "message": created], generation: generation, channelID: channelID)
+        XCTAssertNil(chat.messages.last?.content.embeds, "a removed card never comes back")
+        XCTAssertNil(chat.error)
+        await chat.stop()
+    }
+
+    /// The same through the HTTP response, which reaches the timeline first.
+    @MainActor
+    func testHTTPConfirmationKeepsTheComposerCardUntilItsEvent() async throws {
+        EmbedURLProtocol.handler = { request in
+            guard request.httpMethod == "POST", request.url?.path == "/api/chat/channels/\(channelID)/messages" else { return try answer(request) }
+            let sent = EmbedURLProtocol.requests.last { $0.method == "POST" && $0.path == "/api/chat/channels/\(channelID)/messages" }
+            let clientMessageID = json(sent?.body)?["clientMessageId"] as? String ?? ""
+            let message: [String: Any] = [
+                "id": "Message00000002", "channelId": channelID, "seq": "2", "createdAt": "now", "clientMessageId": clientMessageID,
+                "author": ["id": "self", "name": "Me", "isGuest": false] as [String: Any],
+                "content": ["version": 1, "type": "text", "text": "read https://news.example/story"] as [String: Any],
+            ]
+            return (201, try JSONSerialization.data(withJSONObject: message))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        let generation = chat.eventGeneration
+        chat.draft = "read https://news.example/story"
+        await chat.loadComposerLinkPreview()
+        let shown = try XCTUnwrap(chat.composerLinkPreview)
+
+        await chat.send()
+        XCTAssertNil(chat.pendingMessage)
+        XCTAssertNil(chat.error)
+        XCTAssertEqual(chat.messages.last?.id, "Message00000002")
+        XCTAssertEqual(chat.messages.last?.content.embeds, [shown])
+
+        // Identical cards are harmless; an empty event removes them.
+        chat.receive(event("Message00000002"), generation: generation, channelID: channelID)
+        XCTAssertEqual(chat.messages.last?.content.embeds, [shown])
+        chat.receive(event("Message00000002", embeds: [Any]()), generation: generation, channelID: channelID)
+        XCTAssertNil(chat.messages.last?.content.embeds)
+        await chat.stop()
+    }
+
+    func testCarriedCardsNeverOverrideTheServer() throws {
+        let shown = try XCTUnwrap(try decode(card))
+        var delivery = ChatDeliveryState()
+        let command = delivery.begin(text: "see https://news.example/story", embeds: [shown], makeID: { "c-Message00000001" })
+        XCTAssertEqual(command.embeds, [shown])
+        XCTAssertEqual(delivery.replaceAttachments(id: command.id, attachments: [])?.embeds, [shown], "re-uploads keep the card")
+
+        let carried = PendingMessage(id: "c-Message00000001", text: "x", embeds: [shown])
+        XCTAssertEqual(carried.carryingEmbeds(try message()).content.embeds, [shown])
+        XCTAssertEqual(carried.carryingEmbeds(try message(embeds: [Any]())).content.embeds, [], "the server's own (empty) list wins")
+        XCTAssertNil(carried.carryingEmbeds(try message("Message00000002")).content.embeds, "only the command's own message")
+        XCTAssertEqual(PendingMessage(id: "c", text: "x", suppressEmbeds: true, embeds: [shown]).embeds, [])
     }
 
     func testSendOmitsSuppressEmbedsUnlessSet() async throws {

@@ -3775,8 +3775,10 @@ public final class ChatModel {
         } : []
         // Removing the channel composer's card sends without previews (a retry keeps the command's choice).
         let suppressEmbeds = !inThread && removedPreviewLink != nil && LinkEmbeds.previewLink(in: text) == removedPreviewLink
+        // The card already shown for this draft rides on the pending row, so it keeps its final height.
+        let shownEmbeds = !inThread && gif == nil && !suppressEmbeds && text == draft ? composerLinkPreview.map { [$0] } ?? [] : []
         var command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast,
-                                     replyTo: replyTargets[rootID ?? "channel"], gif: gif, suppressEmbeds: suppressEmbeds)
+                                     replyTo: replyTargets[rootID ?? "channel"], gif: gif, suppressEmbeds: suppressEmbeds, embeds: shownEmbeds)
         if newSubmission {
             replyTargets[rootID ?? "channel"] = nil
             pendingDrafts = files
@@ -3847,7 +3849,7 @@ public final class ChatModel {
             guard MessageValidation.acceptsResponse(message, channelID: channelID, command: command, authorID: session.author.id) else {
                 throw APIError(status: 502, message: "The chat service returned an invalid message.")
             }
-            merge([message]); delivery.confirmHTTP(id: command.id)
+            merge([command.carryingEmbeds(message)]); delivery.confirmHTTP(id: command.id)
             releasePendingUploads()
             onMessageSent?()
         } catch {
@@ -4335,7 +4337,9 @@ public final class ChatModel {
             }
             let newMessage = (try? Sequence.compare(message.seq, delivery.cursor)) == .orderedDescending
             if delivery.receive(seq: message.seq) {
-                merge([message])
+                // Our pending send confirmed here keeps its composer card too.
+                let ownPending = message.author.id == session?.author.id ? delivery.pending : nil
+                merge([ownPending?.carryingEmbeds(message) ?? message])
                 onReadCursor?()
                 if newMessage, let author = session?.author, author.id != message.author.id,
                    !BlockedMessages.isHidden(message, blocked: blockedAuthorIDs, viewerID: author.id) { CaperEffects.shared.play(.message) }

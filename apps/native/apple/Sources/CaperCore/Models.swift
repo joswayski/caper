@@ -1113,11 +1113,16 @@ public struct PendingMessage: Equatable, Sendable {
     public let gif: ChatGif?
     /// The composer's link preview was removed: retries keep sending `suppressEmbeds`.
     public let suppressEmbeds: Bool
+    /// The composer's loaded preview card, shown on the pending row and kept on
+    /// the confirmed message until the server's `message.embeds` replaces it.
+    /// Local only: never sent. Always empty with `suppressEmbeds`.
+    public let embeds: [ChatEmbed]
     /// Ids join the server's idempotency hash, so retries resend the same ids.
     public var attachmentIDs: [String] { attachments.map(\.id) }
 
     public init(id: String, text: String, attachments: [ChatAttachment] = [], createdAt: String = ISO8601DateFormatter().string(from: Date()),
-                threadRootId: String? = nil, broadcast: Bool = false, replyTo: MessageReply? = nil, gif: ChatGif? = nil, suppressEmbeds: Bool = false) {
+                threadRootId: String? = nil, broadcast: Bool = false, replyTo: MessageReply? = nil, gif: ChatGif? = nil, suppressEmbeds: Bool = false,
+                embeds: [ChatEmbed] = []) {
         self.id = id
         self.gif = gif
         self.text = text
@@ -1127,6 +1132,18 @@ public struct PendingMessage: Equatable, Sendable {
         self.broadcast = broadcast
         self.replyTo = replyTo
         self.suppressEmbeds = suppressEmbeds
+        self.embeds = suppressEmbeds ? [] : embeds
+    }
+
+    /// The confirmed copy of this command keeps the card the sender already
+    /// saw while the server unfurls its own: its `message.embeds` event
+    /// replaces it, or removes it when it has none.
+    public func carryingEmbeds(_ message: ChatMessage) -> ChatMessage {
+        guard message.clientMessageId == id, !embeds.isEmpty, !suppressEmbeds, message.content.embeds == nil,
+              message.content.suppressEmbeds != true, !message.isDeleted else { return message }
+        var result = message
+        result.content.embeds = embeds
+        return result
     }
 }
 
@@ -1141,11 +1158,12 @@ public struct ChatDeliveryState: Sendable {
     public init(cursor: String = "0") { self.cursor = cursor }
 
     public mutating func begin(text: String, attachments: [ChatAttachment] = [], threadRootId: String? = nil, broadcast: Bool = false, replyTo: MessageReply? = nil,
-                               gif: ChatGif? = nil, suppressEmbeds: Bool = false, makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
+                               gif: ChatGif? = nil, suppressEmbeds: Bool = false, embeds: [ChatEmbed] = [],
+                               makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
         if let pending { return pending }
         // Rust's UUID serialization returns lowercase in both HTTP and replay.
         let command = PendingMessage(id: makeID().lowercased(), text: text, attachments: attachments, threadRootId: threadRootId, broadcast: broadcast,
-                                     replyTo: replyTo, gif: gif, suppressEmbeds: suppressEmbeds)
+                                     replyTo: replyTo, gif: gif, suppressEmbeds: suppressEmbeds, embeds: embeds)
         pending = command
         return command
     }
@@ -1155,7 +1173,7 @@ public struct ChatDeliveryState: Sendable {
         guard let old = pending, old.id == id else { return nil }
         let command = PendingMessage(id: UUID().uuidString.lowercased(), text: old.text, attachments: attachments,
                                      createdAt: old.createdAt, threadRootId: old.threadRootId, broadcast: old.broadcast, replyTo: old.replyTo, gif: old.gif,
-                                     suppressEmbeds: old.suppressEmbeds)
+                                     suppressEmbeds: old.suppressEmbeds, embeds: old.embeds)
         pending = command
         return command
     }
