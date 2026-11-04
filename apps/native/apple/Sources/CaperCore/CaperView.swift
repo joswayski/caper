@@ -4108,38 +4108,42 @@ private struct ChatView: View {
             }
             .modifier(Entrance.panel)
     }
-    /// The channel's text field box. A separate property keeps `channelBody`
-    /// within the Swift type checker's time limit.
+    /// The channel's text field box, with the draft's link preview below the
+    /// text inside it. A separate property keeps `channelBody` within the Swift
+    /// type checker's time limit.
     private var channelComposerField: some View {
-        HStack(alignment: .bottom, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .bottom, spacing: 0) {
-                AttachmentPickerButton(chat: chat).frame(height: composerMinHeight).padding(.leading, 4)
-                ZStack(alignment: .topLeading) {
-                    if chat.draft.isEmpty {
-                        Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                            .padding(.leading, 5).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                HStack(alignment: .bottom, spacing: 0) {
+                    AttachmentPickerButton(chat: chat).frame(height: composerMinHeight).padding(.leading, 4)
+                    ZStack(alignment: .topLeading) {
+                        if chat.draft.isEmpty {
+                            Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                .padding(.leading, 5).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                        messageComposer
                     }
-                    messageComposer
+                    .frame(minHeight: composerMinHeight, maxHeight: 174)
+                    // Measure the text view instead of filling the 174-point maximum.
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
+                    // The first link's card, after a pause in typing (a newer link cancels it).
+                    .task(id: chat.composerPreviewLink) { await chat.loadComposerLinkPreview() }
+                    #if os(iOS)
+                    .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                    #endif
+                    channelGifButton
+                    #if os(macOS)
+                    ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight)
+                    #endif
                 }
-                .frame(minHeight: composerMinHeight, maxHeight: 174)
-                // Measure the text view instead of filling the 174-point maximum.
-                .fixedSize(horizontal: false, vertical: true)
-                .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
-                // The first link's card, after a pause in typing (a newer link cancels it).
-                .task(id: chat.composerPreviewLink) { await chat.loadComposerLinkPreview() }
                 #if os(iOS)
-                .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                // The held microphone stays put while the bar covers the field.
+                .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight))
                 #endif
-                channelGifButton
-                #if os(macOS)
-                ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight)
-                #endif
+                VoiceRecordButton(chat: chat, inThread: false, height: composerMinHeight).padding(.trailing, 2)
             }
-            #if os(iOS)
-            // The held microphone stays put while the bar covers the field.
-            .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight))
-            #endif
-            VoiceRecordButton(chat: chat, inThread: false, height: composerMinHeight).padding(.trailing, 2)
+            ComposerEmbedPreview(chat: chat)
         }
         .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -4491,7 +4495,6 @@ private struct ChatView: View {
             }
             VoiceComposerNotice(chat: chat, inThread: false)
             AttachmentDraftsView(chat: chat)
-            ComposerEmbedPreview(chat: chat)
             HStack(alignment: .bottom, spacing: 8) {
                 VStack(spacing: 6) {
                     if let conversation = peerConversation, conversation.status == .outgoing {

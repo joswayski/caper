@@ -91,44 +91,69 @@ private val EmbedMediaShape = RoundedCornerShape(6.dp)
 /**
  * A message's link preview cards (docs/media.md "Link embeds"), drawn from blocks in order;
  * unknown blocks were skipped when parsed. Cards that arrive while the row is on screen settle
- * in ([arriving]: every card, for the composer's preview); ones already there when it appears do
- * not. [onRemove] adds the composer's ×, which sends the message without cards.
+ * in; ones already there when it appears do not.
  */
-@Composable internal fun MessageEmbeds(embeds: List<ChatEmbed>, onRemove: (() -> Unit)? = null, arriving: Boolean = false) {
+@Composable internal fun MessageEmbeds(embeds: List<ChatEmbed>) {
     // What the row showed when it first appeared, so only cards added since then animate.
-    val shown = remember { if (arriving) emptySet() else embeds.map { it.url }.toSet() }
+    val shown = remember { embeds.map { it.url }.toSet() }
     if (embeds.isEmpty()) return
-    Box(Modifier.padding(top = 6.dp).widthIn(max = 432.dp).fillMaxWidth()) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            embeds.forEach { embed ->
-                key(embed.url) {
-                    EmbedCard(embed, if (embed.url in shown) Modifier else Modifier.entrance(MOTION_BASE, dy = 4.dp), removable = onRemove != null)
-                }
-            }
-        }
-        onRemove?.let { remove ->
-            Box(
-                Modifier.align(Alignment.TopEnd).padding(4.dp).size(32.dp).clip(MaterialTheme.shapes.small)
-                    .clickable(role = Role.Button, onClickLabel = "Remove link preview", onClick = remove)
-                    .semantics { contentDescription = "Remove link preview" },
-                contentAlignment = Alignment.Center,
-            ) {
-                Box(Modifier.size(24.dp).background(SurfaceRaised, MaterialTheme.shapes.small).border(1.dp, Border, MaterialTheme.shapes.small), contentAlignment = Alignment.Center) {
-                    Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = TextMuted)
-                }
-            }
+    Column(Modifier.padding(top = 6.dp).widthIn(max = 432.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        embeds.forEach { embed ->
+            key(embed.url) { EmbedCard(embed, if (embed.url in shown) Modifier else Modifier.entrance(MOTION_BASE, dy = 4.dp)) }
         }
     }
 }
 
-@Composable private fun EmbedCard(embed: ChatEmbed, modifier: Modifier, removable: Boolean) {
+/**
+ * The draft's link preview inside the composer's frame, under the text (web's
+ * `.chat-composer-embed`): a 56dp thumbnail, the site, the title and one line of text, with ×
+ * to send the message without cards. No player; it settles in and leaves at once.
+ */
+@Composable internal fun ComposerLinkPreview(embed: ChatEmbed, onRemove: () -> Unit) {
+    val title = embed.blocks.firstNotNullOfOrNull { (it as? EmbedBlock.Title)?.text }
+        ?: embed.blocks.firstNotNullOfOrNull { (it as? EmbedBlock.Author)?.name } ?: embed.site.name
+    val text = embed.blocks.firstNotNullOfOrNull { (it as? EmbedBlock.Text)?.text }
+    val images = embed.blocks.filterIsInstance<EmbedBlock.Images>()
+    val thumbnail = (images.firstOrNull { it.thumbnail } ?: images.firstOrNull())?.items?.firstOrNull()?.url
+        ?: embed.blocks.firstNotNullOfOrNull { (it as? EmbedBlock.Player)?.poster ?: (it as? EmbedBlock.Video)?.poster }
+        ?: embed.blocks.firstNotNullOfOrNull { (it as? EmbedBlock.Author)?.icon }
+    key(embed.url) {
+        Box(Modifier.entrance(MOTION_BASE, dy = 4.dp).padding(start = 8.dp, end = 8.dp, bottom = 8.dp).fillMaxWidth()) {
+            Row(
+                Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).background(SurfaceRaised).border(1.dp, Border, MaterialTheme.shapes.small)
+                    .padding(start = 8.dp, top = 8.dp, bottom = 8.dp, end = 36.dp)
+                    .semantics(mergeDescendants = true) { contentDescription = "${embed.site.name}: $title" },
+                horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically,
+            ) {
+                thumbnail?.let { EmbedPicture(it, null, Modifier.size(56.dp).clip(EmbedMediaShape).background(Surface)) }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(embed.site.name, Modifier.weight(1f, fill = false), color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        // The domain comes from the posted link, so a page can't pass itself off as another site.
+                        if (embed.site.name != embed.site.domain) Text(embed.site.domain, color = TextMuted.copy(alpha = 0.75f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Text(title, color = Text, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    text?.let { Text(it, color = TextMuted, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                }
+            }
+            Box(
+                Modifier.align(Alignment.TopEnd).padding(2.dp).size(32.dp).clip(MaterialTheme.shapes.small)
+                    .clickable(role = Role.Button, onClickLabel = "Remove link preview", onClick = onRemove)
+                    .semantics { contentDescription = "Remove link preview" },
+                contentAlignment = Alignment.Center,
+            ) { Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = TextMuted) }
+        }
+    }
+}
+
+@Composable private fun EmbedCard(embed: ChatEmbed, modifier: Modifier) {
     val uriHandler = LocalUriHandler.current
     val heading = embed.blocks.firstNotNullOfOrNull { (it as? EmbedBlock.Title)?.text }
         ?: embed.blocks.firstNotNullOfOrNull { (it as? EmbedBlock.Author)?.name } ?: embed.site.name
     val thumbnail = embed.blocks.firstNotNullOfOrNull { block -> (block as? EmbedBlock.Images)?.takeIf { it.thumbnail } }
     Row(
         modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).background(Surface).border(1.dp, Border, MaterialTheme.shapes.small)
-            .padding(start = 12.dp, end = if (removable) 36.dp else 12.dp, top = 10.dp, bottom = 12.dp)
+            .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 12.dp)
             .semantics { contentDescription = "${embed.site.name}: $heading" },
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {

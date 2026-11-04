@@ -55,6 +55,8 @@ import kotlin.math.roundToInt
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default, keyboardActions: KeyboardActions = KeyboardActions.Default,
     colors: TextFieldColors = OutlinedTextFieldDefaults.colors(),
     keyboardAttachment: ((android.net.Uri) -> Job?)? = null,
+    /** Drawn under the text row inside the same frame (the draft's link preview), growing it. */
+    below: (@Composable () -> Unit)? = null,
 ) = KeyboardAttachmentInput(keyboardAttachment.takeIf { enabled }) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -114,73 +116,81 @@ import kotlin.math.roundToInt
         // then follow the same scrolled text that supplied the glyph bounds.
         onTextLayout = { layout = it },
         decorationBox = { inner ->
-            OutlinedTextFieldDefaults.DecorationBox(
-                value = value.text, innerTextField = {
-                    Box(Modifier.heightIn(max = textHeight).verticalScroll(scroll)) {
-                        Box(Modifier.pointerInput(ranges, enabled) {
-                            var target: Triple<Int, Int, String>? = null
-                            var origin: Offset? = null
-                            fun hide() { pending?.cancel(); name = null; target = null }
-                            fun inspect(point: Offset, wait: Long) {
-                                val next = if (enabled) at(point) else null
-                                if (next == target) return
-                                hide(); target = next
-                                if (next != null) pending = scope.launch {
-                                    delay(wait); anchor = point; name = next.third
-                                }
-                            }
-                            try {
-                                awaitPointerEventScope {
-                                    while (true) {
-                                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                                        val pointer = event.changes.firstOrNull() ?: continue
-                                        when {
-                                            event.type == PointerEventType.Exit -> hide()
-                                            pointer.type == PointerType.Mouse && !pointer.pressed -> inspect(pointer.position, 400)
-                                            event.type == PointerEventType.Press -> { hide(); origin = pointer.position; inspect(pointer.position, 500) }
-                                            event.changes.size > 1 || origin?.let { (pointer.position - it).getDistance() > viewConfiguration.touchSlop } == true -> hide()
-                                            event.type == PointerEventType.Release -> {
-                                                pending?.cancel(); origin = null
-                                                if (name != null) pending = scope.launch { delay(1500); hide() } else hide()
+            // One frame (border, focus colour, fill) around the text row and anything [below] it.
+            val container = @Composable {
+                OutlinedTextFieldDefaults.Container(enabled, false, interaction, colors = colors, shape = MaterialTheme.shapes.small)
+            }
+            Box {
+                if (below != null) Box(Modifier.matchParentSize()) { container() }
+                Column {
+                    OutlinedTextFieldDefaults.DecorationBox(
+                        value = value.text, innerTextField = {
+                            Box(Modifier.heightIn(max = textHeight).verticalScroll(scroll)) {
+                                Box(Modifier.pointerInput(ranges, enabled) {
+                                    var target: Triple<Int, Int, String>? = null
+                                    var origin: Offset? = null
+                                    fun hide() { pending?.cancel(); name = null; target = null }
+                                    fun inspect(point: Offset, wait: Long) {
+                                        val next = if (enabled) at(point) else null
+                                        if (next == target) return
+                                        hide(); target = next
+                                        if (next != null) pending = scope.launch {
+                                            delay(wait); anchor = point; name = next.third
+                                        }
+                                    }
+                                    try {
+                                        awaitPointerEventScope {
+                                            while (true) {
+                                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                val pointer = event.changes.firstOrNull() ?: continue
+                                                when {
+                                                    event.type == PointerEventType.Exit -> hide()
+                                                    pointer.type == PointerType.Mouse && !pointer.pressed -> inspect(pointer.position, 400)
+                                                    event.type == PointerEventType.Press -> { hide(); origin = pointer.position; inspect(pointer.position, 500) }
+                                                    event.changes.size > 1 || origin?.let { (pointer.position - it).getDistance() > viewConfiguration.touchSlop } == true -> hide()
+                                                    event.type == PointerEventType.Release -> {
+                                                        pending?.cancel(); origin = null
+                                                        if (name != null) pending = scope.launch { delay(1500); hide() } else hide()
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } finally { hide() }
+                                }) {
+                                    Column {
+                                        inner()
+                                        if (enabled && !readOnly && focused && value.composition == null && !value.selection.collapsed) {
+                                            Surface(color = Surface, shape = MaterialTheme.shapes.small) {
+                                                Row {
+                                                    TextButton({ format("**") }, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }.semantics { contentDescription = "Bold selection" },
+                                                        shape = RectangleShape, contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
+                                                        Text("B", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                                                    }
+                                                    TextButton({ format("_") }, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }.semantics { contentDescription = "Italic selection" },
+                                                        shape = RectangleShape, contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
+                                                        Text("I", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    name?.let { label ->
+                                        Popup(alignment = Alignment.TopStart, offset = IntOffset(anchor.x.roundToInt(), anchor.y.roundToInt() - with(density) { 42.dp.roundToPx() })) {
+                                            Surface(Modifier.entrance(MOTION_FAST, dy = 4.dp), color = Blackout, contentColor = Text, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                                                Text(":$label:", Modifier.padding(horizontal = 9.dp, vertical = 7.dp).widthIn(max = 260.dp), style = MaterialTheme.typography.labelMedium)
                                             }
                                         }
                                     }
                                 }
-                            } finally { hide() }
-                        }) {
-                            Column {
-                                inner()
-                                if (enabled && !readOnly && focused && value.composition == null && !value.selection.collapsed) {
-                                    Surface(color = Surface, shape = MaterialTheme.shapes.small) {
-                                        Row {
-                                            TextButton({ format("**") }, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }.semantics { contentDescription = "Bold selection" },
-                                                shape = RectangleShape, contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
-                                                Text("B", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                                            }
-                                            TextButton({ format("_") }, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }.semantics { contentDescription = "Italic selection" },
-                                                shape = RectangleShape, contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
-                                                Text("I", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
-                                            }
-                                        }
-                                    }
-                                }
                             }
-                            name?.let { label ->
-                                Popup(alignment = Alignment.TopStart, offset = IntOffset(anchor.x.roundToInt(), anchor.y.roundToInt() - with(density) { 42.dp.roundToPx() })) {
-                                    Surface(Modifier.entrance(MOTION_FAST, dy = 4.dp), color = Blackout, contentColor = Text, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                                        Text(":$label:", Modifier.padding(horizontal = 9.dp, vertical = 7.dp).widthIn(max = 260.dp), style = MaterialTheme.typography.labelMedium)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }, enabled = enabled, singleLine = false, visualTransformation = visualTransformation,
-                interactionSource = interaction, placeholder = placeholder, leadingIcon = leadingIcon, trailingIcon = trailingIcon,
-                contentPadding = OutlinedTextFieldDefaults.contentPadding(start = if (leadingIcon != null) 12.dp else 16.dp),
-                colors = colors, container = {
-                    OutlinedTextFieldDefaults.Container(enabled, false, interaction, colors = colors, shape = MaterialTheme.shapes.small)
-                },
-            )
+                        }, enabled = enabled, singleLine = false, visualTransformation = visualTransformation,
+                        interactionSource = interaction, placeholder = placeholder, leadingIcon = leadingIcon, trailingIcon = trailingIcon,
+                        contentPadding = OutlinedTextFieldDefaults.contentPadding(start = if (leadingIcon != null) 12.dp else 16.dp),
+                        colors = colors, container = { if (below == null) container() },
+                    )
+                    below?.invoke()
+                }
+            }
         },
     )
 }

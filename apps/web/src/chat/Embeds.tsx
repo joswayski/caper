@@ -201,8 +201,37 @@ function EmbedCard({ embed }: { embed: ChatEmbed }) {
   );
 }
 
+/** The draft's compact card inside the composer: thumbnail, site, title and
+ * the first line of text, with × to send the message without previews. */
+export function DraftEmbed({ embed, onRemove }: { embed: ChatEmbed; onRemove: () => void }) {
+  const find = <T extends EmbedBlock["type"]>(type: T) =>
+    embed.blocks.find((block): block is Extract<EmbedBlock, { type: T }> => block.type === type);
+  const images = embed.blocks.filter((block) => block.type === "images");
+  const author = find("author");
+  const media = find("player") ?? find("video");
+  const image = (images.find((block) => block.thumbnail) ?? images[0])?.items[0]?.url ?? media?.poster ?? author?.icon;
+  const title = find("title")?.text ?? author?.name ?? embed.site.name;
+  const text = find("text")?.text;
+  return (
+    <div className="chat-draft-embed" aria-label={`Link preview: ${embed.site.name}: ${title}`} role="group">
+      {image && <img src={image} alt="" referrerPolicy="no-referrer" />}
+      <div>
+        <p className="chat-draft-embed-site">
+          {embed.site.name}
+          {embed.site.name !== embed.site.domain && <span>{embed.site.domain}</span>}
+        </p>
+        <p className="chat-draft-embed-title">{title}</p>
+        {text && <p className="chat-draft-embed-text">{text}</p>}
+      </div>
+      <button type="button" className="chat-embed-remove" onClick={onRemove} aria-label="Remove link preview">
+        ×
+      </button>
+    </div>
+  );
+}
+
 /** A message's link preview cards, drawn from blocks; unknown blocks are skipped. */
-export function MessageEmbeds({ embeds, onRemove }: { embeds: ChatEmbed[]; onRemove?: () => void }) {
+export function MessageEmbeds({ embeds }: { embeds: ChatEmbed[] }) {
   if (!embeds.length) return null;
   return (
     // The row opens message actions on click; playing or following a card only does that.
@@ -210,11 +239,6 @@ export function MessageEmbeds({ embeds, onRemove }: { embeds: ChatEmbed[]; onRem
       {embeds.map((embed) => (
         <EmbedCard key={embed.url} embed={embed} />
       ))}
-      {onRemove && (
-        <button type="button" className="chat-embed-remove" onClick={onRemove} aria-label="Remove link preview">
-          ×
-        </button>
-      )}
     </div>
   );
 }

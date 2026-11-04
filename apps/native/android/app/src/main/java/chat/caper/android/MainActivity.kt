@@ -1951,9 +1951,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
                 state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
-                // Signed in, the draft's first link shows the card it will get, with × to send it without one.
+                // Signed in, the draft's first link shows the card it will get inside the field, with × to send it without one.
                 val preview = rememberLinkPreview(if (state.account != null) draft.text else "", channel.id, viewModel::linkPreview)
-                preview.embed?.let { embed -> Box(Modifier.padding(bottom = 8.dp)) { MessageEmbeds(listOf(embed), onRemove = preview.remove, arriving = true) } }
                 DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
                 // A voice message goes on its own: the draft text and files stay in the composer.
                 // Stopping stages the recording with the draft's files; with "send as soon as I stop" it goes on its own.
@@ -2021,6 +2020,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 enabled = !state.messagesLoading && state.messagesError == null,
                                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions,
                                 colors = composerFieldColors(),
+                                below = preview.embed?.let { embed -> @Composable { ComposerLinkPreview(embed, preview.remove) } },
                             )
                             FilledIconButton(
                                 { sendDraft() },

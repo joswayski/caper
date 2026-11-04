@@ -250,6 +250,26 @@ final class LinkEmbedsTests: XCTestCase {
         XCTAssertNil(LinkEmbeds.previewLink(in: ""))
     }
 
+    func testComposerCardImageAndText() {
+        func embed(_ blocks: [EmbedBlock]) -> ChatEmbed {
+            ChatEmbed(url: "https://a.example", site: EmbedSite(name: "A", domain: "a.example"), blocks: blocks)
+        }
+        func images(_ url: String, thumbnail: Bool) -> EmbedBlock {
+            .images(EmbedImages(items: [EmbedImage(url: url, width: nil, height: nil, alt: nil)], thumbnail: thumbnail))
+        }
+        let author = EmbedBlock.author(EmbedAuthor(name: "Jo", handle: nil, url: nil, icon: "https://m.example/icon"))
+        let poster = EmbedBlock.player(EmbedPlayer(provider: .youtube, id: "x", play: nil, poster: "https://m.example/poster",
+                                                   width: nil, height: nil, start: nil))
+        XCTAssertEqual(embed([author, poster, images("https://m.example/big", thumbnail: false), images("https://m.example/thumb", thumbnail: true)])
+            .compactImage, "https://m.example/thumb")
+        XCTAssertEqual(embed([author, poster, images("https://m.example/big", thumbnail: false)]).compactImage, "https://m.example/big")
+        XCTAssertEqual(embed([author, poster]).compactImage, "https://m.example/poster")
+        XCTAssertEqual(embed([author, .text("one"), .text("two")]).compactImage, "https://m.example/icon")
+        XCTAssertNil(embed([.text("one")]).compactImage)
+        XCTAssertEqual(embed([author, .text("one"), .text("two")]).firstText, "one")
+        XCTAssertNil(embed([author]).firstText)
+    }
+
     func testPlayerPagesLoadOnlyFromCaper() {
         XCTAssertNotNil(LinkEmbeds.playURL("https://embed.caper.chat/play/youtube/abc"))
         XCTAssertNotNil(LinkEmbeds.playURL("https://embed.staging.caper.chat/play/twitch/clip:x"))

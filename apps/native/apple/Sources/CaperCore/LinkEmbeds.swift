@@ -49,6 +49,25 @@ public struct ChatEmbed: Codable, Equatable, Sendable {
         return nil
     }
 
+    /// The composer's compact card image: the thumbnail, else the first image,
+    /// a video or player poster, else the author's icon; nil without one.
+    public var compactImage: String? {
+        if let thumbnail { return thumbnail.url }
+        for block in blocks { if case .images(let images) = block, let first = images.items.first { return first.url } }
+        for block in blocks {
+            if case .video(let video) = block, let poster = video.poster { return poster }
+            if case .player(let player) = block, let poster = player.poster { return poster }
+        }
+        for block in blocks { if case .author(let author) = block, let icon = author.icon { return icon } }
+        return nil
+    }
+
+    /// The first text block, for the composer's compact card.
+    public var firstText: String? {
+        for block in blocks { if case .text(let text) = block { return text } }
+        return nil
+    }
+
     static func card(from decoder: Decoder) -> ChatEmbed? {
         guard let container = try? decoder.container(keyedBy: EmbedKey.self) else { return nil }
         let fields = EmbedFields(container)

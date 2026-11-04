@@ -9,45 +9,86 @@ import WebKit
 /// row is on screen (`message.embeds`) gets the short entrance.
 struct MessageEmbedsView: View {
     let embeds: [ChatEmbed]
-    var onRemove: (() -> Void)?
     /// Read once, when this row's view is first built.
     @State private var initial: Set<String>
 
-    init(embeds: [ChatEmbed], animatesAll: Bool = false, onRemove: (() -> Void)? = nil) {
+    init(embeds: [ChatEmbed]) {
         self.embeds = embeds
-        self.onRemove = onRemove
-        _initial = State(initialValue: animatesAll ? [] : Set(embeds.map(\.url)))
+        _initial = State(initialValue: Set(embeds.map(\.url)))
     }
 
     var body: some View {
         if !embeds.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(embeds, id: \.url) { embed in
-                    EmbedCardView(embed: embed, reservesRemove: onRemove != nil)
+                    EmbedCardView(embed: embed)
                         .modifier(Entrance.embed(!initial.contains(embed.url)))
                 }
             }
             // Tracks never grow past the message column to fit 400pt media.
             .frame(maxWidth: 432, alignment: .leading)
-            .overlay(alignment: .topTrailing) {
-                if let onRemove { EmbedRemoveButton(action: onRemove) }
-            }
             .frame(maxWidth: .infinity, alignment: .leading)
             .modifier(SwipeGuardedLinks())
         }
     }
 }
 
-/// The channel composer's card for the draft's first link, with × to send
-/// without previews. Shown only for signed-in accounts (`composerPreviewLink`).
+/// The draft's first link as a compact card inside the channel composer's
+/// field, below the text (like Slack; web ComposerEmbedPreview), with × to
+/// send without previews. Shown only for signed-in accounts (`composerPreviewLink`).
+/// It rises in as it arrives and leaves instantly; no player in the composer.
 struct ComposerEmbedPreview: View {
     let chat: ChatModel
 
     var body: some View {
         if let embed = chat.composerLinkPreview {
-            MessageEmbedsView(embeds: [embed], animatesAll: true) { chat.removeComposerLinkPreview() }
+            ComposerEmbedCard(embed: embed) { chat.removeComposerLinkPreview() }
+                .modifier(Entrance.embed(true))
+                // A new link is a new card, with its own entrance.
+                .id(embed.url)
+                .padding([.horizontal, .bottom], 8)
                 .accessibilityIdentifier("composer-link-preview")
         }
+    }
+}
+
+private struct ComposerEmbedCard: View {
+    let embed: ChatEmbed
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            if let image = embed.compactImage {
+                EmbedRemoteImage(url: image, maxPixelSize: 168)
+                    .frame(width: 56, height: 56)
+                    .background(CaperTheme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(embed.site.name).font(CaperTheme.font(11, weight: .semibold)).lineLimit(1)
+                    if embed.site.name != embed.site.domain {
+                        Text(embed.site.domain).font(CaperTheme.font(11)).lineLimit(1).truncationMode(.tail)
+                    }
+                }
+                .foregroundStyle(CaperTheme.muted)
+                Text(embed.heading)
+                    .font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.text)
+                    .lineLimit(1).truncationMode(.tail)
+                if let text = embed.firstText {
+                    Text(text).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                        .lineLimit(1).truncationMode(.tail)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            EmbedRemoveButton(action: remove).padding(-4)
+        }
+        .padding(8)
+        .background(CaperTheme.raised, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -73,8 +114,6 @@ private struct EmbedRemoveButton: View {
 
 private struct EmbedCardView: View {
     let embed: ChatEmbed
-    /// Room for the composer's remove button over the card's corner.
-    var reservesRemove = false
 
     var body: some View {
         let heading = embed.heading
@@ -92,7 +131,7 @@ private struct EmbedCardView: View {
         }
         .padding(.top, 10)
         .padding(.leading, 12)
-        .padding(.trailing, reservesRemove ? 36 : 12)
+        .padding(.trailing, 12)
         .padding(.bottom, 12)
         .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))

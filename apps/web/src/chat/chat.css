@@ -5787,15 +5787,87 @@ a.chat-draft-preview {
 .chat-embed-remove:hover {
   color: var(--text);
 }
-.chat-composer-embed {
-  padding: 0 0 8px;
+/* The draft's link card sits inside the input's frame, under the text: the
+   textarea gives up its bottom edge and this row continues the frame. */
+.chat-composer-preview {
+  grid-column: 1;
+  grid-row: 2;
+  margin-top: -7px;
+  padding: 0 8px 8px;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: var(--surface-composer);
+  transition: border-color var(--motion-fast) var(--ease-out);
 }
-.chat-composer-embed .chat-embeds {
-  margin-top: 0;
+.chat-composer form:has(> .chat-composer-preview) :is(.chat-mention-input, textarea) {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
-/* Room for the remove button over the card's corner. */
-.chat-composer-embed .chat-embed {
-  padding-right: 36px;
+/* Padding replaces the bottom border, keeping the text row's height. */
+.chat-composer form:has(> .chat-composer-preview) textarea {
+  border-bottom-width: 0;
+  padding-bottom: 11px;
+}
+.chat-composer form:has(textarea:focus) > .chat-composer-preview {
+  border-color: var(--terracotta);
+}
+.chat-draft-embed {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 420px;
+  min-width: 0;
+  padding: 8px 36px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  animation: caper-rise-in var(--motion-fast) var(--ease-out);
+}
+.chat-draft-embed > img {
+  flex: none;
+  width: 56px;
+  height: 56px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--surface);
+}
+.chat-draft-embed > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.chat-draft-embed p {
+  margin: 0;
+  overflow: hidden;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.chat-draft-embed-site {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.chat-draft-embed-site span {
+  margin-left: 6px;
+  font-weight: 400;
+}
+.chat-draft-embed-title {
+  color: var(--text);
+  font-weight: 500;
+}
+.chat-draft-embed-text {
+  color: var(--text-muted);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-composer-preview {
+    transition: none;
+  }
+  .chat-draft-embed {
+    animation: none;
+  }
 }
 /* Voice messages. The composer's microphone records; the recording bar takes
    the input row's place; sent ones play inline with their transcript. */

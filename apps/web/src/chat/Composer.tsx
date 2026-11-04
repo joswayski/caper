@@ -5,7 +5,7 @@ import { DraftAttachments, type DraftAttachment, type DraftEditing } from "./Att
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { readDraft, saveDraft } from "./drafts.ts";
-import { MessageEmbeds } from "./Embeds.tsx";
+import { DraftEmbed } from "./Embeds.tsx";
 import { fetchPreview, previewLink, type ChatEmbed } from "./embeds.ts";
 import EmojiButton from "./EmojiButton.tsx";
 import type { ChatGif } from "./klipy.ts";
@@ -61,7 +61,7 @@ interface ComposerProps {
   authorId?: string;
   mentionMembers?: MentionCandidate[];
   onSend: (text: string, options?: { suppressEmbeds?: boolean }) => Promise<unknown> | undefined;
-  /** Shows the first link's preview card above the draft (signed-in accounts). */
+  /** Shows the first link's preview card under the draft (signed-in accounts). */
   linkPreviews?: boolean;
   /** Sends a KLIPY GIF on its own; the draft stays. */
   onSendGif?: (gif: ChatGif, query: string) => Promise<unknown> | undefined;
@@ -262,11 +262,6 @@ export default function Composer({
           editing={attachments.editing}
         />
       )}
-      {preview.embed && (
-        <div className="chat-composer-embed">
-          <MessageEmbeds embeds={[preview.embed]} onRemove={preview.remove} />
-        </div>
-      )}
       <form
         data-attach={!!attachments || undefined}
         data-voice={!!attachments?.voice || undefined}
@@ -367,6 +362,12 @@ export default function Composer({
           </button>
         </div>
         {voice.bar}
+        {/* Inside the input's frame, under the draft, so it reads as part of the message. */}
+        {preview.embed && (
+          <div className="chat-composer-preview">
+            <DraftEmbed embed={preview.embed} onRemove={preview.remove} />
+          </div>
+        )}
         <span id="chat-composer-hint" className="sr-only">
           Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
           suggestions. Enter to send. Shift+Enter for a new line.

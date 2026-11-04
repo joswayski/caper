@@ -232,13 +232,10 @@ pub struct Shown {
     pub action: Option<Action>,
     /// A card link or control is hovered, so the row's own menu stays closed.
     pub hovered: bool,
-    /// The composer preview's × was pressed.
-    pub removed: bool,
 }
 
 /// A message's cards. `scope` keeps their ids apart (the message id);
-/// `arrival` is the entrance progress (1 when settled); `removable` adds the
-/// composer's × to the first card.
+/// `arrival` is the entrance progress (1 when settled).
 pub fn cards(
     ui: &mut egui::Ui,
     media: &mut Media,
@@ -246,7 +243,6 @@ pub fn cards(
     scope: &str,
     embeds: &[Embed],
     arrival: f32,
-    removable: bool,
 ) -> Shown {
     let mut shown = Shown::default();
     if embeds.is_empty() {
@@ -258,17 +254,7 @@ pub fn cards(
         ui.spacing_mut().interact_size.y = 20.0;
         let width = ui.available_width().min(CARD_WIDTH);
         for (index, embed) in embeds.iter().enumerate() {
-            let remove = removable && index == 0;
-            card(
-                ui,
-                media,
-                player,
-                (scope, index),
-                embed,
-                width,
-                remove,
-                &mut shown,
-            );
+            card(ui, media, player, (scope, index), embed, width, &mut shown);
         }
     });
     if media.busy() {
@@ -277,7 +263,6 @@ pub fn cards(
     shown
 }
 
-#[allow(clippy::too_many_arguments)]
 fn card(
     ui: &mut egui::Ui,
     media: &mut Media,
@@ -285,7 +270,6 @@ fn card(
     id: (&str, usize),
     embed: &Embed,
     width: f32,
-    remove: bool,
     shown: &mut Shown,
 ) {
     let thumbnail = embed.blocks.iter().find_map(|block| match block {
@@ -295,20 +279,18 @@ fn card(
         } => items.first(),
         _ => None,
     });
-    // Room for the remove button over the card's corner.
-    let right = if remove { 36 } else { 12 };
     let frame = egui::Frame::new()
         .fill(SURFACE)
         .stroke(Stroke::new(1.0, BORDER))
         .corner_radius(8)
         .inner_margin(egui::Margin {
             left: 12,
-            right,
+            right: 12,
             top: 10,
             bottom: 12,
         });
-    let inner = (width - 12.0 - f32::from(right) - 2.0).max(40.0);
-    let response = frame.show(ui, |ui| {
+    let inner = (width - 26.0).max(40.0);
+    frame.show(ui, |ui| {
         ui.set_width(inner);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
@@ -342,34 +324,155 @@ fn card(
             }
         });
     });
-    if remove {
-        let rect = egui::Rect::from_min_size(
-            response.response.rect.right_top() + egui::vec2(-28.0, 4.0),
-            egui::vec2(24.0, 24.0),
-        );
-        let button = ui.interact(
-            rect,
-            ui.id().with(("embed-remove", id.0)),
-            egui::Sense::click(),
-        );
-        let hot = button.hovered() || button.has_focus();
-        ui.painter().rect(
-            rect,
-            8,
-            RAISED,
-            Stroke::new(1.0, BORDER),
-            egui::StrokeKind::Inside,
-        );
-        paint_icon(
-            ui.painter(),
-            rect.shrink(6.0),
-            NavIcon::Close,
-            if hot { TEXT } else { MUTED },
-        );
-        if clicked(&button, "Remove link preview", shown) {
-            shown.removed = true;
-        }
+}
+
+/// The main composer's compact card for the draft's first link, drawn inside
+/// the input frame under the text (web `DraftEmbed`): a thumbnail, the site,
+/// the title and the first line of text, with × to send the message without
+/// previews. It is never a player. `arrival` is the entrance progress;
+/// returns whether × was pressed.
+pub fn composer_card(ui: &mut egui::Ui, media: &mut Media, embed: &Embed, arrival: f32) -> bool {
+    const SIZE: f32 = 56.0;
+    let images = || {
+        embed.blocks.iter().filter_map(|block| match block {
+            EmbedBlock::Images { items, thumbnail } => Some((items, *thumbnail)),
+            _ => None,
+        })
+    };
+    let poster = |player: bool| {
+        embed.blocks.iter().find_map(|block| match block {
+            EmbedBlock::Player { poster, .. } if player => Some(poster),
+            EmbedBlock::Video { poster, .. } if !player => Some(poster),
+            _ => None,
+        })
+    };
+    let author = embed.blocks.iter().find_map(|block| match block {
+        EmbedBlock::Author { icon, .. } => Some(icon),
+        _ => None,
+    });
+    let image = images()
+        .find(|(_, thumbnail)| *thumbnail)
+        .or_else(|| images().next())
+        .and_then(|(items, _)| items.first())
+        .map(|image| &image.url)
+        .or_else(|| {
+            poster(true)
+                .or_else(|| poster(false))
+                .and_then(Option::as_ref)
+        })
+        .or_else(|| author.and_then(Option::as_ref));
+    let text = embed.blocks.iter().find_map(|block| match block {
+        EmbedBlock::Text { text } => Some(text.split_whitespace().collect::<Vec<_>>().join(" ")),
+        _ => None,
+    });
+    let mut shown = Shown::default();
+    let removed = motion::arrive(ui, arrival, egui::vec2(0.0, 4.0), |ui| {
+        // The input frame's own margin is 6; the card sits 8 from its edges.
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 2,
+                right: 2,
+                top: 0,
+                bottom: 8,
+            })
+            .show(ui, |ui| {
+                let width = ui.available_width();
+                // Room on the right for the remove button over the corner.
+                let card = egui::Frame::new()
+                    .fill(RAISED)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(8)
+                    .inner_margin(egui::Margin {
+                        left: 8,
+                        right: 32,
+                        top: 8,
+                        bottom: 8,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width((width - 42.0).max(40.0));
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(10.0, 2.0);
+                            if let Some(url) = image {
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(SIZE, SIZE),
+                                    egui::Sense::hover(),
+                                );
+                                let state = media.image(&key(url), Some(url));
+                                tile(ui, rect, CornerRadius::same(6), state, &response, None);
+                            }
+                            ui.vertical(|ui| {
+                                let mut site = egui::text::LayoutJob::default();
+                                site.append(
+                                    &embed.site.name,
+                                    0.0,
+                                    egui::TextFormat::simple(bold(11.5), MUTED),
+                                );
+                                if embed.site.name != embed.site.domain {
+                                    site.append(
+                                        &embed.site.domain,
+                                        6.0,
+                                        egui::TextFormat::simple(
+                                            egui::FontId::proportional(11.5),
+                                            MUTED,
+                                        ),
+                                    );
+                                }
+                                ui.add(egui::Label::new(site).selectable(false).truncate());
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(heading(embed))
+                                            .font(egui::FontId::new(
+                                                13.6,
+                                                egui::FontFamily::Name("Satoshi Medium".into()),
+                                            ))
+                                            .color(TEXT),
+                                    )
+                                    .selectable(false)
+                                    .truncate(),
+                                );
+                                if let Some(text) = &text {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(text).size(12.5).color(MUTED),
+                                        )
+                                        .selectable(false)
+                                        .truncate(),
+                                    );
+                                }
+                            });
+                        });
+                    });
+                let rect = egui::Rect::from_min_size(
+                    card.response.rect.right_top() + egui::vec2(-28.0, 4.0),
+                    egui::vec2(24.0, 24.0),
+                );
+                let button = ui.interact(
+                    rect,
+                    ui.id().with(("embed-remove", "composer")),
+                    egui::Sense::click(),
+                );
+                let hot = button.hovered() || button.has_focus();
+                ui.painter().rect(
+                    rect,
+                    8,
+                    RAISED,
+                    Stroke::new(1.0, BORDER),
+                    egui::StrokeKind::Inside,
+                );
+                paint_icon(
+                    ui.painter(),
+                    rect.shrink(6.0),
+                    NavIcon::Close,
+                    if hot { TEXT } else { MUTED },
+                );
+                clicked(&button, "Remove link preview", &mut shown)
+            })
+            .inner
+    });
+    if media.busy() {
+        ui.ctx().request_repaint();
     }
+    removed
 }
 
 /// Reports a control's name and pointer state; returns whether it was clicked.

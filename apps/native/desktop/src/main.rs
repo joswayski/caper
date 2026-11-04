@@ -17150,17 +17150,9 @@ impl CaperApp {
                         });
                         ui.add_space(4.0);
                     }
-                    // The first link's card, before sending (signed-in accounts).
-                    let preview = self.link_preview.update(ui.ctx(), &self.draft, self.token.as_deref(), self.media.api());
-                    if let Some(embed) = preview.cloned() {
-                        let arrival = motion::entrance(ui.ctx(), egui::Id::new("composer-embed"), motion::BASE);
-                        let shown = embeds::cards(ui, &mut self.media, &mut self.web_player, "composer", std::slice::from_ref(&embed), arrival, true);
-                        if shown.removed {
-                            self.link_preview.remove();
-                        }
-                        self.embed_action(ui.ctx(), shown.action);
-                        ui.add_space(8.0);
-                    }
+                    // The first link's card, before sending (signed-in accounts),
+                    // drawn compact inside the input frame under the draft.
+                    let preview = self.link_preview.update(ui.ctx(), &self.draft, self.token.as_deref(), self.media.api()).cloned();
                     if attach && self.draft_file_count(None) > 0 {
                         self.draft_chips(ui, None);
                         ui.add_space(8.0);
@@ -17279,6 +17271,12 @@ impl CaperApp {
                                 });
                                 editor
                             }).inner;
+                            if let Some(embed) = &preview {
+                                let arrival = motion::entrance(ui.ctx(), egui::Id::new("composer-embed"), motion::BASE);
+                                if embeds::composer_card(ui, &mut self.media, embed, arrival) {
+                                    self.link_preview.remove();
+                                }
+                            }
                             if pick.is_some() {
                                 self.pick_files(ui.ctx(), None);
                             }
@@ -18476,7 +18474,6 @@ impl CaperApp {
                                 &message.id,
                                 &message.content.embeds,
                                 arrival,
-                                false,
                             )
                         })
                         .inner
@@ -51993,6 +51990,17 @@ mod tests {
                 .iter()
                 .any(|(_, node)| node.label() == Some("Remove link preview")),
             "the composer shows the card with its remove button"
+        );
+        assert!(
+            !nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Play Never Gonna Give You Up")),
+            "the composer's compact card is not a player"
+        );
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == "Never Gonna Give You Up")),
+            "the compact card shows the title"
         );
         app.link_preview.remove();
         assert!(app.link_preview.card().is_none());
