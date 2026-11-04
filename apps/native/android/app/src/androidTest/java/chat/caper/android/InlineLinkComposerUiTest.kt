@@ -16,6 +16,7 @@ import chat.caper.android.ui.CaperTheme
 import chat.caper.android.ui.EmojiTextField
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -52,7 +53,10 @@ class InlineLinkComposerUiTest {
             assertEquals(TextRange(start + 5), value.value.selection)
             assertFalse(value.value.text.contains(DraftLinkPrefix))
         }
-        compose.onNodeWithTag("preview").assertIsDisplayed()
+        // The preview stays under the text row inside the editor's own frame.
+        val frame = editor.fetchSemanticsNode().boundsInRoot
+        val preview = compose.onNodeWithTag("preview", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertTrue(preview.height > 0f && preview.top > frame.top && preview.bottom <= frame.bottom)
     }
 
     @Test fun defaultTransformationKeepsFormattingAndNativeUndoAtUrlBoundary() {

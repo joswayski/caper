@@ -39,7 +39,8 @@ class ReplyFocusUiTest {
                 }
             }
         }
-        compose.onNodeWithText("Existing draft").assertIsNotFocused()
+        // Disabled, the field has no focus state at all, so it cannot be "not focused".
+        compose.onNodeWithText("Existing draft").assert(!isFocused())
         compose.runOnIdle { request = ComposerFocusRequest("channel", "root", "first") }
         compose.runOnIdle { assertEquals(0, consumed); enabled = true }
         compose.waitUntil { consumed == 1 }

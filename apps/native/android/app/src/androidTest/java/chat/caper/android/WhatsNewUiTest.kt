@@ -1,11 +1,11 @@
 package chat.caper.android
 
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.platform.UriHandler
+import android.app.Instrumentation
+import android.content.Intent
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import chat.caper.android.data.PlatformRelease
 import chat.caper.android.data.ReleaseHighlight
 import chat.caper.android.data.WhatsNewSnapshot
@@ -28,11 +28,16 @@ class WhatsNewUiTest {
             ), version = if (it == 4L) "0.1.112" else null)
         }).validated("android", "4".repeat(40))
         var dismissed: Long? = null
+        // A Dialog's content gets its own platform UriHandler, so catch the browser launch itself.
         var opened: String? = null
-        val uriHandler = object : UriHandler { override fun openUri(uri: String) { opened = uri } }
-        compose.setContent { CompositionLocalProvider(LocalUriHandler provides uriHandler) { CaperTheme {
-            WhatsNewDialog(WhatsNewUi(), snapshot, true, {}, { dismissed = snapshot.sequence })
+        val browser = object : Instrumentation.ActivityMonitor() {
+            override fun onStartActivity(intent: Intent): Instrumentation.ActivityResult? =
+                if (intent.action == Intent.ACTION_VIEW) { opened = intent.dataString; Instrumentation.ActivityResult(0, null) } else null
         }
+        InstrumentationRegistry.getInstrumentation().addMonitor(browser)
+        try {
+        compose.setContent { CaperTheme {
+            WhatsNewDialog(WhatsNewUi(), snapshot, true, {}, { dismissed = snapshot.sequence })
         } }
         val newer = compose.onNodeWithText("TEST FIXTURE — Update 4").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         val older = compose.onNodeWithText("TEST FIXTURE — Update 2").fetchSemanticsNode().boundsInRoot
@@ -47,6 +52,7 @@ class WhatsNewUiTest {
         compose.runOnIdle { assertEquals("https://github.com/joswayski/caper/commit/" + "2".repeat(40), opened) }
         compose.onNodeWithText("Got it").performClick()
         compose.runOnIdle { assertEquals(4L, dismissed) }
+        } finally { InstrumentationRegistry.getInstrumentation().removeMonitor(browser) }
     }
 
     @Test fun settingsShowsHonestErrorAndRetry() {
