@@ -9013,16 +9013,24 @@ Apple/web/desktop consume an authoritative message count, Android follows
 active notifications, and Windows taskbar rendering remains unverified.
 This does not change the navigation-dot rules below.
 
-Web (desktop/mobile), Android, iOS/macOS and Rust desktop show a light dot on
-spaces with unread messages or direct mentions. A selected space keeps its dot
-until its other unread channels are viewed. Joined channel rows also show dots.
-The top-right unread dot and bottom-right mute badge can coexist: notification
-levels, pauses, OS permission and mutes do not hide space/channel unread activity.
-DM behavior is unchanged. This is message activity, not a new invitation alert,
-mention counter or notification inbox.
+Web (desktop/mobile), Android, iOS/macOS and Rust desktop mark rail spaces the
+same way. A space with unread messages or direct mentions shows a small light dot
+in the rail margin beside its tile; a space with nothing new shows nothing there.
+A terracotta count on the tile's bottom-right corner shows only unread messages
+that @mention or reply to you (`mentionCount`, capped at 99+), so the dot and the
+count can appear together. The selected space has a terracotta ring and soft outer
+glow that blooms in and settles; hover adds a quiet neutral outline. Deselection
+is instant, and reduced-motion settings skip the bloom and the dot's arrival.
+A selected space keeps its dot until its other unread channels are viewed. Joined
+channel rows also show dots. The rail's unread and mention marks coexist with the
+mute and voice badges: notification levels, pauses, OS permission and mutes do not
+hide space/channel unread activity. DM behavior is unchanged. This is message
+activity, not a new invitation alert or notification inbox.
 
 `GET /api/spaces/unread` returns only unread spaces/channels, with decimal-string
-`lastSeq` and `readSeq` values. Joined channels count other unblocked, active authors' main
+`lastSeq` and `readSeq` values, `unreadCount` and `mentionCount`. `mentionCount` is
+the subset of unread messages that mention the reader or quote-reply to one of
+their messages, excluding forwards. Joined channels count other unblocked, active authors' main
 messages and broadcast replies. Accessible unjoined channels and non-broadcast
 thread replies count direct personal mentions only; forwarded mention metadata
 does not notify. Space membership, private grants and soft removals constrain

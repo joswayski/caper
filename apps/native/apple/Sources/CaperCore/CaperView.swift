@@ -1260,6 +1260,8 @@ private struct SpaceRailButton: View {
     @Bindable var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovered = false
+    /// The selection glow's strength: blooms past 1, then settles at 1.
+    @State private var glow: Double = 0
     let space: Space
     let narrow: Bool
     private var selected: Bool { model.selectedSpaceID == space.id }
@@ -1267,13 +1269,14 @@ private struct SpaceRailButton: View {
     private let corner: CGFloat = 12
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
     private var unread: Bool { model.unreadSpaces.contains { $0.id == space.id } }
-    private var unreadCount: Int { model.unreadSpaces.first { $0.id == space.id }?.channels.reduce(0) { $0 + ($1.unreadCount ?? 0) } ?? 0 }
+    /// The dot means anything new; the count is only mentions and replies to you.
+    private var mentionCount: Int { model.unreadSpaces.first { $0.id == space.id }?.channels.reduce(0) { $0 + ($1.mentionCount ?? 0) } ?? 0 }
     private var connected: Bool { model.account != nil && model.voice.phase == .connected && model.voice.context?.spaceID == space.id }
     private var voiceActive: Bool { model.account != nil && (connected || model.voiceActivitySpaceIDs.contains(space.id)) }
     private var state: String {
         let base: String = model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : ""
-        let unreadLabel = unreadCount > 0 ? "\(unreadCount) unread \(unreadCount == 1 ? "message" : "messages")" : "Unread activity"
-        return [base, unread ? unreadLabel : "", muted ? "Muted" : "", connected ? "Connected to voice" : voiceActive ? "Voice active" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
+        let mentions = mentionCount > 0 ? "\(mentionCount) \(mentionCount == 1 ? "mention" : "mentions")" : ""
+        return [base, unread ? "Unread messages" : "", mentions, muted ? "Muted" : "", connected ? "Connected to voice" : voiceActive ? "Voice active" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     var body: some View {
@@ -1292,19 +1295,30 @@ private struct SpaceRailButton: View {
                             .offset(x: 3, y: -3).accessibilityHidden(true)
                     }
                 }
+                // Selected: a terracotta ring and soft outer glow. Hover: a quiet outline.
+                .background {
+                    // The opaque surface keeps a muted (translucent) icon from showing the ring through it.
+                    ZStack {
+                        RoundedRectangle(cornerRadius: corner + 1).fill(CaperTheme.terracotta.opacity(0.9 * min(glow, 1)))
+                            .padding(-1)
+                            .shadow(color: CaperTheme.terracotta.opacity(0.36 * glow), radius: 6 + 3 * max(glow - 1, 0))
+                        RoundedRectangle(cornerRadius: corner).fill(CaperTheme.surface)
+                    }
+                }
+                .overlay {
+                    if hovered && !selected {
+                        RoundedRectangle(cornerRadius: corner + 1).stroke(CaperTheme.border, lineWidth: 1).padding(-0.5)
+                    }
+                }
                 .overlay(alignment: .bottomTrailing) {
-                    if unreadCount > 0 {
-                        Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
+                    if mentionCount > 0 {
+                        Text(mentionCount > 99 ? "99+" : "\(mentionCount)")
                             .font(CaperTheme.font(11, weight: .bold)).monospacedDigit()
                             .foregroundStyle(CaperTheme.text)
                             .padding(.horizontal, 4).frame(minWidth: 18, minHeight: 18)
                             .background(Capsule().fill(CaperTheme.terracotta))
                             .overlay(Capsule().stroke(CaperTheme.blackout, lineWidth: 2))
                             .offset(x: 3, y: 3).accessibilityHidden(true)
-                    } else if unread {
-                        Circle().fill(CaperTheme.text).frame(width: 8, height: 8)
-                            .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
-                            .offset(x: 2, y: 2).accessibilityHidden(true)
                     }
                 }
         }
@@ -1313,13 +1327,28 @@ private struct SpaceRailButton: View {
         .accessibilityLabel(name)
         .accessibilityValue(state)
         .onHover { hovered = $0 }
+        // New messages: a small dot in the rail margin, beside the tile.
         .overlay(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 2).fill(CaperTheme.text)
-                .frame(width: 4, height: selected ? 32 : hovered ? 20 : 8).offset(x: -10)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: selected)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovered)
-                .accessibilityHidden(true)
+            if unread {
+                Circle().fill(CaperTheme.text).frame(width: 6, height: 6).offset(x: -7)
+                    .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(x: -4)))
+                    .accessibilityHidden(true)
+            }
         }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: unread)
+        .onAppear { glow = selected ? 1 : 0 }
+        .onChange(of: selected) { _, selected in bloom(selected) }
+    }
+
+    /// Selection blooms in and settles; deselection is instant.
+    private func bloom(_ selected: Bool) {
+        guard selected, !reduceMotion else {
+            glow = selected ? 1 : 0
+            return
+        }
+        glow = 0
+        withAnimation(.easeOut(duration: 0.3)) { glow = 1.5 }
+        withAnimation(.easeOut(duration: 0.4).delay(0.3)) { glow = 1 }
     }
 
     /// A muted space: a small bell-slash on the rail tile.

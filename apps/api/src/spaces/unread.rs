@@ -11,7 +11,8 @@ pub(super) async fn list(
     // channels and non-broadcast thread replies count only direct @mentions.
     // Only channels whose stream moved past the read position are checked.
     // Count messages, not stream events; the two sets below are disjoint.
-    let rows: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
+    // `mentionCount` is the subset that @mentions or replies to the reader.
+    let rows: Vec<(String, String, i64, i64, i64, i64)> = sqlx::query_as(
         "WITH visible AS (
           SELECT s.external_id AS space,c.id,c.external_id AS channel,COALESCE(r.seq,0) AS read_seq,
                  EXISTS(SELECT 1 FROM public.channel_joins cj
@@ -41,10 +42,16 @@ pub(super) async fn list(
           GROUP BY v.id
         )
         SELECT v.space,v.channel,GREATEST(latest.seq,mention.seq),v.read_seq,
-               COALESCE(latest.unread_count,0)+COALESCE(mention.unread_count,0)
+               COALESCE(latest.unread_count,0)+COALESCE(mention.unread_count,0),
+               COALESCE(latest.mention_count,0)+COALESCE(mention.unread_count,0)
         FROM visible v
         LEFT JOIN LATERAL (
-          SELECT max(m.channel_seq) AS seq,count(*) AS unread_count FROM public.messages m
+          -- Mentions and replies to the reader drive the rail's count badge.
+          SELECT max(m.channel_seq) AS seq,count(*) AS unread_count,
+                 count(*) FILTER (WHERE m.forward_source_id IS NULL AND (
+                   m.payload->'content'->'mentions' @> jsonb_build_array(jsonb_build_object('type','user','id',$2::text))
+                   OR m.payload->'replyTo'->'author'->>'id'=$2::text)) AS mention_count
+          FROM public.messages m
           JOIN public.chat_sessions cs ON cs.id=m.session_id
           JOIN public.users author ON author.id=cs.user_id AND author.deleted_at IS NULL
           WHERE v.joined AND m.channel_id=v.id AND m.channel_seq>v.read_seq AND m.deleted_at IS NULL
@@ -62,11 +69,11 @@ pub(super) async fn list(
     .await
     .map_err(database_error)?;
     let mut spaces: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    for (space, channel, seq, read_seq, unread_count) in rows {
+    for (space, channel, seq, read_seq, unread_count, mention_count) in rows {
         spaces
             .entry(space)
             .or_default()
-            .push(json!({"id":channel,"lastSeq":seq.to_string(),"readSeq":read_seq.to_string(),"unreadCount":unread_count}));
+            .push(json!({"id":channel,"lastSeq":seq.to_string(),"readSeq":read_seq.to_string(),"unreadCount":unread_count,"mentionCount":mention_count}));
     }
     let feedback_waiting = crate::feedback::waiting_count(pool(&state)?, principal.user.id).await?;
     let badge_count = crate::push::badge::count(pool(&state)?, principal.user.id)

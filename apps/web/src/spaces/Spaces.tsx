@@ -3203,13 +3203,14 @@ export default function Spaces({
       {spaces.map((space) => {
         const muted = isMuted(overrideFor(notifications, { spaceId: space.id })?.mutedUntil);
         const unread = unreadSpaces.find((item) => item.id === space.id);
-        const unreadCount = unread?.channels.reduce((total, channel) => total + (channel.unreadCount ?? 0), 0) ?? 0;
+        // The dot means anything new; the count is only mentions and replies to you.
+        const mentionCount = unread?.channels.reduce((total, channel) => total + (channel.mentionCount ?? 0), 0) ?? 0;
         const connected = connectedSpaceId === space.id;
         const voiceActive = connected || voiceActivity.includes(space.id);
         const label = [
           space.name,
-          unread &&
-            (unreadCount ? `${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"}` : "unread activity"),
+          unread && "unread messages",
+          mentionCount > 0 && `${mentionCount} ${mentionCount === 1 ? "mention" : "mentions"}`,
           muted && "muted",
           voiceActive && (connected ? "connected to voice" : "voice active"),
         ]
@@ -3223,6 +3224,7 @@ export default function Spaces({
             data-muted={muted ? "" : undefined}
             data-voice={voiceActive ? "" : undefined}
           >
+            {unread && <i className="space-unread" aria-hidden="true" />}
             <button
               type="button"
               title={label}
@@ -3234,9 +3236,9 @@ export default function Spaces({
               onClick={() => choose(space.id)}
             >
               <SpaceIcon space={space} />
-              {unread && (
-                <i className="space-unread" data-count={unreadCount || undefined} aria-hidden="true">
-                  {unreadCount ? (unreadCount > 99 ? "99+" : unreadCount) : null}
+              {mentionCount > 0 && (
+                <i className="space-mentions" aria-hidden="true">
+                  {mentionCount > 99 ? "99+" : mentionCount}
                 </i>
               )}
               {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}

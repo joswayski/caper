@@ -541,6 +541,10 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
             .bind(random_id(12)).bind(Uuid::new_v4()).bind(seq).bind(broadcast).execute(&pool).await.unwrap();
     }
     pool.execute("UPDATE messages SET payload='{}'::jsonb WHERE channel_id=(SELECT id FROM channels WHERE external_id='other1234567') AND channel_seq=4").await.unwrap();
+    // A reply to the reader counts toward the rail's mention badge.
+    sqlx::query("UPDATE messages SET payload=$1 WHERE channel_id=(SELECT id FROM channels WHERE external_id='first1234567') AND channel_seq=1")
+        .bind(json!({"content":{"mentions":[]},"replyTo":{"id":"quoted","author":{"id":reader.user.external_id}}}))
+        .execute(&pool).await.unwrap();
     pool.execute("UPDATE messages SET thread_root_id=(SELECT m.id FROM messages m JOIN channels c ON c.id=m.channel_id WHERE c.external_id='quiet1234567' AND m.channel_seq=4) WHERE channel_seq=7").await.unwrap();
     sqlx::query("INSERT INTO messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,forward_source_id) SELECT $1,m.channel_id,m.session_id,$2,''::bytea,9,m.payload,m.id FROM messages m JOIN channels c ON c.id=m.channel_id WHERE c.external_id='quiet1234567' AND m.channel_seq=7")
         .bind(random_id(12)).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
@@ -576,7 +580,7 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
             StatusCode::OK,
             snapshot(
                 json!([
-                    {"id":"first1234567","lastSeq":"1","readSeq":"0","unreadCount":1},{"id":"other1234567","lastSeq":"6","readSeq":"0","unreadCount":3},{"id":"quiet1234567","lastSeq":"7","readSeq":"0","unreadCount":1}
+                    {"id":"first1234567","lastSeq":"1","readSeq":"0","unreadCount":1,"mentionCount":1},{"id":"other1234567","lastSeq":"6","readSeq":"0","unreadCount":3,"mentionCount":3},{"id":"quiet1234567","lastSeq":"7","readSeq":"0","unreadCount":1,"mentionCount":1}
                 ]),
                 5
             )
@@ -593,7 +597,7 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
         call(&app, "GET", "/api/spaces/unread", Value::Null).await.1,
         snapshot(
             json!([
-                {"id":"other1234567","lastSeq":"6","readSeq":"0","unreadCount":3},{"id":"quiet1234567","lastSeq":"7","readSeq":"0","unreadCount":1}
+                {"id":"other1234567","lastSeq":"6","readSeq":"0","unreadCount":3,"mentionCount":3},{"id":"quiet1234567","lastSeq":"7","readSeq":"0","unreadCount":1,"mentionCount":1}
             ]),
             4
         ),
@@ -610,7 +614,7 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
         call(&app, "GET", "/api/spaces/unread", Value::Null).await.1,
         snapshot(
             json!([
-                {"id":"other1234567","lastSeq":"6","readSeq":"2","unreadCount":2},{"id":"quiet1234567","lastSeq":"7","readSeq":"0","unreadCount":1}
+                {"id":"other1234567","lastSeq":"6","readSeq":"2","unreadCount":2,"mentionCount":2},{"id":"quiet1234567","lastSeq":"7","readSeq":"0","unreadCount":1,"mentionCount":1}
             ]),
             3
         ),

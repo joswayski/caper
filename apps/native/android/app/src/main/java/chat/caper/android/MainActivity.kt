@@ -16,6 +16,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
@@ -92,6 +97,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -697,30 +703,61 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             val selected = state.selectedSpace?.space?.id == space.id
             val muted = state.notificationSettings?.spaceMuted(space.id, now) == true
             val unread = state.unreadSpaces.any { it.id == space.id }
-            val unreadCount = state.unreadSpaces.firstOrNull { it.id == space.id }?.channels?.sumOf { it.unreadCount ?: 0 } ?: 0
-            val unreadLabel = if (unreadCount > 0) "$unreadCount unread ${if (unreadCount == 1) "message" else "messages"}" else "Unread activity"
+            // The dot means anything new; the count is only mentions and replies to you.
+            val mentionCount = state.unreadSpaces.firstOrNull { it.id == space.id }?.channels?.sumOf { it.mentionCount ?: 0 } ?: 0
+            val mentionLabel = if (mentionCount > 0) "$mentionCount ${if (mentionCount == 1) "mention" else "mentions"}" else null
             val connected = state.account != null && voice.phase == VoiceState.Phase.CONNECTED && voice.spaceId == space.id
             val voiceActive = state.account != null && (connected || space.id in state.voiceActivitySpaceIds)
             val interaction = remember(space.id) { MutableInteractionSource() }
             val hovered by interaction.collectIsHoveredAsState()
-            // Compose's animation clock honors the system animator duration scale.
-            val indicatorHeight by animateFloatAsState(if (selected) 32f else if (hovered) 20f else 8f, tween(140), label = "Space indicator")
+            // Selection blooms in and settles; deselection is instant. Compose's
+            // animation clock honors the system animator duration scale.
+            val glow = remember(space.id) { Animatable(if (selected) 1f else 0f) }
+            LaunchedEffect(selected) {
+                if (!selected) glow.snapTo(0f) else if (glow.value < 1f) {
+                    glow.snapTo(0f)
+                    glow.animateTo(1.5f, tween(300, easing = FastOutSlowInEasing))
+                    glow.animateTo(1f, tween(400, easing = FastOutSlowInEasing))
+                }
+            }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.width(4.dp).height(indicatorHeight.dp).background(Text, RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp)))
+                // New messages: a small dot in the rail margin, beside the tile.
+                Box(Modifier.width(6.dp), contentAlignment = Alignment.Center) {
+                    androidx.compose.animation.AnimatedVisibility(unread, enter = fadeIn(tween(200)) + slideInHorizontally(tween(200)) { -it }, exit = ExitTransition.None) {
+                        Box(Modifier.size(6.dp).background(Text, CircleShape))
+                    }
+                }
                 Spacer(Modifier.width(2.dp))
                 Box {
+                    val shape = MaterialTheme.shapes.medium
                     Surface(
-                        Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).hoverable(interaction).clickable(interactionSource = interaction, indication = null) { viewModel.selectSpace(space.id) }
-                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) unreadLabel else null, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
+                        Modifier.size(48.dp)
+                            // Selected: a terracotta ring and soft outer glow. Hover: a quiet outline.
+                            .drawBehind {
+                                val g = glow.value
+                                if (g > 0f) {
+                                    val radius = 12.dp.toPx()
+                                    for (step in 1..4) {
+                                        val spread = step * (3.dp.toPx() + 1.dp.toPx() * (g - 1f).coerceAtLeast(0f))
+                                        drawRoundRect(Terracotta.copy(alpha = 0.09f * g / step), topLeft = Offset(-spread, -spread), size = Size(size.width + 2 * spread, size.height + 2 * spread), cornerRadius = CornerRadius(radius + spread))
+                                    }
+                                    drawRoundRect(Terracotta.copy(alpha = 0.9f * g.coerceAtMost(1f)), topLeft = Offset(-1.dp.toPx(), -1.dp.toPx()), size = Size(size.width + 2.dp.toPx(), size.height + 2.dp.toPx()), cornerRadius = CornerRadius(radius + 1.dp.toPx()))
+                                } else if (hovered) {
+                                    drawRoundRect(Border, topLeft = Offset(-0.5.dp.toPx(), -0.5.dp.toPx()), size = Size(size.width + 1.dp.toPx(), size.height + 1.dp.toPx()), cornerRadius = CornerRadius(12.5.dp.toPx()), style = Stroke(1.dp.toPx()))
+                                }
+                            }
+                            .background(Surface, shape)
+                            .alpha(if (muted) MUTED_ALPHA else 1f).clip(shape).hoverable(interaction).clickable(interactionSource = interaction, indication = null) { viewModel.selectSpace(space.id) }
+                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread messages" else null, mentionLabel, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
                         color = Surface, shape = MaterialTheme.shapes.medium,
                     ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, TextMuted) }
                     if (muted) Box(Modifier.align(Alignment.TopStart).offset(x = (-3).dp, y = (-3).dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
                     if (voiceActive) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(18.dp).background(if (connected) VoiceSessionGreen else Blackout, CircleShape).border(2.dp, Blackout, CircleShape).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
                         Icon(painterResource(R.drawable.lucide_volume_2), null, Modifier.size(11.dp), tint = Text)
                     }
-                    if (unreadCount > 0) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).defaultMinSize(minWidth = 20.dp, minHeight = 20.dp).background(Terracotta, CircleShape).border(2.dp, Blackout, CircleShape).padding(horizontal = 5.dp, vertical = 2.dp).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
-                        Text(if (unreadCount > 99) "99+" else "$unreadCount", color = Text, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    } else if (unread) Box(Modifier.align(Alignment.BottomEnd).offset(x = 2.dp, y = 2.dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
+                    if (mentionCount > 0) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).defaultMinSize(minWidth = 20.dp, minHeight = 20.dp).background(Terracotta, CircleShape).border(2.dp, Blackout, CircleShape).padding(horizontal = 5.dp, vertical = 2.dp).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
+                        Text(if (mentionCount > 99) "99+" else "$mentionCount", color = Text, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }

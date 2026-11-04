@@ -124,6 +124,8 @@ public struct UnreadChannel: Codable, Equatable, Sendable {
     public let lastSeq: String
     public var readSeq: String? = nil
     public var unreadCount: Int? = nil
+    /// Unread messages that @mention or reply to the reader.
+    public var mentionCount: Int? = nil
 }
 
 public struct UnreadSpace: Codable, Equatable, Sendable {

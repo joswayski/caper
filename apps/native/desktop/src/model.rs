@@ -280,6 +280,9 @@ pub struct UnreadChannel {
     pub read_seq: Option<String>,
     #[serde(default)]
     pub unread_count: Option<u64>,
+    /// Unread messages that @mention or reply to the reader.
+    #[serde(default)]
+    pub mention_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

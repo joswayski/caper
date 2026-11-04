@@ -70,52 +70,77 @@
   background: var(--surface);
   transition: none;
 }
-.space-rail-item::before {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  width: 4px;
-  height: 8px;
-  transform: translateY(-50%);
-  border-radius: 0 4px 4px 0;
-  background: var(--text);
-  transition: height var(--motion-fast) var(--ease-out);
-  content: "";
-}
+/* Hover gains a quiet outline; leaving it is instant. */
 @media (hover: hover) {
-  .space-rail-item:not([data-active="true"]):has(button:hover)::before {
-    height: 20px;
+  .space-rail-item:not([data-active="true"]) button:hover {
+    box-shadow: 0 0 0 1px var(--border);
+    transition: box-shadow var(--motion-fast) var(--ease-out);
   }
 }
-.space-rail-item[data-active="true"]::before {
-  height: 32px;
+/* The selected space glows: a terracotta bloom that settles to a soft halo. */
+.space-rail-item[data-active="true"] button {
+  color: var(--text);
+  box-shadow:
+    0 0 0 1px rgb(182 77 50 / 0.9),
+    0 0 12px 1px rgb(182 77 50 / 0.36);
+  animation: space-rail-bloom 700ms var(--ease-out);
+}
+@keyframes space-rail-bloom {
+  from {
+    box-shadow:
+      0 0 0 1px rgb(182 77 50 / 0),
+      0 0 0 0 rgb(182 77 50 / 0);
+  }
+  45% {
+    box-shadow:
+      0 0 0 1px rgb(182 77 50 / 1),
+      0 0 18px 3px rgb(182 77 50 / 0.52);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .space-rail-item::before {
-    transition: none;
+  .space-rail-item button {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+/* New messages: a small dot in the rail margin, beside the tile. */
+.space-rail .space-unread {
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 50%;
+  background: var(--text);
+  animation: space-unread-arrive var(--motion-base) var(--ease-out);
+}
+@keyframes space-unread-arrive {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .space-rail .space-unread {
+    animation: none;
   }
 }
 /* An owner's icon fills the borderless tile; badges stay on top. */
 .space-rail .caper-picture {
   border-radius: 12px;
 }
-.space-rail .space-unread {
+/* Mentions and replies to you: a terracotta count on the tile's corner. */
+.space-rail .space-mentions {
   position: absolute;
-  bottom: -3px;
-  right: -3px;
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--blackout);
-  border-radius: 50%;
-  background: var(--text);
-}
-.space-rail .space-unread[data-count] {
+  bottom: -5px;
+  right: -5px;
   display: grid;
   place-items: center;
-  width: auto;
   min-width: 20px;
   height: 20px;
   padding: 0 4px;
+  border: 2px solid var(--blackout);
   border-radius: 10px;
   background: var(--terracotta);
   color: var(--text);

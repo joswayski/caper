@@ -2533,7 +2533,7 @@ impl CaperApp {
                     if name == "parity-unread" {
                         app.unread_spaces = serde_json::from_value(serde_json::json!([
                             {"id": "space0000001", "channels": [{"id": "chan00000002", "lastSeq": "4", "unreadCount": 1}]},
-                            {"id": "space0000002", "channels": [{"id": "quiet0000001", "lastSeq": "150", "unreadCount": 137}]}
+                            {"id": "space0000002", "channels": [{"id": "quiet0000001", "lastSeq": "150", "unreadCount": 137, "mentionCount": 12}]}
                         ]))
                         .expect("valid unread fixture");
                         app.voice_activity_spaces.insert("space0000002".into());
@@ -11803,12 +11803,14 @@ impl CaperApp {
                         for (id, name, demo, (icon_asset, icon_url)) in spaces {
                             let active = self.selected_space.as_deref() == Some(&id);
                             let unread = self.unread_spaces.iter().any(|space| space.id == id);
-                            let unread_count: u64 = self
+                            // The dot means anything new; the count is only
+                            // mentions and replies to you.
+                            let mention_count: u64 = self
                                 .unread_spaces
                                 .iter()
                                 .filter(|space| space.id == id)
                                 .flat_map(|space| &space.channels)
-                                .filter_map(|channel| channel.unread_count)
+                                .filter_map(|channel| channel.mention_count)
                                 .sum();
                             let muted = (!demo && self.account.is_some())
                                 .then(|| self.muted_label(&Scope::Space(id.clone())))
@@ -11829,7 +11831,8 @@ impl CaperApp {
                                     .to_uppercase()
                                     .to_string()
                             };
-                            // Only the side indicator responds to hover/selection.
+                            // The tile stays borderless; the ring and glow behind
+                            // it respond to hover and selection.
                             let current = (SURFACE, Color32::TRANSPARENT, MUTED);
                             let tone = Tone {
                                 rest: current,
@@ -11842,6 +11845,7 @@ impl CaperApp {
                                 letter = letter.color(muted_color(MUTED));
                             }
                             let button = egui::Button::new(letter).min_size(egui::vec2(40.0, 40.0));
+                            let glow_slot = ui.painter().add(egui::Shape::Noop);
                             let response = ui
                                 .with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                                     toned_rounded(ui, tone, 12, true, button)
@@ -11889,11 +11893,14 @@ impl CaperApp {
                                     "\nVoice active in this space"
                                 });
                             }
-                            if unread_count > 0 {
-                                let label = if unread_count > 99 {
+                            if unread {
+                                description.push_str("\nUnread messages");
+                            }
+                            if mention_count > 0 {
+                                let label = if mention_count > 99 {
                                     "99+".to_owned()
                                 } else {
-                                    unread_count.to_string()
+                                    mention_count.to_string()
                                 };
                                 let galley = ui.painter().layout_no_wrap(
                                     label,
@@ -11913,18 +11920,34 @@ impl CaperApp {
                                     TEXT,
                                 );
                                 description.push_str(&format!(
-                                    "\n{unread_count} unread {}",
-                                    if unread_count == 1 {
-                                        "message"
+                                    "\n{mention_count} {}",
+                                    if mention_count == 1 {
+                                        "mention"
                                     } else {
-                                        "messages"
+                                        "mentions"
                                     }
                                 ));
-                            } else if unread {
-                                let center = response.rect.right_bottom() - egui::vec2(1.0, 1.0);
-                                ui.painter().circle_filled(center, 5.0, BLACKOUT);
-                                ui.painter().circle_filled(center, 3.0, TEXT);
-                                description.push_str("\nUnread activity");
+                            }
+                            // New messages: a small dot in the rail margin,
+                            // beside the tile. It arrives; leaving is instant.
+                            let dot = ui.ctx().animate_value_with_time(
+                                egui::Id::new(("space-unread", &id)),
+                                if unread { 1.0 } else { 0.0 },
+                                if unread && !motion::reduced() {
+                                    0.2
+                                } else {
+                                    0.0
+                                },
+                            );
+                            if dot > 0.0 {
+                                ui.painter().circle_filled(
+                                    egui::pos2(
+                                        response.rect.left() - 4.0 - 4.0 * (1.0 - dot),
+                                        response.rect.center().y,
+                                    ),
+                                    3.0,
+                                    TEXT.gamma_multiply(dot),
+                                );
                             }
                             response.widget_info(|| {
                                 egui::WidgetInfo::labeled(
@@ -11934,29 +11957,41 @@ impl CaperApp {
                                 )
                             });
                             let response = response.on_hover_text(description);
-                            let target = if active {
-                                32.0
-                            } else if response.hovered() {
-                                20.0
-                            } else {
-                                8.0
-                            };
-                            let height = ui.ctx().animate_value_with_time(
+                            // Selected: a terracotta ring and soft outer glow that
+                            // blooms in and settles. Deselection is instant.
+                            let selection = ui.ctx().animate_value_with_time(
                                 egui::Id::new(("space-indicator", &id)),
-                                target,
-                                if motion::reduced() { 0.0 } else { 0.14 },
+                                if active { 1.0 } else { 0.0 },
+                                if active && !motion::reduced() {
+                                    0.7
+                                } else {
+                                    0.0
+                                },
                             );
-                            ui.painter().rect_filled(
-                                egui::Rect::from_center_size(
-                                    egui::pos2(
-                                        ui.max_rect().left() - 7.0,
-                                        response.rect.center().y,
+                            let glow = selection + 0.5 * (selection * std::f32::consts::PI).sin();
+                            let tile = response.rect;
+                            let behind = if glow > 0.0 {
+                                egui::Shape::Vec(vec![
+                                    egui::Shadow {
+                                        offset: [0, 0],
+                                        blur: (12.0 + 8.0 * (glow - 1.0).max(0.0)) as u8,
+                                        spread: 1,
+                                        color: TERRACOTTA.gamma_multiply(0.36 * glow),
+                                    }
+                                    .as_shape(tile, 12)
+                                    .into(),
+                                    egui::Shape::rect_filled(
+                                        tile.expand(1.0),
+                                        13.0,
+                                        TERRACOTTA.gamma_multiply(0.9 * glow.min(1.0)),
                                     ),
-                                    egui::vec2(4.0, height),
-                                ),
-                                2.0,
-                                TEXT,
-                            );
+                                ])
+                            } else if response.hovered() {
+                                egui::Shape::rect_filled(tile.expand(1.0), 13.0, BORDER)
+                            } else {
+                                egui::Shape::Noop
+                            };
+                            ui.painter().set(glow_slot, behind);
                             if response.clicked() {
                                 self.select_space(id);
                             } else if response.hovered() || response.has_focus() {
@@ -43770,10 +43805,10 @@ mod tests {
     fn voice_activity_rail_preserves_unread_and_muted_badges() {
         let (context, mut app) = fixture("parity-unread");
         context.enable_accesskit();
-        // Old servers omit counts: preserve their dot until a fresh snapshot.
+        // New messages without mentions show only the margin dot.
         for space in &mut app.unread_spaces {
             for channel in &mut space.channels {
-                channel.unread_count = None;
+                channel.mention_count = None;
             }
         }
         let space = app
@@ -43787,14 +43822,13 @@ mod tests {
             egui::CentralPanel::default().show(context, |ui| app.rail(ui));
         });
         let label = format!(
-            "{}, {}, Voice active in this space, Unread activity",
+            "{}, {}, Voice active in this space, Unread messages",
             space.name,
             app.muted_label(&crate::notifications::Scope::Space(space.id.clone()))
                 .unwrap()
         );
         let rect = node_bounds(&output, &label).expect("all badge descriptions remain accessible");
         for center in [
-            rect.right_bottom() - egui::vec2(1.0, 1.0),
             rect.right_top() + egui::vec2(-3.0, 3.0),
             rect.left_top() + egui::vec2(3.0, 3.0),
         ] {
@@ -43802,26 +43836,36 @@ mod tests {
                 egui::Shape::Circle(circle) if circle.fill == super::BLACKOUT && circle.center == center
             )), "badge backing remains visible at {center:?}");
         }
+        let dot = egui::pos2(rect.left() - 4.0, rect.center().y);
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Circle(circle) if circle.fill == super::TEXT && circle.center == dot
+            )),
+            "new messages show a dot in the rail margin"
+        );
+        assert!(
+            !texts(&output)
+                .iter()
+                .any(|text| text.chars().all(|c| c.is_ascii_digit())),
+            "unread messages alone show no count"
+        );
         for (count, badge) in [(1, "1"), (12, "12"), (99, "99"), (137, "99+")] {
             app.unread_spaces
                 .iter_mut()
                 .find(|s| s.id == space.id)
                 .unwrap()
                 .channels[0]
-                .unread_count = Some(count);
+                .mention_count = Some(count);
             let output = context.run(egui::RawInput::default(), |context| {
                 egui::CentralPanel::default().show(context, |ui| app.rail(ui));
             });
-            let counted_label = label.replace(
-                "Unread activity",
-                &format!(
-                    "{count} unread {}",
-                    if count == 1 { "message" } else { "messages" }
-                ),
+            let counted_label = format!(
+                "{label}, {count} {}",
+                if count == 1 { "mention" } else { "mentions" }
             );
             assert!(
                 node_bounds(&output, &counted_label).is_some(),
-                "the full count remains accessible alongside voice and mute state"
+                "the full mention count remains accessible alongside voice and mute state"
             );
             assert!(texts(&output).contains(&badge), "visible count caps at 99+");
         }
