@@ -31,42 +31,7 @@ Per-feature details, rollout state and validation gaps live in [docs/media.md](d
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  clients["Clients<br/>Web (TanStack Start) · iOS · macOS<br/>Android · Rust desktop"]
-
-  subgraph Cloudflare
-    tunnel["Cloudflare Tunnel"]
-    sfu["Realtime SFU / TURN<br/>voice audio"]
-    cdn["CDN Worker<br/>cdn.caper.chat"]
-    r2[("R2<br/>uploads")]
-    embed["Embed Worker<br/>link previews"]
-  end
-
-  subgraph AWS["AWS · k3s cluster"]
-    webpod["Web server"]
-    api["Rust API<br/>HTTP"]
-    gateway["Rust gateway<br/>WebSocket"]
-    valkey[("Valkey<br/>fanout · presence · calls")]
-  end
-
-  pg[("PlanetScale<br/>Postgres")]
-  ext["SES email · APNs / FCM push<br/>OpenRouter transcripts"]
-  sites["Linked sites"]
-  klipy["KLIPY<br/>GIFs and stickers"]
-
-  clients -- "HTTPS + WebSocket" --> tunnel
-  tunnel --> webpod & api & gateway
-  api & gateway --> pg
-  api <--> valkey <--> gateway
-  api -- "call control" --> sfu
-  clients <-->|audio| sfu
-  clients -- "presigned upload" --> r2
-  clients -- "signed download" --> cdn --> r2
-  api -- "unfurl" --> embed --> sites
-  api --> ext
-  clients --> klipy
-```
+![Caper architecture: clients reach the Rust API, gateway and web server on AWS through Cloudflare Tunnel; voice, files and link previews run on Cloudflare; data lives in PlanetScale Postgres with Valkey for fanout](docs/architecture.svg)
 
 - **API** owns accounts, spaces, channels and messages. Messages are written
   to Postgres with an outbox.
@@ -80,6 +45,10 @@ flowchart LR
   expiring links.
 - **Link previews** are fetched by the Embed Worker on Cloudflare, so links
   people post are never fetched from inside the cluster.
+
+The diagram is generated: edit the layout in
+[scripts/generate-architecture-diagram.mjs](scripts/generate-architecture-diagram.mjs)
+and run `node scripts/generate-architecture-diagram.mjs`.
 
 ## Development
 
