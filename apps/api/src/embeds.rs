@@ -279,6 +279,9 @@ pub(crate) fn spawn(chat: &Chat, jobs: Vec<Job>) {
 
 /// Stores the cards on the message (if it is still at the revision they were
 /// made for) and on the outbox event replays read, then announces them.
+/// Unchanged cards (including none) are announced without storing: a sender
+/// shows its composer's card until this answer replaces or removes it.
+/// Returns whether anything was stored.
 pub(crate) async fn apply(chat: &Chat, job: &Job, cards: Vec<Value>) -> Result<bool, sqlx::Error> {
     let mut tx = chat.pool.begin().await?;
     let row: Option<(i64, i64, Value)> = sqlx::query_as(
@@ -300,37 +303,37 @@ pub(crate) async fn apply(chat: &Chat, job: &Job, cards: Vec<Value>) -> Result<b
         .as_array()
         .cloned()
         .unwrap_or_default();
-    if current == cards {
-        return Ok(false);
-    }
-    let content = payload["content"].as_object_mut().expect("message content");
-    if cards.is_empty() {
-        content.remove("embeds");
-    } else {
-        content.insert("embeds".into(), Value::Array(cards.clone()));
-    }
-    sqlx::query("UPDATE public.messages SET payload=$2 WHERE id=$1")
-        .bind(message_id)
-        .bind(&payload)
+    let changed = current != cards;
+    if changed {
+        let content = payload["content"].as_object_mut().expect("message content");
+        if cards.is_empty() {
+            content.remove("embeds");
+        } else {
+            content.insert("embeds".into(), Value::Array(cards.clone()));
+        }
+        sqlx::query("UPDATE public.messages SET payload=$2 WHERE id=$1")
+            .bind(message_id)
+            .bind(&payload)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE public.channel_events SET payload=jsonb_set(payload,'{message,content}',$3)
+             WHERE channel_id=$1 AND seq=$2 AND payload->'message'->>'id'=$4",
+        )
+        .bind(channel_id)
+        .bind(job.seq)
+        .bind(&payload["content"])
+        .bind(&job.message)
         .execute(&mut *tx)
         .await?;
-    sqlx::query(
-        "UPDATE public.channel_events SET payload=jsonb_set(payload,'{message,content}',$3)
-         WHERE channel_id=$1 AND seq=$2 AND payload->'message'->>'id'=$4",
-    )
-    .bind(channel_id)
-    .bind(job.seq)
-    .bind(&payload["content"])
-    .bind(&job.message)
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
+        tx.commit().await?;
+    }
     chat.publish(
         &format!("{TYPING_TOPIC}:{}", job.channel),
         &json!({"type":"message.embeds","schemaVersion":1,"channelId":job.channel,"messageId":job.message,"revision":job.revision,"embeds":cards}),
     )
     .await;
-    Ok(true)
+    Ok(changed)
 }
 
 #[derive(Deserialize)]
