@@ -105,7 +105,7 @@ const standingLogo = (name, x, y, z, height, depth = 0.26) => {
     grow(project(x + dx, y, z + dz));
     grow(project(x + dx, y - depth, z + dz));
   }
-  const side = shade(logos[name].paths[0][0], 0.42);
+  const side = logos[name].side ?? shade(logos[name].paths[0][0], 0.42);
   const layers = [];
   const steps = Math.max(8, Math.round(depth * 30));
   for (let step = steps; step >= 1; step--) {
@@ -114,6 +114,18 @@ const standingLogo = (name, x, y, z, height, depth = 0.26) => {
   layers.push(`<g transform="${frontPlane(x, y, z)}">${logo(name, height)}</g>`);
   return layers.join("");
 };
+const shadows = [];
+const castShadow = (x, y, shape) => {
+  const [lean, fall] = [0.55, 0.75];
+  const ex = [CA * UNIT, SA * SE * UNIT];
+  const ey = [-SA * UNIT, CA * SE * UNIT];
+  const c = -lean * ex[0] + fall * ey[0];
+  const d = -lean * ex[1] + fall * ey[1];
+  shadows.push(
+    `<g transform="matrix(${fixed(ex[0])},${fixed(ex[1])},${fixed(c)},${fixed(d)},${point(x, y, FLOOR)})">${shape}</g>`,
+  );
+};
+const rect = (u, v, w, h) => `<rect x="${u}" y="${-v - h}" width="${w}" height="${h}" rx="0.08"/>`;
 // Models. Each draws itself centred on grid point (x, y) and returns its footprint for edge planning.
 const models = {
   // One or more logos standing on the floor, side by side.
@@ -126,12 +138,14 @@ const models = {
     return names
       .map((name, index) => {
         const svg = standingLogo(name, left + widths[index] / 2, node.y, FLOOR, height, node.depth);
+        castShadow(left + widths[index] / 2, node.y, logo(name, height, "#000000"));
         left += widths[index] + gap;
         return svg;
       })
       .join("");
   },
   monitor({ x, y }) {
+    castShadow(x, y, rect(-1.45, 0.5, 2.9, 1.75) + rect(-0.15, 0, 0.3, 0.6));
     let svg = prism(x - 0.7, y - 0.6, 1.4, 0.9, 0.07, FLOOR, palettes.client);
     svg += prism(x - 0.15, y - 0.25, 0.3, 0.2, 0.62, FLOOR + 0.07, palettes.client);
     svg += prism(x - 1.45, y - 0.05, 2.9, 0.14, 1.75, FLOOR + 0.5, palettes.client);
@@ -159,6 +173,7 @@ ${bars.map(([u, v, w, fill]) => `<rect x="${u}" y="${v}" width="${w}" height="0.
       [-0.8, "apple"],
       [0.8, "android"],
     ]) {
+      castShadow(x + dx, y, rect(-0.55, 0, 1.1, 2.15));
       svg += prism(x + dx - 0.55, y - 0.07, 1.1, 0.14, 2.15, FLOOR, palettes.graphite);
       svg += `<g transform="${frontPlane(x + dx - 0.55, y + 0.07, FLOOR + 2.15)}">
 <rect x="0.07" y="0.08" width="0.96" height="1.99" rx="0.12" fill="#0C0D0F"/>
@@ -172,6 +187,7 @@ ${bars.map(([u, v, w, fill]) => `<rect x="${u}" y="${v}" width="${w}" height="0.
   },
   laptop({ x, y }) {
     const face = read("apps/web/public/caper-face.svg", "utf8").match(/<path[^>]+\/>/)[0];
+    castShadow(x, y - 0.8, rect(-1.3, 0, 2.6, 1.64));
     let svg = prism(x - 1.3, y - 0.85, 2.6, 0.1, 1.55, FLOOR + 0.09, palettes.client);
     svg += `<g transform="${frontPlane(x - 1.3, y - 0.75, FLOOR + 1.64)}">
 <rect x="0.08" y="0.08" width="2.44" height="1.39" rx="0.05" fill="#0C0D0F"/>
@@ -190,6 +206,7 @@ ${bars.map(([u, v, w, fill]) => `<rect x="${u}" y="${v}" width="${w}" height="0.
     return svg;
   },
   bucket({ x, y }) {
+    castShadow(x, y, `<path d="M-0.78,0L0.78,0L1.02,-1.3L-1.02,-1.3Z"/>`);
     const [bx, by] = project(x, y, FLOOR);
     const [tx, ty] = project(x, y, FLOOR + 1.3);
     const [bottom, top] = [0.78 * UNIT, 1.02 * UNIT];
@@ -202,6 +219,7 @@ ${bars.map(([u, v, w, fill]) => `<rect x="${u}" y="${v}" width="${w}" height="0.
   },
   cube({ x, y }) {
     const s = 1.5;
+    castShadow(x, y + s / 2, rect(-s / 2, 0, s, s));
     let svg = prism(x - s / 2, y - s / 2, s, s, s, FLOOR, palettes.ses);
     svg += `<g transform="${frontPlane(x, y + s / 2, FLOOR + 0.18)}">${logo("ses", s * 0.95)}</g>`;
     return svg;
@@ -212,8 +230,6 @@ const R0 = -6.2;
 const [R1, R2, R3] = [2.2, 9.4, 16.6];
 // Columns: clients, the two Cloudflare columns, AWS, Valkey, PlanetScale.
 const [C, A, B, K, V, P] = [1.6, 10.6, 16.4, 24.6, 30.1, 36.5];
-// Edge labels between clients and Cloudflare sit in the gap between the two zones.
-const GAP = 6.2;
 const zones = [
   { name: "CLIENTS", x: -1.2, y: 0, w: 5.8, d: 21.4, accent: "#F1EDE4" },
   { name: "CLOUDFLARE", x: 7.8, y: 0, w: 11.6, d: 21.4, accent: "#D9734F" },
@@ -237,7 +253,7 @@ const nodes = [
     depth: 0.85,
     label: ["Cloudflare Tunnel", "caper.chat ingress"],
   },
-  { model: "logos", x: A, y: R3, logo: "workers", label: ["CDN Worker", "cdn.caper.chat"] },
+  { model: "logos", x: A, y: R3, logo: "workers", label: ["CDN Worker", "signed downloads"] },
   { model: "logos", x: B, y: R1, logo: "workers", label: ["Embed Worker", "link previews"] },
   { model: "bucket", x: B, y: R3, label: ["R2", "uploads"] },
   { model: "logos", x: K, y: R1, logo: "rust", label: ["Rust API", "accounts · spaces · messages"] },
@@ -260,37 +276,66 @@ const nodes = [
 ];
 
 // Edges run on the floor through grid waypoints. `both` puts an arrow at each end; `arrow: false` at neither.
+// Edges run on the floor through grid waypoints. `both` puts an arrow at each end; `arrow: false` at neither.
+// Every client uses the same Cloudflare entry points, so the clients merge into one trunk that fans out there.
+// Edges into the third-party row stop just below its labels.
+const LABELLED = -3.3;
+const [IN, OUT, TRUNK] = [4.2, 8.6, (R2 + R3) / 2];
 const edges = [
+  ...[R1, R2, R3].map((y) => ({
+    path: [
+      [3.1, y],
+      [IN, y],
+    ],
+    arrow: false,
+  })),
   {
     path: [
-      [3.2, R1],
+      [IN, R3],
+      [IN, -1.8],
+      [C, -1.8],
+      [C, LABELLED],
+    ],
+  },
+  {
+    path: [
+      [IN, TRUNK],
+      [OUT, TRUNK],
+    ],
+    arrow: false,
+  },
+  {
+    path: [
+      [OUT, R1],
+      [OUT, R3 + 3.9],
+    ],
+    arrow: false,
+  },
+  {
+    path: [
+      [OUT, R1],
       [A - 1.1, R1],
     ],
-    both: true,
-    label: [GAP, R1, "voice audio"],
   },
   {
     path: [
-      [3.1, R2],
+      [OUT, R2],
       [A - 1, R2],
     ],
-    label: [GAP, R2, "HTTPS · WebSocket"],
   },
   {
     path: [
-      [3.1, R3],
+      [OUT, R3],
       [A - 1, R3],
     ],
-    label: [GAP + 0.5, R3, "signed download"],
   },
   {
     path: [
-      [4.9, R3],
-      [4.9, R3 + 3.9],
+      [OUT, R3 + 3.9],
       [B, R3 + 3.9],
       [B, R3 + 1.05],
     ],
-    label: [GAP, R3 + 3.9, "direct upload"],
+    label: [12.6, R3 + 3.9, "direct upload"],
   },
   {
     path: [
@@ -300,15 +345,8 @@ const edges = [
   },
   {
     path: [
-      [C, R1 - 0.6],
-      [C, R0 + 0.4],
-    ],
-    label: [C, -2.3, "GIF search"],
-  },
-  {
-    path: [
       [B, R1 - 0.6],
-      [B, R0 + 0.4],
+      [B, LABELLED],
     ],
   },
   {
@@ -399,7 +437,7 @@ const edges = [
   ...[24.4, 28.6, 32.6].map((x) => ({
     path: [
       [x, -2.3],
-      [x, R0 + (x === 24.4 ? 0.8 : 0.4)],
+      [x, LABELLED],
     ],
   })),
 ];
@@ -447,8 +485,7 @@ for (const edge of edges) {
     const width = text.length * 6.3 + 18;
     pills.push({ name: text, box: [px - width / 2, py - 10, px + width / 2, py + 10] });
     layers.labels.push(
-      `<rect x="${fixed(px - width / 2)}" y="${fixed(py - 10)}" width="${fixed(width)}" height="20" rx="10" fill="#0C0D0F" stroke="#34383B"/>`,
-      `<text x="${fixed(px)}" y="${fixed(py + 4)}" text-anchor="middle" font-size="11.5" font-weight="500" fill="#C9C4BA">${escape(text)}</text>`,
+      `<g transform="translate(${fixed(px)},${fixed(py)}) rotate(${fixed(EDGE_ANGLE)})"><rect x="${fixed(-width / 2)}" y="-10" width="${fixed(width)}" height="20" rx="10" fill="#0C0D0F" stroke="#34383B"/><text y="4" text-anchor="middle" font-size="11.5" font-weight="500" fill="#C9C4BA">${escape(text)}</text></g>`,
     );
   }
 }
@@ -462,17 +499,18 @@ for (const node of nodes) {
   const [, , , bottom] = box;
   const [cx] = project(node.x, node.y, FLOOR);
   const [title, detail] = node.label.length === 2 ? node.label : [null, node.label[0]];
-  const half = Math.max((title ?? "").length * 4.1, detail.length * 3.3) + 4;
+  const half = Math.max((title ?? "").length * 4.2, detail.length * 3.35) + 2;
   const top = title ? 0 : -16;
   const labelBox = [cx - half, bottom + 6, cx + half, bottom + 42 + top];
   include(labelBox);
-  if (title) {
-    layers.labels.push(
-      `<text class="halo" x="${fixed(cx)}" y="${fixed(bottom + 22)}" text-anchor="middle" font-size="14.5" font-weight="700" fill="#F3F4F5">${escape(title)}</text>`,
-    );
-  }
+  // A soft backdrop keeps edges from running through the text, without the pill border edge labels use.
+  const lines = [
+    title &&
+      `<text y="22" text-anchor="middle" font-size="14.5" font-weight="700" fill="#F3F4F5">${escape(title)}</text>`,
+    `<text y="${38 + top}" text-anchor="middle" font-size="12" font-weight="500" fill="#9AA0A4">${escape(detail)}</text>`,
+  ];
   layers.labels.push(
-    `<text class="halo" x="${fixed(cx)}" y="${fixed(bottom + 38 + top)}" text-anchor="middle" font-size="12" font-weight="500" fill="#9AA0A4">${escape(detail)}</text>`,
+    `<g transform="translate(${fixed(cx)},${fixed(bottom)}) rotate(${fixed(EDGE_ANGLE)})"><rect class="backdrop" x="${fixed(-half - 6)}" y="7" width="${fixed(2 * half + 12)}" height="${title ? 37 : 21}" rx="7"/>${lines.filter(Boolean).join("")}</g>`,
   );
   placed.push({ name: title ?? detail, depth: node.x * SA + node.y * CA, svg, box, labelBox });
 }
@@ -503,12 +541,15 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${hei
 <style>${font(500)}${font(700)}
 text{font-family:Satoshi,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 .halo{paint-order:stroke;stroke:#0C0D0F;stroke-width:4px;stroke-linejoin:round}
+.backdrop{fill:#0C0D0F;fill-opacity:.78;stroke:#34383B;stroke-opacity:.35}
 .wire{fill:none;stroke:#2E3236;stroke-width:4;stroke-linecap:round;stroke-linejoin:round}
 .flow{fill:none;stroke:#F1EDE4;stroke-opacity:.75;stroke-width:1.6;stroke-dasharray:5 9;stroke-linecap:round;animation:flow 1.4s linear infinite}
 @keyframes flow{to{stroke-dashoffset:-14}}
 @media (prefers-reduced-motion:reduce){.flow{animation:none}}
 </style>
 <defs>
+<filter id="shadow-blur" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.5"/></filter>
+<radialGradient id="instagram-gradient" cx="0.25" cy="1.05" r="1.2"><stop offset="0" stop-color="#FFDD55"/><stop offset="0.12" stop-color="#FFDD55"/><stop offset="0.48" stop-color="#FF543E"/><stop offset="0.78" stop-color="#C837AB"/><stop offset="1" stop-color="#6A3BD8"/></radialGradient>
 ${[...defined.values()].join("\n")}
 <linearGradient id="bucket" x1="0" x2="1"><stop offset="0" stop-color="#C9603F"/><stop offset="1" stop-color="#853823"/></linearGradient>
 <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,1L9,5L0,9Z" fill="#F1EDE4"/></marker>
@@ -519,6 +560,7 @@ ${[...defined.values()].join("\n")}
 <text x="${pad}" y="${pad + 46}" font-size="13" font-weight="500" fill="#9AA0A4">Control traffic runs on AWS. Voice audio, files and link previews stay on Cloudflare.</text>
 <g transform="translate(${fixed(pad - minX)},${fixed(pad + header - minY)})">
 ${layers.zones.join("\n")}
+<g filter="url(#shadow-blur)" opacity="0.55">${shadows.join("")}</g>
 ${layers.edges.join("\n")}
 ${layers.models.join("\n")}
 ${layers.labels.join("\n")}
