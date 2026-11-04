@@ -2189,6 +2189,7 @@ final class CaperParityUITests: XCTestCase {
         try openThread(app)
         let handle = try require(app.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing resize handle")
         let panel = app.descendants(matching: .any)["message-thread"]
+        handle.hover()
         // The Slider is a synthetic accessibilityRepresentation, not a visible
         // control. Xcode 16 can fail to compute its hit point: click the actual
         // handle's midpoint, and keep the Slider for width and keyboard checks.
@@ -2240,6 +2241,7 @@ final class CaperParityUITests: XCTestCase {
         let handle = app.descendants(matching: .any)["channel-sidebar-resize"]
         let channelTitle = app.descendants(matching: .any)["selected-channel-name"]
         XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        handle.hover()
         handle.doubleClick()
         XCTAssertEqual(sidebarWidth(of: handle), 280)
         let initialEdge = channelTitle.frame.minX
@@ -2275,6 +2277,41 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(reopened.descendants(matching: .any)["selected-channel-name"].frame.minX - initialEdge, 10, accuracy: 2)
         capture("sidebar-resized", app: reopened)
         saved.doubleClick()
+    }
+
+    func testMembersResizeDragKeyboardAndSavedWidth() throws {
+        let app = launch()
+        let handle = try require(app.descendants(matching: .any)["members-panel-resize"], timeout: 30, "Missing member list resize handle")
+        handle.hover()
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
+        XCTAssertEqual(sidebarWidth(of: handle), 220)
+        capture("members-default", app: app)
+        let initialEdge = handle.frame.minX
+        let window = app.windows.firstMatch
+        let start = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: handle.frame.midX - window.frame.minX, dy: handle.frame.midY - window.frame.minY
+        ))
+        start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: -67, dy: 0)))
+        XCTAssertEqual(Double(try XCTUnwrap(sidebarWidth(of: handle))), 287, accuracy: 2)
+        XCTAssertEqual(initialEdge - handle.frame.minX, 67, accuracy: 2, "The member edge follows the pointer left")
+        capture("members-dragged", app: app)
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        handle.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(Double(try XCTUnwrap(sidebarWidth(of: handle))), 277, accuracy: 2)
+        handle.typeKey(.home, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(of: handle), 220)
+        handle.typeKey(.end, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(of: handle), 440)
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
+        handle.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(of: handle), 230)
+        app.terminate()
+        let reopened = launch()
+        let saved = try require(reopened.descendants(matching: .any)["members-panel-resize"], timeout: 30, "Missing restored member list")
+        XCTAssertEqual(sidebarWidth(of: saved), 230, "Width survives relaunch")
+        XCTAssertEqual(initialEdge - saved.frame.minX, 10, accuracy: 2)
+        capture("members-resized", app: reopened)
+        saved.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
     }
 
     func testUpdateButtonStaysVisibleAndReopensReviewWithoutCoveringAccountControls() {

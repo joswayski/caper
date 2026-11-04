@@ -108,6 +108,25 @@ Apple implementation remains uncompiled without Xcode; native phone,
 touch/assistive-technology and Windows checks remain unverified. Narrow Chromium
 captures are not physical-device acceptance. No API or migration change.
 
+Desktop resize update (2026-11-04): web's outer room edges retain their resize
+cursors and keyboard controls without a floating icon or hover tooltip. macOS
+attaches horizontal/vertical resize pointers directly to the SwiftUI dividers
+(with a cursor-stack fallback on macOS 14). The wide Apple member list now has a
+draggable leading edge, saved 220–440-point width, keyboard bounds and reset;
+temporary window constraints preserve the preferred width and leave room for
+the conversation. Phone member drawers are unchanged.
+
+Validation: web build/lint/typecheck and 788 unit tests pass; browser outer-edge
+drag, keyboard, persistence, reset and narrow-layout bounds pass, with inspected
+desktop/narrow captures and a pointer recording. The full navigation browser
+script later fails its separate slow-swipe assertion (its helper does not space
+touch events according to the requested duration). Three macOS/Xcode 26.1.1 UI
+tests pass for sidebar, thread and member drag/keyboard/reset/persistence, with
+inspected native captures and a member-resize recording showing the resize
+pointer. Rust desktop's existing pane/cursor/bounds tests pass on Linux; no Rust
+change was needed. macOS 14 fallback, Windows runtime and physical-device checks
+remain unverified. Fixtures do not establish production account acceptance.
+
 Mobile channel, DM and thread timelines dismiss the software keyboard when a
 vertical scroll drag starts. The unsent draft stays in its composer; tapping it
 reopens the keyboard. Automatic following/paging and scrolling within a multiline

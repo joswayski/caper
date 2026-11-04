@@ -311,6 +311,12 @@ try {
     '(() => { const r = document.querySelector(".room-resize-right").getBoundingClientRect(); return [Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2)]; })()',
   );
   browser("mouse", "move", ...edge.map(String));
+  assert.equal(evaluate('getComputedStyle(document.querySelector(".room-resize-right")).cursor'), "ew-resize");
+  assert.equal(
+    evaluate('document.querySelectorAll(".room-resize svg, .room-resize [title], .room-resize[title]").length'),
+    0,
+    "The resize cursor is the only pointer hint; no floating icon or tooltip",
+  );
   browser("mouse", "down", "left");
   browser("mouse", "move", String(edge[0] - 90), String(edge[1]));
   browser("mouse", "up", "left");

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { MoveHorizontal, MoveVertical } from "lucide-react";
 
 const STORAGE_KEY = "caper:room-size";
 
@@ -79,7 +78,7 @@ export default function RoomResize({ room }: { room: RefObject<HTMLElement | nul
         aria-valuemax={bounds[axis]}
         aria-valuenow={value}
         tabIndex={0}
-        title="Drag to resize. Arrow keys to adjust. Double-click to reset."
+        aria-description="Drag to resize. Arrow keys to adjust. Double-click to reset."
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           event.preventDefault();
@@ -126,11 +125,7 @@ export default function RoomResize({ room }: { room: RefObject<HTMLElement | nul
           );
         }}
         onKeyUp={save}
-      >
-        <span className="room-resize-icon" aria-hidden="true">
-          {axis === "width" ? <MoveHorizontal /> : <MoveVertical />}
-        </span>
-      </div>
+      />
     );
   });
 }

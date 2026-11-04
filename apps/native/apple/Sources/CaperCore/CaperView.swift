@@ -825,6 +825,10 @@ private struct WorkspaceView: View {
     @State private var sidebarDragWidth: Double?
     private var liveSidebarWidth: Double { sidebarDragWidth ?? sidebarWidth }
     @FocusState private var sidebarFocused: Bool
+    @AppStorage("caper.membersWidth") private var membersWidth = 220.0
+    @State private var membersDragStart: Double?
+    @State private var membersDragWidth: Double?
+    @FocusState private var membersResizeFocused: Bool
     @State private var membersPreference: Bool?
     @State private var modalDismissDisabled = false
     @State private var profileDismissAction: ProfileDismissAction?
@@ -851,6 +855,8 @@ private struct WorkspaceView: View {
             let narrow = geometry.size.width <= 760
             let navigationWidth = 60 + CGFloat(min(liveSidebarWidth, sidebarMaximum(for: geometry.size.width)))
             let tilesMembers = !narrow && geometry.size.width - navigationWidth >= 540
+            let membersMaximum = min(440, max(220, geometry.size.width - navigationWidth - (tilesMembers ? 320 : 64)))
+            let visibleMembersWidth = min(membersMaximum, max(220, membersDragWidth ?? membersWidth))
             // An intermediate-width window must not open a member list over the
             // conversation by default. The Members control can still reveal it.
             let membersVisible = membersPreference ?? tilesMembers
@@ -954,15 +960,17 @@ private struct WorkspaceView: View {
                         ConversationStage(model: model, narrow: narrow, browse: { slide(open: true) }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                             showMembers(!membersVisible)
                         }
-                        .padding(.trailing, tilesMembers && membersVisible && hasMembers ? 220 : 0)
-                        .transformEnvironment(\.statusColumn) { $0.gap = tilesMembers && membersVisible && hasMembers ? 220 : 0 }
+                        .padding(.trailing, tilesMembers && membersVisible && hasMembers ? visibleMembersWidth : 0)
+                        .transformEnvironment(\.statusColumn) { $0.gap = tilesMembers && membersVisible && hasMembers ? visibleMembersWidth : 0 }
                         if hasMembers {
                             if narrow {
                                 MembersOverlay(model: model, shows: membersVisible && !model.previewingChannel,
                                                width: min(280, geometry.size.width - 64)) { showMembers(false) }
                             } else if membersVisible {
                                 MemberPresenceView(model: model, close: { showMembers(false) })
-                                    .frame(width: 220).padding(.top, tilesMembers ? 0 : 50)
+                                    .frame(width: visibleMembersWidth)
+                                    .overlay(alignment: .leading) { membersResizeHandle(width: visibleMembersWidth, maximum: membersMaximum) }
+                                    .padding(.top, tilesMembers ? 0 : 50)
                             }
                         }
                     }
@@ -1136,6 +1144,44 @@ private struct WorkspaceView: View {
 
     private func resizeSidebar(_ value: Double, viewport: CGFloat) {
         sidebarWidth = clampedSidebarWidth(value, viewport: viewport)
+    }
+
+    private func membersResizeHandle(width: Double, maximum: Double) -> some View {
+        func resize(_ value: Double) { membersWidth = min(maximum, max(220, value.rounded())) }
+        return Color.clear.frame(width: 8).frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .modifier(ResizeCursor())
+            .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .global).onChanged { value in
+                membersResizeFocused = true
+                if membersDragStart == nil { membersDragStart = width }
+                membersDragWidth = min(maximum, max(220, (membersDragStart ?? width) - Double(value.translation.width)))
+            }.onEnded { _ in
+                if let width = membersDragWidth { resize(width) }
+                membersDragWidth = nil; membersDragStart = nil
+            })
+            .simultaneousGesture(TapGesture(count: 2).onEnded { resize(220); membersResizeFocused = true })
+            .onTapGesture { membersResizeFocused = true }
+            .focusable().focusEffectDisabled().focused($membersResizeFocused)
+            .accessibilityRepresentation {
+                if maximum > 220 {
+                    Slider(value: Binding(get: { width }, set: { resize($0) }), in: 220...maximum, step: 10)
+                } else { Text("\(Int(width)) pixels") }
+            }
+            .accessibilityLabel("Member list width")
+            .accessibilityIdentifier("members-panel-resize")
+            .accessibilityValue("\(Int(width)) pixels")
+            .accessibilityHint("Drag to resize. Left widens and Right narrows by 10 pixels; Home and End select the bounds. Double-click resets.")
+            .onKeyPress { press in
+                switch press.key {
+                case .leftArrow: resize(width + 10)
+                case .rightArrow: resize(width - 10)
+                case .home: resize(220)
+                case .end: resize(maximum)
+                default: return .ignored
+                }
+                return .handled
+            }
+            .onDisappear { membersDragWidth = nil; membersDragStart = nil }
     }
 
     private var modalSheet: Binding<WorkspaceSheet?> {
@@ -1457,7 +1503,7 @@ private struct ChannelSidebar: View {
         Color.clear.frame(height: dividerHeight)
             .contentShape(Rectangle())
             .overlay { Rectangle().fill(CaperTheme.border).frame(height: 1) }
-            .modifier(VerticalResizeCursor())
+            .modifier(ResizeCursor(vertical: true))
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { dividerFrame = $0 }
             .onDisappear { dividerFrame = .null; dividerDragShare = nil; dividerDragStart = nil }
             .gesture(DragGesture(minimumDistance: 1).onChanged { value in
@@ -10509,24 +10555,31 @@ struct ControlPointer: ViewModifier {
     }
 }
 
-/// A resize handle's left-right cursor, owned by AppKit like `ControlPointer`'s.
-/// Pushing it on hover left it stuck when the handle went away under the
-/// pointer (Escape closing the thread, a window narrowing past the sidebar).
+/// Let SwiftUI own the pointer on the divider's hit target rather than relying
+/// on a background NSView's cursor rect beneath the hosting view.
 private struct ResizeCursor: ViewModifier {
-    func body(content: Content) -> some View {
-        #if os(macOS)
-        content.background(PointerRegion(enabled: true, cursor: .resizeLeftRight).allowsHitTesting(false))
-        #else
-        content
-        #endif
-    }
-}
+    var vertical = false
+    @State private var pushed = false
 
-/// The channel/DM split is resized vertically, unlike the workspace sidebar.
-private struct VerticalResizeCursor: ViewModifier {
     func body(content: Content) -> some View {
         #if os(macOS)
-        content.background(PointerRegion(enabled: true, cursor: .resizeUpDown).allowsHitTesting(false))
+        if #available(macOS 15, *) {
+            content.pointerStyle(vertical ? .rowResize : .columnResize)
+        } else {
+            content.onContinuousHover { phase in
+                switch phase {
+                case .active:
+                    let cursor = vertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight
+                    if !pushed { cursor.push(); pushed = true }
+                    else { cursor.set() }
+                case .ended:
+                    if pushed { NSCursor.pop(); pushed = false }
+                }
+            }
+            // A thread closing or a narrow window can remove the hovered handle
+            // without an exit event. Balance the legacy cursor stack then too.
+            .onDisappear { if pushed { NSCursor.pop(); pushed = false } }
+        }
         #else
         content
         #endif
