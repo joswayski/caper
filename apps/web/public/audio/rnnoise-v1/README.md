@@ -19,6 +19,3 @@ destroy/free. Float PCM is scaled by 32768 on input and divided on output as req
 by RNNoise. VAD probability is deliberately not used as a speech gate. Memory growth
 is disabled on the render thread; allocation failures trigger capture fallback.
 Update the URL version, checksums, ABI host and inference tests together when upgrading.
-
-This is a different model, not a guarantee of better speech preservation than
-DeepFilterNet or Krisp. Synthetic-noise tests are not speech-quality benchmarks.

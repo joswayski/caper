@@ -1,8 +1,7 @@
 # Native Caper clients
 
-These are **development clients, not feature-parity replacements for caper.chat**.
-There is no embedded browser, JavaScript runtime, local HTTP server, Tauri, or
-Electron. The website remains available and is not replaced by these builds.
+Native clients for caper.chat. There is no embedded browser, JavaScript runtime,
+local HTTP server, Tauri, or Electron; the website remains available.
 
 | Platform | Presentation / networking | Project |
 | --- | --- | --- |
@@ -11,133 +10,74 @@ Electron. The website remains available and is not replaced by these builds.
 | Windows, Linux | Rust / egui + wgpu / native HTTP and WebSocket | [Desktop](desktop/README.md) |
 | Android | Kotlin / Android Compose / native HTTP and WebSocket | [Android](android/README.md) |
 
-The desktop choices follow Captures' native direction. egui/wgpu is a compiled,
-shared renderer for Windows/Linux, not a WebView and not Windows/Linux system
-widgets. Apple and Android have separate native UI implementations. All clients
-talk directly to the same Caper API. No server or Cloudflare credentials belong
-in an app.
+egui/wgpu is a compiled, shared renderer for Windows/Linux, not a WebView or
+system widgets. Apple and Android have separate native UI implementations. All
+clients talk directly to the same Caper API. No server or Cloudflare credentials
+belong in an app.
 
-The clients are being aligned with the current website: account sign-in and
-text conversations, owner space/channel/member management, private
-grants, presence, typing, and the responsive rail/sidebar/conversation layout.
-Implementation checkpoints are not acceptance: check each platform's README and
-the exact revision's CI results before relying on a feature. All clients expose
-native voice in default builds, but physical audio and locked-phone calls remain
-unverified. Visual
-matching, audio controls, platform lifecycle behavior, and physical-device
-acceptance remain in progress.
+## Shared behavior
 
-All native clients provide searchable emoji reactions, counted chips, and
-own-reaction highlighting. Channel previews display reactions without allowing
-mutations until the user joins.
-
-Android, iOS/macOS and Rust desktop implement shared message pins: one-action
-Pin/Unpin, inline “Pinned by …” attribution, and a Pins button in the conversation
-header. Apple uses its platform sheet for the pins list; Android and Rust desktop
-switch the central conversation view. All lists include pins outside loaded
-history and offer Unpin without confirmation. Preview readers cannot mutate pins.
-See [pin validation and rollout](../../docs/media.md#message-pins); implementation
-does not establish native build, device, or production acceptance.
-
-Android, iOS/macOS and Rust desktop let people edit an attached photo or video
-before sending (crop, rotate, draw, text, colour and size, undo/redo/reset) from
-a pencil on its draft tile, re-uploading the original with the edits. Rust
-desktop cannot draw on videos until its bundled FFmpeg gains an overlay filter.
-See [editing attachments](../../docs/media.md#editing-attachments-before-sending)
-for what each platform has and has not been validated on.
-
-Like web, every native client reopens the space and channel you last had open
-when it launches (per account and device, IDs only, joined channels only; DMs
-and previews are not saved), falling back to the first joined channel if you
-have left it.
-
-Live forwarding is implemented in the native clients: a channel/DM picker with
-an optional note, a live original card, and a read-only shared conversation.
-Replies to the destination wrapper remain independent. Rust desktop exposes
-Forward through message context/reaction menus; Apple/Android use their message
-actions. See [forwarding validation and rollout](../../docs/media.md#live-message-forwarding)
-for editing integration and the remaining Apple/Android build/device checks.
-
-Message composers on web, Android, iOS/macOS and Rust desktop also offer emoji
-suggestions after `:` at the cursor. Search by name or keyword (`:tomato`,
-`:thumbs_up`, `:+1`); selecting replaces that token without sending or changing
-the surrounding draft. Hardware keyboards support arrows, Enter/Tab and Escape;
-touch users select a row, and iPhone users still send with the Send button.
-These use the existing Emoji 15 catalog, not custom uploaded emoji. Android/Apple
-builds and physical keyboard/IME checks require their platform toolchains/devices;
-browser coverage is not native acceptance.
-
-Composers also suggest people after `@`: the open space's loaded members except
-you, then `@everyone` and `@here`; in DMs, everyone you share a space or DM with
-(`GET /api/people`, falling back to the other participant until it loads). Selecting
-inserts `@username ` without sending. Names the API resolved in
-`content.mentions` render as terracotta pills, and messages that mention you get a
-light terracotta row tint with a 2px/pt/dp leading edge. Android, SwiftUI and egui
-pills are square-cornered background spans (web rounds them). Tapping or clicking
-a person's pill opens a profile card with **Message** (a popover on macOS and Rust
-desktop, a bottom sheet on Android and iPhone). Mentions do not notify anyone yet. The grammar and payload are described in
-[docs/media.md](../../docs/media.md#scope-and-architecture).
-
-The space invite, private-channel grant and **New direct message** username
-fields suggest people the app already has while you type: known people
-(`GET /api/people`) minus members for spaces, the space's members minus existing
-grantees for private channels, and known people for DMs. People with a pending
-invitation stay listed as "Already invited". Rows match `@` suggestions (avatar,
-display name, `@username` beneath it).
-Choosing one fills in the exact username without submitting; lookups stay
-exact-username and there is no account directory. See
-[docs/media.md](../../docs/media.md#spaces-and-channel-access) for the shared rules.
-
-First launch without a valid session opens email sign-in, not a Guest workspace.
-New accounts finish their profile, then name their first space. Existing accounts
-restore their saved session and open their spaces; logging out returns to sign-in.
+- First launch without a valid session opens email sign-in (no Guest workspace).
+  New accounts finish their profile, then name their first space; saved sessions
+  restore; logout returns to sign-in.
+- Text conversations, owner space/channel/member management, private grants,
+  invite links, direct messages, presence, typing, and the responsive
+  rail/sidebar/conversation layout, following the website.
+- Searchable emoji reactions with counted chips and own-reaction highlighting.
+  Channel previews show reactions but cannot change them or pins until joined.
+- Message pins: Pin/Unpin, "Pinned by …" attribution, and a Pins button in the
+  conversation header (Apple uses a sheet; Android and Rust desktop switch the
+  conversation view). Lists include pins outside loaded history.
+- Editing an attached photo or video before sending (crop, rotate, draw, text,
+  colour and size, undo/redo/reset), re-uploading the original with the edits.
+  Rust desktop cannot draw on videos because its bundled FFmpeg lacks the
+  `overlay` filter. See [editing attachments](../../docs/media.md#editing-attachments-before-sending).
+- Live forwarding: a channel/DM picker with an optional note, a live original
+  card, and a read-only shared conversation. See
+  [live message forwarding](../../docs/media.md#live-message-forwarding).
+- Composer suggestions after `:` (Emoji 15 catalog; `:tomato`, `:+1`) and `@`
+  (the open space's loaded members except you, then `@everyone`/`@here`; in DMs,
+  people from `GET /api/people`). Selecting inserts the token without sending.
+  Resolved `content.mentions` render as terracotta pills (square-cornered on
+  native, rounded on web); messages mentioning you get a terracotta tint and
+  leading edge. A person's pill opens a profile card with **Message**. Mentions
+  only notify through push. See
+  [docs/media.md](../../docs/media.md#scope-and-architecture).
+- Space invite, private-channel grant and **New direct message** username
+  fields suggest known people; lookups stay exact-username with no directory.
+  See [spaces and channel access](../../docs/media.md#spaces-and-channel-access).
+- Each client reopens the last space and channel (per account and device, IDs
+  only, joined channels only), falling back to the first joined channel.
+- Native channel voice in default builds. There are no incoming direct calls,
+  so no CallKit/Telecom/push ringing.
 
 ## Launch at login (desktop only)
 
-**Account gear → Settings… → Startup → Launch at login** opts in to opening Caper when you sign in to
-your computer. It is off by default and opens the normal window, not a hidden
-background service. Startup and sound preferences use switches in a dedicated
-Settings view, separate from quick audio actions, and save immediately. macOS
-also exposes **Caper → Settings…** (⌘,) while signed out.
-Web, iOS and Android have no startup option.
+**Account gear → Settings… → Startup → Launch at login** (off by default) opens
+the normal window at sign-in. macOS also exposes **Caper → Settings…** (⌘,)
+while signed out. Web, iOS and Android have no startup option.
 
-macOS uses `SMAppService.mainApp`; if approval is required, Settings says so and
-links to Login Items in System Settings. Windows registers the current executable
-in the current user's `Run` registry key; Task Manager or system policy can still
-block startup. The Windows uninstaller removes this install's startup entry.
-Linux writes `chat.caper.desktop` under `$XDG_CONFIG_HOME/autostart` (normally
-`~/.config/autostart`); an XDG-compatible graphical session is required. Remove
-that file before uninstalling a Linux package or deleting a portable copy.
+- macOS uses `SMAppService.mainApp`; if approval is required, Settings links to
+  Login Items in System Settings.
+- Windows registers the current executable in the current user's `Run` registry
+  key; the uninstaller removes it.
+- Linux writes `chat.caper.desktop` under `$XDG_CONFIG_HOME/autostart`
+  (normally `~/.config/autostart`); it needs an XDG-compatible session. Remove
+  that file before uninstalling a package or deleting a portable copy.
 
-Switching the option off removes the registration immediately. No account or
-server setting changes, and restoring app preferences never re-enables startup.
-Portable Windows/Linux copies must stay at the registered path; toggle off/on
-after moving them. Startup does not retain development command-line overrides.
-Fixture previews disable this option and never modify real startup registrations.
-Linux registration and UI checks run locally; Windows/macOS builds and real
-logout/login acceptance require their respective OS runners/devices.
+Switching off removes the registration immediately. Portable copies must stay
+at the registered path (toggle off/on after moving). Startup does not keep
+development command-line overrides, and fixture previews never touch real
+registrations.
 
 ## Build and download
 
-The **Native development builds** GitHub Actions workflow uses macOS, Windows, and
-Linux runners nightly on `main`, or on manual dispatch; pushes do not wait for it.
-Python tooling, native contract and self-updater tests run in `CI` on every push.
-It runs independently from the website/API image pipelines and does not deploy
-services, publish a GitHub release, or upload to app stores.
-
-Open a successful workflow run's **Artifacts** section, then select your platform.
-Each artifact contains the package, `SHA256SUMS`, and `BUILD.json` recording the
-exact checked-out Git revision and development-only distribution status.
-Artifacts expire after 14 days and downloading requires repository access.
-
-Apple and Android jobs also exercise an explicit loopback-only fixture with native
-UI automation. They check populated conversations, authentication/error states,
-owner management, and narrow Browse layouts, and upload separate `caper-ui-*`
-artifacts. Android uses a separately built fixture APK; that APK is not the normal
-download package. These checks do not contact the production API or exercise
-microphones, Cloudflare audio, or locked-phone calling. A failed UI job does not
-establish parity even if its preceding package build passed; inspect the captures
-as well as the assertions.
+The **Native development builds** workflow (`.github/workflows/native.yml`)
+runs nightly on `main` and on manual dispatch. It does not deploy, publish a
+release, or upload to stores. Each artifact (kept 14 days) contains the
+package, `SHA256SUMS`, and `BUILD.json` with the exact Git revision. Apple and
+Android jobs also run native UI automation against the loopback fixture and
+upload `caper-ui-*` artifacts; Android uses a separately built fixture APK.
 
 | Target | Package | Installation limits |
 | --- | --- | --- |
@@ -146,9 +86,9 @@ as well as the assertions.
 | macOS Apple Silicon | `Caper-macos-arm64.zip` | Development `.app`, not Developer ID signed/notarized |
 | macOS Intel | `Caper-macos-x64.zip` | Development `.app`, not Developer ID signed/notarized |
 | iOS Simulator Apple Silicon | `Caper-ios-simulator-arm64.zip` | **Cannot install on an iPhone** |
-| Android | `Caper-android-debug.apk` | Debug-signed test APK, not a Play/store release |
+| Android | `Caper-android-debug.apk` | Debug-signed test APK, not a store release |
 
-On a matching development machine, run from the repository root:
+Local builds, from the repository root:
 
 ```sh
 bash apps/native/desktop/build.sh        # Linux
@@ -157,25 +97,24 @@ bash apps/native/apple/build.sh ios     # Mac, iOS Simulator
 bash apps/native/android/build.sh       # JDK 17 + Android SDK 36
 ```
 
-For Windows, run `./apps/native/desktop/build.ps1` in PowerShell. Each project's
-README lists its prerequisites, checks, supported behavior, and remaining gaps.
+On Windows, run `./apps/native/desktop/build.ps1` in PowerShell. Each project's
+README lists its prerequisites.
 
-The root Rust workspace remains the API. The desktop client's separate Cargo
-workspace/lockfile does not add GUI dependencies to server images. Native builds
-do not require `npm install`; the website build is not an app-bundling step.
+The root Rust workspace is the API. The desktop client has its own Cargo
+workspace and lockfile, so GUI dependencies stay out of server images. Native
+builds do not need `npm install`.
 
 ## Signed builds for testers
 
 The **Native release** workflow (`.github/workflows/release.yml`) builds every
 app from one `main` commit:
+
 - a Developer ID-signed, notarized Mac app for Apple Silicon and Intel,
 - a release-signed Android APK and Play bundle,
-- Windows and Linux desktop packages (not code-signed yet).
+- an iPhone build for TestFlight,
+- Windows and Linux desktop packages (not code-signed).
 
-It replaces the `native-latest` pre-release, so these links always point at the
-newest build. The Intel Mac build does not hold up the release: the previous Intel
-files stay in place until it finishes, then it is uploaded and added to the
-self-update manifest. If it fails, Intel Macs keep the previous build.
+It replaces the `native-latest` pre-release:
 
 - Mac (Apple Silicon): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.dmg
 - Mac (Intel): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.dmg
@@ -183,218 +122,135 @@ self-update manifest. If it fails, Intel Macs keep the previous build.
 - Windows: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64-Setup.exe
 - Linux: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb
 
-Mac users open the disk image and drag Caper onto its Applications shortcut,
-then eject the image and open the installed app from Applications. The image and
-app are Developer ID-signed, notarized, and stapled. If `/Applications` is not
-writable, create `~/Applications` in Finder and drag Caper there instead. Signed
-release copies outside these locations or in a non-writable folder show install
-instructions and quit before opening the account UI; development/test apps do not.
-This uses Finder's normal installation/Gatekeeper flow, without stripping
-quarantine or copying apps behind the user's back. Existing Mac ZIP URLs remain
-available for self-updaters and previously shared links; their app must still be
-dragged into a writable Applications folder. The DMG and first-launch alert
-require real macOS visual/installation acceptance; the Linux orb cannot render them.
+The Intel Mac build never holds up the release: the previous Intel files stay
+until it finishes, then it is uploaded and added to the self-update manifest.
 
-Windows users open Setup once; it installs immediately and opens Caper, with no
-Welcome/Next/Finish clicks. Later launches use Start or the desktop shortcut.
-There is no extraction or console window. It installs per-user without admin
-access and appears in Installed apps for removal. Close any old portable copy
-first; the installer does not remove downloads from previous versions.
-Linux users on Ubuntu 24.04 or compatible Debian-based systems open the `.deb`
-in their software installer, then launch Caper from the application menu without
-a terminal. This is not a universal Linux package. ZIP/tar archives remain for
-self-updates and advanced portable use, not the default install experience.
+**Installing.** Mac users drag Caper from the disk image onto Applications (or
+`~/Applications` if `/Applications` is not writable). Signed release copies run
+from anywhere else show install instructions and quit; development builds do
+not. The ZIPs remain for self-updaters. Windows Setup installs per-user without
+admin access or wizard pages, opens Caper, and appears in Installed apps; it
+does not remove old portable copies. Linux users on Ubuntu 24.04 or compatible
+Debian-based systems open the `.deb` in their software installer. The ZIP and
+tar archives are self-update payloads and optional portable copies.
 
 **Releasing.** Every push to `main` that changes the native apps starts
-`release.yml` for that commit. It builds Mac, iPhone (TestFlight), Android,
-Windows and Linux in 20-40 minutes, one release at a time; the newest waiting
-push replaces older waiting ones. Builds start at once. Handing the iPhone build
-to testers, the Play rollout, and publishing the desktop self-update wait for
-the servers they need (`.github/actions/wait-for-servers`): the newest API image
-at or before the commit must have published, and the Ship for caper that
-followed it must have rolled the API and gateway out. If either failed, the
-release fails without reaching anyone; fix forward and the next native change
-releases again. A `git revert` of a native change releases the previous
-behavior the same way. The workflow can also be run by hand from the Actions tab
-(a blank `git_sha` releases the newest `main` commit).
+`release.yml` for that commit (20-40 minutes, one release at a time; the newest
+waiting push replaces older waiting ones). Builds start at once. Handing the
+iPhone build to testers, the Play rollout, and publishing the desktop
+self-update wait for the servers they need (`.github/actions/wait-for-servers`):
+the newest API image at or before the commit must have published, and the Ship
+for caper that followed it must have rolled out the API and gateway. If either
+failed, the release fails without reaching anyone; fix forward. The workflow can
+also be run by hand (a blank `git_sha` releases the newest `main` commit).
 
 Signing material is read from AWS Secrets Manager through GitHub OIDC; see
 `docs/release-signing.md` in joswayski/infrastructure.
 
-**Phone betas.** The homepage's phone buttons are the supported installs; the
+**Phone betas.** The homepage's phone buttons are the supported installs; their
 links live in `apps/web/src/downloads.ts` and stay hidden until set.
-- Android: each release goes to Play's internal track (the owner, within minutes)
-  and its closed testing track (`alpha`), which Google reviews first
-  (`scripts/play-upload.py`, `PLAY_TRACK`). The closed test's testers are an
-  open Google Group: people join the group, opt in at
+
+- Android: each release goes to Play's internal track and its closed testing
+  track (`alpha`, reviewed by Google first) via `scripts/play-upload.py`
+  (`PLAY_TRACK`). Testers join an open Google Group, opt in at
   https://play.google.com/apps/testing/chat.caper.android, and install from
-  Google Play, which keeps them updated. Play re-signs bundles with Google's app
-  signing key, so the GitHub APK (signed with the upload key) cannot update to or
-  from a Play install; it is only for phones without Google Play and never updates
-  itself.
-- iPhone: the same run archives the app (`chat.caper.ios`) and uploads it to
-  TestFlight with `apps/native/apple/upload-testflight.sh`. Signing is cloud-managed
-  through the App Store Connect API key, so no distribution certificate or profile
-  is stored. Each run's build number is `<run number>.<attempt>`.
-  `scripts/testflight-distribute.py` adds each build to every tester group and
-  submits it for Beta App Review when an external group needs it; people who join
-  the TestFlight public link get new builds automatically.
-- Store reviewers sign in with the API's review account (`AUTH_REVIEW_EMAIL` and
-  `AUTH_REVIEW_CODE`, see `docs/media.md`), because sign-in codes are emailed.
+  Google Play. Play re-signs bundles with Google's app signing key, so the
+  GitHub APK (upload key) cannot update to or from a Play install and never
+  updates itself.
+- iPhone: the run archives `chat.caper.ios` and uploads it with
+  `apps/native/apple/upload-testflight.sh`. Signing is cloud-managed through the
+  App Store Connect API key; no certificate or profile is stored. Build numbers
+  are `<run number>.<attempt>`. `scripts/testflight-distribute.py` adds each
+  build to every tester group and submits it for Beta App Review when an
+  external group needs it.
+- Store reviewers sign in with the API's review account (`AUTH_REVIEW_EMAIL`,
+  `AUTH_REVIEW_CODE`; see `docs/media.md`).
 
 **Desktop self-updates.** Release builds of the Mac, Windows and Linux apps carry
-`caper-updater` (`apps/native/updater`) and the run number as their build number.
+`caper-updater` (`apps/native/updater`) and use the run number as build number.
 About 20 seconds after launch and every minute they check
-`https://caper.chat/api/updates/native`. The Rust API caches GitHub's
-`native-latest/latest.json` and its signature together for 60 seconds per process;
-simultaneous refresh requests share one upstream fetch. The updater falls back
-to GitHub directly if the site is unavailable or its response fails verification.
-Downloads still come from GitHub. That manifest is signed with the Ed25519 key in
-the `caper_update` section of `production/signing/release`, and each app only trusts the public key compiled
-into it. When a newer build exists, the Mac app shows an alert (and has
-**Caper › Check for Updates…**), and the Windows and Linux app shows a banner.
-Windows/Linux also have **User Settings › Settings… › Updates › Check for updates**,
-with checking, up-to-date, and retryable failure feedback. Manual checks restore
-an offer dismissed with **Later**; automatic checks keep that version dismissed
-but offer a newer version. Checks do not run concurrently. A running, online app
-normally detects a published release within about one to two minutes, allowing
-for the server cache; manual checks also use that cache. Build/signing time and
-download/install time are separate. Existing installs retain their old schedule
-until they update once. Development builds and static fixtures do not check.
-**Restart to update** hands off to an independent updater, which waits for Caper
-to quit, verifies the download's SHA-256 (and, on Mac, its Developer ID team),
-swaps in the new copy and reopens it. If downloading, verification or installation
-fails, it reopens the existing copy and records the error in `caper-updater.log`
-(Linux: `~/.local/state/caper`, or `$XDG_STATE_HOME/caper`; elsewhere the user's
-temporary directory). Mac reopening uses LaunchServices and checks
-the launch request's result. A copy it cannot replace, such as the Linux `.deb`
-or a Mac app whose folder permissions changed after launch, gets a **Download** link instead.
-That link downloads the matching Mac architecture's DMG, Windows Setup, or Linux
-`.deb` directly; it does not open the GitHub release page. These downloads still
-need manual installation.
-Releases made before the key is stored skip `latest.json`, and apps from before
-this change need one manual reinstall. Android updates come from Google Play; the
-GitHub APK does not self-update.
+`https://caper.chat/api/updates/native`; the API caches GitHub's
+`native-latest/latest.json` and its signature for 60 seconds per process, and
+the updater falls back to GitHub if the site fails or its response does not
+verify. Downloads come from GitHub. The manifest is signed with the Ed25519 key
+in the `caper_update` section of `production/signing/release`; each app trusts
+only the public key compiled into it.
+
+- Mac shows an alert and **Caper › Check for Updates…**; Windows/Linux show a
+  banner and **User Settings › Settings… › Updates › Check for updates**.
+  Manual checks restore an offer dismissed with **Later**.
+- **Restart to update** hands off to an independent updater that waits for
+  Caper to quit, verifies the download's SHA-256 (and, on Mac, its Developer ID
+  team), swaps in the new copy and reopens it. On failure it reopens the
+  existing copy and logs to `caper-updater.log` (Linux: `$XDG_STATE_HOME/caper`
+  or `~/.local/state/caper`; elsewhere the temporary directory).
+- Copies it cannot replace (the Linux `.deb`, or a Mac app in a folder that
+  became read-only) get a **Download** link to the matching DMG, Setup or
+  `.deb` for manual installation.
+- Development builds and fixtures never check. Android updates come from
+  Google Play.
 
 ## Comparing native screens with the web
 
-Use the existing web UI as the reference, not platform-default widgets with
-roughly similar colors. Both use Satoshi; acquire the official, unmodified native
-fonts with `python3 scripts/native_fonts.py`. See [font licensing and integrity
-checks](../../shared/fonts/README.md). Do not commit or separately publish fonts.
+The web UI is the visual reference. Acquire the official Satoshi fonts with
+`python3 scripts/native_fonts.py` (see [shared/fonts](../../shared/fonts/README.md));
+never commit or publish them.
 
-For disposable visual and interaction checks, install the repository's npm dependencies
-with `npm ci`, test the shared fixture with Vitest, then run it with Node 24:
+The parity fixture is a disposable, loopback-only fake API. After `npm ci`, run
+with Node 24:
 
 ```sh
 npm run test:native
 node scripts/native-parity-fixture.mjs
 ```
 
-It listens only on loopback: HTTP on port 3001 and the unified WebSocket on 3002
-(also accepted on 3001). These match the web development proxy defaults. It never
-sends email, calls a production API, or connects to an SFU. Sign in with any
-syntactically valid test email and the code `ABC234`. The deterministic owner
-account opens **Fixture Studio**, containing visibly labeled sample conversations.
-The fixture supports profile edits,
-space/channel/member management, private grants, message history/pagination,
-idempotent sends, gateway replay, typing, and deterministic presence.
+It serves HTTP on port 3001 and the unified WebSocket on 3002 (also accepted on
+3001), matching the web development proxy. It never sends email, calls a
+production API, or connects to an SFU. Sign in with any valid test email and
+code `ABC234`; the owner account opens **Fixture Studio** with labelled sample
+conversations. It supports profile edits, space/channel/member management,
+private grants, history/pagination, idempotent sends, gateway replay, typing
+and deterministic presence. Authentication and authorization are simplified.
 
-`POST /__fixture/control` accepts `{ "reset": true }`, `{ "disconnect": true }`,
-or a one-shot failure such as
-`{ "failure": { "path": "/api/auth/email/request", "method": "POST", "status": 503 } }`.
-It can inject another participant's typing with
-`{ "typing": { "channelId": "chan00000001", "active": true } }`.
-Read-only voice rosters use `{ "media": { "channelId": "chan00000002", "participants": [{ "id": "fixture-voice", "name": "TEST FIXTURE Voice", "muted": false, "deafened": false }] } }`.
-`{ "mediaAccessDenied": { "channelId": "chan00000002" } }` evicts that spectator
-subscription; add `"denied": false` to permit future subscriptions again.
-Media join and participant-token operations deliberately return 503. Authentication, authorization and
-presence are simplified; this fixture is not a substitute for real API tests.
+`POST /__fixture/control` accepts:
 
-Compare fresh-install sign-in, restoration errors, populated conversation, narrow Browse-open, and
-owner-management states. Check actual clicks and keyboard input as well as
-screenshots. Desktop reference size is 1440×900, narrow reference 390×844; browser
-viewport emulation does not prove native mobile or touch behavior. Each platform
-README describes its own preview controls and remaining validation gaps.
+- `{ "reset": true }`, `{ "disconnect": true }`;
+- one-shot failures: `{ "failure": { "path": "/api/auth/email/request", "method": "POST", "status": 503 } }`;
+- typing: `{ "typing": { "channelId": "chan00000001", "active": true } }`;
+- read-only voice rosters: `{ "media": { "channelId": "chan00000002", "participants": [{ "id": "fixture-voice", "name": "TEST FIXTURE Voice", "muted": false, "deafened": false }] } }`;
+- `{ "mediaAccessDenied": { "channelId": "chan00000002" } }` (add `"denied": false` to allow again).
 
-### Layout regression checks
+Media join and participant-token operations return 503.
 
-Check these states on every native release, not only a wide populated screenshot:
+Reference sizes are 1440×900 (desktop) and 390×844 (narrow). Compare sign-in,
+restoration errors, populated conversation, narrow Browse-open, and owner
+management, using real clicks and keyboard input.
 
-- A fresh install, expired session, or logout shows email sign-in with no Guest
-  account, conversation composer, or retired public General fallback. A valid
-  saved account still opens its spaces.
-- Voice follows design H, revised October 17, 2026, on every client. Channels
-  stay text and voice together; the conversation header carries no voice
-  controls (phones keep "N members · M in voice" under the channel name and open
-  Pins and Members from it). There is no "Live now" heading: a live channel's
-  own row grows into a card in its place, and pressing the card (except its
-  controls and `⋯`) opens that chat. Your call's card: the row line with "You're
-  in · N" or Connecting…, timer, faces you first in at most two rows with "+N"
-  past ten (no "is speaking" line), Mute, Deafen and Leave, or Cancel while
-  joining. Right-click, long press or the accessibility action on a face or
-  "+N" opens the full list with per-person volume, beside the sidebar on wide
-  layouts and a sheet on phones. Other live rooms add faces, names, timer and
-  Join or Switch beneath their row. Only voice with no row in the listed space
-  (your call elsewhere, a visited feedback channel) sits above Channels.
-  Collapsing Channels keeps live cards. Quiet rows are one line; live rows end
-  with a green waveform and count. Rows other than your call's keep a headphones
-  join: revealed on hover on Mac and Rust desktop without shifting the name or
-  `⋯`, shown dimmed with a 44-point target on quiet rows on touch (Android,
-  iPhone, iPad) and in Rust desktop windows 760px or narrower. Phones add a
-  56-point strip under the chat header: your call with the card's faces in the
-  card's order (up to five, or four and "+N"), no speaker's name, and Mute
-  (tapping it opens Browse), or, out of a call, who is talking there with Join.
-  Check the minimum desktop sidebar width, long names, more than ten people in a
-  call, three or more live rooms, a call in another space, a collapsed list, and
-  the phone strip; Rust desktop's `parity-voice-*` fixtures show them.
-- Members stay on the right: a column when chat has enough room, an overlay below
-  the chat header otherwise. The toggle must stay accessible. Never stack members
-  underneath the composer. Check 840px desktop windows as well as 1440px and mobile.
-- Desktop sidebar drag, arrow keys, bounds, double-click reset and restored width
-  must agree with the actual conversation edge. All bottom account controls must
-  remain reachable at the minimum width.
-- Apple workspace/profile/audio dialogs dismiss on the backdrop or Escape on Mac;
-  underlying controls cannot activate through the dialog. Destructive confirmation
-  sheets still use protected native presentation and cannot dismiss during a write.
-- Mac window controls occupy the system title bar, not the space rail. Apple audio
-  sliders retain keyboard/VoiceOver adjustment; iPhone retains the system audio-route
-  picker. Sending a message does not introduce a new keyboard-dismissal policy.
-- Navigation does not show a global loading bar or play a voice-toggle sound for
-  the Members button. Genuine pending-send and disconnected/reconnecting states
-  stay visible; hiding them is not a connection fix.
+### Layout rules
 
-Linux fixture rendering and egui geometry tests cover the shared Windows/Linux
-implementation, not Windows rendering. Apple UI tests cover resize, row and Live
-now Join, the call card and participant list (fixture call), the phone voice strip,
-profile backdrop dismissal, audio controls, and narrow layouts but require Xcode.
-Android requires its SDK and emulator/device checks. Do not mark either mobile
-platform visually accepted based on Linux or browser screenshots.
-
-## Release gates
-
-Passing a build or mock protocol test does **not** establish any of these gates:
-
-- Authenticated end-to-end login, onboarding, logout/revocation, and secure
-  credential restoration on each OS.
-- Channel authorization, private-channel grants, space/channel management,
-  durable chat replay, unknown-outcome retries, typing and member presence parity.
-- Native microphone capture/playback through Cloudflare SFU, forced TURN and
-  multi-network calls, mute/deafen, device changes and sustained audio.
-- iPhone/Android ongoing calls while locked or backgrounded, interruption and
-  audio-route handling, Wi-Fi/cellular transitions, and immediate local hangup.
-- Desktop/narrow layouts, accessibility, IME, keyboard navigation, high DPI,
-  native resource use and battery measurements. Compiled UI alone proves no
-  performance improvement over the web implementation.
-- Signed package installation/upgrade, platform trust checks, app-store policy,
-  privacy disclosures and rollback. Development builds carry no build number, so
-  they never self-update; release self-updates are described above.
-
-Native voice and background-call acceptance are required work, not optional
-product cuts. Do not advertise these development apps as supporting them until
-implementation **and physical-device checks** pass. Caper currently has channel
-voice, not incoming direct calls; CallKit/Telecom/push ringing would also require
-a defined incoming-call backend protocol rather than invented client behavior.
-
-See [native distribution and acceptance](../../docs/media.md#native-distribution-and-acceptance)
-for signing, download commands, and the platform validation record.
+- Signed-out, expired or logged-out states show email sign-in only, with no
+  Guest account, composer, or public General fallback.
+- Voice (design H): channels are text and voice together, and the conversation
+  header has no voice controls. A live channel's row grows in place into a card
+  (no "Live now" heading); pressing the card outside its controls opens that
+  chat. Your call's card shows "You're in · N" or Connecting…, a timer, faces
+  (you first, at most two rows, "+N" past ten), and Mute, Deafen and Leave (or
+  Cancel). Right-click, long press or the accessibility action on a face opens
+  the full list with per-person volume (beside the sidebar when wide, a sheet on
+  phones). Other live rows add faces, names, timer and Join/Switch. Only voice
+  with no row in the listed space (your call elsewhere, a visited feedback
+  channel) sits above Channels; collapsing Channels keeps live cards. Quiet rows
+  keep a headphones join (hover-revealed on Mac and Rust desktop; dimmed with a
+  44-point target on touch and in Rust desktop windows 760px or narrower).
+  Phones add a 56-point strip under the chat header: your call's faces (up to
+  five, or four and "+N") and Mute, or who is talking there with Join.
+- Members stay on the right: a column when there is room, an overlay below the
+  chat header otherwise; never under the composer.
+- Desktop sidebar drag, arrow keys, bounds, double-click reset and restored
+  width match the conversation edge; bottom account controls stay reachable at
+  the minimum width.
+- Apple workspace/profile/audio dialogs dismiss on the backdrop or Escape on
+  Mac; destructive confirmations cannot dismiss during a write. Mac window
+  controls sit in the system title bar, not the space rail.
+- No global loading bar and no voice-toggle sound for the Members button.
+  Pending-send and disconnected/reconnecting states stay visible.

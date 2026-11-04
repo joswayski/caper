@@ -47,22 +47,24 @@ then works through the system photo picker on Android 13+.
 
 ## App Store / TestFlight
 
-There is no form to fill in. iOS shows these purpose strings (`project.yml`)
-when it asks:
+There is no permission form to fill in. The OS shows these purpose strings
+(`apps/native/apple/project.yml`) when it asks:
 
-- Photo library: "Caper shows your recent photos and videos so you can attach
-  them to messages. Only items you choose are uploaded."
-- Camera: "Caper uses your camera when you take a photo or video to attach to a
-  message."
-- Microphone: "Caper uses your microphone when you join a voice channel,
+- Photo library (iOS): "Caper shows your recent photos and videos so you can
+  attach them to messages. Only items you choose are uploaded."
+- Photo library add (iOS): "Caper saves photos and videos you choose to your
+  library."
+- Camera (iOS): "Caper uses your camera when you take a photo or video to attach
+  to a message."
+- Microphone (iOS): "Caper uses your microphone when you join a voice channel,
   record a voice message or record a video to attach."
+- Microphone (macOS): "Caper uses your microphone when you join a voice channel
+  or record a voice message."
 
-App Store Connect → App Privacy: if "Photos or Videos" is not already declared,
-add it as **User Content → Photos or Videos**, collected, linked to the user's
-account, used for **App Functionality**, not for tracking. Sent attachments
-already reach Caper's servers, so this may already be declared.
+App Store Connect → App Privacy must declare, each collected, linked to the
+user's account, used for **App Functionality**, not for tracking:
 
-Voice messages (October 2026) upload recorded audio and send it to an AI
-provider for a transcript. If "Audio Data" is not already declared, add it as
-**User Content → Audio Data**, collected, linked to the user's account, used
-for **App Functionality**, not for tracking.
+- **User Content → Photos or Videos**: sent attachments are uploaded to Caper's
+  servers.
+- **User Content → Audio Data**: voice messages upload recorded audio, which is
+  sent to an AI provider for a transcript.

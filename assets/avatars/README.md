@@ -20,9 +20,8 @@ is AI-generated companion artwork based on Caper's own mascot and
 Designs 0–3 came from that original demo sheet. Designs 4–99 came, four at a
 time in reading order, from `companions-01.webp` through
 `companions-24.webp`. Those 512×512 WebP source sheets are retained here for
-provenance and are not served. The current v3 vectors include later hand repairs;
-in particular, the rendered designs are 15 safari hat, 61 carrot cap, 64 cat,
-and 69 dinosaur. There is no sombrero design in the current artwork.
+provenance and are not served. Vector masters live in `assets/avatars/vector-v2/`;
+hand-repaired designs in `assets/avatars/vector-v3/` override them.
 
 `node scripts/generate-avatars.mjs` reproduces the original immutable v1 raster
 atlas from the sheets (ImageMagick 7). Current vectors are exported by

@@ -3,9 +3,8 @@
 Caper serves these files from its own origin. No runtime CDN, LiveKit client,
 API key, license server, or audio upload is used for noise suppression.
 
-- Model: Rikorose/DeepFilterNet `models/DeepFilterNet3_onnx.tar.gz`.
-  Verified byte-identical to the upstream main-branch download on 2026-09-06.
-  Stored as `DeepFilterNet3.bin` because Nitro treats `.gz` as HTTP compression
+- Model: Rikorose/DeepFilterNet `models/DeepFilterNet3_onnx.tar.gz` from the
+  upstream main branch, byte-identical. Stored as `DeepFilterNet3.bin` because Nitro treats `.gz` as HTTP compression
   and browsers would decompress it; the model loader needs the gzip bytes intact.
 - WASM: MezonAI's prebuilt DeepFilterNet3 Rust/Tract runtime, downloaded from
   `https://cdn.mezon.ai/AI/models/datas/noise_suppression/deepfilternet3/v3/pkg/df_bg.wasm`.

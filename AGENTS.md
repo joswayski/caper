@@ -8,7 +8,7 @@ Adapted from the conventions in `joswayski/captures`.
 - `apps/web`: TanStack Start browser app and same-origin development API adapter.
 - `apps/api`: Rust media control, accounts, spaces and unified text/voice channels. Cloudflare Realtime SFU/TURN carries audio; AWS carries control traffic. The public General demo is retired; the homepage shows a labelled local simulation linking to email sign-in. Account spaces require membership, and private channels have explicit member grants. Owners manage spaces/channels, add existing accounts by username, and create Discord-style invite links (`/invite/<code>`, expiry/max uses/landing channel; owner-removed or blocked accounts cannot rejoin by link). Text uses Postgres/outbox and the independently deployed `--gateway` WebSocket role with Valkey fanout. No custom roles, video calls, or screen sharing (the attach drawer's camera only captures photos and videos to attach).
 - `shared/design.css`: shared visual tokens. `docs/brand` contains the owner's reference images and style guidance.
-- `docs/media.md`: configuration, deployment, privacy, validation matrix, and call runbook.
+- `docs/media.md`: configuration, deployment, privacy, contracts, and call runbook.
 
 ## Working conventions
 
@@ -30,11 +30,11 @@ Adapted from the conventions in `joswayski/captures`.
 
 ## Documentation and validation
 
-- Leave README accurate and concise. Put operational detail in `docs/media.md`; maintain an honest platform/test matrix.
+- Leave README accurate and concise. Put operational detail in `docs/media.md`. Docs describe the current system only (how it works, how to configure, run and recreate it): never record test runs, validation results, dated history or completed rollout steps in the repository; report those in the thread instead.
 - Run `npm run check` (Oxlint, Oxfmt, Vite build and native TypeScript 7 typecheck) and `npm test` (Vitest web and shared native-support tests); use `npm run fmt` to format first-party JS/TS/CSS. For Rust, run `cargo fmt --all -- --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`.
 - For Python tooling, use pinned uv and `uv.lock`: `uv run --locked ruff check .`, `uv run --locked ruff format --check .`, `uv run --locked python -m unittest discover -s tests -p 'test_*.py' -v`, and `uv run --locked python shared/fonts/test_native_fonts.py -v`. Use `uv run --locked ruff format .` to format Python; keep release/authoring dependencies in their separate groups, not the global interpreter.
 - Build changed Docker images when a daemon is available; otherwise validate build stages directly and report the limitation.
-- Never equate mocks with live SFU validation. Record multi-network/TURN, sustained voice, and physical device checks separately.
+- Never equate mocks with live SFU validation. Report multi-network/TURN, sustained voice, and physical device checks separately.
 
 ## Shipping
 

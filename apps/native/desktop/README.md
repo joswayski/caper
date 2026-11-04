@@ -7,400 +7,104 @@ players in link previews (YouTube, Vimeo, Twitch): after Play, the operating
 system's own web engine (WebView2 on Windows, WebKitGTK on Linux) shows
 just that player in the card.
 
-## Available now
+## Features
 
-- Signed-out first launch opens passwordless email request/verification and
-  first-account profile onboarding, with no Guest/General fallback.
-- Ctrl/Cmd + Plus, Minus or 0 changes or resets interface zoom and briefly
-  shows its percentage without taking focus or moving content for the notice.
-- Packaged releases check for signed updates 20 seconds after launch and every
-  minute. **Settings… → Updates → Check for updates** offers manual checks with
-  inline progress and success/failure feedback. The quick account menu has no
-  duplicate check action or background-check status. Settings shows the last
-  successful check time and links the installed source revision to GitHub. Confirmed rate limits
-  quietly defer to the next check without discarding known updates. Opening Settings
-  does not start another check. A known release adds a persistent
-  **Update available** button above the profile/audio row, with a thin rainbow edge
-  and occasional shine.
-  The label never moves; Reduce Motion/background windows keep the edge still.
-  Clicking it or finding an update manually opens a centered modal with
-  **What’s new expanded** and fixed actions. **Later**, Escape and backdrop dismissal
-  retain the update button without installing or checking again. Writable installs
-  offer a restart to update;
-  the `.deb` offers a download for manual installation.
-- **Settings… → Updates → What’s new** reopens shipped release highlights for
-  the exact running source revision. First successful load quietly establishes
-  a baseline; later updates show unread highlights once, newest first, after
-  the workspace opens and no call or other modal is active. Acknowledgment is
-  local to the API origin/platform and never moves backward on rollback.
-  Missing publication retries while foreground, at most once per minute;
-  manual history shows loading, empty and retryable error states. Builds use
-  `CAPER_RELEASE_SHA` (40 lowercase hex characters), or the current Git HEAD.
-- Bearer sessions stored in Windows Credential Manager or the Linux Secret
-  Service. If the vault is unavailable, the session remains in memory only and
-  the UI warns that sign-in will not survive restart. There is no plaintext
-  credential fallback. Vault entries are isolated by canonical API origin, so a
-  production credential is never restored for a staging/custom HTTPS origin.
-- Logout revokes the server session and removes the OS credential.
-- Account space/channel navigation, including accessible private channels.
-- Bounded read-only hover prefetch, retained conversation cursors and last-channel
-  restoration. Navigation rechecks access; mutations and revocation discard
-  cached data and fence in-flight completions. Pending navigation keeps the loaded
-  conversation visible, including empty channels; only a first history load with
-  no ready conversation uses a message-pane skeleton. Navigation failures offer
-  in-pane retry/dismiss; drafts and scroll state remain retained,
-  and the composer pauses until navigation finishes or is cancelled/dismissed.
-- HTTP message history and idempotent writes. A timeout or lost response retains
-  the same client message UUID and original text for retry; a definitive
-  validation rejection unlocks editing and the next send gets a new UUID. A
-  matching gateway delivery confirms the pending write even if HTTP finishes
-  late or fails.
-- Compact right-click message menus preserve highlighted text and offer
-  **Copy selected text** separately from **Copy text** (the whole message).
-  Revealed, ready images have **Copy image**, **Copy image link**, and
-  **Open image in browser**. Image copying fetches the original rather than
-  the cropped preview, uses the viewer's decode limits, and copies the first
-  frame of animations as a still image.
-- Unified `/api/chat/events` gateway subscriptions with ordered replay,
-  deduplication, gap resync, heartbeat handling, reconnect status, and stale
-  result isolation across logout/channel changes.
-- Account spaces, private-channel grants, pagination, typing,
-  paginated member presence, owner space/channel/member management, and confirmed
-  non-owner leave-space with immediate call teardown and conversation clearing.
-- Resizable channel and Members sidebars in desktop layouts. Drag the divider
-  beside either pane, or click it and use Left/Right (10px), Home or End.
-  Double-click resets the width (280px channels, 220px Members). Widths save
-  locally; Members ranges from 220–440px, constrained to keep room for chat.
-  Narrow-window mobile-style drawers keep their existing sizing.
-- Invite links: owners create links in Manage space (expiry, use limit and an
-  optional public landing channel; the new link is copied at once), then copy or
-  revoke live ones. Anyone signed in can paste a link or bare code into **Join with
-  invite link** (the rail's link tile or the first-space screen), preview the
-  space and join it. Existing members see **Open space** instead. The browser's
-  **Open in the Caper app** link uses the registered `caper://` handler, bringing
-  the existing window forward. Launches and invite activations open maximized
-  (not fullscreen); the window remains resizable. Saved window sizes no longer
-  control launch size, and new geometry is not saved; account/settings persistence
-  is unchanged.
-- File attachments, when the server has storage configured (otherwise the
-  attach control stays disabled, without shifting the composer). Inline images show the uploaded preview, else
-  the PNG/JPEG/WebP/GIF/AVIF original, decoded off the UI thread and cached by
-  attachment id. Videos play inline from their poster's play button; a separate
-  expand button opens the viewer. GIF-style videos autoplay silently while visible,
-  respecting reduced motion. Leaving the message or expanding stops its inline player.
-  Clicking an image or expanding a video opens the in-app viewer (`viewer.rs`): the
-  message's images and videos with arrows, Left/Right, an "n / m" counter,
-  zoom (double-click, Ctrl+scroll or pinch) and pan, animated GIF/WebP,
-  Save (file dialog), Open in browser and Esc to close. Full-size AVIF/HEIC
-  decode through the bundled FFmpeg, as do AVIF inline images and spoiler
-  previews. Videos play in the app (`player.rs`):
-  FFmpeg decodes frames and PCM, rodio plays the sound and keeps time, with
-  play/pause (Space), a seek bar and volume; the signed URL streams through a
-  loopback range proxy (`media_proxy.rs`). Audio and other files show cards
-  that open in the system browser or player (PDFs open in a tab). Removed files
-  read "File removed". The parked server-processing fields stay supported
-  (absent `status` means ready): processing placeholders with the
-  `attachment.progress` percent, "Couldn't process this file", animated
-  ("GIF") posters, and `message.attachments` updates sequenced like
-  reactions. Signed URLs are
-  refreshed (`POST /api/assets/urls`) before they expire and once after a
-  403/404 image load, so a window left open for days keeps working.
-- Link preview cards under messages and for the composer's first link
-  (`embeds.rs`). Images and direct videos open in the viewer and player. A
-  YouTube/Vimeo/Twitch card's Play loads Caper's `play` page (only HTTPS from
-  `embed.caper.chat` or `embed.staging.caper.chat`) in a native web view kept
-  exactly over the card (`web_player.rs`): Windows uses the installed WebView2
-  runtime in process; Linux runs WebKitGTK in the separate `caper-web-player`
-  helper (`web-player/`), so `caper-desktop` itself never links GTK. On X11 the
-  view is a child of Caper's window; on Wayland, which cannot embed another
-  program's surface, it plays in a small "Caper — YouTube" window and the card
-  offers **Show window**/**Close**. As on Android and Apple: ephemeral storage,
-  no bridge to app code, no developer tools or downloads, autoplay, and only the
-  play page in the main frame; links followed out of the player and new windows
-  open in the system browser. One player plays at a time. It hides, still
-  playing, while its box is partly scrolled out of view or under a menu, popup,
-  tooltip, dialog or the viewer (the card shows its poster marked "Playing"),
-  and closes when another starts, the conversation changes, the card stays out
-  of view, or Caper quits. Without the engine the card says what to install
-  (WebKitGTK `libwebkit2gtk-4.1-0`, or the WebView2 runtime) and offers
-  **Open in browser**. YouTube on Linux also needs GStreamer's
-  `gstreamer1.0-libav` and `gstreamer1.0-plugins-bad` (the `.deb` recommends
-  them). Clicks in the video go to the web view; on X11 keyboard focus follows
-  the window manager. Sending a channel message carries the composer's shown
-  card onto the pending and confirmed row until the server's `message.embeds`
-  replaces or removes it, so the row does not jump. Cards present when a row is
-  first drawn appear in place; ones that arrive while it is shown fade in
-  (opacity only, 140 ms; none with Reduce Motion).
-- Voice messages (`voice_note.rs`) in channel, DM and thread composers and the
-  profile card, wherever files can be attached. A click on the microphone
-  beside Emoji starts hands-free recording: the input row becomes a recording
-  bar (Discard, a pulsing terracotta dot and timer, a live meter, eggshell
-  Stop). Enter stops, Escape discards, 10:00 stops on its own, and recordings
-  under a second are dropped. By default a stopped recording is staged in the
-  composer as a voice chip (play/pause, small waveform, length, ×) beside any
-  files; it uploads at once (so transcription starts) and goes with the next
-  Send together with the text and files. One voice message per message; ×
-  cancels its upload. **Settings → Voice messages → Send voice messages as
-  soon as I stop recording** (per device, off by default) sends it alone at
-  once instead (composer text and files stay; a reply target goes with it;
-  the card's goes to the person's DM through the card's own send, then opens
-  the DM like a text send, with Retry voice message or Discard on failure).
-  Capture opens its own private libwebrtc device module like the Audio test
-  (the selected input and input volume apply) and does not change an active
-  call's microphone or publication; sharing a physical microphone with a live
-  call is not yet device-verified. Each frame goes through the call's
-  microphone processing (DPDFNet-8, switching to RNNoise if it lags, and the
-  voice contour at the saved Voice enhancement strength) as it arrives, so
-  the file, live meter and waveform are what a call would send; if that
-  processing cannot start (say, without the ONNX Runtime library) or fails,
-  the rest records with the input volume alone and the app logs it. The bundled FFmpeg encodes AAC in MP4 (a
-  16 kHz WAV without it), uploaded as is with `voice`, its duration and 64
-  waveform values: per-slice RMS on a -50–0 dBFS scale, 3-tap smoothed and
-  normalised to the loudest slice. Waveforms draw linearly resampled 3 px
-  rounded bars with 2 px gaps and a minimum height, the played part (boundary
-  bar partly) in text colour and moving every frame; the live meter adds a
-  bar every 75 ms from the loudest level in that slice (falling to at most
-  35% of the bar before), with the bar still forming at the right edge at
-  full size from the first level, drawn as pills that brighten toward
-  eggshell when loud and pinch and fade near the left edge, scrolling every
-  frame (stepwise with reduced motion). The recording bar's Stop is
-  terracotta and pulses once a second while live (still with reduced motion). `voice: true` attachments
-  show a player (play/pause, waveform, click or drag to seek, length or time
-  left; one plays at a time) and a Slack-style transcript: three lines with
-  View/Hide transcript, "Transcribing…" while pending (breathing between full
-  and 40% opacity every 2 s, still with reduced motion), nothing when failed or
-  unavailable; `message.attachments` updates fill it in place. Quotes and
-  forward previews read "Voice message".
-- Sending up to 10 files per message in channel, DM and thread composers,
-  including attachment-only thread replies. Staged files and text belong to
-  their conversation/thread and survive closing a thread or switching conversations;
-  a file picker that finishes later keeps its original destination. Failed and
-  expired uploads use the same retry/renewal flow in each composer.
-  Use the attachment picker (Win32 on
-  Windows; on Linux the XDG desktop portal, which needs a file-chooser backend
-  such as xdg-desktop-portal-gtk, -gnome or -kde) or by dropping files on the
-  window, which shows the drop overlay while they hover. Files are compressed on the device, off the UI thread, with the
-  server's `GET /api/assets/usage` `compression` settings: lossless stills
-  (PNG, BMP, TIFF, lossless WebP) stay pixel-exact at full size, as the
-  smaller of an exact-palette indexed PNG (when the colours fit
-  `paletteColors`) and lossless WebP (libwebp, `method` 3 like the web
-  client), kept only when smaller; photos (JPEG, lossy WebP) are scaled to
-  `imageMaxEdge`, upright, without EXIF/GPS, and become AVIF at `avifQuality`
-  when `imageFormat` is `"avif"` (rav1e, 8-bit 4:2:0, sRGB or Display P3
-  signalled in `nclx`), else lossy WebP at `imageQuality` (libwebp), kept
-  only when at least 10% smaller. AVIF falls back to WebP for translucent
-  photos, other colour profiles and encoder errors, and WebP to JPEG. A
-  missing `imageFormat` means WebP. Videos are compressed with the bundled
-  FFmpeg by the same rules as web and phones (H.264/AAC MP4 when the short
-  edge is over `videoMaxHeight`, the codec isn't H.264, the container isn't
-  MP4/QuickTime/WebM or the bitrate is over 1.25× the target; HDR tone
-  mapped to SDR; Windows' hardware-backed Media Foundation encoder first,
-  then x264), with "Compressing… N%" on the chip, a poster preview, and the
-  original kept on any failure. HEIC, AVIF, GIF, SVG, audio and documents
-  upload as the original, as do videos when FFmpeg is missing. Originals lose their
-  metadata losslessly: JPEG APPn/comments except JFIF, ICC and Adobe (a
-  non-default orientation is kept), PNG text/eXIf chunks, and MP4/QuickTime
-  `udta`/`meta` boxes under `moov` and each `trak`, zero-filled as `free`
-  boxes of the same size. Large images get a JPEG preview (≤ `previewEdge`,
-  ≤ 512 KiB). The client reserves the exact stored size, PUTs the preview
-  and then the file straight to storage with exactly the presigned headers
-  and no Caper credentials, confirms (retrying while storage has not seen it
-  yet), and sends. Tiles keep the name, saving ("1.6 MB → 143 KB"), progress
-  and errors such as storage full in their hover text and accessible label,
-  with a local thumbnail the sent message keeps. Each tile has two round
-  corner buttons: Remove (X) top-right and Edit (pencil) diagonally opposite
-  bottom-left, 28 px targets (40 px in narrow layouts). While a file packs or
-  uploads, Remove's edge is a terracotta progress ring (an indeterminate arc
-  while preparing or confirming, still under reduced motion); a failed upload
-  keeps its error border and shows a centred round Retry. Spoilered files show
-  only a crossed-out eye over the obscured thumbnail. Clicking the picture or
-  the pencil (or the menu's Edit) of a file the editor can open (JPEG, PNG,
-  WebP, BMP and TIFF stills, not animated, and with FFmpeg, videos) opens the
-  attachment editor (`attachment_editor.rs`) viewing it, with no tool chosen:
-  the file as it will be sent (a video's still), zoomable like the media
-  viewer, and covered as recipients see it while marked as a spoiler. It is
-  one screen in every state: Close, the file name, Open in default app, Undo,
-  Redo, Reset and Done along the top; the picture in one place (choosing a
-  tool never moves or rescales an uncropped picture); a strip for the chosen
-  tool's options, which fade in; and the tool row Spoiler | Crop, Draw,
-  Text | Remove. A tool is chosen in place and clicking it again returns to
-  viewing; Spoiler toggles live, Remove removes the file and closes, Done
-  saves (or just closes with nothing changed), and Close or Escape discards.
-  Profile card files open the same way; a profile picture or space icon opens
-  on Crop without Spoiler or Remove. Other files' pencils open a menu with the
-  spoiler toggle and Remove attachment, and right-clicking a tile offers Edit
-  (when the editor can open it), the spoiler toggle and Remove attachment.
-  The editor offers crop, rotate left, draw and text with six colours, the
-  egui colour picker and a size slider, undo/redo (Ctrl+Z, Ctrl+Shift+Z,
-  Ctrl+Y). Saving cancels
-  the upload in flight and prepares the original again with the edit
-  (`attachment_edit.rs`): stills at native resolution, always re-encoded by
-  their source class with PNG as the fallback; videos always transcoded,
-  turned and cropped. Marks on videos need an FFmpeg with the `overlay` filter
-  and PNG input, which the bundled build lacks, so Draw and Text are
-  unavailable for videos there. An edit that cannot be applied fails with
-  "Couldn’t apply your edits." and nothing is uploaded. HEIC and AVIF are not
-  editable here (they do not decode). Channel, thread and profile composers attach copied files
-  and images pasted with Ctrl+V; profile composers' Attach menu also has
-  **Paste from clipboard**. Pasting works for native copied files
-  and images on Windows and X11/XWayland, and on Wayland compositors with the
-  data-control clipboard protocol (an image-only Ctrl+V, which egui-winit
-  swallows, is re-sent on key release). Channel, thread and profile composers have an Emoji button beside
-  the `:name:` shortcut.
-- Global two-person direct messages, including exact-username conversation
-  creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
-  replay. An independent account gateway feed presents local OS notifications
-  with sender avatars and click navigation while the app runs, including minimized.
-  Space/private-channel invitation taps refresh pending invitations and open
-  Accept/Decline review, never automatic acceptance, private history or voice.
-  New DM requests alert once without message content and open the existing
-  read-only request review; pending messages stay quiet until acceptance.
-  Quitting exits the app; there is no keep-running-in-tray behavior.
-- The space invite, private-channel grant and New direct message username
-  fields suggest people the app already has (known people minus members,
-  space members minus grantees, known people), ranked like `@` suggestions;
-  pending invitees stay listed as "Already invited". Rows, like `@` popup rows, show the avatar and display name with
-  `@username` beneath it. Clicking or Enter fills the exact username without
-  submitting; Up/Down move and Escape closes the list, not the dialog.
-- The channel/DM and thread reply composers suggest after `:` (emoji) and `@`
-  (people) in one popup; the message editor does not, as on web. Space channels
-  offer the open space's loaded members except you, then `@everyone`/`@here`.
-  DMs, self-notes included, offer the people you share a space or DM with
-  (`GET /api/people`, fetched when a DM opens); until that loads, only the
-  other participant. Names the API resolved in
-  `content.mentions` render as pills: egui background spans with square corners
-  rather than 4px rounded ones, including in thread replies and edited messages.
-  Messages that mention you get a terracotta tint with a 2px leading edge.
-  Clicking a person's pill, or Enter/Space on a focused pill, opens a card with
-  their avatar, name and `@username` from loaded data, Open conversation and
-  Close icons, and an inline DM composer in the channel composer's shell
-  (Attach, Emoji, Send; staged files with image thumbnails above it). Enter
-  sends (your own card says "You", with **Edit profile**). Close retains the per-person draft; populated cards resist
-  outside clicks, and sending prevents dismissal. Drafts survive dialogs until
-  logout. Only Send resolves the DM, prepares/uploads files and sends; success opens it,
-  while errors retain the draft and uncertain retries reuse the exact payload
-  and message UUID. Incoming requests require **Open conversation** and Accept
-  first. Mentions do not notify anyone.
-- Message requests: a DM from someone you share no space with waits under
-  "Message requests" (with a count, never unread dots or sounds) and opens
-  read-only with Accept, Decline or Block; your own pending requests say
-  "Waiting for @name to accept". Blocking (confirmed first) from a DM header,
-  a request or a message's actions hides that account's messages everywhere as
-  collapsed "⊘ N blocked messages — Show" runs, including thread panels; a
-  blocked DM replaces the composer with Unblock. Settings lists blocked
-  accounts and "Who can start a DM with you" (Anyone, People in my spaces, No
-  one new), saved on change and reverted if saving fails. Pinned-message lists
-  still show blocked authors' pins.
-- `@feedback` in place. The team names (`feedback`, `caper`, `admin`, `mod`
-  and the API's other reserved names) work everywhere. In every composer
-  (channels, threads, DMs, notes) a bare `@` lists `@feedback` ("Notify the
-  Caper team") first; a typed query lists people first and then the first
-  team name it starts. With a server
-  `feedback` entry, each such token renders as a pill without a profile card,
-  and "Caper team has been notified 🫡" sits under the message. Messages with
-  `author.admin` show a gold ADMIN badge. Accounts with `feedbackTeam` get a
-  **Feedback** row by the DMs that opens the inbox (`GET /api/feedback`,
-  refreshed on open, by Refresh and after a reply; older pages on demand).
-  Its terracotta count is the unarchived conversations waiting for a team
-  reply, not unread messages. Unread polling refreshes it; opening the inbox
-  does not clear it, and older servers omit it (zero).
-  The inbox shows reporter, "#channel · Space" or "DM · …", preview or
-  "Sent N files", age, and "Answered" (the team wrote last in the thread) or
-  "Waiting". A hover Archive button archives the report's whole thread for the team
-  (`PUT /api/feedback/archive`; it leaves the list at once, then the list
-  reloads, keeping any error). "Show archived" at the bottom lists archived
-  threads (`?archived=true`) under "Archived feedback", without a status and
-  with Restore ("Restore to the inbox"); "Back to feedback" returns. A report, or a `feedback` notification click,
-  opens the conversation by channel id at the message. Only a reported reply
-  opens its existing thread; top-level reports leave thread creation to you.
-  The inbox stays visible until the reported message is ready.
-  Without membership (`visitor: true`) the team takes part like a member
-  (replies, files, reactions, typing, pins, forwarding, and joining a visited
-  space channel's live call from its card above the channels or the narrow strip), but there is no member list,
-  read marker, join/leave, settings or notification menu. Back returns to
-  the inbox (or the conversation a notification interrupted). Conversations
-  the team member already belongs to open normally.
-- Notification controls govern phone push and local desktop notifications.
-  The space menu and each channel's options menu set
-  **Notifications** (Default, All messages, Only @mentions, Nothing) and
-  **Mute** (15 minutes, 1, 8 or 24 hours, or until turned back on); a channel
-  in a muted space says "Muted with the space". DM rows get a hover options
-  button to turn notifications off or mute the conversation; personal notes
-  get none. Muted spaces, channels and DMs are dimmed with a bell-slash, and a
-  muted DM shows no unread dot. **Settings… → Notifications → Notify me
-  about** sets the account level. Settings load after sign-in and when
-  Settings or a menu opens; changes apply at once and revert with an inline
-  error if saving fails.
-- Custom profile pictures and space icons: Edit profile and Manage space
-  (owners) show the picture in a frame with an edit badge on its corner. The
-  frame opens the native file dialog, or with a custom picture set a menu to
-  choose another or remove it; without one, your mascot holds up a
-  "change me!" sign. Regenerate and edit use matching badges on its bottom
-  corners; regeneration swaps the mascot without adding a progress row or
-  shifting the form. Profile names, mascot regeneration, picture removal,
-  **Apply crop**, and **Use picture** from history stay private until **Save
-  profile**. Preparing a photo is local; Save uploads it with draft completion
-  and commits the names and picture together. A static **Unsaved changes**
-  label marks edits; closing asks **Keep editing** or **Discard**, saving
-  holds the dialog open, and failures preserve the draft for retry. Space icon
-  edits still apply with **Done**. GIFs upload unchanged up to 5 MB and
-  1024 px, and bigger ones are shrunk to a square that fits (frames and timing kept);
-  other images become a 512 px square WebP; HEIC/AVIF are refused locally.
-  Pictures replace the mascot in every avatar and icons fill rail tiles, cached by
-  asset ID (≤ 128 px, 64 MiB of frames). GIFs animate; reduced motion shows the
-  first frame. `--fixture parity-pictures` (also `-profile`, `-space`) shows them.
-- Message reactions. Hovering or keyboard-focusing a reaction chip shows who
-  reacted (large emoji plus the shared summary wording); names load on demand
-  with history's read access and are cached per message reaction revision.
-- Experimental native voice: raw Google libwebrtc with platform audio devices,
-  Caper SFU offer/answer publication and subscription, voice roster, lease
-  snapshots, TURN refresh and replay-safe ICE restart/ACK. Browsing leaves the
-  active call running; explicit replacement, logout and access denial silence
-  locally. Mute/deafen and input/output selection use native ADM.
-- Voice in the channel list: your call's row grows in place into a green card
-  (status and timer on the row, then faces, Mute, Deafen and Leave), and other
-  live rows gain faces, names, the session timer and Join/Switch, in list order.
-  A click anywhere else on a card opens its chat; right-click or long-touch a
-  face (or "+N") for the full list with per-person volume (Shift+F10 on your
-  call's row opens it too). A call with no row in the listed space (another
-  space, a feedback visit) and a visited channel's live room sit above
-  Channels; collapsing Channels hides quiet rows only. Narrow windows' strip
-  shows the card's first five faces (four and "+N" beyond), with no speaker name.
-- Prejoin device discovery, saved device/output-volume preferences, per-person
-  local mute and 0–200% software playback gain, and aggregate connection
-  statistics. Participant mute survives microphone-track replacement and takes
-  effect locally even while signaling is waiting for HTTP.
-- Speaking rings on your own call's faces (call card, full list and narrow
-  strip), from the web
-  client's rule (32 ms RMS ≥ 0.004, 180 ms release, never while muted) applied
-  to your published microphone PCM and each subscription's decoded PCM.
-- Persisted 0–200% input gain and voice-contour strength, with on-device DPDFNet-8
-  HR denoising and RNNoise fallback. Account-enabled audio diagnostics show only
-  local numeric processing counters; ordinary connection details remain public.
-- Native playback of the web client's bundled interaction sounds; no network
-  audio fetch and no sounds in static fixtures.
-- Audio test, as on web: microphone and speaker pickers with 0–200% volumes; a
-  speaker test looping the join sound through the selected output's own ADM at
-  the live speaker volume until stopped or the dialog closes; explicit local
-  microphone recording (30 seconds maximum) with a live input meter, then
-  natural and enhanced playback (natural first, enhanced when it ends), a new
-  comparison after volume or enhancement changes, and silent-recording
-  detection. Samples stay in memory, never go to the API, and are discarded
-  when the test ends. During a recording, live microphone publication is
-  suspended; newer mute intent is retained.
+- Email sign-in and profile onboarding; no Guest/General fallback.
+- Bearer sessions in Windows Credential Manager or the Linux Secret Service,
+  isolated by canonical API origin. If the vault is unavailable the session
+  stays in memory only and the UI warns; there is no plaintext fallback.
+  Logout revokes the server session and removes the OS credential.
+- Spaces, channels (including private), owner space/channel/member management,
+  confirmed leave-space, paginated presence, typing, history pagination,
+  last-channel restoration, and hover prefetch with access rechecks.
+- Idempotent HTTP sends: a timeout keeps the same client message UUID for
+  retry; a matching gateway delivery confirms a pending write. The unified
+  `/api/chat/events` gateway provides ordered replay, deduplication, gap
+  resync, heartbeats and reconnect status.
+- Resizable channel (default 280px) and Members (220–440px) sidebars: drag,
+  Left/Right/Home/End, double-click to reset; widths save locally.
+- Ctrl/Cmd + Plus, Minus or 0 changes or resets interface zoom.
+- Invite links: owners create (expiry, use limit, optional landing channel),
+  copy and revoke them in Manage space; anyone can join from **Join with invite
+  link**. The `caper://` handler brings the existing window forward. Windows
+  open maximized.
+- Direct messages, message requests (Accept/Decline/Block), blocking with
+  collapsed "N blocked messages" runs, and "Who can start a DM with you".
+- `:` emoji and `@` people suggestions in channel, DM and thread composers;
+  mention pills open a profile card with an inline DM composer.
+- Reactions (hover cards name who reacted), pins, forwarding, threads.
+- `@feedback` and other reserved team names; `feedbackTeam` accounts get a
+  **Feedback** inbox (archive/restore, visits with `visitor: true`).
+- Notifications: per-space/channel/DM levels and mutes, and local OS
+  notifications from the account gateway while the app runs (including
+  minimized). Quitting exits; there is no tray mode.
+- Custom profile pictures and space icons (GIFs up to 5 MB/1024 px unchanged,
+  larger ones shrunk; others become 512 px WebP; HEIC/AVIF refused).
+- Attachments when the server has storage configured: up to 10 files per
+  message from the picker, drag and drop, or Ctrl+V. The picker is Win32 on
+  Windows and the XDG desktop portal on Linux (needs a file-chooser backend
+  such as xdg-desktop-portal-gtk, -gnome or -kde). Clipboard paste of files and
+  images works on Windows, X11/XWayland, and Wayland compositors with the
+  data-control protocol.
+- On-device compression with the server's `GET /api/assets/usage`
+  `compression` settings (rules in `docs/media.md`): lossless stills as
+  indexed PNG or lossless WebP (libwebp), photos as AVIF (rav1e) or WebP,
+  videos as H.264/AAC MP4 through the bundled FFmpeg (Windows tries Media
+  Foundation's hardware encoder first, then x264). Originals have metadata
+  stripped losslessly. Without FFmpeg, videos upload as originals.
+- Attachment editor (`attachment_editor.rs`, `attachment_edit.rs`): spoiler,
+  crop, rotate, draw and text with undo/redo. Draw and Text are unavailable for
+  videos because the bundled FFmpeg lacks the `overlay` filter. HEIC/AVIF are
+  not editable.
+- Media viewer (`viewer.rs`) and video player (`player.rs`: FFmpeg decode,
+  rodio audio, signed URLs streamed through the loopback range proxy
+  `media_proxy.rs`). AVIF/HEIC decode through the bundled FFmpeg. Signed URLs
+  refresh through `POST /api/assets/urls` before expiry and after a 403/404.
+- Link preview cards (`embeds.rs`). YouTube/Vimeo/Twitch Play loads Caper's
+  `play` page (HTTPS from `embed.caper.chat` or `embed.staging.caper.chat`
+  only) in a native web view over the card (`web_player.rs`): WebView2 in
+  process on Windows; on Linux the separate `caper-web-player` helper
+  (`web-player/`) runs WebKitGTK so `caper-desktop` never links GTK. On X11 the
+  view is a child window; on Wayland it opens a small "Caper — YouTube" window.
+  The view has ephemeral storage, no app bridge, and opens other links in the
+  system browser. Without the engine the card names what to install
+  (`libwebkit2gtk-4.1-0` or the WebView2 runtime). YouTube on Linux also needs
+  `gstreamer1.0-libav` and `gstreamer1.0-plugins-bad` (recommended by the
+  `.deb`).
+- Voice messages (`voice_note.rs`): hands-free recording up to 10:00 through
+  a private libwebrtc device module and the call's microphone processing,
+  encoded as AAC/MP4 with the bundled FFmpeg (16 kHz WAV without it), staged
+  as a chip and sent with the next message, or sent at once with **Settings →
+  Voice messages → Send voice messages as soon as I stop recording**. Players
+  show waveforms and transcripts.
+- Updates (release builds only): checks 20 seconds after launch and every
+  minute, **Settings… → Updates → Check for updates**, an **Update available**
+  button and modal with release notes, and restart-to-update (the `.deb` offers
+  a download instead). **Settings… → Updates → What's new** shows release
+  highlights for the running source revision, which builds take from
+  `CAPER_RELEASE_SHA` (40 lowercase hex characters) or the current Git HEAD.
+- Experimental native voice (raw Google libwebrtc, see
+  [voice-spike](voice-spike/README.md)): Cloudflare SFU publish/subscribe,
+  roster, lease snapshots, TURN refresh and replay-safe ICE restart. Browsing
+  keeps the call running. Voice in the channel list follows the shared layout
+  in [apps/native](../README.md#layout-rules).
+- Audio: device selection and saved preferences, 0–200% input gain and
+  per-person playback gain, local mute, speaking rings, voice-contour strength,
+  DPDFNet-8 HR denoising with RNNoise fallback, an Audio test (speaker test and
+  up to 30 seconds of local natural/enhanced microphone comparison, kept in
+  memory only), connection statistics, and the web's bundled interaction sounds.
 
 The account bearer is sent only in the HTTP/WebSocket `Authorization` header.
-The short-lived chat capability is separate, held only in memory, and sent only
-in `x-caper-chat-token` for message writes. Neither appears in URLs or logs.
-HTTP redirects are disabled, so credentials cannot be forwarded to another
-origin.
+The short-lived chat capability is held only in memory and sent only in
+`x-caper-chat-token` for message writes. Neither appears in URLs or logs.
+HTTP redirects are disabled.
 
 ## Build dependencies
 
 The workspace pins Rust **1.94.0** and eframe **0.33.3** in its independent
 `Cargo.lock`. Builds default to `CARGO_BUILD_JOBS=2` for 4 GB runners.
 
-Ubuntu 24.04 CI/build host:
+Ubuntu 24.04 build host:
 
 ```sh
 # clang-21/lld-21 are not in the stock Noble repositories. Configure the
@@ -432,132 +136,53 @@ Outputs are unsigned:
 - `dist/Caper-windows-x64.zip` (self-update payload / optional portable archive)
 
 Windows Setup installs to `%LOCALAPPDATA%\Programs\Caper\app`, creates Start
-and desktop shortcuts, and registers an uninstaller in Installed apps. Opening
-Setup immediately shows installation progress, then closes and opens Caper;
-there are no Welcome/Next/Finish clicks. Silent `/S` installs do not launch Caper.
-Neither installation nor launch requires a terminal or administrator access. The updater
-replaces only `app`, preserving the uninstaller and shortcuts. Close Caper before
-installing or uninstalling. CI runs `test-installer.ps1` on a clean Windows host
-to check the PE GUI subsystem, install/reinstall, file hashes, shortcuts and removal.
-In CI it first clears an install left by a run cancelled mid-test; run locally,
-it refuses to touch an existing install.
+and desktop shortcuts, registers an uninstaller in Installed apps, then opens
+Caper (silent `/S` installs do not launch it). It needs no administrator access.
+The updater replaces only `app`. `test-installer.ps1` checks the GUI subsystem,
+install/reinstall, file hashes, shortcuts and removal; run locally, it refuses
+to touch an existing install.
 
-The `.deb` is built against Ubuntu 24.04 (glibc 2.39) and declares native
-X11/Wayland, D-Bus, PulseAudio/ALSA, Vulkan-or-GL and WebKitGTK
-(`libwebkit2gtk-4.1-0`) runtime dependencies. It is not a static or
-distribution-independent Linux binary. Linux session persistence also requires
-an unlocked Secret Service provider such as GNOME Keyring. Only the
-`caper-web-player` helper (beside the app in the archive,
+The `.deb` targets Ubuntu 24.04 (glibc 2.39) and depends on X11/Wayland, D-Bus,
+PulseAudio/ALSA, Vulkan-or-GL and WebKitGTK (`libwebkit2gtk-4.1-0`). Session
+persistence needs an unlocked Secret Service provider such as GNOME Keyring.
+Only the `caper-web-player` helper (beside the app in the archive,
 `/usr/lib/caper-desktop/` in the `.deb`) links GTK and WebKitGTK; `build.sh`
-fails if `caper-desktop` does, and the unpacked app starts without them (video
-cards then offer the browser).
+fails if `caper-desktop` does.
 
-Run the unpacked binary directly, or install the Debian package with
-`sudo apt install ./Caper-linux-x64.deb`. The production endpoint is
-`https://caper.chat`; development may use `--api-url http://localhost:PORT` or
-`CAPER_API_URL`. Plain HTTP is rejected for non-loopback hosts.
+Linux packages carry the native ONNX Runtime and its licenses. Windows also
+stages the four Microsoft-signed app-local VC++ DLLs that ONNX Runtime imports,
+taken from the active Visual Studio toolchain (not hash-pinned).
+
+Run the unpacked binary, or `sudo apt install ./Caper-linux-x64.deb`. The
+production endpoint is `https://caper.chat`; development may use
+`--api-url http://localhost:PORT` or `CAPER_API_URL`. Plain HTTP is rejected
+for non-loopback hosts.
+
+## Audio processing
+
+Live input and local comparison run gain → bundled DPDFNet-8 HR (or RNNoise) →
+voice contour. Natural replay is post-gain/post-denoise; enhanced replay adds
+the contour. The model and native ONNX Runtime 1.23.2 match the web assets. The
+contour approximates the browser filters/compressor, not bit-for-bit Web Audio.
+Playback gain uses WebRTC's software track volume, not system volume. A missing
+saved device fails explicitly rather than opening another microphone.
 
 ## Windows microphone access and firewall prompts
 
-Windows capture uses WebRTC's WASAPI **shared mode**. A Discord call does not
-normally prevent Caper from using the same microphone. Caper cannot bypass
-Windows microphone privacy settings or another application's exclusive access.
-**System default** consistently resolves the normal Windows input/output
-default, not WebRTC's implicit communications default. Failed startup closes
-the capture gate and reports the failing stage.
+Windows capture uses WebRTC's WASAPI **shared mode**, so another app's call
+does not normally block the microphone. Caper cannot bypass Windows microphone
+privacy settings or another application's exclusive access. **System default**
+resolves the normal Windows default device, not the communications default.
 
 Voice and local audio tests open WebRTC sockets and can trigger a Windows
-Firewall prompt. This is separate from microphone permission; Caper does not
-automatically change firewall rules or suppress security prompts. The unsigned
-Windows executable can also show **Publisher: Unknown**. See the
-[Windows audio and firewall runbook](../../../docs/media.md#windows-microphone-access-and-firewall-prompts)
-for troubleshooting, network-profile guidance, and Windows acceptance gaps.
+Firewall prompt; Caper does not change firewall rules. The unsigned executable
+can show **Publisher: Unknown**. See the
+[Windows audio and firewall runbook](../../../docs/media.md#windows-microphone-access-and-firewall-prompts).
 
-## Calling and known parity gaps
+Not supported: camera, screen sharing, notifications after quit, and
+Windows/Linux code signing.
 
-Voice is **experimental**, not live/physical-device accepted. Source and local
-tests exercise signaling, cancellation and native ICE gathering; they do not
-prove two-client SFU/TURN or actual mic/speaker quality. Playback gain uses a
-narrow bridge to WebRTC's software track volume, not system volume. Independent
-device enumeration does not start capture or alter an active call's ADM. A
-missing saved device fails explicitly rather than silently opening another mic.
-Explicit/default input and output selection applies synchronously to the local
-call, including while signaling is pending. The Linux pinned Pulse ADM exposes
-one dynamic default pseudo-device in the orb, not two explicit monitor GUIDs:
-the two-null-sink regression verifies A→B by changing the private server's default
-and resetting the input, not by selecting two explicit GUIDs.
-
-Mute, route changes, comparison, and zero gain fence publication synchronously.
-Reopening live capture replaces the private ADM, peer pair, and decoder before
-accepting a new publication epoch, then resets denoiser/contour state. Local
-delayed-PCM tests cover that boundary; hardware-driver buffering still requires
-physical-device validation.
-
-Live input and local comparison use gain → bundled DPDFNet-8 HR (or RNNoise)
-→ voice contour. Natural replay is post-gain/post-denoise; enhanced replay adds
-the live contour. The model and native ONNX Runtime 1.23.2 are pinned to the web
-assets/runtime version. FFT/OLA and recurrent-state reference tests pass; the
-contour approximates the browser filters/compressor, not bit-for-bit Web Audio.
-Private null-device speech tests exercise actual capture and positive decoded
-local-peer PCM, replay, and stop. They do not establish physical quality or
-remote SFU reception. Pure sine capture was suppressed while speech succeeded;
-the suppression mechanism is not established.
-
-Linux packages carry the checked native runtime and licenses. Windows also
-stages the four Microsoft-signed app-local VC++ DLLs imported by ORT; these come
-from the active Visual Studio toolchain and are not immutable hash-pinned. Windows
-package execution remains an exact-head CI/platform acceptance requirement.
-No camera, screen sharing, notifications after quit, or Windows/Linux code signing.
-IME/accessibility and sustained multi-network voice need separate acceptance.
-The `.deb` and archives are unsigned release artifacts, not installers.
-
-An earlier opt-in, ignored live smoke used two locally muted/deafened NativeSessions
-with a private PulseAudio null sink/monitor. On 2026-09-24 both published and
-reached connected transports, but the combined snapshot/reconcile step returned HTTP 502 on
-one run and later `unauthorized` on another; two-way subscription/RTP was not
-verified. This is not evidence of physical capture or listening. Do not run the
-public smoke without isolated virtual devices and explicit authorization.
-
-A separate **local-only** connected-peer test found that ADM disabled plus a
-disabled device track emitted 0 RTP bytes; enabling ADM without the track also
-emitted 0, while a virtual null-source input and synthetic zero-PCM track each
-emitted RTP. Production starts with synthetic silence, sends the pending local
-SDP immediately after setting the offer (like the web client), and only opens
-the selected device after the current gateway and roster are ready. Cancel
-closes the local peer and disables ADM before remote leave finishes.
-
-The owned-session-only live smoke was rerun on 2026-09-24 at 04:39:57–04:40:12
-UTC with private virtual devices. Both peers connected and subscribed, but
-the ten-second receive check failed: A sent/received **451/0 bytes**, B
-**1396/0 bytes**. No unrelated roster was observed. This test fed a silent null
-source, not speech, and checked aggregate RTP bytes rather than decoded audio.
-It is an unresolved silent-transport observation, not proof that normal speech
-cannot be received. Silence handling versus a relay/receive fault was not
-distinguished. The failed process closed local peers;
-remote leave completion was not independently confirmed (server leases expire).
-The ignored test now awaits remote leave before asserting its RTP result and
-reports safe direction/track counts. It has not been rerun with that diagnostic.
-
-A physical microphone is not required for meaningful automated audio tests.
-The private null-device regression injects locally generated speech into the
-virtual microphone, requires nonzero captured and denoised PCM, and checks that
-a second local peer decodes it. On September 24, a separately authorized,
-20-second-bounded live test also passed **two-way decoded speech through the
-public SFU**, using two owned native sessions and generated virtual-microphone
-input. Both remote leaves were acknowledged and both clients disappeared from
-General. See [the acceptance record](../../../docs/media.md#native-generated-speech-acceptance)
-for exact boundaries and results; physical devices and sustained/TURN calls
-remain unverified.
-
-A non-ignored, local-only native test receives actual RTP after adding a
-subscription to an existing transport and after ICE renewal. It caught a separate
-binding-default bug that changed receive transceivers to inactive during renewal;
-restart offers now retain existing receive directions without adding an unused
-receiver to a publish-only session. This does **not** diagnose or resolve the
-silent live-test observation above. Further public tests require explicit
-authorization and the same isolation controls.
-
-## Validation
+## Checks
 
 ```sh
 cargo fmt --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop -- --check
@@ -568,118 +193,53 @@ cargo test --manifest-path apps/native/desktop/Cargo.toml -p caper-web-player --
 cargo clippy --manifest-path apps/native/desktop/Cargo.toml -p caper-web-player --features engine --locked --all-targets --no-deps -- -D warnings
 ```
 
-For deterministic visual inspection without live accounts, launch
-`caper-desktop --fixture login` or `--fixture parity-channel`. These are
-explicitly labeled static previews; the chat fixture at loopback port 3001
-does not provide live SFU media. Use normal `--api-url` for networked chat tests.
-`parity-new-messages` previews a retained channel unread boundary between two
-messages by the same author, including the divider's grouping break.
-`parity-voice-joining` and `parity-voice-connected` preview your call's card in
-#general's place in the list (Cancel/Leave) and the audio bar without starting a
-media transport; `parity-voice-speaking` adds fixed speaking rings for you and
-Maya. `parity-voice-elsewhere` previews a call in another space, whose card sits
-above Channels. `parity-voice-crowded` (and `-narrow`) previews a twelve-person call
-folding into `+3` and four other live rooms' cards in list order;
-`parity-voice-list` (and `-narrow`) opens the full list at Maya's audio
-controls; `parity-voice-strip-narrow` and `parity-voice-join-narrow` preview the
-strip under a narrow chat header in and outside a call.
-`parity-voice-error` and `parity-audio-error` preview capture failure guidance
-above the account bar and in the Audio test dialog without starting capture or a
-transport.
-`parity-direct` and `parity-direct-new` preview a two-person DM and its
-exact-username dialog without a live account or notification provider.
-`parity-direct-emoji` checks bundled Twemoji in display names (pepper, skin-tone
-joiner sequence, flag, and a truncated name), including the self row, account
-bar, conversation heading, message authors and composer placeholder. These
-labels do not rely on installed system emoji fonts. Linux fixture rendering
-and headless tests cover the shared desktop path; Windows device validation
-remains separate.
-`parity-mentions` previews mention pills, an unresolved `@name`, and rows that
-mention you; click `@alex` or `@fixture_owner` for the cards, or type `@` in its
-composer for space suggestions.
-`parity-direct-no-spaces` previews first-space setup without DM navigation,
-even when the account has an existing conversation.
-`parity-attachments` previews ready, processing (with poster and percent, and
-without a preview), failed, animated ("GIF") and removed files, file/audio
-cards and upload chips from synthetic local images; it never fetches media or
-uploads.
-`parity-voice-messages` previews labelled voice messages with a clamped ready
-transcript, a pending one, one without transcript or waveform, and an ordinary
-audio card; `parity-voice-recording` adds the recording bar at a frozen 0:07.
-Neither plays, uploads nor opens a microphone. `parity-voice-profile` opens
-Alex's profile card over them with typed text, and `-recording` its bar.
-`parity-voice-staged` stages an uploaded voice chip beside a photo under typed
-text, above a message with text, a photo and a voice message.
-`parity-thread-attachments` previews the same chips inside a thread;
-`parity-thread-attachments-ready` previews an attachment-only reply, and
-`parity-thread-attachments-rejected` previews a rejected reply with Edit/Dismiss.
-Append `-narrow` to these thread fixtures for a 390px-wide window. These are
-labelled local previews, not live storage or upload validation.
-`parity-embeds` previews link preview cards (X, YouTube, an article with a
-thumbnail, a gallery) and the composer's preview from labelled local data.
-Its player's Play points at `embed.caper.chat`; debug builds started with
-`CAPER_DEV_PLAY_ORIGIN=http://127.0.0.1:PORT` (loopback HTTP only) load `play`
-pages from a stand-in server on that port instead. Release builds ignore it.
-`CAPER_WEB_PLAYER` names a helper outside the usual places.
-`parity-attachment-editor` opens the attachment editor on a synthetic picture
-with a labelled line and text (`-crop` and `-text` open those tools, `-narrow`
-a 390px-wide window); `-chip` shows the composer file's Edit button, and
-`-preview` opens it viewing, with no tool chosen.
-`parity-requests` previews an open incoming request and the requests list;
-`parity-requests-outgoing` an unaccepted request you sent; `parity-blocked`
-Maya's #general messages collapsed after blocking her; `parity-blocked-dm` the
-blocked-DM composer.
-`parity-muted` previews a muted space in the rail, a muted channel, a muted
-DM with unread messages (no dot) and a DM with notifications off (still
-dotted); it sends no notification requests.
-`parity-reactions` adds reaction chips whose hover cards name the labelled
-fixture members locally instead of requesting who reacted.
-`parity-feedback` previews the team inbox with a 12-conversation waiting
-badge; `parity-feedback-zero` previews the same inbox without a badge.
-`parity-thread` opens a thread with an admin parent, reply count and one reply;
-`parity-thread-loading` shows its loading state. Check the 300px minimum panel,
-long channel names, multiline drafts and the message-actions menu. The reply
-editor grows to the same 320px/40%-of-window cap as web, then scrolls, leaving
-the broadcast choice, emoji picker and Send accessible. Narrow windows use a
-back arrow; side-by-side threads use Close. These Linux previews exercise the
-shared Rust layout, not Windows display scaling or a live send.
-`parity-opening` and `parity-opening-narrow` preview pending navigation with
-retained history and a labelled fixture draft; `parity-opening-error` previews
-retry, and `parity-loading` previews the initial history skeleton.
-These previews do not start a navigation request or a media transport.
-`parity-settings`, `parity-settings-checking`, `parity-settings-current`,
-`parity-settings-deferred`, and `parity-settings-offline` preview the update
-control and check feedback. These are static states: their check buttons are
-disabled and no updater process runs.
-`parity-update` and `parity-update-narrow` preview long, version-grouped release
-notes under **What’s new**, collapsed by default, with a fixed restart/Later footer.
-`parity-update-download` shows the
-manual installer fallback; `parity-update-error` and `parity-update-incomplete`
-show a previous install failure and unavailable older history. These fixtures never install
-updates or start update checks.
-`parity-whats-new` and `parity-whats-new-narrow` preview labeled simulated
-post-update highlights with newest releases first and a fixed Done footer.
-`parity-whats-new-loading`, `parity-whats-new-empty`, and
-`parity-whats-new-error` preview the manual history states. None fetches release
-metadata or changes real acknowledgments.
+## Fixture previews
 
-After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
-vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.
+`caper-desktop --fixture <name>` opens a labelled static preview that makes no
+network requests, starts no media transport or updater, and never uploads.
+Use `--api-url` with the loopback parity fixture for networked chat. Fixtures:
 
-Static desktop icons use the main `apps/web/public/caper-face.svg` artwork.
-With ImageMagick 7 and librsvg installed, run
-`node scripts/generate-favicons.mjs` from the repository root to regenerate the
-web fallback PNGs, Linux SVG, desktop fallback PNG, multi-size Windows ICO,
-and macOS AppIcon PNGs. Use
-`node scripts/generate-favicons.mjs --check` to detect asset drift without writes.
-The executable, installer, and uninstaller all use that ICO; Start and desktop
-shortcuts use the executable's icon. Linux packages the same main SVG under
-`hicolor/scalable/apps/caper.svg`; macOS uses matching transparent PNGs from
-16 to 1024px. Runtime window icons also stay on the original green mascot;
-wordmarks also stay original, and daily characters rotate only in file-drop
-illustrations. The opaque iOS icon is unchanged.
-Linux uses `app_id=caper` to match `caper.desktop` and its `Icon=caper` lookup;
-the app does not write per-user icon overrides.
-After installing an updated Windows build, Search may retain a cached icon;
-sign out and back in before checking again. Asset checks in Linux do not verify
-Windows Search, macOS Finder/Dock or pinned-shortcut cache behavior.
+- Sign-in and chat: `login`, `parity-channel`, `parity-new-messages`,
+  `parity-mentions`, `parity-reactions`, `parity-opening`,
+  `parity-opening-narrow`, `parity-opening-error`, `parity-loading`.
+- Voice: `parity-voice-joining`, `parity-voice-connected`,
+  `parity-voice-speaking`, `parity-voice-elsewhere`, `parity-voice-crowded`
+  (and `-narrow`), `parity-voice-list` (and `-narrow`),
+  `parity-voice-strip-narrow`, `parity-voice-join-narrow`,
+  `parity-voice-error`, `parity-audio-error`.
+- Direct messages: `parity-direct`, `parity-direct-new`, `parity-direct-emoji`,
+  `parity-direct-no-spaces`, `parity-requests`, `parity-requests-outgoing`,
+  `parity-blocked`, `parity-blocked-dm`, `parity-muted`.
+- Files and media: `parity-attachments`, `parity-pictures` (and `-profile`,
+  `-space`), `parity-embeds`, `parity-attachment-editor` (and `-crop`, `-text`,
+  `-narrow`, `-chip`, `-preview`), `parity-voice-messages`,
+  `parity-voice-recording`, `parity-voice-profile` (and `-recording`),
+  `parity-voice-staged`.
+- Threads: `parity-thread`, `parity-thread-loading`,
+  `parity-thread-attachments`, `parity-thread-attachments-ready`,
+  `parity-thread-attachments-rejected` (append `-narrow` for 390px).
+- Feedback: `parity-feedback`, `parity-feedback-zero`.
+- Updates: `parity-settings`, `parity-settings-checking`,
+  `parity-settings-current`, `parity-settings-deferred`,
+  `parity-settings-offline`, `parity-update`, `parity-update-narrow`,
+  `parity-update-download`, `parity-update-error`, `parity-update-incomplete`,
+  `parity-whats-new`, `parity-whats-new-narrow`, `parity-whats-new-loading`,
+  `parity-whats-new-empty`, `parity-whats-new-error`.
+
+Debug builds started with `CAPER_DEV_PLAY_ORIGIN=http://127.0.0.1:PORT`
+(loopback HTTP only) load `play` pages from a stand-in server; release builds
+ignore it. `CAPER_WEB_PLAYER` names a helper outside the usual places.
+
+## Icons
+
+After `npm ci`, `node scripts/native-icons.mjs --check` verifies the bundled
+vectors match the web client's pinned Lucide package; omit `--check` to
+regenerate.
+
+Static desktop icons use `apps/web/public/caper-face.svg`. With ImageMagick 7
+and librsvg installed, `node scripts/generate-favicons.mjs` regenerates the web
+fallback PNGs, Linux SVG, desktop fallback PNG, multi-size Windows ICO, and
+macOS AppIcon PNGs (`--check` detects drift without writing). The executable,
+installer and uninstaller use that ICO. Linux packages the SVG as
+`hicolor/scalable/apps/caper.svg` and uses `app_id=caper` to match
+`caper.desktop` and `Icon=caper`.

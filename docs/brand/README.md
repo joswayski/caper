@@ -10,11 +10,11 @@ Canonical colors: blackout `#0C0D0F`, surface `#151719`, border `#34383B`, text 
 
 Thread unread indicators use the existing gold `#E4C76A` (`--pin-gold`) for both the dot and label, distinct from the terracotta reply count. This does not change channel or DM unread colors.
 
-Source: images supplied by Jose Valerio in the browser-media implementation thread, September 6, 2026.
+Source: images supplied by Jose Valerio.
 
 ## Echo mark (saved for later, not in the product)
 
-A candidate mark for caper.chat, saved on October 11, 2026 for possible future use. No client uses it yet; the web, Android, Apple and desktop apps still use the wordmark and character icons. Two concentric c's (caper, chat) read as an echo, a voice carrying outward, around the Caper character. [Overview sheet](echo/echo-sheet.png).
+A candidate mark for caper.chat, kept for possible future use. No client uses it yet; the web, Android, Apple and desktop apps still use the wordmark and character icons. Two concentric c's (caper, chat) read as an echo, a voice carrying outward, around the Caper character. [Overview sheet](echo/echo-sheet.png).
 
 - [`echo.svg`](echo/echo.svg): primary, on dark backgrounds.
 - [`echo-plain.svg`](echo/echo-plain.svg): the caper without its face, where the mark should be quieter.

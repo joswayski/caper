@@ -6,21 +6,21 @@ SHA-256: `7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631`.
 Size: 14,857,107 bytes. Reproduce with `node scripts/vendor-dpdfnet.mjs 8`
 (Python `onnx` required). Metadata is exported from this model.
 
-The ONNX runtime, DSP and worklet are vendored alongside the model. It uses 48 kHz,
-960-point FFT, 480-sample hops, Vorbis window, normalization initialization and
-bounded-backlog bypass when the device cannot sustain real-time inference. The
-fallback tries DPDFNet-2 HR, then RNNoise, with browser suppression during runtime transitions.
-Voice-page preparation initializes one unused worker
-for exclusive handoff to microphone capture. No paid API or inference service.
-
-Asset version v2 restores the intact ONNX Runtime 1.23.2 WASM binary after the v1
-relocation corrupted it. The model and DSP are unchanged. The new directory avoids
-reusing immutable cached v1 responses. Runtime WASM: 11,905,541 bytes; SHA-256
+The ONNX Runtime 1.23.2 WASM, DSP and worklet are vendored alongside the model.
+Runtime WASM: 11,905,541 bytes; SHA-256
 `45eaee27761ad883742a8d4b8fce1538d60ce43b51adf1726fafccc59b8c1a15`.
-Use binary-safe copies when moving WASM or ONNX files; never round-trip through text.
+Use binary-safe copies when moving WASM or ONNX files; never round-trip through
+text. Asset directories are immutable once served: a changed file gets a new
+directory version.
 
-DPDFNet-8 is the preferred microphone filter. Check its active status after joining.
-Startup failure retries once, then tries DPDFNet-2 HR and RNNoise before allowing publication;
-runtime failure/overload keeps tracks live while trying the same recovery order.
-Each engine has one error retry per capture; sustained overload skips retries.
-See `../dpdfnet2-v1/README.md` for the smaller model. Healthy captures stay on 8 HR.
+Processing uses 48 kHz, a 960-point FFT, 480-sample hops, a Vorbis window,
+normalization initialization, and bounded-backlog bypass when the device cannot
+sustain real-time inference. Voice-page preparation initializes one unused
+worker for exclusive handoff to microphone capture. No paid API or inference
+service.
+
+DPDFNet-8 is the preferred microphone filter. On startup failure, runtime
+failure or overload it falls back to DPDFNet-2 HR (`../dpdfnet2-v1/`), then
+RNNoise, with browser suppression during transitions; startup fallbacks finish
+before publication, runtime ones keep tracks live. Each engine gets one error
+retry per capture; sustained overload skips retries.
