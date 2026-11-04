@@ -73,6 +73,31 @@ test("empty threads show the parent and empty state without a zero-reply divider
   expect(markup).not.toContain("0 replies");
 });
 
+test("deleted roots and replies leave no rows while surviving replies stay visible", () => {
+  const deletedAt = "2026-10-08T08:00:00Z";
+  const reply: ChatMessage = {
+    ...root,
+    id: "reply",
+    clientMessageId: "reply-client",
+    seq: "2",
+    threadRootId: root.id,
+    content: { version: 1, type: "text", text: "Surviving reply" },
+  };
+  const deletedRoot = { ...root, deletedAt };
+  const deletedReply = {
+    ...reply,
+    id: "deleted-reply",
+    deletedAt,
+    content: { ...reply.content, text: "Deleted reply" },
+  };
+  const markup = render([deletedRoot, deletedReply, reply]);
+  expect(markup).not.toContain("Thread parent");
+  expect(markup).not.toContain("chat-thread-parent");
+  expect(markup).not.toContain("Deleted reply");
+  expect(markup).toContain("Surviving reply");
+  expect(render([deletedRoot, deletedReply])).toContain("No replies yet.");
+});
+
 test.each([
   [1, "1 reply"],
   [3, "3 replies"],

@@ -4999,7 +4999,7 @@ private struct NativeThreadView: View {
                     let replyRows = entries(threadReplies)
                     let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID })
                     // The root's reactions grow the thread as well as its replies'.
-                    let recentRows: [TimelineEntry] = (root.map { entries([$0]) } ?? []) + replyRows.suffix(TimelinePin.recentRows)
+                    let recentRows: [TimelineEntry] = (root.flatMap { $0.isDeleted ? nil : entries([$0]) } ?? []) + replyRows.suffix(TimelinePin.recentRows)
                     let threadPending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == chat.threadRootID ? $0 : nil }
                     let _ = arrivals.observe("thread", key: chat.threadRootID ?? "",
                                              ids: chat.threadMessages.map(\.clientMessageId) + (threadPending.map { [$0.id] } ?? []),
@@ -5007,7 +5007,7 @@ private struct NativeThreadView: View {
                     LazyVStack(spacing: 0) {
                         let grouping = MessageGrouping.layout(replyRows, inThread: true, pending: threadPending, author: chat.currentAuthor)
                         if let root {
-                            threadEntries(entries([root]))
+                            if !root.isDeleted { threadEntries(entries([root])) }
                             if let summary = root.thread, summary.replyCount > 0 {
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).padding(12)
                             }
@@ -7887,51 +7887,55 @@ private struct NativeReplyContext: View {
         let impulse = 1 + CGFloat((seed >> 16) & 255) / 255 * 0.4
         let limit = 5 + CGFloat(seed >> 24) / 255 * 2
         let speedLimit = limit * 16
-        let canExpand = !hidden && (expanded || fullHeight > collapsedHeight + 1)
+        let canExpand = !hidden && reference.deleted != true && (expanded || fullHeight > collapsedHeight + 1)
         VStack(alignment: .leading, spacing: 0) {
-            Button { Task { _ = await chat.goToReply(reference) } } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        if hidden { Text("Blocked message").lineLimit(1) }
-                        else {
-                            Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId, picture: reference.author.avatarPicture)
-                            Text(reference.author.name).fontWeight(.bold).lineLimit(1)
-                            if reference.hasAttachments && reference.deleted != true { CaperIcon(name: reference.hasVoice ? "mic" : "paperclip", size: 13) }
+            let source = VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    if hidden { Text("Blocked message").lineLimit(1) }
+                    else {
+                        Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId, picture: reference.author.avatarPicture)
+                        Text(reference.author.name).fontWeight(.bold).lineLimit(1)
+                        if reference.hasAttachments && reference.deleted != true { CaperIcon(name: reference.hasVoice ? "mic" : "paperclip", size: 13) }
+                    }
+                    Spacer(minLength: 4)
+                    if reference.deleted != true { Text("View original").font(CaperTheme.font(11)).fixedSize() }
+                }.frame(minHeight: 20)
+                if !hidden {
+                    Text(excerpt).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if !expanded { collapsedHeight = $0 } }
+                        .background {
+                            Text(excerpt).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading).hidden().accessibilityHidden(true)
+                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
                         }
-                        Spacer(minLength: 4)
-                        Text("View original").font(CaperTheme.font(11)).fixedSize()
-                    }.frame(minHeight: 20)
-                    if !hidden {
-                        Text(excerpt).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if !expanded { collapsedHeight = $0 } }
-                            .background {
-                                Text(excerpt).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
-                                    .frame(maxWidth: .infinity, alignment: .leading).hidden().accessibilityHidden(true)
-                                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
+                    if reference.deleted != true, let attachments = reference.attachments, !attachments.isEmpty {
+                        HStack(spacing: 4) {
+                            ForEach(Array(attachments.prefix(3))) { attachment in
+                                ReplyAttachmentThumbnail(attachment: attachment, chat: chat)
                             }
-                        if reference.deleted != true, let attachments = reference.attachments, !attachments.isEmpty {
-                            HStack(spacing: 4) {
-                                ForEach(Array(attachments.prefix(3))) { attachment in
-                                    ReplyAttachmentThumbnail(attachment: attachment, chat: chat)
-                                }
-                                if attachments.count > 3 {
-                                    Text("+\(attachments.count - 3)").font(CaperTheme.font(12))
-                                        .frame(width: 44, height: 44)
-                                }
+                            if attachments.count > 3 {
+                                Text("+\(attachments.count - 3)").font(CaperTheme.font(12))
+                                    .frame(width: 44, height: 44)
                             }
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                #if os(iOS)
-                .frame(minHeight: 44, alignment: .topLeading)
-                #else
-                .frame(minHeight: 24, alignment: .topLeading)
-                #endif
-            }.buttonStyle(.plain)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            #if os(iOS)
+            .frame(minHeight: 44, alignment: .topLeading)
+            #else
+            .frame(minHeight: 24, alignment: .topLeading)
+            #endif
+            if reference.deleted == true {
+                source
+            } else {
+                Button { Task { _ = await chat.goToReply(reference) } } label: { source }
+                .buttonStyle(.plain)
                 .accessibilityLabel(hidden ? "View original blocked message" : "View original message from \(reference.author.name)")
                 .accessibilityHint(hidden ? "" : excerpt)
+            }
             if canExpand {
                 Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
                     .buttonStyle(ReplyExpandButton())

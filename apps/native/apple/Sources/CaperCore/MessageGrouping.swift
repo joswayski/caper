@@ -88,7 +88,7 @@ enum ChannelUnreadDivider {
                       || Sequence.isSuccessor($0.seq, of: readSeq)
               }) else { return nil }
         return messages.first {
-            $0.isChannelMessage && $0.author.id != viewerID && !blocked.contains($0.author.id)
+            $0.isChannelMessage && !$0.isDeleted && $0.author.id != viewerID && !blocked.contains($0.author.id)
                 && (try? Sequence.compare($0.seq, readSeq)) == .orderedDescending
                 && (try? Sequence.compare($0.seq, lastSeq)).map { $0 != .orderedDescending } == true
         }?.id

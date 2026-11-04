@@ -45,6 +45,7 @@ export function channelNewMessagesId(
   return messages.find(
     (message) =>
       isChannelMessage(message) &&
+      !message.deletedAt &&
       message.author.id !== viewerId &&
       !blockedAuthor(message.author, blocked, viewerId) &&
       BigInt(message.seq) > read &&

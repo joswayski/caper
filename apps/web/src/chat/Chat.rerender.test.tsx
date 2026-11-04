@@ -124,6 +124,38 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+test.each([false, true])(
+  "deleted rows disappear but their quoted replies remain (channel window: %s)",
+  async (windowed) => {
+    await render(<Page speaking="Nobody is speaking" />);
+    const client = fixture.clients.at(-1)!;
+    const original = message(1);
+    const answer: ChatMessage = {
+      ...message(2),
+      replyTo: { id: original.id, author: original.author, text: "", hasAttachments: false, deleted: true },
+    };
+    const tombstone = { ...original, deletedAt: "2026-10-19T00:05:00Z" };
+    const messages = [tombstone, answer];
+    await act(async () => client.emit({ messages, channelMessages: windowed ? messages : undefined }));
+    expect(container.querySelector(`[data-message-key="${original.clientMessageId}"]`)).toBeNull();
+    expect(container.querySelectorAll(".chat-message[data-message-key]")).toHaveLength(1);
+    expect(container.textContent).toContain("Original message was deleted.");
+    expect(container.textContent).toContain(answer.content.text);
+    expect(container.textContent).not.toContain("This message was deleted.");
+    expect(container.querySelector(".chat-reply-source")?.tagName).toBe("DIV");
+    expect(container.querySelector(".chat-reply-context button")).toBeNull();
+    expect(container.querySelector(".chat-reply-view")).toBeNull();
+
+    await act(async () => client.emit({ messages: [tombstone], channelMessages: windowed ? [tombstone] : undefined }));
+    expect(container.querySelector(".chat-message[data-message-key]")).toBeNull();
+    expect(container.querySelector(".chat-date-divider")).toBeNull();
+    expect(container.textContent).toContain("No messages yet.");
+    await act(async () => client.emit({ hasMore: true }));
+    expect(container.textContent).toContain("Load older messages");
+    expect(container.textContent).not.toContain("No messages yet.");
+  },
+);
+
 test("voice, presence, typing and composer updates leave unchanged message rows alone", async () => {
   await render(<Page speaking="Nobody is speaking" />);
   // Let mount effects (hydration, the client's first state) settle.

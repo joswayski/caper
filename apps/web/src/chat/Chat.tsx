@@ -829,13 +829,14 @@ export default function Chat({
           firstMessageId = undefined;
           setListReady(false);
           setFirstItemIndex(INITIAL_ITEM_INDEX);
-        } else if (next.channelMessages?.[0]?.id !== firstMessageId) {
-          const prepended = next.channelMessages?.findIndex((message) => message.id === firstMessageId) ?? -1;
+        } else if (next.channelMessages?.find((message) => !message.deletedAt)?.id !== firstMessageId) {
+          const visible = next.channelMessages?.filter((message) => !message.deletedAt);
+          const prepended = visible?.findIndex((message) => message.id === firstMessageId) ?? -1;
           if (prepended > 0) {
             prependAnchor.current = topMessage(scrollerRef.current);
             setFirstItemIndex((index) => index - prepended);
           }
-          firstMessageId = next.channelMessages?.[0]?.id;
+          firstMessageId = visible?.[0]?.id;
         }
         // The composer clears the draft a new local send came from.
         // Transfer ownership synchronously, before focus can renew an uncertain
@@ -1257,10 +1258,11 @@ export default function Chat({
     ? (expectedChannelName ?? state.channelName)
     : (expectedChannelName ?? state.channelName).toLowerCase();
   // Kept between unrelated renders (typing, presence, the composer), like the rows built from them.
-  const channelMessages = useMemo(
+  const channelHistory = useMemo(
     () => state.channelMessages ?? state.messages.filter(isChannelMessage),
     [state.channelMessages, state.messages],
   );
+  const channelMessages = useMemo(() => channelHistory.filter((message) => !message.deletedAt), [channelHistory]);
   const messages = useMemo(
     () =>
       state.pendingSend && !state.pendingSend.threadRootId ? [...channelMessages, state.pendingSend] : channelMessages,
@@ -1268,7 +1270,7 @@ export default function Chat({
   );
   const newMessagesId =
     trackChannelVisit && visitReady
-      ? channelNewMessagesId(channelMessages, unreadVisit?.entry, state.hasMore, viewerId, blockedIds)
+      ? channelNewMessagesId(channelHistory, unreadVisit?.entry, state.hasMore, viewerId, blockedIds)
       : undefined;
   arrivals.current.observe(
     "channel",
@@ -2003,7 +2005,12 @@ export default function Chat({
                 </button>
               </div>
             )}
-            {state.phase === "ready" && !messages.length && (
+            {state.phase === "ready" && !messages.length && state.hasMore && (
+              <HistoryHeader
+                context={{ hasMore: true, loadingOlder: state.loadingOlder, olderError: state.olderError, loadOlder }}
+              />
+            )}
+            {state.phase === "ready" && !messages.length && !state.hasMore && !state.hasNewer && (
               <div className="chat-state chat-empty">
                 <DailyCaper className="chat-empty-caper" />
                 {direct && viewerId && directPeerId === viewerId ? (

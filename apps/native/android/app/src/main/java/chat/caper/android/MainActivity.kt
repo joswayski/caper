@@ -2282,7 +2282,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var mentionTarget by remember { mutableStateOf<MentionCard?>(null) }
     // Above the list, so new messages scrolling a row away don't close its viewer.
     val viewerHost = remember { MediaViewerHost() }
-    val messages = if (inThread) state.displayedMessages else state.displayedChannelMessages
+    val messages = (if (inThread) state.displayedMessages else state.displayedChannelMessages).filter { it.deletedAt == null }
     // Runs of blocked authors' messages collapse; Show reveals one run, in memory only.
     var revealedRuns by remember { mutableStateOf(emptySet<String>()) }
     var blockTarget by remember { mutableStateOf<BlockedAccount?>(null) }
@@ -2290,7 +2290,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val blocked = state.blockedIds
     val rows = remember(messages, blocked, selfId, revealedRuns) { timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns)) }
     val newMessagesId = if (!inThread && state.visit == null && !state.feedbackShown && state.selectedDirectId == null && state.selectedChannel?.direct == false)
-        chat.caper.android.data.channelNewMessagesId(messages, state.channelVisitUnread, state.hasMoreMessages, blocked, selfId) else null
+        chat.caper.android.data.channelNewMessagesId(state.channelMessages, state.channelVisitUnread, state.hasMoreMessages, blocked, selfId) else null
     // Recheck while stationary too: foreground return and failed acknowledgements need no scroll.
     // The bottom of a real reply must be visible (also works for replies taller than the viewport).
     LaunchedEffect(inThread, state.selectedChannel?.id, state.thread, rows) {
@@ -3169,7 +3169,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
     }
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current.density
-    val canExpand = !hidden && (expanded || clipped)
+    val canExpand = !hidden && !reference.deleted && (expanded || clipped)
     // Match the other clients: each replying message has stable spring settings,
     // including when several messages quote the same original.
     val seed = remember(motionKey) { motionKey.toByteArray(Charsets.UTF_8).fold(2166136261u) { hash, byte -> (hash xor byte.toUByte().toUInt()) * 16777619u } }
@@ -3185,7 +3185,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
     DisposableEffect(motionKey, hidden, still) {
         onDispose { motion?.cancel(); displacement = 0f; velocity = 0f }
     }
-    val action = if (onOpen == null) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
+    val action = if (onOpen == null || reference.deleted) Modifier else Modifier.clickable(role = Role.Button, onClickLabel = "View original message", onClick = onOpen)
     Column(Modifier.fillMaxWidth().onGloballyPositioned { coordinates ->
         val y = coordinates.positionInWindow().y / density
         val delta = (previousY ?: y) - y
@@ -3235,7 +3235,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
                             Spacer(Modifier.width(6.dp))
                         }
                         Text(if (hidden) "Blocked message" else reference.author.name, Modifier.weight(1f), color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (onOpen != null) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
+                        if (onOpen != null && !reference.deleted) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
                     }
                     if (!hidden) Text(text, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp, fontStyle = if (reference.deleted) FontStyle.Italic else null,
                         maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,

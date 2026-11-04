@@ -56,6 +56,8 @@ test("channel unread divider uses the entry boundary, not live arrivals or a tru
   assert.equal(divider(rows.slice(2)), undefined);
   assert.equal(divider(rows.slice(2), entry, false), "15");
   assert.equal(divider(rows.slice(-1), entry, false), undefined);
+  assert.equal(divider([row("11", "other", { deletedAt: at(1) }), row("15")]), "15");
+  assert.equal(divider([row("11", "other", { deletedAt: at(1) })]), undefined);
   assert.equal(channelNewMessagesId(rows, undefined, false, "me", new Set()), undefined);
   assert.equal(channelNewMessagesId(rows, { lastSeq: "15" }, false, "me", new Set()), undefined);
   assert.equal(

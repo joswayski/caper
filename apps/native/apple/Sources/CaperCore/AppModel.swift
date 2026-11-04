@@ -3076,9 +3076,9 @@ public final class ChatModel {
     private var restoredDraft: String?
     private var threadBroadcasts: [String: Bool] = [:]
     public var channelMessages: [ChatMessage] { messages.filter { $0.isChannelMessage && !threadOnlyRows.contains($0.id) && Self.inWindow($0, start: windowStart, end: windowEnd) } }
-    public var displayedChannelMessages: [ChatMessage] { channelMessages.map(project) }
+    public var displayedChannelMessages: [ChatMessage] { channelMessages.map(project).filter { !$0.isDeleted } }
     public var threadMessages: [ChatMessage] { messages.filter { $0.threadRootId != nil && $0.threadRootId == threadRootID && Self.inWindow($0, start: threadWindowStart, end: threadWindowEnd) } }
-    public var displayedThreadMessages: [ChatMessage] { threadMessages.map(project) }
+    public var displayedThreadMessages: [ChatMessage] { threadMessages.map(project).filter { !$0.isDeleted } }
     private static func inWindow(_ message: ChatMessage, start: String?, end: String?) -> Bool {
         (start == nil || (try? Sequence.compare(message.seq, start!)) != .orderedAscending) &&
         (end == nil || (try? Sequence.compare(message.seq, end!)) != .orderedDescending)

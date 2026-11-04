@@ -16770,8 +16770,10 @@ impl CaperApp {
                         .cloned()
                         .collect();
                     if let Some(parent) = rows.iter().find(|message| message.id == root) {
-                        self.messages_or_blocked(ui, &[parent]);
-                        ui.add_space(8.0);
+                        if !parent.is_deleted() {
+                            self.messages_or_blocked(ui, &[parent]);
+                            ui.add_space(8.0);
+                        }
                         if let Some(summary) = &parent.thread
                             && summary.reply_count > 0
                         {
@@ -16827,7 +16829,7 @@ impl CaperApp {
                     }
                     let replies: Vec<_> = rows
                         .iter()
-                        .filter(|message| message.thread_root_id.is_some())
+                        .filter(|message| message.thread_root_id.is_some() && !message.is_deleted())
                         .collect();
                     if loading && replies.is_empty() {
                         ui.allocate_ui(egui::vec2(ui.available_width(), 196.0), message_skeleton);
@@ -17811,6 +17813,19 @@ impl CaperApp {
                                     reference.author.picture(),
                                 );
                             }
+                            if reference.deleted {
+                                ui.label(
+                                    RichText::new(if blocked {
+                                        "Blocked message"
+                                    } else {
+                                        &reference.author.name
+                                    })
+                                    .size(12.0)
+                                    .strong()
+                                    .color(MUTED),
+                                );
+                                return false;
+                            }
                             ui.add_enabled(
                                 !blocked && !self.context_loading,
                                 egui::Button::new(
@@ -17833,7 +17848,6 @@ impl CaperApp {
                         });
                         let mut open = heading.inner;
                         if !blocked && reference.deleted {
-                            // The heading still opens the tombstone in place.
                             ui.label(
                                 RichText::new("Original message was deleted.")
                                     .size(12.0)
@@ -31816,6 +31830,7 @@ fn history_messages<'a>(
         .messages()
         .filter(|message| {
             message.is_channel_message()
+                && !message.is_deleted()
                 && !thread_only.contains(&message.id)
                 && window.is_none_or(|window| window.contains(message))
         })
@@ -56292,7 +56307,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_message_confirms_merges_the_tombstone_and_leaves_placeholders() {
+    fn deleting_a_message_hides_its_row_but_keeps_the_deleted_quote() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -56373,8 +56388,9 @@ mod tests {
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         assert!(app.message_editor.is_none());
-        assert!(shows(&output, "This message was deleted."));
+        assert!(!shows(&output, "This message was deleted."));
         assert!(shows(&output, "Original message was deleted."));
+        assert!(!shows(&output, "View original"));
         assert!(!shows(&output, &original.content.text));
         assert!(!shows(&output, "(edited)"));
     }

@@ -83,6 +83,7 @@ export function ReplyContext({
     (reference.hasAttachments ? attachmentsExcerpt(reference.attachments) : "Message");
   const files = hidden || reference.deleted ? [] : (reference.attachments ?? []).filter(isChatAttachment);
   const canExpand = !reference.deleted && clipped;
+  const Source = reference.deleted ? "div" : "button";
   useLayoutEffect(() => {
     const element = root.current!;
     const update = () => {
@@ -227,11 +228,17 @@ export function ReplyContext({
         </svg>
       )}
       <div className="chat-reply-body">
-        <button
-          type="button"
+        <Source
+          type={reference.deleted ? undefined : "button"}
           className="chat-reply-source"
-          onClick={onOpen}
-          aria-label={hidden ? "View original blocked message" : `View original message from ${reference.author.name}`}
+          onClick={reference.deleted ? undefined : onOpen}
+          aria-label={
+            reference.deleted
+              ? undefined
+              : hidden
+                ? "View original blocked message"
+                : `View original message from ${reference.author.name}`
+          }
           aria-describedby={hidden ? undefined : excerptId}
         >
           <span className="chat-reply-heading">
@@ -246,7 +253,7 @@ export function ReplyContext({
                 {reference.hasAttachments && <Paperclip size={13} aria-label="Has attachments" />}
               </>
             )}
-            <span className="chat-reply-view">View original</span>
+            {!reference.deleted && <span className="chat-reply-view">View original</span>}
           </span>
           {!hidden && (
             <span
@@ -265,7 +272,7 @@ export function ReplyContext({
               {files.length > 3 && <span className="chat-reply-thumbnail">+{files.length - 3}</span>}
             </span>
           )}
-        </button>
+        </Source>
         {!hidden && canExpand && (
           <button
             type="button"

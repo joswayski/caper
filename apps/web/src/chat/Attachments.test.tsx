@@ -47,7 +47,14 @@ test("voice replies use ready transcripts, retain text precedence, and conceal p
       expect(html).not.toContain("Meet me");
     }
   for (const html of render(attachment, "", true)) expect(html).not.toContain("Meet me");
-  expect(render(attachment, "", false, true)[0]).not.toContain("Meet me");
+  expect(render()[0]).toContain("View original message from Me");
+  for (const hidden of [false, true]) {
+    const deleted = render(attachment, "", hidden, true)[0];
+    expect(deleted).not.toContain("Meet me");
+    expect(deleted).not.toContain("View original");
+    expect(deleted).not.toContain("<button");
+    expect(deleted).toContain(hidden ? "Blocked message" : "Original message was deleted.");
+  }
   const long = render({ ...attachment, transcript: { status: "ready", text: "A long transcript. ".repeat(20) } })[0];
   // Keep all text for browser line measurement; SSR cannot determine overflow.
   expect(long).toContain("A long transcript. ".repeat(20).trim());

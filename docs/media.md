@@ -4466,10 +4466,13 @@ an edit) is idempotent and returns a tombstone: `deletedAt`, empty text, no file
 or mentions, a bumped `revision`, and `editSeq`/`attachmentsSeq` at the new
 sequence. It is delivered as an ordinary `message.edited` event, followed by a
 `message.pin` unpin when it was pinned, so released clients that predate
-deletion still blank the message and drop its files. Current clients render
-"This message was deleted." in place, keep its thread summary, and offer no
-other actions. Replies quoting it carry `replyTo.deleted` with empty text and
-show "Original message was deleted."; forwards of it become unavailable.
+deletion still blank the message and drop its files. Current clients hide the
+entire deleted row in channels, DMs and threads, before grouping and date
+separators are calculated. Tombstones remain in sync state and pagination;
+an open thread keeps its surviving replies when its root is deleted.
+Replies quoting it carry `replyTo.deleted` with empty text and
+show "Original message was deleted." without a "View original" action or
+clickable quote; forwards of it become unavailable.
 
 Nothing is purged (`202610180002_message_deletions.sql` only adds
 `messages.deleted_at`). The content is kept in `message_versions`, the files are
@@ -4506,15 +4509,20 @@ message's retired files for anyone but its author, so other people lose access
 within about two hours. A copy already in someone's browser or app cache stays
 there, as a saved file would.
 
-Validation: the ignored Postgres/Valkey test
+Original deletion validation: the ignored Postgres/Valkey test
 `chat::deletion::tests::deletion_keeps_the_row_scrubs_content_and_only_lets_the_author_delete`,
 web unit tests, the fixture test, and a Chromium check against
 `native-parity-fixture.mjs` at 1440px and 390px (menu, confirmation, tombstone).
-Rust desktop unit tests, fmt and clippy pass on Linux (not launched; Windows and
-macOS unbuilt). Android and Apple add unit tests mirroring the edit tests but were
-not compiled here (no Android SDK or Swift toolchain); CI and the native release
-are their first build. Device and live-API checks remain open on every native
-client.
+
+Hidden-row validation (2026-11-04): web regression tests cover deleted rows,
+preserved quotes, deleted thread roots/replies, empty-history paging and unread
+boundaries. Chromium fixture checks cover immediate deletion, reload, surviving
+thread replies, and desktop/narrow layouts. Native macOS and iOS simulator builds
+and rendering were checked against that fixture; Apple unit tests and Android
+JVM tests pass. Rust desktop's unit suite passes, including rendered deletion
+and quoted-reply coverage. Android device rendering, packaged APK validation,
+Windows builds and live-API checks remain open; the fixture is not production
+acceptance.
 
 No infrastructure, secret or configuration change is needed. The migration is
 additive and Ship rolls the API out before the gateway and web as usual.

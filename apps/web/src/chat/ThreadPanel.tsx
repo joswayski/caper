@@ -183,6 +183,7 @@ export default function ThreadPanel({
     const next = rootId
       ? state.messages.filter(
           (message) =>
+            !message.deletedAt &&
             message.threadRootId === rootId &&
             (!windowStart || sequence(message.seq) >= sequence(windowStart)) &&
             (!windowEnd || sequence(message.seq) <= sequence(windowEnd)),
@@ -632,7 +633,7 @@ export default function ThreadPanel({
         }}
       >
         <div className="chat-motion-clip">
-          {root && <div className="chat-thread-parent">{renderedRoot}</div>}
+          {root && !root.deletedAt && <div className="chat-thread-parent">{renderedRoot}</div>}
           {!!root?.thread?.replyCount && (
             <div className="chat-thread-divider">
               {root.thread.replyCount} {root.thread.replyCount === 1 ? "reply" : "replies"}

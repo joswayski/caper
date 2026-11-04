@@ -37,6 +37,10 @@ final class MessageGroupingTests: XCTestCase {
         XCTAssertEqual(divider(Array(rows.dropFirst())), "11", "the exact successor proves the boundary is loaded")
         XCTAssertNil(divider(Array(rows.dropFirst(2))), "do not invent a boundary at the loaded window edge")
         XCTAssertEqual(divider(Array(rows.dropFirst()), more: false), "11")
+        var deleted = row("11", maya)
+        deleted.deletedAt = "2026-10-07T10:01:00Z"
+        XCTAssertEqual(divider([deleted, row("13", maya)]), "13")
+        XCTAssertNil(divider([deleted]))
         XCTAssertNil(divider(rows, read: "13"), "a read entry never gains a live divider")
         XCTAssertNil(divider([row("14", maya)], more: false), "live messages are outside the entry snapshot")
         XCTAssertEqual(ChannelUnreadDivider.messageID(messages: rows, readSeq: "10", lastSeq: "13",

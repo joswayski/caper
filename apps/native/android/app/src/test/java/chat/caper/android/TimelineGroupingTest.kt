@@ -41,6 +41,9 @@ class TimelineGroupingTest {
     @Test fun `new messages skip self and blocked authors even when revealed`() {
         assertEquals("m4", channelNewMessagesId(messages, entry(), false, setOf(blocked.id), "self"))
         assertNull(channelNewMessagesId(messages, entry(), false, setOf(blocked.id), maya.id))
+        val deleted = messages[1].copy(deletedAt = "2026-10-06T20:00:00Z")
+        assertEquals("m4", channelNewMessagesId(listOf(deleted, messages[3]), entry(), true, emptySet(), "self"))
+        assertNull(channelNewMessagesId(listOf(deleted), entry(), true, emptySet(), "self"))
     }
 
     @Test fun `read or old-server visits never gain a divider from live arrivals`() {

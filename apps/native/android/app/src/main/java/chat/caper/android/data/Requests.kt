@@ -28,7 +28,7 @@ internal fun channelNewMessagesId(messages: List<ChatMessage>, entry: UnreadChan
     if (hasOlder && first > read + BigInteger.ONE) return null
     return messages.firstOrNull {
         val seq = it.seq.toBigIntegerOrNull() ?: read
-        seq > read && seq <= last && it.author.id != selfId && !collapsesFor(it, blocked, selfId)
+        seq > read && seq <= last && it.deletedAt == null && it.author.id != selfId && !collapsesFor(it, blocked, selfId)
     }?.id
 }
 

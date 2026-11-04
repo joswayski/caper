@@ -521,6 +521,8 @@
   color: inherit;
   font: inherit;
   text-align: left;
+}
+button.chat-reply-source {
   cursor: pointer;
 }
 .chat-reply-heading {
@@ -645,7 +647,7 @@
   color: var(--text);
 }
 @media (hover: hover) {
-  .chat-reply-source:hover {
+  button.chat-reply-source:hover {
     color: var(--text);
   }
 }
