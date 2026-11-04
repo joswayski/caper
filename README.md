@@ -32,7 +32,7 @@ Desktop apps update themselves; phone apps update through TestFlight and Google 
 - **Link previews** are fetched by the Embed Worker on Cloudflare, so links
   people post are never fetched from inside the cluster.
 
-## What works today
+## Features
 
 - Spaces with text and voice channels, private channels and invite links ([invites](docs/media.md#invite-links))
 - Direct messages and a Notifications inbox for unread messages, mentions, replies, reactions and invitations ([notifications](docs/notifications.md))
