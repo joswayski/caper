@@ -1,15 +1,19 @@
-import { useLayoutEffect, type RefObject } from "react";
+import { useCallback, useLayoutEffect, useRef, type RefObject } from "react";
 import { ARRIVAL_MS } from "./arrivals.ts";
 
 /** Keep live-end layout corrections instant, but carry the painted rows from
  * their previous positions. This also covers short, bottom-aligned histories,
- * where scrollTop never changes. User scrolling and history loads stay instant. */
+ * where scrollTop never changes. User scrolling and history loads stay instant.
+ * Link preview cards that load into a row count as arrivals too. Returns
+ * `carry`: call it as a change outside the list resizes it, before layout (the
+ * composer's preview card), so the rows glide instead of jumping. */
 export function useTimelineMotion(
   ref: RefObject<HTMLElement | null>,
   identity: string | undefined,
   live: boolean,
   mounted?: HTMLElement | null,
 ) {
+  const carryRef = useRef<() => void>(undefined);
   useLayoutEffect(() => {
     const scroller = ref.current;
     if (!scroller || !live) return;
@@ -19,9 +23,11 @@ export function useTimelineMotion(
     const easing = tokens.getPropertyValue("--ease-out").trim() || "cubic-bezier(0.16, 1, 0.3, 1)";
     let positions = new Map<string, number>();
     const seen = new Set<string>();
+    const cards = new WeakSet<Element>();
     const animations = new Map<HTMLElement, Animation>();
     let until = 0;
     let watchUntil = 0;
+    let pinUntil = 0;
     let frame = 0;
     let near = true;
     const rows = () => [...scroller.querySelectorAll<HTMLElement>("[data-motion-key]")];
@@ -39,6 +45,9 @@ export function useTimelineMotion(
     };
     const measure = () => {
       const now = performance.now();
+      // Hold the live end before reading rows, so a carried resize glides from
+      // where the rows were painted rather than first jumping to the end.
+      if (now < pinUntil && near) scroller.scrollTop = scroller.scrollHeight;
       const current = rows();
       const bounds = scroller.getBoundingClientRect();
       const scale = bounds.height / scroller.offsetHeight || 1;
@@ -59,6 +68,11 @@ export function useTimelineMotion(
           carried = offset;
         }
       }
+      for (const card of scroller.querySelectorAll(".chat-embed[data-arrive]"))
+        if (!cards.has(card)) {
+          cards.add(card);
+          arriving = true;
+        }
       if (arriving && near && !reduced.matches) {
         until = now + duration;
         // Confirmation can remeasure a pending row after its entrance ends.
@@ -99,6 +113,13 @@ export function useTimelineMotion(
     };
     const mutations = new MutationObserver(changed);
     changed();
+    carryRef.current = () => {
+      if (!near || reduced.matches) return;
+      const now = performance.now();
+      watchUntil = Math.max(watchUntil, now + duration);
+      // Only the resize this call announces, which is measured within a frame.
+      pinUntil = now + 50;
+    };
     mutations.observe(scroller, { childList: true, subtree: true });
     const interrupt = () => {
       stop();
@@ -111,6 +132,7 @@ export function useTimelineMotion(
     scroller.addEventListener("scroll", measure, { passive: true });
     reduced.addEventListener("change", interrupt);
     return () => {
+      carryRef.current = undefined;
       stop();
       resize.disconnect();
       mutations.disconnect();
@@ -119,4 +141,5 @@ export function useTimelineMotion(
       reduced.removeEventListener("change", interrupt);
     };
   }, [ref, identity, live, mounted]);
+  return useCallback(() => carryRef.current?.(), []);
 }

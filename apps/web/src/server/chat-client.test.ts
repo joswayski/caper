@@ -16,6 +16,7 @@ import {
   type GeneralChatHistory,
 } from "../chat/types.ts";
 import { replyReference } from "../chat/Replies.tsx";
+import { embedsOf } from "../chat/embeds.ts";
 import { AttachmentUpload, type UploadTransport } from "../chat/uploads.ts";
 import { DEFAULT_COMPRESSION } from "../chat/prepare.ts";
 import { receiveProfile, resetProfilesForTests } from "../account/profiles.ts";
@@ -751,6 +752,33 @@ for (const status of [200, 503]) {
     assert.equal(f.client.snapshotHistory()?.cursor, "0", "HTTP still cannot advance the replay cursor");
   });
 }
+
+test("a send keeps the composer's card until the server's cards arrive, which may remove it", async (t) => {
+  const f = await sendingFixture(t);
+  const card = {
+    version: 1 as const,
+    url: "https://x.com/jack/status/20",
+    site: { name: "X", domain: "x.com" },
+    blocks: [{ type: "text" as const, text: "just setting up my twttr" }],
+  };
+  const sending = f.client.send("see https://x.com/jack/status/20", { embeds: [card] });
+  assert.deepEqual(f.state.pendingSend?.embeds, [card], "the pending row draws the card already shown");
+  const accepted = committed(f.posts[0].body, "1");
+  f.posts[0].resolve(Response.json(accepted));
+  assert.equal(await sending, true);
+  assert.deepEqual(embedsOf(f.state.messages[0]), [card], "confirmation must not drop the card before it is unfurled");
+  f.sockets[0].message(accepted);
+  assert.deepEqual(embedsOf(f.state.messages[0]), [card], "an ordered copy without cards keeps it too");
+  f.sockets[0].frame({
+    type: "message.embeds",
+    schemaVersion: 1,
+    channelId: "general",
+    messageId: accepted.id,
+    revision: 1,
+    embeds: [],
+  });
+  assert.deepEqual(embedsOf(f.state.messages[0]), [], "the server found no card: the local one goes");
+});
 
 test("stopped clients cannot send or retry history", async (t) => {
   const f = await sendingFixture(t);

@@ -8,6 +8,7 @@ import { playSound } from "../audio/effects.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
 import { appGateway } from "../gateway/client.ts";
 import { ChatTimeline, type ChatTimelineEvent } from "./timeline.ts";
+import { withEmbeds, type ChatEmbed } from "./embeds.ts";
 import {
   attachmentsOf,
   isChannelMessage,
@@ -44,6 +45,8 @@ export interface PendingChatMessage {
   replyTo?: ChatReplyReference;
   /** The author removed the link previews before sending. */
   suppressEmbeds?: boolean;
+  /** The composer's loaded preview card, shown until the server's cards arrive. */
+  embeds?: ChatEmbed[];
 }
 
 export interface ThreadViewState {
@@ -1023,12 +1026,13 @@ export class ChatClient {
       replyTo?: ChatReplyReference;
       uploads?: AttachmentUpload[];
       suppressEmbeds?: boolean;
+      embeds?: ChatEmbed[];
       gif?: ChatGif;
     } = {},
   ): Promise<boolean> {
     if (this.controller.signal.aborted || this.sending || this.state.sendRejected) return false;
     if (this.state.pendingSend && this.state.pendingSend.threadRootId !== options.threadRootId) return false;
-    const { attachments = [], uploads = [], suppressEmbeds, gif, ...thread } = options;
+    const { attachments = [], uploads = [], suppressEmbeds, embeds, gif, ...thread } = options;
     if (!this.state.pendingSend) this.pendingUploads = uploads;
     // A timeout is an unknown outcome. Enter/Send must retry the same command,
     // just like the explicit retry button, before allowing a new command.
@@ -1039,7 +1043,7 @@ export class ChatClient {
         attachments: attachments.length ? attachments : undefined,
         gif,
         createdAt: new Date().toISOString(),
-        ...(suppressEmbeds ? { suppressEmbeds } : {}),
+        ...(suppressEmbeds ? { suppressEmbeds } : embeds?.length ? { embeds } : {}),
         ...thread,
       }),
       author: this.session?.author,
@@ -1170,7 +1174,13 @@ export class ChatClient {
       const message = await Promise.race([request, confirmation]);
       if (!current()) return false;
       this.releaseUploads();
-      this.timeline.mergeSent(message);
+      // Keep the card the sender already saw while the server unfurls its own;
+      // its message.embeds event replaces it (or removes it, when it has none).
+      this.timeline.mergeSent(
+        pending.embeds && message.content.embeds === undefined && !message.content.suppressEmbeds
+          ? withEmbeds(message, message.revision ?? 1, pending.embeds)
+          : message,
+      );
       if (message.threadRootId) this.scheduleThreadUnread();
       this.update({
         messages: this.timeline.messages,

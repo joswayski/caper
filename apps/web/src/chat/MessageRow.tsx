@@ -511,7 +511,7 @@ function MessageRowView({
               onExpired={pending ? undefined : actions.refreshUrls}
               onView={"content" in message ? actions.viewFile(message.id) : undefined}
             />
-            {"content" in message && <MessageEmbeds embeds={embedsOf(message)} />}
+            <MessageEmbeds embeds={"content" in message ? embedsOf(message) : (message.embeds ?? [])} />
             {"content" in message && reportsFeedback(message) && (
               <p className="chat-feedback-note">Caper team has been notified 🫡</p>
             )}

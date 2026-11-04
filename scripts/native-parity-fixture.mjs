@@ -22,6 +22,10 @@ export const fixtureIDs = {
   stranger: "stranger0001",
 };
 const ids = fixtureIDs;
+/** Links that get cards, without repeats, skipping any written `<like this>`. */
+const embedLinks = (text) => [
+  ...new Set([...text.matchAll(/(<)?(https?:\/\/[^\s<>]+)(>)?/giu)].filter((m) => !(m[1] && m[3])).map((m) => m[2])),
+];
 const limits = { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 };
 const initialAccount = { id: ids.owner, username: "fixture_owner", displayName: "Fixture Owner", avatarId: 0 };
 const members = [
@@ -433,6 +437,40 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       broadcast("chat", current.channelId, event);
     }, voiceTranscriptDelayMs);
   };
+  // Like the API, cards arrive after the send, as an unsequenced event that
+  // replays and history also carry. Cards are local; nothing is fetched.
+  const unfurl = (message) => {
+    const links = message.content.suppressEmbeds ? [] : embedLinks(message.content.text).slice(0, 5);
+    if (!links.length) return;
+    setTimeout(() => {
+      const embeds = links.map(fixtureEmbed);
+      message.content.embeds = embeds;
+      for (const event of state.createdEvents.get(message.channelId) ?? [])
+        if (event.message.id === message.id) event.message.content.embeds = clone(embeds);
+      broadcast("chat", message.channelId, {
+        type: "message.embeds",
+        schemaVersion: 1,
+        channelId: message.channelId,
+        messageId: message.id,
+        revision: message.revision ?? 1,
+        embeds: clone(embeds),
+      });
+    }, 600);
+  };
+  const fixtureEmbed = (url) => ({
+    version: 1,
+    url,
+    site: { name: "Fixture Site", domain: new URL(url).hostname },
+    blocks: [
+      { type: "title", text: `TEST FIXTURE card for ${new URL(url).pathname}`, url },
+      { type: "text", text: "A local link preview. Nothing was fetched from the web." },
+      {
+        type: "images",
+        thumbnail: true,
+        items: [{ url: `http://127.0.0.1:${port}/__fixture/embed.svg`, width: 160, height: 160 }],
+      },
+    ],
+  });
   const created = (message) => {
     const event = { type: "message.created", channelId: message.channelId, seq: message.seq, message: clone(message) };
     state.createdEvents.set(message.channelId, [...(state.createdEvents.get(message.channelId) ?? []), event]);
@@ -632,6 +670,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           messages.push(message);
           state.messages.set(channelId, messages);
           created(message);
+          unfurl(message);
         }
         if (body.notification) {
           const channel = channelFor(body.notification.channelId ?? ids.design);
@@ -925,6 +964,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (!user || !asset || asset.ownerId !== user.id) return reject(response, 404, "Asset not found.");
         if (!asset.completed && !asset.attachment) asset.deleted = true;
         return json(response, 204);
+      }
+      if (path === "/__fixture/embed.svg" && method === "GET") {
+        response.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "max-age=3600" });
+        return response.end(
+          '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160"><rect width="160" height="160" fill="#637A43"/><text x="80" y="92" font-size="28" text-anchor="middle" fill="#F3F4F5">TEST</text></svg>',
+        );
+      }
+      if (path === "/api/embeds/preview" && method === "POST") {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const link = embedLinks(String(body.url ?? ""))[0];
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return json(response, 200, { embed: link ? fixtureEmbed(link) : null });
       }
       if (path === "/api/klipy")
         return user
@@ -1667,8 +1718,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           messages.push(message);
           state.messages.set(channel.id, messages);
           state.sendKeys.set(key, { token: request.headers["x-caper-chat-token"], text: body.text, message });
+          if (body.suppressEmbeds === true) message.content.suppressEmbeds = true;
           created(message);
           transcribe(message);
+          unfurl(message);
           return json(response, 200, message);
         }
         const page = historyWindow(

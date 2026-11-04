@@ -60,7 +60,8 @@ interface ComposerProps {
   };
   authorId?: string;
   mentionMembers?: MentionCandidate[];
-  onSend: (text: string, options?: { suppressEmbeds?: boolean }) => Promise<unknown> | undefined;
+  /** `embeds` is the card already shown for the draft, for the pending row. */
+  onSend: (text: string, options?: { suppressEmbeds?: boolean; embeds?: ChatEmbed[] }) => Promise<unknown> | undefined;
   /** Shows the first link's preview card under the draft (signed-in accounts). */
   linkPreviews?: boolean;
   /** Sends a KLIPY GIF on its own; the draft stays. */
@@ -69,6 +70,8 @@ interface ComposerProps {
   /** Wraps each resize, which reports whether the height changed, so the
    * conversation can measure its position first and stay on the newest message. */
   onResize: (resize: () => boolean) => void;
+  /** Runs as the link preview card appears or goes, before the conversation measures its new size. */
+  onPreviewChange?: () => void;
   /** Whether a draft exists, for actions that would replace it. */
   onDraftPresence: (hasDraft: boolean) => void;
   attachments?: ComposerAttachments;
@@ -122,6 +125,7 @@ export default function Composer({
   onSendGif,
   onTyping,
   onResize,
+  onPreviewChange,
   onDraftPresence,
   attachments,
   linkPreviews = false,
@@ -196,12 +200,21 @@ export default function Composer({
   }, []);
 
   const preview = useLinkPreview(linkPreviews ? draft : "");
+  const hasPreview = !!preview.embed;
+  const shownPreview = useRef(hasPreview);
+  useLayoutEffect(() => {
+    if (shownPreview.current !== hasPreview) onPreviewChange?.();
+    shownPreview.current = hasPreview;
+  }, [hasPreview]);
   const submit = async () => {
     if (!identityReady || sending || sendRejected || pendingSend?.threadRootId) return;
     setValidationError(undefined);
     const submitted = pendingSend?.text ?? draft;
     try {
-      await onSend(submitted, { suppressEmbeds: preview.removed(submitted) });
+      await onSend(submitted, {
+        suppressEmbeds: preview.removed(submitted),
+        embeds: preview.embed && submitted === draft ? [preview.embed] : undefined,
+      });
     } catch (error) {
       setValidationError(error instanceof Error ? error.message : "Message could not be sent.");
     }

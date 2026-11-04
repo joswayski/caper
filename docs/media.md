@@ -4655,7 +4655,9 @@ Previews are built by Caper itself, not by fix sites such as vxtwitter.
    own job; a deleted message gets none), and on the outbox event replays read
    for that revision. Then it publishes an unsequenced `message.embeds` event:
    `{type, schemaVersion: 1, channelId, messageId, revision, embeds}` on the
-   typing topic.
+   typing topic. It publishes even when nothing changed or no link got a card
+   (without storing anything), so a sender's provisional card is confirmed or
+   removed.
 5. Clients apply it to the message when the revision matches. History, replays
    and pins read the stored copy, so a client that missed the event still shows
    the cards after reconnecting.
@@ -4670,6 +4672,15 @@ before sending. The Worker caches answers for 30 minutes, so the card after
 sending is instant. Removing the card (×) sends the message with
 `suppressEmbeds: true`: it is stored as `content.suppressEmbeds`, no job runs,
 and edits keep it.
+
+A card already shown when the message is sent goes with the pending row and
+stays on the confirmed message (locally; it is never sent) until the
+`message.embeds` event replaces or removes it, so the row has its final height
+from the start. Cards that load while a row is on screen fade in
+(`--motion-fast`, opacity only; none with reduced motion) and the timeline
+carries the rows they push, as it does when the composer card appears; cards a
+row already had when it was drawn appear in place. Web, Android, Apple and Rust
+desktop behave alike.
 
 **Compatibility.** Released clients ignore `content.embeds`. Released desktop
 builds treat any unknown chat event as a broken stream and reconnect, so the

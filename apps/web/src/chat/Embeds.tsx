@@ -100,7 +100,7 @@ function footerTime(timestamp?: string) {
   );
 }
 
-function EmbedCard({ embed }: { embed: ChatEmbed }) {
+function EmbedCard({ embed, arrive }: { embed: ChatEmbed; arrive: boolean }) {
   const heading =
     embed.blocks.find((block) => block.type === "title")?.text ??
     embed.blocks.find((block) => block.type === "author")?.name ??
@@ -179,7 +179,7 @@ function EmbedCard({ embed }: { embed: ChatEmbed }) {
     }
   });
   return (
-    <article className="chat-embed" aria-label={`${embed.site.name}: ${heading}`}>
+    <article className="chat-embed" data-arrive={arrive || undefined} aria-label={`${embed.site.name}: ${heading}`}>
       <div className="chat-embed-body">
         <a className="chat-embed-site" href={embed.url} {...LINK}>
           {embed.site.name}
@@ -230,14 +230,18 @@ export function DraftEmbed({ embed, onRemove }: { embed: ChatEmbed; onRemove: ()
   );
 }
 
-/** A message's link preview cards, drawn from blocks; unknown blocks are skipped. */
+/** A message's link preview cards, drawn from blocks; unknown blocks are skipped.
+ * Cards the row had when it was first drawn (history, a row scrolled back into
+ * view, a send that carried its composer card) appear in place; cards that load
+ * while it is on screen fade in. */
 export function MessageEmbeds({ embeds }: { embeds: ChatEmbed[] }) {
+  const [initial] = useState(() => new Set(embeds.map((embed) => embed.url)));
   if (!embeds.length) return null;
   return (
     // The row opens message actions on click; playing or following a card only does that.
     <div className="chat-embeds" onClick={(event) => event.stopPropagation()}>
       {embeds.map((embed) => (
-        <EmbedCard key={embed.url} embed={embed} />
+        <EmbedCard key={embed.url} embed={embed} arrive={!initial.has(embed.url)} />
       ))}
     </div>
   );

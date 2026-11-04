@@ -61,6 +61,7 @@ import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
+import type { ChatEmbed } from "./embeds.ts";
 import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings, UploadError } from "./uploads.ts";
 import {
   getVoiceSendOnStop,
@@ -757,7 +758,7 @@ export default function Chat({
   // message when it already was. Read the position before resizing, not a
   // delayed bottom callback, and correct only real height changes using the
   // new DOM extent rather than the virtualizer's previous measurements.
-  useTimelineMotion(
+  const carryTimeline = useTimelineMotion(
     scrollerRef,
     state.channelId,
     state.phase === "ready" && !state.hasNewer && !state.loadingNewer,
@@ -1345,7 +1346,12 @@ export default function Chat({
     if (scroller && allowFollow.current && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80)
       scroller.scrollTop = scroller.scrollHeight;
   }, [typingLabel]);
-  const sendDraft = async (text: string, threadRootId?: string, broadcast = false, suppressEmbeds = false) => {
+  const sendDraft = async (
+    text: string,
+    threadRootId?: string,
+    broadcast = false,
+    preview: { suppressEmbeds?: boolean; embeds?: ChatEmbed[] } = {},
+  ) => {
     const client = clientRef.current;
     const files = drafts.filter((draft) => draft.threadRootId === threadRootId);
     const sources = !state.pendingSend ? files.map((draft) => uploads.current.get(draft.key)!) : [];
@@ -1376,7 +1382,7 @@ export default function Chat({
       threadRootId,
       broadcast,
       replyTo: replyTargets[threadRootId ?? "channel"],
-      suppressEmbeds,
+      ...preview,
     });
     if (sent && !threadRootId && state.hasNewer) {
       setJumpMessage(undefined);
@@ -2326,11 +2332,12 @@ export default function Chat({
               pendingSend={state.pendingSend}
               authorId={state.author?.id}
               mentionMembers={mentionMembers}
-              onSend={(text, options) => sendDraft(text, undefined, false, options?.suppressEmbeds)}
+              onSend={(text, preview) => sendDraft(text, undefined, false, preview)}
               linkPreviews={signedIn}
               onSendGif={signedIn && !readOnly ? (gif, query) => sendGif(gif, query) : undefined}
               onTyping={setTyping}
               onResize={keepLatestInView}
+              onPreviewChange={() => allowFollow.current && carryTimeline()}
               onDraftPresence={setHasDraft}
               attachments={
                 signedIn || channelDrafts.length

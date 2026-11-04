@@ -5603,16 +5603,19 @@ a.chat-draft-preview {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  animation: chat-embed-arrive var(--motion-base) var(--ease-out);
+}
+/* A card that loads while its message is on screen fades in; the timeline
+   carries the rows it pushes up (useTimelineMotion). */
+.chat-embed[data-arrive] {
+  animation: chat-embed-arrive var(--motion-fast) var(--ease-out);
 }
 @keyframes chat-embed-arrive {
   from {
     opacity: 0;
-    transform: translateY(4px);
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chat-embed {
+  .chat-embed[data-arrive] {
     animation: none;
   }
 }
