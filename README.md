@@ -48,18 +48,16 @@ Per-feature details, rollout state and validation gaps live in [docs/media.md](d
 
 ## Development
 
-You'll need Node.js 24, npm 11+, Docker Compose, Rust 1.94, and AWS CLI access to
-the `staging` profile.
+You'll need Node.js 24, npm 11+, Docker Compose and Rust 1.94.
 
 ```bash
 npm ci
-aws sso login --profile staging
 npm run dev
 ```
 
-Open `http://localhost:3000/login`. Compose runs the web app, API, gateway and Valkey;
-config comes from AWS Secrets Manager (`staging/apps/caper`), with
-[.env.example](.env.example) listing the settings.
+Open `http://localhost:3000/login`. Compose runs the web app, API, gateway and Valkey.
+It loads its settings, listed in [.env.example](.env.example), from AWS, so it needs
+AWS credentials.
 
 Checks:
 
