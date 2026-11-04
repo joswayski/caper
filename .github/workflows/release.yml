@@ -136,7 +136,12 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-15
+          # Hosted macos-15 arm64 stopped acquiring runners on November 4,
+          # 2026 ("not acquired by Runner of type hosted"). The Xcode 27 image
+          # is arm64 with Xcode 27.1 by default, the same Xcode the self-hosted
+          # Mac CI and TestFlight already build with; the deployment target
+          # stays macOS 14.
+          - os: xcode-27
             label: Apple-Silicon
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
