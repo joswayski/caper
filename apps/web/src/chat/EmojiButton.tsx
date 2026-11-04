@@ -38,7 +38,7 @@ export default function EmojiButton({
   onSelect: (emoji: string) => void;
   onOpenChange?: (open: boolean) => void;
   /** The composer that Escape, the close button or an outside press returns typing to. */
-  returnFocus?: RefObject<HTMLTextAreaElement | null>;
+  returnFocus?: RefObject<HTMLElement | null>;
   onSendGif?: (gif: ChatGif, query: string) => void;
   gifDisabled?: boolean;
 }) {

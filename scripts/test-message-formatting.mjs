@@ -11,6 +11,15 @@ const session = process.env.FORMAT_TEST_SESSION ?? `format-${process.pid}`;
 const artifacts = process.env.FORMAT_TEST_ARTIFACTS && resolve(process.env.FORMAT_TEST_ARTIFACTS);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
 function browser(...args) {
+  // Select-all through real keys: synthetic contenteditable fills can paste into
+  // the editor's previous selection before its selectionchange event is delivered.
+  if (args[0] === "fill") {
+    browser("focus", args[1]);
+    browser("press", "Control+a");
+    browser("press", "Backspace");
+    if (args[2].length > 1000) return browser("keyboard", "inserttext", args[2]);
+    return browser("type", args[1], args[2]);
+  }
   const result = JSON.parse(
     execFileSync("agent-browser", ["--session", session, "--restore", ...args, "--json"], {
       encoding: "utf8",
@@ -44,11 +53,11 @@ const clickToolbarEdge = (side) => {
   browser("mouse", "up", "left");
 };
 const select = (start, end) => {
-  browser("click", "#chat-message");
+  browser("focus", "#chat-message");
   evaluate(
     `const field = document.querySelector('#chat-message'); field.focus(); field.setSelectionRange(${start}, ${end});`,
   );
-  browser("press", "Shift");
+  evaluate("await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));");
 };
 try {
   browser("open", origin.href);
@@ -108,6 +117,8 @@ try {
   );
   clickToolbarEdge("left");
   assert.equal(value(), "Make this **bold** and italic.");
+  assert.equal(evaluate("return document.querySelector('#chat-message strong').textContent;"), "bold");
+  assert.equal(evaluate("return document.querySelector('#chat-message').textContent;"), "Make this bold and italic.");
   assert.equal(evaluate("return document.activeElement.id;"), "chat-message", "formatting retains editor focus");
   browser("press", "Control+z");
   assert.equal(value(), "Make this bold and italic.", "one undo removes formatting, not the draft");
@@ -120,6 +131,7 @@ try {
   select(23, 29);
   clickToolbarEdge("right");
   assert.equal(value(), "Make this **bold** and _italic_.");
+  assert.equal(evaluate("return document.querySelector('#chat-message em').textContent;"), "italic");
   browser("press", "ArrowRight");
   browser("press", "Enter");
   browser("wait", "#sent strong");
@@ -206,8 +218,63 @@ try {
   browser("press", "Enter");
   assert.equal(value(), "Select _these words_ to format them", "keyboard-focused button remains actionable");
   select(8, 19);
+  const url = "https://youtu.be/NQXAC9IVRw?x=a_b&y=2";
+  browser("fill", "#chat-message", `Read ${url} today`);
+  select(14, 23);
+  assert.equal(
+    evaluate("return [...document.querySelectorAll('.chat-format-toolbar button')].every(button => button.disabled);"),
+    true,
+  );
+  browser("press", "Control+b");
+  browser("press", "Control+i");
+  assert.equal(value(), `Read ${url} today`, "partial link formatting cannot change its destination");
+  capture("protected-link");
+  select(5, 5 + url.length);
+  browser("press", "Control+b");
+  assert.equal(evaluate("return document.querySelector('#chat-message strong').textContent;"), url);
+  assert.equal(
+    evaluate(`
+    const clipboardData = new DataTransfer();
+    document.querySelector('#chat-message').dispatchEvent(new ClipboardEvent('copy', {clipboardData, bubbles: true, cancelable: true}));
+    return clipboardData.getData('text/plain');
+  `),
+    url,
+    "copy exports the visible address, never source markers",
+  );
+  browser("press", "ArrowRight");
+  browser("press", "Enter");
+  assert.equal(evaluate("return document.querySelector('#sent article:last-child a').getAttribute('href');"), url);
+  assert.equal(value(), "");
+  browser("press", "Control+z");
+  assert.equal(value(), "", "undo cannot resurrect a sent draft");
+  evaluate(`
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', 'Plain pasted text');
+    clipboardData.setData('text/html', '<img src=x onerror=alert(1)><a href=https://evil.example>Plain pasted text</a>');
+    document.querySelector('#chat-message').dispatchEvent(new ClipboardEvent('paste', {clipboardData, bubbles: true, cancelable: true}));
+  `);
+  assert.equal(value(), "Plain pasted text");
+  assert.equal(evaluate("return document.querySelector('#chat-message img, #chat-message a');"), null);
+  browser("fill", "#chat-message", "**@fee**");
+  browser("wait", "#chat-mention-feedback");
+  browser("click", "#chat-mention-feedback");
+  assert.equal(value(), "**@feedback** ", "mention completion preserves the surrounding style");
+  assert.equal(evaluate("return document.querySelector('#chat-message strong').textContent;"), "@feedback");
+  browser("fill", "#chat-message", "**:smile**");
+  browser("wait", "#chat-emoji-options button");
+  browser("click", "#chat-emoji-options button:first-child");
+  assert.equal(evaluate("return document.querySelector('#chat-message strong').textContent.includes(':');"), false);
+  assert.equal(evaluate("return document.querySelector('#chat-message').textContent.includes('*');"), false);
+  browser("fill", "#chat-message", "Make this bold and italic.");
+  select(10, 14);
+  browser("press", "Control+b");
+  select(23, 29);
+  browser("press", "Control+i");
+  capture("visual-desktop");
+  browser("set", "viewport", "390", "844", "2");
+  capture("visual-narrow");
   console.log(
-    "PASS: toolbar, shortcuts, toggling, undo, send, nested emphasis, links, mentions, edit, dismissal, narrow layout and 4,000-character limit",
+    "PASS: visible emphasis, toolbar, shortcuts, undo/redo boundary, send/edit, nested styles, protected URLs, safe paste/copy, mentions, narrow layout and 4,000-character limit",
   );
 } finally {
   if (!process.env.FORMAT_TEST_KEEP) browser("close");

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { dialogKeyDown } from "../components/dialogKeyboard";
 import { focusReturn } from "./focus-return.ts";
 import type { ChatMessage } from "./types.ts";
-import MentionTextarea from "./MentionTextarea.tsx";
+import MentionTextarea, { type ComposerInput } from "./MentionTextarea.tsx";
 
 export default function MessageEditor({
   message,
@@ -16,7 +16,7 @@ export default function MessageEditor({
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const textarea = useRef<HTMLTextAreaElement>(null);
+  const textarea = useRef<ComposerInput>(null);
   const [baseline, setBaseline] = useState(message);
   const [draft, setDraft] = useState(message.content.text);
   const [saving, setSaving] = useState(false);
@@ -90,7 +90,7 @@ export default function MessageEditor({
           rows={5}
           aria-describedby="chat-edit-count"
           aria-invalid={count > 4_000 || undefined}
-          onChange={(event) => setDraft(event.target.value)}
+          onValueChange={setDraft}
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) {
               event.preventDefault();

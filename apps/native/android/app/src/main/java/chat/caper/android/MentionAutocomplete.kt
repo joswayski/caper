@@ -76,14 +76,15 @@ private fun Char.startsMention(): Boolean = isWhitespace() || this in "([{"
 /** The `@name` token ending at a collapsed caret, outside IME composition. */
 internal fun mentionToken(value: TextFieldValue): MentionToken? {
     if (!value.selection.collapsed || value.composition != null) return null
-    val text = value.text
-    val caret = value.selection.start
+    val projection = chat.caper.android.data.formattedMessage(value.text)
+    val text = projection.text
+    val caret = projection.displayed(value.selection.start)
     if (caret < text.length && (text[caret] == '@' || text[caret].isMentionNameChar())) return null
     var at = caret - 1
     while (at >= 0 && text[at].isMentionNameChar()) at--
     if (at < 0 || text[at] != '@' || caret - at - 1 > MENTION_NAME_LIMIT) return null
     if (at > 0 && !text[at - 1].startsMention()) return null
-    return MentionToken(at, caret, text.substring(at + 1, caret))
+    return MentionToken(projection.sourceIndices[at], projection.sourceIndices[caret - 1] + 1, text.substring(at + 1, caret))
 }
 
 /**
@@ -177,10 +178,16 @@ internal fun rankPeople(people: List<MentionCandidate>, query: String): List<Men
 
 /** Replaces the token with `@username ` and leaves the caret after the space. */
 internal fun insertMention(value: TextFieldValue, token: MentionToken, username: String, limit: Int = 4000): TextFieldValue? {
-    val inserted = "@$username "
-    val text = value.text.substring(0, token.start) + inserted + value.text.substring(token.end)
+    val visible = chat.caper.android.data.formattedMessage(value.text).sourceIndices.toSet()
+    var end = token.end
+    while (end < value.text.length && end !in visible) end++
+    // Put the completion's separator after closing styles, not inside them.
+    val inserted = "@$username" + value.text.substring(token.end, end) + " "
+    val text = value.text.substring(0, token.start) + inserted + value.text.substring(end)
     if (text.codePointCount(0, text.length) > limit) return null
-    return TextFieldValue(text, TextRange(token.start + inserted.length))
+    val caret = token.start + inserted.length
+    val repaired = chat.caper.android.data.repairFormatEdit(value.text, chat.caper.android.data.FormatSelection(text, caret, caret))
+    return TextFieldValue(repaired.text, TextRange(repaired.start))
 }
 
 /** A grammatical mention in message text; [name] is lowercase. */
@@ -212,18 +219,30 @@ internal fun draftMentionSpans(text: String, source: MentionSource): List<Mentio
     }
 }
 
-/** Colour only: selection, IME offsets and the submitted text are unchanged. */
+/** Project the wire draft into styled text; Compose keeps selection and IME in source offsets. */
 internal class MentionVisualTransformation(private val source: MentionSource) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
-        val styled = AnnotatedString.Builder(text)
-        val mentions = draftMentionSpans(text.text, source)
+        val formatted = chat.caper.android.data.formattedMessage(text.text)
+        val styled = AnnotatedString.Builder(formatted.text)
+        var offset = 0
+        for (run in formatted.runs) {
+            if (run.bold || run.italic) styled.addStyle(SpanStyle(
+                fontWeight = if (run.bold) androidx.compose.ui.text.font.FontWeight.Bold else null,
+                fontStyle = if (run.italic) androidx.compose.ui.text.font.FontStyle.Italic else null,
+            ), offset, offset + run.text.length)
+            offset += run.text.length
+        }
+        val mentions = draftMentionSpans(formatted.text, source)
         for (span in mentions) {
             styled.addStyle(SpanStyle(background = Terracotta.copy(alpha = 0.24f)), span.start, span.end)
         }
-        for (link in linkRanges(text.text, mentions.map { it.start until it.end })) {
+        for (link in linkRanges(formatted.text, mentions.map { it.start until it.end })) {
             styled.addStyle(SpanStyle(color = LinkBlue, background = LinkBlue.copy(alpha = 0.14f)), link.start, link.end)
         }
-        return TransformedText(styled.toAnnotatedString(), OffsetMapping.Identity)
+        return TransformedText(styled.toAnnotatedString(), object : OffsetMapping {
+            override fun originalToTransformed(offset: Int) = formatted.displayed(offset)
+            override fun transformedToOriginal(offset: Int) = formatted.original(offset)
+        })
     }
 }
 

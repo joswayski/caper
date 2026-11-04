@@ -338,7 +338,7 @@
 }
 /* Other scrolling chat surfaces use the app's thin, quiet scrollbar (call.css,
    live-window.css) instead of a full-width bar inside rounded corners. */
-.chat-composer textarea,
+.chat-composer .chat-rich-input,
 .chat-emoji-suggestions,
 .chat-pins,
 .chat-message-actions,
@@ -1859,7 +1859,7 @@ button.chat-mention-card-avatar {
   .chat-composer-tools {
     margin: 1px 1px 1px 0;
   }
-  .chat-profile-composer form textarea {
+  .chat-profile-composer form .chat-rich-input {
     padding-right: 92px;
   }
 }
@@ -2221,7 +2221,7 @@ button.chat-mention-card-avatar {
   align-items: end;
   gap: 7px;
 }
-:is(.chat-composer, .chat-profile-composer) textarea {
+:is(.chat-composer, .chat-profile-composer) .chat-rich-input {
   width: 100%;
   resize: none;
   overflow-y: auto;
@@ -2237,65 +2237,65 @@ button.chat-mention-card-avatar {
   line-height: 1.4;
   transition: border-color var(--motion-fast) var(--ease-out);
 }
-:is(.chat-composer, .chat-profile-composer) textarea:focus-visible {
+:is(.chat-composer, .chat-profile-composer) .chat-rich-input:focus-visible {
   outline: none;
 }
-:is(.chat-composer, .chat-profile-composer) textarea:focus {
+:is(.chat-composer, .chat-profile-composer) .chat-rich-input:focus {
   border-color: var(--terracotta);
 }
 @media (prefers-reduced-motion: reduce) {
-  :is(.chat-composer, .chat-profile-composer) textarea,
+  :is(.chat-composer, .chat-profile-composer) .chat-rich-input,
   .chat-reaction,
   .chat-reply-expand {
     transition: none;
   }
 }
-:is(.chat-composer, .chat-profile-composer) textarea:disabled {
+:is(.chat-composer, .chat-profile-composer) .chat-rich-input[aria-disabled="true"] {
   opacity: 0.55;
 }
-:is(.chat-composer, .chat-profile-composer) form textarea {
+:is(.chat-composer, .chat-profile-composer) form .chat-rich-input {
   grid-column: 1;
   grid-row: 1;
   padding-right: 48px;
 }
-:is(.chat-composer, .chat-profile-composer) form[data-attach] textarea {
+:is(.chat-composer, .chat-profile-composer) form[data-attach] .chat-rich-input {
   padding-left: 48px;
 }
-.chat-profile-composer form textarea {
+.chat-profile-composer form .chat-rich-input {
   max-height: 160px;
   padding-right: 84px;
 }
 /* Emoji, microphone and send. */
-.chat-profile-composer form[data-voice] textarea {
+.chat-profile-composer form[data-voice] .chat-rich-input {
   padding-right: 120px;
 }
 @media (pointer: coarse) {
-  .chat-profile-composer form[data-voice] textarea {
+  .chat-profile-composer form[data-voice] .chat-rich-input {
     padding-right: 134px;
   }
 }
 .chat-composer-send-touch {
   display: none;
 }
-.chat-composer form[data-voice] textarea {
+.chat-composer form[data-voice] .chat-rich-input {
   padding-right: 84px;
 }
 @media (max-width: 760px), (pointer: coarse) {
   .chat-composer-send-touch {
     display: grid;
   }
-  .chat-composer form textarea {
+  .chat-composer form .chat-rich-input {
     padding-right: 84px;
   }
-  .chat-composer form[data-voice] textarea {
+  .chat-composer form[data-voice] .chat-rich-input {
     padding-right: 120px;
   }
 }
 @media (pointer: coarse) {
-  .chat-composer form textarea {
+  .chat-composer form .chat-rich-input {
     padding-right: 92px;
   }
-  .chat-composer form[data-voice] textarea {
+  .chat-composer form[data-voice] .chat-rich-input {
     padding-right: 136px;
   }
 }
@@ -2307,75 +2307,59 @@ button.chat-mention-card-avatar {
   border-radius: 8px;
   background: var(--surface-composer);
 }
-:is(.chat-composer, .chat-profile-composer, .chat-edit-dialog, .chat-forward-body) .chat-mention-input > textarea {
+.chat-rich-input {
   position: relative;
   display: block;
   background: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+  cursor: text;
+  outline: none;
+  caret-color: var(--text);
 }
 /* A long channel or person name stays on one line instead of growing the
    empty composer to four. */
-.chat-mention-input > textarea::placeholder {
+.chat-rich-input[data-empty]::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  max-width: calc(100% - 100px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.chat-mention-input-mirror {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  box-sizing: border-box;
-  border: 1px solid transparent;
-  border-radius: inherit;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  color: transparent;
+  color: var(--text-muted);
   pointer-events: none;
 }
-.chat-mention-input-mirror mark {
+.chat-rich-input strong {
+  font-weight: 700;
+}
+.chat-rich-input em {
+  font-style: italic;
+}
+.chat-rich-input .chat-draft-mention {
   background: rgb(182 77 50 / 24%);
-  color: transparent;
   border-radius: 3px;
 }
-.chat-mention-input-mirror .chat-draft-link {
+.chat-rich-input .chat-draft-link {
+  color: var(--link);
   background: color-mix(in srgb, var(--link) 14%, transparent);
   border-radius: 4px;
   box-decoration-break: clone;
-  /* Visual padding only: the mirror must wrap at the textarea's exact glyph positions. */
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--link) 14%, transparent),
     0 0 6px color-mix(in srgb, var(--link) 8%, transparent);
 }
-/* A textarea cannot colour individual ranges. When URLs exist, the aligned
-   mirror paints the text; the real textarea still owns editing and the caret. */
-.chat-mention-input:has(.chat-draft-link) > textarea {
-  color: transparent;
-  caret-color: var(--text);
-}
-.chat-mention-input:has(.chat-draft-link) > textarea::selection {
-  color: transparent;
-  background: rgb(105 207 255 / 28%);
-}
-.chat-mention-input:has(.chat-draft-link) .chat-mention-input-mirror,
-.chat-mention-input:has(.chat-draft-link) mark {
-  color: var(--text);
-}
-.chat-mention-input:has(.chat-draft-link) .chat-draft-link {
-  color: var(--link);
-}
 @media (forced-colors: active) {
-  .chat-mention-input:has(.chat-draft-link) .chat-mention-input-mirror {
-    visibility: hidden;
-  }
-  .chat-mention-input:has(.chat-draft-link) > textarea {
+  .chat-rich-input {
     color: CanvasText;
     caret-color: CanvasText;
   }
-  .chat-mention-input:has(.chat-draft-link) > textarea::selection {
+  .chat-rich-input ::selection {
     color: HighlightText;
     background: Highlight;
   }
 }
-.chat-mention-input[data-disabled] .chat-mention-input-mirror {
+.chat-mention-input[data-disabled] .chat-rich-input {
   opacity: 0.55;
 }
 .chat-format-toolbar {
@@ -4773,10 +4757,10 @@ a.chat-draft-preview {
   grid-column: 1;
   grid-row: 2;
 }
-.chat-thread-composer form textarea {
+.chat-thread-composer form .chat-rich-input {
   padding-right: 48px;
 }
-.chat-thread-composer form[data-voice] textarea {
+.chat-thread-composer form[data-voice] .chat-rich-input {
   padding-right: 92px;
 }
 .chat-thread-send-row > .chat-thread-tools {
@@ -4802,7 +4786,7 @@ a.chat-draft-preview {
   .chat-attach:focus-visible {
     outline-offset: -2px;
   }
-  :is(.chat-composer, .chat-profile-composer) form[data-attach] textarea {
+  :is(.chat-composer, .chat-profile-composer) form[data-attach] .chat-rich-input {
     padding-left: 42px;
   }
   .chat-thread-send-row > .chat-thread-tools {
@@ -4812,7 +4796,7 @@ a.chat-draft-preview {
     width: 32px;
     height: 32px;
   }
-  .chat-thread-composer form[data-voice] textarea {
+  .chat-thread-composer form[data-voice] .chat-rich-input {
     padding-right: 80px;
   }
 }
@@ -4997,7 +4981,7 @@ a.chat-draft-preview {
   font-size: 0.8rem;
 }
 .chat-forward-body input[type="search"],
-.chat-forward-body textarea {
+.chat-forward-body .chat-rich-input {
   width: 100%;
   min-height: 40px;
   padding: 10px;
@@ -5007,7 +4991,7 @@ a.chat-draft-preview {
   color: var(--text);
   font: inherit;
 }
-.chat-forward-body textarea {
+.chat-forward-body .chat-rich-input {
   resize: vertical;
 }
 .chat-forward-destinations {
@@ -5158,7 +5142,7 @@ a.chat-draft-preview {
   font-size: 0.82rem;
   font-weight: 700;
 }
-.chat-edit-dialog textarea,
+.chat-edit-dialog .chat-rich-input,
 .chat-edit-dialog select {
   width: 100%;
   padding: 10px 12px;
@@ -5170,7 +5154,7 @@ a.chat-draft-preview {
   font-size: 0.85rem;
   line-height: 1.5;
 }
-.chat-edit-dialog textarea {
+.chat-edit-dialog .chat-rich-input {
   resize: vertical;
   min-height: 140px;
   max-height: 45dvh;
@@ -5418,7 +5402,7 @@ a.chat-draft-preview {
   }
 }
 @media (max-width: 760px), (pointer: coarse) {
-  .chat-thread-composer form textarea {
+  .chat-thread-composer form .chat-rich-input {
     min-height: 46px;
   }
   .chat-thread-composer .chat-attach,
@@ -5426,7 +5410,7 @@ a.chat-draft-preview {
     width: 44px;
     height: 44px;
   }
-  .chat-thread-composer form[data-voice] textarea {
+  .chat-thread-composer form[data-voice] .chat-rich-input {
     padding-right: 100px;
   }
   .chat-thread-send-row button[type="submit"] {
@@ -6276,50 +6260,50 @@ a.chat-draft-preview {
   letter-spacing: 0.02em;
   line-height: 1;
 }
-:is(.chat-composer, .chat-profile-composer) form:has(.chat-gif-tool) textarea {
+:is(.chat-composer, .chat-profile-composer) form:has(.chat-gif-tool) .chat-rich-input {
   padding-right: 82px;
 }
-.chat-composer form[data-voice]:has(.chat-gif-tool) textarea {
+.chat-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
   padding-right: 118px;
 }
-.chat-profile-composer form:has(.chat-gif-tool) textarea {
+.chat-profile-composer form:has(.chat-gif-tool) .chat-rich-input {
   padding-right: 118px;
 }
 @media (max-width: 760px), (pointer: coarse) {
-  .chat-composer form:has(.chat-gif-tool) textarea {
+  .chat-composer form:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 118px;
   }
-  .chat-composer form[data-voice]:has(.chat-gif-tool) textarea {
+  .chat-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 154px;
   }
 }
 @media (pointer: coarse) {
-  :is(.chat-composer, .chat-profile-composer) form:has(.chat-gif-tool) textarea {
+  :is(.chat-composer, .chat-profile-composer) form:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 134px;
   }
-  .chat-composer form[data-voice]:has(.chat-gif-tool) textarea {
+  .chat-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 178px;
   }
 }
-.chat-thread-composer form:has(.chat-gif-tool) textarea {
+.chat-thread-composer form:has(.chat-gif-tool) .chat-rich-input {
   padding-right: 92px;
 }
-.chat-thread-composer form[data-voice]:has(.chat-gif-tool) textarea {
+.chat-thread-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
   padding-right: 136px;
 }
 @media (min-width: 761px) and (hover: hover) and (pointer: fine) {
-  .chat-thread-composer form:has(.chat-gif-tool) textarea {
+  .chat-thread-composer form:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 82px;
   }
-  .chat-thread-composer form[data-voice]:has(.chat-gif-tool) textarea {
+  .chat-thread-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 114px;
   }
 }
 @media (max-width: 760px), (pointer: coarse) {
-  .chat-thread-composer form:has(.chat-gif-tool) textarea {
+  .chat-thread-composer form:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 96px;
   }
-  .chat-thread-composer form[data-voice]:has(.chat-gif-tool) textarea {
+  .chat-thread-composer form[data-voice]:has(.chat-gif-tool) .chat-rich-input {
     padding-right: 146px;
   }
 }

@@ -1,9 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useState, type KeyboardEvent, type RefObject } from "react";
 import { PersonSuggestion } from "../components/PeopleSuggestions";
+import type { ComposerInput } from "./MentionTextarea.tsx";
 import { emojiAsset } from "./emoji.ts";
-import { emojiToken, emojiSuggestions, insertEmoji, loadEmojiChoices, type EmojiChoice } from "./emoji-autocomplete.ts";
 import {
-  insertMention,
+  emojiToken,
+  emojiSuggestions,
+  loadEmojiChoices,
+  type EmojiChoice,
+  type EmojiToken,
+} from "./emoji-autocomplete.ts";
+import { formattedMessage } from "./formatting.ts";
+import {
   mentionName,
   mentionSuggestions,
   mentionToken,
@@ -22,18 +29,16 @@ export function useComposerSuggestions({
   input,
   people,
   specialMentions,
-  onInsert,
   onTooLong,
 }: {
   /** Prefix for the popup's element IDs; unique per composer. */
   id: string;
   draft: string;
-  input: RefObject<HTMLTextAreaElement | null>;
+  input: RefObject<ComposerInput | null>;
   /** People `@` can suggest, without the author; undefined until loaded. */
   people?: MentionCandidate[];
   /** `@everyone` and `@here`, which DMs do not offer. */
   specialMentions: boolean;
-  onInsert: (value: string) => void;
   onTooLong: () => void;
 }) {
   const [selection, setSelection] = useState({ start: 0, end: 0 });
@@ -45,7 +50,17 @@ export function useComposerSuggestions({
   const [selected, setSelected] = useState(0);
   const selectionKey = `${draft}:${selection.start}:${selection.end}`;
   const suggesting = focused && !composing && dismissed !== selectionKey;
-  const token = suggesting ? emojiToken(draft, selection.start, selection.end) : undefined;
+  const projection = useMemo(() => formattedMessage(draft), [draft]);
+  const visible = projection.runs.map((run) => run.text).join("");
+  const start = projection.sourceIndices.filter((index) => index < selection.start).length;
+  const end = projection.sourceIndices.filter((index) => index < selection.end).length;
+  const sourceToken = (token: EmojiToken | undefined) =>
+    token && {
+      ...token,
+      start: projection.sourceIndices[token.start],
+      end: projection.sourceIndices[token.end - 1] + 1,
+    };
+  const token = suggesting ? sourceToken(emojiToken(visible, start, end)) : undefined;
   const emojiOpen = !!token;
   const emojiQuery = token?.query;
   const emojiOptions = useMemo(
@@ -53,7 +68,7 @@ export function useComposerSuggestions({
     [emojiChoices, emojiQuery],
   );
   // `:` and `@` tokens never overlap; only one popup can be open.
-  const mention = suggesting && !token ? mentionToken(draft, selection.start, selection.end) : undefined;
+  const mention = suggesting && !token ? sourceToken(mentionToken(visible, start, end)) : undefined;
   const mentionOptions = mention ? mentionSuggestions(people ?? [], mention.query, specialMentions) : [];
   const mentionOpen = mentionOptions.length > 0;
   const optionCount = token ? emojiOptions.length : mentionOptions.length;
@@ -82,31 +97,22 @@ export function useComposerSuggestions({
       active = false;
     };
   }, [emojiOpen, emojiChoices]);
-  const track = (element: HTMLTextAreaElement) => {
+  const track = (element: ComposerInput) => {
     setSelection({ start: element.selectionStart, end: element.selectionEnd });
     const nextKey = `${element.value}:${element.selectionStart}:${element.selectionEnd}`;
     setDismissed((current) => (current === nextKey ? current : undefined));
   };
-  const apply = (result: { value: string; caret: number } | undefined) => {
-    if (!result) {
-      onTooLong();
-      return;
-    }
-    onInsert(result.value);
-    setSelection({ start: result.caret, end: result.caret });
-    requestAnimationFrame(() => {
-      input.current?.focus();
-      input.current?.setSelectionRange(result.caret, result.caret);
-    });
+  const apply = (token: EmojiToken, text: string) => {
+    if (!input.current?.replaceText(token.start, token.end, text)) onTooLong();
   };
   const chooseEmoji = (entry: EmojiChoice) => {
-    if (token) apply(insertEmoji(draft, token, entry.emoji));
+    if (token) apply(token, entry.emoji);
   };
   const chooseMention = (option: MentionSuggestion) => {
-    if (mention) apply(insertMention(draft, mention, mentionName(option)));
+    if (mention) apply(mention, `@${mentionName(option)} `);
   };
   /** Handles suggestion keys; true when the composer must not act on the key. */
-  const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+  const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.nativeEvent.isComposing || composing) return true;
     if ((emojiOpen || mentionOpen) && event.key === "Escape") {
       event.preventDefault();
@@ -207,7 +213,7 @@ export function useComposerSuggestions({
     popup,
     keyDown,
     /** Call from the textarea's change handler. */
-    change: (element: HTMLTextAreaElement) => {
+    change: (element: ComposerInput) => {
       setDismissed(undefined);
       track(element);
     },
@@ -216,15 +222,15 @@ export function useComposerSuggestions({
       "aria-autocomplete": "list" as const,
       "aria-controls": emojiOptions.length ? `${id}-emoji-options` : mentionOpen ? `${id}-mention-options` : undefined,
       "aria-activedescendant": activeOptionId || undefined,
-      onFocus: (event: { currentTarget: HTMLTextAreaElement }) => {
+      onFocus: () => {
         setFocused(true);
-        track(event.currentTarget);
+        if (input.current) track(input.current);
       },
-      onSelect: (event: { currentTarget: HTMLTextAreaElement }) => track(event.currentTarget),
+      onSelect: (event: { currentTarget: ComposerInput }) => track(event.currentTarget),
       onCompositionStart: () => setComposing(true),
-      onCompositionEnd: (event: { currentTarget: HTMLTextAreaElement }) => {
+      onCompositionEnd: () => {
         setComposing(false);
-        track(event.currentTarget);
+        if (input.current) track(input.current);
       },
     },
     blur: () => setFocused(false),

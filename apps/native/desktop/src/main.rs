@@ -16715,6 +16715,7 @@ impl CaperApp {
                                 ui.set_width(text_width);
                                 // Let Reply focus and accept typing while history loads; sending still waits.
                                 ui.scope(|ui| {
+                                    formatting::prepare(ui, &draft.0, composer_id, !loading);
                                     egui::ScrollArea::vertical()
                                         .id_salt(("thread-composer-scroll", &root))
                                         .max_height(editor_height - 20.0)
@@ -17253,6 +17254,7 @@ impl CaperApp {
                         );
                         hint.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - 8.0).max(1.0));
                         let hint = emoji::layout_job(ui, hint);
+                        formatting::prepare(ui, draft, composer_id, true);
                         let mut output = egui::TextEdit::multiline(draft)
                             .id(composer_id)
                             .layouter(&mut layouter)
@@ -22627,6 +22629,7 @@ impl CaperApp {
                                         .min_scrolled_height(42.0)
                                         .auto_shrink([false, true])
                                         .show(ui, |ui| {
+                                            formatting::prepare(ui, &draft.text, id, editable);
                                             egui::TextEdit::multiline(&mut draft.text)
                                                 .id(id)
                                                 .layouter(&mut layouter)
@@ -30518,7 +30521,8 @@ enum Run {
     Link(std::ops::Range<usize>, String),
 }
 
-/// Colour-only highlights keep editable glyph metrics and cursor positions unchanged.
+/// Styled glyphs over the wire draft. Hidden delimiters occupy zero width but retain
+/// one galley character per source scalar, preserving egui's editing coordinates.
 fn draft_layout(
     ui: &egui::Ui,
     text: &str,
@@ -30534,7 +30538,21 @@ fn draft_layout(
     };
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = width;
-    let ranges = mentions::draft_highlights(text, people, specials);
+    let styles = formatting::source_runs(text);
+    let visible: String = styles
+        .iter()
+        .filter(|run| !run.hidden)
+        .map(|run| &text[run.range.clone()])
+        .collect();
+    let source_indices: Vec<usize> = styles
+        .iter()
+        .filter(|run| !run.hidden)
+        .flat_map(|run| run.range.clone())
+        .collect();
+    let ranges: Vec<_> = mentions::draft_highlights(&visible, people, specials)
+        .into_iter()
+        .map(|range| source_indices[range.start]..source_indices[range.end - 1] + 1)
+        .collect();
     if text.is_empty() {
         job.append(text, 0.0, plain.clone());
     }
@@ -30544,15 +30562,34 @@ fn draft_layout(
             Run::Pill(range, _) => (range, TERRACOTTA.gamma_multiply(0.24), plain.color),
             Run::Link(range, _) => (range, LINK.gamma_multiply(0.14), LINK),
         };
-        job.append(
-            &text[range],
-            0.0,
-            egui::TextFormat {
+        for style in &styles {
+            let start = range.start.max(style.range.start);
+            let end = range.end.min(style.range.end);
+            if start >= end {
+                continue;
+            }
+            let mut format = egui::TextFormat {
                 background,
                 color,
                 ..plain.clone()
-            },
-        );
+            };
+            if style.hidden {
+                // Zero-width glyphs are layout-only: clipboard, undo, persistence and
+                // sending continue to use the original Markdown TextBuffer.
+                format.background = Color32::TRANSPARENT;
+                job.append(
+                    &"\u{200b}".repeat(text[start..end].chars().count()),
+                    0.0,
+                    format,
+                );
+            } else {
+                if style.bold {
+                    format.font_id.family = egui::FontFamily::Name("Satoshi Bold".into());
+                }
+                format.italics = style.italic;
+                job.append(&text[start..end], 0.0, format);
+            }
+        }
     }
     ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
@@ -47593,6 +47630,44 @@ mod tests {
             [Run::Pill(0..4, 0), Run::Plain(4..8)]
         );
         assert!(message_runs("", &[]).is_empty());
+    }
+
+    #[test]
+    fn draft_formatting_hides_marker_glyphs_without_changing_edit_offsets() {
+        let context = egui::Context::default();
+        super::configure(&context);
+        let text = "**bold _🙂_** https://example.com/a_b";
+        let _ = context.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let galley = super::draft_layout(
+                    ui,
+                    text,
+                    500.0,
+                    &[],
+                    mentions::Specials::default(),
+                    egui::FontId::proportional(13.6),
+                );
+                assert_eq!(galley.job.text.chars().count(), text.chars().count());
+                assert_eq!(
+                    galley.job.text.replace('\u{200b}', ""),
+                    "bold 🙂 https://example.com/a_b"
+                );
+                let hidden: Vec<_> = galley
+                    .rows
+                    .iter()
+                    .flat_map(|row| &row.glyphs)
+                    .filter(|glyph| glyph.chr == '\u{200b}')
+                    .collect();
+                assert_eq!(hidden.len(), 6);
+                assert!(hidden.iter().all(|glyph| glyph.advance_width == 0.0));
+                assert!(galley.job.sections.iter().any(|section| {
+                    section.format.italics
+                        && section.format.font_id.family
+                            == egui::FontFamily::Name("Satoshi Bold".into())
+                        && galley.job.text[section.byte_range.clone()].contains('🙂')
+                }));
+            });
+        });
     }
 
     #[test]

@@ -10,8 +10,7 @@ import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import EmojiButton from "./EmojiButton.tsx";
 import { useKlipy } from "./GifButton.tsx";
 import { shareKlipy, type ChatGif } from "./klipy.ts";
-import { insertEmoji } from "./emoji-autocomplete.ts";
-import MentionTextarea from "./MentionTextarea.tsx";
+import MentionTextarea, { type ComposerInput } from "./MentionTextarea.tsx";
 import type { AttachmentEdit } from "./edit.ts";
 import { editableKind, type CompressionSettings } from "./prepare.ts";
 import { isChatMessage, type ChatAttachment } from "./types.ts";
@@ -155,7 +154,7 @@ export default function ProfileComposer({
   personId: string;
   username: string;
   /** The card focuses this field when it opens. */
-  inputRef: RefObject<HTMLTextAreaElement | null>;
+  inputRef: RefObject<ComposerInput | null>;
   onSent: () => void;
   onStateChange: (state: { picking: boolean; sending: boolean }) => void;
 }) {
@@ -273,7 +272,6 @@ export default function ProfileComposer({
     draft: draft.text,
     input,
     specialMentions: false,
-    onInsert: (text) => save({ ...draft, text }),
     onTooLong: () => setError("Messages must be 4,000 characters or fewer."),
   });
   useEffect(() => {
@@ -425,17 +423,9 @@ export default function ProfileComposer({
   const chooseEmoji = (emoji: string) => {
     const element = input.current;
     const start = element?.selectionStart ?? draft.text.length;
-    const result = insertEmoji(draft.text, { start, end: element?.selectionEnd ?? start, query: "" }, emoji);
-    if (!result) {
+    if (!element?.replaceText(start, element.selectionEnd, emoji)) {
       setError("Messages must be 4,000 characters or fewer.");
-      return;
     }
-    save({ ...draft, text: result.value });
-    setError(undefined);
-    requestAnimationFrame(() => {
-      element?.focus();
-      element?.setSelectionRange(result.caret, result.caret);
-    });
   };
   /** Sends the draft, or `gif` on its own, keeping the draft. */
   const submit = async (gif?: { gif: ChatGif; query: string }) => {
@@ -619,9 +609,9 @@ export default function ProfileComposer({
           enterKeyHint="send"
           aria-describedby="profile-composer-hint"
           {...suggestions.textarea}
-          onChange={(event) => {
-            save({ ...draft, text: event.target.value });
-            suggestions.change(event.target);
+          onValueChange={(value, input) => {
+            save({ ...draft, text: value });
+            suggestions.change(input);
             setError(undefined);
           }}
           onBlur={suggestions.blur}

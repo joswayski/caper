@@ -2,6 +2,60 @@ import XCTest
 @testable import CaperCore
 
 final class MessageFormattingTests: XCTestCase {
+    func testVisibleNavigationDeletionAndClipboard() {
+        let text = "**a👩‍💻b**"
+        XCTAssertEqual(MessageFormatting.normalizedSelection(text, selection: NSRange(location: 1, length: 0)), NSRange(location: 2, length: 0))
+        let afterEmoji = MessageFormatting.movedSelection(text, selection: NSRange(location: 3, length: 0), backward: false, extending: false)
+        XCTAssertEqual(afterEmoji, NSRange(location: 8, length: 0))
+        XCTAssertEqual(MessageFormatting.deletionRange(text, selection: afterEmoji, backward: true), NSRange(location: 3, length: 5))
+        XCTAssertEqual(MessageFormatting.movedSelection(text, selection: NSRange(location: 11, length: 0), backward: true, extending: false), NSRange(location: 8, length: 0))
+        XCTAssertEqual(MessageFormatting.copiedText(text, selection: NSRange(location: 0, length: 11)), "a👩‍💻b")
+        XCTAssertEqual(MessageFormatting.copiedText("**hello**", selection: NSRange(location: 3, length: 3)), "ell")
+        XCTAssertEqual(MessageFormatting.movedSelection("**a**b", selection: NSRange(location: 2, length: 0), backward: false, extending: false), NSRange(location: 5, length: 0))
+    }
+
+    func testReplacementAndStyledLinkEdgeEdits() {
+        XCTAssertEqual(MessageFormatting.repairEdit("**hello**", text: "**new**", selection: NSRange(location: 5, length: 0)).text, "**new**")
+        let url = "https://example.com/a_b"
+        for edited in ["** \(url)**", "**\(url) **"] {
+            let result = MessageFormatting.repairEdit("**\(url)**", text: edited, selection: NSRange(location: 3, length: 0))
+            XCTAssertEqual(MessageLinks.segments(in: result.text).compactMap(\.href), [url])
+            XCTAssertEqual(MessageFormatting.projection(result.text).text, edited.replacingOccurrences(of: "**", with: ""))
+        }
+    }
+
+    func testFormattedCompletionKeepsWireRanges() throws {
+        let text = "**:rocket**"
+        let match = try XCTUnwrap(ComposerAutocomplete.match(text: text, selection: NSRange(location: 9, length: 0), markedText: false, mentions: .empty))
+        guard case let .emoji(emoji) = match else { return XCTFail("Expected emoji completion") }
+        XCTAssertEqual(emoji.replacementRange, NSRange(location: 2, length: 7))
+        let result = try XCTUnwrap(ComposerAutocomplete.inserting(choice: 0, in: text, match: match))
+        XCTAssertEqual(result.text, "**🚀**")
+        XCTAssertEqual(result.selection, NSRange(location: 4, length: 0))
+        let person = MentionCandidate.member(id: "alice", username: "alice", displayName: "Alice")
+        let mention = MentionAutocompleteMatch(replacementRange: NSRange(location: 2, length: 3), choices: [person])
+        XCTAssertEqual(ComposerAutocomplete.inserting(choice: 0, in: "**@al**", match: .mention(mention))?.text, "**@alice** ")
+        XCTAssertEqual(EmojiAutocomplete.inserting("🚀", in: "**hello** tail", selection: NSRange(location: 0, length: 7))?.text, "🚀 tail")
+    }
+
+    func testEditsDiscardOnlyOrphanedDelimiters() {
+        for (before, after, caret, expected, expectedCaret) in [
+            ("**hello**", "****", 2, "", 0),
+            ("**_🙂_**", "**__**", 3, "", 0),
+            ("a **bold** z", "a ** z", 4, "a  z", 2),
+            ("**hello** tail", "**llo** tail", 2, "**llo** tail", 2),
+            ("a **", "a *", 3, "a *", 3),
+        ] {
+            let result = MessageFormatting.repairEdit(before, text: after, selection: NSRange(location: caret, length: 0))
+            XCTAssertEqual(result.text, expected)
+            XCTAssertEqual(result.selection, NSRange(location: expectedCaret, length: 0))
+        }
+        let result = MessageFormatting.toggle("**hello** rest", selection: NSRange(location: 2, length: 7), marker: "**")
+        XCTAssertEqual(result?.text, "hello rest")
+        XCTAssertEqual(result?.selection, NSRange(location: 0, length: 5))
+        XCTAssertNil(MessageFormatting.toggle("identifier", selection: NSRange(location: 2, length: 3), marker: "_"))
+    }
+
     private struct Fixtures: Decodable {
         struct Case: Decodable {
             let text: String
@@ -18,6 +72,26 @@ final class MessageFormattingTests: XCTestCase {
         XCTAssertFalse(fixtures.cases.isEmpty)
         for fixture in fixtures.cases {
             XCTAssertEqual(MessageFormatting.runs(fixture.text), fixture.runs, fixture.text)
+            let projection = MessageFormatting.projection(fixture.text)
+            let units = Array(fixture.text.utf16)
+            XCTAssertEqual(String(decoding: projection.sourceIndices.map { units[$0] }, as: UTF16.self), fixture.runs.map(\.text).joined())
+        }
+    }
+
+    func testURLBoundariesCannotBeSplit() throws {
+        let text = "🙂 https://example.com/a_b?q=one&x=two tail"
+        let source = text as NSString
+        let start = source.range(of: "https:").location, end = source.range(of: " tail").location
+        for marker in ["**", "_"] {
+            for (a, b) in [(start + 2, start + 2), (start + 2, end), (0, end - 2), (start, end - 1)] {
+                let selection = NSRange(location: a, length: b - a)
+                let result = try XCTUnwrap(MessageFormatting.toggle(text, selection: selection, marker: marker))
+                XCTAssertEqual(result.text, text)
+                XCTAssertEqual(result.selection, selection)
+            }
+            let result = try XCTUnwrap(MessageFormatting.toggle(text, selection: NSRange(location: start, length: end - start), marker: marker))
+            XCTAssertEqual(MessageFormatting.runs(result.text).map(\.text).joined(), text)
+            XCTAssertEqual(MessageLinks.segments(in: result.text).compactMap(\.href), MessageLinks.segments(in: text).compactMap(\.href))
         }
     }
 
@@ -29,7 +103,7 @@ final class MessageFormattingTests: XCTestCase {
             ("_hello_", NSRange(location: 1, length: 5), "_", "hello", NSRange(location: 0, length: 5)),
             ("_hello_", NSRange(location: 0, length: 7), "_", "hello", NSRange(location: 0, length: 5)),
             ("🙂 hi", NSRange(location: 3, length: 2), "_", "🙂 _hi_", NSRange(location: 4, length: 2)),
-            ("", NSRange(location: 0, length: 0), "**", "****", NSRange(location: 2, length: 0)),
+            ("", NSRange(location: 0, length: 0), "**", "", NSRange(location: 0, length: 0)),
             ("_x_", NSRange(location: 0, length: 3), "**", "**_x_**", NSRange(location: 2, length: 3)),
             (" word \n", NSRange(location: 0, length: 7), "_", " _word_ \n", NSRange(location: 2, length: 4)),
             (" \t", NSRange(location: 0, length: 2), "**", " \t", NSRange(location: 2, length: 0)),

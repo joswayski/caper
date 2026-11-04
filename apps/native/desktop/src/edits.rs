@@ -444,10 +444,22 @@ impl CaperApp {
                             )));
                         state.store(ui.ctx(), text_id);
                     }
+                    let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
+                        crate::draft_layout(
+                            ui,
+                            text.as_str(),
+                            width,
+                            &[],
+                            crate::mentions::Specials::default(),
+                            egui::FontId::proportional(14.0),
+                        )
+                    };
+                    crate::formatting::prepare(ui, &editor.draft, text_id, !editor.busy);
                     let input = ui.add_enabled(
                         !editor.busy,
                         egui::TextEdit::multiline(&mut editor.draft)
                             .id(text_id)
+                            .layouter(&mut layouter)
                             .desired_width(f32::INFINITY)
                             .desired_rows(7)
                             .margin(egui::Margin::symmetric(10, 8)),

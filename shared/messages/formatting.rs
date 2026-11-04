@@ -9,6 +9,28 @@ pub struct Run {
 }
 
 pub fn runs(text: &str) -> Vec<Run> {
+    let mut out: Vec<Run> = Vec::new();
+    visit_runs(text, |range, bold, italic| {
+        let value = &text[range];
+        if let Some(last) = out
+            .last_mut()
+            .filter(|r| r.bold == bold && r.italic == italic)
+        {
+            last.text.push_str(value);
+        } else {
+            out.push(Run {
+                text: value.to_owned(),
+                bold,
+                italic,
+            });
+        }
+    });
+    out
+}
+
+/// Visits visible source byte ranges in order. Gaps are recognized delimiters.
+/// Both rendering and editable projections use this single grammar.
+pub fn visit_runs(text: &str, mut emit: impl FnMut(std::ops::Range<usize>, bool, bool)) {
     let chars: Vec<char> = text.chars().collect();
     let mut protected = Vec::new();
     for part in links::segments(text) {
@@ -30,18 +52,15 @@ pub fn runs(text: &str) -> Vec<Run> {
             && (m.len() != 2
                 || (c.get(i.wrapping_sub(1)) != Some(&'*') && c.get(i + 2) != Some(&'*')))
     }
-    fn append(out: &mut Vec<Run>, c: &[char], bold: bool, italic: bool) {
-        if c.is_empty() {
-            return;
-        }
-        let text: String = c.iter().collect();
-        if let Some(last) = out
-            .last_mut()
-            .filter(|r| r.bold == bold && r.italic == italic)
-        {
-            last.text.push_str(&text);
-        } else {
-            out.push(Run { text, bold, italic });
+    fn append(
+        out: &mut impl FnMut(usize, usize, bool, bool),
+        start: usize,
+        end: usize,
+        bold: bool,
+        italic: bool,
+    ) {
+        if start < end {
+            out(start, end, bold, italic);
         }
     }
     fn parse(
@@ -51,7 +70,7 @@ pub fn runs(text: &str) -> Vec<Run> {
         end: usize,
         bold: bool,
         italic: bool,
-        out: &mut Vec<Run>,
+        out: &mut impl FnMut(usize, usize, bool, bool),
     ) {
         let mut plain = start;
         let mut i = start;
@@ -79,7 +98,7 @@ pub fn runs(text: &str) -> Vec<Run> {
                     && !whitespace(c[close - 1])
                     && (m.len() != 1 || !word(c.get(close + 1)))
                 {
-                    append(out, &c[plain..i], bold, italic);
+                    append(out, plain, i, bold, italic);
                     parse(
                         c,
                         p,
@@ -97,11 +116,24 @@ pub fn runs(text: &str) -> Vec<Run> {
             }
             i += 1;
         }
-        append(out, &c[plain..end], bold, italic);
+        append(out, plain, end, bold, italic);
     }
-    let mut out = Vec::new();
-    parse(&chars, &protected, 0, chars.len(), false, false, &mut out);
-    out
+    let offsets: Vec<usize> = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain([text.len()])
+        .collect();
+    parse(
+        &chars,
+        &protected,
+        0,
+        chars.len(),
+        false,
+        false,
+        &mut |start, end, bold, italic| {
+            emit(offsets[start]..offsets[end], bold, italic);
+        },
+    );
 }
 
 #[cfg(test)]

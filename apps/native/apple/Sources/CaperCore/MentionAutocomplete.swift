@@ -246,11 +246,17 @@ enum MentionAutocomplete {
     /// after the space; nil when the draft would exceed `scalarLimit`.
     static func inserting(_ candidate: MentionCandidate, in text: String, match: MentionAutocompleteMatch,
                           scalarLimit: Int = 4_000) -> (text: String, selection: NSRange)? {
-        guard let range = Range(match.replacementRange, in: text) else { return nil }
-        let insertion = "@\(candidate.username) "
+        guard Range(match.replacementRange, in: text) != nil else { return nil }
+        let source = text as NSString, visible = Set(MessageFormatting.projection(text).sourceIndices)
+        var end = NSMaxRange(match.replacementRange)
+        while end < source.length, !visible.contains(end) { end += 1 }
+        // The completion separator follows closing styles rather than invalidating them.
+        let closing = source.substring(with: NSRange(location: NSMaxRange(match.replacementRange), length: end - NSMaxRange(match.replacementRange)))
+        guard let range = Range(NSRange(location: match.replacementRange.location, length: end - match.replacementRange.location), in: text) else { return nil }
+        let insertion = "@\(candidate.username)\(closing) "
         let result = text.replacingCharacters(in: range, with: insertion)
         guard result.unicodeScalars.count <= scalarLimit else { return nil }
-        return (result, NSRange(location: match.replacementRange.location + insertion.utf16.count, length: 0))
+        return MessageFormatting.repairEdit(text, text: result, selection: NSRange(location: match.replacementRange.location + insertion.utf16.count, length: 0))
     }
 
     /// Complete locally known names, without changing the editable text or its UTF-16 offsets.

@@ -372,12 +372,7 @@ export function ForwardPicker({
         </div>
         <label>
           Add a note (optional)
-          <MentionTextarea
-            rows={2}
-            value={note}
-            disabled={!!command}
-            onChange={(event) => setNote(event.target.value)}
-          />
+          <MentionTextarea rows={2} value={note} disabled={!!command} onValueChange={setNote} />
         </label>
         {error && (
           <p role="alert" className="chat-forward-error">

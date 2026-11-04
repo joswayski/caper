@@ -14,8 +14,7 @@ import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.t
 import type { Arrivals } from "./arrivals.ts";
 import EmojiButton from "./EmojiButton.tsx";
 import type { ChatGif } from "./klipy.ts";
-import { insertEmoji } from "./emoji-autocomplete.ts";
-import MentionTextarea from "./MentionTextarea.tsx";
+import MentionTextarea, { type ComposerInput } from "./MentionTextarea.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage, type ChatReplyReference } from "./types.ts";
 import { ReplyDraft } from "./Replies.tsx";
@@ -81,7 +80,7 @@ export default function ThreadPanel({
   const [drafts, setDrafts] = useState<Record<string, ThreadDraft>>(readThreadDrafts);
   useEffect(() => saveThreadDrafts(drafts), [drafts]);
   const [validation, setValidation] = useState<string>();
-  const composer = useRef<HTMLTextAreaElement>(null);
+  const composer = useRef<ComposerInput>(null);
   const keyboardDismiss = useTimelineKeyboardDismiss("chat-thread-reply");
   const canAttach = !!attachments?.enabled;
   const dragDepth = useRef(0);
@@ -231,16 +230,9 @@ export default function ThreadPanel({
   const chooseEmoji = (emoji: string) => {
     const input = composer.current;
     const start = input?.selectionStart ?? draft.text.length;
-    const result = insertEmoji(draft.text, { start, end: input?.selectionEnd ?? start, query: "" }, emoji);
-    if (!result) {
+    if (!input?.replaceText(start, input.selectionEnd, emoji)) {
       setValidation("Messages must be 4,000 characters or fewer.");
-      return;
     }
-    update({ text: result.value });
-    requestAnimationFrame(() => {
-      input?.focus();
-      input?.setSelectionRange(result.caret, result.caret);
-    });
   };
   const suggestions = useComposerSuggestions({
     id: "chat-thread",
@@ -248,7 +240,6 @@ export default function ThreadPanel({
     input: composer,
     people: mentionPeople,
     specialMentions,
-    onInsert: (text) => update({ text }),
     onTooLong: () => setValidation("Messages must be 4,000 characters or fewer."),
   });
   useEffect(() => {
@@ -813,9 +804,9 @@ export default function ThreadPanel({
                 {...suggestions.textarea}
                 // Typing can start while history loads; submit still waits for it.
                 disabled={state.phase !== "ready"}
-                onChange={(event) => {
-                  update({ text: event.target.value });
-                  suggestions.change(event.target);
+                onValueChange={(value, input) => {
+                  update({ text: value });
+                  suggestions.change(input);
                 }}
                 onBlur={suggestions.blur}
                 onPaste={(event) => {

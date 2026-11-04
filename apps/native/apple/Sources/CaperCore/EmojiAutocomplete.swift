@@ -83,7 +83,7 @@ enum EmojiAutocomplete {
         let result = text.replacingCharacters(in: range, with: emoji)
         guard result.unicodeScalars.count <= scalarLimit else { return nil }
         let cursor = selection.location + (emoji as NSString).length
-        return (result, NSRange(location: cursor, length: 0))
+        return MessageFormatting.repairEdit(text, text: result, selection: NSRange(location: cursor, length: 0))
     }
 
     private static func normalize(_ value: String) -> String {
@@ -123,10 +123,20 @@ enum ComposerAutocompleteMatch: Equatable {
 
 enum ComposerAutocomplete {
     static func match(text: String, selection: NSRange, markedText: Bool, mentions: MentionSource) -> ComposerAutocompleteMatch? {
-        if let mention = MentionAutocomplete.match(text: text, selection: selection, markedText: markedText, source: mentions) {
-            return .mention(mention)
+        guard !markedText, selection.length == 0, selection.location <= text.utf16.count else { return nil }
+        let projection = MessageFormatting.projection(text)
+        let displayed = projection.runs.map(\.text).joined()
+        let caret = NSRange(location: projection.sourceIndices.filter { $0 < selection.location }.count, length: 0)
+        func original(_ range: NSRange) -> NSRange {
+            let start = projection.sourceIndices[range.location]
+            return NSRange(location: start, length: projection.sourceIndices[NSMaxRange(range) - 1] + 1 - start)
         }
-        return EmojiAutocomplete.match(text: text, selection: selection, markedText: markedText).map { ComposerAutocompleteMatch.emoji($0) }
+        if let mention = MentionAutocomplete.match(text: displayed, selection: caret, markedText: false, source: mentions) {
+            return .mention(MentionAutocompleteMatch(replacementRange: original(mention.replacementRange), choices: mention.choices))
+        }
+        return EmojiAutocomplete.match(text: displayed, selection: caret, markedText: false).map {
+            .emoji(EmojiAutocompleteMatch(replacementRange: original($0.replacementRange), choices: $0.choices))
+        }
     }
 
     /// Accepts the row at `index`, enforcing the same 4,000-scalar limit for both kinds.
@@ -253,9 +263,46 @@ struct SuggestionRow: ViewModifier {
 }
 
 #if os(iOS) || os(macOS)
-/// Attributes only: never replace the text, register an undo edit, or change glyph metrics.
+private extension NSAttributedString.Key {
+    static let composerDelimiter = NSAttributedString.Key("CaperComposerDelimiter")
+}
+
+/// TextKit keeps the original string (and native selection/IME/undo coordinates),
+/// but recognized Markdown delimiters have no drawn glyph or advance.
+private final class ComposerGlyphs: NSObject, NSLayoutManagerDelegate {
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
+                       properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
+                       characterIndexes charIndexes: UnsafePointer<Int>, font: PlatformComposerFont,
+                       forGlyphRange glyphRange: NSRange) -> Int {
+        guard let storage = layoutManager.textStorage else { return 0 }
+        var properties = Array(UnsafeBufferPointer(start: props, count: glyphRange.length))
+        for index in properties.indices where charIndexes[index] < storage.length {
+            if storage.attribute(.composerDelimiter, at: charIndexes[index], effectiveRange: nil) as? Bool == true {
+                properties[index] = .null
+            }
+        }
+        properties.withUnsafeBufferPointer {
+            layoutManager.setGlyphs(glyphs, properties: $0.baseAddress!, characterIndexes: charIndexes,
+                                   font: font, forGlyphRange: glyphRange)
+        }
+        return glyphRange.length
+    }
+}
+
+#if os(iOS)
+private typealias PlatformComposerFont = UIFont
+#else
+private typealias PlatformComposerFont = NSFont
+#endif
+
+/// Attribute-only rendering preserves the wire draft and native editing transactions.
 @MainActor private func highlightDraft(_ storage: NSTextStorage, source: MentionSource) {
-    let ranges = MentionAutocomplete.draftHighlights(in: storage.string, source: source)
+    let projection = MessageFormatting.projection(storage.string)
+    let visible = projection.runs.map(\.text).joined()
+    let ranges = MentionAutocomplete.draftHighlights(in: visible, source: source).map { range in
+        NSRange(location: projection.sourceIndices[range.location],
+                length: projection.sourceIndices[NSMaxRange(range) - 1] + 1 - projection.sourceIndices[range.location])
+    }
     #if os(iOS)
     let color = UIColor(CaperTheme.terracotta).withAlphaComponent(0.24)
     let linkColor = UIColor(CaperTheme.link).withAlphaComponent(0.14)
@@ -269,7 +316,26 @@ struct SuggestionRow: ViewModifier {
     #endif
     storage.beginEditing()
     storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: storage.length))
+    storage.removeAttribute(.obliqueness, range: NSRange(location: 0, length: storage.length))
+    storage.removeAttribute(.composerDelimiter, range: NSRange(location: 0, length: storage.length))
     storage.addAttribute(.foregroundColor, value: textColor, range: NSRange(location: 0, length: storage.length))
+    let baseFont = PlatformComposerFont(name: "Satoshi-Regular", size: 14) ?? PlatformComposerFont.systemFont(ofSize: 14)
+    storage.addAttribute(.font, value: baseFont, range: NSRange(location: 0, length: storage.length))
+    let visibleIndices = Set(projection.sourceIndices)
+    for index in 0..<storage.length where !visibleIndices.contains(index) {
+        storage.addAttribute(.composerDelimiter, value: true, range: NSRange(location: index, length: 1))
+    }
+    var displayed = 0
+    for run in projection.runs {
+        let font = PlatformComposerFont(name: run.bold ? "Satoshi-Bold" : "Satoshi-Regular", size: 14) ?? baseFont
+        for index in displayed..<(displayed + run.text.utf16.count) {
+            storage.addAttribute(.font, value: font, range: NSRange(location: projection.sourceIndices[index], length: 1))
+            // The bundled Satoshi faces are upright; TextKit synthesizes the same
+            // slant on both Apple clients instead of silently falling back to upright.
+            if run.italic { storage.addAttribute(.obliqueness, value: 0.2, range: NSRange(location: projection.sourceIndices[index], length: 1)) }
+        }
+        displayed += run.text.utf16.count
+    }
     var offset = 0
     for segment in MessageLinks.segments(in: storage.string) {
         let range = NSRange(location: offset, length: segment.text.utf16.count)
@@ -286,11 +352,40 @@ struct SuggestionRow: ViewModifier {
     }
     #endif
     storage.endEditing()
+    for layout in storage.layoutManagers {
+        layout.invalidateGlyphs(forCharacterRange: NSRange(location: 0, length: storage.length), changeInLength: 0, actualCharacterRange: nil)
+    }
 }
 #endif
 
 #if os(iOS)
 final class ComposerTextView: UITextView {
+    fileprivate let composerGlyphs = ComposerGlyphs()
+    private var navigationRange: NSRange?
+    private var navigationAnchor = 0
+    @objc private func moveVisible(_ command: UIKeyCommand) {
+        guard markedTextRange == nil else { return }
+        let extending = command.modifierFlags.contains(.shift)
+        if !extending || navigationRange != selectedRange { navigationAnchor = selectedRange.location }
+        let next = MessageFormatting.movedSelection(text, selection: selectedRange,
+            backward: command.input == UIKeyCommand.inputLeftArrow, extending: extending,
+            activeAtStart: selectedRange.length > 0 && navigationAnchor == NSMaxRange(selectedRange))
+        selectedRange = next; navigationRange = next
+    }
+    override func deleteBackward() {
+        guard markedTextRange == nil else { super.deleteBackward(); return }
+        guard let range = MessageFormatting.deletionRange(text, selection: selectedRange, backward: true) else { return }
+        selectedRange = range
+        super.deleteBackward()
+    }
+    override func copy(_ sender: Any?) {
+        guard selectedRange.length > 0 else { return }
+        UIPasteboard.general.string = MessageFormatting.copiedText(text, selection: selectedRange)
+    }
+    override func cut(_ sender: Any?) {
+        guard isEditable, selectedRange.length > 0, markedTextRange == nil else { return }
+        copy(sender); deleteBackward()
+    }
     var autocompleteActive: (() -> Bool)?
     var handleKey: ((String) -> Void)?
     var pasteAttachments: (() -> Bool)?
@@ -400,8 +495,17 @@ final class ComposerTextView: UITextView {
     func touched() { hideEmojiName(); if !covered { focusRelease?.cancel(); focusRelease = nil; focusHeld = false } }
     override func accessibilityActivate() -> Bool { touched(); return super.accessibilityActivate() }
     override var keyCommands: [UIKeyCommand]? {
-        let formatting = [UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(formatBold(_:))),
+        var formatting = [UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(formatBold(_:))),
                           UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(formatItalic(_:)))]
+        if markedTextRange == nil {
+            for input in [UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow] {
+                for modifiers in [UIKeyModifierFlags(), .shift] {
+                    let command = UIKeyCommand(input: input, modifierFlags: modifiers, action: #selector(moveVisible(_:)))
+                    command.wantsPriorityOverSystemBehavior = true
+                    formatting.append(command)
+                }
+            }
+        }
         guard markedTextRange == nil, autocompleteActive?() == true else { return (super.keyCommands ?? []) + formatting }
         return [UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow, "\r", "\t", UIKeyCommand.inputEscape].map {
             let command = UIKeyCommand(input: $0, modifierFlags: [], action: #selector(autocompleteKey(_:)))
@@ -437,6 +541,7 @@ struct NativeMessageTextEditor: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
         let view = ComposerTextView(); view.delegate = context.coordinator
+        view.layoutManager.delegate = view.composerGlyphs
         let touchDown = TouchDownObserver(target: nil, action: nil)
         touchDown.cancelsTouchesInView = false; touchDown.delaysTouchesEnded = false
         touchDown.touched = { [weak view] in view?.touched() }
@@ -487,11 +592,26 @@ struct NativeMessageTextEditor: UIViewRepresentable {
         var parent: NativeMessageTextEditor; weak var view: UITextView?; var dismissed = false
         private var highlighting = false
         init(_ parent: NativeMessageTextEditor) { self.parent = parent }
+        func textView(_ view: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
+            guard !highlighting, view.markedTextRange == nil,
+                  view.undoManager?.isUndoing != true, view.undoManager?.isRedoing != true else { return true }
+            let proposed = (view.text as NSString).replacingCharacters(in: range, with: replacement)
+            let result = MessageFormatting.repairEdit(view.text, text: proposed, selection: NSRange(location: range.location + replacement.utf16.count, length: 0))
+            guard result.text != proposed,
+                  let all = view.textRange(from: view.beginningOfDocument, to: view.endOfDocument) else { return true }
+            highlighting = true
+            view.replace(all, withText: result.text); view.selectedRange = result.selection
+            highlighting = false
+            parent.text = result.text; dismissed = false; refresh(view)
+            return false
+        }
         func format(_ marker: String) {
             guard let view, view.isEditable, view.markedTextRange == nil,
                   let result = MessageFormatting.toggle(view.text, selection: view.selectedRange, marker: marker),
                   result.text.unicodeScalars.count <= 4000 else { return }
-            view.text = result.text; view.selectedRange = result.selection
+            guard result.text != view.text,
+                  let range = view.textRange(from: view.beginningOfDocument, to: view.endOfDocument) else { return }
+            view.replace(range, withText: result.text); view.selectedRange = result.selection
             parent.text = result.text; dismissed = false; refresh(view)
         }
         func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
@@ -509,6 +629,11 @@ struct NativeMessageTextEditor: UIViewRepresentable {
         func textViewDidChangeSelection(_ textView: UITextView) { guard !highlighting else { return }; dismissed = false; refresh(textView) }
         func refresh(_ textView: UITextView) {
             guard !highlighting else { return }
+            if textView.markedTextRange == nil {
+                highlighting = true
+                textView.selectedRange = MessageFormatting.normalizedSelection(textView.text, selection: textView.selectedRange)
+                highlighting = false
+            }
             highlight(textView)
             parent.controller.formattingSelection = textView.selectedRange.length > 0
             parent.controller.formatAction = { [weak self] in self?.format($0) }
@@ -536,6 +661,9 @@ struct NativeMessageTextEditor: UIViewRepresentable {
             guard !highlighting, view.markedTextRange == nil else { return }
             highlighting = true
             highlightDraft(view.textStorage, source: parent.highlightSource ?? parent.mentions)
+            view.typingAttributes.removeValue(forKey: .composerDelimiter)
+            view.typingAttributes.removeValue(forKey: .obliqueness)
+            view.typingAttributes[.font] = UIFont(name: "Satoshi-Regular", size: 14)
             view.typingAttributes.removeValue(forKey: .backgroundColor)
             view.typingAttributes[.foregroundColor] = UIColor(CaperTheme.text)
             highlighting = false
@@ -565,6 +693,38 @@ struct NativeMessageTextEditor: UIViewRepresentable {
 }
 #elseif os(macOS)
 final class ComposerTextView: NSTextView {
+    fileprivate let composerGlyphs = ComposerGlyphs()
+    private func moveVisible(backward: Bool, extending: Bool) {
+        guard !hasMarkedText() else { return }
+        let previous = selectedRange()
+        let activeAtStart = selectionAffinity == .upstream
+        let anchor = activeAtStart ? NSMaxRange(previous) : previous.location
+        let next = MessageFormatting.movedSelection(string, selection: previous, backward: backward, extending: extending, activeAtStart: activeAtStart)
+        setSelectedRange(next, affinity: extending && next.location < anchor ? .upstream : .downstream, stillSelecting: false)
+    }
+    override func moveLeft(_ sender: Any?) { if hasMarkedText() { super.moveLeft(sender) } else { moveVisible(backward: true, extending: false) } }
+    override func moveRight(_ sender: Any?) { if hasMarkedText() { super.moveRight(sender) } else { moveVisible(backward: false, extending: false) } }
+    override func moveLeftAndModifySelection(_ sender: Any?) { if hasMarkedText() { super.moveLeftAndModifySelection(sender) } else { moveVisible(backward: true, extending: true) } }
+    override func moveRightAndModifySelection(_ sender: Any?) { if hasMarkedText() { super.moveRightAndModifySelection(sender) } else { moveVisible(backward: false, extending: true) } }
+    override func deleteBackward(_ sender: Any?) {
+        guard !hasMarkedText() else { super.deleteBackward(sender); return }
+        guard let range = MessageFormatting.deletionRange(string, selection: selectedRange(), backward: true) else { return }
+        setSelectedRange(range); super.deleteBackward(sender)
+    }
+    override func deleteForward(_ sender: Any?) {
+        guard !hasMarkedText() else { super.deleteForward(sender); return }
+        guard let range = MessageFormatting.deletionRange(string, selection: selectedRange(), backward: false) else { return }
+        setSelectedRange(range); super.deleteForward(sender)
+    }
+    override func copy(_ sender: Any?) {
+        guard selectedRange().length > 0 else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(MessageFormatting.copiedText(string, selection: selectedRange()), forType: .string)
+    }
+    override func cut(_ sender: Any?) {
+        guard isEditable, selectedRange().length > 0, !hasMarkedText() else { return }
+        copy(sender); deleteBackward(sender)
+    }
     var handleKey: ((NSEvent) -> Bool)?
     var focusChanged: ((Bool) -> Void)?
     var formatSelection: ((String) -> Void)?
@@ -619,6 +779,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); let view = ComposerTextView()
+        view.layoutManager?.delegate = view.composerGlyphs
         scroll.documentView = view; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         view.delegate = context.coordinator; view.drawsBackground = false; view.textColor = NSColor(CaperTheme.text)
         view.font = NSFont(name: "Satoshi-Regular", size: 14); view.textContainerInset = NSSize(width: 0, height: 10)
@@ -664,13 +825,14 @@ struct NativeMessageTextEditor: NSViewRepresentable {
         else if mentionsChanged { context.coordinator.refresh(view) }
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
-        guard let width = proposal.width, let view = nsView.documentView as? NSTextView else { return nil }
+        guard let width = proposal.width, let view = nsView.documentView as? ComposerTextView else { return nil }
         // Measure on a scratch text system. Resizing the live text view here
         // invalidates SwiftUI's layout, which measures again, without end.
         var attributes: [NSAttributedString.Key: Any] = [:]
         if let font = view.font { attributes[.font] = font }
-        let storage = NSTextStorage(string: view.string, attributes: attributes)
+        let storage = view.textStorage.map { NSTextStorage(attributedString: $0) } ?? NSTextStorage(string: view.string, attributes: attributes)
         let layout = NSLayoutManager(); storage.addLayoutManager(layout)
+        layout.delegate = view.composerGlyphs
         let container = NSTextContainer(size: NSSize(width: width.isFinite ? max(40, width - 16) : CGFloat.greatestFiniteMagnitude,
                                                      height: CGFloat.greatestFiniteMagnitude))
         layout.addTextContainer(container); layout.ensureLayout(for: container)
@@ -681,6 +843,22 @@ struct NativeMessageTextEditor: NSViewRepresentable {
         var parent: NativeMessageTextEditor; weak var view: ComposerTextView?; var dismissed = false
         private var highlighting = false
         init(_ parent: NativeMessageTextEditor) { self.parent = parent }
+        func textView(_ view: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+            MainActor.assumeIsolated {
+                guard !highlighting, !view.hasMarkedText(), let replacement = replacementString,
+                      view.undoManager?.isUndoing != true, view.undoManager?.isRedoing != true else { return true }
+                let proposed = (view.string as NSString).replacingCharacters(in: affectedCharRange, with: replacement)
+                let result = MessageFormatting.repairEdit(view.string, text: proposed, selection: NSRange(location: affectedCharRange.location + replacement.utf16.count, length: 0))
+                guard result.text != proposed else { return true }
+                highlighting = true
+                view.insertText(result.text, replacementRange: NSRange(location: 0, length: view.string.utf16.count))
+                view.setSelectedRange(result.selection)
+                highlighting = false
+                parent.text = result.text; dismissed = false
+                if let composer = view as? ComposerTextView { refresh(composer) }
+                return false
+            }
+        }
         // Older macOS SDKs (15.x) don't mark NSTextViewDelegate main-actor, so these delegate
         // calls are nonisolated there. AppKit still delivers them on the main thread.
         func textDidChange(_ notification: Notification) {
@@ -693,6 +871,12 @@ struct NativeMessageTextEditor: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) { MainActor.assumeIsolated { guard !highlighting, let view else { return }; dismissed = false; refresh(view) } }
         @MainActor func refresh(_ view: ComposerTextView) {
             guard !highlighting else { return }
+            if !view.hasMarkedText() {
+                highlighting = true
+                let range = MessageFormatting.normalizedSelection(view.string, selection: view.selectedRange())
+                if range != view.selectedRange() { view.setSelectedRange(range, affinity: view.selectionAffinity, stillSelecting: false) }
+                highlighting = false
+            }
             highlight(view)
             parent.controller.formattingSelection = view.selectedRange().length > 0
             parent.controller.formatAction = { [weak self] in self?.format($0) }
@@ -714,6 +898,9 @@ struct NativeMessageTextEditor: NSViewRepresentable {
             guard !highlighting, !view.hasMarkedText(), let storage = view.textStorage else { return }
             highlighting = true
             highlightDraft(storage, source: parent.highlightSource ?? parent.mentions)
+            view.typingAttributes.removeValue(forKey: .composerDelimiter)
+            view.typingAttributes.removeValue(forKey: .obliqueness)
+            view.typingAttributes[.font] = NSFont(name: "Satoshi-Regular", size: 14)
             view.typingAttributes.removeValue(forKey: .backgroundColor)
             view.typingAttributes.removeValue(forKey: .toolTip)
             view.typingAttributes[.foregroundColor] = NSColor(CaperTheme.text)
@@ -745,8 +932,10 @@ struct NativeMessageTextEditor: NSViewRepresentable {
             guard let view, view.isEditable, !view.hasMarkedText(),
                   let result = MessageFormatting.toggle(view.string, selection: view.selectedRange(), marker: marker),
                   result.text.unicodeScalars.count <= 4000,
+                  result.text != view.string,
                   view.shouldChangeText(in: NSRange(location: 0, length: (view.string as NSString).length), replacementString: result.text) else { return }
-            view.string = result.text; view.setSelectedRange(result.selection); view.didChangeText()
+            view.textStorage?.replaceCharacters(in: NSRange(location: 0, length: (view.string as NSString).length), with: result.text)
+            view.setSelectedRange(result.selection); view.didChangeText()
             parent.text = result.text; dismissed = false; refresh(view)
         }
         @MainActor func accept(_ index: Int) {

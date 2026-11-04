@@ -9,8 +9,7 @@ import { DraftEmbed } from "./Embeds.tsx";
 import { fetchPreview, previewLink, type ChatEmbed } from "./embeds.ts";
 import EmojiButton from "./EmojiButton.tsx";
 import type { ChatGif } from "./klipy.ts";
-import { insertEmoji } from "./emoji-autocomplete.ts";
-import MentionTextarea from "./MentionTextarea.tsx";
+import MentionTextarea, { type ComposerInput } from "./MentionTextarea.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
 import { useVoiceRecorder, type VoiceComposer } from "./VoiceRecorder.tsx";
@@ -132,7 +131,7 @@ export default function Composer({
 }: ComposerProps) {
   const [draft, setDraft] = useState(() => (draftKey ? readDraft(draftKey) : ""));
   const [validationError, setValidationError] = useState<string>();
-  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<ComposerInput>(null);
   const people = useMemo(() => mentionMembers?.filter((member) => member.id !== authorId), [mentionMembers, authorId]);
   const suggestions = useComposerSuggestions({
     id: "chat",
@@ -140,11 +139,6 @@ export default function Composer({
     input: composerRef,
     people,
     specialMentions: !direct,
-    onInsert: (value) => {
-      setDraft(value);
-      setValidationError(undefined);
-      onTyping(!!value.trim());
-    },
     onTooLong: () => setValidationError("Messages must be 4,000 characters or fewer."),
   });
 
@@ -235,18 +229,9 @@ export default function Composer({
   const chooseEmoji = (emoji: string) => {
     const input = composerRef.current;
     const start = input?.selectionStart ?? draft.length;
-    const result = insertEmoji(draft, { start, end: input?.selectionEnd ?? start, query: "" }, emoji);
-    if (!result) {
+    if (!input?.replaceText(start, input.selectionEnd, emoji)) {
       setValidationError("Messages must be 4,000 characters or fewer.");
-      return;
     }
-    setDraft(result.value);
-    setValidationError(undefined);
-    onTyping(true);
-    requestAnimationFrame(() => {
-      input?.focus();
-      input?.setSelectionRange(result.caret, result.caret);
-    });
   };
   const characterCount = Array.from(draft).length;
   const error = validationError ?? attachments?.error;
@@ -313,11 +298,11 @@ export default function Composer({
           aria-describedby="chat-composer-hint"
           {...suggestions.textarea}
           placeholder={`Message ${direct ? "" : "#"}${channelName}`}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            suggestions.change(event.target);
+          onValueChange={(value, input) => {
+            setDraft(value);
+            suggestions.change(input);
             setValidationError(undefined);
-            onTyping(!!event.target.value.trim());
+            onTyping(!!value.trim());
           }}
           onBlur={() => {
             suggestions.blur();

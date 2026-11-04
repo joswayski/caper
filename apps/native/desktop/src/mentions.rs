@@ -35,11 +35,15 @@ pub struct Token {
 /// egui cursors, positions count Unicode scalars, not UTF-8 bytes. The `:` emoji
 /// token can never be active at the same caret: its run cannot reach an `@`.
 pub fn token(text: &str, caret: usize) -> Option<Token> {
-    let chars: Vec<_> = text.chars().collect();
-    if caret > chars.len()
-        || chars
-            .get(caret)
-            .is_some_and(|c| *c == '@' || name_character(*c))
+    if caret > text.chars().count() {
+        return None;
+    }
+    let (visible, indices) = crate::formatting::projection(text);
+    let caret = indices.partition_point(|index| *index < caret);
+    let chars: Vec<_> = visible.chars().collect();
+    if chars
+        .get(caret)
+        .is_some_and(|c| *c == '@' || name_character(*c))
     {
         return None;
     }
@@ -55,8 +59,8 @@ pub fn token(text: &str, caret: usize) -> Option<Token> {
         return None;
     }
     Some(Token {
-        start: at,
-        end: caret,
+        start: indices[at],
+        end: indices[caret - 1] + 1,
         query: chars[start..caret].iter().collect(),
     })
 }
@@ -306,14 +310,26 @@ pub fn grantees(
 /// Replaces the token with `@name ` and returns the draft and the caret after
 /// the space, or `None` past the message limit (as emoji insertion does).
 pub fn insert(text: &str, token: &Token, name: &str) -> Option<(String, usize)> {
-    let mention = format!("@{name} ");
+    let (_, indices) = crate::formatting::projection(text);
+    let mut end = token.end;
+    let length = text.chars().count();
+    while end < length && indices.binary_search(&end).is_err() {
+        end += 1;
+    }
+    // Keep the trailing separator outside any closing formatting delimiters.
+    let closing: String = text.chars().skip(token.end).take(end - token.end).collect();
+    let mention = format!("@{name}{closing} ");
     let value: String = text
         .chars()
         .take(token.start)
         .chain(mention.chars())
-        .chain(text.chars().skip(token.end))
+        .chain(text.chars().skip(end))
         .collect();
-    (value.chars().count() <= MAX_MESSAGE).then(|| (value, token.start + mention.chars().count()))
+    (value.chars().count() <= MAX_MESSAGE).then(|| {
+        let caret = token.start + mention.chars().count();
+        let (value, caret, _) = crate::formatting::repair_edit(text, &value, caret, caret);
+        (value, caret)
+    })
 }
 
 /// Every mention token in sent text, as UTF-8 byte ranges with lowercase names.

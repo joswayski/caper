@@ -4536,16 +4536,29 @@ mentions against the displayed text too, so formatting `@user_name` does not
 change whom a message notifies. Stored text and edit-history diffs retain markers.
 
 **Bold and italic.** Select text in a message composer, edit dialog or forwarding
-note to use B/I, or press Ctrl/Cmd+B and Ctrl/Cmd+I. This is a Markdown-assisted
-textarea, not a WYSIWYG editor: `**bold**` and `_italic_` remain visible while
-editing and render as emphasis in sent messages. Different styles nest and can
-span lines. Surrounding selection whitespace stays outside the markers; formatting
-cannot expand a draft beyond 4,000 characters. Unmatched and backslash-escaped
+note to use B/I, or press Ctrl/Cmd+B and Ctrl/Cmd+I. Recognized `**bold**` and
+`_italic_` render as styled text while editing, without showing their delimiters.
+Formatting requires selected text; a shortcut at a collapsed caret does nothing.
+Different styles nest and can span lines. Surrounding selection whitespace stays
+outside the markers; formatting cannot expand a draft beyond 4,000 characters.
+Unmatched and backslash-escaped
 markers, underscores in identifiers, and URL contents stay literal. HTML, custom
 links, headings, lists, and other Markdown are not interpreted. Older clients
 show the readable source markers. Reply excerpts and history retain the source.
 All clients' parser tests share
 `shared/messages/formatting-cases.json`; the API and desktop share the Rust parser.
+
+Selecting part of a URL disables formatting (including keyboard shortcuts).
+Selecting the whole URL is allowed when its destination can stay unchanged.
+Selections that the existing message grammar cannot express, such as italicizing
+part of an identifier, are rejected instead of showing styling recipients won't see.
+The web composer uses ProseMirror for selection, composition and undo, converting
+to the existing string draft at its boundary. Native composers project the stored
+source into styled text using their platform text layout and offset mapping.
+Emoji/mention completion uses visible text and preserves formatting. Web paste
+accepts plain text rather than importing arbitrary HTML or hidden link destinations;
+copy exports the visible text. Sending clears the web editor's undo history so the
+next message cannot resurrect the sent draft.
 
 The formatting toolbar is one borderless bar: adjacent buttons fill its entire
 surface with no inset padding, gaps, individual borders or focus rings. Hover,
@@ -4566,24 +4579,27 @@ not implemented in this first version.
 Browser validation: `node scripts/test-message-formatting.mjs http://localhost:5173`
 mounts real components with explicitly labelled local-only delivery. It checks
 full-area toolbar edge clicks, borderless controls and background-only keyboard
-focus (including the edit dialog), shortcuts, toggling, undo, sending, nested
-emphasis, links, mentions, editing, dismissal, narrow layout and the character
-limit. This does not replace native-device or live delivery checks.
+focus (including the edit dialog), visible emphasis, shortcuts, toggling, undo,
+sending, nested emphasis, link protection, safe paste/copy, mentions, editing,
+dismissal, narrow layout and the character limit. This does not replace
+native-device or live delivery checks.
 
-Formatting validation (Linux orb): web check/build and 772 tests passed; API
-build, fmt, clippy and 218 tests passed (93 integration tests require external
-fixtures and remain ignored). Android compiled and all 571 unit tests passed,
-without a connected device. Linux desktop built and passed application-only
-clippy. Its toolbar follow-up run passed 754 tests with 20 ignored and exposed
-missing app font setup in the composer test; after correcting that fixture,
-all three formatting tests passed. Wide/narrow native captures and an outer-edge
-button click were inspected. Dependency-inclusive desktop clippy still reports existing
-vendored WebRTC documentation warnings. Apple changes and shared-fixture tests
-are authored but uncompiled here (no Swift/Xcode); Apple and Android device UI,
-Windows/macOS desktop and native sent-message rendering remain unverified.
-The browser interaction recording uses local simulated delivery. No production
-account writes or live delivery checks were performed. Docker has no running
-daemon here; the API binary was built directly instead of building its image.
+Visual-composer validation (Linux orb and Mac satellite): web check/build and
+795 tests passed, along with the browser interaction script above. API fmt,
+clippy and 218 tests passed (94 external-fixture tests remain ignored). Android
+built a debug APK and all 599 unit tests passed, without a connected device. Linux
+desktop built, passed application-only clippy and 787 tests (20 ignored), and
+its actual composer was exercised with keyboard selection and B/I shortcuts.
+macOS and iOS Simulator builds each passed seven formatting tests. Temporary
+native-component renders exercised B/I on both Apple platforms and copy on
+macOS; their captures were inspected, as were desktop/narrow web, protected-link,
+edit-dialog, and Linux desktop captures. The iOS render harness stalled on
+system pasteboard access, so it does not establish iOS clipboard behavior.
+Physical devices, native IME and OS undo/clipboard menus, Windows desktop and
+live message delivery remain unverified. Native editors keep source coordinates
+under their visual projection; browser checks do not establish native behavior.
+No production account writes were performed. Docker has no running daemon here;
+the web build and API checks ran directly rather than building their images.
 
 **Links.** `http://`, `https://` and `www.` URLs (case-insensitive) become
 links. The rules follow GitHub Flavored Markdown's autolink literals: a link

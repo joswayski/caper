@@ -134,7 +134,7 @@ test.each([{ loading: true }, { error: "Thread could not be loaded." }])(
 
 test("the reply composer offers the channel composer's emoji and mention suggestions", () => {
   const markup = render([root]);
-  expect(markup).toMatch(/<textarea[^>]*id="chat-thread-reply"[^>]*aria-autocomplete="list"/);
+  expect(markup).toMatch(/<div[^>]*id="chat-thread-reply"[^>]*aria-autocomplete="list"[^>]*role="textbox"/);
   expect(markup).toContain('aria-describedby="chat-thread-composer-hint"');
   expect(markup).toContain("Type : to find emoji or @ to mention someone.");
 });

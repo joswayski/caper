@@ -50,7 +50,7 @@ import kotlin.math.roundToInt
     value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit, modifier: Modifier = Modifier,
     enabled: Boolean = true, maxLines: Int = 6, readOnly: Boolean = false,
     placeholder: (@Composable () -> Unit)? = null,
-    visualTransformation: VisualTransformation = VisualTransformation.None,
+    visualTransformation: VisualTransformation = chat.caper.android.MentionVisualTransformation(chat.caper.android.MentionSource(emptyList(), false)),
     leadingIcon: (@Composable () -> Unit)? = null, trailingIcon: (@Composable () -> Unit)? = null,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default, keyboardActions: KeyboardActions = KeyboardActions.Default,
     colors: TextFieldColors = OutlinedTextFieldDefaults.colors(),
@@ -60,6 +60,22 @@ import kotlin.math.roundToInt
 ) = KeyboardAttachmentInput(keyboardAttachment.takeIf { enabled }) {
     val context = LocalContext.current
     val density = LocalDensity.current
+    val history = remember { chat.caper.android.data.FormatEditHistory() }
+    var restoringHistory by remember { mutableStateOf(false) }
+    SideEffect { history.remember(value.text) }
+    val clipboard = androidx.compose.ui.platform.LocalClipboard.current
+    val visibleClipboard = remember(clipboard, value.text, value.selection) {
+        object : androidx.compose.ui.platform.Clipboard by clipboard {
+            override suspend fun setClipEntry(clipEntry: androidx.compose.ui.platform.ClipEntry?) {
+                val selected = value.text.substring(value.selection.min, value.selection.max)
+                val entry = if (clipEntry?.clipData?.itemCount == 1 && clipEntry.clipData.getItemAt(0).text?.toString() == selected) {
+                    androidx.compose.ui.platform.ClipEntry(android.content.ClipData.newPlainText("message",
+                        chat.caper.android.data.copiedFormatText(value.text, value.selection.min, value.selection.max)))
+                } else clipEntry
+                clipboard.setClipEntry(entry)
+            }
+        }
+    }
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val style = LocalTextStyle.current.merge(androidx.compose.ui.text.TextStyle(
@@ -87,7 +103,8 @@ import kotlin.math.roundToInt
         if (!enabled || readOnly || value.composition != null) return
         val result = toggleFormat(value.text, value.selection.min, value.selection.max, marker)
         // Reject expansion rather than letting a caller truncate the selected content.
-        if (result.text.codePointCount(0, result.text.length) > 4000) return
+        if (result.text == value.text || result.text.codePointCount(0, result.text.length) > 4000) return
+        history.remember(result.text)
         onValueChange(TextFieldValue(result.text, TextRange(result.start, result.end)))
     }
     LaunchedEffect(scroll.value, enabled) { pending?.cancel(); name = null }
@@ -95,12 +112,28 @@ import kotlin.math.roundToInt
     DisposableEffect(value.text) { onDispose { pending?.cancel() } }
     fun at(point: Offset): Triple<Int, Int, String>? {
         val result = layout ?: return null
+        val mapping = visualTransformation.filter(value.annotatedString).offsetMapping
         return ranges.firstOrNull { range ->
-            (range.first until range.second).any { result.getBoundingBox(it).contains(point) }
+            (mapping.originalToTransformed(range.first) until mapping.originalToTransformed(range.second))
+                .any { result.getBoundingBox(it).contains(point) }
         }
     }
+    CompositionLocalProvider(androidx.compose.ui.platform.LocalClipboard provides visibleClipboard) {
     BasicTextField(
-        value, onValueChange, modifier.onPreviewKeyEvent { event ->
+        value, { next ->
+            // Never rewrite a live IME composition. Normal edits discard only delimiters
+            // that were previously hidden and are no longer valid after the edit.
+            if (next.composition != null || value.composition != null) onValueChange(next)
+            else {
+                val repaired = history.edit(value.text,
+                    chat.caper.android.data.FormatSelection(next.text, next.selection.start, next.selection.end), restoringHistory)
+                onValueChange(if (repaired.text == next.text) next else TextFieldValue(repaired.text, TextRange(repaired.start, repaired.end)))
+            }
+            restoringHistory = false
+        }, modifier.onPreviewKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown) {
+                restoringHistory = (event.isCtrlPressed || event.isMetaPressed) && (event.key == Key.Z || event.key == Key.Y)
+            }
             if (enabled && !readOnly && event.type == KeyEventType.KeyDown && (event.isCtrlPressed || event.isMetaPressed) && !event.isAltPressed) {
                 when (event.key) {
                     Key.B -> { format("**"); true }
@@ -193,4 +226,5 @@ import kotlin.math.roundToInt
             }
         },
     )
+    }
 }

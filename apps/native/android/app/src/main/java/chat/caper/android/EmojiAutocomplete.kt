@@ -9,8 +9,9 @@ internal data class EmojiToken(val start: Int, val end: Int, val query: String)
 
 internal fun emojiToken(value: TextFieldValue): EmojiToken? {
     if (!value.selection.collapsed || value.composition != null) return null
-    val text = value.text
-    val caret = value.selection.start
+    val projection = chat.caper.android.data.formattedMessage(value.text)
+    val text = projection.text
+    val caret = projection.displayed(value.selection.start)
     if (caret < text.length && (text[caret] == ':' || text[caret].isEmojiQueryChar())) return null
     var colon = caret - 1
     while (colon >= 0 && text[colon].isEmojiQueryChar()) colon--
@@ -19,7 +20,7 @@ internal fun emojiToken(value: TextFieldValue): EmojiToken? {
     val query = text.substring(colon + 1, caret)
     // One character is an emoticon (":D", ":P", ":3"), not a search; Send sends it as typed.
     if (query.length == 1) return null
-    return EmojiToken(colon, caret, query)
+    return EmojiToken(projection.sourceIndices[colon], projection.sourceIndices[caret - 1] + 1, query)
 }
 
 private fun Char.isEmojiQueryChar(): Boolean =
@@ -52,7 +53,8 @@ internal fun insertEmoji(value: TextFieldValue, token: EmojiToken, emoji: String
     val text = value.text.substring(0, token.start) + emoji + value.text.substring(token.end)
     if (text.codePointCount(0, text.length) > limit) return null
     val caret = token.start + emoji.length
-    return TextFieldValue(text, TextRange(caret))
+    val repaired = chat.caper.android.data.repairFormatEdit(value.text, chat.caper.android.data.FormatSelection(text, caret, caret))
+    return TextFieldValue(repaired.text, TextRange(repaired.start))
 }
 
 internal fun emojiShortcodeLabel(name: String) = ":${name.replace(' ', '_')}:"

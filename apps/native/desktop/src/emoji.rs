@@ -425,11 +425,15 @@ fn query_character(value: char) -> bool {
 
 // egui cursors count Unicode scalars, not UTF-8 bytes or grapheme clusters.
 pub fn token(text: &str, caret: usize) -> Option<Token> {
-    let chars: Vec<_> = text.chars().collect();
-    if caret > chars.len()
-        || chars
-            .get(caret)
-            .is_some_and(|c| *c == ':' || query_character(*c))
+    if caret > text.chars().count() {
+        return None;
+    }
+    let (visible, indices) = crate::formatting::projection(text);
+    let caret = indices.partition_point(|index| *index < caret);
+    let chars: Vec<_> = visible.chars().collect();
+    if chars
+        .get(caret)
+        .is_some_and(|c| *c == ':' || query_character(*c))
     {
         return None;
     }
@@ -448,8 +452,8 @@ pub fn token(text: &str, caret: usize) -> Option<Token> {
         return None;
     }
     Some(Token {
-        start: colon,
-        end: caret,
+        start: indices[colon],
+        end: indices[caret - 1] + 1,
         query: chars[start..caret].iter().collect(),
     })
 }
@@ -506,7 +510,11 @@ pub fn insert(text: &str, token: &Token, emoji: &str) -> Option<(String, usize)>
         .chain(emoji.chars())
         .chain(text.chars().skip(token.end))
         .collect();
-    (value.chars().count() <= 4_000).then(|| (value, token.start + emoji.chars().count()))
+    (value.chars().count() <= 4_000).then(|| {
+        let caret = token.start + emoji.chars().count();
+        let (value, caret, _) = crate::formatting::repair_edit(text, &value, caret, caret);
+        (value, caret)
+    })
 }
 
 pub fn unicode_id(value: &str) -> String {

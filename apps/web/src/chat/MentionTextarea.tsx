@@ -5,348 +5,396 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type HTMLAttributes,
   type Ref,
-  type TextareaHTMLAttributes,
-  type KeyboardEvent,
-  type FocusEvent,
-  type PointerEvent,
 } from "react";
-import {
-  autoUpdate,
-  flip,
-  FloatingPortal,
-  offset,
-  shift,
-  useDismiss,
-  useFloating,
-  useInteractions,
-  useMergeRefs,
-} from "@floating-ui/react";
+import { autoUpdate, flip, FloatingPortal, offset, shift, useFloating } from "@floating-ui/react";
+import { EditorState, TextSelection } from "prosemirror-state";
+import { Decoration, DecorationSet, EditorView } from "prosemirror-view";
+import { history, undo, redo } from "prosemirror-history";
+import { keymap } from "prosemirror-keymap";
+import { baseKeymap } from "prosemirror-commands";
+import { Bold, Italic } from "lucide-react";
 import { emojiSegments } from "./emoji.ts";
 import { emojiName } from "./reactors.ts";
 import { draftMentionSegments, type MentionCandidate } from "./mentions.ts";
 import { linkSegments } from "./links.ts";
-import { toggleFormat } from "./formatting.ts";
-import { Bold, Italic } from "lucide-react";
+import {
+  composerDocument,
+  composerSource,
+  displayedOffset,
+  formatComposer,
+  normalizeComposer,
+  sourceOffset,
+} from "./rich-text.ts";
 
-/** An aligned text mirror styles URLs/mentions while the textarea keeps native editing. */
-export default function MentionTextarea({
-  ref,
-  people,
-  specialMentions = false,
-  ...props
-}: TextareaHTMLAttributes<HTMLTextAreaElement> & {
-  ref?: Ref<HTMLTextAreaElement>;
+/** Source offsets let emoji/mention insertion keep using the stored draft format. */
+export interface ComposerInput extends HTMLDivElement {
+  readonly value: string;
+  readonly selectionStart: number;
+  readonly selectionEnd: number;
+  readonly disabled: boolean;
+  setSelectionRange(start: number, end: number): void;
+  replaceText(start: number, end: number, text: string): boolean;
+}
+
+type Props = Omit<HTMLAttributes<HTMLDivElement>, "onChange" | "onSelect"> & {
+  ref?: Ref<ComposerInput>;
+  value: string;
+  disabled?: boolean;
+  readOnly?: boolean;
+  rows?: number;
+  placeholder?: string;
   people?: MentionCandidate[];
   specialMentions?: boolean;
-}) {
-  const input = useRef<HTMLTextAreaElement>(null);
-  const mirror = useRef<HTMLDivElement>(null);
+  onValueChange: (value: string, input: ComposerInput) => void;
+  onSelect?: (event: { currentTarget: ComposerInput }) => void;
+};
+
+/** A real rich-text editing surface; Markdown exists only at the draft boundary. */
+export default function MentionTextarea({
+  ref,
+  value,
+  disabled,
+  readOnly,
+  rows = 1,
+  placeholder,
+  people,
+  specialMentions = false,
+  onValueChange,
+  onSelect,
+  ...props
+}: Props) {
+  const input = useRef<ComposerInput>(null);
+  const view = useRef<EditorView>(undefined);
+  const current = useRef({ value, disabled, readOnly, people, specialMentions, onValueChange, onSelect });
+  current.current = { value, disabled, readOnly, people, specialMentions, onValueChange, onSelect };
+  const source = useRef(value);
   useImperativeHandle(ref, () => input.current!, []);
-  const text = String(props.value ?? "");
-  const segments = draftMentionSegments(text, people, specialMentions);
-  const [selection, setSelection] = useState<{ start: number; end: number }>();
-  const composing = useRef(false);
+  const [selection, setSelection] = useState(false);
+  const [, renderSelection] = useState(0);
   const formatting = useFloating({
-    open: !!selection && !props.disabled && !props.readOnly,
+    open: selection && !disabled && !readOnly,
     placement: "top",
     strategy: "fixed",
     middleware: [offset(8), flip(), shift({ padding: 12 })],
     whileElementsMounted: autoUpdate,
   });
   const trackSelection = () => {
-    const field = input.current;
-    if (
-      !field ||
-      field.disabled ||
-      field.readOnly ||
-      composing.current ||
-      field.selectionStart === field.selectionEnd
-    ) {
-      setSelection(undefined);
-      return;
-    }
-    setSelection({ start: field.selectionStart, end: field.selectionEnd });
+    const editor = view.current;
+    if (!editor || editor.composing) return;
+    setSelection(!editor.state.selection.empty && editor.hasFocus());
+    renderSelection((revision) => revision + 1);
+    current.current.onSelect?.({ currentTarget: input.current! });
     formatting.refs.setPositionReference({
-      contextElement: field,
+      contextElement: input.current!,
       getBoundingClientRect: () => {
-        // The existing mirror has the textarea's exact font, wrapping and scroll.
-        const range = document.createRange();
-        const walker = document.createTreeWalker(mirror.current!, NodeFilter.SHOW_TEXT);
-        let offset = 0;
-        let started = false;
-        while (walker.nextNode()) {
-          const node = walker.currentNode;
-          const end = offset + (node.textContent?.length ?? 0);
-          if (!started && field.selectionStart <= end) {
-            range.setStart(node, field.selectionStart - offset);
-            started = true;
-          }
-          if (field.selectionEnd <= end) {
-            range.setEnd(node, field.selectionEnd - offset);
-            const rect = range.getBoundingClientRect();
-            const bounds = field.getBoundingClientRect();
-            return new DOMRect(
-              Math.max(bounds.left, Math.min(rect.left, bounds.right)),
-              Math.max(bounds.top, Math.min(rect.top, bounds.bottom)),
-              Math.min(rect.width, bounds.width),
-              Math.min(rect.height, bounds.height),
-            );
-          }
-          offset = end;
-        }
-        return field.getBoundingClientRect();
+        const { from, to } = editor.state.selection;
+        const start = editor.coordsAtPos(from);
+        const end = editor.coordsAtPos(to);
+        const bounds = editor.dom.getBoundingClientRect();
+        return new DOMRect(
+          Math.max(bounds.left, Math.min(start.left, bounds.right)),
+          Math.max(bounds.top, start.top),
+          Math.max(0, end.right - start.left),
+          start.bottom - start.top,
+        );
       },
     });
   };
-  const format = (marker: "**" | "_") => {
-    const field = input.current;
-    if (!field || field.disabled || field.readOnly || composing.current) return;
-    const result = toggleFormat(field.value, field.selectionStart, field.selectionEnd, marker);
-    if (result.text === field.value || Array.from(result.text).length > 4_000) return;
-    // Replace only the changed range. insertText keeps this one native undo step;
-    // setRangeText is the fallback for browsers without that editing command.
-    let start = 0;
-    while (start < field.value.length && field.value[start] === result.text[start]) start++;
-    let oldEnd = field.value.length;
-    let newEnd = result.text.length;
-    while (oldEnd > start && newEnd > start && field.value[oldEnd - 1] === result.text[newEnd - 1]) {
-      oldEnd--;
-      newEnd--;
-    }
-    field.focus();
-    field.setSelectionRange(start, oldEnd);
-    const inserted = result.text.slice(start, newEnd);
-    if (!document.execCommand("insertText", false, inserted)) {
-      field.setRangeText(inserted, start, oldEnd, "end");
-      field.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    requestAnimationFrame(() => {
-      field.setSelectionRange(result.start, result.end);
-      trackSelection();
-    });
+  const track = useRef(trackSelection);
+  track.current = trackSelection;
+  const format = (style: "bold" | "italic") => {
+    const editor = view.current;
+    if (!editor || editor.composing || disabled || readOnly) return;
+    editor.focus();
+    formatComposer(style)(editor.state, editor.dispatch);
+    track.current();
   };
+
   const [name, setName] = useState<string>();
   const tooltipId = useId();
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const target = useRef<HTMLElement | undefined>(undefined);
-  const press = useRef<{ x: number; y: number } | undefined>(undefined);
   const generation = useRef(0);
+  const emojiTarget = useRef<HTMLElement | null>(null);
+  const press = useRef<{ x: number; y: number } | undefined>(undefined);
   const close = () => {
     clearTimeout(timer.current);
-    target.current = undefined;
+    emojiTarget.current = null;
     generation.current++;
     setName(undefined);
   };
-  const { refs, floatingStyles, context } = useFloating({
+  const tooltip = useFloating({
     open: !!name,
-    onOpenChange: (open) => {
-      if (!open) close();
-    },
     placement: "top",
     strategy: "fixed",
     middleware: [offset(6), flip(), shift({ padding: 12 })],
     whileElementsMounted: autoUpdate,
   });
-  const { getReferenceProps } = useInteractions([useDismiss(context, { ancestorScroll: true })]);
-  const fieldRef = useMergeRefs([input, refs.setReference]);
+  const inspect = (target: HTMLElement, delay: number) => {
+    const emoji = target.closest<HTMLElement>("[data-emoji]");
+    if (emoji === emojiTarget.current) return;
+    close();
+    if (!emoji) return;
+    emojiTarget.current = emoji;
+    const request = generation.current;
+    timer.current = setTimeout(() => {
+      void emojiName(emoji.textContent ?? "").then((label) => {
+        if (generation.current !== request) return;
+        tooltip.refs.setPositionReference(emoji);
+        setName(label);
+      });
+    }, delay);
+  };
   useEffect(() => {
     close();
     return () => {
       clearTimeout(timer.current);
       generation.current++;
     };
-  }, [text]);
-  const atPoint = (x: number, y: number) => {
-    if (!input.current || props.disabled) return;
-    const field = input.current.getBoundingClientRect();
-    if (x < field.left || x > field.right || y < field.top || y > field.bottom) return;
-    return Array.from(mirror.current?.querySelectorAll<HTMLElement>("[data-emoji]") ?? []).find((span) =>
-      Array.from(span.getClientRects()).some(
-        (rect) => x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom,
-      ),
-    );
-  };
-  const inspect = (span: HTMLElement | undefined, delay: number) => {
-    if (span === target.current) return;
-    close();
-    if (!span) return;
-    target.current = span;
-    const request = generation.current;
-    timer.current = setTimeout(() => {
-      void emojiName(span.textContent ?? "").then((label) => {
-        if (generation.current !== request) return;
-        refs.setPositionReference({
-          getBoundingClientRect: () => span.getBoundingClientRect(),
-          contextElement: input.current!,
-        });
-        setName(label);
-      });
-    }, delay);
-  };
-  const renderText = (value: string) =>
-    emojiSegments(value).map((part, index) =>
-      part.emoji ? (
-        <span key={index} data-emoji>
-          {part.text}
-        </span>
-      ) : (
-        part.text
-      ),
-    );
-  const sync = () => {
-    const field = input.current;
-    const backdrop = mirror.current;
-    if (!field || !backdrop) return;
-    const style = getComputedStyle(field);
-    for (const property of [
-      "font-family",
-      "font-size",
-      "font-weight",
-      "font-style",
-      "line-height",
-      "letter-spacing",
-      "text-align",
-      "text-indent",
-      "text-transform",
-      "padding-top",
-      "padding-right",
-      "padding-bottom",
-      "padding-left",
-      "border-top-width",
-      "border-right-width",
-      "border-bottom-width",
-      "border-left-width",
-      "tab-size",
-    ])
-      backdrop.style.setProperty(property, style.getPropertyValue(property));
-    backdrop.style.width = `${field.clientWidth + parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth)}px`;
-    backdrop.scrollTop = field.scrollTop;
-    backdrop.scrollLeft = field.scrollLeft;
-  };
-  useLayoutEffect(sync);
+  }, [value]);
+
   useLayoutEffect(() => {
-    const field = input.current;
-    if (!field) return;
-    const observer = new ResizeObserver(sync);
-    observer.observe(field);
-    // Loaded fonts can change wrapping without changing the field's dimensions.
-    void document.fonts?.ready.then(sync);
-    return () => observer.disconnect();
+    const field = input.current!;
+    const plugins = () => [
+      history(),
+      keymap({
+        "Mod-z": undo,
+        "Shift-Mod-z": redo,
+        "Mod-y": redo,
+        Enter: (state, dispatch) => {
+          dispatch?.(state.tr.insertText("\n"));
+          return true;
+        },
+        "Shift-Enter": (state, dispatch) => {
+          dispatch?.(state.tr.insertText("\n"));
+          return true;
+        },
+      }),
+      keymap(baseKeymap),
+    ];
+    const editor = new EditorView(
+      { mount: field },
+      {
+        state: EditorState.create({ doc: composerDocument(source.current), plugins: plugins() }),
+        editable: () => !current.current.disabled && !current.current.readOnly,
+        dispatchTransaction(transaction) {
+          if (transaction.docChanged && !editor.composing) normalizeComposer(transaction);
+          editor.updateState(editor.state.apply(transaction));
+          if (transaction.docChanged) {
+            source.current = composerSource(editor.state.doc);
+            current.current.onValueChange(source.current, field);
+          }
+          track.current();
+        },
+        decorations(state) {
+          const decorations: Decoration[] = [];
+          let position = 0;
+          for (const segment of draftMentionSegments(
+            state.doc.textContent,
+            current.current.people,
+            current.current.specialMentions,
+          )) {
+            if (segment.mention)
+              decorations.push(
+                Decoration.inline(position, position + segment.text.length, { class: "chat-draft-mention" }),
+              );
+            for (const part of linkSegments(segment.text)) {
+              if (part.href)
+                decorations.push(
+                  Decoration.inline(position, position + part.text.length, { class: "chat-draft-link" }),
+                );
+              position += part.text.length;
+            }
+          }
+          position = 0;
+          for (const part of emojiSegments(state.doc.textContent)) {
+            if (part.emoji)
+              decorations.push(Decoration.inline(position, position + part.text.length, { "data-emoji": "" }));
+            position += part.text.length;
+          }
+          return DecorationSet.create(state.doc, decorations);
+        },
+        handlePaste(editor, event) {
+          // Never import arbitrary HTML, remote images or a pasted link's hidden href.
+          // Native file attachment handling runs in the React capture handler first.
+          const text = event.clipboardData?.getData("text/plain");
+          if (text === undefined) return false;
+          editor.dispatch(editor.state.tr.insertText(text.replace(/\r\n?/g, "\n")).setMeta("paste", true));
+          return true;
+        },
+        handleDrop(editor, event) {
+          if (event.dataTransfer?.files.length) return true;
+          const text = event.dataTransfer?.getData("text/plain");
+          if (!text) return true;
+          const position = editor.posAtCoords({ left: event.clientX, top: event.clientY });
+          if (position) editor.dispatch(editor.state.tr.insertText(text, position.pos));
+          return true;
+        },
+      },
+    );
+    view.current = editor;
+    Object.defineProperties(field, {
+      value: { configurable: true, get: () => source.current },
+      disabled: { configurable: true, get: () => !!current.current.disabled },
+      selectionStart: { configurable: true, get: () => sourceOffset(source.current, editor.state.selection.from) },
+      selectionEnd: {
+        configurable: true,
+        get: () => sourceOffset(source.current, editor.state.selection.to, !editor.state.selection.empty),
+      },
+    });
+    field.setSelectionRange = (start, end) => {
+      editor.dispatch(
+        editor.state.tr.setSelection(
+          TextSelection.create(
+            editor.state.doc,
+            displayedOffset(source.current, start),
+            displayedOffset(source.current, end),
+          ),
+        ),
+      );
+    };
+    field.replaceText = (start, end, text) => {
+      if (!editor.editable || editor.composing) return false;
+      const change = normalizeComposer(
+        editor.state.tr
+          .setSelection(
+            TextSelection.create(
+              editor.state.doc,
+              displayedOffset(source.current, start),
+              displayedOffset(source.current, end),
+            ),
+          )
+          .insertText(text),
+      );
+      if (Array.from(composerSource(change.doc)).length > 4000) return false;
+      editor.dispatch(change);
+      editor.focus();
+      return true;
+    };
+    return () => {
+      editor.destroy();
+      view.current = undefined;
+    };
   }, []);
+
+  useLayoutEffect(() => {
+    const editor = view.current!;
+    if (value !== source.current && !editor.composing) {
+      const doc = composerDocument(value);
+      source.current = value;
+      if (!value) {
+        // A sent/discarded draft must not be resurrected by undo in the next message.
+        editor.updateState(EditorState.create({ doc, plugins: editor.state.plugins }));
+      } else {
+        editor.dispatch(editor.state.tr.replaceWith(0, editor.state.doc.content.size, doc.content));
+      }
+    }
+    editor.setProps({ editable: () => !disabled && !readOnly });
+  }, [value, disabled, readOnly, people, specialMentions]);
+
   return (
-    <div className="chat-mention-input" data-disabled={props.disabled || undefined}>
-      <div ref={mirror} className="chat-mention-input-mirror" aria-hidden="true">
-        {segments.map((segment, index) => (
-          <span key={index}>
-            {segment.mention ? (
-              <mark>{renderText(segment.text)}</mark>
-            ) : (
-              linkSegments(segment.text).map((part, index) =>
-                part.href ? (
-                  <mark key={index} className="chat-draft-link">
-                    {renderText(part.text)}
-                  </mark>
-                ) : (
-                  <span key={index}>{renderText(part.text)}</span>
-                ),
-              )
-            )}
-          </span>
-        ))}
-        {"\n"}
-      </div>
-      <textarea
+    <div className="chat-mention-input" data-disabled={disabled || undefined}>
+      <div
         {...props}
-        ref={fieldRef}
+        ref={input}
+        className={`chat-rich-input ${props.className ?? ""}`}
+        role="textbox"
+        aria-multiline="true"
+        aria-disabled={disabled || undefined}
+        aria-readonly={readOnly || undefined}
+        aria-label={props["aria-label"] ?? placeholder ?? "Message"}
         aria-keyshortcuts="Control+B Meta+B Control+I Meta+I"
         aria-description={
           props["aria-description"] ??
-          "Select text to format it. Control or Command B for bold, I for italic. Markdown markers stay visible while editing."
+          "Select text to format it. Control or Command B for bold, I for italic. Formatting cannot split a link."
         }
         aria-describedby={
           name ? [props["aria-describedby"], tooltipId].filter(Boolean).join(" ") : props["aria-describedby"]
         }
-        {...getReferenceProps({
-          onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => {
-            close();
-            if (!event.nativeEvent.isComposing && !event.altKey && (event.metaKey || event.ctrlKey)) {
-              const key = event.key.toLowerCase();
-              if (key === "b" || key === "i") {
-                event.preventDefault();
-                format(key === "b" ? "**" : "_");
-                return;
-              }
-            }
-            if (selection && event.key === "Escape") {
+        data-placeholder={placeholder}
+        data-empty={!value || undefined}
+        style={{ ...props.style, minHeight: rows > 1 ? `${rows * 1.4 + 1.25}em` : undefined }}
+        tabIndex={disabled ? -1 : 0}
+        onKeyDownCapture={(event) => {
+          close();
+          if (!event.nativeEvent.isComposing && !event.altKey && (event.metaKey || event.ctrlKey)) {
+            const key = event.key.toLowerCase();
+            if (key === "b" || key === "i") {
               event.preventDefault();
-              setSelection(undefined);
+              format(key === "b" ? "bold" : "italic");
               return;
             }
-            props.onKeyDown?.(event);
-          },
-          onBlur: (event: FocusEvent<HTMLTextAreaElement>) => {
-            close();
-            if (!formatting.refs.floating.current?.contains(event.relatedTarget)) setSelection(undefined);
-            props.onBlur?.(event);
-          },
-          onPointerDown: (event: PointerEvent<HTMLTextAreaElement>) => {
-            close();
-            press.current = undefined;
-            if (event.pointerType !== "mouse" && event.isPrimary) {
-              press.current = { x: event.clientX, y: event.clientY };
-              inspect(atPoint(event.clientX, event.clientY), 500);
-            }
-            props.onPointerDown?.(event);
-          },
-          onPointerMove: (event: PointerEvent<HTMLTextAreaElement>) => {
-            if (event.pointerType === "mouse" && event.buttons === 0)
-              inspect(atPoint(event.clientX, event.clientY), 400);
-            else if (press.current && Math.hypot(event.clientX - press.current.x, event.clientY - press.current.y) > 10)
-              close();
-            props.onPointerMove?.(event);
-          },
-          onPointerUp: (event: PointerEvent<HTMLTextAreaElement>) => {
-            if (press.current) {
-              clearTimeout(timer.current);
-              // Keep a completed hold readable briefly after the finger lifts.
-              if (name) timer.current = setTimeout(close, 1500);
-              else close();
-              press.current = undefined;
-            }
-            props.onPointerUp?.(event);
-          },
-          onPointerCancel: (event: PointerEvent<HTMLTextAreaElement>) => {
-            close();
-            press.current = undefined;
-            props.onPointerCancel?.(event);
-          },
-          onPointerLeave: (event: PointerEvent<HTMLTextAreaElement>) => {
-            if (event.pointerType === "mouse") close();
-            props.onPointerLeave?.(event);
-          },
-        })}
-        onSelect={(event) => {
-          if (document.activeElement === input.current) trackSelection();
-          props.onSelect?.(event);
+          }
+          if (selection && event.key === "Escape") {
+            event.preventDefault();
+            setSelection(false);
+            return;
+          }
+          props.onKeyDown?.(event);
         }}
+        onKeyDown={undefined}
+        onPasteCapture={props.onPaste}
+        onPaste={undefined}
         onCompositionStart={(event) => {
-          composing.current = true;
-          setSelection(undefined);
+          setSelection(false);
           props.onCompositionStart?.(event);
         }}
         onCompositionEnd={(event) => {
-          composing.current = false;
           props.onCompositionEnd?.(event);
+          requestAnimationFrame(() => {
+            const editor = view.current;
+            if (!editor || editor.composing) return;
+            const transaction = normalizeComposer(editor.state.tr);
+            if (transaction.docChanged) editor.dispatch(transaction);
+            track.current();
+          });
+        }}
+        onBlur={(event) => {
+          close();
+          if (!formatting.refs.floating.current?.contains(event.relatedTarget)) setSelection(false);
+          props.onBlur?.(event);
+        }}
+        onPointerMove={(event) => {
+          if (event.pointerType === "mouse" && !event.buttons) inspect(event.target as HTMLElement, 400);
+          else if (press.current && Math.hypot(event.clientX - press.current.x, event.clientY - press.current.y) > 10)
+            close();
+          props.onPointerMove?.(event);
+        }}
+        onPointerDown={(event) => {
+          close();
+          press.current = undefined;
+          if (event.pointerType !== "mouse" && event.isPrimary) {
+            press.current = { x: event.clientX, y: event.clientY };
+            inspect(event.target as HTMLElement, 500);
+          }
+          props.onPointerDown?.(event);
+        }}
+        onPointerUp={(event) => {
+          if (press.current) {
+            clearTimeout(timer.current);
+            if (name) timer.current = setTimeout(close, 1500);
+            else close();
+            press.current = undefined;
+          }
+          props.onPointerUp?.(event);
+        }}
+        onPointerCancel={(event) => {
+          close();
+          press.current = undefined;
+          props.onPointerCancel?.(event);
+        }}
+        onPointerLeave={(event) => {
+          close();
+          props.onPointerLeave?.(event);
         }}
         onScroll={(event) => {
           close();
-          sync();
           formatting.update();
           props.onScroll?.(event);
         }}
       />
-      {selection && !props.disabled && !props.readOnly && (
+      {selection && !disabled && !readOnly && (
         <FloatingPortal root={input.current?.closest<HTMLElement>("dialog, [role='dialog'], .live-scene") ?? undefined}>
           <div
             ref={formatting.refs.setFloating}
@@ -357,31 +405,41 @@ export default function MentionTextarea({
             onPointerDown={(event) => event.preventDefault()}
             onBlur={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget) && event.relatedTarget !== input.current)
-                setSelection(undefined);
+                setSelection(false);
             }}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault();
                 input.current?.focus();
-                setSelection(undefined);
+                setSelection(false);
               }
             }}
           >
             {(
               [
-                ["**", "Bold", Bold],
-                ["_", "Italic", Italic],
+                ["bold", "Bold", Bold],
+                ["italic", "Italic", Italic],
               ] as const
-            ).map(([marker, label, Icon]) => {
-              const result = toggleFormat(text, selection.start, selection.end, marker);
+            ).map(([style, label, Icon]) => {
+              const state = view.current!.state;
+              const allowed = formatComposer(style)(state);
               return (
                 <button
-                  key={marker}
+                  key={style}
                   type="button"
                   aria-label={label}
-                  title={`${label} (${navigator.platform.includes("Mac") ? "⌘" : "Ctrl+"}${label[0]})`}
-                  disabled={result.text === text || Array.from(result.text).length > 4_000}
-                  onClick={() => format(marker)}
+                  aria-pressed={state.doc.rangeHasMark(
+                    state.selection.from,
+                    state.selection.to,
+                    state.schema.marks[style],
+                  )}
+                  title={
+                    allowed
+                      ? `${label} (${navigator.platform.includes("Mac") ? "⌘" : "Ctrl+"}${label[0]})`
+                      : "This selection cannot be formatted without changing its text or link"
+                  }
+                  disabled={!allowed}
+                  onClick={() => format(style)}
                 >
                   <Icon size={17} aria-hidden="true" />
                 </button>
@@ -393,8 +451,8 @@ export default function MentionTextarea({
       {name && (
         <FloatingPortal root={input.current?.closest<HTMLElement>(".live-scene") ?? undefined}>
           <div
-            ref={refs.setFloating}
-            style={floatingStyles}
+            ref={tooltip.refs.setFloating}
+            style={tooltip.floatingStyles}
             className="chat-emoji-tooltip"
             role="tooltip"
             id={tooltipId}

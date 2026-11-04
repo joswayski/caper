@@ -55,7 +55,7 @@ export default function GifButton({
   disabled?: boolean;
   onSelect: (gif: ChatGif, query: string) => void;
   onOpenChange?: (open: boolean) => void;
-  returnFocus?: RefObject<HTMLTextAreaElement | null>;
+  returnFocus?: RefObject<HTMLElement | null>;
 }) {
   const config = useKlipy();
   const [open, setOpenState] = useState(false);

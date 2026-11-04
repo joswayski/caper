@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ChatViewState } from "./client.ts";
 import type { ChatMessage, GeneralChatHistory } from "./types.ts";
+import type { ComposerInput } from "./MentionTextarea.tsx";
 
 // Every message row renders its text through LinkedText exactly once, so its
 // renders count the row's renders, keyed by the message's text.
@@ -176,10 +177,11 @@ test("voice, presence, typing and composer updates leave unchanged message rows 
   expect(container.querySelector(".chat-typing")?.textContent).toContain("Fixture Author");
   await act(async () => client.emit({ typingAuthors: [] }));
   // The viewer types a draft.
-  const textarea = container.querySelector<HTMLTextAreaElement>("#chat-message")!;
+  const textarea = container.querySelector<ComposerInput>("#chat-message")!;
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "a draft");
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    const clipboardData = new DataTransfer();
+    clipboardData.setData("text/plain", "a draft");
+    textarea.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
   });
   expect(textarea.value).toBe("a draft");
   expect(counts()).toEqual(settled);
@@ -205,7 +207,7 @@ test.each([false, true])("Reply focuses within the click, including a repeated t
   await render(<Chat name="Viewer" signedIn identityReady channelId="channel" initialHistory={history} />);
   await act(async () => fixture.clients.at(-1)!.emit({ phase: "ready", author: history.messages[0].author }));
   const row = container.querySelector(".chat-message[data-message-key]")!;
-  const input = container.querySelector<HTMLTextAreaElement>("#chat-message")!;
+  const input = container.querySelector<ComposerInput>("#chat-message")!;
   for (let repeat = 0; repeat < 2; repeat++) {
     input.blur();
     if (menu) {
@@ -240,7 +242,7 @@ test.each([false, true])("Reply in thread focuses before history arrives (menu: 
     : row.querySelector<HTMLButtonElement>(".chat-reply-thread")!;
   await act(async () => {
     button.click();
-    const input = container.querySelector<HTMLTextAreaElement>("#chat-thread-reply")!;
+    const input = container.querySelector<ComposerInput>("#chat-thread-reply")!;
     expect(input).not.toBeNull();
     expect(input.disabled).toBe(false);
     expect(document.activeElement).toBe(input);

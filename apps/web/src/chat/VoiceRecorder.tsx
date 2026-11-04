@@ -72,7 +72,7 @@ export function useVoiceRecorder({
 }: {
   voice: VoiceComposer | undefined;
   disabled: boolean;
-  returnFocus?: RefObject<HTMLTextAreaElement | null>;
+  returnFocus?: RefObject<HTMLElement | null>;
 }): { button: ReactNode; bar: ReactNode; notice: ReactNode; active: boolean } {
   const [phase, setPhase] = useState<Phase>("idle");
   const [mode, setMode] = useState<Mode>("free");

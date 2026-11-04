@@ -29,6 +29,7 @@ import { canEditProfile, editProfile } from "../account/profile-editor.ts";
 import { pictureUrl } from "../account/pictures.ts";
 import ProfileComposer from "./ProfileComposer.tsx";
 import MediaViewer from "./MediaViewer.tsx";
+import type { ComposerInput } from "./MentionTextarea.tsx";
 
 export interface MentionCardTarget {
   person: MentionCardPerson;
@@ -84,7 +85,7 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
   const canInvite = !person.self && !blocked && !!person.username && spaces.length > 0;
   const canBlock = !!onBlock && (blocked || (!person.admin && !person.team));
   const returnFocus = useRef(anchor);
-  const composerInput = useRef<HTMLTextAreaElement>(null);
+  const composerInput = useRef<ComposerInput>(null);
   const nodeId = useFloatingNodeId();
   const { refs, floatingStyles, context } = useFloating({
     nodeId,
