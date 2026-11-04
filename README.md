@@ -13,8 +13,6 @@ All builds are on the [latest release](https://github.com/joswayski/caper/releas
 | iPhone | Join the [TestFlight beta](https://testflight.apple.com/join/khGQMuYP) and install through TestFlight. |
 | Android | Join the [testers group](https://groups.google.com/g/caper-testers), opt in on [Google Play](https://play.google.com/apps/testing/chat.caper.android), then install Caper from Play. No Google Play? Use the [APK](https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk) (it doesn't update itself). |
 
-Desktop apps update themselves; phone apps update through TestFlight and Google Play.
-
 ## Architecture
 
 ![Caper architecture: clients reach the Rust API, gateway and web server on AWS through Cloudflare Tunnel; voice, files and link previews run on Cloudflare; data lives in PlanetScale Postgres with Valkey for fanout](docs/architecture.svg)
