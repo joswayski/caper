@@ -8020,8 +8020,8 @@ The list appears below channels in every space, including accounts with no space
 Web pins it above the account controls; narrow web and mobile clients expose it in
 Browse navigation. Leaving or deleting a space does not delete DMs. Space owners
 have no special DM access. This is server-authorized privacy, not end-to-end
-encryption. Group DMs, attachments, message deletion, and DM voice are not
-implemented; message requests and blocking are described below. Existing text length, send limits, typing, history pagination,
+encryption. DMs support attachments and message deletion like channels; group
+DMs and DM voice calls are not implemented; message requests and blocking are described below. Existing text length, send limits, typing, history pagination,
 idempotent sends, outbox and gateway replay rules apply unchanged.
 
 The sidebar pins your real account name with a `you` label. Opening it lazily
