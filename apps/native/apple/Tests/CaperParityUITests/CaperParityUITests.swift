@@ -978,6 +978,25 @@ final class CaperParityUITests: XCTestCase {
     }
     #endif
 
+    #if os(macOS)
+    func testMessageToolbarHoverDoesNotChangeNeighbor() throws {
+        let app = launch(fixture: "reaction-chips")
+        let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 10, "Missing fixture message")
+        try hoverMessage(row)
+        let thumb = app.buttons["quick-reaction-chan00000001m01-👍"]
+        let heart = app.buttons["quick-reaction-chan00000001m01-❤️"]
+        XCTAssertTrue(thumb.isHittable)
+        XCTAssertTrue(heart.isHittable)
+        // Compare the same live render, not a stored OS-dependent snapshot.
+        let thumbBeforeHover = thumb.screenshot().pngRepresentation
+        let heartBeforeHover = heart.screenshot().pngRepresentation
+        heart.hover()
+        XCTAssertNotEqual(heart.screenshot().pngRepresentation, heartBeforeHover, "The hovered button must highlight")
+        XCTAssertEqual(thumb.screenshot().pngRepresentation, thumbBeforeHover, "Hover feedback must not bleed into its neighbor")
+        capture("message-toolbar-heart-hover", app: app)
+    }
+    #endif
+
     func testReactionChipsPickerAndEmptySearchState() throws {
         let app = launch(fixture: "reaction-chips")
         let own = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "selected by you")).firstMatch
