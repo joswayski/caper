@@ -487,11 +487,12 @@ for (const zone of zones) {
   for (let gx = Math.ceil(x); gx < x + w; gx++) grid.push(`M${fixed(gx - x)},0V${fixed(d)}`);
   for (let gy = Math.ceil(y); gy < y + d; gy++) grid.push(`M0,${fixed(gy - y)}H${fixed(w)}`);
   const slab = `width="${fixed(w)}" height="${fixed(d)}" rx="${ZONE_RADIUS}"`;
+  // A soft glow in the zone colour fades about one grid square inward from the outline.
   const clip = `zone-${zones.indexOf(zone)}`;
   const [lx, ly] = zone.above ? project(x + 0.3, y, FLOOR) : project(x + 0.3, y + d, 0);
   layers.zones.push(
     `<rect transform="${floorPlane(x, y, 0)}" ${slab} fill="#0E0F11"/>`,
-    `<g transform="${floorPlane(x, y, FLOOR)}"><clipPath id="${clip}"><rect ${slab}/></clipPath><rect ${slab} fill="#17191C"/><path clip-path="url(#${clip})" d="${grid.join("")}" stroke="#202327" stroke-width="1" vector-effect="non-scaling-stroke" fill="none"/><rect ${slab} fill="none" stroke="${zone.accent}" stroke-opacity="0.45" stroke-width="1.2" vector-effect="non-scaling-stroke"/></g>`,
+    `<g transform="${floorPlane(x, y, FLOOR)}"><clipPath id="${clip}"><rect ${slab}/></clipPath><rect ${slab} fill="#17191C"/><path clip-path="url(#${clip})" d="${grid.join("")}" stroke="#202327" stroke-width="1" vector-effect="non-scaling-stroke" fill="none"/><g clip-path="url(#${clip})"><rect ${slab} fill="none" stroke="${zone.accent}" stroke-opacity="0.22" stroke-width="2" filter="url(#zone-glow)"/></g><rect ${slab} fill="none" stroke="${zone.accent}" stroke-opacity="0.85" stroke-width="1.5" vector-effect="non-scaling-stroke"/></g>`,
     `<text class="halo" transform="translate(${fixed(lx)},${fixed(ly)}) rotate(${fixed(EDGE_ANGLE)})" y="${zone.above ? -9 : 20}" font-size="12.5" font-weight="700" letter-spacing="0.12em" fill="${zone.accent}">${escape(zone.name)}</text>`,
   );
   include(bounds);
@@ -577,6 +578,7 @@ text{font-family:Satoshi,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 @media (prefers-reduced-motion:reduce){.flow{animation:none}}
 </style>
 <defs>
+<filter id="zone-glow" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="0.35"/></filter>
 <filter id="shadow-blur" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="4"/></filter>
 <radialGradient id="instagram-gradient" cx="0.25" cy="1.05" r="1.2"><stop offset="0" stop-color="#FFDD55"/><stop offset="0.12" stop-color="#FFDD55"/><stop offset="0.48" stop-color="#FF543E"/><stop offset="0.78" stop-color="#C837AB"/><stop offset="1" stop-color="#6A3BD8"/></radialGradient>
 ${[...defined.values()].join("\n")}
