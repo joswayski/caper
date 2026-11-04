@@ -40,7 +40,6 @@ const palettes = {
   cloudflare: { top: "#C9603F", left: "#B64D32", right: "#853823" },
   aws: { top: "#7C9657", left: "#637A43", right: "#475831" },
   neutral: { top: "#4A4F53", left: "#34383B", right: "#26292C" },
-  ses: { top: "#EA5B6E", left: "#DD344C", right: "#A8263A" },
 };
 
 // Screen-space bounds, collected per model so labels can be placed under it and checked for overlaps.
@@ -82,6 +81,7 @@ const defined = new Map();
 const logo = (name, height, fill) => {
   const {
     box: [w, h],
+    origin: [ox, oy] = [0, 0],
     paths,
   } = logos[name];
   const id = `logo-${name}${fill ? `-${fill.slice(1)}` : ""}`;
@@ -91,7 +91,7 @@ const logo = (name, height, fill) => {
       `<g id="${id}">${paths.map(([color, d]) => `<path fill="${fill ?? color}" d="${d}"/>`).join("")}</g>`,
     );
   }
-  return `<use href="#${id}" transform="scale(${(height / h).toFixed(5)}) translate(${fixed(-w / 2)},${fixed(-h)})"/>`;
+  return `<use href="#${id}" transform="scale(${(height / h).toFixed(5)}) translate(${fixed(-w / 2 - ox)},${fixed(-h - oy)})"/>`;
 };
 // A logo standing upright at (x, y), extruded backward so it reads as a solid piece.
 const standingLogo = (name, x, y, z, height, depth = 0.26) => {
@@ -217,16 +217,11 @@ ${bars.map(([u, v, w, fill]) => `<rect x="${u}" y="${v}" width="${w}" height="0.
 <ellipse cx="${fixed(tx)}" cy="${fixed(ty + 1.5)}" rx="${fixed(top - 4)}" ry="${fixed(top * SE - 3)}" fill="#6E2E1C"/>
 <g transform="${frontPlane(x, y + 0.92, FLOOR + 0.35)}">${logo("cloudflare", 0.62, "#F1EDE4")}</g>`;
   },
-  cube({ x, y }) {
-    const s = 1.5;
-    castShadow(x, y + s / 2, rect(-s / 2, 0, s, s));
-    let svg = prism(x - s / 2, y - s / 2, s, s, s, FLOOR, palettes.ses);
-    svg += `<g transform="${frontPlane(x, y + s / 2, FLOOR + 0.18)}">${logo("ses", s * 0.95)}</g>`;
-    return svg;
-  },
 };
 
-const R0 = -6.2;
+// Corner radius of the zone slabs, in grid units.
+const ZONE_RADIUS = 0.7;
+const R0 = -7.2;
 const [R1, R2, R3] = [2.2, 9.4, 16.6];
 // Columns: clients, the two Cloudflare columns, AWS, Valkey, PlanetScale.
 const [C, A, B, K, V, P] = [1.6, 10.6, 16.4, 24.6, 30.1, 36.5];
@@ -235,7 +230,7 @@ const zones = [
   { name: "CLOUDFLARE", x: 7.8, y: 0, w: 11.6, d: 21.4, accent: "#D9734F" },
   { name: "AWS · K3S", x: 21, y: 0, w: 11.8, d: 21.4, accent: "#8FAA66" },
   { name: "PLANETSCALE", x: 34.2, y: R2 - 3.4, w: 4.6, d: 6.8, accent: "#9AA0A4" },
-  { name: "THIRD-PARTY SERVICES", x: -1.2, y: -9.4, w: 34.8, d: 6.4, accent: "#9AA0A4", above: true },
+  { name: "THIRD-PARTY SERVICES", x: -1.2, y: -10.4, w: 33.4, d: 6.4, accent: "#9AA0A4", above: true },
 ];
 
 // A label is [title, detail], or [detail] alone when the logo already names the service.
@@ -260,8 +255,8 @@ const nodes = [
   { model: "logos", x: K, y: R2, logo: "rust", label: ["Rust gateway", "live WebSocket"] },
   { model: "logos", x: K, y: R3, logo: "tanstack", label: ["Web server", "TanStack Start"] },
   { model: "logos", x: V, y: R3, logo: "valkey", label: ["Valkey", "fanout · presence · calls"] },
-  { model: "logos", x: P, y: R2, logo: "planetscale", label: ["PlanetScale", "Postgres"] },
-  { model: "logos", x: C, y: R0, logo: "klipy", logoHeight: 0.95, label: ["GIFs · stickers"] },
+  { model: "logos", x: P, y: R2, logo: "planetscale", label: ["Postgres", "durable data"] },
+  { model: "logos", x: 1.7, y: R0, logo: "klipy", logoHeight: 0.95, label: ["GIFs · stickers"] },
   {
     model: "logos",
     x: B,
@@ -270,16 +265,16 @@ const nodes = [
     logoHeight: 1.05,
     label: ["Linked sites", "fetched for previews"],
   },
-  { model: "cube", x: 24.4, y: R0, label: ["Amazon SES", "sign-in email"] },
-  { model: "logos", x: 28.6, y: R0, logo: ["apple", "firebase"], logoHeight: 1.25, label: ["APNs / FCM", "push"] },
-  { model: "logos", x: 32.6, y: R0, logo: "openrouter", logoHeight: 1.35, label: ["OpenRouter", "transcripts"] },
+  { model: "logos", x: K - 3, y: R0, logo: "ses", logoHeight: 1.6, label: ["Amazon SES", "sign-in email"] },
+  { model: "logos", x: K + 0.6, y: R0, logo: ["apple", "firebase"], logoHeight: 1.25, label: ["APNs / FCM", "push"] },
+  { model: "logos", x: K + 4.2, y: R0, logo: "openrouter", logoHeight: 1.35, label: ["OpenRouter", "transcripts"] },
 ];
 
 // Edges run on the floor through grid waypoints. `both` puts an arrow at each end; `arrow: false` at neither.
 // Edges run on the floor through grid waypoints. `both` puts an arrow at each end; `arrow: false` at neither.
 // Every client uses the same Cloudflare entry points, so the clients merge into one trunk that fans out there.
 // Edges into the third-party row stop just below its labels.
-const LABELLED = -3.3;
+const LABELLED = R0 + 2.9;
 const [IN, OUT, TRUNK] = [4.2, 8.6, (R2 + R3) / 2];
 const edges = [
   ...[R1, R2, R3].map((y) => ({
@@ -291,10 +286,15 @@ const edges = [
   })),
   {
     path: [
+      [IN, R1],
       [IN, R3],
-      [IN, -1.8],
-      [C, -1.8],
-      [C, LABELLED],
+    ],
+    arrow: false,
+  },
+  {
+    path: [
+      [1.7, 0],
+      [1.7, LABELLED],
     ],
   },
   {
@@ -429,12 +429,12 @@ const edges = [
   },
   {
     path: [
-      [24.4, -2.3],
-      [32.6, -2.3],
+      [K - 3, -2.3],
+      [K + 4.2, -2.3],
     ],
     arrow: false,
   },
-  ...[24.4, 28.6, 32.6].map((x) => ({
+  ...[K - 3, K + 0.6, K + 4.2].map((x) => ({
     path: [
       [x, -2.3],
       [x, LABELLED],
@@ -455,21 +455,24 @@ const include = (box) => {
 for (const zone of zones) {
   const { x, y, w, d } = zone;
   bounds = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const corner of [
+    [x, y],
+    [x + w, y],
+    [x, y + d],
+    [x + w, y + d],
+  ]) {
+    grow(project(...corner, 0));
+    grow(project(...corner, FLOOR));
+  }
   const grid = [];
-  for (let gx = Math.ceil(x); gx < x + w; gx++) grid.push(`M${point(gx, y, FLOOR)}L${point(gx, y + d, FLOOR)}`);
-  for (let gy = Math.ceil(y); gy < y + d; gy++) grid.push(`M${point(x, gy, FLOOR)}L${point(x + w, gy, FLOOR)}`);
+  for (let gx = Math.ceil(x); gx < x + w; gx++) grid.push(`M${fixed(gx - x)},0V${fixed(d)}`);
+  for (let gy = Math.ceil(y); gy < y + d; gy++) grid.push(`M0,${fixed(gy - y)}H${fixed(w)}`);
+  const slab = `width="${fixed(w)}" height="${fixed(d)}" rx="${ZONE_RADIUS}"`;
+  const clip = `zone-${zones.indexOf(zone)}`;
   const [lx, ly] = zone.above ? project(x + 0.3, y, FLOOR) : project(x + 0.3, y + d, 0);
   layers.zones.push(
-    prism(x, y, w, d, FLOOR, 0, { top: "#17191C", left: "#111315", right: "#0E0F11" }),
-    `<path d="${grid.join("")}" stroke="#202327" stroke-width="1" fill="none"/>`,
-    `<polygon points="${[
-      [x, y],
-      [x + w, y],
-      [x + w, y + d],
-      [x, y + d],
-    ]
-      .map((p) => point(...p, FLOOR))
-      .join(" ")}" fill="none" stroke="${zone.accent}" stroke-opacity="0.45" stroke-width="1.2"/>`,
+    `<rect transform="${floorPlane(x, y, 0)}" ${slab} fill="#0E0F11"/>`,
+    `<g transform="${floorPlane(x, y, FLOOR)}"><clipPath id="${clip}"><rect ${slab}/></clipPath><rect ${slab} fill="#17191C"/><path clip-path="url(#${clip})" d="${grid.join("")}" stroke="#202327" stroke-width="1" vector-effect="non-scaling-stroke" fill="none"/><rect ${slab} fill="none" stroke="${zone.accent}" stroke-opacity="0.45" stroke-width="1.2" vector-effect="non-scaling-stroke"/></g>`,
     `<text class="halo" transform="translate(${fixed(lx)},${fixed(ly)}) rotate(${fixed(EDGE_ANGLE)})" y="${zone.above ? -9 : 20}" font-size="12.5" font-weight="700" letter-spacing="0.12em" fill="${zone.accent}">${escape(zone.name)}</text>`,
   );
   include(bounds);
@@ -541,14 +544,14 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${hei
 <style>${font(500)}${font(700)}
 text{font-family:Satoshi,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 .halo{paint-order:stroke;stroke:#0C0D0F;stroke-width:4px;stroke-linejoin:round}
-.backdrop{fill:#0C0D0F;fill-opacity:.78;stroke:#34383B;stroke-opacity:.35}
+.backdrop{fill:#0C0D0F;stroke:#34383B;stroke-opacity:.35}
 .wire{fill:none;stroke:#2E3236;stroke-width:4;stroke-linecap:round;stroke-linejoin:round}
 .flow{fill:none;stroke:#F1EDE4;stroke-opacity:.75;stroke-width:1.6;stroke-dasharray:5 9;stroke-linecap:round;animation:flow 1.4s linear infinite}
 @keyframes flow{to{stroke-dashoffset:-14}}
 @media (prefers-reduced-motion:reduce){.flow{animation:none}}
 </style>
 <defs>
-<filter id="shadow-blur" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.5"/></filter>
+<filter id="shadow-blur" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="4"/></filter>
 <radialGradient id="instagram-gradient" cx="0.25" cy="1.05" r="1.2"><stop offset="0" stop-color="#FFDD55"/><stop offset="0.12" stop-color="#FFDD55"/><stop offset="0.48" stop-color="#FF543E"/><stop offset="0.78" stop-color="#C837AB"/><stop offset="1" stop-color="#6A3BD8"/></radialGradient>
 ${[...defined.values()].join("\n")}
 <linearGradient id="bucket" x1="0" x2="1"><stop offset="0" stop-color="#C9603F"/><stop offset="1" stop-color="#853823"/></linearGradient>
@@ -560,7 +563,7 @@ ${[...defined.values()].join("\n")}
 <text x="${pad}" y="${pad + 46}" font-size="13" font-weight="500" fill="#9AA0A4">Control traffic runs on AWS. Voice audio, files and link previews stay on Cloudflare.</text>
 <g transform="translate(${fixed(pad - minX)},${fixed(pad + header - minY)})">
 ${layers.zones.join("\n")}
-<g filter="url(#shadow-blur)" opacity="0.55">${shadows.join("")}</g>
+<g filter="url(#shadow-blur)" opacity="0.4">${shadows.join("")}</g>
 ${layers.edges.join("\n")}
 ${layers.models.join("\n")}
 ${layers.labels.join("\n")}
