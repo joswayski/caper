@@ -7,7 +7,7 @@ on:
 
 permissions:
   actions: read
-  contents: write
+  contents: read
   id-token: write
 
 jobs:
@@ -88,7 +88,7 @@ jobs:
           base64 -d release/latest.json.sig > "$RUNNER_TEMP/signature.bin"
           openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/public.der" \
             -in release/latest.json -sigfile "$RUNNER_TEMP/signature.bin"
-      - name: Restore downloads without replacing any existing release
+      - name: Checksum the restored downloads
         run: |
           set -euo pipefail
           cd release
@@ -97,10 +97,12 @@ jobs:
             Caper-Android.apk Caper-macOS-Intel.dmg Caper-macOS-Intel.zip)
           for file in "${files[@]}"; do test -s "$file"; done
           sha256sum "${files[@]}" > SHA256SUMS
-          git push origin "$RELEASE_SHA:refs/tags/native-latest"
-          gh release create native-latest --verify-tag --prerelease --target "$RELEASE_SHA" \
-            --title 'Caper apps (latest)' \
-            --notes 'Restored build 309 downloads and its signed update manifest. Intel Mac downloads retain build 307, the previous successfully signed Intel build. iPhone build 309.1 is available through TestFlight.' \
-            "${files[@]}" SHA256SUMS latest.json latest.json.sig
-          gh release view native-latest --json targetCommitish,assets \
-            --jq '{targetCommitish,assets:[.assets[].name]}'
+          mkdir ../restored
+          mv "${files[@]}" SHA256SUMS latest.json latest.json.sig ../restored/
+      # GITHUB_TOKEN gets 403 creating a release on a tag whose workflows
+      # differ from main's, so an owner token publishes these files.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: restored-native-latest
+          path: restored
+          retention-days: 3
