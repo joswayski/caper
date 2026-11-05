@@ -23,7 +23,12 @@ targets:
         CFBundleDisplayName: Caper UIKit Development
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel or record a voice message.
+        NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel, record a voice message or record a video to attach.
+        # The attach drawer: recent photos and videos, and its Camera tile.
+        NSCameraUsageDescription: Caper uses your camera when you take a photo or video to attach to a message.
+        NSPhotoLibraryAddUsageDescription: Caper saves photos and videos you choose to your library.
+        NSPhotoLibraryUsageDescription: Caper shows your recent photos and videos so you can attach them to messages. Only items you choose are uploaded.
+        PHPhotoLibraryPreventAutomaticLimitedAccessAlert: true
         ITSAppUsesNonExemptEncryption: false
         UIAppFonts: [Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf]
         UILaunchScreen:

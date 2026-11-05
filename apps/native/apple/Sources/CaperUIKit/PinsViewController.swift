@@ -12,6 +12,12 @@ final class PinsViewController: UIViewController, UICollectionViewDelegate {
     private let empty = UIStackView()
     private let error = UIKitStyle.label(size: 12, color: UIKitStyle.error)
     private let observer = ModelObserver()
+    private lazy var rowHost = RowHost(chat: model.chat, present: { [weak self] in self?.present($0, animated: false) }) { [weak self] message in
+        guard let self else { return }
+        let chat = self.model.chat
+        self.dismiss(animated: true)
+        Task { _ = await chat.onOpenForward?(message) }
+    }
 
     init(model: AppModel) {
         self.model = model
@@ -67,6 +73,7 @@ final class PinsViewController: UIViewController, UICollectionViewDelegate {
         dataSource = UICollectionViewDiffableDataSource(collectionView: collection) { [weak self] collection, path, id in
             let cell = collection.dequeueReusableCell(withReuseIdentifier: PinCardCell.reuse, for: path) as! PinCardCell
             guard let self, let row = self.rows[id] else { return cell }
+            cell.host = self.rowHost
             cell.configure(row.state, mine: row.state.pinMine, jumping: self.model.chat.jumpingToMessage) { [weak self] in
                 self?.goTo(row.message)
             }
@@ -138,6 +145,10 @@ private final class PinCardCell: UICollectionViewCell {
     private let row = MessageRowView()
     private lazy var go = CaperButton("Go to message", kind: .secondary, icon: "arrow-right", size: 13) { [weak self] in self?.action?() }
     private var action: (() -> Void)?
+    var host: RowHost? {
+        get { row.host }
+        set { row.host = newValue }
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)

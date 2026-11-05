@@ -180,6 +180,67 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertFalse(list.exists)
     }
 
+    /// Emojis, GIFs and stickers insert at the caret; the microphone is there.
+    func testComposerEmojiPicker() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let composer = app.textViews["message-composer"]
+        composer.tap()
+        composer.typeText("hi ")
+        let emoji = app.buttons["composer-emoji"]
+        XCTAssertEqual(emoji.label, "Emojis, GIFs and stickers")
+        emoji.tap()
+        let grid = app.descendants(matching: .any)["reaction-picker-grid"]
+        XCTAssertTrue(grid.waitForExistence(timeout: 10))
+        screenshot("uikit-emoji-picker")
+        grid.buttons.firstMatch.tap()
+        XCTAssertTrue(grid.waitForNonExistence(timeout: 5))
+        let value = composer.value as? String ?? ""
+        XCTAssertTrue(value.hasPrefix("hi ") && value.count > 3, value)
+        XCTAssertTrue(app.descendants(matching: .any)["composer-voice-record"].exists)
+        XCTAssertTrue(app.buttons["send-message"].isEnabled)
+    }
+
+    /// A photo chosen in the attach drawer is staged above the composer.
+    /// (The fixture's relative upload URLs suit web only, so CaperCore never
+    /// uploads to it; `testIncomingAttachmentRenders` covers sent media.)
+    func testAttachDrawerStagesAPhoto() {
+        control(["reset": true, "uploadsEnabled": true])
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let attach = app.buttons["attach-files-button"]
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: attach)
+        waitForExpectations(timeout: 15)
+        attach.tap()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Full Access' OR label BEGINSWITH[c] 'Allow'")).firstMatch
+        if allow.waitForExistence(timeout: 5) { allow.tap() }
+        let tiles = app.buttons.matching(identifier: "attach-drawer-tile")
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15), "The simulator's sample photos must appear")
+        tiles.firstMatch.tap()
+        XCTAssertTrue(app.buttons["attach-drawer-send"].waitForExistence(timeout: 10))
+        screenshot("uikit-attach-drawer")
+        app.buttons["attach-drawer-resize"].swipeDown()
+        XCTAssertTrue(app.otherElements["attach-drawer"].waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["Files to send"].waitForExistence(timeout: 10), "The photo waits above the composer")
+        XCTAssertTrue(app.buttons["send-message"].isEnabled)
+        screenshot("uikit-attachment-staged")
+    }
+
+    /// A message's image arrives by edit and renders inside the row.
+    func testIncomingAttachmentRenders() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        control(["incomingEdit": ["channelId": "chan00000001", "messageId": "b00000000003000", "text": "Image test",
+                                  "attachments": [["id": "fixtureimage001", "kind": "image", "status": "ready",
+                                                   "name": "TEST FIXTURE image.png", "contentType": "image/png",
+                                                   "size": 1024, "width": 512, "height": 512,
+                                                   "url": "http://127.0.0.1:3001/__fixture/embed.svg"]]]])
+        let media = row(Self.latest).descendants(matching: .any)["attachment-fixtureimage001"]
+        XCTAssertTrue(media.waitForExistence(timeout: 15))
+        screenshot("uikit-attachment-row")
+    }
+
     /// VoiceOver reads who and when from each row's header and can move into
     /// the text itself; controls carry labels.
     func testAccessibilityLabels() {

@@ -7780,7 +7780,7 @@ private struct ComposerEmojiButton: View {
 }
 
 #if os(iOS)
-private struct ComposerExpressionPicker: View {
+struct ComposerExpressionPicker: View {
     let configuration: KlipyConfiguration?
     let mediaEnabled: Bool
     let select: (String) -> Void

@@ -1,4 +1,5 @@
 import CaperCore
+import SwiftUI
 import UIKit
 
 /// One timeline row's display state. Built per snapshot from the model; cells
@@ -18,7 +19,9 @@ struct MessageRowState: Equatable {
     var mentionsViewer: Bool
     var edited: Bool
     var deleted: Bool
-    var attachmentCount: Int
+    /// Files, a GIF, link cards or a forward, drawn by CaperCore's SwiftUI leaves.
+    var extras: ChatMessage?
+    var pendingAttachments: [ChatAttachment]
     var pending: Bool
     var pendingError: String?
     var pendingRejected: Bool
@@ -44,7 +47,8 @@ struct MessageRowState: Equatable {
         mentionsViewer = NativePresentation.mentionsViewer(message, viewerID: viewerID)
         edited = message.forward == nil && !message.isDeleted && (message.revision ?? 1) > 1
         deleted = message.isDeleted
-        attachmentCount = message.isDeleted ? 0 : message.content.attachments?.count ?? 0
+        extras = UIKitMessageExtras.shows(message) ? message : nil
+        pendingAttachments = []
         pending = false
         pendingError = nil
         pendingRejected = false
@@ -70,7 +74,8 @@ struct MessageRowState: Equatable {
         mentionsViewer = false
         edited = false
         deleted = false
-        attachmentCount = pending.attachments.count
+        extras = nil
+        pendingAttachments = pending.attachments
         self.pending = true
         pendingError = error
         pendingRejected = rejected
@@ -124,6 +129,13 @@ final class MessageTextView: UITextView, NSTextLayoutManagerDelegate {
     }
 }
 
+/// What a row's hosted SwiftUI leaves need from the conversation.
+struct RowHost {
+    let chat: ChatModel
+    let present: UIKitHosting.Present
+    let openForward: (ChatMessage) -> Void
+}
+
 /// One message: avatar or grouped gutter, header, text and its notes. The
 /// timeline's cells and the Pins cards host it.
 final class MessageRowView: UIView {
@@ -135,6 +147,9 @@ final class MessageRowView: UIView {
     private let header = UIStackView()
     private let body = MessageTextView()
     private let note = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
+    private let extras = HostedView()
+    /// The model and a presenter for the hosted extras (media viewer, forwards).
+    var host: RowHost?
     private let column = UIStackView()
     private let accent = UIView()
     private let tint = UIView()
@@ -172,7 +187,7 @@ final class MessageRowView: UIView {
         column.axis = .vertical
         column.spacing = 4
         column.alignment = .fill
-        [header, body, note].forEach(column.addArrangedSubview)
+        [header, body, extras, note].forEach(column.addArrangedSubview)
         column.translatesAutoresizingMaskIntoConstraints = false
 
         gutter.translatesAutoresizingMaskIntoConstraints = false
@@ -248,6 +263,15 @@ final class MessageRowView: UIView {
         tint.backgroundColor = Self.background(row)
         accent.isHidden = !(row.focused || (row.pinnedBy == nil && row.mentionsViewer))
 
+        if let host, let message = row.extras {
+            extras.show(UIKitMessageExtras(message: message, chat: host.chat, present: host.present, openForward: { host.openForward(message) }))
+        } else if let host, !row.pendingAttachments.isEmpty {
+            extras.show(UIKitMessageExtras(pending: row.pendingAttachments, chat: host.chat, present: host.present))
+        } else {
+            extras.show(Optional<EmptyView>.none)
+        }
+        extras.isHidden = row.extras == nil && row.pendingAttachments.isEmpty
+
         if row.deleted {
             body.isHidden = true
             note.isHidden = false
@@ -255,10 +279,7 @@ final class MessageRowView: UIView {
         } else {
             body.isHidden = row.text.isEmpty
             if !row.text.isEmpty { body.attributedText = Self.render(row) }
-            let files = row.attachmentCount
             var lines: [String] = []
-            // Attachments render in a later milestone; say they exist rather than hide them.
-            if files > 0 { lines.append(files == 1 ? "1 attachment" : "\(files) attachments") }
             if let error = row.pendingError { lines.append("\(row.pendingRejected ? "Not sent." : "Not confirmed yet.") \(error)") }
             note.isHidden = lines.isEmpty
             note.text = lines.joined(separator: "\n")
@@ -331,7 +352,7 @@ final class MessageRowView: UIView {
     }
 
     override var accessibilityElements: [Any]? {
-        get { [header, body, note].filter { !$0.isHidden } }
+        get { [header, body, extras, note].filter { !$0.isHidden } }
         set {}
     }
 

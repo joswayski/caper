@@ -28,6 +28,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private let composer = ComposerView()
     private lazy var members = MembersPanel(model: model)
     private var lastFocusRevision = 0
+    private var capabilitiesKey: String?
     private var collection: UICollectionView!
     private var dataSource: UICollectionViewDiffableDataSource<Int, Item>!
 
@@ -74,6 +75,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             self.dataSource.apply(snapshot, animatingDifferences: false)
         }
         composerObserver.start { [weak self] in self?.renderComposer() }
+        UIKitHosting.warmAttachGallery()
     }
 
     // MARK: Layout
@@ -206,6 +208,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
                 return cell
             case let .row(id):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: MessageCell.reuse, for: indexPath) as! MessageCell
+                cell.row.host = self.rowHost
                 if let row = self.rows[id] {
                     cell.retry = row.pending ? { [weak self] in Task { await self?.model.chat.send(retryPending: true) } } : nil
                     cell.configure(row)
@@ -248,6 +251,15 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             chat.draftChanged(text)
         }
         composer.submitted = { [weak self] in self?.send() }
+        composer.attachTapped = { [weak self] in
+            guard let self, let drawer = UIKitHosting.attachDrawer(chat: self.model.chat) else { return }
+            self.present(drawer, animated: false)
+        }
+        composer.emojiTapped = { [weak self] in
+            guard let self else { return }
+            let composer = self.composer
+            self.present(UIKitHosting.expressionPicker(chat: self.model.chat) { composer.insert($0) }, animated: true)
+        }
         NSLayoutConstraint.activate([
             composer.topAnchor.constraint(equalTo: typing.bottomAnchor),
             composer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
@@ -348,6 +360,12 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         }
 
         let switched = key != shownKey
+        // Uploads and GIFs are optional server configuration; recheck per conversation.
+        if live, key != capabilitiesKey {
+            capabilitiesKey = key
+            let chat = model.chat
+            Task { await chat.checkUploadAvailability(); await chat.checkKlipyAvailability() }
+        }
         let oldItems = dataSource.snapshot().itemIdentifiers
         let oldFirstRow = oldItems.first(where: \.isRow)
         let anchor = switched ? nil : visibleAnchor()
@@ -468,13 +486,30 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     // MARK: Composer
 
+    private lazy var rowHost = RowHost(chat: model.chat, present: presentHosted) { [weak self] message in
+        guard let chat = self?.model.chat else { return }
+        Task { _ = await chat.onOpenForward?(message) }
+    }
+    private lazy var voice = UIKitVoiceComposer(chat: model.chat) { [weak self] words in
+        self?.composer.insert(words, spaced: true) ?? false
+    }
+    private var presentHosted: UIKitHosting.Present {
+        { [weak self] controller in self?.presentedViewController == nil ? self?.present(controller, animated: false) : nil }
+    }
+
     private func renderComposer() {
         let chat = model.chat
         let name = model.selectedChannel?.name ?? cached?.channelName ?? chat.channelName
         let ready = isLive && chat.canInteract && !model.previewingChannel
-        composer.configure(channelName: name, enabled: ready, canSend: chat.canPressSend(inThread: false)
-            && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        composer.configure(prompt: "Message #\(name.lowercased())", enabled: ready,
+                           canSend: chat.canPressSend(inThread: false),
+                           canAttach: chat.canAttach,
+                           attachReason: chat.canAttach ? nil : chat.attachUnavailableReason,
+                           canPickExpressions: ready)
         composer.show(draft: chat.draft)
+        composer.showAccessories(ready && UIKitComposerAccessories.shows(chat: chat)
+                                 ? UIKitComposerAccessories(chat: chat, present: presentHosted) : nil)
+        composer.showVoice(button: ready ? voice.button : nil, bar: voice.bar, recording: ready && voice.isRecording)
     }
 
     private func send() {
