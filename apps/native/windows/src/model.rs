@@ -4,6 +4,7 @@
 //! benchmark fixture locally (a labelled development mock, never shown as a
 //! real account).
 
+#[derive(Clone, PartialEq)]
 pub struct Person {
     pub name: String,
     pub initials: String,
@@ -47,6 +48,15 @@ pub struct Reaction {
     pub mine: bool,
 }
 
+/// The message a reply quotes, drawn in a panel above it.
+#[derive(PartialEq)]
+pub struct Reply {
+    pub author: Person,
+    /// Its text (or an attachments label); empty when it was deleted.
+    pub text: String,
+    pub deleted: bool,
+}
+
 #[derive(PartialEq)]
 pub struct Message {
     pub id: String,
@@ -62,6 +72,11 @@ pub struct Message {
     pub edited_inline: bool,
     /// A tombstone: its notice is drawn muted.
     pub deleted: bool,
+    pub reply: Option<Reply>,
+    /// A thread root's reply count, shown under it.
+    pub thread_replies: Option<u64>,
+    /// A thread reply also sent to the channel: "Replied to a thread".
+    pub thread_context: bool,
 }
 
 pub struct Channel {
@@ -503,6 +518,9 @@ impl Conversation {
             reactions,
             edited_inline: false,
             deleted: false,
+            reply: None,
+            thread_replies: None,
+            thread_context: false,
         });
     }
 }
@@ -528,6 +546,9 @@ impl Conversation {
             reactions: Vec::new(),
             edited_inline: false,
             deleted: false,
+            reply: None,
+            thread_replies: None,
+            thread_context: false,
         });
     }
 }

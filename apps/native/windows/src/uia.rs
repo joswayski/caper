@@ -137,9 +137,27 @@ fn name(a: &App, id: Id) -> String {
         Id::Row(i) => {
             let m = &c.messages[i];
             let text = a.rows.row(i).map(|r| r.plain.clone()).unwrap_or_default();
-            let mut name = format!("{}, {}: {}", c.members[m.author].name, m.time, text);
+            let mut name = String::new();
+            if let Some(r) = &m.reply {
+                if r.deleted {
+                    name.push_str("Replying to a deleted message. ");
+                } else {
+                    name.push_str(&format!("Replying to {}: {}. ", r.author.name, r.text));
+                }
+            }
+            if m.thread_context {
+                name.push_str("Replied to a thread. ");
+            }
+            name.push_str(&format!(
+                "{}, {}: {}",
+                c.members[m.author].name, m.time, text
+            ));
             if m.edited_inline {
                 name.push_str(" (edited)");
+            }
+            if let Some(n) = m.thread_replies {
+                let s = if n == 1 { "reply" } else { "replies" };
+                name.push_str(&format!(". {n} {s}, View thread"));
             }
             // Each chip as the egui client labels it.
             for r in &m.reactions {

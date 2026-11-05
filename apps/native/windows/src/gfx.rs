@@ -60,6 +60,10 @@ pub struct Brushes {
     /// Your reaction chips: pressed fill and light terracotta label.
     pub pressed: ID2D1SolidColorBrush,
     pub own: ID2D1SolidColorBrush,
+    /// Quote panels: `--surface` with a softened border.
+    pub surface: ID2D1SolidColorBrush,
+    pub border_soft: ID2D1SolidColorBrush,
+    pub terracotta_bright: ID2D1SolidColorBrush,
 }
 
 pub struct Formats {
@@ -88,6 +92,17 @@ pub struct Formats {
     pub error: IDWriteTextFormat,
     /// A grouped row's "(edited)" marker.
     pub edited: IDWriteTextFormat,
+    /// A reply's quote panel: its text (at most three lines, then an
+    /// ellipsis), a deleted original's notice, the author, the small
+    /// muted labels and the avatar initials.
+    pub quote: IDWriteTextFormat,
+    pub quote_deleted: IDWriteTextFormat,
+    pub quote_name: IDWriteTextFormat,
+    pub quote_meta: IDWriteTextFormat,
+    pub quote_initials: IDWriteTextFormat,
+    /// A thread root's "N replies" and "View thread".
+    pub thread_count: IDWriteTextFormat,
+    pub thread_view: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -176,6 +191,9 @@ impl Gfx {
                 error: brush(theme::ERROR, 1.0)?,
                 pressed: brush(0x39231E, 1.0)?,
                 own: brush(0xF2AE9C, 1.0)?,
+                surface: brush(0x151719, 1.0)?,
+                border_soft: brush(theme::BORDER, 0.7)?,
+                terracotta_bright: brush(theme::TERRACOTTA_BRIGHT, 1.0)?,
             };
             let fmt = |size: f32, weight: DWRITE_FONT_WEIGHT| {
                 dwrite.CreateTextFormat(
@@ -217,6 +235,21 @@ impl Gfx {
                 link_small: fmt(13.6, DWRITE_FONT_WEIGHT_NORMAL)?,
                 error: fmt(13.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 edited: fmt(10.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                quote: fmt(12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                quote_deleted: dwrite.CreateTextFormat(
+                    w!("Satoshi"),
+                    &fonts,
+                    DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STYLE_ITALIC,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    12.0,
+                    w!("en-us"),
+                )?,
+                quote_name: fmt(12.0, DWRITE_FONT_WEIGHT_BOLD)?,
+                quote_meta: fmt(11.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                quote_initials: centered(7.0, DWRITE_FONT_WEIGHT_BOLD)?,
+                thread_count: fmt(12.0, DWRITE_FONT_WEIGHT_BOLD)?,
+                thread_view: fmt(12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
             };
             let f = &formats;
             for f in [
@@ -231,9 +264,21 @@ impl Gfx {
                 &f.space,
                 &f.header,
                 &f.member,
+                &f.quote_name,
+                &f.quote_meta,
+                &f.thread_count,
+                &f.thread_view,
             ] {
                 f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             }
+            let sign = dwrite.CreateEllipsisTrimmingSign(&f.quote)?;
+            f.quote.SetTrimming(
+                &DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_WORD,
+                    ..Default::default()
+                },
+                &sign,
+            )?;
             // egui's line height for body text is 1.35 em; match it so wrapped paragraphs line up.
             for f in [&f.message, &f.composer] {
                 f.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 15.0 * 1.35, 15.0 * 1.05)?;

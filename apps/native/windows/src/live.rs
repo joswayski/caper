@@ -118,7 +118,12 @@ impl Ids {
                 self.members.push(m.author.id.clone());
                 self.members.len() - 1
             });
-        let row = grouping::Row::new(&m.author.id, &m.created_at, false);
+        // Replies and thread broadcasts keep their header, as in egui's history.
+        let row = grouping::Row::new(
+            &m.author.id,
+            &m.created_at,
+            m.thread_root_id.is_some() || m.reply_to.is_some(),
+        );
         let grouped = grouping::grouped(self.last.as_ref(), &row);
         self.last = Some(row);
         Some((author, grouped))
@@ -275,13 +280,27 @@ impl Live {
             Ok(core::Apply::Buffered) => return,
             Ok(core::Apply::Applied | core::Apply::Duplicate) => {}
         }
+        let mut root = None;
         for m in self.timeline.messages() {
-            if m.seq.parse::<u64>().is_ok_and(|seq| seq > old) && m.id != id {
+            if m.id == id {
+                root = m.thread_root_id.clone();
+            }
+            if m.seq.parse::<u64>().is_ok_and(|seq| seq > old)
+                && m.id != id
+                && m.is_channel_message()
+            {
                 out.push(Update::Message(Box::new(m.clone())));
             }
         }
-        if let Some(m) = self.timeline.messages().find(|m| m.id == id) {
-            out.push(Update::Message(Box::new(m.clone())));
+        // A thread reply also changes its root's summary.
+        for id in [Some(id), root.as_deref()].into_iter().flatten() {
+            if let Some(m) = self
+                .timeline
+                .messages()
+                .find(|m| m.id == id && m.is_channel_message())
+            {
+                out.push(Update::Message(Box::new(m.clone())));
+            }
         }
     }
 
@@ -519,7 +538,8 @@ pub fn conversation(
         .collect();
     let listed = members.len();
     let mut out = Vec::with_capacity(messages.len());
-    for m in messages {
+    // Thread-only replies live in their thread, not the channel.
+    for m in messages.iter().filter(|m| m.is_channel_message()) {
         let Some((author, grouped)) = ids.place(m) else {
             continue;
         };
@@ -667,6 +687,28 @@ pub fn message(
         },
         edited_inline: edited && grouped,
         deleted,
+        reply: m.reply_to.as_ref().map(|r| model::Reply {
+            author: person(&r.author.id, &r.author.name),
+            text: if r.deleted {
+                String::new()
+            } else {
+                let text = r.full_text.as_deref().unwrap_or(&r.text);
+                if !text.is_empty() {
+                    text.to_owned()
+                } else if r.has_attachments {
+                    core::attachments_label(&r.attachments).to_owned()
+                } else {
+                    "Message".to_owned()
+                }
+            },
+            deleted: r.deleted,
+        }),
+        thread_replies: m
+            .thread
+            .as_ref()
+            .map(|t| t.reply_count)
+            .filter(|n| *n > 0 && m.thread_root_id.is_none()),
+        thread_context: m.thread_root_id.is_some() && m.broadcast,
     }
 }
 
@@ -691,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_show_your_reactions_edits_and_deletions_as_the_egui_client_does() {
+    fn rows_show_reactions_edits_deletions_replies_and_threads_as_egui_does() {
         let reacted = core_message(serde_json::json!({ "reactions": [
             { "emoji": "👍", "authorIds": ["member000002", "owner0000001"] },
             { "emoji": "🎉", "authorIds": ["member000002"] },
@@ -724,6 +766,50 @@ mod tests {
         }));
         let row = message(&deleted, 0, false, None);
         assert!(row.deleted && row.reactions.is_empty() && !row.time.contains("edited"));
+        assert!(row.reply.is_none() && row.thread_replies.is_none() && !row.thread_context);
+
+        let quoted = |extra: serde_json::Value| {
+            let mut reply = serde_json::json!({
+                "id": "b00000000000002",
+                "author": { "id": "member000001", "name": "Maya", "isGuest": false },
+                "text": "short",
+                "fullText": "the whole original",
+                "hasAttachments": false,
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                reply[k] = v.clone();
+            }
+            message(
+                &core_message(serde_json::json!({ "replyTo": reply })),
+                0,
+                false,
+                None,
+            )
+            .reply
+            .unwrap()
+        };
+        let reply = quoted(serde_json::json!({}));
+        assert_eq!(
+            (reply.author.name.as_str(), reply.text.as_str()),
+            ("Maya", "the whole original")
+        );
+        assert!(
+            quoted(serde_json::json!({ "deleted": true, "text": "", "fullText": null })).deleted
+        );
+        assert_eq!(
+            quoted(serde_json::json!({ "text": "", "fullText": null })).text,
+            "Message"
+        );
+
+        let root = core_message(serde_json::json!({
+            "thread": { "replyCount": 2, "participants": [], "seq": "5" },
+        }));
+        assert_eq!(message(&root, 0, false, None).thread_replies, Some(2));
+        let broadcast = core_message(serde_json::json!({
+            "threadRootId": "b00000000000009", "broadcast": true,
+        }));
+        let shared = message(&broadcast, 0, false, None);
+        assert!(shared.thread_context && shared.thread_replies.is_none());
         assert!(
             matches!(&row.spans[..], [Span::Rich { text, italic: true, .. }] if text == "This message was deleted.")
         );

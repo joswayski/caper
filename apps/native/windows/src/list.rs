@@ -39,7 +39,36 @@ pub struct Row {
     /// A grouped row's "(edited)" marker, its width and its position
     /// from the text's origin.
     pub edited: Option<(IDWriteTextLayout, f32, f32, f32)>,
+    /// The quoted message's panel above a reply.
+    pub quote: Option<Quote>,
+    /// Space above the header for the quote panel.
+    pub header_y: f32,
+    /// "Replied to a thread · View thread" above a thread broadcast's text.
+    pub context: Option<IDWriteTextLayout>,
+    pub context_y: f32,
+    /// A thread root's "N replies" (and its width) and "View thread".
+    pub thread: Option<(IDWriteTextLayout, f32, IDWriteTextLayout)>,
+    pub thread_y: f32,
 }
+
+/// The egui client's reply panel: the quoted author's avatar and name,
+/// "View original", and at most three lines of the quoted text.
+pub struct Quote {
+    pub initials: IDWriteTextLayout,
+    pub color: u32,
+    pub name: IDWriteTextLayout,
+    pub view: IDWriteTextLayout,
+    pub view_w: f32,
+    pub text: IDWriteTextLayout,
+    pub height: f32,
+}
+
+const QUOTE_PAD_X: f32 = 12.0;
+const QUOTE_PAD_Y: f32 = 10.0;
+const QUOTE_HEADING: f32 = 20.0;
+const QUOTE_AVATAR: f32 = 16.0;
+const QUOTE_LINES: usize = 3;
+const THREAD_H: f32 = 22.0;
 
 pub struct Header {
     pub name: IDWriteTextLayout,
@@ -295,6 +324,66 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
             r.mine,
         ));
     }
+    let quote = match &m.reply {
+        Some(r) => {
+            let (body, format) = if r.deleted {
+                ("Original message was deleted.", &g.formats.quote_deleted)
+            } else {
+                (r.text.as_str(), &g.formats.quote)
+            };
+            let text = g.layout(&gfx::wide(body), format, width)?;
+            emoji::apply(&text, body, 12.0, 1.0)?;
+            let name = g.layout(&gfx::wide(&r.author.name), &g.formats.quote_name, 10_000.0)?;
+            emoji::apply(&name, &r.author.name, 12.0, 1.0)?;
+            let initials = g.layout(
+                &gfx::wide(&r.author.initials),
+                &g.formats.quote_initials,
+                QUOTE_AVATAR,
+            )?;
+            unsafe { initials.SetMaxHeight(QUOTE_AVATAR)? };
+            // A deleted original cannot be opened.
+            let view = g.layout(
+                &gfx::wide(if r.deleted { "" } else { "View original" }),
+                &g.formats.quote_meta,
+                10_000.0,
+            )?;
+            Some(Quote {
+                initials,
+                color: r.author.color,
+                name,
+                view_w: gfx::metrics(&view).widthIncludingTrailingWhitespace,
+                view,
+                text,
+                height: 0.0,
+            })
+        }
+        None => None,
+    };
+    let context = if m.thread_context {
+        Some(g.layout(
+            &gfx::wide("Replied to a thread \u{b7} View thread"),
+            &g.formats.quote_meta,
+            10_000.0,
+        )?)
+    } else {
+        None
+    };
+    let thread = match m.thread_replies {
+        Some(n) => {
+            let count = g.layout(
+                &gfx::wide(&format!("{n} {}", if n == 1 { "reply" } else { "replies" })),
+                &g.formats.thread_count,
+                10_000.0,
+            )?;
+            let view = g.layout(&gfx::wide("View thread"), &g.formats.thread_view, 10_000.0)?;
+            Some((
+                count.clone(),
+                gfx::metrics(&count).widthIncludingTrailingWhitespace,
+                view,
+            ))
+        }
+        None => None,
+    };
     let mut row = Row {
         height: 0.0,
         width,
@@ -309,6 +398,12 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         reactions,
         reactions_y: 0.0,
         edited,
+        quote,
+        header_y: 0.0,
+        context,
+        context_y: 0.0,
+        thread,
+        thread_y: 0.0,
     };
     place(&mut row, m);
     Ok(row)
@@ -338,11 +433,40 @@ fn place(row: &mut Row, m: &crate::model::Message) {
             text_h += 15.0;
         }
     }
-    let mut y = if row.header.is_some() {
-        NAME_H + 2.0
-    } else {
-        0.0
-    };
+    // The quote panel sits 4 DIPs below the row's top and 8 above the
+    // message's own header, as in the egui client; positions below are from
+    // the content top (`content_top`), so the panel starts above it.
+    let top = content_top(m.grouped);
+    let mut y = 0.0;
+    if let Some(q) = &mut row.quote {
+        let w = (row.width - 2.0 * QUOTE_PAD_X).max(20.0);
+        let mut lines = [DWRITE_LINE_METRICS::default(); QUOTE_LINES + 1];
+        let mut count = 0;
+        let shown = unsafe {
+            let _ = q.text.SetMaxWidth(w);
+            let _ = q.text.SetMaxHeight(f32::MAX);
+            let _ = q.text.GetLineMetrics(Some(&mut lines), &mut count);
+            let shown: f32 = lines[..(count as usize).min(QUOTE_LINES)]
+                .iter()
+                .map(|l| l.height)
+                .sum();
+            // Longer quotes stop after three lines with an ellipsis.
+            if count as usize > QUOTE_LINES {
+                let _ = q.text.SetMaxHeight(shown);
+            }
+            shown
+        };
+        q.height = QUOTE_PAD_Y + QUOTE_HEADING + 2.0 + shown + QUOTE_PAD_Y;
+        y = 4.0 - top + q.height + 8.0;
+    }
+    row.header_y = y;
+    if row.header.is_some() {
+        y += NAME_H + 2.0;
+    }
+    if let Some(l) = &row.context {
+        row.context_y = y;
+        y += gfx::metrics(l).height + 2.0;
+    }
     row.text_y = y;
     y += text_h;
     row.picture_y = y + 6.0;
@@ -353,8 +477,11 @@ fn place(row: &mut Row, m: &crate::model::Message) {
     if !row.reactions.is_empty() {
         y += 6.0 + REACTION_H;
     }
-    let top = if m.grouped { 2.0 } else { 14.0 };
-    let body = y.max(if m.grouped { 18.0 } else { AVATAR });
+    row.thread_y = y + 4.0;
+    if row.thread.is_some() {
+        y += 4.0 + THREAD_H;
+    }
+    let body = y.max(row.header_y + if m.grouped { 18.0 } else { AVATAR });
     row.height = (top + body + 4.0).ceil();
 }
 
@@ -385,18 +512,50 @@ pub fn draw_row(
     };
     let top = y + content_top(m.grouped);
     unsafe {
+        if let Some(q) = &row.quote {
+            let p = rect(BODY_X, y + 4.0, BODY_X + row.width, y + 4.0 + q.height);
+            fill_round(dc, p, 8.0, &g.brushes.surface);
+            stroke_round(dc, p, 8.0, &g.brushes.border_soft);
+            let (x, hy) = (p.left + QUOTE_PAD_X, p.top + QUOTE_PAD_Y);
+            let a = rect(
+                x,
+                hy + (QUOTE_HEADING - QUOTE_AVATAR) / 2.0,
+                x + QUOTE_AVATAR,
+                hy + (QUOTE_HEADING + QUOTE_AVATAR) / 2.0,
+            );
+            fill_round(dc, a, QUOTE_AVATAR * 0.3, &g.solid(q.color));
+            crate::text::draw(dc, &q.initials, a.left, a.top, &g.brushes.text);
+            crate::text::draw(dc, &q.name, a.right + 6.0, hy + 2.0, &g.brushes.muted);
+            crate::text::draw(
+                dc,
+                &q.view,
+                p.right - QUOTE_PAD_X - q.view_w,
+                hy + 3.0,
+                &g.brushes.muted,
+            );
+            crate::text::draw(dc, &q.text, x, hy + QUOTE_HEADING + 2.0, &g.brushes.muted);
+        }
+        let hy = top + row.header_y;
         if let Some(h) = &row.header {
-            let a = rect(PAD_X, top, PAD_X + AVATAR, top + AVATAR);
+            let a = rect(PAD_X, hy, PAD_X + AVATAR, hy + AVATAR);
             fill_round(dc, a, AVATAR * 0.3, &g.solid(c.members[m.author].color));
             crate::text::draw(dc, &h.initials, a.left, a.top, &g.brushes.text);
-            crate::text::draw(dc, &h.name, BODY_X, top, &g.brushes.text);
+            crate::text::draw(dc, &h.name, BODY_X, hy, &g.brushes.text);
             crate::text::draw(
                 dc,
                 &h.time,
                 BODY_X + h.name_w + 8.0,
-                top + 4.0,
+                hy + 4.0,
                 &g.brushes.muted,
             );
+        }
+        if let Some(l) = &row.context {
+            crate::text::draw(dc, l, BODY_X, top + row.context_y, &g.brushes.muted);
+        }
+        if let Some((count, w, view)) = &row.thread {
+            let ty = top + row.thread_y + 3.0;
+            crate::text::draw(dc, count, BODY_X + 6.0, ty, &g.brushes.terracotta_bright);
+            crate::text::draw(dc, view, BODY_X + 6.0 + w + 8.0, ty, &g.brushes.muted);
         }
         let ty = top + row.text_y;
         let fill = |s: u32, l: u32, brush: &ID2D1SolidColorBrush, pad: f32, radius: f32| {
