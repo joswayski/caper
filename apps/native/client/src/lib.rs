@@ -41,6 +41,7 @@ pub mod pictures;
 pub mod player;
 pub mod profile_dm;
 pub mod profile_edit;
+pub mod sign_in;
 pub mod startup;
 #[path = "../../desktop/voice-spike/src/state.rs"]
 pub mod state;

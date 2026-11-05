@@ -37,6 +37,7 @@ mod window_state;
 mod worker;
 
 use caper_client::caper_avatar_index;
+use caper_client::sign_in::{MAX_RESENDS, clean_sign_in_code, resend_countdown, resend_wait};
 use caper_client::{
     api, attachment_edit, avatar_images, blocking, compress, effects, feedback, gateway, grouping,
     invites, media, media_gateway, media_proxy, model, names, navigation, notifications,
@@ -1148,11 +1149,6 @@ impl ReactorCache {
     }
 }
 
-/// "Resend code" waits this long after each code is sent.
-const RESEND_COOLDOWN: Duration = Duration::from_secs(60);
-/// The API stops sending after three codes per 15 minutes, so a fourth would
-/// never verify: one code plus at most two resends per email entry.
-const MAX_RESENDS: u8 = 2;
 const REACTOR_RETRY: Duration = Duration::from_secs(5);
 /// Web re-reads spaces, invitations and the open space this often.
 const MEMBERSHIP_REFRESH: Duration = Duration::from_secs(15);
@@ -26296,31 +26292,6 @@ impl ConnectionReport {
     }
 }
 
-/// Web's sign-in code cleanup: uppercase, drop anything outside the code
-/// alphabet (spaces, dashes), then keep six characters.
-fn clean_sign_in_code(code: &mut String) {
-    code.make_ascii_uppercase();
-    code.retain(|character| "ABCDEFGHJKMNPQRSTWXYZ23456789".contains(character));
-    code.truncate(6);
-}
-
-/// How long "Resend code" still waits, `elapsed` after the latest code.
-fn resend_wait(elapsed: Duration) -> Option<Duration> {
-    RESEND_COOLDOWN
-        .checked_sub(elapsed)
-        .filter(|wait| !wait.is_zero())
-}
-
-/// "Resend code in 0:42" (whole seconds rounded up), and how long until the
-/// shown second changes.
-fn resend_countdown(wait: Duration) -> (String, Duration) {
-    let seconds = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
-    (
-        format!("Resend code in {}:{:02}", seconds / 60, seconds % 60),
-        wait.saturating_sub(Duration::from_secs(seconds.saturating_sub(1))),
-    )
-}
-
 fn login_error_frame(ui: &mut egui::Ui, error: &str) {
     egui::Frame::new()
         .stroke(Stroke::new(1.0_f32, TERRACOTTA))
@@ -33840,13 +33811,14 @@ mod tests {
     use super::{
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, DELETE_ACCOUNT_URL, Dialog,
         GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend,
-        Phase, RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT,
-        display_time, endpoint, media, message_runs, normalize_channel, permanent_send_rejection,
-        pill_rects, projected_reactions, redundant_invitation, resend_countdown, resend_wait,
-        short_time, take_date_divider, timestamp_parts, voice,
+        Phase, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT, display_time,
+        endpoint, media, message_runs, normalize_channel, permanent_send_rejection, pill_rects,
+        projected_reactions, redundant_invitation, short_time, take_date_divider, timestamp_parts,
+        voice,
     };
     use crate::TestPass as _;
     use crate::{mentions, navigation, uploads, voice_note, whats_new, worker};
+    use caper_client::sign_in::RESEND_COOLDOWN;
     use std::time::{Duration, Instant};
 
     /// A file dropped on the window, as egui-winit reports a native drop.
@@ -49258,27 +49230,6 @@ mod tests {
                 "Agreed. Let’s check the narrow layout and the management dialogs too."
             )
             .x
-        );
-    }
-
-    #[test]
-    fn resend_countdown_shows_minutes_and_seconds_rounded_up() {
-        assert_eq!(resend_wait(Duration::ZERO), Some(RESEND_COOLDOWN));
-        assert_eq!(resend_wait(RESEND_COOLDOWN), None);
-        assert_eq!(resend_wait(Duration::from_secs(90)), None);
-        let (label, changes) = resend_countdown(RESEND_COOLDOWN);
-        assert_eq!(
-            (label.as_str(), changes),
-            ("Resend code in 1:00", Duration::from_secs(1))
-        );
-        let (label, changes) = resend_countdown(Duration::from_millis(41_250));
-        assert_eq!(
-            (label.as_str(), changes),
-            ("Resend code in 0:42", Duration::from_millis(250))
-        );
-        assert_eq!(
-            resend_countdown(Duration::from_millis(1)).0,
-            "Resend code in 0:01"
         );
     }
 
