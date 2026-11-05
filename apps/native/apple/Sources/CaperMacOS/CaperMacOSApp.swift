@@ -41,9 +41,7 @@ struct CaperMacOSApp: App {
     }
 
     private func bringReviewForward() {
-        if let window = NSApp.windows.first(where: {
-            $0.identifier?.rawValue == "caper-main" && ($0.isVisible || $0.isMiniaturized)
-        }) {
+        if let window = UpdateWindowRegistration.windows.allObjects.first(where: { $0.isVisible || $0.isMiniaturized }) {
             window.deminiaturize(nil)
             window.makeKeyAndOrderFront(nil)
         } else {
@@ -109,12 +107,16 @@ private struct CaperWindow: View {
     }
 }
 
-/// Identifies account windows without depending on SwiftUI's private window IDs.
+/// SwiftUI can overwrite NSWindow.identifier after viewDidMoveToWindow.
+/// Keep weak references to account windows rather than opening a duplicate
+/// whenever their generated identifiers no longer match our scene name.
 private struct UpdateWindowRegistration: NSViewRepresentable {
+    static let windows = NSHashTable<NSWindow>.weakObjects()
+
     final class RegistrationView: NSView {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            window?.identifier = NSUserInterfaceItemIdentifier("caper-main")
+            if let window { UpdateWindowRegistration.windows.add(window) }
         }
     }
     func makeNSView(context: Context) -> RegistrationView { RegistrationView() }

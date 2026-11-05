@@ -215,6 +215,9 @@ struct VoiceTranscriptView: View {
                 }
             }
             .modifier(VoiceTranscriptRule())
+            // Keep the parent's identifier on the group, rather than replacing
+            // the selectable text and toggle's identifiers on macOS 15.
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("voice-transcript")
         }
     }

@@ -1151,7 +1151,10 @@ private struct WorkspaceView: View {
             .focusable().focusEffectDisabled().focused($membersResizeFocused)
             .accessibilityRepresentation {
                 if maximum > 220 {
-                    Slider(value: Binding(get: { width }, set: { resize($0) }), in: 220...maximum, step: 10)
+                    // A live window resize can leave less than one 10pt step.
+                    // SwiftUI traps when a stepped slider has zero intervals.
+                    Slider(value: Binding(get: { width }, set: { resize($0) }),
+                           in: 220...maximum, step: min(10, maximum - 220))
                 } else { Text("\(Int(width)) pixels") }
             }
             .accessibilityLabel("Member list width")
@@ -4083,7 +4086,8 @@ private struct ChatView: View {
                     .focusable().focusEffectDisabled().focused($threadResizeFocused)
                     .accessibilityRepresentation {
                         if maximum > minimum {
-                            Slider(value: Binding(get: { width }, set: { resize($0) }), in: minimum...maximum, step: 10)
+                            Slider(value: Binding(get: { width }, set: { resize($0) }),
+                                   in: minimum...maximum, step: min(10, maximum - minimum))
                         } else { Text("\(Int(width)) pixels") }
                     }
                     .accessibilityLabel("Thread width")
@@ -5935,9 +5939,9 @@ private struct MessageLinkRenderer: TextRenderer {
 }
 
 extension MessageLinks {
-    /// Inline linked text plus a decorative SF Symbol, never part of the source
-    /// or the Copy text action. Text concatenation retains native link attributes
-    /// and line wrapping, including in forwarded originals. Nil when no links.
+    /// Inline linked text, with a decorative SF Symbol on iOS. macOS native
+    /// selection copies inline images as U+FFFC, so its text contains only the
+    /// source characters. Links and wrapping survive in forwarded originals too.
     /// Hosts set `.tint` to the same colour:
     /// SwiftUI may draw link runs in the tint rather than their own colour.
     static func renderedText(_ text: String) -> Text? {
@@ -5950,21 +5954,31 @@ extension MessageLinks {
             if let href = run.href, let url = URL(string: href) {
                 part.link = url
                 part.foregroundColor = CaperTheme.link
+                #if os(iOS)
                 let icon = Text(Image(systemName: "link"))
                     .font(.system(size: 10))
                     .kerning(3)
                     .foregroundColor(CaperTheme.link)
                     .accessibilityLabel(Text(""))
+                #endif
                 if #available(iOS 18.0, macOS 15.0, *) {
                     let attribute = MessageLinkAttribute(id: UUID())
+                    #if os(macOS)
+                    rendered = rendered + Text(part).underline(false).customAttribute(attribute)
+                    #else
                     rendered = rendered + icon.customAttribute(attribute)
                         + Text(part).underline(false).customAttribute(attribute)
+                    #endif
                 } else {
                     // iOS 17/macOS 14: native attributed backgrounds preserve
                     // wrapping/actions, but have square corners, no padding or
-                    // glow, and cannot include the decorative image attachment.
+                    // glow. The iOS image attachment sits outside the background.
                     part.backgroundColor = CaperTheme.link.opacity(0.10)
+                    #if os(macOS)
+                    rendered = rendered + Text(part).underline(false)
+                    #else
                     rendered = rendered + icon + Text(part).underline(false)
+                    #endif
                 }
             } else {
                 rendered = rendered + Text(part)
@@ -10141,12 +10155,15 @@ private struct SpaceEditor: View {
                         } else {
                             iconSection
                             Divider().overlay(CaperTheme.border)
-                            DisclosureGroup("Custom links", isExpanded: $customLinksExpanded) {
+                            DisclosureGroup(isExpanded: $customLinksExpanded) {
                                 InviteLinksSection(model: model, mutationPending: .constant(false)).id(model.detail?.space.id)
                                     .padding(.top, 12)
+                            } label: {
+                                // A group-level identifier overrides every
+                                // child field's identifier on macOS 15.
+                                Text("Custom links").accessibilityIdentifier("space-custom-links")
                             }
                             .font(CaperTheme.font(12, weight: .medium)).tint(CaperTheme.text)
-                            .accessibilityIdentifier("space-custom-links")
                         }
                         Divider().overlay(CaperTheme.border)
                         Text("Pending invitations  \(model.pendingMembers.count)").font(CaperTheme.font(14, weight: .bold))

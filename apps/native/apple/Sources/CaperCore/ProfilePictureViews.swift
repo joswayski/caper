@@ -358,6 +358,10 @@ struct PictureEditor<Preview: View>: View {
 
     private var pencil: some View {
         CaperIcon(name: "pencil", size: 15).frame(width: actionSide, height: actionSide)
+            // CaperIcon hides decorative artwork. A native Menu needs an
+            // accessible label of its own or macOS 15 drops the entire control.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
     }
 
     private var pictureMenu: some View {

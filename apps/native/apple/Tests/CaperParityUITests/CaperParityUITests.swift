@@ -30,7 +30,13 @@ final class CaperParityUITests: XCTestCase {
         // A persistent runner can restore closed or Settings-only windows from
         // an earlier launch. Ignore AppKit's saved window state for this test
         // process without deleting user preferences or changing normal launches.
-        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+        // Keyboard-navigation cases must not depend on the host's preference.
+        app.launchArguments += [
+            "-ApplePersistenceIgnoreState", "YES", "-AppleKeyboardUIMode", "2",
+            // Ignore a previous run's saved narrow frame, not just its open
+            // window list. AppKit still constrains the default to this screen.
+            "-NSWindow Frame caper-main-AppWindow-1", "",
+        ]
         #endif
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
@@ -81,7 +87,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["Custom links"].firstMatch.exists)
         XCTAssertTrue(app.descendants(matching: .any)["Deactivate link"].firstMatch.exists)
         app.descendants(matching: .any)["Regenerate link"].firstMatch.tap()
-        let regenerateAlert = app.alerts["Regenerate link?"]
+        let regenerateAlert = alert("Regenerate link?", in: app)
         XCTAssertTrue(regenerateAlert.waitForExistence(timeout: 5))
         XCTAssertTrue(regenerateAlert.staticTexts["The previous URL stops admitting new members. The new link resets to 30 days and 100 joins."].exists)
         regenerateAlert.buttons["Cancel"].tap()
@@ -89,7 +95,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(regenerateAlert.exists)
         options.tap()
         app.descendants(matching: .any)["Deactivate link"].firstMatch.tap()
-        let deactivateAlert = app.alerts["Deactivate link?"]
+        let deactivateAlert = alert("Deactivate link?", in: app)
         XCTAssertTrue(deactivateAlert.waitForExistence(timeout: 5))
         deactivateAlert.buttons["Cancel"].tap()
         XCTAssertTrue(copy.exists)
@@ -275,6 +281,24 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
+    /// SwiftUI alerts are native sheets on macOS 15, not AXAlert elements.
+    /// Scope by the visible title so a background sheet cannot satisfy a check.
+    private func alert(_ title: String, in app: XCUIApplication) -> XCUIElement {
+        #if os(macOS)
+        app.sheets.containing(.staticText, identifier: title).firstMatch
+        #else
+        app.alerts[title]
+        #endif
+    }
+
+    private func textValue(_ element: XCUIElement) -> String {
+        #if os(macOS)
+        (element.value as? String).flatMap { $0.isEmpty ? nil : $0 } ?? element.label
+        #else
+        element.label
+        #endif
+    }
+
     /// Closes the call's participant list: Escape for the Mac's popover, Close
     /// for the phone's sheet, as a person would.
     private func closeVoiceList(in app: XCUIApplication) {
@@ -409,8 +433,8 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         let root = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
                                "Missing fixture thread root")
-        // Beside Members the thread is 232 pt and "Before :tomato" wraps, growing
-        // the composer for reasons unrelated to suggestions.
+        // Leave room for the thread's editor, and keep its draft short enough
+        // not to wrap on the hosted Mac. Wrapping legitimately grows the editor.
         try hideMembers(in: app)
         for inThread in [false, true] {
             if inThread { try require(root.buttons["View thread"], timeout: 5, "Missing thread link").click() }
@@ -419,7 +443,7 @@ final class CaperParityUITests: XCTestCase {
             let composer = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", inThread ? "Reply to thread" : "Message #")).firstMatch,
                                        timeout: 5, "Missing composer")
             XCTAssertTrue(focus(composer))
-            composer.typeText("Before ")
+            composer.typeText("A ")
             let viewport = timeline.frame
             let editor = composer.frame
             let lastText = inThread ? "TEST FIXTURE — Stationary thread reply"
@@ -448,7 +472,7 @@ final class CaperParityUITests: XCTestCase {
             // overlaid popup rather than the history beneath it. (`isHittable` uses the accessibility hit
             // test, which does not resolve SwiftUI overlay content here even though clicks land.)
             tomato.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
-            XCTAssertEqual(composer.value as? String, "Before 🍅", "The overlaid popup must accept clicks")
+            XCTAssertEqual(composer.value as? String, "A 🍅", "The overlaid popup must accept clicks")
             XCTAssertTrue(hasKeyboardFocus(composer))
             assertStationary()
             composer.typeText(" @")
@@ -457,7 +481,7 @@ final class CaperParityUITests: XCTestCase {
             capture("\(scope)-autocomplete-mentions", app: app)
             composer.typeKey(.escape, modifierFlags: [])
             XCTAssertFalse(app.buttons["mention-suggestion-everyone"].exists)
-            XCTAssertEqual(composer.value as? String, "Before 🍅 @", "Dismissing suggestions must retain the draft")
+            XCTAssertEqual(composer.value as? String, "A 🍅 @", "Dismissing suggestions must retain the draft")
             assertStationary()
         }
     }
@@ -1021,7 +1045,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(quick[0].isSelected)
         XCTAssertFalse(quick[1].isSelected)
         XCTAssertLessThan(quick[2].frame.maxX, app.buttons["add-reaction-\(hoverTargetID)"].frame.minX)
-        target.descendants(matching: .any)["Message options"].tap()
+        // SwiftUI exposes the overlay's controls as siblings of the row on
+        // macOS 15; only the hovered row has a visible toolbar.
+        app.descendants(matching: .any)["Message options"].firstMatch.tap()
         XCTAssertTrue(app.menuItems["Copy message ID"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.menuItems.matching(NSPredicate(format: "label BEGINSWITH %@", "React with")).firstMatch.exists)
         app.typeKey(.escape, modifierFlags: [])
@@ -1179,6 +1205,9 @@ final class CaperParityUITests: XCTestCase {
         app.launchArguments += ["-AppleKeyboardUIMode", "2"]
         app.launch()
         launchedApp = app
+        // Three panes squeeze the main timeline to 232pt on hosted Macs;
+        // wrapped rows then scroll the unrelated links out of realization.
+        try hideMembers(in: app)
         let selectedRow = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
                                       "Missing fixture thread root")
         try require(selectedRow.buttons["View thread"], timeout: 5, "Missing existing thread link").click()
@@ -1291,7 +1320,9 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 30,
                               "Missing voice message")
-        let text = row.descendants(matching: .any)["voice-transcript-text"].firstMatch
+        // iOS also exposes an empty layout element with this identifier. The
+        // selectable StaticText is the rendered transcript we want to measure.
+        let text = row.staticTexts["voice-transcript-text"]
         let expand = try require(row.buttons["View transcript"], timeout: 10, "Missing transcript toggle")
         XCTAssertTrue(text.exists)
         let collapsedHeight = text.frame.height
@@ -1383,7 +1414,7 @@ final class CaperParityUITests: XCTestCase {
                                   "Missing grouped media message")
             let media = try require(row.buttons["attachment-fixtureimage001"], timeout: 10, "Missing media frame")
             media.hover()
-            let action = try require(row.buttons["add-reaction-\(messageID)"], timeout: 5, "Missing hover action")
+            let action = try require(app.buttons["add-reaction-\(messageID)"], timeout: 5, "Missing hover action")
             XCTAssertGreaterThanOrEqual(media.frame.minY, action.frame.maxY + 2,
                                        "A follow-up's attachment must clear the entire hover-button target")
             XCTAssertTrue(media.isHittable)
@@ -1692,7 +1723,7 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Invite by username", in: app, timeout: 5)
         _ = try require(app.buttons["default-invite-link-copy"], timeout: 10, "The primary link is ready to copy")
         let defaultSummary = try require(app.staticTexts["default-invite-link-summary"], timeout: 5, "The returned link reports its default landing channel")
-        XCTAssertTrue(defaultSummary.label.hasPrefix("#general · 100 of 100 joins remaining · Expires in 30 days"))
+        XCTAssertTrue(textValue(defaultSummary).hasPrefix("#general · 100 of 100 joins remaining · Expires in 30 days"))
         XCTAssertFalse(app.staticTexts["Opens in"].exists)
         app.buttons["Close"].firstMatch.tap()
         #if os(macOS)
@@ -1703,7 +1734,7 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Invite by username", in: app, timeout: 5)
         _ = try require(app.buttons["default-invite-link-copy"], timeout: 10, "The clicked channel's primary link is ready to copy")
         let channelSummary = try require(app.staticTexts["default-invite-link-summary"], timeout: 5, "The returned link reports the clicked channel, not the selected channel")
-        XCTAssertTrue(channelSummary.label.hasPrefix("#design · 100 of 100 joins remaining · Expires in 30 days"))
+        XCTAssertTrue(textValue(channelSummary).hasPrefix("#design · 100 of 100 joins remaining · Expires in 30 days"))
         XCTAssertFalse(app.staticTexts["Opens in"].exists)
         app.buttons["Close"].firstMatch.tap()
         #if os(iOS)
@@ -2192,7 +2223,6 @@ final class CaperParityUITests: XCTestCase {
         try openThread(app)
         let handle = try require(app.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing resize handle")
         let panel = app.descendants(matching: .any)["message-thread"]
-        handle.hover()
         // The Slider is a synthetic accessibilityRepresentation, not a visible
         // control. Xcode 16 can fail to compute its hit point: click the actual
         // handle's midpoint, and keep the Slider for width and keyboard checks.
@@ -2304,7 +2334,10 @@ final class CaperParityUITests: XCTestCase {
         handle.typeKey(.home, modifierFlags: [])
         XCTAssertEqual(sidebarWidth(of: handle), 220)
         handle.typeKey(.end, modifierFlags: [])
-        XCTAssertEqual(sidebarWidth(of: handle), 440)
+        // Members must leave 320pt for the conversation, even on a 1024pt VM.
+        let sidebarEdge = app.descendants(matching: .any)["channel-sidebar-resize"].frame.maxX
+        let available = window.frame.maxX - sidebarEdge - 320
+        XCTAssertEqual(sidebarWidth(of: handle), Int(min(440, available)))
         handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
         handle.typeKey(.leftArrow, modifierFlags: [])
         XCTAssertEqual(sidebarWidth(of: handle), 230)
@@ -2339,12 +2372,14 @@ final class CaperParityUITests: XCTestCase {
             capture(key == .home ? "update-compact-sidebar" : "update-wide-sidebar", app: app)
             update.click()
             XCTAssertTrue(app.buttons["desktop-update-install"].waitForExistence(timeout: 3))
+            XCTAssertEqual(app.windows.count, 1, "Review must reuse the account window, not open another")
             capture("update-review", app: app)
             app.buttons["Later"].click()
             XCTAssertTrue(update.waitForExistence(timeout: 3))
             XCTAssertTrue(update.isHittable)
             update.click()
             XCTAssertTrue(app.buttons["desktop-update-install"].waitForExistence(timeout: 3))
+            XCTAssertEqual(app.windows.count, 1, "Reopening the review must reuse the same window")
             app.typeKey(.escape, modifierFlags: [])
             XCTAssertTrue(update.waitForExistence(timeout: 3))
             XCTAssertTrue(app.buttons["account-profile"].isHittable)
@@ -2377,7 +2412,7 @@ final class CaperParityUITests: XCTestCase {
         app.buttons["regenerate-avatar"].tap()
         assertStaticText("Unsaved changes", in: app)
         app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).click()
-        let discard = app.alerts["Discard profile changes?"]
+        let discard = alert("Discard profile changes?", in: app)
         XCTAssertTrue(discard.waitForExistence(timeout: 3))
         discard.buttons["Keep editing"].click()
         XCTAssertTrue(app.buttons["profile-save"].isEnabled)
@@ -2992,10 +3027,16 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(edit.label, "Change profile picture")
         XCTAssertEqual(regenerate.frame.midY, edit.frame.midY, accuracy: 1)
         XCTAssertLessThan(regenerate.frame.maxX, edit.frame.minX)
-        // The badges stay small beside the frame; iOS widens their touch area instead.
+        // iOS accessibility reports the 44pt touch area around each 28pt badge,
+        // not the smaller artwork that the Mac's pointer target follows.
         for control in [regenerate, edit] {
+            #if os(macOS)
             XCTAssertLessThanOrEqual(control.frame.width, 34)
             XCTAssertLessThanOrEqual(control.frame.height, 34)
+            #else
+            XCTAssertEqual(control.frame.width, 44, accuracy: 1)
+            XCTAssertEqual(control.frame.height, 44, accuracy: 1)
+            #endif
         }
         #if os(macOS)
         username.hover()
@@ -3022,7 +3063,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(previewAccountAvatar, originalAvatar, "Previewing must not publish the chosen avatar")
 
         app.buttons["Close profile"].tap()
-        let discard = app.alerts["Discard profile changes?"]
+        let discard = alert("Discard profile changes?", in: app)
         XCTAssertTrue(discard.waitForExistence(timeout: 5))
         XCTAssertTrue(discard.buttons["Discard"].exists)
         discard.buttons["Keep editing"].tap()
@@ -3320,9 +3361,11 @@ final class CaperParityUITests: XCTestCase {
         let window = app.windows.firstMatch
         let dragWidth = { (width: CGFloat) in
             let frame = window.frame
-            let corner = window.coordinate(withNormalizedOffset: .zero)
-                .withOffset(CGVector(dx: frame.width - 1, dy: frame.height - 1))
-            corner.press(forDuration: 0.1, thenDragTo: corner.withOffset(CGVector(dx: width - frame.width, dy: 0)))
+            // The lower corner can fall outside the rounded window's resize
+            // region. Use the straight edge, away from the Dock as well.
+            let edge = window.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: frame.width - 1, dy: frame.height / 2))
+            edge.press(forDuration: 0.1, thenDragTo: edge.withOffset(CGVector(dx: width - frame.width, dy: 0)))
         }
         // The app saves its window frame, so a narrow window would carry into
         // every later test (which need a desktop width). Restore it, even on failure.
@@ -3330,7 +3373,9 @@ final class CaperParityUITests: XCTestCase {
         addTeardownBlock { @MainActor in
             if window.exists, abs(window.frame.width - originalWidth) > 4 { dragWidth(originalWidth) }
         }
-        for width in [CGFloat(960), 820, 700, 820, 960] {
+        // With the 280pt sidebar and 60pt rail, 885 leaves Members a 220...225
+        // range, smaller than its normal 10pt AX step; 880 leaves no range.
+        for width in [CGFloat(960), 885, 880, 820, 700, 820, 880, 885, 960] {
             dragWidth(width)
             let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(window.frame.width - width) < 4 }, object: window)
             XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed, "The test must cross the actual layout breakpoints")
@@ -3443,12 +3488,25 @@ final class CaperParityUITests: XCTestCase {
         #endif
         XCTAssertFalse(app.textFields["invite-link-expiry-number"].exists, "Custom-link settings start collapsed, as on web")
         capture("manage-space", app: app)
+        #if os(macOS)
+        let customLinks = app.disclosureTriangles["Custom links"]
+        #else
         let customLinks = app.descendants(matching: .any)["space-custom-links"].firstMatch
-        customLinks.tap()
+        #endif
+        func toggleCustomLinks() {
+            #if os(macOS)
+            // The native DisclosureGroup toggles at its chevron, not at the
+            // midpoint of the label's AX frame (macOS 15).
+            customLinks.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)).click()
+            #else
+            customLinks.tap()
+            #endif
+        }
+        toggleCustomLinks()
         XCTAssertTrue(app.textFields["invite-link-expiry-number"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.textFields["invite-link-max-uses"].exists)
         capture("manage-space-custom-links", app: app)
-        customLinks.tap()
+        toggleCustomLinks()
         XCTAssertFalse(app.textFields["invite-link-expiry-number"].exists)
         let username = app.textFields["Exact username"]
         XCTAssertTrue(username.isEnabled, "The dialog must not inherit the disabled workspace")

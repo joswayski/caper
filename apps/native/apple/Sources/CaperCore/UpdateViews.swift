@@ -255,6 +255,9 @@ private struct UpdateButtonSweep: View, Animatable {
                     }
                     HStack(spacing: 10) {
                         Button("Later", action: close).buttonStyle(CaperSecondaryButton())
+                            // Escape must work even if AppKit restores focus to
+                            // a child button when the review is reopened.
+                            .keyboardShortcut(.cancelAction)
                         Spacer()
                         Button(update.canApply ? (inCall ? "Restart and leave call" : "Restart to update") : "Download",
                                action: update.canApply ? restart : download).buttonStyle(CaperPrimaryButton())
