@@ -531,6 +531,44 @@ impl Share {
     }
 }
 
+/// The attachment cache key for a KLIPY URL; such keys never ask Caper's API
+/// to re-sign them.
+pub fn media_key(url: &str) -> String {
+    format!("{}{url}", crate::attachments::EXTERNAL_KEY)
+}
+
+/// The same original used inline, without Caper asset signing or a still preview.
+pub fn viewer_file(gif: &Gif) -> crate::model::Attachment {
+    use crate::model::{Attachment, AttachmentKind, AttachmentStatus};
+    let (url, content_type) = match gif.gif.as_ref() {
+        Some(url) => (url.clone(), "image/gif"),
+        None => (
+            gif.webp.clone().expect("validated GIF has an image"),
+            "image/webp",
+        ),
+    };
+    Attachment {
+        id: media_key(&url),
+        kind: AttachmentKind::Image,
+        content_type: content_type.into(),
+        name: gif.alt().into(),
+        size: 0,
+        width: Some(gif.width),
+        height: Some(gif.height),
+        duration_ms: None,
+        preview: gif.still.is_some(),
+        url: Some(url),
+        preview_url: gif.still.clone(),
+        unavailable: false,
+        status: AttachmentStatus::Ready,
+        animated: false,
+        spoiler: false,
+        voice: false,
+        waveform: None,
+        transcript: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -285,6 +285,13 @@ pub fn start(application: &gtk::Application, base: &str) {
                 Signal::Wake => app.receive(),
                 Signal::Title(title) => app.ui.window.set_title(Some(&title)),
                 Signal::Front => app.ui.window.present(),
+                Signal::Media {
+                    generation,
+                    key,
+                    url,
+                    result,
+                } => app.images.media.loaded(generation, key, url, result),
+                Signal::RefreshMedia => app.refresh_media(),
                 Signal::Picture { asset, url, image } => {
                     app.images.loaded(asset, url, image);
                     app.state.borrow_mut().layout += 1;
@@ -452,6 +459,18 @@ impl App {
             group.add_action(&action);
         }
         self.ui.window.insert_action_group("row", Some(&group));
+    }
+
+    /// Asks for fresh signed URLs for the media that wants them.
+    fn refresh_media(&self) {
+        let Some(token) = self.state.borrow().token.clone() else {
+            return;
+        };
+        let ids = self.images.media.take_refresh();
+        if !ids.is_empty() {
+            self.worker
+                .send(Command::RefreshAttachmentUrls { token, ids });
+        }
     }
 
     /// Tells the gateway someone is here, at most every few seconds.
@@ -1155,6 +1174,15 @@ impl App {
                 self.open_thread(root);
             }
             Action::Menu { id, anchor } => self.row_menu(&id, &anchor),
+            Action::Reveal(id) => {
+                self.images.media.revealed.borrow_mut().insert(id);
+                self.render();
+            }
+            Action::View(files, index) => {
+                crate::viewer::open(&self.ui.window, &self.images, files, index)
+            }
+            Action::Open(attachment) => self.images.media.open(&attachment),
+            Action::OpenUrl(url) => crate::media::open_uri(&url),
         }
     }
 
@@ -1609,6 +1637,17 @@ impl App {
                     Err(error) => state.error = Some(error),
                 }
             }
+            Event::AttachmentUrls { token, ids, result }
+                if state.token.as_ref() == Some(&token) =>
+            {
+                if let Some(url) = self
+                    .images
+                    .media
+                    .refreshed(&ids, result.unwrap_or_default())
+                {
+                    crate::media::open_uri(&url);
+                }
+            }
             Event::Gateway(event) => self.gateway(state, event),
             _ => {}
         }
@@ -2031,7 +2070,9 @@ impl App {
                 .as_ref()
                 .map(|session| session.author.id.clone());
             let joined = state.session.is_some() && state.joined();
+            let revealed = self.images.media.revealed.borrow();
             let viewer = |in_thread| rows::Viewer {
+                revealed: &revealed,
                 me: me.as_deref(),
                 author: author.as_deref(),
                 joined,
@@ -2050,6 +2091,7 @@ impl App {
                         author: &session.author,
                         created_at: &pending.created_at,
                         text: &pending.text,
+                        content: Default::default(),
                     })
             };
             let main = rows::build(

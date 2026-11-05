@@ -17,6 +17,15 @@ pub enum Signal {
         url: String,
         image: Option<caper_client::Rgba>,
     },
+    /// Message media wants fresh signed URLs.
+    RefreshMedia,
+    /// Message media finished loading (`crate::media`).
+    Media {
+        generation: u64,
+        key: String,
+        url: String,
+        result: Result<Vec<(caper_client::Rgba, std::time::Duration)>, Option<u16>>,
+    },
 }
 
 #[derive(Clone)]

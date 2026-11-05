@@ -20,9 +20,11 @@
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+pub use caper_client::embeds::footer_line;
+use caper_client::embeds::{heading, image_files, key};
 use eframe::egui::{self, Color32, CornerRadius, Stroke};
 
-use crate::attachments::{EMBED_KEY, ImageState, Media};
+use crate::attachments::{ImageState, Media};
 use crate::model::{Attachment, AttachmentKind, AttachmentStatus, Embed, EmbedBlock, EmbedImage};
 use crate::web_player::{self, WebPlayer};
 use crate::{
@@ -101,42 +103,6 @@ fn openable(url: &str) -> bool {
     caper_web_player::openable(url)
 }
 
-fn key(url: &str) -> String {
-    format!("{EMBED_KEY}{url}")
-}
-
-/// An image block's items as viewer files: unsigned, ready, sized when known.
-fn image_files(items: &[EmbedImage], name: &str) -> Vec<Attachment> {
-    items
-        .iter()
-        .map(|image| Attachment {
-            id: key(&image.url),
-            spoiler: false,
-            voice: false,
-            waveform: None,
-            transcript: None,
-            kind: AttachmentKind::Image,
-            // The decoders sniff the real format; this only picks the path.
-            content_type: "image/jpeg".into(),
-            name: image
-                .alt
-                .clone()
-                .filter(|alt| !alt.is_empty())
-                .unwrap_or_else(|| name.into()),
-            size: 0,
-            width: image.width,
-            height: image.height,
-            duration_ms: None,
-            preview: true,
-            url: Some(image.url.clone()),
-            preview_url: Some(image.url.clone()),
-            unavailable: false,
-            status: AttachmentStatus::Ready,
-            animated: false,
-        })
-        .collect()
-}
-
 /// A direct video as a viewer file; its poster shares the inline tile's
 /// texture (both use the video's id).
 fn video_file(block: &EmbedBlock, name: &str) -> Option<Attachment> {
@@ -180,45 +146,6 @@ fn video_file(block: &EmbedBlock, name: &str) -> Option<Attachment> {
 
 /// The card's name for players, viewers and screen readers: its title, else
 /// its author, else its site.
-fn heading(embed: &Embed) -> &str {
-    embed
-        .blocks
-        .iter()
-        .find_map(|block| match block {
-            EmbedBlock::Title { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .or_else(|| {
-            embed.blocks.iter().find_map(|block| match block {
-                EmbedBlock::Author { name, .. } => Some(name.as_str()),
-                _ => None,
-            })
-        })
-        .unwrap_or(&embed.site.name)
-}
-
-/// Web's `dateStyle: "medium"`, in local time.
-fn footer_date(timestamp: &str) -> Option<String> {
-    chrono::DateTime::parse_from_rfc3339(timestamp)
-        .ok()
-        .map(|date| {
-            date.with_timezone(&chrono::Local)
-                .format("%b %-d, %Y")
-                .to_string()
-        })
-}
-
-pub fn footer_line(text: Option<&str>, timestamp: Option<&str>) -> String {
-    [
-        text.filter(|text| !text.is_empty()).map(str::to_owned),
-        timestamp.and_then(footer_date),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" · ")
-}
-
 /// What a card asks the app to do.
 pub enum Action {
     /// Open an http(s) link in the system browser.

@@ -16,6 +16,7 @@ pub mod credentials;
 pub mod daily_icon;
 pub mod edits;
 pub mod effects;
+pub mod embeds;
 pub mod feedback;
 pub mod ffmpeg;
 pub mod forwarding;

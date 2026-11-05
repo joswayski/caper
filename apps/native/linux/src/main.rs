@@ -2,6 +2,7 @@
 //! any release or package yet.
 
 mod app;
+mod content;
 mod fonts;
 #[allow(dead_code)]
 #[path = "../../../../shared/messages/formatting.rs"]
@@ -12,8 +13,10 @@ mod images;
 #[path = "../../../../shared/messages/links.rs"]
 mod links;
 mod markup;
+mod media;
 mod rows;
 mod ui;
+mod viewer;
 
 use gtk::{gio, glib, prelude::*};
 

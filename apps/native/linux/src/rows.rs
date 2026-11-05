@@ -67,6 +67,8 @@ pub struct Row {
     /// It asked the Caper team, so it carries their notice.
     pub team_notice: bool,
     pub offers: Offers,
+    /// Files, link previews and a GIF below the text.
+    pub content: crate::content::Content,
 }
 
 /// One change to the shown list, applied in order. Positions are already
@@ -173,23 +175,7 @@ fn body(message: &Message, markup: &mut Markup) -> String {
     if message.is_deleted() {
         return format!("{MUTED}This message was deleted.</i></span>");
     }
-    let mut text = markup.text(message);
-    let content = &message.content;
-    let extra = if !content.attachments.is_empty() {
-        Some(caper_client::model::attachments_label(&content.attachments))
-    } else {
-        content.gif.as_ref().map(|_| "GIF")
-    };
-    if let Some(extra) = extra {
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        text.push_str(&format!(
-            "{MUTED}{}</i></span>",
-            glib::markup_escape_text(extra)
-        ));
-    }
-    text
+    markup.text(message)
 }
 
 /// Your message while it sends: its client id, author, time and text.
@@ -198,6 +184,8 @@ pub struct Draft<'a> {
     pub author: &'a Author,
     pub created_at: &'a str,
     pub text: &'a str,
+    /// The files it sends, shown from your local copies.
+    pub content: crate::content::Content,
 }
 
 /// Who is reading, for reactions and the actions each row offers.
@@ -213,6 +201,8 @@ pub struct Viewer<'a> {
     pub images: &'a Images,
     /// Your reactions still on their way, drawn over the server's counts.
     pub reactions: &'a caper_client::reactions::Reactions,
+    /// Spoiler attachments you revealed.
+    pub revealed: &'a std::collections::HashSet<String>,
 }
 
 impl Viewer<'_> {
@@ -339,6 +329,29 @@ pub fn build<'a>(
                     )),
             team_notice: !deleted
                 && caper_client::mentions::notifies_team(&message.content.mentions),
+            content: if deleted {
+                crate::content::Content::default()
+            } else {
+                crate::content::Content {
+                    attachments: message
+                        .content
+                        .attachments
+                        .iter()
+                        .map(|attachment| {
+                            (
+                                viewer.images.media.resolve(attachment),
+                                attachment.spoiler && !viewer.revealed.contains(&attachment.id),
+                            )
+                        })
+                        .collect(),
+                    embeds: if message.content.suppress_embeds {
+                        Vec::new()
+                    } else {
+                        message.content.embeds.clone()
+                    },
+                    gif: message.content.gif.clone(),
+                }
+            },
             offers: Offers {
                 act,
                 mine: act && viewer.author == Some(message.author.id.as_str()),
@@ -375,6 +388,7 @@ pub fn build<'a>(
             mentioned: false,
             team_notice: false,
             offers: Offers::default(),
+            content: draft.content,
         };
         push(&mut rows, draft.id, draft.author, draft.created_at, row);
     }
@@ -415,6 +429,14 @@ pub enum Action {
         id: String,
         anchor: gtk::Widget,
     },
+    /// Show this spoiler attachment.
+    Reveal(String),
+    /// Show these images in the viewer, starting at the index.
+    View(Vec<caper_client::model::Attachment>, usize),
+    /// Open the full file in the browser or the system's player.
+    Open(caper_client::model::Attachment),
+    /// Open an http(s) link.
+    OpenUrl(String),
 }
 
 pub type Handler = Rc<dyn Fn(Action)>;
@@ -432,6 +454,7 @@ struct Widgets {
     edited: gtk::Label,
     pinned: gtk::Label,
     body: gtk::Label,
+    content: gtk::Box,
     notice: gtk::Label,
     card: gtk::Overlay,
     reactions: gtk::Box,
@@ -544,7 +567,9 @@ fn build_widgets(images: &Images) -> Widgets {
     header.append(&edited);
     header.append(&pinned);
     content.append(&header);
+    let extra = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&body);
+    content.append(&extra);
     content.append(&notice);
     content.append(&reactions);
     content.append(&reaction_error);
@@ -599,6 +624,7 @@ fn build_widgets(images: &Images) -> Widgets {
         edited,
         pinned,
         body,
+        content: extra,
         reactions,
         reaction_error,
         reaction_error_label,
@@ -703,6 +729,14 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
         .pinned
         .set_label(row.pinned_by.as_deref().unwrap_or_default());
     widgets.body.set_markup(&row.markup);
+    widgets.body.set_visible(!row.markup.is_empty());
+    while let Some(child) = widgets.content.first_child() {
+        widgets.content.remove(&child);
+    }
+    if let Some(view) = crate::content::view(images, &row.content, handler) {
+        widgets.content.append(&view);
+    }
+    widgets.content.set_visible(!row.content.is_empty());
     while let Some(child) = widgets.reactions.first_child() {
         widgets.reactions.remove(&child);
     }
@@ -775,6 +809,7 @@ mod tests {
             mentioned: false,
             team_notice: false,
             offers: Offers::default(),
+            content: Default::default(),
         }
     }
 

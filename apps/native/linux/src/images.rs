@@ -22,33 +22,74 @@ const MAX_FETCHES: usize = 4;
 
 /// The Lucide icons the client draws (`desktop/resources/icons`, white
 /// strokes recoloured per use).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Icon {
-    Send,
-    Users,
-    SmilePlus,
-    Reply,
-    Thread,
-    More,
-    Hash,
-    Lock,
-    Close,
-    LogOut,
+macro_rules! icons {
+    ($($name:ident => $file:literal,)*) => {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+        #[allow(dead_code)]
+        pub enum Icon {
+            $($name,)*
+        }
+
+        fn icon_source(icon: Icon) -> &'static str {
+            match icon {
+                $(Icon::$name => include_str!(concat!("../../desktop/resources/icons/", $file, ".svg")),)*
+            }
+        }
+    };
 }
 
-fn icon_source(icon: Icon) -> &'static str {
-    match icon {
-        Icon::Send => include_str!("../../desktop/resources/icons/send.svg"),
-        Icon::Users => include_str!("../../desktop/resources/icons/users.svg"),
-        Icon::SmilePlus => include_str!("../../desktop/resources/icons/smile-plus.svg"),
-        Icon::Reply => include_str!("../../desktop/resources/icons/reply.svg"),
-        Icon::Thread => include_str!("../../desktop/resources/icons/thread.svg"),
-        Icon::More => include_str!("../../desktop/resources/icons/ellipsis.svg"),
-        Icon::Hash => include_str!("../../desktop/resources/icons/hash.svg"),
-        Icon::Lock => include_str!("../../desktop/resources/icons/lock.svg"),
-        Icon::Close => include_str!("../../desktop/resources/icons/x.svg"),
-        Icon::LogOut => include_str!("../../desktop/resources/icons/log-out.svg"),
-    }
+icons! {
+    Send => "send",
+    Users => "users",
+    SmilePlus => "smile-plus",
+    Smile => "smile",
+    Reply => "reply",
+    Thread => "thread",
+    More => "ellipsis",
+    Hash => "hash",
+    Lock => "lock",
+    Close => "x",
+    LogOut => "log-out",
+    FileText => "file-text",
+    FileUp => "file-up",
+    Play => "play",
+    Pause => "pause",
+    Plus => "plus",
+    Paperclip => "paperclip",
+    Download => "download",
+    ExternalLink => "external-link",
+    Eye => "eye",
+    EyeOff => "eye-off",
+    ChevronLeft => "chevron-left",
+    ChevronRight => "chevron-right",
+    ChevronDown => "chevron-down",
+    Copy => "copy",
+    Pin => "pin",
+    PinOff => "pin-off",
+    Search => "search",
+    Settings => "settings",
+    Bell => "bell",
+    BellOff => "bell-off",
+    Forward => "forward",
+    Mic => "mic",
+    MicOff => "mic-off",
+    Headphones => "headphones",
+    HeadphoneOff => "headphone-off",
+    PhoneOff => "phone-off",
+    Volume => "volume-2",
+    VolumeOff => "volume-x",
+    Pencil => "pencil",
+    Trash => "trash-2",
+    Link => "link",
+    Inbox => "inbox",
+    ArrowLeft => "arrow-left",
+    Images => "images",
+    Check => "check",
+    Retry => "rotate-ccw",
+    Message => "message-circle",
+    Ban => "ban",
+    AudioLines => "audio-lines",
+    Speech => "speech",
 }
 
 /// What an avatar shows: an uploaded picture, a Caper mascot, or the
@@ -100,6 +141,8 @@ struct Pictures {
 }
 
 pub struct Images {
+    /// Message media: attachments, link previews and GIFs.
+    pub media: crate::media::Media,
     api: Api,
     signals: async_channel::Sender<Signal>,
     icons: RefCell<HashMap<(Icon, &'static str), gdk::Texture>>,
@@ -110,6 +153,7 @@ pub struct Images {
 impl Images {
     pub fn new(api: Api, signals: async_channel::Sender<Signal>) -> Self {
         Self {
+            media: crate::media::Media::new(api.clone(), signals.clone()),
             api,
             signals,
             icons: RefCell::default(),
@@ -217,6 +261,7 @@ impl Images {
     }
 
     pub fn clear_pictures(&self) {
+        self.media.clear();
         let mut pictures = self.pictures.borrow_mut();
         pictures.ready.clear();
         pictures.failed.clear();

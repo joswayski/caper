@@ -548,3 +548,121 @@ list.member-list > row:hover {
 .sidebar .section {
   padding: 14px 16px 6px;
 }
+
+/* Message content: media tiles, file cards, link previews and GIFs. */
+.content {
+  margin-top: 6px;
+}
+
+button.tile {
+  padding: 0;
+  min-height: 0;
+  min-width: 0;
+  border-radius: 8px;
+  background: @caper_surface;
+  border: none;
+  box-shadow: none;
+}
+
+button.tile:hover {
+  background: @caper_surface_raised;
+}
+
+fixed.gallery {
+  border-radius: 12px;
+}
+
+fixed.gallery button.tile {
+  border-radius: 2px;
+}
+
+button.tile.spoiler {
+  background: @caper_surface_raised;
+  border: 1px solid @caper_border;
+}
+
+button.tile.sticker,
+button.tile.gif {
+  background: transparent;
+}
+
+.pill {
+  background: alpha(@caper_blackout, 0.78);
+  color: @caper_text;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pill.corner {
+  margin: 8px;
+  padding: 2px 8px;
+}
+
+.play {
+  background: alpha(@caper_blackout, 0.72);
+  border-radius: 999px;
+  padding: 12px;
+}
+
+button.file-card {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+  box-shadow: none;
+}
+
+button.file-card:hover {
+  background: @caper_surface_raised;
+}
+
+.file-name {
+  font-weight: 700;
+  font-size: 13px;
+  color: @caper_text;
+}
+
+.small {
+  font-size: 12px;
+}
+
+.transcript {
+  color: @caper_text;
+  font-size: 13px;
+}
+
+.embed {
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+  border-left: 3px solid @caper_border;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.embed-title {
+  font-weight: 700;
+}
+
+.embed-text {
+  color: @caper_text_muted;
+  font-size: 13px;
+}
+
+window.caper.viewer {
+  background-color: @caper_blackout;
+}
+
+window.caper.viewer .header {
+  padding: 8px 12px;
+  border-bottom: 1px solid @caper_border;
+}
+
+window.caper.viewer button.step {
+  margin: 0 16px;
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 999px;
+  background: alpha(@caper_surface, 0.85);
+}

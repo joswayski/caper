@@ -4,7 +4,9 @@
 //! view, so an ad item that arrives anyway is skipped in the grid.
 
 use crate::attachments::{ImageState, Media};
-pub use caper_client::klipy::{Config, Gif, Item, Kind, Page, Share, Tile, fetch};
+pub use caper_client::klipy::{
+    Config, Gif, Item, Kind, Page, Share, Tile, fetch, media_key, viewer_file,
+};
 use eframe::egui::{self, Color32, CornerRadius, RichText};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -457,44 +459,6 @@ fn gif_sources(gif: &Gif, playing: bool) -> Vec<Source<'_>> {
     .into_iter()
     .flatten()
     .collect()
-}
-
-/// The attachment cache key for a KLIPY URL; such keys never ask Caper's API
-/// to re-sign them.
-pub fn media_key(url: &str) -> String {
-    format!("{}{url}", crate::attachments::EXTERNAL_KEY)
-}
-
-/// The same original used inline, without Caper asset signing or a still preview.
-pub fn viewer_file(gif: &Gif) -> crate::model::Attachment {
-    use crate::model::{Attachment, AttachmentKind, AttachmentStatus};
-    let (url, content_type) = match gif.gif.as_ref() {
-        Some(url) => (url.clone(), "image/gif"),
-        None => (
-            gif.webp.clone().expect("validated GIF has an image"),
-            "image/webp",
-        ),
-    };
-    Attachment {
-        id: media_key(&url),
-        kind: AttachmentKind::Image,
-        content_type: content_type.into(),
-        name: gif.alt().into(),
-        size: 0,
-        width: Some(gif.width),
-        height: Some(gif.height),
-        duration_ms: None,
-        preview: gif.still.is_some(),
-        url: Some(url),
-        preview_url: gif.still.clone(),
-        unavailable: false,
-        status: AttachmentStatus::Ready,
-        animated: false,
-        spoiler: false,
-        voice: false,
-        waveform: None,
-        transcript: None,
-    }
 }
 
 /// Paints the first source that loads, contained in `rect`; a loading
