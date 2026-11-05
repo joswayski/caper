@@ -116,7 +116,7 @@ test("Windows ICO frames and Linux window PNG share the exact macOS raster expor
 test("native desktop icons remain packaged while daily characters stay in-app", () => {
   const main = read("apps/native/desktop/src/main.rs").toString();
   assert.match(main, /image::load_from_memory\(include_bytes!\("\.\.\/resources\/caper-icon\.png"\)\)/);
-  assert.match(main, /daily_icon::DailyIcon::load\(creation\.storage\)/);
+  assert.match(main, /daily_icon::load\(creation\.storage\)/);
   assert.doesNotMatch(main, /ViewportCommand::Icon|app_icon::apply/);
   assert.doesNotMatch(
     read("apps/native/apple/Sources/CaperMacOS/CaperMacOSApp.swift").toString(),
