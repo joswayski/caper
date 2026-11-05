@@ -52,7 +52,13 @@ public final class AppModel {
     var activityCursor: String?
     var activityLoading = false
     var activityError: String?
-    var activityReading: String?
+    /// The row being opened; only it is disabled meanwhile.
+    var activityOpening: String?
+    /// After a filter change the previous rows stay, dimmed and inert, until the
+    /// new page arrives: emptying the list first collapsed it and reset the scroll.
+    var activityStale = false
+    /// Mark-reads in flight; automatic refreshes wait for them.
+    private var activityReads = 0
     var activityShown = false
     private var activityRequest = 0
     private var activityReactionRequest = 0
@@ -168,7 +174,8 @@ public final class AppModel {
 
     func loadActivity(reset: Bool, poll: Bool = false) async {
         if poll && activityLoading { return }
-        guard account != nil, activityReading == nil, reset || (!activityLoading && activityCursor != nil) else { return }
+        if poll && activityReads > 0 { return }
+        guard account != nil, reset || (!activityLoading && activityCursor != nil) else { return }
         let attempt = generation
         activityRequest += 1
         let request = activityRequest
@@ -176,8 +183,8 @@ public final class AppModel {
         let cursor = reset ? nil : activityCursor
         let oldest = poll ? activityItems.last : nil
         activityLoading = true; activityError = nil
-        if reset && !poll { activityItems = []; activityCursor = nil }
-        defer { if generation == attempt && request == activityRequest { activityLoading = false } }
+        if reset && !poll { activityStale = !activityItems.isEmpty }
+        defer { if generation == attempt && request == activityRequest { activityLoading = false; activityStale = false } }
         do {
             var page = try await api.activityInbox(filter: filter, unread: unread, cursor: cursor)
             var rows = page.items
@@ -197,34 +204,56 @@ public final class AppModel {
             activityUnread = page.unreadCount
             updateApplicationBadge(page.unreadCount)
         } catch {
-            if generation == attempt && request == activityRequest { activityError = FriendlyError.message(for: error) }
+            guard generation == attempt && request == activityRequest else { return }
+            // Rows kept from the previous filter must not stand in for this one.
+            if reset && !poll { activityItems = []; activityCursor = nil }
+            activityError = FriendlyError.message(for: error)
         }
     }
 
+    /// Optimistic: the row and count change at once and go back if the save fails,
+    /// so the rest of the inbox never waits on (or disables for) the request.
     func readActivity(_ item: ActivityItem) async -> Bool {
-        guard account != nil, activityReading == nil else { return false }
+        guard account != nil else { return false }
         let attempt = generation
-        activityReading = item.id; activityError = nil
+        activityError = nil
         activityRequest += 1; activityLoading = false; unreadRevision += 1
-        defer { if generation == attempt { activityReading = nil } }
+        activityReads += 1
+        defer { if generation == attempt { activityReads -= 1 } }
+        let index = activityItems.firstIndex { $0.id == item.id }
+        let wasUnread = index.map { activityItems[$0].unread } ?? item.unread
+        if wasUnread {
+            if let index { activityItems[index].unread = false }
+            activityExpanded[item.id]?.unread = false
+            if activityUnreadOnly { activityItems.removeAll { $0.id == item.id } }
+            activityUnread = max(0, activityUnread - 1); updateApplicationBadge(activityUnread)
+        }
         do {
             let result = try await api.readActivity(ids: [item.id])
             guard generation == attempt else { return false }
             unreadRevision += 1
-            activityUnread = result.unreadCount; updateApplicationBadge(result.unreadCount)
-            if let index = activityItems.firstIndex(where: { $0.id == item.id }) { activityItems[index].unread = false }
-            activityExpanded[item.id]?.unread = false
-            if activityUnreadOnly { activityItems.removeAll { $0.id == item.id } }
+            // With several reads in flight, only the last reply's count includes them all.
+            if activityReads == 1 { activityUnread = result.unreadCount; updateApplicationBadge(result.unreadCount) }
             return true
         } catch {
-            if generation == attempt { activityError = FriendlyError.message(for: error) }
+            guard generation == attempt else { return false }
+            if wasUnread {
+                if let current = activityItems.firstIndex(where: { $0.id == item.id }) { activityItems[current].unread = true }
+                else if let index { var restored = item; restored.unread = true; activityItems.insert(restored, at: min(index, activityItems.count)) }
+                activityExpanded[item.id]?.unread = true
+                activityUnread += 1; updateApplicationBadge(activityUnread)
+            }
+            activityError = FriendlyError.message(for: error)
             return false
         }
     }
 
     func openActivity(_ item: ActivityItem) async -> Bool {
         guard let route = item.route else { activityError = "This notification is no longer available."; return false }
+        guard activityOpening == nil else { return false }
         let attempt = generation; let navigation = navigationGeneration
+        activityOpening = item.id
+        defer { if generation == attempt { activityOpening = nil } }
         guard await readActivity(item), activityShown, generation == attempt, navigationGeneration == navigation else { return false }
         error = nil; navigationError = nil
         await open(route)
@@ -2826,7 +2855,7 @@ extension AppModel {
 
     private func clearNotificationState() {
         activityRequest += 1; activityItems = []; activityCursor = nil; activityUnread = 0
-        activityLoading = false; activityReading = nil; activityError = nil
+        activityLoading = false; activityOpening = nil; activityStale = false; activityReads = 0; activityError = nil
         activityShown = false
         activityFilter = .all; activityUnreadOnly = true
         voiceActivitySpaceIDs = []

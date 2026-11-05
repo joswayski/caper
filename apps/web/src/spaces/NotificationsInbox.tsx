@@ -49,6 +49,9 @@ export default function NotificationsInbox({
   const [cursor, setCursor] = useState<string | null>();
   const [count, setCount] = useState<number>();
   const [loading, setLoading] = useState(true);
+  // After a filter change the previous rows stay in place, dimmed and inert, until
+  // the new ones arrive: emptying the list first collapsed it and reset the scroll.
+  const [stale, setStale] = useState(false);
   const [saving, setSaving] = useState<string>();
   const [error, setError] = useState<string>();
   const [expanded, setExpanded] = useState<InboxItem>();
@@ -60,9 +63,13 @@ export default function NotificationsInbox({
   const mounted = useRef(true);
   const loadedItems = useRef<InboxItem[]>([]);
   const fetching = useRef(false);
-  const busy = useRef(false);
+  // Opens and mark-reads in flight; automatic refreshes wait for them.
+  const busy = useRef(0);
+  const countRef = useRef<number>(undefined);
+  const opening = useRef(false);
   const updateCount = useCallback(
     (value: number) => {
+      countRef.current = value;
       setCount(value);
       onCount(value);
       setApplicationBadge(value);
@@ -72,7 +79,7 @@ export default function NotificationsInbox({
 
   const load = useCallback(
     async (after?: string, background = false) => {
-      if (background && (fetching.current || busy.current)) return;
+      if (background && (fetching.current || busy.current > 0)) return;
       const request = ++revision.current;
       fetching.current = true;
       if (!background) setLoading(true);
@@ -106,12 +113,19 @@ export default function NotificationsInbox({
         setCursor(result.nextCursor);
         updateCount(result.unreadCount);
       } catch (reason) {
-        if (mounted.current && request === revision.current)
-          setError(reason instanceof Error ? reason.message : "Notifications couldn’t load.");
+        if (!mounted.current || request !== revision.current) return;
+        // Rows kept from the previous filter must not stand in for this one.
+        if (!after && !background) {
+          loadedItems.current = [];
+          setItems([]);
+          setCursor(undefined);
+        }
+        setError(reason instanceof Error ? reason.message : "Notifications couldn’t load.");
       } finally {
         if (mounted.current && request === revision.current) {
           fetching.current = false;
           setLoading(false);
+          if (!after) setStale(false);
         }
       }
     },
@@ -126,9 +140,7 @@ export default function NotificationsInbox({
     };
   }, []);
   useEffect(() => {
-    loadedItems.current = [];
-    setItems([]);
-    setCursor(undefined);
+    setStale(loadedItems.current.length > 0);
     void load();
     const refresh = () => {
       if (document.visibilityState === "visible") void load(undefined, true);
@@ -144,30 +156,59 @@ export default function NotificationsInbox({
     };
   }, [load]);
 
+  // Marking read updates the row and count at once and puts them back if the save fails,
+  // so the rest of the list never waits on (or dims for) the request.
   async function act(item: InboxItem, open: boolean) {
-    if (busy.current) return;
-    busy.current = true;
-    setSaving(item.id);
+    if (open) {
+      if (opening.current) return;
+      opening.current = true;
+      setSaving(item.id);
+    }
+    busy.current++;
     setError(undefined);
     revision.current++;
     fetching.current = false;
     setLoading(false);
+    const index = loadedItems.current.findIndex((row) => row.id === item.id);
+    const update = (rows: InboxItem[]) => {
+      loadedItems.current = rows;
+      setItems(rows);
+    };
     try {
       if (item.unread) {
-        const result = await readInbox([item.id]);
-        if (!mounted.current) return;
-        updateCount(result.unreadCount);
-        loadedItems.current = unread
-          ? loadedItems.current.filter((row) => row.id !== item.id)
-          : loadedItems.current.map((row) => (row.id === item.id ? { ...row, unread: false } : row));
-        setItems(loadedItems.current);
+        update(
+          unread
+            ? loadedItems.current.filter((row) => row.id !== item.id)
+            : loadedItems.current.map((row) => (row.id === item.id ? { ...row, unread: false } : row)),
+        );
+        if (countRef.current) updateCount(countRef.current - 1);
+        try {
+          const result = await readInbox([item.id]);
+          // With several reads in flight, only the last reply's count includes them all.
+          if (mounted.current && busy.current === 1) updateCount(result.unreadCount);
+        } catch (reason) {
+          if (!mounted.current) return;
+          const rows = loadedItems.current;
+          update(
+            rows.some((row) => row.id === item.id)
+              ? rows.map((row) => (row.id === item.id ? { ...row, unread: true } : row))
+              : index < 0
+                ? rows
+                : [...rows.slice(0, index), item, ...rows.slice(index)],
+          );
+          if (countRef.current !== undefined) updateCount(countRef.current + 1);
+          throw reason;
+        }
       }
       if (open && mounted.current) await onOpen(item);
     } catch (reason) {
       if (mounted.current) setError(reason instanceof Error ? reason.message : "That notification couldn’t open.");
     } finally {
-      busy.current = false;
-      if (mounted.current) setSaving(undefined);
+      busy.current--;
+      if (open) {
+        opening.current = false;
+        if (mounted.current) setSaving(undefined);
+      }
     }
   }
 
@@ -191,7 +232,7 @@ export default function NotificationsInbox({
               type="button"
               key={value}
               aria-pressed={filter === value}
-              disabled={!!saving || composerBusy}
+              disabled={composerBusy}
               onClick={() => {
                 setExpanded(undefined);
                 setFilter(value);
@@ -208,7 +249,7 @@ export default function NotificationsInbox({
               role="switch"
               aria-label="Unread only"
               checked={unread}
-              disabled={!!saving || composerBusy}
+              disabled={composerBusy}
               onChange={(event) => {
                 setExpanded(undefined);
                 setUnread(event.target.checked);
@@ -226,13 +267,19 @@ export default function NotificationsInbox({
             </button>
           </p>
         )}
-        <ul className="inbox-list" aria-label="Notifications" aria-busy={loading}>
+        <ul
+          className="inbox-list"
+          aria-label="Notifications"
+          aria-busy={loading}
+          data-stale={stale || undefined}
+          inert={stale}
+        >
           {visibleItems.map((item) => (
             <li key={item.id} data-unread={item.unread || undefined}>
               <button
                 type="button"
                 className="inbox-open"
-                disabled={!!saving || composerBusy}
+                disabled={saving === item.id || composerBusy}
                 onClick={() => void act(item, true)}
               >
                 <span className="inbox-avatar">
@@ -257,12 +304,11 @@ export default function NotificationsInbox({
                   {new Date(item.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                 </time>
                 {item.unread && (
-                  <Tooltip content={saving === item.id ? "Saving…" : "Mark read without opening"}>
+                  <Tooltip content="Mark read without opening">
                     <button
                       type="button"
                       className="inbox-read"
                       aria-label={`Mark notification from ${item.actorName} read`}
-                      disabled={!!saving}
                       onClick={() => void act(item, false)}
                     >
                       <Check aria-hidden="true" />
@@ -277,7 +323,7 @@ export default function NotificationsInbox({
                     accountId={accountId}
                     item={item}
                     expanded={expanded?.id === item.id}
-                    disabled={!!saving || composerBusy}
+                    disabled={composerBusy}
                     onExpand={() => setExpanded(expanded?.id === item.id ? undefined : item)}
                     onStateChange={composerState}
                   />
@@ -285,7 +331,7 @@ export default function NotificationsInbox({
             </li>
           ))}
         </ul>
-        {loading && (
+        {loading && !visibleItems.length && (
           <p className="inbox-status" role="status">
             Loading notifications…
           </p>

@@ -4432,28 +4432,15 @@ impl CaperApp {
                     open,
                     result,
                 } if epoch == self.account_epoch => {
-                    self.activity.reading = None;
-                    match result {
-                        Ok(read) => {
-                            self.unread_revision += 1;
-                            self.activity.unread_count = read.unread_count;
-                            if let Some(row) = self.activity.expanded.get_mut(&item.id) {
-                                row.unread = false;
-                            }
-                            for row in &mut self.activity.items {
-                                if row.id == item.id {
-                                    row.unread = false;
-                                }
-                            }
-                            if self.activity.unread_only {
-                                self.activity.items.retain(|row| row.unread);
-                            }
-                            self.unread_refresh_due = Some(Instant::now());
-                            if open && navigation == self.navigation && self.activity.shown {
-                                self.open_activity_item(item);
-                            }
+                    if open {
+                        self.activity.opening = None;
+                    }
+                    if self.activity.read_finished(&item, result) {
+                        self.unread_revision += 1;
+                        self.unread_refresh_due = Some(Instant::now());
+                        if open && navigation == self.navigation && self.activity.shown {
+                            self.open_activity_item(item);
                         }
-                        Err(error) => self.activity.error = Some(error),
                     }
                 }
                 Event::FeedbackLoaded {
@@ -45168,7 +45155,7 @@ mod tests {
         assert_eq!(app.profile_drafts[&key].text, "Independent reply");
         assert_eq!(app.selected_channel, channel);
         assert_eq!(app.draft, "Keep chat draft");
-        assert!(app.activity.reading.is_none());
+        assert!(app.activity.reads.is_empty() && app.activity.opening.is_none());
         assert!(app.activity.shown);
     }
 

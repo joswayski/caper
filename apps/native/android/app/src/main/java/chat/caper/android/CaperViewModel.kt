@@ -113,41 +113,72 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     internal fun loadActivity(more: Boolean = false, poll: Boolean = false) {
         val token = accountToken ?: return
         val current = activityMutable.value
-        if (current.reading != null || poll && current.loading || more && (current.loading || current.cursor == null)) return
+        // Polling waits for reads in flight; a filter change does not.
+        if (poll && (current.loading || current.busy > 0) || more && (current.loading || current.cursor == null)) return
         val epoch = accountGeneration; val request = ++activityRequest
+        val reload = !more && !poll
+        // A reload keeps the previous rows in place (stale) until the new page replaces them.
         activityMutable.value = current.copy(loading = true, error = null,
-            items = if (more || poll) current.items else emptyList(), cursor = if (more || poll) current.cursor else null)
+            stale = if (reload) current.visibleItems.isNotEmpty() else current.stale)
         viewModelScope.launch {
             try {
                 val page = api.activityInbox(token, current.filter, current.unreadOnly, if (more) current.cursor else null,
                     through = if (poll) current.items.lastOrNull() else null)
                 if (epoch != accountGeneration || request != activityRequest) return@launch
-                val items = (if (more) current.items else emptyList()) + page.items
+                val items = (if (more) activityMutable.value.items else emptyList()) + page.items
                 activityMutable.value = activityMutable.value.copy(items = items.distinctBy { it.id },
-                    cursor = page.nextCursor, unreadCount = page.unreadCount, loading = false)
+                    cursor = page.nextCursor, unreadCount = page.unreadCount, loading = false, stale = false)
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) {
-                if (epoch == accountGeneration && request == activityRequest)
-                    activityMutable.value = activityMutable.value.copy(loading = false, error = message(error))
+                if (epoch == accountGeneration && request == activityRequest) {
+                    val failed = activityMutable.value
+                    // Rows kept from the previous filter must not stand in for this one.
+                    activityMutable.value = if (reload) failed.copy(items = emptyList(), cursor = null, loading = false, stale = false, error = message(error))
+                        else failed.copy(loading = false, stale = false, error = message(error))
+                }
             }
         }
     }
 
+    /** Marks [item] read at once and puts it back if the save fails; [open] then navigates to it. */
     internal fun readActivity(item: ActivityItem, open: Boolean = false, onOpened: () -> Unit = {}) {
         val token = accountToken ?: return
-        if (activityMutable.value.reading != null) return
+        val start = activityMutable.value
+        // Stale rows are inert, and one open runs at a time.
+        if (start.stale || open && start.opening != null) return
         val epoch = accountGeneration; val navigation = generation; val opening = conversationOpeningRevision
         ++activityRequest; ++unreadRevision
-        activityMutable.value = activityMutable.value.copy(reading = item.id, loading = false, error = null)
+        val index = start.items.indexOfFirst { it.id == item.id }
+        val unread = (start.items.firstOrNull { it.id == item.id } ?: start.expanded[item.id] ?: item).unread
+        val counted = unread && start.unreadCount > 0
+        fun ActivityInboxState.withUnread(value: Boolean) = copy(
+            expanded = expanded.mapValues { (_, row) -> if (row.id == item.id) row.copy(unread = value) else row },
+            items = items.map { if (it.id == item.id) it.copy(unread = value) else it }.filter { !unreadOnly || it.unread })
+        activityMutable.value = (if (unread) start.withUnread(false) else start).copy(
+            unreadCount = start.unreadCount - if (counted) 1 else 0, busy = start.busy + 1,
+            opening = if (open) item.id else start.opening, loading = false, error = null)
         viewModelScope.launch {
             try {
-                val result = api.readActivity(token, listOf(item.id))
-                if (epoch != accountGeneration) return@launch
-                ++unreadRevision
-                activityMutable.value = activityMutable.value.copy(unreadCount = result.unreadCount,
-                    expanded = activityMutable.value.expanded.mapValues { (_, row) -> if (row.id == item.id) row.copy(unread = false) else row },
-                    items = activityMutable.value.items.map { if (it.id == item.id) it.copy(unread = false) else it }
-                        .filter { !activityMutable.value.unreadOnly || it.unread })
+                if (unread) {
+                    val result = try { api.readActivity(token, listOf(item.id)) }
+                    catch (error: CancellationException) { throw error }
+                    catch (error: Throwable) {
+                        if (epoch == accountGeneration) {
+                            val now = activityMutable.value
+                            val same = now.filter == start.filter && now.unreadOnly == start.unreadOnly
+                            val rows = if (!same || index < 0 || now.items.any { it.id == item.id }) now.items
+                                else now.items.toMutableList().apply { add(index.coerceAtMost(size), item) }
+                            activityMutable.value = now.copy(items = rows, unreadCount = now.unreadCount + if (counted) 1 else 0).withUnread(true)
+                        }
+                        throw error
+                    }
+                    if (epoch != accountGeneration) return@launch
+                    ++unreadRevision
+                    val now = activityMutable.value
+                    // A reload answered before this read landed must not bring the row back; with several
+                    // reads in flight, only the last reply's count includes them all.
+                    activityMutable.value = now.withUnread(false).copy(unreadCount = if (now.busy == 1) result.unreadCount else now.unreadCount)
+                }
                 if (open && activityShown && navigation == generation && opening == conversationOpeningRevision) {
                     val channel = item.conversationId ?: item.channelId
                     require(item.spaceId != null || item.conversationId != null) { "This notification is no longer available." }
@@ -181,7 +212,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: Throwable) {
                 if (epoch == accountGeneration) activityMutable.value = activityMutable.value.copy(error = message(error))
             } finally {
-                if (epoch == accountGeneration) activityMutable.value = activityMutable.value.copy(reading = null)
+                if (epoch == accountGeneration) activityMutable.value = activityMutable.value.let {
+                    it.copy(busy = it.busy - 1, opening = if (open) null else it.opening)
+                }
             }
         }
     }

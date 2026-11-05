@@ -90,6 +90,16 @@
   padding: 0;
   list-style: none;
 }
+.inbox-list[data-stale] {
+  opacity: 0.5;
+  /* Fast responses swap rows without a visible dim. */
+  transition: opacity var(--motion-fast) var(--ease-out) 150ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .inbox-list[data-stale] {
+    transition: opacity 0s linear 150ms;
+  }
+}
 .inbox-list > li {
   position: relative;
   padding: 12px 0;

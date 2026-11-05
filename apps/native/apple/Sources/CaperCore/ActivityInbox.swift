@@ -85,6 +85,7 @@ private struct ActivityInboxView: View {
     @Bindable var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var reactionItem: ActivityItem?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     #if os(macOS)
     private let actionSize: CGFloat = 32
     #else
@@ -110,7 +111,7 @@ private struct ActivityInboxView: View {
                                 .background(model.activityFilter == filter ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.raised,
                                             in: RoundedRectangle(cornerRadius: 8))
                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(model.activityFilter == filter ? CaperTheme.terracotta : CaperTheme.border))
-                        }.buttonStyle(.plain).disabled(model.activityReading != nil)
+                        }.buttonStyle(.plain)
                             .accessibilityAddTraits(model.activityFilter == filter ? .isSelected : [])
                     }
                 }
@@ -123,7 +124,6 @@ private struct ActivityInboxView: View {
                     #else
                     .scaleEffect(0.75).frame(width: 40, height: 44)
                     #endif
-                    .disabled(model.activityReading != nil)
                     .onChange(of: model.activityUnreadOnly) { _, _ in Task { await model.loadActivity(reset: true) } }
                 Text("Unread only ") + Text("(\(model.activityUnread))").foregroundColor(CaperTheme.muted)
                 Spacer()
@@ -132,7 +132,7 @@ private struct ActivityInboxView: View {
                 HStack {
                     Text(error).foregroundStyle(CaperTheme.terracotta)
                     Button("Retry") { Task { await model.loadActivity(reset: true, poll: true) } }
-                        .disabled(model.activityLoading || model.activityReading != nil)
+                        .disabled(model.activityLoading)
                 }
             }
             ScrollView {
@@ -155,13 +155,13 @@ private struct ActivityInboxView: View {
                                         Text(item.body).lineLimit(3)
                                         Text(item.location).foregroundStyle(CaperTheme.muted)
                                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                                }.buttonStyle(.plain).disabled(model.activityReading != nil)
+                                }.buttonStyle(.plain).disabled(model.activityOpening == item.id)
                                 HStack(spacing: 6) {
                                     Text(FeedbackInbox.relativeTime(item.createdAt)).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                                     if item.unread {
                                         Button { Task { _ = await model.readActivity(item) } } label: {
                                             Image(systemName: "checkmark").frame(width: actionSize, height: actionSize).contentShape(Rectangle())
-                                        }.buttonStyle(.plain).disabled(model.activityReading != nil)
+                                        }.buttonStyle(.plain)
                                             .accessibilityLabel("Mark notification from \(item.actorName) read")
                                             .help("Mark read without opening")
                                     }
@@ -194,6 +194,11 @@ private struct ActivityInboxView: View {
                         Button("Load more") { Task { await model.loadActivity(reset: false) } }.disabled(model.activityLoading)
                     }
                 }
+                .opacity(model.activityStale ? 0.5 : 1).allowsHitTesting(!model.activityStale)
+                // Fast responses swap rows without a visible dim; leaving it is instant.
+                .animation(model.activityStale
+                           ? (reduceMotion ? Animation.linear(duration: 0) : CaperMotion.easeOut(CaperMotion.fast)).delay(0.15) : nil,
+                           value: model.activityStale)
             }
         }.font(CaperTheme.font(13)).padding(20).foregroundStyle(CaperTheme.text)
             .background(CaperTheme.surface)
@@ -216,7 +221,7 @@ private struct ActivityInboxView: View {
                 await model.loadActivity(reset: true)
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(15)) } catch { return }
-                    if !model.activityLoading && model.activityReading == nil { await model.loadActivity(reset: true, poll: true) }
+                    if !model.activityLoading { await model.loadActivity(reset: true, poll: true) }
                 }
             }
     }

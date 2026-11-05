@@ -160,7 +160,13 @@ pub struct Inbox {
     pub filter: Filter,
     pub unread_only: bool,
     pub loading: bool,
-    pub reading: Option<String>,
+    /// The row whose open is in flight; only it is disabled, and a second open waits.
+    pub opening: Option<String>,
+    /// Optimistic mark-reads in flight, with each row's original position for undo.
+    pub reads: Vec<(String, Option<usize>)>,
+    /// After a filter change the previous rows stay, dimmed and inert, until the new
+    /// page arrives: emptying the list first collapsed it and reset the scroll.
+    pub stale: bool,
     pub error: Option<String>,
     pub request: u64,
     pub refreshed: Option<Instant>,
@@ -181,7 +187,9 @@ impl Default for Inbox {
             filter: Filter::All,
             unread_only: true,
             loading: false,
-            reading: None,
+            opening: None,
+            reads: Vec::new(),
+            stale: false,
             error: None,
             request: 0,
             refreshed: None,
@@ -210,16 +218,71 @@ impl Inbox {
     pub fn due(&self) -> bool {
         self.shown
             && !self.loading
-            && self.reading.is_none()
+            && self.reads.is_empty()
+            && self.opening.is_none()
             && self
                 .refreshed
                 .is_none_or(|at| at.elapsed() >= Duration::from_secs(15))
+    }
+    fn set_read(&mut self, id: &str) {
+        for row in self.items.iter_mut().chain(self.expanded.values_mut()) {
+            if row.id == id {
+                row.unread = false;
+            }
+        }
+        if self.unread_only {
+            self.items.retain(|row| row.id != id);
+        }
+    }
+    /// Marks an unread row read at once; `read_finished` keeps or reverts it.
+    pub fn mark_read(&mut self, item: &Item) {
+        if !item.unread {
+            return;
+        }
+        let index = self.items.iter().position(|row| row.id == item.id);
+        self.reads.push((item.id.clone(), index));
+        self.set_read(&item.id);
+        self.unread_count = self.unread_count.saturating_sub(1);
+    }
+    /// `item` is the row as it was when acted on. Returns whether the read succeeded.
+    pub fn read_finished(&mut self, item: &Item, result: Result<Read, String>) -> bool {
+        let pending = item
+            .unread
+            .then(|| self.reads.iter().position(|(id, _)| *id == item.id))
+            .flatten()
+            .map(|at| self.reads.remove(at).1);
+        match result {
+            Ok(read) => {
+                self.set_read(&item.id);
+                // With several reads in flight, only the last reply's count includes them all.
+                if self.reads.is_empty() {
+                    self.unread_count = read.unread_count;
+                }
+                true
+            }
+            Err(error) => {
+                if let Some(index) = pending {
+                    if let Some(row) = self.items.iter_mut().find(|row| row.id == item.id) {
+                        row.unread = true;
+                    } else if let Some(index) = index {
+                        self.items.insert(index.min(self.items.len()), item.clone());
+                    }
+                    if let Some(row) = self.expanded.get_mut(&item.id) {
+                        row.unread = true;
+                    }
+                    self.unread_count += 1;
+                }
+                self.error = Some(error);
+                false
+            }
+        }
     }
     pub fn finish(&mut self, request: u64, more: bool, result: Result<Page, String>) {
         if request != self.request {
             return;
         }
         self.loading = false;
+        let stale = std::mem::take(&mut self.stale);
         match result {
             Ok(page) => {
                 if !more {
@@ -233,7 +296,14 @@ impl Inbox {
                 self.cursor = page.next_cursor;
                 self.unread_count = page.unread_count;
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => {
+                // Rows kept from the previous filter must not stand in for this one.
+                if stale {
+                    self.items.clear();
+                    self.cursor = None;
+                }
+                self.error = Some(error);
+            }
         }
     }
 }
@@ -329,8 +399,7 @@ impl crate::CaperApp {
         let Some(token) = self.token.clone() else {
             return;
         };
-        if self.activity.reading.is_some()
-            || poll && self.activity.loading
+        if poll && (self.activity.loading || !self.activity.reads.is_empty())
             || more && (self.activity.loading || self.activity.cursor.is_none())
         {
             return;
@@ -340,8 +409,7 @@ impl crate::CaperApp {
         self.activity.error = None;
         self.activity.refreshed = Some(Instant::now());
         if !more && !poll {
-            self.activity.items.clear();
-            self.activity.cursor = None;
+            self.activity.stale = !self.activity.items.is_empty();
         }
         self.worker.send(crate::worker::Command::LoadActivity {
             epoch: self.account_epoch,
@@ -426,36 +494,34 @@ impl crate::CaperApp {
                     self.activity.shown = false;
                 }
             });
-            ui.add_enabled_ui(self.activity.reading.is_none(), |ui| {
-                let mut changed = false;
-                ui.horizontal_wrapped(|ui| {
-                    for filter in Filter::ALL {
-                        changed |= ui
-                            .selectable_value(&mut self.activity.filter, filter, filter.label())
-                            .changed();
-                    }
-                });
-                changed |= ui
-                    .scope(|ui| {
-                        ui.set_max_width(210.0);
-                        crate::settings_switch(
-                            ui,
-                            &mut self.activity.unread_only,
-                            &format!("Unread only ({})", self.activity.unread_count),
-                            "",
-                        )
-                        .changed()
-                    })
-                    .inner;
-                if changed {
-                    self.load_activity(false);
+            let mut changed = false;
+            ui.horizontal_wrapped(|ui| {
+                for filter in Filter::ALL {
+                    changed |= ui
+                        .selectable_value(&mut self.activity.filter, filter, filter.label())
+                        .changed();
                 }
             });
+            changed |= ui
+                .scope(|ui| {
+                    ui.set_max_width(210.0);
+                    crate::settings_switch(
+                        ui,
+                        &mut self.activity.unread_only,
+                        &format!("Unread only ({})", self.activity.unread_count),
+                        "",
+                    )
+                    .changed()
+                })
+                .inner;
+            if changed {
+                self.load_activity(false);
+            }
             if let Some(error) = &self.activity.error {
                 ui.colored_label(crate::TERRACOTTA, error);
                 if ui
                     .add_enabled(
-                        !self.activity.loading && self.activity.reading.is_none(),
+                        !self.activity.loading && self.activity.reads.is_empty(),
                         egui::Button::new("Retry"),
                     )
                     .clicked()
@@ -474,7 +540,12 @@ impl crate::CaperApp {
                 .min_scrolled_height((context.content_rect().height() - 240.0).clamp(160.0, 480.0))
                 .max_height((context.content_rect().height() - 200.0).max(160.0))
                 .show(ui, |ui| {
+                    if self.activity.stale {
+                        ui.visuals_mut().disabled_alpha = 0.5;
+                        ui.disable();
+                    }
                     for item in &visible {
+                        let opening = self.activity.opening.as_ref() == Some(&item.id);
                         ui.push_id(&item.id, |ui| {
                             let title = format!(
                                 "{}{}",
@@ -488,7 +559,7 @@ impl crate::CaperApp {
                                     |ui| {
                                         if ui
                                             .add_enabled(
-                                                self.activity.reading.is_none(),
+                                                !opening,
                                                 egui::Button::new(
                                                     egui::RichText::new(title).strong(),
                                                 )
@@ -505,22 +576,15 @@ impl crate::CaperApp {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         if item.unread
-                                            && ui
-                                                .add_enabled_ui(
-                                                    self.activity.reading.is_none(),
-                                                    |ui| {
-                                                        crate::drawn_icon_button(
-                                                            ui,
-                                                            crate::NavIcon::Check,
-                                                            &format!(
-                                                                "Mark notification from {} read",
-                                                                item.actor_name
-                                                            ),
-                                                        )
-                                                    },
-                                                )
-                                                .inner
-                                                .clicked()
+                                            && crate::drawn_icon_button(
+                                                ui,
+                                                crate::NavIcon::Check,
+                                                &format!(
+                                                    "Mark notification from {} read",
+                                                    item.actor_name
+                                                ),
+                                            )
+                                            .clicked()
                                         {
                                             action = Some((item.clone(), false));
                                         }
@@ -554,7 +618,7 @@ impl crate::CaperApp {
                             }
                             if ui
                                 .add_enabled(
-                                    self.activity.reading.is_none(),
+                                    !opening,
                                     egui::Label::new(&item.body).sense(egui::Sense::click()),
                                 )
                                 .clicked()
@@ -652,10 +716,7 @@ impl crate::CaperApp {
                     }
                     if self.activity.cursor.is_some()
                         && ui
-                            .add_enabled(
-                                !self.activity.loading && self.activity.reading.is_none(),
-                                egui::Button::new("Load more"),
-                            )
+                            .add_enabled(!self.activity.loading, egui::Button::new("Load more"))
                             .clicked()
                     {
                         self.load_activity(true);
@@ -711,12 +772,20 @@ impl crate::CaperApp {
         }
         if let Some((item, open)) = action
             && let Some(token) = self.token.clone()
+            && !(open && self.activity.opening.is_some())
         {
             self.unread_revision += 1;
-            self.activity.request += 1;
-            self.activity.loading = false;
-            self.activity.reading = Some(item.id.clone());
+            // A refresh already in flight could bring this row back unread; a filter
+            // reload replacing stale rows keeps going.
+            if !self.activity.stale {
+                self.activity.request += 1;
+                self.activity.loading = false;
+            }
+            if open {
+                self.activity.opening = Some(item.id.clone());
+            }
             self.activity.error = None;
+            self.activity.mark_read(&item);
             self.worker.send(crate::worker::Command::ReadActivity {
                 epoch: self.account_epoch,
                 navigation: self.navigation,
@@ -841,9 +910,13 @@ mod tests {
     }
     #[test]
     fn stale_pages_do_not_replace_current_filter_or_clear_loading() {
+        // A filter change keeps the previous rows (dimmed) until its own page answers.
         let mut inbox = Inbox {
             request: 2,
             loading: true,
+            stale: true,
+            items: vec![item("previous")],
+            cursor: Some("previous".into()),
             ..Default::default()
         };
         inbox.finish(
@@ -855,11 +928,47 @@ mod tests {
                 unread_count: 9,
             }),
         );
-        assert!(inbox.loading);
-        assert!(inbox.cursor.is_none());
+        assert!(inbox.loading && inbox.stale);
+        assert_eq!(inbox.items[0].id, "previous");
+        assert_eq!(inbox.cursor.as_deref(), Some("previous"));
         assert_eq!(inbox.unread_count, 0);
         inbox.finish(2, false, Err("offline".into()));
-        assert!(!inbox.loading);
+        assert!(!inbox.loading && !inbox.stale);
+        assert!(inbox.items.is_empty() && inbox.cursor.is_none());
         assert_eq!(inbox.error.as_deref(), Some("offline"));
+    }
+
+    #[test]
+    fn mark_read_is_optimistic_and_restores_the_row_and_count_on_failure() {
+        let mut inbox = Inbox {
+            shown: true,
+            items: vec![item("a"), item("b"), item("c")],
+            unread_count: 5,
+            ..Default::default()
+        };
+        let (b, c) = (item("b"), item("c"));
+        inbox.mark_read(&b);
+        inbox.mark_read(&c);
+        let ids = |inbox: &Inbox| {
+            inbox
+                .items
+                .iter()
+                .map(|row| row.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&inbox), ["a"]);
+        assert_eq!(inbox.unread_count, 3);
+        assert!(!inbox.due(), "polling waits for reads in flight");
+        assert!(!inbox.read_finished(&b, Err("offline".into())));
+        assert_eq!(ids(&inbox), ["a", "b"]);
+        assert!(inbox.items[1].unread);
+        assert_eq!(inbox.unread_count, 4);
+        assert_eq!(inbox.error.as_deref(), Some("offline"));
+        assert!(inbox.read_finished(&c, Ok(Read { unread_count: 2 })));
+        assert!(inbox.reads.is_empty() && inbox.due());
+        assert_eq!(
+            inbox.unread_count, 2,
+            "the last read takes the server count"
+        );
     }
 }

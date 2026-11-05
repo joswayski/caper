@@ -145,6 +145,12 @@ final class APIClientTests: XCTestCase {
         XCTAssertTrue(success)
         XCTAssertEqual(model.activityItems.map(\.unread), [true, false, true, true])
         XCTAssertEqual(model.activityUnread, 3)
+        MockURLProtocol.handler = { _ in (503, Data(#"{"error":"Offline"}"#.utf8)) }
+        let failed = await model.readActivity(model.activityItems[0])
+        XCTAssertFalse(failed)
+        XCTAssertEqual(model.activityItems.map(\.unread), [true, false, true, true], "A failed read puts the row back")
+        XCTAssertEqual(model.activityUnread, 3)
+        XCTAssertNotNil(model.activityError)
     }
 
     func testDirectRecipientLookupReturnsPersonWithoutCreatingConversation() async throws {

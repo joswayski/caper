@@ -1,5 +1,8 @@
 package chat.caper.android
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -13,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -58,15 +62,15 @@ import kotlinx.coroutines.delay
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     ActivityFilter.entries.forEach { filter ->
                         FilterChip(inbox.filter == filter, { viewModel.filterActivity(filter, inbox.unreadOnly) },
-                            label = { Text(filter.label) }, enabled = inbox.reading == null)
+                            label = { Text(filter.label) })
                     }
                 }
-                Row(Modifier.toggleable(inbox.unreadOnly, enabled = inbox.reading == null, role = Role.Switch) {
+                Row(Modifier.toggleable(inbox.unreadOnly, role = Role.Switch) {
                     viewModel.filterActivity(inbox.filter, it)
                 }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box(Modifier.width(40.dp).height(48.dp), contentAlignment = Alignment.Center) {
                         Switch(inbox.unreadOnly, null, Modifier.wrapContentSize(unbounded = true).scale(0.75f),
-                            enabled = inbox.reading == null, colors = caperSwitchColors())
+                            colors = caperSwitchColors())
                     }
                     Text("Unread only", color = Text)
                     Text("(${inbox.unreadCount})", color = TextMuted)
@@ -74,25 +78,33 @@ import kotlinx.coroutines.delay
                 inbox.error?.let {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(it, Modifier.weight(1f), color = ErrorText, fontSize = 13.sp)
-                        TextButton({ viewModel.loadActivity(poll = true) }, enabled = !inbox.loading && inbox.reading == null) { Text("Retry") }
+                        TextButton({ viewModel.loadActivity(poll = true) }, enabled = !inbox.loading) { Text("Retry") }
                     }
                 }
                 if (inbox.loading && inbox.visibleItems.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if (!inbox.loading && inbox.visibleItems.isEmpty() && inbox.error == null) Text("No notifications match these filters.", color = TextMuted)
-                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // The previous filter's rows stay put until the new page replaces them: dimmed after a beat
+                // (fast replies swap without a flash) and inert. Leaving the stale state is instant.
+                val still = reducedMotion()
+                val dim by animateFloatAsState(if (inbox.stale) 0.5f else 1f, when {
+                    !inbox.stale -> snap()
+                    still -> snap(150)
+                    else -> tween(MOTION_FAST, 150, EaseOut)
+                }, label = "stale")
+                LazyColumn(Modifier.weight(1f).graphicsLayer { alpha = dim }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(inbox.visibleItems, key = { it.id }) { item ->
                         Column(Modifier.fillMaxWidth().background(SurfaceRaised, MaterialTheme.shapes.small).padding(12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("${if (item.unread) "● " else ""}${item.actorName}",
-                                    Modifier.weight(1f).clickable(enabled = inbox.reading == null) {
+                                    Modifier.weight(1f).clickable(enabled = !inbox.stale && inbox.opening != item.id) {
                                         viewModel.readActivity(item, open = true) { shown = false; onOpened() }
                                     }, fontWeight = if (item.unread) FontWeight.Bold else FontWeight.Medium, color = Text, fontSize = 13.sp)
                                 Text(feedbackAge(item.createdAt), color = TextMuted, fontSize = 11.sp)
-                                if (item.unread) IconButton({ viewModel.readActivity(item) }, enabled = inbox.reading == null) {
+                                if (item.unread) IconButton({ viewModel.readActivity(item) }, enabled = !inbox.stale) {
                                     Icon(painterResource(R.drawable.lucide_check), "Mark notification from ${item.actorName} read", Modifier.size(16.dp), tint = TextMuted)
                                 }
                             }
-                            Column(Modifier.fillMaxWidth().clickable(enabled = inbox.reading == null) {
+                            Column(Modifier.fillMaxWidth().clickable(enabled = !inbox.stale && inbox.opening != item.id) {
                                 viewModel.readActivity(item, open = true) { shown = false; onOpened() }
                             }, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 val description = when (item.kind) {
@@ -109,8 +121,8 @@ import kotlinx.coroutines.delay
                             val direct = state.directConversations.firstOrNull { it.id == item.conversationId }
                             val writable = item.canReply && direct?.incoming != true && direct?.blocked != true && direct?.peer?.id !in state.blockedIds
                             if (writable) Row {
-                                TextButton({ viewModel.toggleActivityReply(item) }, Modifier.heightIn(min = 48.dp)) { Text(if (item.id in inbox.expanded) "Close reply" else "Reply", color = TextMuted) }
-                                TextButton({ reacting = item }, Modifier.heightIn(min = 48.dp)) { Text("React", color = TextMuted) }
+                                TextButton({ viewModel.toggleActivityReply(item) }, Modifier.heightIn(min = 48.dp), enabled = !inbox.stale) { Text(if (item.id in inbox.expanded) "Close reply" else "Reply", color = TextMuted) }
+                                TextButton({ reacting = item }, Modifier.heightIn(min = 48.dp), enabled = !inbox.stale) { Text("React", color = TextMuted) }
                             }
                             if (item.id in inbox.expanded) key(item.draftKey, epoch) {
                                 Column(Modifier.entrance(MOTION_FAST, dy = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -121,7 +133,7 @@ import kotlinx.coroutines.delay
                         }
                     }
                     if (inbox.cursor != null) item {
-                        TextButton({ viewModel.loadActivity(more = true) }, enabled = !inbox.loading && inbox.reading == null) { Text("Load more") }
+                        TextButton({ viewModel.loadActivity(more = true) }, enabled = !inbox.loading) { Text("Load more") }
                     }
                 }
             }

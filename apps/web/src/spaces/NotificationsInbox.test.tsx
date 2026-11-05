@@ -287,3 +287,72 @@ test("inline drafts survive collapse and live reads; replies keep their destinat
     vi.restoreAllMocks();
   }
 });
+
+test("filter changes keep rows in place and reads apply before the server answers", async () => {
+  const make = (id: number): InboxItem => ({
+    id: `m:${id}`,
+    kind: "message",
+    actorId: "actor0000001",
+    actorName: `Person ${id}`,
+    avatarId: null,
+    body: `Message ${id}`,
+    createdAt: `2026-11-04T12:00:0${id}Z`,
+    unread: true,
+    spaceId: null,
+    spaceName: null,
+    channelId: null,
+    channelName: null,
+    conversationId: "direct000001",
+    messageId: `message0000${id}`,
+    threadRootId: null,
+    emoji: null,
+  });
+  const rows = [make(2), make(1)];
+  let hold: Promise<void> = Promise.resolve();
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    await hold;
+    if (init?.method === "POST") return Response.json({ unreadCount: 1 });
+    const query = new URL(String(input), "http://localhost").searchParams;
+    return Response.json({
+      items: query.get("unread") === "true" ? rows : [...rows, { ...make(0), unread: false }],
+      nextCursor: null,
+      unreadCount: 2,
+    });
+  });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const previews = () => Array.from(container.querySelectorAll(".inbox-preview"), (node) => node.textContent);
+  const list = () => container.querySelector<HTMLElement>(".inbox-list")!;
+  let release = () => {};
+  const pause = () => (hold = new Promise((resolve) => (release = resolve)));
+  try {
+    await act(async () =>
+      root.render(
+        <NotificationsInbox accountId="self00000001" onClose={() => {}} onCount={() => {}} onOpen={() => {}} />,
+      ),
+    );
+    pause();
+    await act(async () => container.querySelector<HTMLInputElement>('[role="switch"]')!.click());
+    expect(previews()).toEqual(["Message 2", "Message 1"]);
+    expect(list().inert).toBe(true);
+    expect(container.textContent).not.toContain("Loading notifications");
+    await act(async () => release());
+    expect(previews()).toEqual(["Message 2", "Message 1", "Message 0"]);
+    expect(list().inert).toBe(false);
+
+    pause();
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Mark notification from Person 2 read"]')!.click(),
+    );
+    expect(container.querySelector('[aria-label="Mark notification from Person 2 read"]')).toBeNull();
+    expect(container.querySelector(".inbox-toolbar")?.textContent).toContain("(1)");
+    expect(container.querySelectorAll("button:disabled")).toHaveLength(0);
+    await act(async () => release());
+    expect(container.querySelector(".inbox-toolbar")?.textContent).toContain("(1)");
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  }
+});
