@@ -107,6 +107,25 @@ Android needs only port 3001 (API and `/api/chat/events`). The smoke run resets 
 
 Extra fixture controls: `POST /__fixture/control {"messageRequest":{}}` adds an incoming request; `PUT /api/blocks/member000001` blocks Maya; `POST /__fixture/control {"pushPlatforms":["fcm"]}` advertises FCM and `GET /__fixture/push-devices` reads back registrations (the switch needs a fixture APK built with `app/google-services.json`).
 
+## Performance: Baseline Profile and macrobenchmarks
+
+`:benchmark` holds Macrobenchmarks for cold start, opening the 3,000-message `#general`, scrolling back through its history and typing, each run without ahead-of-time compilation (`None`) and with the Baseline Profile (`Partial`). Its `BaselineProfileGenerator` walks the same journey to produce the app's Baseline Profile; `profileinstaller` installs it (and Compose's own profiles) on sideloaded APKs. Cold start reports both first frame and "fully drawn" (`ReportDrawnWhen`: past the brand screen and the first history page).
+
+They run on a physical phone (API 28+; API 33+ to generate the profile without root) against the app's `benchmarkRelease` build: release code and R8, debug-signed, installed beside the shipped app as `chat.caper.android.benchmark`, talking to `http://localhost:3001`.
+
+```bash
+# Terminal 1, from the repository root:
+CAPER_BENCH_MESSAGES=3000 node scripts/native-parity-fixture.mjs
+
+# Terminal 2, with the phone connected (prepare-fonts.sh and prepare-audio.sh first, as for build.sh):
+adb reverse tcp:3001 tcp:3001
+cd apps/native/android
+./gradlew :benchmark:connectedBenchmarkReleaseAndroidTest   # results in benchmark/build/outputs/connected_android_test_additional_output/
+./gradlew :app:generateBaselineProfile                       # writes app/src/release/generated/baselineProfiles/; commit it
+```
+
+Builds never regenerate the profile; regenerate and commit it after large UI changes.
+
 ## Security notes
 
 - Account credentials use `Authorization`; chat capability uses its dedicated header and media capability stays in the media subscription/body. No credential is placed in a URL or log.

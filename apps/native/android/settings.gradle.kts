@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "CaperAndroid"
-include(":app")
+include(":app", ":benchmark")

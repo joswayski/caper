@@ -4,6 +4,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("androidx.baselineprofile")
 }
 
 val firebaseEnabled = file("google-services.json").isFile
@@ -126,6 +127,35 @@ tasks.configureEach {
     }
 }
 
+// The Baseline Profile plugin adds `benchmarkRelease` and `nonMinifiedRelease`: release code for
+// :benchmark to measure and profile, never shipped. They install beside the shipped app as
+// chat.caper.android.benchmark (debug-signed) and talk to the loopback bench fixture over cleartext.
+val benchmarkBuildTypes = setOf("benchmarkRelease", "nonMinifiedRelease")
+androidComponents {
+    finalizeDsl { android ->
+        android.buildTypes.matching { it.name in benchmarkBuildTypes }.configureEach {
+            applicationIdSuffix = ".benchmark"
+            signingConfig = android.signingConfigs.getByName("debug")
+        }
+    }
+    onVariants(selector().all()) { variant ->
+        if (variant.buildType !in benchmarkBuildTypes) return@onVariants
+        variant.buildConfigFields?.put("API_BASE_URL", com.android.build.api.variant.BuildConfigField("String", "\"http://localhost:3001\"", null))
+        // google-services.json lists only the shipped and debug application IDs.
+        variant.buildConfigFields?.put("FIREBASE_ENABLED", com.android.build.api.variant.BuildConfigField("boolean", "false", null))
+        variant.manifestPlaceholders.put("usesCleartextTraffic", "true")
+    }
+}
+tasks.configureEach {
+    if (name.endsWith("GoogleServices") && benchmarkBuildTypes.any { name.contains(it, ignoreCase = true) }) enabled = false
+}
+
+baselineProfile {
+    // Generated on a connected phone (`./gradlew :app:generateBaselineProfile`), then committed
+    // under src/release/generated/baselineProfiles; builds never regenerate it.
+    automaticGenerationDuringBuild = false
+}
+
 if (!releaseSigningAvailable) {
     tasks.configureEach {
         if (name in setOf("assembleRelease", "bundleRelease")) doFirst {
@@ -152,6 +182,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
     implementation("androidx.core:core-ktx:1.17.0")
+    // Installs the Baseline Profile (and Compose's own) on sideloaded APKs; Play does this itself.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+    baselineProfile(project(":benchmark"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")

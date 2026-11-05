@@ -331,6 +331,8 @@ internal data class VoiceJoinIntent(
     val voice by VoiceCallService.state.collectAsStateWithLifecycle()
     val whatsNew by viewModel.whatsNew.state.collectAsStateWithLifecycle()
     var overlay by remember { mutableStateOf<Overlay?>(null) }
+    // Startup's "fully drawn" (macrobenchmarks, Android vitals): past the brand screen and the first history page.
+    androidx.activity.compose.ReportDrawnWhen { state.screen != SessionScreen.Loading && !state.restoring && !state.messagesLoading }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val view = LocalView.current
     val workspaceReady = state.account != null && state.limits != null && !state.restoring &&
