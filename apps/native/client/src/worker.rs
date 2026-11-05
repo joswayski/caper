@@ -997,6 +997,12 @@ pub struct SendFailure {
     pub code: Option<String>,
 }
 
+/// A DM refusal (blocked, or a request not yet accepted) is an ordinary
+/// failure, not lost access to the conversation.
+pub fn dm_refusal(code: Option<&str>) -> bool {
+    matches!(code, Some("dm_blocked" | "dm_not_accepted"))
+}
+
 #[derive(Debug)]
 pub struct LoadError {
     pub message: String,

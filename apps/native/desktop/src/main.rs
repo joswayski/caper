@@ -37,6 +37,7 @@ mod window_state;
 mod worker;
 
 use caper_client::caper_avatar_index;
+use caper_client::reactions::{Reacted, Reactions};
 use caper_client::sign_in::{MAX_RESENDS, clean_sign_in_code, resend_countdown, resend_wait};
 use caper_client::{
     api, attachment_edit, avatar_images, blocking, compress, effects, feedback, gateway, grouping,
@@ -59,6 +60,7 @@ use std::time::{Duration, Instant};
 use voice::{MicrophoneState, Recorded, Voice, VoiceOperation};
 use worker::{
     AccountOperation, AccountResult, AdminOperation, AdminResult, Command, Event, Worker, current,
+    dm_refusal,
 };
 
 /// Arriving messages settle up from this far below (web's `caper-message-in`).
@@ -575,10 +577,6 @@ impl MessageWindow {
 
 /// A block in either direction: a definitive refusal shown in place, never an
 /// expired session or lost access that closes the conversation.
-fn dm_refusal(code: Option<&str>) -> bool {
-    matches!(code, Some("dm_blocked" | "dm_not_accepted"))
-}
-
 fn permanent_send_rejection(status: Option<u16>) -> bool {
     matches!(status, Some(400 | 404 | 409 | 413 | 422))
 }
@@ -1113,14 +1111,6 @@ enum SelfDirectTarget {
     Create(String),
 }
 
-#[derive(Clone)]
-struct PendingReaction {
-    desired: bool,
-    sent: bool,
-    visible: bool,
-    superseded: bool,
-}
-
 /// Who reacted to one message, read at the snapshot's `reactionSeq`.
 struct ReactorCache {
     revision: String,
@@ -1156,36 +1146,6 @@ const REACTOR_CACHE_LIMIT: usize = 256;
 /// Discord-style hover card: large emoji, then the summary.
 const REACTOR_TOOLTIP_WIDTH: f32 = 280.0;
 const REACTOR_TOOLTIP_EMOJI: f32 = 36.0;
-
-fn projected_reactions(
-    reactions: &[model::Reaction],
-    message: &str,
-    author: Option<&str>,
-    pending: &BTreeMap<(String, String), PendingReaction>,
-) -> Vec<model::Reaction> {
-    let mut projected = reactions.to_vec();
-    let Some(author) = author else {
-        return projected;
-    };
-    for ((pending_message, emoji), intent) in pending {
-        if pending_message != message || !intent.visible {
-            continue;
-        }
-        if let Some(reaction) = projected.iter_mut().find(|item| item.emoji == *emoji) {
-            reaction.author_ids.retain(|id| id != author);
-            if intent.desired {
-                reaction.author_ids.push(author.to_owned());
-            }
-        } else if intent.desired {
-            projected.push(model::Reaction {
-                emoji: emoji.clone(),
-                author_ids: vec![author.to_owned()],
-            });
-        }
-    }
-    projected.retain(|reaction| !reaction.author_ids.is_empty());
-    projected
-}
 
 struct CaperApp {
     daily_icon: Option<daily_icon::DailyIcon>,
@@ -1376,8 +1336,7 @@ struct CaperApp {
     reaction_category: usize,
     reaction_search_focus: bool,
     reaction_textures: emoji::Textures,
-    pending_reactions: BTreeMap<(String, String), PendingReaction>,
-    reaction_errors: BTreeMap<String, String>,
+    reactions: Reactions,
     /// Who reacted, by message ID, for reaction chip hover cards.
     reactors: BTreeMap<String, ReactorCache>,
     /// The open **View reactions** window: message ID and selected emoji.
@@ -1755,8 +1714,7 @@ impl CaperApp {
             reaction_category: 0,
             reaction_search_focus: false,
             reaction_textures,
-            pending_reactions: BTreeMap::new(),
-            reaction_errors: BTreeMap::new(),
+            reactions: Reactions::default(),
             reactors: BTreeMap::new(),
             reactors_view: None,
             pending_pins: BTreeSet::new(),
@@ -5052,43 +5010,19 @@ impl CaperApp {
                     self.selected_channel.as_deref(),
                 ) =>
                 {
-                    let key = (message.clone(), emoji.clone());
-                    match result {
-                        Ok(update)
-                            if update.channel_id == channel && update.message_id == message =>
-                        {
+                    match self
+                        .reactions
+                        .reacted(&channel, &message, &emoji, active, result)
+                    {
+                        Reacted::Acknowledged(update) => {
                             if self.timeline.merge_reaction_ack(update).is_err() {
                                 self.reload_channel();
                             }
-                            if self
-                                .pending_reactions
-                                .get(&key)
-                                .is_some_and(|pending| pending.desired == active)
-                            {
-                                self.pending_reactions.remove(&key);
-                            } else if let Some(pending) = self.pending_reactions.get_mut(&key) {
-                                pending.sent = false;
-                            }
                             self.send_next_reaction(&message);
                         }
-                        Ok(_) => self.reload_channel(),
-                        Err(error)
-                            if matches!(error.status, Some(401 | 403 | 404))
-                                && !dm_refusal(error.code.as_deref()) =>
-                        {
-                            self.pending_reactions.remove(&key);
-                            self.clear_channel(&error.message);
-                        }
-                        Err(error) => {
-                            if let Some(pending) = self.pending_reactions.get_mut(&key) {
-                                pending.sent = false;
-                                if !pending.superseded {
-                                    pending.visible = false;
-                                    self.reaction_errors.insert(message.clone(), error.message);
-                                }
-                            }
-                            self.send_next_reaction(&message);
-                        }
+                        Reacted::Reload => self.reload_channel(),
+                        Reacted::ClearChannel(error) => self.clear_channel(&error),
+                        Reacted::Failed => self.send_next_reaction(&message),
                     }
                 }
                 Event::Reactors {
@@ -7567,8 +7501,7 @@ impl CaperApp {
         }
         self.reaction_picker = None;
         self.reactors_view = None;
-        self.pending_reactions.clear();
-        self.reaction_errors.clear();
+        self.reactions.clear();
         self.reactors.clear();
         self.pending_pins.clear();
         self.mutations = model::MessageMutations::default();
@@ -8346,8 +8279,7 @@ impl CaperApp {
         }
         self.reaction_picker = None;
         self.reactors_view = None;
-        self.pending_reactions.clear();
-        self.reaction_errors.clear();
+        self.reactions.clear();
         self.reactors.clear();
         self.pending_pins.clear();
         self.mutations = model::MessageMutations::default();
@@ -18571,12 +18503,8 @@ impl CaperApp {
         let reactions = if deleted {
             Vec::new()
         } else {
-            projected_reactions(
-                &message.reactions,
-                &message.id,
-                author.as_deref(),
-                &self.pending_reactions,
-            )
+            self.reactions
+                .projected(&message.reactions, &message.id, author.as_deref())
         };
         if let Some(token) = self.token.clone() {
             // Hover only: sensing clicks here, above the row, would swallow
@@ -19350,23 +19278,17 @@ impl CaperApp {
                         self.open_thread(message.id.clone());
                     }
                 }
-                if let Some(error) = self.reaction_errors.get(&message.id).cloned() {
+                if let Some(error) = self.reactions.error(&message.id).map(str::to_owned) {
                     ui.horizontal(|ui| {
                         ui.colored_label(ERROR, error);
                         if can_react
                             && ui.small_button("Retry").clicked()
-                            && let Some(((message, emoji), pending)) = self
-                                .pending_reactions
-                                .iter()
-                                .find(|((id, _), pending)| id == &message.id && !pending.visible)
-                                .map(|(key, value)| (key.clone(), value.clone()))
+                            && let Some((emoji, desired)) = self.reactions.retry(&message.id)
                         {
-                            self.set_reaction(&message, &emoji, pending.desired);
+                            self.set_reaction(&message.id, &emoji, desired);
                         }
                         if ui.small_button("Dismiss").clicked() {
-                            self.reaction_errors.remove(&message.id);
-                            self.pending_reactions
-                                .retain(|(id, _), pending| id != &message.id || pending.visible);
+                            self.reactions.dismiss(&message.id);
                         }
                     });
                 }
@@ -21047,12 +20969,9 @@ impl CaperApp {
             .session
             .as_ref()
             .map(|session| session.author.id.clone());
-        let reactions = projected_reactions(
-            &message.reactions,
-            &message.id,
-            author.as_deref(),
-            &self.pending_reactions,
-        );
+        let reactions =
+            self.reactions
+                .projected(&message.reactions, &message.id, author.as_deref());
         let Some(current) = reactions
             .iter()
             .find(|reaction| reaction.emoji == selected)
@@ -21236,23 +21155,7 @@ impl CaperApp {
         if self.session.is_none() || self.selected_channel.is_none() {
             return;
         }
-        let key = (message.to_owned(), emoji.to_owned());
-        self.reaction_errors.remove(message);
-        if let Some(pending) = self.pending_reactions.get_mut(&key) {
-            pending.desired = active;
-            pending.visible = true;
-            pending.superseded = pending.sent;
-        } else {
-            self.pending_reactions.insert(
-                key,
-                PendingReaction {
-                    desired: active,
-                    sent: false,
-                    visible: true,
-                    superseded: false,
-                },
-            );
-        }
+        self.reactions.set(message, emoji, active);
         self.send_next_reaction(message);
     }
 
@@ -21287,35 +21190,21 @@ impl CaperApp {
     }
 
     fn send_next_reaction(&mut self, message: &str) {
-        if self
-            .pending_reactions
-            .iter()
-            .any(|((id, _), pending)| id == message && pending.sent)
-        {
-            return;
-        }
-        let Some((key, active)) = self.pending_reactions.iter().find_map(|(key, pending)| {
-            (key.0 == message && pending.visible && !pending.sent)
-                .then(|| (key.clone(), pending.desired))
-        }) else {
-            return;
-        };
         let (Some(session), Some(channel)) = (&self.session, &self.selected_channel) else {
             return;
         };
-        let chat_token = session.token.clone();
-        let channel = channel.clone();
-        let pending = self.pending_reactions.get_mut(&key).unwrap();
-        pending.sent = true;
-        pending.superseded = false;
+        let (chat_token, channel) = (session.token.clone(), channel.clone());
+        let Some(next) = self.reactions.next(message) else {
+            return;
+        };
         self.worker.send(Command::React {
             generation: self.generation,
             token: self.token.clone(),
             chat_token,
             channel,
-            message: key.0,
-            emoji: key.1,
-            active,
+            message: next.message,
+            emoji: next.emoji,
+            active: next.active,
         });
     }
 
@@ -33810,11 +33699,10 @@ fn main() -> eframe::Result {
 mod tests {
     use super::{
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, DELETE_ACCOUNT_URL, Dialog,
-        GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend,
-        Phase, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT, display_time,
-        endpoint, media, message_runs, normalize_channel, permanent_send_rejection, pill_rects,
-        projected_reactions, redundant_invitation, short_time, take_date_divider, timestamp_parts,
-        voice,
+        GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingSend, Phase,
+        RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT, display_time, endpoint,
+        media, message_runs, normalize_channel, permanent_send_rejection, pill_rects,
+        redundant_invitation, short_time, take_date_divider, timestamp_parts, voice,
     };
     use crate::TestPass as _;
     use crate::{mentions, navigation, uploads, voice_note, whats_new, worker};
@@ -33858,80 +33746,6 @@ mod tests {
     };
 
     #[test]
-    fn pending_reactions_project_own_membership_over_latest_authoritative_counts() {
-        let mut pending = std::collections::BTreeMap::new();
-        pending.insert(
-            ("message".into(), "👍".into()),
-            PendingReaction {
-                desired: false,
-                sent: true,
-                visible: true,
-                superseded: false,
-            },
-        );
-        pending.insert(
-            ("message".into(), "🎉".into()),
-            PendingReaction {
-                desired: true,
-                sent: false,
-                visible: true,
-                superseded: false,
-            },
-        );
-        let authoritative = vec![
-            model::Reaction {
-                emoji: "👍".into(),
-                author_ids: vec!["me".into(), "other".into(), "gateway".into()],
-            },
-            model::Reaction {
-                emoji: "🎉".into(),
-                author_ids: vec!["other".into()],
-            },
-        ];
-
-        let projected = projected_reactions(&authoritative, "message", Some("me"), &pending);
-
-        assert_eq!(
-            authoritative[0].author_ids.len(),
-            3,
-            "source stays authoritative"
-        );
-        assert_eq!(projected[0].author_ids, ["other", "gateway"]);
-        assert_eq!(projected[1].author_ids, ["other", "me"]);
-
-        let only_me = vec![model::Reaction {
-            emoji: "👍".into(),
-            author_ids: vec!["me".into()],
-        }];
-        assert!(
-            projected_reactions(&only_me, "message", Some("me"), &pending)
-                .iter()
-                .all(|reaction| reaction.emoji != "👍")
-        );
-    }
-
-    #[test]
-    fn failed_reaction_overlay_rolls_back_without_hiding_other_authors() {
-        let pending = std::collections::BTreeMap::from([(
-            ("message".into(), "👍".into()),
-            PendingReaction {
-                desired: false,
-                sent: false,
-                visible: false,
-                superseded: false,
-            },
-        )]);
-        let authoritative = vec![model::Reaction {
-            emoji: "👍".into(),
-            author_ids: vec!["me".into(), "other".into()],
-        }];
-        assert_eq!(
-            projected_reactions(&authoritative, "message", Some("me"), &pending),
-            authoritative
-        );
-    }
-
-    #[test]
     fn rapid_reaction_failure_retries_latest_intent_and_keeps_other_emoji_moving() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -33947,7 +33761,7 @@ mod tests {
         app.set_reaction(&message.id, "👀", true);
         app.set_reaction(&message.id, "👀", false);
         app.set_reaction(&message.id, "👀", true);
-        assert!(app.pending_reactions[&key].superseded);
+        assert!(app.reactions.pending[&key].superseded);
         let fail = || crate::worker::Event::Reacted {
             generation: app.generation,
             channel: channel.clone(),
@@ -33963,12 +33777,12 @@ mod tests {
         events.send(fail()).unwrap();
         app.receive();
         assert!(
-            app.pending_reactions[&key].sent,
+            app.reactions.pending[&key].sent,
             "latest intent automatically follows superseded failure"
         );
-        assert!(app.pending_reactions[&key].visible);
-        assert!(!app.pending_reactions[&key].superseded);
-        assert!(!app.reaction_errors.contains_key(&message.id));
+        assert!(app.reactions.pending[&key].visible);
+        assert!(!app.reactions.pending[&key].superseded);
+        assert!(!app.reactions.errors.contains_key(&message.id));
 
         app.set_reaction(&message.id, "🎉", true);
         events
@@ -33987,14 +33801,14 @@ mod tests {
             .unwrap();
         app.receive();
         assert!(
-            !app.pending_reactions[&key].visible,
+            !app.reactions.pending[&key].visible,
             "current failure rolls back"
         );
         assert!(
-            app.pending_reactions[&(message.id.clone(), "🎉".into())].sent,
+            app.reactions.pending[&(message.id.clone(), "🎉".into())].sent,
             "failure cannot block another emoji"
         );
-        assert!(app.reaction_errors.contains_key(&message.id));
+        assert!(app.reactions.errors.contains_key(&message.id));
         events
             .send(crate::worker::Event::Reacted {
                 generation: app.generation,
@@ -34014,7 +33828,7 @@ mod tests {
             .unwrap();
         app.receive();
         assert!(
-            app.reaction_errors.contains_key(&message.id),
+            app.reactions.errors.contains_key(&message.id),
             "another emoji's success cannot hide the failure"
         );
         let output = render(&mut app, &context, vec![]);
@@ -39180,16 +38994,17 @@ mod tests {
         assert!(!app.needs_first_space());
         app.draft = "private draft".into();
         app.pending = Some(PendingSend::prepare(None, "private draft", Vec::new()));
-        app.pending_reactions.insert(
+        app.reactions.pending.insert(
             ("message".into(), "👍".into()),
-            PendingReaction {
+            caper_client::reactions::PendingReaction {
                 desired: true,
                 sent: true,
                 visible: true,
                 superseded: false,
             },
         );
-        app.reaction_errors
+        app.reactions
+            .errors
             .insert("message".into(), "failed".into());
         assert!(app.timeline.messages().next().is_some());
         app.select_channel("next".into(), false);
@@ -39204,8 +39019,8 @@ mod tests {
         assert!(app.timeline.messages().next().is_none());
         assert!(app.draft.is_empty());
         assert!(app.pending.is_none());
-        assert!(app.pending_reactions.is_empty());
-        assert!(app.reaction_errors.is_empty());
+        assert!(app.reactions.pending.is_empty());
+        assert!(app.reactions.errors.is_empty());
         app.accept_navigation(
             stale_generation,
             app.navigation,
@@ -39474,7 +39289,7 @@ mod tests {
         assert_eq!(app.reaction_picker.as_deref(), Some(message.id.as_str()));
         assert!(app.reaction_search.is_empty());
         assert_eq!(app.reaction_category, 0);
-        assert!(app.pending_reactions.is_empty(), "opening does not react");
+        assert!(app.reactions.pending.is_empty(), "opening does not react");
         render(&mut app, &context, vec![]);
         let picker = app.emoji_picker_rect.expect("reaction picker drawn");
         assert!(
@@ -39510,21 +39325,22 @@ mod tests {
             .joined = false;
         let message = app.timeline.messages().nth(1).unwrap().id.clone();
         let key = (message.clone(), "👍".to_owned());
-        app.pending_reactions.insert(
+        app.reactions.pending.insert(
             key.clone(),
-            PendingReaction {
+            caper_client::reactions::PendingReaction {
                 desired: true,
                 sent: false,
                 visible: true,
                 superseded: false,
             },
         );
-        app.reaction_errors
+        app.reactions
+            .errors
             .insert(message.clone(), "Try again".into());
         app.reaction_picker = Some(message.clone());
 
         app.set_reaction(&message, "👍", false);
-        assert!(app.pending_reactions[&key].desired);
+        assert!(app.reactions.pending[&key].desired);
         let output = render(&mut app, &context, vec![]);
         let labels: Vec<_> = output
             .shapes
@@ -39640,7 +39456,7 @@ mod tests {
             texts(&output)
         );
         click(&mut app, &context, chip);
-        assert!(app.pending_reactions.is_empty(), "previews cannot react");
+        assert!(app.reactions.pending.is_empty(), "previews cannot react");
         // As on web, the hover bar keeps Add reaction, disabled.
         context.enable_accesskit();
         let output = timed_frame(
@@ -39708,7 +39524,8 @@ mod tests {
         click(&mut app, &context, chip);
         let key = (message.id.clone(), "👍".to_owned());
         assert!(
-            app.pending_reactions
+            app.reactions
+                .pending
                 .get(&key)
                 .is_some_and(|pending| !pending.desired),
             "clicking removes your reaction exactly as before"
@@ -43211,14 +43028,14 @@ mod tests {
         let quick = more - egui::vec2(6.0 * 24.0, 0.0);
         click(&mut app, &context, quick);
         assert!(
-            !app.pending_reactions[&(message.id.clone(), "👍".into())].desired,
+            !app.reactions.pending[&(message.id.clone(), "👍".into())].desired,
             "your 👍 toggles off"
         );
         let output = render(&mut app, &context, vec![]);
         assert!(!shows(&output, "Copy text"), "quick reactions need no menu");
 
         click(&mut app, &context, quick + egui::vec2(24.0, 0.0));
-        assert!(app.pending_reactions[&(message.id.clone(), "❤️".into())].desired);
+        assert!(app.reactions.pending[&(message.id.clone(), "❤️".into())].desired);
 
         click(&mut app, &context, more);
         let output = render(&mut app, &context, vec![]);
