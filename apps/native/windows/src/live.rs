@@ -79,6 +79,15 @@ pub enum Update {
     /// A new message, or the latest state of a shown one (its reactions,
     /// text or deletion changed), whose row is then rebuilt.
     Message(Box<core::Message>),
+    /// The reply to edit (or reload) request `request`: the message's new
+    /// copy, or why it failed.
+    Edited {
+        request: u64,
+        reloaded: bool,
+        result: Result<Box<core::Message>, String>,
+    },
+    /// The reply to delete request `request`: None once deleted.
+    Deleted(u64, Option<String>),
     /// Online account ids in the open space.
     Presence(HashSet<String>),
     /// The gateway's state while not live ("Connecting…"); None once live.
@@ -176,6 +185,14 @@ pub struct Live {
     pub reactions: Reactions,
     /// Updates made on the UI thread (a reaction toggled), drained first.
     queued: Vec<Update>,
+    /// Your edits and pin changes awaiting their reply, drawn over the
+    /// server's copy (the core's projection, as in the egui client).
+    mutations: core::MessageMutations,
+    pending_pins: HashSet<String>,
+    /// The last edit or delete request, so only its reply reaches a dialog.
+    request: u64,
+    /// The signed-in chat author (pins you make carry it).
+    author: Option<core::Author>,
 }
 
 /// Starts the worker and restores the stored session; `None` without
@@ -211,6 +228,10 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         timeline: core::Timeline::default(),
         reactions: Reactions::default(),
         queued: Vec::new(),
+        mutations: core::MessageMutations::default(),
+        pending_pins: HashSet::new(),
+        request: 0,
+        author: None,
     })
 }
 
@@ -338,7 +359,7 @@ impl Live {
     /// A message as the viewer sees it: your pending reactions drawn over
     /// the server's counts.
     fn shown(&self, m: &core::Message) -> core::Message {
-        let mut m = m.clone();
+        let mut m = self.mutations.project(m).into_owned();
         m.reactions = self
             .reactions
             .projected(&m.reactions, &m.id, self.me.as_deref());
@@ -362,6 +383,111 @@ impl Live {
         self.reactions.set(id, emoji, active);
         self.send_next_reaction(id);
         self.republish(id);
+    }
+
+    /// A shown message as the server last sent it, by id.
+    pub fn message(&self, id: &str) -> Option<core::Message> {
+        self.timeline.messages().find(|m| m.id == id).cloned()
+    }
+
+    /// The signed-in, non-guest author of `m` may delete it (and edit it,
+    /// unless it is a forward), as in the egui client.
+    pub fn can_delete(&self, m: &core::Message) -> bool {
+        !m.is_deleted()
+            && self.chat_token.is_some()
+            && self
+                .author
+                .as_ref()
+                .is_some_and(|a| !a.is_guest && a.id == m.author.id)
+    }
+
+    pub fn can_edit(&self, m: &core::Message) -> bool {
+        m.forward.is_none() && self.can_delete(m)
+    }
+
+    pub fn can_pin(&self, m: &core::Message) -> bool {
+        !m.is_deleted() && self.chat_token.is_some()
+    }
+
+    pub fn pin_pending(&self, id: &str) -> bool {
+        self.pending_pins.contains(id)
+    }
+
+    /// Saves `text` as the new content of `original`; returns the request
+    /// its reply carries. The new text shows at once.
+    pub fn edit(&mut self, original: &core::Message, text: String) -> u64 {
+        self.request += 1;
+        let (Some(chat_token), Some(_)) = (&self.chat_token, &self.channel) else {
+            return self.request;
+        };
+        self.mutations
+            .edits
+            .insert(original.id.clone(), (text.clone(), original.revision));
+        self.worker.send(Command::EditMessage {
+            generation: self.generation,
+            request: self.request,
+            token: self.token.clone(),
+            chat_token: chat_token.clone(),
+            original: Box::new(original.clone()),
+            text,
+        });
+        self.republish(&original.id);
+        self.request
+    }
+
+    /// "Discard draft and load latest": reloads `original` from the server.
+    pub fn reload_message(&mut self, original: &core::Message) -> u64 {
+        self.request += 1;
+        self.worker.send(Command::ReloadMessage {
+            generation: self.generation,
+            request: self.request,
+            token: self.token.clone(),
+            channel: original.channel_id.clone(),
+            message: original.id.clone(),
+        });
+        self.request
+    }
+
+    pub fn delete(&mut self, m: &core::Message) -> u64 {
+        self.request += 1;
+        if let Some(chat_token) = &self.chat_token {
+            self.worker.send(Command::DeleteMessage {
+                generation: self.generation,
+                request: self.request,
+                token: self.token.clone(),
+                chat_token: chat_token.clone(),
+                channel: m.channel_id.clone(),
+                message: m.id.clone(),
+            });
+        }
+        self.request
+    }
+
+    /// Pins or unpins `m`, shown at once.
+    pub fn pin(&mut self, m: &core::Message, active: bool) {
+        let (Some(chat_token), Some(channel), Some(author)) =
+            (&self.chat_token, &self.channel, &self.author)
+        else {
+            return;
+        };
+        if self.pending_pins.contains(&m.id) || m.channel_id != *channel {
+            return;
+        }
+        let pin = active.then(|| core::Pin {
+            author: author.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        });
+        self.mutations.pins.insert(m.id.clone(), (m.clone(), pin));
+        self.pending_pins.insert(m.id.clone());
+        self.worker.send(Command::Pin {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token: chat_token.clone(),
+            channel: channel.clone(),
+            message: m.id.clone(),
+            active,
+        });
+        self.republish(&m.id);
     }
 
     /// Retry under a failed reaction.
@@ -466,6 +592,8 @@ impl Live {
                         return;
                     };
                     self.reactions.clear();
+                    self.mutations = core::MessageMutations::default();
+                    self.pending_pins.clear();
                     let mut timeline = core::Timeline::default();
                     if let Err(e) = timeline.reset(history.messages, &history.cursor) {
                         out.push(Update::Failed(e));
@@ -474,7 +602,8 @@ impl Live {
                     match session {
                         Ok(s) => {
                             self.chat_token = Some(s.token);
-                            self.me = Some(s.author.id);
+                            self.me = Some(s.author.id.clone());
+                            self.author = Some(s.author);
                         }
                         Err(e) => out.push(Update::Failed(e)),
                     }
@@ -551,6 +680,72 @@ impl Live {
                         self.reload();
                     }
                     Reacted::Failed => self.send_next_reaction(&message),
+                }
+                self.republish(&message);
+                out.append(&mut self.queued);
+            }
+            Event::EditSnapshot {
+                generation,
+                request,
+                channel,
+                message,
+                reloaded,
+                result,
+            } if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                self.mutations.edits.remove(&message);
+                if let Ok(snapshot) = &result
+                    && self.timeline.merge_edit_ack((**snapshot).clone()).is_err()
+                {
+                    self.reload();
+                }
+                self.republish(&message);
+                out.append(&mut self.queued);
+                out.push(Update::Edited {
+                    request,
+                    reloaded,
+                    result,
+                });
+            }
+            Event::Deleted {
+                generation,
+                request,
+                channel,
+                message,
+                result,
+            } if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                if let Ok(tombstone) = &result
+                    && self.timeline.merge_edit_ack((**tombstone).clone()).is_err()
+                {
+                    self.reload();
+                }
+                self.republish(&message);
+                out.append(&mut self.queued);
+                out.push(Update::Deleted(request, result.err()));
+            }
+            Event::Pinned {
+                generation,
+                channel,
+                message,
+                result,
+                ..
+            } if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                self.pending_pins.remove(&message);
+                self.mutations.pins.remove(&message);
+                match result {
+                    Ok(update) if update.channel_id == channel && update.message.id == message => {
+                        if self.timeline.merge_pin_ack(update).is_err() {
+                            self.reload();
+                        }
+                    }
+                    Ok(_) => self.reload(),
+                    Err(error) => {
+                        out.push(Update::Failed(error.message));
+                        if matches!(error.status, Some(401 | 403 | 404))
+                            && !caper_client::worker::dm_refusal(error.code.as_deref())
+                        {
+                            self.reload();
+                        }
+                    }
                 }
                 self.republish(&message);
                 out.append(&mut self.queued);

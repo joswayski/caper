@@ -103,6 +103,10 @@ pub struct Formats {
     /// A thread root's "N replies" and "View thread".
     pub thread_count: IDWriteTextFormat,
     pub thread_view: IDWriteTextFormat,
+    /// Dialogs: the title, the edit dialog's note and button labels.
+    pub dialog_title: IDWriteTextFormat,
+    pub dialog_note: IDWriteTextFormat,
+    pub button: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -250,6 +254,9 @@ impl Gfx {
                 quote_initials: centered(7.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 thread_count: fmt(12.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 thread_view: fmt(12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                dialog_title: fmt(18.4, DWRITE_FONT_WEIGHT_BOLD)?,
+                dialog_note: fmt(12.8, DWRITE_FONT_WEIGHT_NORMAL)?,
+                button: fmt(12.0, DWRITE_FONT_WEIGHT_BOLD)?,
             };
             let f = &formats;
             for f in [

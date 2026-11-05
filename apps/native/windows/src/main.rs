@@ -16,6 +16,7 @@
 mod bench;
 mod composer;
 mod emoji;
+mod overlay;
 // The message grammar every client shares.
 #[allow(dead_code)]
 #[path = "../../../../shared/messages/formatting.rs"]
@@ -64,13 +65,13 @@ use windows_numerics::Matrix3x2;
 /// Pixel row of the anchor (bottom of the startup history) in the virtual surface.
 const ORIGIN: f64 = 4_000_000.0;
 const VS_H: u32 = 1 << 23;
-const EV_TEXT: u8 = 1;
-const EV_FOCUS: u8 = 2;
+pub(crate) const EV_TEXT: u8 = 1;
+pub(crate) const EV_FOCUS: u8 = 2;
 const EV_ROWS: u8 = 4;
 /// The sign-in screen appeared, changed step or went away.
-const EV_SCREEN: u8 = 8;
+pub(crate) const EV_SCREEN: u8 = 8;
 const TIMER_BENCH: usize = 1;
-const TIMER_CARET: usize = 2;
+pub(crate) const TIMER_CARET: usize = 2;
 const TIMER_LIVE: usize = 3;
 /// The sign-in screen's spinner and resend countdown.
 const TIMER_SIGNIN: usize = 4;
@@ -97,6 +98,8 @@ struct Dirty {
     composer: bool,
     toolbar: bool,
     signin: bool,
+    /// The message menu or a dialog.
+    overlay: bool,
 }
 
 impl Dirty {
@@ -110,6 +113,7 @@ impl Dirty {
             composer: true,
             toolbar: true,
             signin: true,
+            overlay: true,
         }
     }
 }
@@ -215,6 +219,11 @@ pub struct App {
     /// Unsent composer text of channels not on screen, by channel id.
     drafts: std::collections::HashMap<String, Vec<u16>>,
     signin_p: Panel,
+    /// The open message menu and dialog, over the conversation.
+    pub menu: Option<overlay::Menu>,
+    pub dialog: Option<overlay::Dialog>,
+    menu_p: Panel,
+    dialog_p: Panel,
     quit: bool,
 }
 
@@ -243,6 +252,8 @@ impl App {
             let composer_p = Panel::new(&g)?;
             let toolbar = Panel::new(&g)?;
             let signin_p = Panel::new(&g)?;
+            let menu_p = Panel::new(&g)?;
+            let dialog_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
             let content = g.visual()?;
             let vs = g.dcomp.CreateVirtualSurface(
@@ -267,7 +278,9 @@ impl App {
                 root.AddVisual(v, true, &prev)?;
                 prev = v.cast()?;
             }
-            root.AddVisual(&signin_p.visual, true, &prev)?;
+            root.AddVisual(&menu_p.visual, true, &prev)?;
+            root.AddVisual(&dialog_p.visual, true, &menu_p.visual)?;
+            root.AddVisual(&signin_p.visual, true, &dialog_p.visual)?;
             let (channel_layouts, member_layouts) = side_layouts(&g, &c)?;
             let n = c.messages.len();
             let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
@@ -324,6 +337,10 @@ impl App {
                 signin: None,
                 drafts: Default::default(),
                 signin_p,
+                menu: None,
+                dialog: None,
+                menu_p,
+                dialog_p,
                 quit: false,
             })
         }
@@ -471,6 +488,12 @@ impl App {
                     self.rows.append(&self.g, &self.c)?;
                     self.need = true;
                 }
+                live::Update::Edited {
+                    request,
+                    reloaded,
+                    result,
+                } => self.edited(request, reloaded, result),
+                live::Update::Deleted(request, error) => self.deleted(request, error),
                 live::Update::Presence(online) => {
                     self.c.presence = true;
                     for (person, id) in self.c.members.iter_mut().zip(&self.ids.members) {
@@ -576,6 +599,11 @@ impl App {
             MEMBERS_W - 16.0,
             MEMBER_H,
         )
+    }
+
+    /// The space a row's date divider takes above it.
+    pub fn row_lead(&self, i: usize) -> f32 {
+        self.rows.row(i).map_or(0.0, |r| r.lead)
     }
 
     pub fn row_rect(&self, i: usize) -> (f32, f32, f32, f32) {
@@ -734,6 +762,9 @@ impl App {
 
     /// The focused text field and its text origin (client DIPs).
     pub fn focused_field(&self) -> Option<(&Composer, (f32, f32))> {
+        if let Some(d) = &self.dialog {
+            return d.field.focused.then(|| (&d.field, d.text_origin()));
+        }
         if let Some(s) = &self.signin {
             return s.field().focused.then(|| (s.field(), s.field_origin));
         }
@@ -743,6 +774,9 @@ impl App {
     }
 
     fn focused_field_mut(&mut self) -> Option<&mut Composer> {
+        if let Some(d) = &mut self.dialog {
+            return Some(&mut d.field).filter(|f| f.focused && d.kind == overlay::Kind::Edit);
+        }
         if let Some(s) = &mut self.signin {
             return Some(s.field_mut()).filter(|f| f.focused);
         }
@@ -751,7 +785,9 @@ impl App {
 
     /// After an edit or caret move in the focused field.
     fn field_changed(&mut self, text: bool) {
-        if self.signin.is_some() {
+        if self.dialog.is_some() {
+            self.dialog_changed();
+        } else if self.signin.is_some() {
             self.signin_changed(text);
         } else {
             self.composer_changed();
@@ -911,6 +947,15 @@ impl App {
         if !self.in_history(x, y) {
             return None;
         }
+        // The toolbar reaches above its row: it keeps that row hovered.
+        if let Some((i, (tx, ty, tw, th))) = self.toolbar_rect()
+            && x >= tx
+            && x < tx + tw
+            && y >= ty
+            && y < ty + th
+        {
+            return Some(i);
+        }
         self.rows.row_at(self.scroll_top + (y - HEADER_H) as f64)
     }
 
@@ -949,6 +994,9 @@ impl App {
         {
             return r;
         }
+        if let Some(r) = self.overlay_input(msg, wp, x, y, ctrl, shift) {
+            return r;
+        }
         match msg {
             WM_SIZE => {
                 let (pw, ph) = ((lp.0 & 0xffff) as f32, ((lp.0 >> 16) & 0xffff) as f32);
@@ -957,6 +1005,8 @@ impl App {
                     self.h = ph / self.scale;
                     self.dirty.layout = true;
                     self.dirty.signin = true;
+                    self.close_menu();
+                    self.dialog_changed();
                     self.need = true;
                 }
             }
@@ -970,7 +1020,9 @@ impl App {
                     if let Some(f) = self.focused_field_mut() {
                         f.caret_on = !f.caret_on;
                     }
-                    if self.signin.is_some() {
+                    if self.dialog.is_some() {
+                        self.dirty.overlay = true;
+                    } else if self.signin.is_some() {
                         self.dirty.signin = true;
                     } else {
                         self.dirty.composer = true;
@@ -1026,7 +1078,9 @@ impl App {
                     self.composer_changed();
                 } else {
                     self.set_composer_focus(false);
-                    if let Some((i, action)) = self.action_at(x, y) {
+                    if let Some(i) = self.more_at(x, y) {
+                        self.open_menu(i);
+                    } else if let Some((i, action)) = self.action_at(x, y) {
                         self.row_action(i, action);
                     } else if self.in_history(x, y) {
                         if let Some(h) = self.msg_hit(x, y) {
@@ -1093,7 +1147,9 @@ impl App {
                 let hand = self.hover_channel.is_some()
                     || self.hover_space.is_some()
                     || self.pointer.is_some_and(|(x, y)| {
-                        self.link_at(x, y).is_some() || self.action_at(x, y).is_some()
+                        self.link_at(x, y).is_some()
+                            || self.action_at(x, y).is_some()
+                            || self.more_at(x, y).is_some()
                     });
                 unsafe {
                     SetCursor(
@@ -1733,7 +1789,8 @@ impl App {
         match self.hover_row {
             Some(i) => self.toolbar.offset(
                 ((self.list_w() - TOOLBAR.0 - 16.0) * self.scale).round(),
-                (((self.rows.top[i] - self.scroll_top) as f32 - 12.0).max(0.0) * self.scale)
+                (((self.rows.top[i] - self.scroll_top) as f32 + self.row_lead(i) - 12.0).max(0.0)
+                    * self.scale)
                     .round(),
             )?,
             None => self.toolbar.offset(-10_000.0, 0.0)?,
@@ -2016,6 +2073,8 @@ impl App {
             self.apply_layout()?;
         }
         self.update_history()?;
+        // Before the panels, which take the rest of the damage flags.
+        self.draw_overlays()?;
         self.draw_panels()?;
         unsafe { self.g.dcomp.Commit()? };
         if let Some(live) = &self.live {

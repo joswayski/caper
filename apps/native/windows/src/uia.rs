@@ -9,6 +9,7 @@
 //! plain text: screen readers can read it by character, word and line, find
 //! its bounds and select in it (the selection is the history's selection).
 use crate::list::Action;
+use crate::overlay::{Kind, Part as DPart};
 use crate::signin::Part;
 use crate::{App, composer::Composer, gfx};
 use std::cell::Cell;
@@ -37,6 +38,11 @@ pub enum Id {
     Composer,
     /// A part of the sign-in form, which replaces the tree while shown.
     Sign(Part),
+    /// The open message menu and its items.
+    Menu,
+    MenuItem(usize),
+    /// A part of the open dialog, which replaces the tree while shown.
+    Dialog(DPart),
 }
 
 fn na() -> Error {
@@ -49,13 +55,17 @@ fn with<R>(f: impl FnOnce(&mut App) -> Result<R>) -> Result<R> {
 
 /// The editable field behind a node: the sign-in field or the composer.
 fn field(a: &App, id: Id) -> &Composer {
-    match (id, &a.signin) {
-        (Id::Sign(_), Some(s)) => s.field(),
+    match (id, &a.signin, &a.dialog) {
+        (Id::Dialog(_), _, Some(d)) => &d.field,
+        (Id::Sign(_), Some(s), _) => s.field(),
         _ => &a.composer,
     }
 }
 
 fn field_mut(a: &mut App, id: Id) -> &mut Composer {
+    if let (Id::Dialog(_), Some(d)) = (id, &mut a.dialog) {
+        return &mut d.field;
+    }
     match (id, &mut a.signin) {
         (Id::Sign(_), Some(s)) => s.field_mut(),
         _ => &mut a.composer,
@@ -63,7 +73,9 @@ fn field_mut(a: &mut App, id: Id) -> &mut Composer {
 }
 
 fn field_changed(a: &mut App, id: Id, text: bool) {
-    if matches!(id, Id::Sign(_)) {
+    if matches!(id, Id::Dialog(_)) {
+        a.dialog_changed();
+    } else if matches!(id, Id::Sign(_)) {
         a.signin_changed(text);
     } else {
         a.composer_changed();
@@ -72,6 +84,9 @@ fn field_changed(a: &mut App, id: Id, text: bool) {
 
 /// The node of the focused text field, while one is focused.
 fn focused(a: &App) -> Option<Id> {
+    if let Some(d) = &a.dialog {
+        return d.field.focused.then_some(Id::Dialog(DPart::Field));
+    }
     match &a.signin {
         Some(s) => s.field().focused.then_some(Id::Sign(Part::Field)),
         None => a.composer.focused.then_some(Id::Composer),
@@ -82,6 +97,9 @@ fn children(a: &App, id: Id) -> Vec<Id> {
     if let (Id::Root, Some(s)) = (id, &a.signin) {
         return s.parts().map(Id::Sign).collect();
     }
+    if let (Id::Root, Some(d)) = (id, &a.dialog) {
+        return d.parts().map(Id::Dialog).collect();
+    }
     match id {
         Id::Root => vec![
             Id::Rail,
@@ -89,7 +107,14 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             Id::History,
             Id::Composer,
             Id::Members,
-        ],
+        ]
+        .into_iter()
+        .chain(a.menu.as_ref().map(|_| Id::Menu))
+        .collect(),
+        Id::Menu => a
+            .menu
+            .as_ref()
+            .map_or_else(Vec::new, |m| (0..m.items.len()).map(Id::MenuItem).collect()),
         Id::Rail => (0..a.c.spaces.len()).map(Id::Space).collect(),
         Id::Channels => (0..a.c.channels.len()).map(Id::Channel).collect(),
         Id::History => a.visible_rows().map(Id::Row).collect(),
@@ -110,6 +135,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Channel(_) => Id::Channels,
         Id::Row(_) => Id::History,
         Id::Control(i, _) => Id::Row(i),
+        Id::MenuItem(_) => Id::Menu,
         Id::Member(_) => Id::Members,
         _ => Id::Root,
     })
@@ -125,7 +151,10 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Member(i) => i < a.c.members.len(),
         Id::Space(i) => i < a.c.spaces.len(),
         Id::Sign(p) => a.signin.as_ref().is_some_and(|s| s.part_rect(p).is_some()),
-        _ => a.signin.is_none() || id == Id::Root,
+        Id::Dialog(p) => a.dialog.as_ref().is_some_and(|d| d.part_rect(p).is_some()),
+        Id::Menu => a.menu.is_some() && a.dialog.is_none(),
+        Id::MenuItem(k) => a.dialog.is_none() && a.menu.as_ref().is_some_and(|m| k < m.items.len()),
+        _ => (a.signin.is_none() && a.dialog.is_none()) || id == Id::Root,
     }
 }
 
@@ -201,6 +230,26 @@ fn name(a: &App, id: Id) -> String {
             }
         ),
         Id::Composer => format!("Message #{}", c.channels[c.channel].name),
+        Id::Menu => "Message actions".into(),
+        Id::MenuItem(k) => a
+            .menu
+            .as_ref()
+            .and_then(|m| m.items.get(k))
+            .map_or_else(String::new, |item| item.label().into()),
+        Id::Dialog(p) => {
+            let Some(d) = &a.dialog else {
+                return String::new();
+            };
+            match p {
+                DPart::Title => d.title().into(),
+                DPart::Note => d.note().into(),
+                DPart::Field => "Message".into(),
+                DPart::Error => d.error.clone().unwrap_or_default(),
+                DPart::Reload => "Discard draft and load latest".into(),
+                DPart::Cancel => "Cancel".into(),
+                DPart::Primary => d.primary_label().into(),
+            }
+        }
         Id::Sign(p) => {
             let Some(s) = &a.signin else {
                 return String::new();
@@ -226,6 +275,11 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Channel(_) | Id::Row(_) | Id::Member(_) => UIA_ListItemControlTypeId,
         Id::Composer | Id::Sign(Part::Field) => UIA_EditControlTypeId,
         Id::Sign(Part::Title | Part::Message) => UIA_TextControlTypeId,
+        Id::Menu => UIA_MenuControlTypeId,
+        Id::MenuItem(_) => UIA_MenuItemControlTypeId,
+        Id::Dialog(DPart::Field) => UIA_EditControlTypeId,
+        Id::Dialog(DPart::Title | DPart::Note | DPart::Error) => UIA_TextControlTypeId,
+        Id::Dialog(_) => UIA_ButtonControlTypeId,
         Id::Sign(_) | Id::Control(..) => UIA_ButtonControlTypeId,
     }
 }
@@ -243,6 +297,9 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Member(i) => (8, i),
         Id::Composer => (9, 0),
         Id::Sign(p) => (10, p as usize),
+        Id::Menu => (12, 0),
+        Id::MenuItem(k) => (13, k),
+        Id::Dialog(p) => (14, p as usize),
         Id::Control(i, action) => (
             11,
             i * 64
@@ -287,6 +344,19 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         ),
         Id::Member(i) => a.member_rect(i),
         Id::Composer => a.box_rect(),
+        Id::Menu => a
+            .menu
+            .as_ref()
+            .map_or((0.0, 0.0, 0.0, 0.0), crate::overlay::Menu::rect),
+        Id::MenuItem(k) => a
+            .menu
+            .as_ref()
+            .map_or((0.0, 0.0, 0.0, 0.0), |m| m.item_rect(k)),
+        Id::Dialog(p) => a
+            .dialog
+            .as_ref()
+            .and_then(|d| d.part_rect(p))
+            .unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Sign(p) => a
             .signin
             .as_ref()
@@ -378,6 +448,15 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
             Id::Sign(Part::Title | Part::Message) => false,
+            Id::MenuItem(_) => pattern == UIA_InvokePatternId,
+            Id::Dialog(DPart::Field) => {
+                pattern == UIA_ValuePatternId
+                    || pattern == UIA_TextPatternId
+                    || pattern == UIA_TextPattern2Id
+            }
+            Id::Dialog(DPart::Reload | DPart::Cancel | DPart::Primary) => {
+                pattern == UIA_InvokePatternId
+            }
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
                 pattern == UIA_InvokePatternId
             }
@@ -416,12 +495,20 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     Id::Composer
                         | Id::Space(_)
                         | Id::Channel(_)
+                        | Id::MenuItem(_)
+                        | Id::Dialog(DPart::Field | DPart::Reload | DPart::Cancel | DPart::Primary)
                         | Id::Sign(Part::Field | Part::Primary | Part::OtherEmail | Part::Resend)
                 )),
                 UIA_HasKeyboardFocusPropertyId => VARIANT::from(focused(a) == Some(id)),
                 UIA_IsEnabledPropertyId => VARIANT::from(match (id, &a.signin) {
                     (Id::Sign(Part::Field), Some(s)) => s.editable(),
                     (Id::Sign(Part::Title | Part::Message), _) => true,
+                    (Id::Dialog(p), _) => a.dialog.as_ref().is_some_and(|d| d.enabled(p)),
+                    (Id::MenuItem(k), _) => a
+                        .menu
+                        .as_ref()
+                        .and_then(|m| m.items.get(k))
+                        .is_some_and(|item| item.enabled()),
                     (Id::Sign(p), Some(s)) => s.part_rect(p).is_some_and(|(_, on)| on),
                     _ => true,
                 }),
@@ -498,6 +585,7 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
             match id {
                 Id::Composer => a.set_composer_focus(true),
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
+                Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
                 _ => {}
             }
             Ok(())
@@ -549,6 +637,8 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Space(i) => a.select_space(i),
                 Id::Channel(i) => a.select_channel(i),
                 Id::Sign(p) => a.signin_activate(Some(p)),
+                Id::MenuItem(k) => a.menu_activate(k),
+                Id::Dialog(p) => a.dialog_activate(p),
                 Id::Control(i, action) => a.row_action(i, action),
                 _ => {}
             }
@@ -660,6 +750,9 @@ impl Doc {
     /// Client DIP position of the layout origin.
     fn origin(self, a: &App) -> (f32, f32) {
         match (self, &a.signin) {
+            (Self::Field(Id::Dialog(_)), _) => {
+                a.dialog.as_ref().map_or((0.0, 0.0), |d| d.text_origin())
+            }
             (Self::Field(Id::Sign(_)), Some(s)) => s.field_origin,
             (Self::Field(_), _) => a.composer_text_origin(),
             (Self::Row(i), _) => a.row_text_origin(i),
@@ -1126,8 +1219,9 @@ pub fn raise_rows_changed() {
 
 /// The text field on screen: the sign-in field while signed out.
 fn editable() -> Id {
-    match crate::with_app(|a| a.signin.is_some()) {
-        Some(true) => Id::Sign(Part::Field),
+    match crate::with_app(|a| (a.dialog.as_ref().map(|d| d.kind), a.signin.is_some())) {
+        Some((Some(Kind::Edit), _)) => Id::Dialog(DPart::Field),
+        Some((_, true)) => Id::Sign(Part::Field),
         _ => Id::Composer,
     }
 }
