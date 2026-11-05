@@ -8,7 +8,8 @@
 //! bounding rectangles). Each message row implements Text too, over its
 //! plain text: screen readers can read it by character, word and line, find
 //! its bounds and select in it (the selection is the history's selection).
-use crate::{App, gfx};
+use crate::signin::Part;
+use crate::{App, composer::Composer, gfx};
 use std::cell::Cell;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::DirectWrite::*;
@@ -31,6 +32,8 @@ pub enum Id {
     Members,
     Member(usize),
     Composer,
+    /// A part of the sign-in form, which replaces the tree while shown.
+    Sign(Part),
 }
 
 fn na() -> Error {
@@ -41,7 +44,41 @@ fn with<R>(f: impl FnOnce(&mut App) -> Result<R>) -> Result<R> {
     crate::with_app(f).unwrap_or_else(|| Err(na()))
 }
 
+/// The editable field behind a node: the sign-in field or the composer.
+fn field(a: &App, id: Id) -> &Composer {
+    match (id, &a.signin) {
+        (Id::Sign(_), Some(s)) => s.field(),
+        _ => &a.composer,
+    }
+}
+
+fn field_mut(a: &mut App, id: Id) -> &mut Composer {
+    match (id, &mut a.signin) {
+        (Id::Sign(_), Some(s)) => s.field_mut(),
+        _ => &mut a.composer,
+    }
+}
+
+fn field_changed(a: &mut App, id: Id, text: bool) {
+    if matches!(id, Id::Sign(_)) {
+        a.signin_changed(text);
+    } else {
+        a.composer_changed();
+    }
+}
+
+/// The node of the focused text field, while one is focused.
+fn focused(a: &App) -> Option<Id> {
+    match &a.signin {
+        Some(s) => s.field().focused.then_some(Id::Sign(Part::Field)),
+        None => a.composer.focused.then_some(Id::Composer),
+    }
+}
+
 fn children(a: &App, id: Id) -> Vec<Id> {
+    if let (Id::Root, Some(s)) = (id, &a.signin) {
+        return s.parts().map(Id::Sign).collect();
+    }
     match id {
         Id::Root => vec![
             Id::Rail,
@@ -75,7 +112,8 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Channel(i) => i < a.c.channels.len(),
         Id::Member(i) => i < a.c.members.len(),
         Id::Space(i) => i < a.c.spaces.len(),
-        _ => true,
+        Id::Sign(p) => a.signin.as_ref().is_some_and(|s| s.part_rect(p).is_some()),
+        _ => a.signin.is_none() || id == Id::Root,
     }
 }
 
@@ -112,6 +150,19 @@ fn name(a: &App, id: Id) -> String {
             }
         ),
         Id::Composer => format!("Message #{}", c.channels[c.channel].name),
+        Id::Sign(p) => {
+            let Some(s) = &a.signin else {
+                return String::new();
+            };
+            match p {
+                Part::Title => s.title().into(),
+                Part::Field => s.field_name().into(),
+                Part::Message => s.message().unwrap_or_default().into(),
+                Part::Primary => s.primary_label().into(),
+                Part::OtherEmail => "Use a different email".into(),
+                Part::Resend => s.resend_label(),
+            }
+        }
     }
 }
 
@@ -122,7 +173,9 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Space(_) => UIA_ListItemControlTypeId,
         Id::Channels | Id::History | Id::Members => UIA_ListControlTypeId,
         Id::Channel(_) | Id::Row(_) | Id::Member(_) => UIA_ListItemControlTypeId,
-        Id::Composer => UIA_EditControlTypeId,
+        Id::Composer | Id::Sign(Part::Field) => UIA_EditControlTypeId,
+        Id::Sign(Part::Title | Part::Message) => UIA_TextControlTypeId,
+        Id::Sign(_) => UIA_ButtonControlTypeId,
     }
 }
 
@@ -138,6 +191,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Members => (7, 0),
         Id::Member(i) => (8, i),
         Id::Composer => (9, 0),
+        Id::Sign(p) => (10, p as usize),
     };
     [UiaAppendRuntimeId as i32, k, i as i32]
 }
@@ -159,6 +213,11 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         ),
         Id::Member(i) => a.member_rect(i),
         Id::Composer => a.box_rect(),
+        Id::Sign(p) => a
+            .signin
+            .as_ref()
+            .and_then(|s| s.part_rect(p))
+            .map_or((0.0, 0.0, 0.0, 0.0), |(r, _)| r),
     }
 }
 
@@ -244,7 +303,11 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             Id::Space(_) | Id::Channel(_) => {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
-            Id::Composer => {
+            Id::Sign(Part::Title | Part::Message) => false,
+            Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
+                pattern == UIA_InvokePatternId
+            }
+            Id::Composer | Id::Sign(Part::Field) => {
                 pattern == UIA_ValuePatternId
                     || pattern == UIA_TextPatternId
                     || pattern == UIA_TextPattern2Id
@@ -273,13 +336,24 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     _ => format!("{id:?}"),
                 })),
                 UIA_FrameworkIdPropertyId => VARIANT::from(BSTR::from("Win32")),
-                UIA_IsKeyboardFocusablePropertyId => {
-                    VARIANT::from(matches!(id, Id::Composer | Id::Space(_) | Id::Channel(_)))
+                UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
+                    id,
+                    Id::Composer
+                        | Id::Space(_)
+                        | Id::Channel(_)
+                        | Id::Sign(Part::Field | Part::Primary | Part::OtherEmail | Part::Resend)
+                )),
+                UIA_HasKeyboardFocusPropertyId => VARIANT::from(focused(a) == Some(id)),
+                UIA_IsEnabledPropertyId => VARIANT::from(match (id, &a.signin) {
+                    (Id::Sign(Part::Field), Some(s)) => s.editable(),
+                    (Id::Sign(Part::Title | Part::Message), _) => true,
+                    (Id::Sign(p), Some(s)) => s.part_rect(p).is_some_and(|(_, on)| on),
+                    _ => true,
+                }),
+                // Errors and \"We sent a new code\" are announced when they appear.
+                UIA_LiveSettingPropertyId if id == Id::Sign(Part::Message) => {
+                    VARIANT::from(Assertive.0)
                 }
-                UIA_HasKeyboardFocusPropertyId => {
-                    VARIANT::from(id == Id::Composer && a.composer.focused)
-                }
-                UIA_IsEnabledPropertyId => VARIANT::from(true),
                 UIA_IsOffscreenPropertyId => {
                     let (_, y, _, h) = node_rect(a, id);
                     VARIANT::from(y + h < 0.0 || y > a.h)
@@ -346,8 +420,10 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
     fn SetFocus(&self) -> Result<()> {
         let id = self.id;
         with(|a| {
-            if id == Id::Composer {
-                a.set_composer_focus(true);
+            match id {
+                Id::Composer => a.set_composer_focus(true),
+                Id::Sign(Part::Field) => a.set_signin_focus(true),
+                _ => {}
             }
             Ok(())
         })
@@ -383,11 +459,9 @@ impl IRawElementProviderFragmentRoot_Impl for Node_Impl {
     }
 
     fn GetFocus(&self) -> Result<IRawElementProviderFragment> {
-        let focused = with(|a| Ok(a.composer.focused))?;
-        if focused {
-            Ok(fragment(Id::Composer))
-        } else {
-            Err(Error::empty())
+        match with(|a| Ok(focused(a)))? {
+            Some(id) => Ok(fragment(id)),
+            None => Err(Error::empty()),
         }
     }
 }
@@ -399,6 +473,7 @@ impl IInvokeProvider_Impl for Node_Impl {
             match id {
                 Id::Space(i) => a.select_space(i),
                 Id::Channel(i) => a.select_channel(i),
+                Id::Sign(p) => a.signin_activate(Some(p)),
                 _ => {}
             }
             Ok(())
@@ -439,30 +514,38 @@ impl ISelectionItemProvider_Impl for Node_Impl {
 impl IValueProvider_Impl for Node_Impl {
     fn SetValue(&self, val: &PCWSTR) -> Result<()> {
         let text = unsafe { val.as_wide().to_vec() };
+        let id = self.id;
         with(|a| {
-            a.composer.text = text;
-            a.composer.caret = a.composer.text.len();
-            a.composer.anchor = a.composer.caret;
-            a.composer_changed();
+            if a.signin.as_ref().is_some_and(|s| !s.editable()) {
+                return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
+            }
+            let f = field_mut(a, id);
+            f.text = text;
+            f.caret = f.text.len();
+            f.anchor = f.caret;
+            field_changed(a, id, true);
             Ok(())
         })
     }
 
     fn Value(&self) -> Result<BSTR> {
-        with(|a| Ok(BSTR::from_wide(&a.composer.text)))
+        let id = self.id;
+        with(|a| Ok(BSTR::from_wide(&field(a, id).text)))
     }
 
     fn IsReadOnly(&self) -> Result<BOOL> {
-        Ok(false.into())
+        with(|a| Ok(a.signin.as_ref().is_some_and(|s| !s.editable()).into()))
     }
 }
 
 // ---------------------------------------------------------------------------
-// Text: one implementation over two sources, the composer and a message row.
+// Text: one implementation over two sources, a text field (the composer or
+// the sign-in field) and a message row.
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Doc {
-    Composer,
+    /// The composer or the sign-in field, by node.
+    Field(Id),
     Row(usize),
 }
 
@@ -470,45 +553,46 @@ impl Doc {
     fn of(id: Id) -> Self {
         match id {
             Id::Row(i) => Self::Row(i),
-            _ => Self::Composer,
+            _ => Self::Field(id),
         }
     }
 
     fn id(self) -> Id {
         match self {
-            Self::Composer => Id::Composer,
+            Self::Field(id) => id,
             Self::Row(i) => Id::Row(i),
         }
     }
 
     fn text(self, a: &App) -> Result<Vec<u16>> {
         match self {
-            Self::Composer => Ok(a.composer.text.clone()),
+            Self::Field(id) if exists(a, id) => Ok(field(a, id).text.clone()),
             Self::Row(i) if exists(a, Id::Row(i)) => {
                 Ok(a.rows.row(i).map(|r| r.plain16.clone()).unwrap_or_default())
             }
-            Self::Row(_) => Err(na()),
+            _ => Err(na()),
         }
     }
 
     fn layout(self, a: &App) -> Option<IDWriteTextLayout> {
         match self {
-            Self::Composer => a.composer.layout.clone(),
+            Self::Field(id) => field(a, id).layout.clone(),
             Self::Row(i) => a.rows.row(i).map(|r| r.text.clone()),
         }
     }
 
     /// Client DIP position of the layout origin.
     fn origin(self, a: &App) -> (f32, f32) {
-        match self {
-            Self::Composer => a.composer_text_origin(),
-            Self::Row(i) => a.row_text_origin(i),
+        match (self, &a.signin) {
+            (Self::Field(Id::Sign(_)), Some(s)) => s.field_origin,
+            (Self::Field(_), _) => a.composer_text_origin(),
+            (Self::Row(i), _) => a.row_text_origin(i),
         }
     }
 
     fn selection(self, a: &App) -> (usize, usize) {
         match self {
-            Self::Composer => a.composer.selection(),
+            Self::Field(id) => field(a, id).selection(),
             Self::Row(i) => App::sel_for(a.sel, i, a.row_len(i))
                 .map_or((0, 0), |(s, e)| (s as usize, e as usize)),
         }
@@ -516,10 +600,11 @@ impl Doc {
 
     fn select(self, a: &mut App, s: usize, e: usize) {
         match self {
-            Self::Composer => {
-                a.composer.anchor = s;
-                a.composer.caret = e;
-                a.composer_changed();
+            Self::Field(id) => {
+                let f = field_mut(a, id);
+                f.anchor = s;
+                f.caret = e;
+                field_changed(a, id, false);
             }
             Self::Row(i) => a.set_sel(Some(((i, s as u32), (i, e as u32)))),
         }
@@ -593,11 +678,15 @@ impl ITextProvider2_Impl for Node_Impl {
     }
 
     fn GetCaretRange(&self, isactive: *mut BOOL) -> Result<ITextRangeProvider> {
-        let (caret, focused) = with(|a| Ok((a.composer.caret, a.composer.focused)))?;
+        let id = self.id;
+        let (caret, focused) = with(|a| {
+            let f = field(a, id);
+            Ok((f.caret, f.focused))
+        })?;
         if !isactive.is_null() {
             unsafe { *isactive = focused.into() };
         }
-        Ok(range(Doc::Composer, caret, caret))
+        Ok(range(Doc::Field(id), caret, caret))
     }
 }
 
@@ -796,7 +885,7 @@ impl ITextRangeProvider_Impl for TextRange_Impl {
 
     fn GetAttributeValue(&self, id: UIA_TEXTATTRIBUTE_ID) -> Result<VARIANT> {
         Ok(match id {
-            UIA_IsReadOnlyAttributeId => VARIANT::from(self.doc != Doc::Composer),
+            UIA_IsReadOnlyAttributeId => VARIANT::from(matches!(self.doc, Doc::Row(_))),
             UIA_FontNameAttributeId => VARIANT::from(BSTR::from("Satoshi")),
             UIA_FontSizeAttributeId => VARIANT::from(11.25f64),
             _ => VARIANT::from(unsafe { UiaGetReservedNotSupportedValue()? }),
@@ -925,11 +1014,11 @@ impl ITextRangeProvider_Impl for TextRange_Impl {
     }
 }
 
-/// Raised after composer edits while a client listens.
+/// Raised after edits in the focused field while a client listens.
 pub fn raise_composer_events() {
     unsafe {
         if UiaClientsAreListening().as_bool() {
-            let n = node(Id::Composer);
+            let n = node(editable());
             let _ = UiaRaiseAutomationEvent(&n, UIA_Text_TextChangedEventId);
             let _ = UiaRaiseAutomationEvent(&n, UIA_Text_TextSelectionChangedEventId);
         }
@@ -939,7 +1028,7 @@ pub fn raise_composer_events() {
 pub fn raise_focus() {
     unsafe {
         if UiaClientsAreListening().as_bool() {
-            let _ = UiaRaiseAutomationEvent(&node(Id::Composer), UIA_AutomationFocusChangedEventId);
+            let _ = UiaRaiseAutomationEvent(&node(editable()), UIA_AutomationFocusChangedEventId);
         }
     }
 }
@@ -955,6 +1044,38 @@ pub fn raise_rows_changed() {
                 id.as_mut_ptr(),
                 3,
             );
+        }
+    }
+}
+
+/// The text field on screen: the sign-in field while signed out.
+fn editable() -> Id {
+    match crate::with_app(|a| a.signin.is_some()) {
+        Some(true) => Id::Sign(Part::Field),
+        _ => Id::Composer,
+    }
+}
+
+/// The sign-in screen appeared, changed step or closed: the tree under the
+/// root changed, and its message (an assertive live region) is announced.
+pub fn raise_screen_changed() {
+    unsafe {
+        if UiaClientsAreListening().as_bool() {
+            let mut id = runtime_id(Id::Root);
+            let _ = UiaRaiseStructureChangedEvent(
+                &node(Id::Root),
+                StructureChangeType_ChildrenInvalidated,
+                id.as_mut_ptr(),
+                3,
+            );
+            if crate::with_app(|a| a.signin.as_ref().and_then(|s| s.message()).is_some())
+                == Some(true)
+            {
+                let _ = UiaRaiseAutomationEvent(
+                    &node(Id::Sign(Part::Message)),
+                    UIA_LiveRegionChangedEventId,
+                );
+            }
         }
     }
 }

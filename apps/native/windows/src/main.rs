@@ -20,6 +20,7 @@ mod gfx;
 mod list;
 mod live;
 mod model;
+mod signin;
 mod text;
 mod theme;
 mod uia;
@@ -59,9 +60,13 @@ const VS_H: u32 = 1 << 23;
 const EV_TEXT: u8 = 1;
 const EV_FOCUS: u8 = 2;
 const EV_ROWS: u8 = 4;
+/// The sign-in screen appeared, changed step or went away.
+const EV_SCREEN: u8 = 8;
 const TIMER_BENCH: usize = 1;
 const TIMER_CARET: usize = 2;
 const TIMER_LIVE: usize = 3;
+/// The sign-in screen's spinner and resend countdown.
+const TIMER_SIGNIN: usize = 4;
 const WHEEL_STEP: f64 = 48.0;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -84,6 +89,7 @@ struct Dirty {
     members: bool,
     composer: bool,
     toolbar: bool,
+    signin: bool,
 }
 
 impl Dirty {
@@ -96,6 +102,7 @@ impl Dirty {
             members: true,
             composer: true,
             toolbar: true,
+            signin: true,
         }
     }
 }
@@ -196,6 +203,9 @@ pub struct App {
     /// Shown in the header: the last error (true), or the gateway's
     /// connection state while it is not live (false).
     status: Option<(String, bool)>,
+    /// The signed-out screens, over everything else while shown.
+    pub signin: Option<signin::SignIn>,
+    signin_p: Panel,
     quit: bool,
 }
 
@@ -223,6 +233,7 @@ impl App {
             let members = Panel::new(&g)?;
             let composer_p = Panel::new(&g)?;
             let toolbar = Panel::new(&g)?;
+            let signin_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
             let content = g.visual()?;
             let vs = g.dcomp.CreateVirtualSurface(
@@ -247,6 +258,7 @@ impl App {
                 root.AddVisual(v, true, &prev)?;
                 prev = v.cast()?;
             }
+            root.AddVisual(&signin_p.visual, true, &prev)?;
             let (channel_layouts, member_layouts) = side_layouts(&g, &c)?;
             let n = c.messages.len();
             let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
@@ -300,6 +312,8 @@ impl App {
                 live: None,
                 ids: live::Ids::default(),
                 status: None,
+                signin: None,
+                signin_p,
                 quit: false,
             })
         }
@@ -353,10 +367,40 @@ impl App {
         }
         for u in updates {
             match u {
+                live::Update::SignedOut(warning) => {
+                    if let Some(s) = &mut self.signin {
+                        s.restoring = false;
+                        s.error = warning;
+                    }
+                    self.signin_screen_changed();
+                    self.set_signin_focus(true);
+                }
+                live::Update::CodeRequested(result) => {
+                    if let Some(s) = &mut self.signin {
+                        s.code_requested(result);
+                    }
+                    // The code step's field takes focus, as on web.
+                    self.signin_screen_changed();
+                    self.set_signin_focus(true);
+                }
+                live::Update::VerifyFailed(error, attempts) => {
+                    if let Some(s) = &mut self.signin {
+                        s.verify_failed(error, attempts);
+                    }
+                    self.signin_screen_changed();
+                }
+                live::Update::SignedIn => {
+                    self.set_signin_focus(false);
+                    if let Some(s) = &mut self.signin {
+                        s.restoring = true;
+                    }
+                    self.signin_screen_changed();
+                }
                 live::Update::Loaded(loaded) => {
                     let (c, ids) = *loaded;
                     self.ids = ids;
                     self.status = None;
+                    self.close_signin()?;
                     self.set_conversation(c)?;
                 }
                 live::Update::Message(m) => {
@@ -388,6 +432,12 @@ impl App {
                     }
                 }
                 live::Update::Failed(e) => {
+                    if let Some(s) = self.signin.as_mut().filter(|s| s.restoring) {
+                        // Signed in, but nothing to open: say why instead of spinning.
+                        s.failure = Some(e);
+                        self.signin_screen_changed();
+                        continue;
+                    }
                     self.status = Some((e, true));
                     self.dirty.header = true;
                     self.need = true;
@@ -514,6 +564,143 @@ impl App {
         self.dirty.composer = true;
         self.events |= EV_FOCUS;
         self.need = true;
+    }
+
+    // ---- sign-in ----
+
+    /// The sign-in screen needs drawing and its UIA tree changed.
+    fn signin_screen_changed(&mut self) {
+        self.arm_signin_timer();
+        self.dirty.signin = true;
+        self.events |= EV_SCREEN;
+        self.need = true;
+    }
+
+    /// Runs the spinner and countdown timer only while one is shown.
+    fn arm_signin_timer(&mut self) {
+        let Some(s) = &self.signin else { return };
+        // The spinner turns and the countdown ticks only while shown.
+        let tick = if s.restoring && s.failure.is_none() {
+            Some(std::time::Duration::from_millis(33))
+        } else {
+            s.next_tick()
+        };
+        unsafe {
+            match tick {
+                Some(d) => {
+                    SetTimer(
+                        Some(self.hwnd),
+                        TIMER_SIGNIN,
+                        d.as_millis().clamp(10, u32::MAX as u128) as u32,
+                        None,
+                    );
+                }
+                None => {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_SIGNIN);
+                }
+            }
+        }
+    }
+
+    pub fn set_signin_focus(&mut self, focused: bool) {
+        let hwnd = self.hwnd;
+        let Some(s) = &mut self.signin else { return };
+        let focused = focused && !s.restoring;
+        let field = s.field_mut();
+        if field.focused == focused {
+            return;
+        }
+        field.focused = focused;
+        field.caret_on = true;
+        unsafe {
+            if focused {
+                SetTimer(Some(hwnd), TIMER_CARET, GetCaretBlinkTime(), None);
+            } else {
+                let _ = KillTimer(Some(hwnd), TIMER_CARET);
+            }
+        }
+        self.dirty.signin = true;
+        self.events |= EV_FOCUS;
+        self.need = true;
+    }
+
+    /// After the sign-in field's text or caret changed.
+    pub fn signin_changed(&mut self, text: bool) {
+        let Some(s) = &mut self.signin else { return };
+        if text {
+            s.edited();
+        }
+        s.field_mut().caret_on = true;
+        if let Err(e) = s.relayout_field(&self.g, self.w) {
+            eprintln!("sign-in layout failed: {e:?}");
+        }
+        self.dirty.signin = true;
+        self.events |= EV_TEXT;
+        self.need = true;
+        self.ime_position();
+    }
+
+    /// Clicks, Enter and UIA Invoke on the sign-in form.
+    pub fn signin_activate(&mut self, part: Option<signin::Part>) {
+        let Some(s) = &mut self.signin else { return };
+        let request = match part {
+            Some(p) => s.activate(p),
+            None => s.submit(),
+        };
+        if let (Some(request), Some(live)) = (request, &self.live) {
+            match request {
+                signin::Request::Code(email) => live.request_code(email),
+                signin::Request::Verify { challenge, code } => live.verify(challenge, code),
+            }
+        }
+        if part == Some(signin::Part::OtherEmail) {
+            self.set_signin_focus(true);
+        }
+        self.signin_screen_changed();
+    }
+
+    /// Signed in and loaded: the conversation replaces the sign-in screen.
+    fn close_signin(&mut self) -> Result<()> {
+        if self.signin.take().is_none() {
+            return Ok(());
+        }
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_SIGNIN);
+            let _ = KillTimer(Some(self.hwnd), TIMER_CARET);
+            self.signin_p.visual.SetContent(None)?;
+        }
+        self.signin_p.surface = None;
+        self.signin_p.size = (0, 0);
+        self.dirty = Dirty::all();
+        self.events |= EV_SCREEN;
+        self.need = true;
+        Ok(())
+    }
+
+    /// The focused text field and its text origin (client DIPs).
+    pub fn focused_field(&self) -> Option<(&Composer, (f32, f32))> {
+        if let Some(s) = &self.signin {
+            return s.field().focused.then(|| (s.field(), s.field_origin));
+        }
+        self.composer
+            .focused
+            .then(|| (&self.composer, self.composer_text_origin()))
+    }
+
+    fn focused_field_mut(&mut self) -> Option<&mut Composer> {
+        if let Some(s) = &mut self.signin {
+            return Some(s.field_mut()).filter(|f| f.focused);
+        }
+        Some(&mut self.composer).filter(|c| c.focused)
+    }
+
+    /// After an edit or caret move in the focused field.
+    fn field_changed(&mut self, text: bool) {
+        if self.signin.is_some() {
+            self.signin_changed(text);
+        } else {
+            self.composer_changed();
+        }
     }
 
     pub fn select_space(&mut self, i: usize) {
@@ -684,6 +871,11 @@ impl App {
         let y = ((lp.0 >> 16) & 0xffff) as i16 as f32 / self.scale;
         let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
         let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+        if self.signin.is_some()
+            && let Some(r) = self.signin_input(msg, wp, lp, x, y, ctrl, shift)
+        {
+            return r;
+        }
         match msg {
             WM_SIZE => {
                 let (pw, ph) = ((lp.0 & 0xffff) as f32, ((lp.0 >> 16) & 0xffff) as f32);
@@ -691,6 +883,7 @@ impl App {
                     self.w = pw / self.scale;
                     self.h = ph / self.scale;
                     self.dirty.layout = true;
+                    self.dirty.signin = true;
                     self.need = true;
                 }
             }
@@ -701,25 +894,28 @@ impl App {
                     let _ = PostMessageW(Some(self.hwnd), live::WM_LIVE, WPARAM(0), LPARAM(0));
                 },
                 TIMER_CARET => {
-                    self.composer.caret_on = !self.composer.caret_on;
-                    self.dirty.composer = true;
+                    if let Some(f) = self.focused_field_mut() {
+                        f.caret_on = !f.caret_on;
+                    }
+                    if self.signin.is_some() {
+                        self.dirty.signin = true;
+                    } else {
+                        self.dirty.composer = true;
+                    }
+                    self.need = true;
+                }
+                TIMER_SIGNIN => {
+                    if let Some(s) = &mut self.signin {
+                        s.spin = (s.spin + 0.21) % std::f32::consts::TAU;
+                    }
+                    self.arm_signin_timer();
+                    self.dirty.signin = true;
                     self.need = true;
                 }
                 _ => {}
             },
             WM_MOUSEMOVE => {
-                if !self.tracking {
-                    let mut t = TRACKMOUSEEVENT {
-                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
-                        dwFlags: TME_LEAVE,
-                        hwndTrack: self.hwnd,
-                        dwHoverTime: 0,
-                    };
-                    unsafe {
-                        let _ = TrackMouseEvent(&mut t);
-                    }
-                    self.tracking = true;
-                }
+                self.track_leave();
                 self.pointer = Some((x, y));
                 self.update_hover();
                 if self.history_hover() != self.hover_row {
@@ -844,22 +1040,185 @@ impl App {
                 }
                 return Some(LRESULT(0));
             }
-            WM_IME_STARTCOMPOSITION if self.composer.focused => {
+            WM_IME_STARTCOMPOSITION if self.focused_field().is_some() => {
                 self.ime_position();
                 return Some(LRESULT(0));
             }
-            WM_IME_COMPOSITION if self.composer.focused => {
+            WM_IME_COMPOSITION if self.focused_field().is_some() => {
                 self.ime_composition(lp);
                 return Some(LRESULT(0));
             }
-            WM_IME_ENDCOMPOSITION if self.composer.focused => {
-                self.composer.comp.clear();
-                self.composer_changed();
+            WM_IME_ENDCOMPOSITION if self.focused_field().is_some() => {
+                if let Some(f) = self.focused_field_mut() {
+                    f.comp.clear();
+                }
+                self.field_changed(false);
                 return Some(LRESULT(0));
             }
             _ => return None,
         }
         Some(LRESULT(0))
+    }
+
+    fn track_leave(&mut self) {
+        if self.tracking {
+            return;
+        }
+        let mut t = TRACKMOUSEEVENT {
+            cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+            dwFlags: TME_LEAVE,
+            hwndTrack: self.hwnd,
+            dwHoverTime: 0,
+        };
+        unsafe {
+            let _ = TrackMouseEvent(&mut t);
+        }
+        self.tracking = true;
+    }
+
+    /// Pointer and keyboard input while the sign-in screen covers the window.
+    /// None leaves the message to the normal handler (size, timers, IME).
+    fn signin_input(
+        &mut self,
+        msg: u32,
+        wp: WPARAM,
+        _lp: LPARAM,
+        x: f32,
+        y: f32,
+        ctrl: bool,
+        shift: bool,
+    ) -> Option<Option<LRESULT>> {
+        let done = Some(Some(LRESULT(0)));
+        match msg {
+            WM_MOUSEMOVE => {
+                self.track_leave();
+                self.pointer = Some((x, y));
+                let s = self.signin.as_mut()?;
+                let hover = s.hit(x, y);
+                let dragging = s.pressed == Some(signin::Part::Field);
+                if dragging {
+                    let (ox, oy) = s.field_origin;
+                    let field = s.field_mut();
+                    let p = field.hit(x - ox, y - oy);
+                    if p != field.caret {
+                        field.move_to(p, true);
+                        self.signin_changed(false);
+                    }
+                } else if hover != s.hover {
+                    s.hover = hover;
+                    self.dirty.signin = true;
+                    self.need = true;
+                }
+                done
+            }
+            WM_MOUSELEAVE => {
+                self.tracking = false;
+                self.pointer = None;
+                if let Some(s) = &mut self.signin {
+                    s.hover = None;
+                }
+                self.dirty.signin = true;
+                self.need = true;
+                done
+            }
+            WM_LBUTTONDOWN => {
+                unsafe {
+                    SetCapture(self.hwnd);
+                }
+                let s = self.signin.as_mut()?;
+                let part = s.hit(x, y);
+                s.pressed = part;
+                if part == Some(signin::Part::Field) {
+                    let (ox, oy) = s.field_origin;
+                    let field = s.field_mut();
+                    let p = field.hit(x - ox, y - oy);
+                    field.move_to(p, shift);
+                    self.set_signin_focus(true);
+                    self.signin_changed(false);
+                } else {
+                    self.dirty.signin = true;
+                    self.need = true;
+                }
+                done
+            }
+            WM_LBUTTONUP => {
+                unsafe {
+                    let _ = ReleaseCapture();
+                }
+                let s = self.signin.as_mut()?;
+                let pressed = s.pressed.take();
+                let released = s.hit(x, y);
+                self.dirty.signin = true;
+                self.need = true;
+                if let Some(p) =
+                    pressed.filter(|p| Some(*p) == released && *p != signin::Part::Field)
+                {
+                    self.signin_activate(Some(p));
+                }
+                done
+            }
+            WM_LBUTTONDBLCLK | WM_MOUSEWHEEL => done,
+            WM_SETCURSOR => {
+                let s = self.signin.as_ref()?;
+                let cursor = match self.pointer.and_then(|(x, y)| s.hit(x, y)) {
+                    Some(signin::Part::Field) => IDC_IBEAM,
+                    Some(_) => IDC_HAND,
+                    None => IDC_ARROW,
+                };
+                unsafe {
+                    SetCursor(LoadCursorW(None, cursor).ok());
+                }
+                Some(Some(LRESULT(1)))
+            }
+            WM_KEYDOWN => {
+                let vk = VIRTUAL_KEY(wp.0 as u16);
+                let hwnd = self.hwnd;
+                let s = self.signin.as_mut()?;
+                let editable = s.editable();
+                let field = s.field_mut();
+                if !field.focused {
+                    if vk == VK_TAB || vk == VK_RETURN {
+                        self.set_signin_focus(true);
+                    }
+                    return done;
+                }
+                if ctrl && vk == VIRTUAL_KEY('C' as u16) {
+                    let (a, b) = field.selection();
+                    if b > a {
+                        set_clipboard(hwnd, &field.text[a..b]);
+                    }
+                    return done;
+                }
+                match vk {
+                    VK_RETURN => self.signin_activate(None),
+                    VK_ESCAPE => self.set_signin_focus(false),
+                    // Movement and selection work while read-only; edits do not.
+                    VK_LEFT | VK_RIGHT | VK_HOME | VK_END => {
+                        field.edit_key(hwnd, vk, ctrl, shift, false);
+                        self.signin_changed(false);
+                    }
+                    _ if ctrl && vk == VIRTUAL_KEY('A' as u16) => {
+                        field.edit_key(hwnd, vk, ctrl, shift, false);
+                        self.signin_changed(false);
+                    }
+                    _ if editable && field.edit_key(hwnd, vk, ctrl, shift, false) => {
+                        self.signin_changed(true);
+                    }
+                    _ => return Some(None),
+                }
+                done
+            }
+            WM_CHAR => {
+                let c = wp.0 as u16;
+                let s = self.signin.as_mut()?;
+                if s.editable() && s.field().focused && !ctrl && c >= 0x20 && c != 0x7f {
+                    s.field_mut().insert(&[c]);
+                    self.signin_changed(true);
+                }
+                done
+            }
+            _ => None,
+        }
     }
 
     pub fn scroll_by(&mut self, dy: f64) {
@@ -894,63 +1253,19 @@ impl App {
             }
             return true;
         }
-        let c = &mut self.composer;
-        let (a, b) = c.selection();
         match vk {
-            VK_RETURN if shift => c.insert(&['\n' as u16]),
+            VK_RETURN if shift => self.composer.insert(&['\n' as u16]),
             VK_RETURN => {
                 if let Err(e) = self.send() {
                     eprintln!("send failed: {e:?}");
                 }
                 return true;
             }
-            VK_LEFT => {
-                let to = if !shift && a != b {
-                    a
-                } else if ctrl {
-                    c.word_left(c.caret)
-                } else {
-                    c.prev(c.caret)
-                };
-                c.move_to(to, shift);
-            }
-            VK_RIGHT => {
-                let to = if !shift && a != b {
-                    b
-                } else if ctrl {
-                    c.word_right(c.caret)
-                } else {
-                    c.next(c.caret)
-                };
-                c.move_to(to, shift);
-            }
-            VK_HOME => c.move_to(0, shift),
-            VK_END => {
-                let n = c.text.len();
-                c.move_to(n, shift);
-            }
-            VK_BACK => c.backspace(ctrl),
-            VK_DELETE => c.delete(ctrl),
             VK_ESCAPE => {
                 self.set_composer_focus(false);
                 return true;
             }
-            _ if ctrl && vk == VIRTUAL_KEY('A' as u16) => {
-                c.anchor = 0;
-                c.caret = c.text.len();
-            }
-            _ if ctrl && vk == VIRTUAL_KEY('X' as u16) => {
-                let t = c.text[a..b].to_vec();
-                set_clipboard(self.hwnd, &t);
-                self.composer.insert(&[]);
-            }
-            _ if ctrl && vk == VIRTUAL_KEY('V' as u16) => {
-                let t: Vec<u16> = get_clipboard(self.hwnd)
-                    .into_iter()
-                    .filter(|c| *c != '\r' as u16)
-                    .collect();
-                self.composer.insert(&t);
-            }
+            _ if self.composer.edit_key(self.hwnd, vk, ctrl, shift, true) => {}
             _ => return false,
         }
         self.composer_changed();
@@ -958,11 +1273,10 @@ impl App {
     }
 
     fn ime_position(&self) {
-        if !self.composer.focused {
+        let Some((field, (tx, ty))) = self.focused_field() else {
             return;
-        }
-        let (tx, ty) = self.composer_text_origin();
-        let (cx, cy, ch) = self.composer.caret_pos(self.composer.display_caret());
+        };
+        let (cx, cy, ch) = field.caret_pos(field.display_caret());
         let s = self.scale;
         let p = POINT {
             x: ((tx + cx) * s) as i32,
@@ -1011,21 +1325,24 @@ impl App {
                 ImmGetCompositionStringW(himc, kind, Some(buf.as_mut_ptr().cast()), bytes as u32);
                 buf
             };
-            if flags & GCS_RESULTSTR.0 != 0 {
-                let s = read(GCS_RESULTSTR);
-                self.composer.comp.clear();
-                self.composer.insert(&s);
-            }
-            if flags & GCS_COMPSTR.0 != 0 {
-                self.composer.comp = read(GCS_COMPSTR);
-                let cur = ImmGetCompositionStringW(himc, GCS_CURSORPOS, None, 0);
-                self.composer.comp_cursor = (cur.max(0) as usize).min(self.composer.comp.len());
-            } else if flags & GCS_RESULTSTR.0 != 0 {
-                self.composer.comp.clear();
+            let editable = self.signin.as_ref().is_none_or(signin::SignIn::editable);
+            if let Some(field) = self.focused_field_mut().filter(|_| editable) {
+                if flags & GCS_RESULTSTR.0 != 0 {
+                    let s = read(GCS_RESULTSTR);
+                    field.comp.clear();
+                    field.insert(&s);
+                }
+                if flags & GCS_COMPSTR.0 != 0 {
+                    field.comp = read(GCS_COMPSTR);
+                    let cur = ImmGetCompositionStringW(himc, GCS_CURSORPOS, None, 0);
+                    field.comp_cursor = (cur.max(0) as usize).min(field.comp.len());
+                } else if flags & GCS_RESULTSTR.0 != 0 {
+                    field.comp.clear();
+                }
             }
             let _ = ImmReleaseContext(self.hwnd, himc);
         }
-        self.composer_changed();
+        self.field_changed(flags & GCS_RESULTSTR.0 != 0);
     }
 
     // ---- frame ----
@@ -1278,6 +1595,21 @@ impl App {
         Ok(())
     }
 
+    fn draw_signin(&mut self) -> Result<()> {
+        let s = self.scale;
+        let px = |v: f32| (v * s).ceil().max(1.0) as u32;
+        let resized = self.signin_p.ensure(&self.g, px(self.w), px(self.h))?;
+        if !(self.dirty.signin || resized) {
+            return Ok(());
+        }
+        self.dirty.signin = false;
+        let (g, w, h) = (&self.g, self.w, self.h);
+        let Some(form) = self.signin.as_mut() else {
+            return Ok(());
+        };
+        self.signin_p.draw(s, |dc| form.draw(g, dc, w, h))
+    }
+
     fn draw_panels(&mut self) -> Result<()> {
         let s = self.scale;
         let g = &self.g;
@@ -1526,6 +1858,13 @@ impl App {
             Action::Quit => self.quit = true,
             Action::None => {}
         }
+        if self.signin.is_some() {
+            // The sign-in screen covers everything; the rest waits until it closes.
+            self.draw_signin()?;
+            unsafe { self.g.dcomp.Commit()? };
+            self.bench.log_frame(started.elapsed());
+            return Ok(());
+        }
         if self.dirty.layout {
             self.dirty.layout = false;
             self.apply_layout()?;
@@ -1733,7 +2072,14 @@ fn main() -> Result<()> {
         let active = bench.active();
         let app = App::new(hwnd, Gfx::new()?, Conversation::demo(messages), bench)?;
         APP.with(|a| *a.borrow_mut() = Some(app));
-        with_app(|a| a.live = live::start(hwnd));
+        with_app(|a| {
+            a.live = live::start(hwnd);
+            if a.live.is_some() {
+                // Restoring the stored session; the sign-in form follows if there is none.
+                a.signin = Some(signin::SignIn::new());
+                a.signin_screen_changed();
+            }
+        });
         if active {
             SetTimer(Some(hwnd), TIMER_BENCH, 50, None);
         }
@@ -1777,6 +2123,9 @@ fn main() -> Result<()> {
             }
             if events & EV_ROWS != 0 {
                 uia::raise_rows_changed();
+            }
+            if events & EV_SCREEN != 0 {
+                uia::raise_screen_changed();
             }
             if quit {
                 let _ = DestroyWindow(hwnd);

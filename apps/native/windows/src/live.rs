@@ -1,8 +1,9 @@
 //! Real conversations through the shared client core's background worker
 //! (`caper_client::worker`): restores the stored session, opens the
 //! account's first space and its first joined channel, follows it live
-//! through the gateway, and sends messages. Only used when `CAPER_API_URL`
-//! is set; sign-in and the rest of the egui client's commands come later.
+//! through the gateway, and sends messages. Signs in by email code when
+//! no session is stored. Only used when `CAPER_API_URL` is set; the rest
+//! of the egui client's commands come later.
 use crate::model::{self, Conversation, Person, Reaction, Span};
 use caper_client::worker::{Command, Event, Worker};
 use caper_client::{Host, api::Api, gateway, grouping, model as core};
@@ -65,6 +66,14 @@ impl Host for WinHost {
 }
 
 pub enum Update {
+    /// No stored session (or restoring it failed, with the reason): sign in.
+    SignedOut(Option<String>),
+    /// A sign-in code was emailed (the challenge), or why not.
+    CodeRequested(Result<String, String>),
+    /// The code was wrong, expired or used up, with attempts left.
+    VerifyFailed(String, Option<u64>),
+    /// Signed in: the account's spaces are loading.
+    SignedIn,
     Loaded(Box<(Conversation, Ids)>),
     Message(Box<core::Message>),
     /// Online account ids in the open space.
@@ -150,6 +159,53 @@ pub fn start(hwnd: HWND) -> Option<Live> {
 }
 
 impl Live {
+    pub fn request_code(&self, email: String) {
+        self.worker.send(Command::RequestCode {
+            generation: self.generation,
+            email,
+        });
+    }
+
+    pub fn verify(&self, challenge: String, code: String) {
+        self.worker.send(Command::VerifyCode {
+            generation: self.generation,
+            challenge,
+            code,
+        });
+    }
+
+    /// Opens the account's first space; its first joined channel follows.
+    fn open(
+        &mut self,
+        token: String,
+        account: core::Account,
+        spaces: core::Spaces,
+        out: &mut Vec<Update>,
+    ) {
+        let current = self.generation;
+        self.name = account
+            .display_name
+            .or(account.username)
+            .unwrap_or_default();
+        let Some(space) = spaces.spaces.first().map(|s| s.id.clone()) else {
+            out.push(Update::Failed("This account has no spaces.".into()));
+            return;
+        };
+        self.token = Some(token.clone());
+        self.spaces = Some(spaces);
+        self.worker.send(Command::PrepareNavigation {
+            generation: current,
+            navigation: 1,
+            token: Some(token),
+            space: Some(space),
+            channel: None,
+            name: self.name.clone(),
+            cached: None,
+            visit: false,
+            preferred: None,
+        });
+    }
+
     pub fn send(&self, text: String) {
         let (Some(channel), Some(chat_token)) = (&self.channel, &self.chat_token) else {
             return;
@@ -192,34 +248,34 @@ impl Live {
         let current = self.generation;
         match event {
             Event::Restored { generation, result } if generation == current => match result {
-                Ok(Some((token, account, spaces))) => {
-                    self.name = account
-                        .display_name
-                        .or(account.username)
-                        .unwrap_or_default();
-                    let Some(space) = spaces.spaces.first().map(|s| s.id.clone()) else {
-                        out.push(Update::Failed("This account has no spaces.".into()));
-                        return;
-                    };
-                    self.token = Some(token.clone());
-                    self.spaces = Some(spaces);
-                    self.worker.send(Command::PrepareNavigation {
-                        generation: current,
-                        navigation: 1,
-                        token: Some(token),
-                        space: Some(space),
-                        channel: None,
-                        name: self.name.clone(),
-                        cached: None,
-                        visit: false,
-                        preferred: None,
-                    });
-                }
-                Ok(None) => out.push(Update::Failed(
-                    "Not signed in: no session in the credential store.".into(),
-                )),
-                Err(e) => out.push(Update::Failed(e)),
+                Ok(Some((token, account, spaces))) => self.open(token, account, spaces, out),
+                Ok(None) => out.push(Update::SignedOut(None)),
+                Err(e) => out.push(Update::SignedOut(Some(e))),
             },
+            Event::CodeRequested { generation, result } if generation == current => {
+                out.push(Update::CodeRequested(result));
+            }
+            Event::Verified {
+                generation,
+                result,
+                attempts_remaining,
+            } if generation == current => match result {
+                Ok((token, account, spaces)) => {
+                    out.push(Update::SignedIn);
+                    self.worker.send(Command::PersistCredential {
+                        generation: current,
+                        token: token.clone(),
+                    });
+                    self.open(token, account, spaces, out);
+                }
+                Err(e) => out.push(Update::VerifyFailed(e, attempts_remaining)),
+            },
+            Event::Credential {
+                generation,
+                result: Err(e),
+            } if generation == current => {
+                out.push(Update::Failed(format!("Could not save the session: {e}")));
+            }
             Event::NavigationPrepared {
                 generation, result, ..
             } if generation == current => match result {

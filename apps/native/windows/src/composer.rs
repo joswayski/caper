@@ -3,6 +3,7 @@
 use crate::gfx::{self, Gfx, fill_round, rect};
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::core::*;
 
 pub const PAD: f32 = 12.0;
@@ -144,10 +145,22 @@ impl Composer {
 
     /// Lays out the visible text at `width` (inner width). Returns the box height in DIPs.
     pub fn relayout(&mut self, g: &Gfx, width: f32) -> Result<f32> {
+        let text_h = self.relayout_with(g, &g.formats.composer, 15.0, width)?;
+        Ok(text_h.min(LINE * MAX_LINES) + 2.0 * PAD)
+    }
+
+    /// Lays out the visible text in `format` (`size` DIPs) at `width`; returns its height.
+    pub fn relayout_with(
+        &mut self,
+        g: &Gfx,
+        format: &IDWriteTextFormat,
+        size: f32,
+        width: f32,
+    ) -> Result<f32> {
         self.width = width;
         let d = self.display();
-        let layout = g.layout(&d, &g.formats.composer, width)?;
-        crate::emoji::apply(&layout, &String::from_utf16_lossy(&d), 15.0, 1.2)?;
+        let layout = g.layout(&d, format, width)?;
+        crate::emoji::apply(&layout, &String::from_utf16_lossy(&d), size, 1.2)?;
         unsafe {
             if !self.comp.is_empty() {
                 layout.SetUnderline(
@@ -161,7 +174,115 @@ impl Composer {
         }
         self.text_h = gfx::metrics(&layout).height.max(LINE);
         self.layout = Some(layout);
-        Ok(self.text_h.min(LINE * MAX_LINES) + 2.0 * PAD)
+        Ok(self.text_h)
+    }
+
+    /// Editing keys every text field shares: caret movement, deletion,
+    /// select all, cut and paste. Enter, Escape and copy belong to the
+    /// caller. False when `vk` is not one of them.
+    pub fn edit_key(
+        &mut self,
+        hwnd: windows::Win32::Foundation::HWND,
+        vk: VIRTUAL_KEY,
+        ctrl: bool,
+        shift: bool,
+        multiline: bool,
+    ) -> bool {
+        let (a, b) = self.selection();
+        match vk {
+            VK_LEFT => {
+                let to = if !shift && a != b {
+                    a
+                } else if ctrl {
+                    self.word_left(self.caret)
+                } else {
+                    self.prev(self.caret)
+                };
+                self.move_to(to, shift);
+            }
+            VK_RIGHT => {
+                let to = if !shift && a != b {
+                    b
+                } else if ctrl {
+                    self.word_right(self.caret)
+                } else {
+                    self.next(self.caret)
+                };
+                self.move_to(to, shift);
+            }
+            VK_HOME => self.move_to(0, shift),
+            VK_END => self.move_to(self.text.len(), shift),
+            VK_BACK => self.backspace(ctrl),
+            VK_DELETE => self.delete(ctrl),
+            _ if ctrl && vk == VIRTUAL_KEY('A' as u16) => {
+                self.anchor = 0;
+                self.caret = self.text.len();
+            }
+            _ if ctrl && vk == VIRTUAL_KEY('X' as u16) => {
+                crate::set_clipboard(hwnd, &self.text[a..b]);
+                self.insert(&[]);
+            }
+            _ if ctrl && vk == VIRTUAL_KEY('V' as u16) => {
+                // A single-line field takes a pasted line break as a space.
+                let t: Vec<u16> = crate::get_clipboard(hwnd)
+                    .into_iter()
+                    .filter(|c| *c != '\r' as u16)
+                    .map(|c| {
+                        if !multiline && c == '\n' as u16 {
+                            ' ' as u16
+                        } else {
+                            c
+                        }
+                    })
+                    .collect();
+                self.insert(&t);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Draws the selection, text (or `placeholder` when empty) and caret
+    /// with the layout origin at (ox, oy). The caller clips.
+    pub fn draw_text(
+        &self,
+        g: &Gfx,
+        dc: &ID2D1DeviceContext,
+        ox: f32,
+        oy: f32,
+        placeholder: Option<(&IDWriteTextLayout, &ID2D1SolidColorBrush)>,
+    ) {
+        unsafe {
+            if self.text.is_empty() && self.comp.is_empty() {
+                if let Some((l, brush)) = placeholder {
+                    crate::text::draw(dc, l, ox, oy, brush);
+                }
+            } else if let Some(l) = &self.layout {
+                let (a, b) = self.selection();
+                if b > a && self.comp.is_empty() {
+                    let mut buf = [DWRITE_HIT_TEST_METRICS::default(); 16];
+                    let mut n = 0u32;
+                    if l.HitTestTextRange(a as u32, (b - a) as u32, ox, oy, Some(&mut buf), &mut n)
+                        .is_ok()
+                    {
+                        for m in &buf[..(n as usize).min(16)] {
+                            dc.FillRectangle(
+                                &rect(m.left, m.top, m.left + m.width, m.top + m.height),
+                                &g.brushes.selection,
+                            );
+                        }
+                    }
+                }
+                crate::text::draw(dc, l, ox, oy, &g.brushes.text);
+            }
+            if self.focused && self.caret_on {
+                let (x, y, ch) = self.caret_pos(self.display_caret());
+                dc.FillRectangle(
+                    &rect(ox + x, oy + y, ox + x + 1.5, oy + y + ch),
+                    &g.brushes.text,
+                );
+            }
+        }
     }
 
     /// Display-string position of the caret (inside the composition while composing).
@@ -238,36 +359,13 @@ impl Composer {
                 &rect(PAD, PAD, w - PAD, h - PAD),
                 D2D1_ANTIALIAS_MODE_ALIASED,
             );
-            let scroll = self.scroll();
-            let (ox, oy) = (PAD, PAD - scroll);
-            if self.text.is_empty() && self.comp.is_empty() {
-                let l = g.layout(&gfx::wide(placeholder), &g.formats.composer, self.width)?;
-                crate::text::draw(dc, &l, ox, oy, &g.brushes.muted);
-            } else if let Some(l) = &self.layout {
-                let (a, b) = self.selection();
-                if b > a && self.comp.is_empty() {
-                    let mut buf = [DWRITE_HIT_TEST_METRICS::default(); 16];
-                    let mut n = 0u32;
-                    if l.HitTestTextRange(a as u32, (b - a) as u32, ox, oy, Some(&mut buf), &mut n)
-                        .is_ok()
-                    {
-                        for m in &buf[..(n as usize).min(16)] {
-                            dc.FillRectangle(
-                                &rect(m.left, m.top, m.left + m.width, m.top + m.height),
-                                &g.brushes.selection,
-                            );
-                        }
-                    }
-                }
-                crate::text::draw(dc, l, ox, oy, &g.brushes.text);
-            }
-            if self.focused && self.caret_on {
-                let (x, y, ch) = self.caret_pos(self.display_caret());
-                dc.FillRectangle(
-                    &rect(ox + x, oy + y, ox + x + 1.5, oy + y + ch),
-                    &g.brushes.text,
-                );
-            }
+            let (ox, oy) = (PAD, PAD - self.scroll());
+            let hint = if self.text.is_empty() && self.comp.is_empty() {
+                Some(g.layout(&gfx::wide(placeholder), &g.formats.composer, self.width)?)
+            } else {
+                None
+            };
+            self.draw_text(g, dc, ox, oy, hint.as_ref().map(|l| (l, &g.brushes.muted)));
             dc.PopAxisAlignedClip();
         }
         Ok(())

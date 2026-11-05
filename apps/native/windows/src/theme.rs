@@ -11,6 +11,14 @@ pub const TEXT: u32 = 0xF3F4F5;
 pub const TEXT_MUTED: u32 = 0xB9BCBE;
 pub const LINK: u32 = 0x69CFFF;
 pub const TERRACOTTA: u32 = 0xB64D32;
+/// Hovered fields and controls.
+pub const TERRACOTTA_BRIGHT: u32 = 0xDB6849;
+/// Error text, readable on blackout.
+pub const ERROR: u32 = 0xFF9B82;
+/// Primary actions (`.primary`): eggshell at rest, lighter on hover, darker pressed.
+pub const ACTION: u32 = 0xF1EDE4;
+pub const ACTION_HOVER: u32 = 0xFBF9F4;
+pub const ACTION_PRESS: u32 = 0xDDD7CB;
 pub const CAPER: u32 = 0x637A43;
 /// `--surface-hover`: white at 6%.
 pub const HOVER: (u32, f32) = (0xFFFFFF, 0.06);

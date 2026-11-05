@@ -54,6 +54,9 @@ pub struct Brushes {
     pub selection: ID2D1SolidColorBrush,
     pub eggshell: ID2D1SolidColorBrush,
     pub blackout: ID2D1SolidColorBrush,
+    /// Field placeholders: muted text at 65%.
+    pub hint: ID2D1SolidColorBrush,
+    pub error: ID2D1SolidColorBrush,
 }
 
 pub struct Formats {
@@ -70,6 +73,16 @@ pub struct Formats {
     pub rail: IDWriteTextFormat,
     pub composer: IDWriteTextFormat,
     pub toolbar: IDWriteTextFormat,
+    /// Sign-in: the 40px Black heading, 16px body and field text, 14px
+    /// labels and notes, the 16px Medium action, 13.6px links, 13px errors.
+    pub title: IDWriteTextFormat,
+    pub body: IDWriteTextFormat,
+    pub field: IDWriteTextFormat,
+    pub label: IDWriteTextFormat,
+    pub note: IDWriteTextFormat,
+    pub action: IDWriteTextFormat,
+    pub link_small: IDWriteTextFormat,
+    pub error: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -85,11 +98,15 @@ pub struct Gfx {
 }
 
 /// Satoshi, embedded unchanged (see shared/fonts/README.md).
-const SATOSHI: [&[u8]; 3] = [
+const SATOSHI: [&[u8]; 4] = [
     include_bytes!("../../../../shared/fonts/cache/Satoshi-Regular.otf"),
     include_bytes!("../../../../shared/fonts/cache/Satoshi-Medium.otf"),
     include_bytes!("../../../../shared/fonts/cache/Satoshi-Bold.otf"),
+    include_bytes!("../../../../shared/fonts/cache/Satoshi-Black.otf"),
 ];
+
+/// The web app's wordmark, drawn with Direct2D's SVG renderer.
+const WORDMARK: &[u8] = include_bytes!("../../../web/public/caper-wordmark.svg");
 
 impl Gfx {
     pub fn new() -> Result<Self> {
@@ -150,6 +167,8 @@ impl Gfx {
                 selection: brush(theme::SELECTION.0, theme::SELECTION.1)?,
                 eggshell: brush(0xF1EDE4, 1.0)?,
                 blackout: brush(theme::BLACKOUT, 1.0)?,
+                hint: brush(theme::TEXT_MUTED, 0.65)?,
+                error: brush(theme::ERROR, 1.0)?,
             };
             let fmt = |size: f32, weight: DWRITE_FONT_WEIGHT| {
                 dwrite.CreateTextFormat(
@@ -182,9 +201,20 @@ impl Gfx {
                 rail: centered(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 composer: fmt(15.0, DWRITE_FONT_WEIGHT_MEDIUM)?,
                 toolbar: centered(14.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                title: fmt(40.0, DWRITE_FONT_WEIGHT_BLACK)?,
+                body: fmt(16.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                field: fmt(16.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                label: fmt(14.0, DWRITE_FONT_WEIGHT_BOLD)?,
+                note: fmt(14.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                action: fmt(16.0, DWRITE_FONT_WEIGHT_MEDIUM)?,
+                link_small: fmt(13.6, DWRITE_FONT_WEIGHT_NORMAL)?,
+                error: fmt(13.0, DWRITE_FONT_WEIGHT_NORMAL)?,
             };
             let f = &formats;
             for f in [
+                &f.field,
+                &f.action,
+                &f.link_small,
                 &f.name,
                 &f.time,
                 &f.reaction,
@@ -211,6 +241,22 @@ impl Gfx {
                 formats,
                 solids: Default::default(),
             })
+        }
+    }
+
+    /// The wordmark as an SVG document scaled to `w`×`h` DIPs.
+    pub fn wordmark(&self, w: f32, h: f32) -> Result<ID2D1SvgDocument> {
+        unsafe {
+            let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(WORDMARK))
+                .ok_or_else(|| Error::from(E_OUTOFMEMORY))?;
+            let dc: ID2D1DeviceContext5 = self.dc.cast()?;
+            dc.CreateSvgDocument(
+                &stream,
+                D2D_SIZE_F {
+                    width: w,
+                    height: h,
+                },
+            )
         }
     }
 
