@@ -1,0 +1,63 @@
+# Development-only UIKit iPhone client. Release, TestFlight and build.sh keep
+# using CaperApple.xcodeproj from project.yml; nothing here ships.
+include: project.yml
+name: CaperUIKit
+targets:
+  CaperUIKit:
+    type: application
+    platform: iOS
+    sources:
+      - Sources/CaperUIKit
+      - path: Resources
+        buildPhase: resources
+    dependencies:
+      - target: CaperCoreIOS
+      - target: CaperRTCBridgeIOS
+        embed: true
+      - package: WebRTC
+        product: WebRTC
+        link: true
+    info:
+      path: Configuration/UIKit-Info.plist
+      properties:
+        CFBundleDisplayName: Caper UIKit Development
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel or record a voice message.
+        ITSAppUsesNonExemptEncryption: false
+        UIAppFonts: [Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf]
+        UILaunchScreen:
+          UIColorName: ""
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIUserInterfaceStyle: Dark
+        UIViewControllerBasedStatusBarAppearance: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        # Deliberately no caper:// handler, associated domains, push or background audio.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.uikit-development
+        PRODUCT_NAME: CaperUIKit
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+  CaperUIKitTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: Tests/CaperUIKitTests
+    dependencies:
+      - target: CaperUIKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.uikit-development.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  CaperUIKit:
+    build:
+      targets:
+        CaperUIKit: all
+        CaperUIKitTests: [test]
+    test:
+      targets: [CaperUIKitTests]

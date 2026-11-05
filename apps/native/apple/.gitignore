@@ -12,3 +12,7 @@ Package.resolved
 /Resources/Fonts/
 # XcodeGen writes the Info.plists from project.yml on every prepare.sh run.
 /Configuration/*-Info.plist
+/CaperUIKit.xcodeproj/
+/DerivedData-UIKit/
+/uikit-artifacts/
+/UIKitResults.xcresult/
