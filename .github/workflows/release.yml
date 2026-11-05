@@ -744,7 +744,11 @@ jobs:
           cd release
           read -r -a files <<<"$RELEASE_ASSETS"
           gh release delete "$RELEASE_TAG" --cleanup-tag --yes 2>/dev/null || true
-          gh release create "$RELEASE_TAG" --prerelease --target "$RELEASE_SHA" \
+          # The Releases API cannot create an older tag with GITHUB_TOKEN when
+          # main's workflows changed during the build. Push the built commit's
+          # tag through Git first; never let release creation choose main's tip.
+          git push origin "$RELEASE_SHA:refs/tags/$RELEASE_TAG"
+          gh release create "$RELEASE_TAG" --verify-tag --prerelease --target "$RELEASE_SHA" \
             --title "Caper apps (latest)" --notes-file notes.md "${files[@]}"
       - name: Remove signing material
         if: always()
