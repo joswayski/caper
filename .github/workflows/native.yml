@@ -270,6 +270,54 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  appkit:
+    name: Apple / AppKit development host
+    needs: route
+    # A sibling job, not a dependency of the shipping Apple clients. It does
+    # not run XCUITest, so the hosted Xcode 27 focus limitation does not apply.
+    runs-on: ${{ needs.route.outputs.mac == 'true' && fromJSON('["self-hosted","josemac-ui"]') || 'xcode-27' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare the isolated native project
+        run: |
+          bash apps/native/apple/prepare.sh
+          apps/native/apple/.build/xcodegen-21ac9944b0ab546a07422dbed86f33dd2ebd76f8/.build/debug/xcodegen generate \
+            --spec apps/native/apple/native-project.yml --project apps/native/apple
+      - name: Test AppKit timeline and shared Apple contracts
+        run: |
+          set -o pipefail
+          xcodebuild -project apps/native/apple/CaperNative.xcodeproj -scheme CaperAppKit \
+            -configuration Debug -destination "platform=macOS,arch=$(uname -m)" \
+            -derivedDataPath apps/native/apple/.build/NativeDerivedData \
+            -resultBundlePath "$RUNNER_TEMP/AppKitTests.xcresult" \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 300 \
+            -maximum-test-execution-time-allowance 600 test | tee "$RUNNER_TEMP/appkit-tests.log"
+      - name: Compile the development-only AppKit host
+        run: |
+          set -o pipefail
+          xcodebuild -project apps/native/apple/CaperNative.xcodeproj -scheme CaperAppKit \
+            -configuration Release -destination "platform=macOS,arch=$(uname -m)" \
+            -derivedDataPath apps/native/apple/.build/NativeDerivedData \
+            ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES build | tee "$RUNNER_TEMP/appkit-build.log"
+          app=apps/native/apple/.build/NativeDerivedData/Build/Products/Release/CaperAppKit.app
+          test "$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")" = chat.caper.appkit-development
+          test -x "$app/Contents/MacOS/CaperAppKit"
+          codesign --verify --deep --strict "$app"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: caper-appkit-checks-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/AppKitTests.xcresult/
+            ${{ runner.temp }}/appkit-tests.log
+            ${{ runner.temp }}/appkit-build.log
+          if-no-files-found: warn
+          retention-days: 14
+
   android:
     name: Android / development APK
     needs: route

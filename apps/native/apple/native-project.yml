@@ -1,0 +1,83 @@
+# Development-only hosts. Release/build.sh continue to use CaperApple.xcodeproj.
+include: project.yml
+name: CaperNative
+targets:
+  CaperAppKit:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/CaperAppKit
+      - path: Resources
+        buildPhase: resources
+    dependencies:
+      - target: CaperCoreMacOS
+      - target: CaperRTCBridge
+        embed: true
+      - framework: .build/onnxruntime-osx-universal2-1.23.2/lib/libonnxruntime.1.23.2.dylib
+        link: false
+        embed: true
+        codeSign: true
+      - package: WebRTC
+        product: WebRTC
+    info:
+      path: Configuration/AppKit-Info.plist
+      properties:
+        CFBundleDisplayName: Caper AppKit Development
+        NSPrincipalClass: NSApplication
+        NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel or record a voice message.
+        ATSApplicationFontsPath: .
+        # Deliberately no caper:// handler, updater, or production signing identity.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.appkit-development
+        PRODUCT_NAME: CaperAppKit
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        SKIP_INSTALL: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+  CaperAppKitViewTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests/CaperAppKitViewTests
+      - Sources/CaperAppKit/NativeControls.swift
+      - Sources/CaperAppKit/MessageTimeline.swift
+    dependencies:
+      - target: CaperCoreMacOS
+      - target: CaperRTCBridge
+      - framework: .build/onnxruntime-osx-universal2-1.23.2/lib/libonnxruntime.1.23.2.dylib
+        link: false
+        embed: true
+        codeSign: true
+      - package: WebRTC
+        product: WebRTC
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.appkit-development.view-tests
+        GENERATE_INFOPLIST_FILE: YES
+  CaperAppKitTests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources: Tests/CaperAppKitTests
+    dependencies:
+      - target: CaperAppKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.appkit-development.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  CaperAppKit:
+    build:
+      targets:
+        CaperAppKit: all
+        CaperCoreTests: [test]
+        CaperAppKitViewTests: [test]
+    test:
+      targets: [CaperCoreTests, CaperAppKitViewTests]
+  CaperAppKitTests:
+    build:
+      targets:
+        CaperAppKit: all
+        CaperAppKitTests: [test]
+    test:
+      targets: [CaperAppKitTests]
