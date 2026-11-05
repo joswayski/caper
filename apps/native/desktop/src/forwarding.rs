@@ -397,7 +397,7 @@ impl Forwarding {
             View::Picker { .. } => "Forward message",
             View::Conversation { .. } => "Forwarded conversation",
         };
-        let shown = egui::Window::new(title).id(egui::Id::new("live-forward")).open(&mut open).collapsible(false).resizable(true).default_width(460.0).max_height(context.content_rect().height() - 48.0).show(context, |ui| {
+        let shown = egui::Window::new(title).id(egui::Id::unique("live-forward")).open(&mut open).collapsible(false).resizable(true).default_width(460.0).max_height(context.content_rect().height() - 48.0).show(context, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 match view {
                     View::Picker { source, destinations, selected, search, text, pending, session, .. } => {
@@ -420,8 +420,8 @@ impl Forwarding {
                                         if checked { selected.push(destination.id.clone()); }
                                         else { selected.retain(|id| id != &destination.id); }
                                     }
-                                    checkbox.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), checked, format!("{} · {}", destination.name, destination.space_name)));
-                                    row.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), checked, format!("{} · {}", destination.name, destination.space_name)));
+                                    checkbox.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), checked, format!("{} · {}", destination.name, destination.space_name)));
+                                    row.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), checked, format!("{} · {}", destination.name, destination.space_name)));
                                 });
                             });
                         }
@@ -535,6 +535,7 @@ pub fn original(ui: &mut egui::Ui, message: &Message, textures: &mut crate::emoj
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestPass as _;
 
     #[test]
     fn unknown_result_preserves_retry_capability_and_definitive_rejection_unlocks_intent() {
@@ -743,7 +744,7 @@ mod tests {
             }
             let mut output = egui::FullOutput::default();
             for _ in 0..3 {
-                output = context.run(
+                output = context.test_pass(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,

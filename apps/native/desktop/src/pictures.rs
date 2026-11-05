@@ -1063,7 +1063,7 @@ pub struct Shared(Arc<Mutex<Pictures>>);
 
 impl Shared {
     pub fn of(context: &egui::Context) -> Self {
-        let id = egui::Id::new("caper-pictures");
+        let id = egui::Id::unique("caper-pictures");
         context.data_mut(|data| data.get_temp_mut_or_default::<Self>(id).clone())
     }
 
@@ -1460,16 +1460,11 @@ mod tests {
     }
 
     fn texture_color(context: &egui::Context, texture: egui::TextureId) -> egui::Color32 {
-        let delta = context.tex_manager().write().take_delta();
-        let update = &delta
-            .set
-            .iter()
-            .rev()
-            .find(|(id, _)| *id == texture)
-            .unwrap()
-            .1;
-        let egui::ImageData::Color(image) = &update.image;
-        image.pixels[0]
+        let mut delta = context.tex_manager().write().take_delta();
+        let egui::ImageData::Color(image) = &delta.set[&texture].last().unwrap().image;
+        let color = image.pixels[0];
+        delta.clear();
+        color
     }
 
     #[test]

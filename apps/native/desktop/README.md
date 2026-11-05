@@ -101,7 +101,7 @@ HTTP redirects are disabled.
 
 ## Build dependencies
 
-The workspace pins Rust **1.99.1** and eframe **0.33.3** in its independent
+The workspace pins Rust **1.99.1** and eframe **0.37.0** in its independent
 `Cargo.lock`. Builds default to `CARGO_BUILD_JOBS=2` for 4 GB runners.
 
 Ubuntu 24.04 build host:

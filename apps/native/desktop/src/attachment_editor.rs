@@ -562,7 +562,7 @@ impl Editor {
             }
         }
         let screen = context.content_rect();
-        let modal = egui::Modal::new(egui::Id::new("attachment-editor"))
+        let modal = egui::Modal::new(egui::Id::unique("attachment-editor"))
             .frame(egui::Frame::NONE)
             .backdrop_color(BLACKOUT)
             .show(context, |ui| self.contents(ui, screen, to_send, spoiler));
@@ -658,7 +658,7 @@ impl Editor {
             })
             .inner;
         done_response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, can_finish, finish_label)
+            egui::WidgetInfo::labeled(egui::Role::Button, can_finish, finish_label)
         });
         if done_response.clicked() && can_finish {
             let fin = with_field(self.current(), self.field.as_ref());
@@ -702,7 +702,7 @@ impl Editor {
                 ToSend::Preparing => {
                     let response = ui.interact(
                         open,
-                        ui.id().with("attachment-editor-preparing"),
+                        ui.scope_id().with("attachment-editor-preparing"),
                         egui::Sense::hover(),
                     );
                     egui::Spinner::new().size(16.0).color(MUTED).paint_at(
@@ -710,7 +710,7 @@ impl Editor {
                         Rect::from_center_size(open.center(), egui::vec2(16.0, 16.0)),
                     );
                     response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, false, OPEN_SENT)
+                        egui::WidgetInfo::labeled(egui::Role::Button, false, OPEN_SENT)
                     });
                     response.on_hover_text(EDIT_PENDING);
                 }
@@ -781,7 +781,7 @@ impl Editor {
             let to = crate::motion::mark(ui);
             let shown = crate::motion::entrance(
                 ui.ctx(),
-                ui.id().with(("attachment-editor-options", self.tool)),
+                ui.scope_id().with(("attachment-editor-options", self.tool)),
                 crate::motion::FAST,
             );
             crate::motion::settle_range(
@@ -1044,7 +1044,7 @@ impl Editor {
             let shown_rect = layout.rect.intersect(stage);
             let response = ui.interact(
                 shown_rect,
-                ui.id().with("attachment-editor-stage"),
+                ui.scope_id().with("attachment-editor-stage"),
                 egui::Sense::click_and_drag(),
             );
             let mut label = match self.kind {
@@ -1054,8 +1054,7 @@ impl Editor {
             if spoiler {
                 label.push_str(SPOILER_LABEL);
             }
-            response
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, &label));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, &label));
             let base = zoom_base(&layout, self.zoom);
             self.zoom.interact(ui, &response, stage, base);
             // Keep it covering the stage however far it is dragged.
@@ -1064,7 +1063,7 @@ impl Editor {
         }
         let response = ui.interact(
             layout.rect,
-            ui.id().with("attachment-editor-stage"),
+            ui.scope_id().with("attachment-editor-stage"),
             if self.tool == Tool::Crop {
                 egui::Sense::hover()
             } else {
@@ -1076,7 +1075,7 @@ impl Editor {
         } else {
             "Image being edited"
         };
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));
         let response = if self.tool == Tool::Text {
             response.on_hover_cursor(egui::CursorIcon::Text)
         } else {
@@ -1400,7 +1399,7 @@ impl Editor {
             Stroke::new(1.0_f32, Color32::from_white_alpha(140)),
             egui::StrokeKind::Outside,
         );
-        let id = egui::Id::new("attachment-editor-text");
+        let id = egui::Id::unique("attachment-editor-text");
         let edit = ui.put(
             rect,
             egui::TextEdit::singleline(&mut field.text)
@@ -1410,16 +1409,14 @@ impl Editor {
                     egui::FontFamily::Name("Satoshi Bold".into()),
                 ))
                 .text_color(Color32::from_rgb(red, green, blue))
-                .horizontal_align(egui::Align::Center)
-                .vertical_align(egui::Align::Center)
-                .frame(false)
-                .margin(egui::vec2(4.0, 2.0))
+                .align(egui::Align2::CENTER_CENTER)
+                .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 2)))
                 .char_limit(MAX_TEXT)
                 .desired_width(size.x),
         );
         edit.widget_info(|| {
             egui::WidgetInfo::labeled(
-                egui::WidgetType::TextEdit,
+                egui::Role::TextInput,
                 true,
                 if field.index.is_none() {
                     "New text"
@@ -1483,11 +1480,10 @@ impl Editor {
         let mut held = None;
         let inside = ui.interact(
             frame,
-            ui.id().with("attachment-editor-crop"),
+            ui.scope_id().with("attachment-editor-crop"),
             egui::Sense::drag(),
         );
-        inside
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Crop frame"));
+        inside.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, "Crop frame"));
         if inside.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
         }
@@ -1505,7 +1501,8 @@ impl Editor {
             paint_handle(&painter, at, handle);
             let response = ui.interact(
                 Rect::from_center_size(at, egui::vec2(HANDLE_HIT, HANDLE_HIT)),
-                ui.id().with(("attachment-editor-handle", handle as u8)),
+                ui.scope_id()
+                    .with(("attachment-editor-handle", handle as u8)),
                 egui::Sense::drag(),
             );
             if response.hovered() {
@@ -2170,7 +2167,7 @@ fn icon_button(
 ) -> egui::Response {
     let response = ui.interact(
         rect,
-        ui.id().with(("attachment-editor-button", label)),
+        ui.scope_id().with(("attachment-editor-button", label)),
         if enabled {
             egui::Sense::click()
         } else {
@@ -2202,7 +2199,7 @@ fn icon_button(
         },
     );
     let label = label.to_owned();
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, &label));
     if enabled {
         response.on_hover_text(hover)
     } else {
@@ -2213,7 +2210,7 @@ fn icon_button(
 fn text_button(ui: &mut egui::Ui, rect: Rect, label: &str, enabled: bool) -> egui::Response {
     let response = ui.interact(
         rect,
-        ui.id().with(("attachment-editor-text-button", label)),
+        ui.scope_id().with(("attachment-editor-text-button", label)),
         if enabled {
             egui::Sense::click()
         } else {
@@ -2237,7 +2234,7 @@ fn text_button(ui: &mut egui::Ui, rect: Rect, label: &str, enabled: bool) -> egu
             MUTED
         },
     );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     response
 }
 
@@ -2267,7 +2264,7 @@ fn tool_button_toned(
 ) -> egui::Response {
     let response = ui.interact(
         rect,
-        ui.id().with(("attachment-editor-tool", label)),
+        ui.scope_id().with(("attachment-editor-tool", label)),
         if enabled {
             egui::Sense::click()
         } else {
@@ -2325,9 +2322,8 @@ fn tool_button_toned(
             color,
         );
     }
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
-    });
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, label));
     if labelled {
         response
     } else {
@@ -2339,7 +2335,7 @@ fn tool_button_toned(
 fn action_button(ui: &mut egui::Ui, rect: Rect, icon: NavIcon, label: &str) -> egui::Response {
     let response = ui.interact(
         rect,
-        ui.id().with(("attachment-editor-action", label)),
+        ui.scope_id().with(("attachment-editor-action", label)),
         egui::Sense::click(),
     );
     let hot = response.hovered() || response.has_focus();
@@ -2378,7 +2374,7 @@ fn action_button(ui: &mut egui::Ui, rect: Rect, icon: NavIcon, label: &str) -> e
         galley,
         TEXT,
     );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     response
 }
 
@@ -2392,7 +2388,7 @@ fn swatch(
 ) -> egui::Response {
     let response = ui.interact(
         rect.expand(4.0),
-        ui.id().with(("attachment-editor-swatch", name)),
+        ui.scope_id().with(("attachment-editor-swatch", name)),
         egui::Sense::click(),
     );
     let [red, green, blue] = color;
@@ -2419,9 +2415,8 @@ fn swatch(
             Stroke::new(1.0_f32, ACTION),
         );
     }
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, selected, name)
-    });
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, name));
     response.on_hover_text(name)
 }
 
@@ -2430,7 +2425,7 @@ fn swatch(
 fn eraser_button(ui: &mut egui::Ui, rect: Rect, selected: bool) -> egui::Response {
     let response = ui.interact(
         rect,
-        ui.id().with("attachment-editor-eraser"),
+        ui.scope_id().with("attachment-editor-eraser"),
         egui::Sense::click(),
     );
     let hot = response.hovered() || response.has_focus();
@@ -2459,9 +2454,8 @@ fn eraser_button(ui: &mut egui::Ui, rect: Rect, selected: bool) -> egui::Respons
         NavIcon::Eraser,
         if selected || hot { TEXT } else { MUTED },
     );
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, selected, "Eraser")
-    });
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, selected, "Eraser"));
     response.on_hover_text("Eraser")
 }
 
@@ -2469,7 +2463,7 @@ fn eraser_button(ui: &mut egui::Ui, rect: Rect, selected: bool) -> egui::Respons
 fn custom_swatch(ui: &mut egui::Ui, rect: Rect, color: [u8; 3], selected: bool) -> egui::Response {
     let response = ui.interact(
         rect.expand(4.0),
-        ui.id().with("attachment-editor-custom-colour"),
+        ui.scope_id().with("attachment-editor-custom-colour"),
         egui::Sense::click(),
     );
     let painter = ui.painter();
@@ -2507,12 +2501,7 @@ fn custom_swatch(ui: &mut egui::Ui, rect: Rect, color: [u8; 3], selected: bool) 
         painter.circle_stroke(centre, radius + 3.0, Stroke::new(1.0_f32, ACTION));
     }
     response.widget_info(|| {
-        egui::WidgetInfo::selected(
-            egui::WidgetType::ColorButton,
-            true,
-            selected,
-            "Custom colour",
-        )
+        egui::WidgetInfo::selected(egui::Role::ColorWell, true, selected, "Custom colour")
     });
     response.on_hover_text("Custom colour")
 }
@@ -2560,6 +2549,7 @@ fn load_video(path: &Path) -> Option<Loaded> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestPass as _;
 
     #[test]
     fn layouts_map_between_the_screen_and_the_picture() {
@@ -2783,7 +2773,7 @@ mod tests {
     ) -> (egui::FullOutput, Outcome) {
         context.enable_accesskit();
         let mut outcome = Outcome::Open;
-        let output = context.run(
+        let output = context.test_pass(
             egui::RawInput {
                 time: Some(time),
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)),

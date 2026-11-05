@@ -922,6 +922,7 @@ impl Media {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestPass as _;
 
     fn attachment(url: Option<&str>) -> Attachment {
         Attachment {
@@ -986,7 +987,7 @@ mod tests {
         media.copy_image(&context, &attachment(Some(&format!("{base}/original"))));
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let output = context.run(Default::default(), |ctx| media.poll(ctx));
+            let output = context.test_pass(Default::default(), |ctx| media.poll(ctx));
             if let Some(egui::OutputCommand::CopyImage(image)) =
                 output.platform_output.commands.first()
             {
@@ -1223,9 +1224,10 @@ mod tests {
                 panic!("GIF must load")
             };
             let assert_color = |expected: egui::Color32| {
-                let delta = context.tex_manager().write().take_delta();
-                let update = &delta.set.iter().find(|(id, _)| *id == texture).unwrap().1;
-                let egui::ImageData::Color(image) = &update.image;
+                let mut delta = context.tex_manager().write().take_delta();
+                let egui::ImageData::Color(image) =
+                    delta.set[&texture].last().unwrap().image.clone();
+                delta.clear();
                 assert_eq!(image.size, [4, 2]);
                 // WebP's compositing rounds by one channel value in the image decoder.
                 for (actual, expected) in image.pixels[0]
@@ -1338,15 +1340,11 @@ mod tests {
             ) else {
                 panic!("GIF must load");
             };
-            let delta = context.tex_manager().write().take_delta();
-            let egui::ImageData::Color(image) = &delta
-                .set
-                .iter()
-                .find(|(id, _)| *id == texture)
-                .unwrap()
-                .1
-                .image;
-            assert_eq!(image.pixels[0], expected, "frame at {elapsed}ms");
+            let mut delta = context.tex_manager().write().take_delta();
+            let egui::ImageData::Color(image) = &delta.set[&texture].last().unwrap().image;
+            let pixel = image.pixels[0];
+            delta.clear();
+            assert_eq!(pixel, expected, "frame at {elapsed}ms");
         }
     }
 

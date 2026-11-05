@@ -67,6 +67,7 @@ pub fn default_slider<T: Numeric>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestPass as _;
 
     fn frame(
         ctx: &egui::Context,
@@ -76,15 +77,17 @@ mod tests {
         events: Vec<egui::Event>,
     ) -> egui::Response {
         let mut response = None;
-        let _ = ctx.run(
+        let _ = ctx.test_pass(
             egui::RawInput {
                 events,
                 ..Default::default()
             },
             |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.spacing_mut().slider_width = 300.0;
-                    response = Some(default_slider(ui, value, range.clone(), home, false));
+                ctx.root_ui(|root| {
+                    egui::CentralPanel::default().show(root, |ui| {
+                        ui.spacing_mut().slider_width = 300.0;
+                        response = Some(default_slider(ui, value, range.clone(), home, false));
+                    })
                 });
             },
         );
@@ -138,7 +141,7 @@ mod tests {
                 }],
             );
             let radius = response.rect.height() / 2.5
-                * match ctx.style().visuals.handle_shape {
+                * match ctx.global_style().visuals.handle_shape {
                     egui::style::HandleShape::Circle => 1.0,
                     egui::style::HandleShape::Rect { aspect_ratio } => aspect_ratio,
                 };

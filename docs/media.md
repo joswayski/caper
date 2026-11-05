@@ -1083,7 +1083,7 @@ keeps the temporary URI permission until the attachment job finishes. Rust
 desktop accepts native file lists, encoded media/documents and images with
 Ctrl+V; native file references come first, and the encoded fallback recognizes
 media, PDF, ZIP and generic binary data, preferring GIF over PNG. Rust vendors a
-narrow `egui-winit` 0.33.3 patch that delivers paste intent on key-down even
+narrow `egui-winit` 0.37.0 patch that delivers paste intent on key-down even
 without text; see the vendored `PATCHES.md` when upgrading egui.
 `scripts/test-chat-paste.mjs` covers web against `native-parity-fixture.mjs`.
 
@@ -4687,9 +4687,10 @@ maximized/fullscreen mode across exits and update restarts. Minimized geometry
 never replaces the last usable bounds, and maximized/fullscreen bounds never
 replace the normal restore rectangle. Invalid tiny saves fall back to the default
 window. Windows starts hidden and applies the saved mode after the first painted
-frame. Fixtures do not save this state. The record uses eframe 0.33's `window`
-format, keeping its monitor/DPI placement and off-screen clamping. The macOS
-SwiftUI client uses system window restoration.
+frame. Fixtures do not save this state. The record uses eframe 0.37's `window`
+format, keeping its monitor/DPI placement and off-screen clamping. eframe's own
+mode flags stay off and Caper's mode sits beside them; eframe 0.33 records still
+load. The macOS SwiftUI client uses system window restoration.
 
 ## Voice-start notifications
 

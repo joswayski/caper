@@ -49,8 +49,11 @@ avif-serialize = "=0.8.9"
 # protocol, without a web engine (see web-player/ and src/web_player.rs).
 caper-web-player = { path = "web-player" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-eframe = { version = "0.33.3", default-features = false, features = ["wgpu", "x11", "wayland", "accesskit", "default_fonts", "persistence"] }
-egui_extras = { version = "0.33.3", default-features = false, features = ["svg", "image"] }
+# system_fonts: load installed fonts on demand for scripts and emoji that
+# Satoshi and egui's bundled fonts lack (CJK, Arabic, Devanagari, color emoji).
+# experimental: the widget theme API, which keeps text fields' earlier metrics.
+eframe = { version = "=0.37.0", default-features = false, features = ["wgpu", "x11", "wayland", "accesskit", "default_fonts", "persistence", "system_fonts", "experimental"] }
+egui_extras = { version = "=0.37.0", default-features = false, features = ["svg", "image"] }
 # Attachments decode PNG/JPEG/WebP/GIF/BMP/TIFF in pure Rust. AVIF inline
 # images and AVIF/HEIC full-size images use the bundled FFmpeg instead.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
@@ -86,20 +89,24 @@ webpx = { version = "=0.4.0", default-features = false, features = ["encode", "i
 # release builds only when `nasm` is on PATH.
 avif-asm = ["rav1e/asm"]
 
+[dev-dependencies]
+# Tests check that eframe reads Caper's `window` record.
+egui-winit = { version = "=0.37.0", default-features = false, features = ["serde"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Caper's X11 window id for the web player helper.
 raw-window-handle = "0.6"
 keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 notify-rust = { version = "4.18.2", default-features = false, features = ["z"] }
 zbus = "=5.19.0"
-wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "vulkan", "gles"] }
+wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", "vulkan", "gles"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # WebView2 in process for link preview players; its loader finds the
 # system runtime at run time.
 caper-web-player = { path = "web-player", features = ["engine"] }
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
-wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "dx12"] }
+wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", "dx12"] }
 windows = { version = "0.61.3", features = ["UI_ViewManagement", "UI_Notifications", "Data_Xml_Dom"] }
 winreg = "0.55"
 winrt-toast-reborn = "0.3.8"

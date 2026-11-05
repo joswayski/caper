@@ -120,7 +120,7 @@ pub fn breathing(context: &Context, period: f64, low: f32) -> f32 {
 }
 
 fn enabled_id() -> Id {
-    Id::new("caper-motion")
+    Id::unique("caper-motion")
 }
 
 /// Headless tests draw final states unless they turn motion on.
@@ -382,7 +382,10 @@ pub fn begin_displacement(
     let allowed = live
         && enabled(context)
         && !context.input(|input| {
-            input.raw_scroll_delta != Vec2::ZERO
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::MouseWheel { .. }))
                 || input.pointer.is_decidedly_dragging()
                 || [
                     egui::Key::PageUp,
@@ -407,12 +410,12 @@ pub fn begin_displacement(
             state.until = now + f64::from(SLOW);
         }
         state.event = event;
-        data.insert_temp(Id::new("displacement-active"), (id, allowed));
+        data.insert_temp(Id::unique("displacement-active"), (id, allowed));
     });
 }
 
 pub fn end_displacement(context: &Context) {
-    context.data_mut(|data| data.remove::<(Id, bool)>(Id::new("displacement-active")));
+    context.data_mut(|data| data.remove::<(Id, bool)>(Id::unique("displacement-active")));
 }
 
 /// Carry the whole timeline, including dividers, from its last painted position.
@@ -425,7 +428,7 @@ pub fn displaced<R>(ui: &mut egui::Ui, key: &str, content: impl FnOnce(&mut egui
     let pass = ui.ctx().cumulative_pass_nr();
     let active = ui
         .ctx()
-        .data(|data| data.get_temp::<(Id, bool)>(Id::new("displacement-active")));
+        .data(|data| data.get_temp::<(Id, bool)>(Id::unique("displacement-active")));
     if let Some((id, true)) = active {
         let offset = ui.ctx().data_mut(|data| {
             let state = data.get_temp_mut_or_default::<Displacement>(id);
@@ -553,6 +556,7 @@ impl Arrivals {
 #[cfg(test)]
 mod tests {
     use super::{ARRIVAL, Arrivals, BASE, breath, breathing, enable, entrance, kde_animations_off};
+    use crate::TestPass as _;
     use eframe::egui;
 
     #[test]
@@ -580,7 +584,7 @@ mod tests {
         for (motion, expected) in [(false, 1.0), (true, 0.4)] {
             let context = egui::Context::default();
             let mut alpha = 0.0;
-            let _ = context.run(
+            let _ = context.test_pass(
                 egui::RawInput {
                     time: Some(1.0),
                     ..Default::default()
@@ -605,7 +609,7 @@ mod tests {
         motion: bool,
     ) -> f32 {
         let mut painted = 0.0;
-        let _ = context.run(
+        let _ = context.test_pass(
             egui::RawInput {
                 time: Some(time),
                 ..Default::default()
@@ -617,28 +621,30 @@ mod tests {
                 // ScrollArea can temporarily report not-at-end while it measures
                 // the append. That must not cancel an already-started animation.
                 let watching = live && event.is_none_or(|at| time <= at);
-                super::begin_displacement(context, egui::Id::new("list"), event, watching, live);
-                egui::CentralPanel::default().show(context, |ui| {
-                    ui.add_space(top);
-                    let from = super::mark(ui);
-                    super::displaced(ui, "timeline", |ui| {
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(ui.cursor().min, egui::vec2(20.0, 20.0)),
-                            0.0,
-                            egui::Color32::WHITE,
-                        );
-                    });
-                    painted = context.graphics(|graphics| {
-                        graphics
-                            .get(ui.layer_id())
-                            .unwrap()
-                            .all_entries()
-                            .nth(from)
-                            .unwrap()
-                            .shape
-                            .visual_bounding_rect()
-                            .top()
-                    });
+                super::begin_displacement(context, egui::Id::unique("list"), event, watching, live);
+                context.root_ui(|root| {
+                    egui::CentralPanel::default().show(root, |ui| {
+                        ui.add_space(top);
+                        let from = super::mark(ui);
+                        super::displaced(ui, "timeline", |ui| {
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(ui.cursor().min, egui::vec2(20.0, 20.0)),
+                                0.0,
+                                egui::Color32::WHITE,
+                            );
+                        });
+                        painted = context.graphics(|graphics| {
+                            graphics
+                                .get(ui.layer_id())
+                                .unwrap()
+                                .all_entries()
+                                .nth(from)
+                                .unwrap()
+                                .shape
+                                .visual_bounding_rect()
+                                .top()
+                        });
+                    })
                 });
                 super::end_displacement(context);
             },
@@ -738,11 +744,11 @@ mod tests {
             ..Default::default()
         };
         let mut progress = 0.0;
-        let _ = context.run(input, |context| {
+        let _ = context.test_pass(input, |context| {
             if motion {
                 enable(context);
             }
-            progress = entrance(context, egui::Id::new("entering"), BASE);
+            progress = entrance(context, egui::Id::unique("entering"), BASE);
         });
         progress
     }

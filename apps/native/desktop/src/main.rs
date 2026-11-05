@@ -413,9 +413,9 @@ enum EmojiTarget {
 impl EmojiTarget {
     fn editor(&self) -> egui::Id {
         match self {
-            Self::Channel => egui::Id::new("message-composer"),
-            Self::Thread(root) => egui::Id::new(("thread-draft", root)),
-            Self::Profile(person) => egui::Id::new(("profile-composer", person)),
+            Self::Channel => egui::Id::unique("message-composer"),
+            Self::Thread(root) => egui::Id::unique(("thread-draft", root)),
+            Self::Profile(person) => egui::Id::unique(("profile-composer", person)),
         }
     }
 }
@@ -660,7 +660,7 @@ impl SuggestionState {
         if !range.is_empty() {
             return None;
         }
-        ComposerToken::at(text, range.primary.index)
+        ComposerToken::at(text, range.primary.index.0)
             .filter(|token| self.dismissed.as_ref() != Some(&(text.to_owned(), token.end())))
     }
 }
@@ -3644,7 +3644,7 @@ impl CaperApp {
         self.install_voice_messages_fixture(false);
         self.mention_card = Some(MentionCard {
             pill: PillClick {
-                id: egui::Id::new("fixture-alex-pill"),
+                id: egui::Id::unique("fixture-alex-pill"),
                 rect: egui::Rect::from_min_size(egui::pos2(402.0, 330.0), egui::vec2(48.0, 18.0)),
                 entry: model::Mention {
                     kind: "user".into(),
@@ -8516,7 +8516,7 @@ impl CaperApp {
     fn reply_in_thread(&mut self, context: &egui::Context, root: String) {
         self.showing_pins = false;
         self.open_thread(root.clone());
-        context.memory_mut(|memory| memory.request_focus(egui::Id::new(("thread-draft", root))));
+        context.memory_mut(|memory| memory.request_focus(egui::Id::unique(("thread-draft", root))));
     }
 
     fn close_thread(&mut self) {
@@ -8872,8 +8872,8 @@ impl CaperApp {
     fn close_gif_picker(&mut self, context: &egui::Context) {
         if let Some(picker) = self.gif_picker.take() {
             let id = picker.root.map_or_else(
-                || egui::Id::new("message-composer"),
-                |root| egui::Id::new(("thread-draft", root)),
+                || egui::Id::unique("message-composer"),
+                |root| egui::Id::unique(("thread-draft", root)),
             );
             context.memory_mut(|memory| memory.request_focus(id));
         }
@@ -9975,7 +9975,7 @@ impl CaperApp {
         // Top center: at the bottom left it covered the account bar's audio
         // controls (and the composer in narrow windows).
         let text_width = (context.content_rect().width() - 32.0 - 28.0 - 16.0 - 28.0).max(1.0);
-        egui::Area::new(egui::Id::new("space-notice"))
+        egui::Area::new(egui::Id::unique("space-notice"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 16.0))
             .show(context, |ui| {
@@ -10210,7 +10210,8 @@ impl eframe::App for CaperApp {
         self.web_player.stop();
     }
 
-    fn update(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let context = &ui.ctx().clone();
         if let Some(window) = &mut self.window_state {
             window.update(context);
         }
@@ -10221,7 +10222,7 @@ impl eframe::App for CaperApp {
                 self.selected_space, self.selected_channel, self.selected_direct
             )
         }));
-        if motion::reduced() && context.style().animation_time > 0.0 {
+        if motion::reduced() && context.global_style().animation_time > 0.0 {
             // egui's own fades, scrolls and disclosures rest at once too.
             context.all_styles_mut(|style| {
                 style.animation_time = 0.0;
@@ -10287,7 +10288,7 @@ impl eframe::App for CaperApp {
         }
         self.update_notice(context);
         self.poll_whats_new(context);
-        self.page(context);
+        self.page(ui);
         self.inline_videos.retain(|_, (player, seen, _)| {
             let keep = *seen == context.cumulative_frame_nr() && self.viewer.is_none();
             if !keep {
@@ -10373,7 +10374,7 @@ impl eframe::App for CaperApp {
             frame,
             &[egui::LayerId::new(
                 egui::Order::Background,
-                egui::Id::new("dialog-backdrop"),
+                egui::Id::unique("dialog-backdrop"),
             )],
         );
     }
@@ -10464,7 +10465,8 @@ impl CaperApp {
         ));
     }
 
-    fn page(&mut self, context: &egui::Context) {
+    fn page(&mut self, ui: &mut egui::Ui) {
+        let context = &ui.ctx().clone();
         self.poll_app_links(context);
         let login = self.account.is_none() || matches!(self.dialog, Some(Dialog::SignIn));
         if !login {
@@ -10472,13 +10474,13 @@ impl CaperApp {
             self.login_focus = None;
         }
         if self.restoring(context) {
-            self.restoring_page(context);
+            self.restoring_page(ui);
         } else if login {
-            self.login_page(context);
+            self.login_page(ui);
         } else if self.onboarding() {
-            self.onboarding_page(context);
+            self.onboarding_page(ui);
         } else if self.needs_first_space() {
-            self.first_space_page(context);
+            self.first_space_page(ui);
             self.activity_dialog(context);
         } else {
             // Before the page, like the media viewer: the editor is modal
@@ -10501,7 +10503,7 @@ impl CaperApp {
                 self.open_settings();
             }
             let dialog_was_open = self.dialog.is_some();
-            self.shell(context);
+            self.shell(ui);
             if !self.updates.has_available() {
                 self.activity_dialog(context);
                 self.pins_dialog(context);
@@ -10576,7 +10578,7 @@ impl CaperApp {
             return;
         }
         context.request_repaint_after(Duration::from_secs_f64(self.zoom_notice_until - now));
-        egui::Area::new(egui::Id::new("zoom-notice"))
+        egui::Area::new(egui::Id::unique("zoom-notice"))
             .order(egui::Order::Tooltip)
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0))
             .interactable(false)
@@ -10594,7 +10596,7 @@ impl CaperApp {
 
     /// Only the release notes scroll; the install action always stays visible.
     fn update_notice(&mut self, context: &egui::Context) {
-        let focus_id = egui::Id::new("update-review-focused");
+        let focus_id = egui::Id::unique("update-review-focused");
         let Some(update) = self.updates.available() else {
             context.data_mut(|data| data.remove::<bool>(focus_id));
             return;
@@ -10613,7 +10615,7 @@ impl CaperApp {
         }
         let viewport = context.viewport_rect();
         egui::Popup::close_all(context);
-        let modal = egui::Modal::new(egui::Id::new("app-update"))
+        let modal = egui::Modal::new(egui::Id::unique("app-update"))
             .frame(
                 egui::Frame::new()
                     .fill(SURFACE)
@@ -10910,7 +10912,7 @@ impl CaperApp {
     fn wordmark(&self, ui: &mut egui::Ui) {
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(132.0, 35.0), egui::Sense::hover());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "Caper"));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Caper"));
         egui::Image::new(egui::include_image!(
             "../../../web/public/caper-wordmark.svg"
         ))
@@ -10995,10 +10997,10 @@ impl CaperApp {
         true
     }
 
-    fn restoring_page(&self, context: &egui::Context) {
+    fn restoring_page(&self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BLACKOUT))
-            .show(context, |ui| {
+            .show(ui, |ui| {
                 let height = 35.0 + 14.0 + 16.0 + 14.0 + 16.0;
                 ui.add_space(((ui.available_height() - height) / 2.0).max(0.0));
                 ui.vertical_centered(|ui| {
@@ -11014,10 +11016,10 @@ impl CaperApp {
             });
     }
 
-    fn first_space_page(&mut self, context: &egui::Context) {
+    fn first_space_page(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BLACKOUT))
-            .show(context, |ui| {
+            .show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.set_max_width(440.0);
@@ -11043,7 +11045,7 @@ impl CaperApp {
                             ui.add_space(4.0);
                             let field = ui.add(
                                 egui::TextEdit::singleline(&mut self.form_name)
-                                    .vertical_align(egui::Align::Center)
+                                    .align(egui::Align2::LEFT_CENTER)
                                     .char_limit(64)
                                     .hint_text("Gaming nights")
                                     .min_size(egui::vec2(0.0, 52.0))
@@ -11108,10 +11110,10 @@ impl CaperApp {
             });
     }
 
-    fn onboarding_page(&mut self, context: &egui::Context) {
+    fn onboarding_page(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BLACKOUT))
-            .show(context, |ui| {
+            .show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.set_max_width(440.0);
@@ -11132,7 +11134,7 @@ impl CaperApp {
                             ui.add_space(4.0);
                             let field = ui.add(
                                 egui::TextEdit::singleline(&mut self.username)
-                                    .vertical_align(egui::Align::Center)
+                                    .align(egui::Align2::LEFT_CENTER)
                                     .char_limit(32)
                                     .min_size(egui::vec2(0.0, 52.0))
                                     .desired_width(f32::INFINITY),
@@ -11152,7 +11154,7 @@ impl CaperApp {
                             ui.add_space(4.0);
                             let field = ui.add(
                                 egui::TextEdit::singleline(&mut self.display_name)
-                                    .vertical_align(egui::Align::Center)
+                                    .align(egui::Align2::LEFT_CENTER)
                                     .char_limit(64)
                                     .min_size(egui::vec2(0.0, 52.0))
                                     .desired_width(f32::INFINITY),
@@ -11214,14 +11216,14 @@ impl CaperApp {
             });
     }
 
-    fn login_page(&mut self, context: &egui::Context) {
+    fn login_page(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
                     .fill(BLACKOUT)
                     .inner_margin(egui::Margin::symmetric(20, 0)),
             )
-            .show(context, |ui| {
+            .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     let width = ui.available_width().min(440.0);
                     ui.set_max_width(width);
@@ -11267,9 +11269,9 @@ impl CaperApp {
                             let response = ui.add_enabled(
                                 !exhausted,
                                 egui::TextEdit::singleline(text)
-                                    .id(egui::Id::new("sign-in-code"))
+                                    .id(egui::Id::unique("sign-in-code"))
                                     .hint_text("e.g. ABC234")
-                                    .vertical_align(egui::Align::Center)
+                                    .align(egui::Align2::LEFT_CENTER)
                                     .font(egui::FontId::proportional(16.0))
                                     .margin(egui::Margin::symmetric(14, 4))
                                     .min_size(egui::vec2(width, 52.0))
@@ -11381,7 +11383,7 @@ impl CaperApp {
                                 self.resend_code();
                                 // Keep typing in the code field, as on web.
                                 ui.memory_mut(|memory| {
-                                    memory.request_focus(egui::Id::new("sign-in-code"));
+                                    memory.request_focus(egui::Id::unique("sign-in-code"));
                                 });
                             }
                             if !resends_left && self.challenge.is_some() {
@@ -11403,8 +11405,8 @@ impl CaperApp {
                                 if self.loading { &mut frozen } else { &mut self.email };
                             let response = ui.add(
                                 egui::TextEdit::singleline(text)
-                                    .id(egui::Id::new("sign-in-email"))
-                                    .vertical_align(egui::Align::Center)
+                                    .id(egui::Id::unique("sign-in-email"))
+                                    .align(egui::Align2::LEFT_CENTER)
                                     // Web's field: 14px inset, 16px text.
                                     .font(egui::FontId::proportional(16.0))
                                     .margin(egui::Margin::symmetric(14, 4))
@@ -11602,7 +11604,7 @@ impl CaperApp {
             touch.distance = delta.x * direction;
             // Own the horizontal drag before a scrolling list or selectable
             // message can consume it, including its release click.
-            context.set_dragged_id(egui::Id::new("navigation-swipe"));
+            context.set_dragged_id(egui::Id::unique("navigation-swipe"));
             if phase == egui::TouchPhase::End {
                 let velocity = match touch.samples.first() {
                     Some(&(time, x)) if now > time => (pos.x - x) * direction / (now - time) as f32,
@@ -11674,7 +11676,8 @@ impl CaperApp {
         pose
     }
 
-    fn shell(&mut self, context: &egui::Context) {
+    fn shell(&mut self, ui: &mut egui::Ui) {
+        let context = &ui.ctx().clone();
         let covered = self.browse_covers_conversation();
         self.navigation_swipe(context);
         self.navigation_swipe_bottom = context.viewport_rect().bottom();
@@ -11683,7 +11686,7 @@ impl CaperApp {
         self.narrow_layout = narrow;
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(SURFACE))
-            .show(context, |ui| {
+            .show(ui, |ui| {
                 if self.dialog.is_some() {
                     ui.disable();
                 }
@@ -11697,10 +11700,10 @@ impl CaperApp {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
                             // The account bar keeps the full width below the rail and
                             // sidebar.
-                            let bar = egui::TopBottomPanel::bottom("narrow-account")
+                            let bar = egui::Panel::bottom("narrow-account")
                                 .show_separator_line(false)
                                 .frame(egui::Frame::new().fill(SIDEBAR).inner_margin(12))
-                                .show_inside(ui, |ui| self.account_bar(ui));
+                                .show(ui, |ui| self.account_bar(ui));
                             self.browse_bar = bar.response.rect.height();
                             let browse = ui.available_rect_before_wrap();
                             let rail_rect = egui::Rect::from_min_max(
@@ -11729,7 +11732,7 @@ impl CaperApp {
                         // conversation's background never reach Browse beneath it.
                         ui.interact(
                             stage,
-                            egui::Id::new("narrow-stage-backdrop"),
+                            egui::Id::unique("narrow-stage-backdrop"),
                             egui::Sense::click_and_drag(),
                         );
                     }
@@ -11758,7 +11761,7 @@ impl CaperApp {
                                 && ui
                                     .interact(
                                         body,
-                                        egui::Id::new("members-backdrop"),
+                                        egui::Id::unique("members-backdrop"),
                                         egui::Sense::click(),
                                     )
                                     .clicked()
@@ -11841,18 +11844,14 @@ impl CaperApp {
                     let separator = ui
                         .interact(
                             separator_rect.expand2(egui::vec2(3.0, 0.0)),
-                            egui::Id::new("sidebar-resize"),
+                            egui::Id::unique("sidebar-resize"),
                             egui::Sense::click_and_drag(),
                         )
                         .on_hover_text(
                             "Drag to resize. Arrow keys to adjust. Double-click to reset.",
                         );
                     separator.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::Slider,
-                            true,
-                            "Channel sidebar width",
-                        )
+                        egui::WidgetInfo::labeled(egui::Role::Slider, true, "Channel sidebar width")
                     });
                     if separator.dragged() {
                         self.sidebar_width = (sidebar_width + separator.drag_delta().x)
@@ -11908,18 +11907,14 @@ impl CaperApp {
                                     members_rect.min - egui::vec2(3.0, 0.0),
                                     egui::pos2(members_rect.left() + 4.0, members_rect.bottom()),
                                 ),
-                                egui::Id::new("members-resize"),
+                                egui::Id::unique("members-resize"),
                                 egui::Sense::click_and_drag(),
                             )
                             .on_hover_text(
                                 "Drag to resize. Arrow keys to adjust. Double-click to reset.",
                             );
                         separator.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Slider,
-                                true,
-                                "Member list width",
-                            )
+                            egui::WidgetInfo::labeled(egui::Role::Slider, true, "Member list width")
                         });
                         if separator.dragged() {
                             self.members_width = (members_width - separator.drag_delta().x)
@@ -12127,7 +12122,7 @@ impl CaperApp {
                             // New messages: a small dot in the rail margin,
                             // beside the tile. It arrives; leaving is instant.
                             let dot = ui.ctx().animate_value_with_time(
-                                egui::Id::new(("space-unread", &id)),
+                                egui::Id::unique(("space-unread", &id)),
                                 if unread { 1.0 } else { 0.0 },
                                 if unread && !motion::reduced() {
                                     0.2
@@ -12147,7 +12142,7 @@ impl CaperApp {
                             }
                             response.widget_info(|| {
                                 egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
+                                    egui::Role::Button,
                                     true,
                                     description.replace('\n', ", "),
                                 )
@@ -12156,7 +12151,7 @@ impl CaperApp {
                             // Selected: a terracotta ring and soft outer glow that
                             // blooms in and settles. Deselection is instant.
                             let selection = ui.ctx().animate_value_with_time(
-                                egui::Id::new(("space-indicator", &id)),
+                                egui::Id::unique(("space-indicator", &id)),
                                 if active { 1.0 } else { 0.0 },
                                 if active && !motion::reduced() {
                                     0.7
@@ -12294,7 +12289,7 @@ impl CaperApp {
                         }
                         add.widget_info(|| {
                             egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
+                                egui::Role::Button,
                                 add_enabled,
                                 "Create space",
                             )
@@ -12334,7 +12329,7 @@ impl CaperApp {
                         );
                         join.widget_info(|| {
                             egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
+                                egui::Role::Button,
                                 true,
                                 "Join with invite link",
                             )
@@ -12377,10 +12372,10 @@ impl CaperApp {
                 ui.set_height(ui.available_height());
                 ui.spacing_mut().item_spacing.y = 0.0;
                 if account_bar {
-                    egui::TopBottomPanel::bottom("native-account")
+                    egui::Panel::bottom("native-account")
                         .show_separator_line(false)
                         .frame(egui::Frame::NONE)
-                        .show_inside(ui, |ui| self.account_bar(ui));
+                        .show(ui, |ui| self.account_bar(ui));
                 }
                 // Pinned above the scrolling channel list, as on web.
                 let header = ui.allocate_ui_with_layout(
@@ -12437,7 +12432,7 @@ impl CaperApp {
                         let actions = if truncated { actions.on_hover_text(name) } else { actions };
                         actions.widget_info(|| {
                             egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
+                                egui::Role::Button,
                                 self.owner() || self.can_leave_space(),
                                 format!("{name} actions"),
                             )
@@ -12669,8 +12664,8 @@ impl CaperApp {
                                 let search = ui.add_sized(
                                     [ui.available_width(), 32.0],
                                     egui::TextEdit::singleline(&mut self.channel_search)
-                                        .id(egui::Id::new("browse-channels-search"))
-                                        .vertical_align(egui::Align::Center)
+                                        .id(egui::Id::unique("browse-channels-search"))
+                                        .align(egui::Align2::LEFT_CENTER)
                                         .margin(egui::Margin::symmetric(8, 4))
                                         .hint_text(RichText::new("Search channels").color(MUTED.gamma_multiply(0.65))),
                                 );
@@ -12818,7 +12813,7 @@ impl CaperApp {
                 let divider = ui
                     .interact(
                         divider_rect,
-                        egui::Id::new("sidebar-height-resize"),
+                        egui::Id::unique("sidebar-height-resize"),
                         egui::Sense::click_and_drag(),
                     )
                     .on_hover_text(
@@ -12826,7 +12821,7 @@ impl CaperApp {
                     );
                 divider.widget_info(|| {
                     egui::WidgetInfo::labeled(
-                        egui::WidgetType::Slider,
+                        egui::Role::Slider,
                         true,
                         "Channel and direct message list height",
                     )
@@ -13022,12 +13017,12 @@ impl CaperApp {
                         ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
                     let response = ui.interact(
                         rect,
-                        egui::Id::new("direct-heading-plus"),
+                        egui::Id::unique("direct-heading-plus"),
                         egui::Sense::click(),
                     );
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                            egui::Role::Button,
                             ui.is_enabled(),
                             "New direct message",
                         )
@@ -13110,7 +13105,7 @@ impl CaperApp {
                 let lit = response.hovered() || response.has_focus();
                 response.widget_info(|| {
                     egui::WidgetInfo::selected(
-                        egui::WidgetType::SelectableLabel,
+                        egui::Role::Button,
                         ui.is_enabled(),
                         self_active,
                         &name,
@@ -13564,7 +13559,7 @@ impl CaperApp {
                 .allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
             response.widget_info(|| {
                 egui::WidgetInfo::selected(
-                    egui::WidgetType::SelectableLabel,
+                    egui::Role::Button,
                     ui.is_enabled(),
                     active,
                     format!("Message request from {name}"),
@@ -13695,9 +13690,8 @@ impl CaperApp {
         {
             self.prepare_voice_join(id);
         }
-        button.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, button.enabled(), label)
-        });
+        button
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, button.enabled(), label));
         let button = match self.join_unavailable(id) {
             Some(reason) => button.on_disabled_hover_text(reason),
             None => button.on_hover_text(tooltip),
@@ -13866,7 +13860,7 @@ impl CaperApp {
                 egui::vec2(ui.available_width().max(0.0), 44.0),
                 egui::Sense::click(),
             );
-            title.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+            title.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
             let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&title));
             if open || title.hovered() || title.has_focus() {
                 ui.painter().rect_filled(rect, 8.0, SURFACE_HOVER);
@@ -14117,7 +14111,7 @@ impl CaperApp {
         let speaking = self.call_speaking(&people);
         let entering = motion::entrance(
             ui.ctx(),
-            egui::Id::new(("live-call", &call.channel_id)),
+            egui::Id::unique(("live-call", &call.channel_id)),
             motion::BASE,
         );
         let (card, clicked, (head, faces)) = motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| {
@@ -14286,7 +14280,11 @@ impl CaperApp {
             egui::pos2(left - 4.0, row.top()),
             egui::pos2(end + 4.0, row.bottom()),
         );
-        let open = ui.interact(link, ui.id().with("call-channel"), egui::Sense::click());
+        let open = ui.interact(
+            link,
+            ui.scope_id().with("call-channel"),
+            egui::Sense::click(),
+        );
         if open.hovered() || open.has_focus() {
             ui.painter().rect_filled(link, 6.0, SURFACE_HOVER);
         }
@@ -14313,7 +14311,7 @@ impl CaperApp {
         } else {
             format!("Open #{}", call.channel_name)
         };
-        open.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        open.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
         let open = open.on_hover_text(label);
         if open.clicked() {
             self.open_call_chat(call, false);
@@ -14382,7 +14380,7 @@ impl CaperApp {
             let (muted, deafened) = self.face_audio(person);
             let face = ui.interact(
                 rect,
-                ui.id().with(("call-face", &person.id)),
+                ui.scope_id().with(("call-face", &person.id)),
                 egui::Sense::CLICK,
             );
             let picture = paint_avatar(ui, rect, &person.name, person.avatar_id, person.picture());
@@ -14404,7 +14402,7 @@ impl CaperApp {
         }
         if more > 0 {
             let rect = slot(faces);
-            let tile = ui.interact(rect, ui.id().with("call-more"), egui::Sense::CLICK);
+            let tile = ui.interact(rect, ui.scope_id().with("call-more"), egui::Sense::CLICK);
             ui.painter()
                 .circle_filled(rect.center(), size / 2.0, MORE_TILE);
             ui.painter().text(
@@ -14468,7 +14466,7 @@ impl CaperApp {
                     );
                     leave.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                            egui::Role::Button,
                             true,
                             if joining {
                                 "Cancel joining voice"
@@ -14522,7 +14520,8 @@ impl CaperApp {
     fn room_card(&mut self, ui: &mut egui::Ui, room: &LiveRoom, listed: bool) {
         let touch = self.narrow_layout;
         let id = &room.row.id;
-        let entering = motion::entrance(ui.ctx(), egui::Id::new(("live-room", id)), motion::BASE);
+        let entering =
+            motion::entrance(ui.ctx(), egui::Id::unique(("live-room", id)), motion::BASE);
         let (clicked, on_action) = motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| {
             // Behind its row and buttons, which keep their own clicks.
             let shown = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::CLICK), |ui| {
@@ -14576,7 +14575,7 @@ impl CaperApp {
             row.min,
             egui::pos2(row.left() + 24.0 + name.size().x + 4.0, row.bottom()),
         );
-        let open = ui.interact(link, ui.id().with("open"), egui::Sense::click());
+        let open = ui.interact(link, ui.scope_id().with("open"), egui::Sense::click());
         if open.hovered() || open.has_focus() {
             ui.painter().rect_filled(link, 6.0, SURFACE_HOVER);
         }
@@ -14601,7 +14600,7 @@ impl CaperApp {
             TEXT,
         );
         let label = format!("Open #{}", room.row.name);
-        open.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        open.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
         // A visited room is the conversation already open.
         if open.on_hover_text(label).clicked() && self.visited_channel(&room.row.id).is_none() {
             self.select_channel(room.row.id.clone(), false);
@@ -14690,9 +14689,8 @@ impl CaperApp {
                     let (rect, response) =
                         ui.allocate_exact_size(galley.size(), egui::Sense::hover());
                     emoji::paint_galley(ui.painter(), rect.min, galley, MUTED);
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &names)
-                    });
+                    response
+                        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &names));
                 });
                 on_action
             },
@@ -14740,11 +14738,7 @@ impl CaperApp {
                         .min_size(egui::vec2(0.0, height)),
                 );
                 button.widget_info(|| {
-                    egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
-                        false,
-                        format!("Joining #{name}"),
-                    )
+                    egui::WidgetInfo::labeled(egui::Role::Button, false, format!("Joining #{name}"))
                 });
                 let on = button.contains_pointer();
                 button.on_disabled_hover_text(format!("Connecting to #{name}…"));
@@ -14780,7 +14774,7 @@ impl CaperApp {
         );
         let mut close = false;
         if touch {
-            let backdrop = egui::Area::new(egui::Id::new("call-list-backdrop"))
+            let backdrop = egui::Area::new(egui::Id::unique("call-list-backdrop"))
                 .order(egui::Order::Middle)
                 .fixed_pos(screen.min)
                 .show(&context, |ui| {
@@ -14795,7 +14789,7 @@ impl CaperApp {
         }
         let (area, width, max_height) = if touch {
             (
-                egui::Area::new(egui::Id::new("call-list"))
+                egui::Area::new(egui::Id::unique("call-list"))
                     .pivot(egui::Align2::LEFT_BOTTOM)
                     .fixed_pos(screen.left_bottom()),
                 screen.width(),
@@ -14804,7 +14798,7 @@ impl CaperApp {
         } else {
             (
                 // Beside the sidebar, level with the card.
-                egui::Area::new(egui::Id::new("call-list"))
+                egui::Area::new(egui::Id::unique("call-list"))
                     .fixed_pos(egui::pos2(card.right() + 20.0, card.top()))
                     .constrain(true),
                 300.0,
@@ -14952,7 +14946,7 @@ impl CaperApp {
                                 }
                                 audio.widget_info(|| {
                                     egui::WidgetInfo::selected(
-                                        egui::WidgetType::Button,
+                                        egui::Role::Button,
                                         true,
                                         open,
                                         format!("Audio controls for {}", person.name),
@@ -15078,17 +15072,17 @@ impl CaperApp {
         if !in_call && live_here.is_none() {
             return;
         }
-        let strip = egui::TopBottomPanel::top("voice-strip")
-            .exact_height(56.0)
+        let strip = egui::Panel::top("voice-strip")
+            .exact_size(56.0)
             .show_separator_line(false)
             .frame(
                 egui::Frame::new()
                     .fill(VOICE_STRIP)
                     .inner_margin(egui::Margin::symmetric(12, 6)),
             )
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 let entering =
-                    motion::entrance(ui.ctx(), egui::Id::new("voice-strip"), motion::BASE);
+                    motion::entrance(ui.ctx(), egui::Id::unique("voice-strip"), motion::BASE);
                 motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| match live_here {
                     _ if in_call => self.strip_call(ui),
                     Some((channel, people)) => self.strip_join(ui, &channel, &people),
@@ -15126,11 +15120,11 @@ impl CaperApp {
         // Registered first, so Mute (added after) takes its own clicks.
         let strip = ui.interact(
             inner.expand2(egui::vec2(12.0, 6.0)),
-            ui.id().with("open-call"),
+            ui.scope_id().with("open-call"),
             egui::Sense::click(),
         );
         let label = format!("Voice in #{}: show the call", call.channel_name);
-        strip.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        strip.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
         if strip.hovered() || strip.has_focus() {
             ui.painter().rect_filled(strip.rect, 0.0, SURFACE_HOVER);
         }
@@ -15225,7 +15219,7 @@ impl CaperApp {
         if joining {
             button.widget_info(|| {
                 egui::WidgetInfo::labeled(
-                    egui::WidgetType::Button,
+                    egui::Role::Button,
                     false,
                     format!("Joining voice in #{name}"),
                 )
@@ -15331,9 +15325,10 @@ impl CaperApp {
         } else {
             "Sign in to edit your profile".into()
         };
-        let open_profile = ui.interact(profile, ui.id().with("profile"), egui::Sense::click());
+        let open_profile =
+            ui.interact(profile, ui.scope_id().with("profile"), egui::Sense::click());
         open_profile.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &profile_label)
+            egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &profile_label)
         });
         if open_profile.hovered() || open_profile.has_focus() {
             ui.painter().rect_filled(profile, 4.0, COMPOSER);
@@ -15962,7 +15957,7 @@ impl CaperApp {
                         );
                         play.widget_info(|| {
                             egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
+                                egui::Role::Button,
                                 play.enabled(),
                                 format!(
                                     "{} {} audio sample",
@@ -16185,7 +16180,7 @@ impl CaperApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
-                    let input = ui.add(egui::TextEdit::singleline(&mut self.member_search).id(egui::Id::new("member-search")).hint_text("Search members").desired_width((ui.available_width() - 56.0).max(0.0)));
+                    let input = ui.add(egui::TextEdit::singleline(&mut self.member_search).id(egui::Id::unique("member-search")).hint_text("Search members").desired_width((ui.available_width() - 56.0).max(0.0)));
                     if focus_search { input.request_focus(); }
                     if drawn_icon_button(ui, NavIcon::Close, "Clear and close member search").clicked() {
                         self.member_search.clear();
@@ -16281,12 +16276,12 @@ impl CaperApp {
                         emoji::name_label(ui, bold(&member.display_name).size(12.0), egui::Sense::hover());
                     }
                 });
-                let response = ui.interact(row.response.rect, ui.id().with(("member-profile", &member.id)), egui::Sense::click())
+                let response = ui.interact(row.response.rect, ui.scope_id().with(("member-profile", &member.id)), egui::Sense::click())
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                 let response = if self.live != "Live" || self.presence_pending.is_some() {
                     response.on_hover_text("Last known status; reconnecting")
                 } else { response };
-                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open profile for {}", member.display_name)));
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Open profile for {}", member.display_name)));
                 if response.hovered() || response.has_focus() {
                     ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, SURFACE_HOVER));
                 }
@@ -16408,15 +16403,15 @@ impl CaperApp {
         egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
             ui.set_min_size(ui.available_size());
             ui.spacing_mut().item_spacing.y = 0.0;
-            let heading = egui::TopBottomPanel::top("feedback-heading")
-                .exact_height(54.0)
+            let heading = egui::Panel::top("feedback-heading")
+                .exact_size(54.0)
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(CONVERSATION)
                         .inner_margin(egui::Margin::symmetric(18, 8)),
                 )
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
                     ui.allocate_ui_with_layout(
                         egui::vec2(ui.available_width(), 38.0),
@@ -16558,17 +16553,18 @@ impl CaperApp {
         // sliding in from the trailing edge.
         let thread_alone = self.thread_view.is_some() && narrow;
         if self.thread_view.is_some() {
-            let progress = motion::entrance(ui.ctx(), egui::Id::new("thread-panel"), motion::BASE);
+            let progress =
+                motion::entrance(ui.ctx(), egui::Id::unique("thread-panel"), motion::BASE);
             let from = motion::mark(ui);
             if narrow {
                 self.thread_panel(ui, true);
             } else {
-                egui::SidePanel::right("message-thread")
-                    .default_width(340.0)
-                    .min_width(300.0)
-                    .max_width(480.0)
+                egui::Panel::right("message-thread")
+                    .default_size(340.0)
+                    .min_size(300.0)
+                    .max_size(480.0)
                     .frame(egui::Frame::new().fill(CONVERSATION))
-                    .show_inside(ui, |ui| self.thread_panel(ui, false));
+                    .show(ui, |ui| self.thread_panel(ui, false));
             }
             motion::settle(
                 ui.ctx(),
@@ -16667,8 +16663,8 @@ impl CaperApp {
                 .is_some_and(|direct| direct.blocked || self.is_blocked(&direct.peer.id));
         ui.set_min_height(ui.available_height());
         ui.spacing_mut().item_spacing.y = 0.0;
-        let heading = egui::TopBottomPanel::top("thread-heading")
-            .exact_height(54.0)
+        let heading = egui::Panel::top("thread-heading")
+            .exact_size(54.0)
             .show_separator_line(false)
             .frame(
                 egui::Frame::new()
@@ -16679,7 +16675,7 @@ impl CaperApp {
                         egui::Margin::symmetric(18, 8)
                     }),
             )
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.allocate_ui_with_layout(
                     egui::vec2(ui.available_width(), if narrow { 46.0 } else { 38.0 }),
                     if narrow {
@@ -16778,11 +16774,11 @@ impl CaperApp {
             let files = self.draft_file_count(Some(&root));
             let per_row = (((width + 8.0) / 244.0).floor() as usize).max(1);
             let chips_height = (files.div_ceil(per_row) as f32 * 56.0).min(120.0);
-            egui::TopBottomPanel::bottom("thread-composer")
-                .min_height(editor_height + 8.0 + broadcast_height + 28.0 + chips_height + self.voice_status_rows(Some(&root)) * 30.0)
+            egui::Panel::bottom("thread-composer")
+                .min_size(editor_height + 8.0 + broadcast_height + 28.0 + chips_height + self.voice_status_rows(Some(&root)) * 30.0)
                 .show_separator_line(false)
                 .frame(composer_frame)
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                 if let Some(error) = &self.error
                     && self.pending.as_ref().is_none_or(|pending| pending.thread_root_id.as_deref() == Some(&root)) { ui.colored_label(ERROR, error); }
                 self.reply_draft(ui, &root);
@@ -16811,7 +16807,7 @@ impl CaperApp {
                     ui.label("Confirm or dismiss the pending message first.");
                 }
                 // The channel composer's `:`/`@` suggestions, with their own state.
-                let composer_id = egui::Id::new(("thread-draft", &root));
+                let composer_id = egui::Id::unique(("thread-draft", &root));
                 let attach = self.can_attach() && !loading;
                 if files > 0 {
                     egui::ScrollArea::vertical()
@@ -16868,8 +16864,6 @@ impl CaperApp {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     let editor = egui::Frame::new().fill(COMPOSER).corner_radius(8).inner_margin(egui::Margin::symmetric(11, 10)).show(ui, |ui| {
                         ui.set_width(editor_width - 22.0);
-                        // The scrolling text stays inside the padded field.
-                        ui.visuals_mut().clip_rect_margin = 0.0;
                         ui.horizontal_top(|ui| {
                             let button = ui.add_enabled_ui(attach && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Plus, "Attach files", 28.0))
                                 .inner.on_disabled_hover_text(if !attach { attach_unavailable.to_owned() } else { "Attach files".to_owned() });
@@ -16889,10 +16883,9 @@ impl CaperApp {
                                             let output = egui::TextEdit::multiline(&mut draft.0)
                                             .id(composer_id).desired_rows(1).desired_width(f32::INFINITY).char_limit(4000)
                                             .min_size(egui::vec2(0.0, 28.0))
-                                            .vertical_align(egui::Align::Center)
+                                            .align(egui::Align2::LEFT_CENTER)
                                             .font(egui::FontId::proportional(13.6))
-                                            .margin(egui::vec2(0.0, 5.0))
-                                            .frame(false)
+                                            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 5)))
                                             .layouter(&mut layouter)
                                             .hint_text(RichText::new("Reply to thread…").color(MUTED))
                                             .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui);
@@ -16905,6 +16898,7 @@ impl CaperApp {
                                 choose_gif = ui.add_enabled_ui(!loading && !blocked, |ui| klipy::button(ui, 28.0)).inner.clicked();
                             }
                             formatting::composer_controls(ui, &mut draft.0, &mut output, !loading);
+                            formatting::keep_selection(ui, &draft.0, &mut output);
                             choose_emoji = ui.add_enabled_ui(!loading, |ui| drawn_icon_button_sized(ui, NavIcon::Smile, "Insert emoji", 28.0)).inner.clicked();
                             if mic_in_field { record = mic_button(ui, mic && !loading, mic_unavailable, 28.0); }
                             output
@@ -16936,10 +16930,10 @@ impl CaperApp {
                 if (enter || send) && !blocked && !loading { self.send_message_to(Some(root.clone()), draft.1); }
             });
         } else {
-            let note = egui::TopBottomPanel::bottom("thread-composer")
+            let note = egui::Panel::bottom("thread-composer")
                 .show_separator_line(false)
                 .frame(composer_frame.inner_margin(egui::Margin::symmetric(18, 12)))
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     ui.label(
                         RichText::new(if direct {
                             "You can’t reply in this conversation."
@@ -16956,7 +16950,7 @@ impl CaperApp {
                 Stroke::new(1.0_f32, BORDER),
             );
         }
-        let displacement_id = ui.id().with(("thread-displacement", &root));
+        let displacement_id = ui.scope_id().with(("thread-displacement", &root));
         let pinned = ui
             .ctx()
             .data(|data| data.get_temp::<bool>(displacement_id.with("pinned")))
@@ -17118,7 +17112,7 @@ impl CaperApp {
         ui.ctx().data_mut(|data| {
             data.insert_temp(
                 displacement_id.with("pinned"),
-                thread_history.state.offset.y + thread_history.inner_rect.height()
+                thread_history.state.clamped_offset().y + thread_history.inner_rect.height()
                     >= thread_history.content_size.y - 1.0,
             )
         });
@@ -17143,15 +17137,15 @@ impl CaperApp {
             let conversation = ui.max_rect();
             ui.spacing_mut().item_spacing.y = 0.0;
             let stage = ui.max_rect();
-            let heading = egui::TopBottomPanel::top("chat-heading")
-                .exact_height(54.0)
+            let heading = egui::Panel::top("chat-heading")
+                .exact_size(54.0)
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(CONVERSATION)
                         .inner_margin(if narrow { egui::Margin::symmetric(12, 4) } else { egui::Margin::symmetric(18, 8) }),
                 )
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     if narrow {
                         let header = egui::Rect::from_min_size(stage.min, egui::vec2(stage.width(), 54.0));
                         ui.allocate_ui_with_layout(
@@ -17170,7 +17164,7 @@ impl CaperApp {
                             let visit = self.visiting().map(|visit| visit.title.clone());
                             // Web's ellipsis: a long (up to 80-character) name leaves room
                             // for the actions measured last frame instead of running under them.
-                            let actions_width_id = ui.id().with("heading-actions-width");
+                            let actions_width_id = ui.scope_id().with("heading-actions-width");
                             let actions_width = ui.data(|data| data.get_temp::<f32>(actions_width_id)).unwrap_or(0.0);
                             ui.allocate_ui_with_layout(
                                 egui::vec2((ui.available_width() - actions_width - 12.0).max(40.0), 38.0),
@@ -17260,17 +17254,17 @@ impl CaperApp {
             });
             let reserved = voice_error_row + if joined { editor_height + 28.0 + session_row + chip_rows * 56.0 + voice_rows } else { 44.0 };
             // The height this pass's panel gets, before its content is drawn.
-            let lagged = egui::containers::panel::PanelState::load(ui.ctx(), egui::Id::new("composer")).map(|state| state.rect.height());
+            let lagged = egui::containers::panel::PanelState::load(ui.ctx(), ui.scope_id().with("composer")).map(|state| state.size().y);
             let available = ui.available_rect_before_wrap().height();
-            let composer = egui::TopBottomPanel::bottom("composer")
-                .min_height(reserved)
+            let composer = egui::Panel::bottom("composer")
+                .min_size(reserved)
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(CONVERSATION)
                         .inner_margin(egui::Margin { left: 18, right: 18, top: 12, bottom: 16 }),
                 )
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     if self.opening || self.navigation_error.is_some() {
                         ui.disable();
                     }
@@ -17393,7 +17387,7 @@ impl CaperApp {
                     } else {
                         format!("Message #{}", self.channel_name())
                     };
-                    let composer_id = egui::Id::new("message-composer");
+                    let composer_id = egui::Id::unique("message-composer");
                     if attach && ui.is_enabled() && ui.memory(|memory| memory.has_focus(composer_id))
                         && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Paste(_)))) {
                         match profile_dm::paste_files() {
@@ -17429,16 +17423,16 @@ impl CaperApp {
                             .layouter(&mut layouter)
                             .desired_width(f32::INFINITY)
                             .min_size(egui::vec2(0.0, 42.0))
-                            .vertical_align(egui::Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .desired_rows(1)
                             .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)))
                             .font(egui::FontId::proportional(13.6))
-                            .margin(egui::vec2(4.0, 10.0))
                             .hint_text(hint.clone())
-                            .frame(false)
+                            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 10)))
                             .char_limit(4_000).show(ui);
                         paint_draft_links(ui, &output, background);
                         formatting::composer_controls(ui, draft, &mut output, true);
+                        formatting::keep_selection(ui, draft, &mut output);
                         if draft.is_empty() {
                             let position = egui::pos2(output.galley_pos.x, output.response.rect.center().y - hint.size().y / 2.0);
                             emoji::paint_inline(&ui.painter().with_clip_rect(output.text_clip_rect), position, &hint);
@@ -17498,7 +17492,7 @@ impl CaperApp {
                                 editor
                             }).inner;
                             if let Some(embed) = &preview {
-                                let arrival = motion::entrance(ui.ctx(), egui::Id::new("composer-embed"), motion::BASE);
+                                let arrival = motion::entrance(ui.ctx(), egui::Id::unique("composer-embed"), motion::BASE);
                                 if embeds::composer_card(ui, &mut self.media, embed, arrival) {
                                     self.link_preview.remove();
                                 }
@@ -17639,10 +17633,10 @@ impl CaperApp {
                 offset: self
                     .history_area
                     .and_then(|id| egui::scroll_area::State::load(ui.ctx(), id))
-                    .map_or(0.0, |state| state.offset.y),
+                    .map_or(0.0, |state| state.clamped_offset().y),
                 viewport: self.history_viewport,
                 at_end: self.history_at_end,
-                scrolled: ui.input(|input| input.raw_scroll_delta.y != 0.0 || input.pointer.is_decidedly_dragging()),
+                scrolled: ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::MouseWheel { delta, .. } if delta.y != 0.0)) || input.pointer.is_decidedly_dragging()),
                 frozen,
                 now: ui.input(|input| input.time),
             };
@@ -17674,10 +17668,10 @@ impl CaperApp {
             // Sticking to the scroll end does not bottom-align content shorter
             // than the viewport. Measure the whole history (including its header
             // and pending sends), and put spare space above it on the next pass.
-            let height_id = ui.id().with(("history-natural-height", &scope));
+            let height_id = ui.scope_id().with(("history-natural-height", &scope));
             let natural_height = ui.ctx().data_mut(|data| data.get_temp::<f32>(height_id)).unwrap_or(0.0);
             let top_space = if empty { 0.0 } else { (history_clip.height() - natural_height).max(0.0) };
-            motion::begin_displacement(ui.ctx(), ui.id().with(("channel-displacement", &scope)), self.arrivals.latest("channel"), frame.at_end, displace_live);
+            motion::begin_displacement(ui.ctx(), ui.scope_id().with(("channel-displacement", &scope)), self.arrivals.latest("channel"), frame.at_end, displace_live);
             let history = history.show_viewport(ui, |ui, viewport| {
                     let origin = ui.max_rect().top();
                     ui.set_clip_rect(ui.clip_rect().intersect(history_clip));
@@ -17716,8 +17710,7 @@ impl CaperApp {
                     let mut drawn = Vec::with_capacity(plan.above.len() + plan.flow.len());
                     let row_ui = |index: usize| {
                         egui::UiBuilder::new()
-                            .id_salt(("history-row", &items[index].key))
-                            .global_scope(true)
+                            .scope_id(egui::Id::unique(("history-row", &items[index].key)))
                     };
                     // Rows just above the viewport are drawn only to measure
                     // them: at their estimated tops, clipped above the
@@ -17803,7 +17796,7 @@ impl CaperApp {
                                             self.draft = rejected.text;
                                             if let Some(reference) = rejected.reply_to { self.reply_targets.insert("channel".into(), reference); }
                                             self.restore_drafts(rejected.attachments, None);
-                                            ui.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
+                                            ui.memory_mut(|memory| memory.request_focus(egui::Id::unique("message-composer")));
                                         }
                                         if toned(ui, QUIET_TONE, true, button("Dismiss")).clicked() { self.discard_rejected(); }
                                     });
@@ -17848,7 +17841,7 @@ impl CaperApp {
                 ui.ctx().request_repaint();
             }
             if let Some((plan, drawn, start)) = &history.inner
-                && self.history_list.finish(plan, drawn, *start, history.content_size.y, history.state.offset.y)
+                && self.history_list.finish(plan, drawn, *start, history.content_size.y, history.state.clamped_offset().y)
             {
                 ui.ctx().request_discard("keep the reading position as rows are measured");
                 ui.ctx().request_repaint();
@@ -17937,7 +17930,7 @@ impl CaperApp {
         if !self.showing_pins && !self.opening {
             let height = history.content_size.y;
             let viewport = history.inner_rect.height();
-            let offset = history.state.offset.y;
+            let offset = history.state.clamped_offset().y;
             if let Some(previous) = self.older_anchor.take()
                 && !self.history_list.anchoring()
             {
@@ -18030,7 +18023,7 @@ impl CaperApp {
         key: &str,
     ) -> egui::Pos2 {
         let blocked = self.is_blocked(&reference.author.id);
-        let expanded_id = ui.id().with(("reply-expanded", key));
+        let expanded_id = ui.scope_id().with(("reply-expanded", key));
         let mut expanded = ui
             .data(|data| data.get_temp::<bool>(expanded_id))
             .unwrap_or(false);
@@ -18290,11 +18283,7 @@ impl CaperApp {
                             .frame(false),
                         );
                         cancel.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
-                                true,
-                                "Cancel reply",
-                            )
+                            egui::WidgetInfo::labeled(egui::Role::Button, true, "Cancel reply")
                         });
                         if cancel.on_hover_text("Cancel reply").clicked() {
                             self.reply_targets.remove(key);
@@ -18329,8 +18318,8 @@ impl CaperApp {
             self.close_thread();
         }
         let id = root.map_or_else(
-            || egui::Id::new("message-composer"),
-            |root| egui::Id::new(("thread-draft", root)),
+            || egui::Id::unique("message-composer"),
+            |root| egui::Id::unique(("thread-draft", root)),
         );
         context.memory_mut(|memory| memory.request_focus(id));
     }
@@ -18484,7 +18473,7 @@ impl CaperApp {
                         );
                         response.widget_info(|| {
                             egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
+                                egui::Role::Button,
                                 true,
                                 format!("Open profile for {}", pin.author.name),
                             )
@@ -18577,11 +18566,11 @@ impl CaperApp {
             {
                 let marker = ui.interact(
                     target,
-                    ui.id().with(("edit-history", &message.id)),
+                    ui.scope_id().with(("edit-history", &message.id)),
                     egui::Sense::click(),
                 );
                 marker.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Message history")
+                    egui::WidgetInfo::labeled(egui::Role::Button, true, "Message history")
                 });
                 if marker.on_hover_text("Message history").clicked() {
                     self.open_edit_history(message);
@@ -18628,12 +18617,14 @@ impl CaperApp {
             // except on a link, which belongs to the link.
             let row = ui.interact(
                 message_rect,
-                ui.id().with((&message.id, "forward-context")),
+                ui.scope_id().with((&message.id, "forward-context")),
                 egui::Sense::hover(),
             );
             // A link preview's links own their own menu (hover from the last pass).
             let card_hovered = ui
-                .data(|data| data.get_temp::<bool>(egui::Id::new(("embed-hovered", &message.id))))
+                .data(|data| {
+                    data.get_temp::<bool>(egui::Id::unique(("embed-hovered", &message.id)))
+                })
                 .unwrap_or(false);
             let opened = row.contains_pointer()
                 && !body.link_hovered
@@ -18805,7 +18796,7 @@ impl CaperApp {
                         let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                         let response = ui.interact(
                             rect,
-                            ui.id().with((&message.id, "quick-reaction", emoji)),
+                            ui.scope_id().with((&message.id, "quick-reaction", emoji)),
                             if can_react {
                                 egui::Sense::click()
                             } else {
@@ -18821,7 +18812,7 @@ impl CaperApp {
                     let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                     Some(ui.interact(
                         rect,
-                        ui.id().with((&message.id, "thread-action")),
+                        ui.scope_id().with((&message.id, "thread-action")),
                         egui::Sense::click(),
                     ))
                 };
@@ -18830,7 +18821,7 @@ impl CaperApp {
                     let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                     ui.interact(
                         rect,
-                        ui.id().with((&message.id, "reply-action")),
+                        ui.scope_id().with((&message.id, "reply-action")),
                         if self.pending.is_none() {
                             egui::Sense::click()
                         } else {
@@ -18842,7 +18833,7 @@ impl CaperApp {
                     let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                     ui.interact(
                         rect,
-                        ui.id().with((&message.id, "reaction-action")),
+                        ui.scope_id().with((&message.id, "reaction-action")),
                         if can_react {
                             egui::Sense::click()
                         } else {
@@ -18853,7 +18844,7 @@ impl CaperApp {
                 let more_rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                 let more = ui.interact(
                     more_rect,
-                    ui.id().with((&message.id, "more-action")),
+                    ui.scope_id().with((&message.id, "more-action")),
                     egui::Sense::click(),
                 );
                 // The whole bar stays while its menu or picker is open, even
@@ -18986,7 +18977,7 @@ impl CaperApp {
                 }
                 if let Some(reply) = reply {
                     reply.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Reply in thread")
+                        egui::WidgetInfo::labeled(egui::Role::Button, true, "Reply in thread")
                     });
                     if reply.on_hover_text("Reply in thread").clicked() {
                         self.reply_in_thread(
@@ -19001,7 +18992,7 @@ impl CaperApp {
                 if let Some(reply_message) = reply_message {
                     reply_message.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                            egui::Role::Button,
                             self.pending.is_none(),
                             "Reply",
                         )
@@ -19013,28 +19004,19 @@ impl CaperApp {
                 for (emoji, mine, response) in quick {
                     let label = format!("React with {emoji}");
                     response.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::Button,
-                            can_react,
-                            mine,
-                            &label,
-                        )
+                        egui::WidgetInfo::selected(egui::Role::Button, can_react, mine, &label)
                     });
                     if response.on_hover_text(label).clicked() && can_react {
                         self.set_reaction(&message.id, emoji, !mine);
                     }
                 }
                 more.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Message actions")
+                    egui::WidgetInfo::labeled(egui::Role::Button, true, "Message actions")
                 });
                 let more = more.on_hover_text("More actions");
                 if let Some(emoji) = emoji {
                     emoji.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            can_react,
-                            "Add reaction",
-                        )
+                        egui::WidgetInfo::labeled(egui::Role::Button, can_react, "Add reaction")
                     });
                     if can_react && (emoji.hovered() || emoji.has_focus()) {
                         self.reaction_textures
@@ -19255,7 +19237,7 @@ impl CaperApp {
                         .inner;
                     notice.response.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Label,
+                            egui::Role::Label,
                             true,
                             mentions::FEEDBACK_NOTICE,
                         )
@@ -19310,7 +19292,7 @@ impl CaperApp {
                             );
                             response.widget_info(|| {
                                 egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
+                                    egui::Role::Button,
                                     can_react,
                                     label.clone(),
                                 )
@@ -19542,9 +19524,9 @@ impl CaperApp {
         let pins = self.mutations.pinned(&self.timeline);
         let mut close = false;
         let card_was_open = self.mention_card.is_some();
-        let modal = egui::Modal::new(egui::Id::new("pinned-messages"))
+        let modal = egui::Modal::new(egui::Id::unique("pinned-messages"))
             .frame(
-                egui::Frame::popup(&context.style())
+                egui::Frame::popup(&context.global_style())
                     .fill(SURFACE)
                     .stroke(Stroke::new(1.0_f32, BORDER))
                     .corner_radius(8)
@@ -19654,11 +19636,11 @@ impl CaperApp {
                             }
                         });
                 });
-                context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::new("emoji-picker")));
+                context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("emoji-picker")));
                 self.emoji_picker(context);
-                context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::new("reactors")));
+                context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("reactors")));
                 self.reactors_window(context);
-                context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::new("mention-card")));
+                context.set_sublayer(ui.layer_id(), egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("mention-card")));
                 self.mention_card(context);
             });
         motion::modal(context, modal.response.layer_id);
@@ -19710,7 +19692,7 @@ impl CaperApp {
             })
             .inner;
         ui.data_mut(|data| {
-            data.insert_temp(egui::Id::new(("embed-hovered", message)), shown.hovered)
+            data.insert_temp(egui::Id::unique(("embed-hovered", message)), shown.hovered)
         });
         self.embed_action(ui.ctx(), shown.action);
     }
@@ -19722,7 +19704,7 @@ impl CaperApp {
     /// Entrance progress of a message's link previews: cards that arrived
     /// live fade in when first drawn soon after; others are in place.
     fn embed_arrival(&mut self, context: &egui::Context, message: &str) -> f32 {
-        let id = egui::Id::new(("embed-arrival", message));
+        let id = egui::Id::unique(("embed-arrival", message));
         if let Some(at) = self.embed_arrivals.remove(message)
             && at.elapsed().as_secs_f64() <= motion::ARRIVAL
         {
@@ -19790,7 +19772,7 @@ impl CaperApp {
         }
         let unix_now = chrono::Utc::now().timestamp();
         let now = Instant::now();
-        let reveal_scope = ui.id();
+        let reveal_scope = ui.scope_id();
         let hidden = |attachment: &model::Attachment, ui: &egui::Ui| {
             attachment.spoiler
                 && !ui.ctx().data_mut(|data| {
@@ -19882,7 +19864,7 @@ impl CaperApp {
                                         rect,
                                         ui.interact(
                                             rect,
-                                            ui.id().with(&attachment.id),
+                                            ui.scope_id().with(&attachment.id),
                                             egui::Sense::click(),
                                         ),
                                     )
@@ -19925,7 +19907,7 @@ impl CaperApp {
                                 );
                                 response.widget_info(|| {
                                     egui::WidgetInfo::labeled(
-                                        egui::WidgetType::Button,
+                                        egui::Role::Button,
                                         true,
                                         "Reveal spoiler attachment",
                                     )
@@ -19964,7 +19946,7 @@ impl CaperApp {
                                 hide = spoiler_hide_button(
                                     ui,
                                     rect,
-                                    ui.id().with(("hide-spoiler", &attachment.id)),
+                                    ui.scope_id().with(("hide-spoiler", &attachment.id)),
                                 )
                                 .clicked();
                             }
@@ -20031,7 +20013,10 @@ impl CaperApp {
         };
         let radius = placed.map_or(CornerRadius::same(8), |(_, radius)| radius);
         let (rect, response) = if let Some((rect, _)) = placed {
-            (rect, ui.interact(rect, ui.id().with(&attachment.id), sense))
+            (
+                rect,
+                ui.interact(rect, ui.scope_id().with(&attachment.id), sense),
+            )
         } else {
             ui.allocate_exact_size(size, sense)
         };
@@ -20183,9 +20168,9 @@ impl CaperApp {
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
                 if clickable {
-                    egui::WidgetType::Button
+                    egui::Role::Button
                 } else {
-                    egui::WidgetType::Label
+                    egui::Role::Label
                 },
                 clickable,
                 label.clone(),
@@ -20228,7 +20213,7 @@ impl CaperApp {
             );
             let expand = ui.interact(
                 expand_rect,
-                ui.id().with(("expand-video", &attachment.id)),
+                ui.scope_id().with(("expand-video", &attachment.id)),
                 egui::Sense::click(),
             );
             painter.circle_filled(expand_rect.center(), 16.0, Color32::from_black_alpha(170));
@@ -20240,7 +20225,7 @@ impl CaperApp {
             );
             expand.widget_info(|| {
                 egui::WidgetInfo::labeled(
-                    egui::WidgetType::Button,
+                    egui::Role::Button,
                     true,
                     format!("Open {} in viewer", attachment.name),
                 )
@@ -20339,7 +20324,7 @@ impl CaperApp {
                         .map_or((false, None), |(_, state)| *state);
                     let clicks = voice_chip(
                         ui,
-                        egui::Id::new(("draft-voice", draft.key)),
+                        egui::Id::unique(("draft-voice", draft.key)),
                         prepared
                             .voice
                             .as_ref()
@@ -20364,7 +20349,7 @@ impl CaperApp {
                 }
                 let entering = motion::entrance(
                     ui.ctx(),
-                    egui::Id::new(("draft-chip", draft.slot)),
+                    egui::Id::unique(("draft-chip", draft.slot)),
                     motion::BASE,
                 );
                 let from = motion::mark(ui);
@@ -20421,7 +20406,7 @@ impl CaperApp {
                     uploads::size_label(draft.source_size, draft.stored_size)
                 );
                 chip.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Label, true, accessible.clone())
+                    egui::WidgetInfo::labeled(egui::Role::Label, true, accessible.clone())
                 });
                 chip.on_hover_text(accessible.clone());
                 // The centre holds Retry after a failure, else the spoiler
@@ -20448,14 +20433,14 @@ impl CaperApp {
                 {
                     let response = ui.interact(
                         rect,
-                        egui::Id::new(("draft-preview", draft.key)),
+                        egui::Id::unique(("draft-preview", draft.key)),
                         egui::Sense::click(),
                     );
                     choice = tile_context_menu(&response, true, previewable, draft.spoiler);
                     if let Some(url) = url {
                         let label = format!("Preview {accessible}");
                         response.widget_info(|| {
-                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+                            egui::WidgetInfo::labeled(egui::Role::Button, true, label.clone())
                         });
                         if response
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -20489,7 +20474,7 @@ impl CaperApp {
                     let response = tile_retry_button(
                         ui,
                         rect,
-                        egui::Id::new(("draft-retry", draft.slot)),
+                        egui::Id::unique(("draft-retry", draft.slot)),
                         &label,
                     );
                     if response.on_hover_text(status.clone()).clicked() {
@@ -20498,7 +20483,7 @@ impl CaperApp {
                 }
                 // Remove top-right, Edit diagonally opposite.
                 let corners = tile_corners(rect, touch);
-                let id = egui::Id::new(("draft-actions", draft.slot));
+                let id = egui::Id::unique(("draft-actions", draft.slot));
                 let response = corner_button(
                     ui,
                     corners.remove,
@@ -20909,7 +20894,7 @@ impl CaperApp {
                 .raw
                 .dropped_files
                 .iter()
-                .filter_map(|file| file.path.clone())
+                .map(|file| file.path().to_path_buf())
                 .collect()
         });
         if !dropped.is_empty() && !self.conversation_covered() {
@@ -20947,7 +20932,7 @@ impl CaperApp {
             .align_alternatives(&BELOW)
             .width(REACTOR_TOOLTIP_WIDTH)
             .frame(
-                egui::Frame::popup(&chip.ctx.style())
+                egui::Frame::popup(&chip.ctx.global_style())
                     .fill(SURFACE)
                     .stroke(Stroke::new(1.0_f32, BORDER))
                     .corner_radius(8)
@@ -21152,7 +21137,7 @@ impl CaperApp {
         let mut chosen = None;
         let mut retry = false;
         let shown = egui::Window::new("Reactions")
-            .id(egui::Id::new("reactors"))
+            .id(egui::Id::unique("reactors"))
             .title_bar(false)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(context.content_rect().center())
@@ -21196,7 +21181,7 @@ impl CaperApp {
                         );
                         tab.widget_info(|| {
                             egui::WidgetInfo::selected(
-                                egui::WidgetType::Button,
+                                egui::Role::Button,
                                 true,
                                 active,
                                 format!("{}, {count}", reaction.emoji),
@@ -21407,7 +21392,7 @@ impl CaperApp {
             "Add a reaction"
         };
         let mut window = egui::Window::new(title)
-            .id(egui::Id::new("emoji-picker"))
+            .id(egui::Id::unique("emoji-picker"))
             .title_bar(false);
         // A composer's picker opens above its Emoji button, ending at it.
         if profile && let Some(anchor) = self.composer_emoji_anchor {
@@ -21447,7 +21432,7 @@ impl CaperApp {
                         let response = response.on_hover_text(*name);
                         response.widget_info(|| {
                             egui::WidgetInfo::selected(
-                                egui::WidgetType::Button,
+                                egui::Role::Button,
                                 true,
                                 self.reaction_search.trim().is_empty()
                                     && self.reaction_category == index,
@@ -21482,7 +21467,7 @@ impl CaperApp {
                     }
                 });
                 ui.add_space(10.0);
-                let search_id = egui::Id::new("emoji-picker-search");
+                let search_id = egui::Id::unique("emoji-picker-search");
                 let search = ui.add(
                     egui::TextEdit::singleline(&mut self.reaction_search)
                         .id(search_id)
@@ -21543,7 +21528,7 @@ impl CaperApp {
                                     let response = response.on_hover_text(&entry.name);
                                     response.widget_info(|| {
                                         egui::WidgetInfo::labeled(
-                                            egui::WidgetType::Button,
+                                            egui::Role::Button,
                                             true,
                                             &entry.name,
                                         )
@@ -21645,7 +21630,10 @@ impl CaperApp {
                 let caret = text.chars().count();
                 caret..caret
             },
-            |range| range.as_sorted_char_range(),
+            |range| {
+                let range = range.as_sorted_char_range();
+                range.start.0..range.end.0
+            },
         );
         self.composer_emoji = Some((
             target,
@@ -21748,7 +21736,7 @@ impl CaperApp {
                     .mention_card
                     .as_ref()
                     .and_then(|card| card.pill.entry.id.as_ref())
-                    .is_some_and(|person| id == egui::Id::new(("profile-composer", person)))
+                    .is_some_and(|person| id == egui::Id::unique(("profile-composer", person)))
                 {
                     return Vec::new();
                 }
@@ -21776,7 +21764,7 @@ impl CaperApp {
             for event in &input.events {
                 if let egui::Event::Ime(event) = event {
                     self.ime_composing =
-                        matches!(event, egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_));
+                        matches!(event, egui::ImeEvent::Preedit { text, .. } if !text.is_empty());
                 }
             }
         });
@@ -21786,7 +21774,7 @@ impl CaperApp {
         let mut state = self.composer_suggestions.remove(&id).unwrap_or_default();
         if let Some((dismissed, caret)) = &state.dismissed
             && (dismissed != text
-                || cursor.is_none_or(|range| !range.is_empty() || range.primary.index != *caret))
+                || cursor.is_none_or(|range| !range.is_empty() || range.primary.index.0 != *caret))
         {
             state.dismissed = None;
         }
@@ -22126,7 +22114,7 @@ impl CaperApp {
             profile.username.clone_from(&account.username);
             profile.display_name.clone_from(&account.display_name);
         }
-        let id = egui::Id::new("mention-card");
+        let id = egui::Id::unique("mention-card");
         // Follow the pill while the history scrolls.
         let anchor = context
             .read_response(card.pill.id)
@@ -22253,13 +22241,13 @@ impl CaperApp {
                                 let response = ui
                                     .interact(
                                         rect,
-                                        ui.id().with("profile-picture"),
+                                        ui.scope_id().with("profile-picture"),
                                         egui::Sense::click(),
                                     )
                                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                                 response.widget_info(|| {
                                     egui::WidgetInfo::labeled(
-                                        egui::WidgetType::Button,
+                                        egui::Role::Button,
                                         true,
                                         "Open profile picture",
                                     )
@@ -22456,7 +22444,7 @@ impl CaperApp {
         if self.profile_emoji_open() {
             context.set_sublayer(
                 shown.response.layer_id,
-                egui::LayerId::new(egui::Order::Foreground, egui::Id::new("emoji-picker")),
+                egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("emoji-picker")),
             );
         }
         // A dialog opened over the card (Ctrl+,) closes first; leave it Escape.
@@ -22464,7 +22452,7 @@ impl CaperApp {
             && context
                 .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let suggestions_open = card.pill.entry.id.as_ref().is_some_and(|person| {
-            let editor = egui::Id::new(("profile-composer", person));
+            let editor = egui::Id::unique(("profile-composer", person));
             if self
                 .composer_suggestions
                 .get(&editor)
@@ -22637,7 +22625,7 @@ impl CaperApp {
                         let (status, failed) = file.upload_status();
                         let clicks = voice_chip(
                             ui,
-                            egui::Id::new(("profile-voice", person, index)),
+                            egui::Id::unique(("profile-voice", person, index)),
                             prepared
                                 .voice
                                 .as_ref()
@@ -22668,7 +22656,7 @@ impl CaperApp {
                         ui,
                         width,
                         FileChip {
-                            id: egui::Id::new(("profile-file", person, index)),
+                            id: egui::Id::unique(("profile-file", person, index)),
                             name: &name,
                             status,
                             detail: uploads::size_label(file.size, None),
@@ -22822,34 +22810,45 @@ impl CaperApp {
                                         .show(ui, |ui| {
                                             formatting::prepare(ui, &draft.text, id, editable);
                                             let background = ui.painter().add(egui::Shape::Noop);
-                                            let output = egui::TextEdit::multiline(&mut draft.text)
-                                                .id(id)
-                                                .layouter(&mut layouter)
-                                                .hint_text(
-                                                    RichText::new(
-                                                        self.activity
-                                                            .targets
-                                                            .get(person)
-                                                            .map_or_else(
-                                                                || format!("Message @{username}"),
-                                                                activity::Item::reply_label,
-                                                            ),
+                                            let mut output =
+                                                egui::TextEdit::multiline(&mut draft.text)
+                                                    .id(id)
+                                                    .layouter(&mut layouter)
+                                                    .hint_text(
+                                                        RichText::new(
+                                                            self.activity
+                                                                .targets
+                                                                .get(person)
+                                                                .map_or_else(
+                                                                    || {
+                                                                        format!(
+                                                                            "Message @{username}"
+                                                                        )
+                                                                    },
+                                                                    activity::Item::reply_label,
+                                                                ),
+                                                        )
+                                                        .color(Color32::from_rgb(142, 149, 152)),
                                                     )
-                                                    .color(Color32::from_rgb(142, 149, 152)),
-                                                )
-                                                .desired_width(f32::INFINITY)
-                                                .min_size(egui::vec2(0.0, 42.0))
-                                                .vertical_align(egui::Align::Center)
-                                                .desired_rows(1)
-                                                .return_key(Some(egui::KeyboardShortcut::new(
-                                                    egui::Modifiers::SHIFT,
-                                                    egui::Key::Enter,
-                                                )))
-                                                .font(egui::FontId::proportional(13.6))
-                                                .margin(egui::vec2(4.0, 10.0))
-                                                .frame(false)
-                                                .char_limit(4_000)
-                                                .show(ui);
+                                                    .desired_width(f32::INFINITY)
+                                                    .min_size(egui::vec2(0.0, 42.0))
+                                                    .align(egui::Align2::LEFT_CENTER)
+                                                    .desired_rows(1)
+                                                    .return_key(Some(egui::KeyboardShortcut::new(
+                                                        egui::Modifiers::SHIFT,
+                                                        egui::Key::Enter,
+                                                    )))
+                                                    .font(egui::FontId::proportional(13.6))
+                                                    .frame(egui::Frame::NONE.inner_margin(
+                                                        egui::Margin::symmetric(4, 10),
+                                                    ))
+                                                    .char_limit(4_000)
+                                                    .show(ui);
+                                            formatting::keep_selection(
+                                                ui,
+                                                &draft.text,
+                                                &mut output,
+                                            );
                                             paint_draft_links(ui, &output, background);
                                             output
                                         })
@@ -23199,7 +23198,7 @@ impl CaperApp {
         {
             let mut discard = false;
             let mut keep = false;
-            let modal = egui::Modal::new(egui::Id::new("discard-profile")).show(context, |ui| {
+            let modal = egui::Modal::new(egui::Id::unique("discard-profile")).show(context, |ui| {
                 ui.set_width(340.0);
                 ui.heading("Discard profile changes?");
                 ui.label("Your changes have not been saved.");
@@ -23397,7 +23396,7 @@ impl CaperApp {
             Dialog::ManageChannel(id) => !self.channel_dirty(id),
             _ => false,
         };
-        let modal = egui::Area::new(egui::Id::new("caper-dialog"))
+        let modal = egui::Area::new(egui::Id::unique("caper-dialog"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .fade_in(false)
@@ -23620,7 +23619,7 @@ impl CaperApp {
                                             Dialog::StartDirect => {
                                                 ui.label("Enter an exact username.");
                                                 ui.add_space(12.0);
-                                                let id = egui::Id::new("direct-username");
+                                                let id = egui::Id::unique("direct-username");
                                                 let pending = self.loading || lookup_pending;
                                                 let people: Vec<_> = self.people.iter().flatten().filter(|_| !pending).map(mentions::Person::from).collect();
                                                 let before = self.member_username.clone();
@@ -23629,7 +23628,7 @@ impl CaperApp {
                                                         [ui.available_width(), 42.0],
                                                         egui::TextEdit::singleline(value)
                                                             .id(id)
-                                                            .vertical_align(egui::Align::Center)
+                                                            .align(egui::Align2::LEFT_CENTER)
                                                             .margin(egui::Margin::symmetric(8, 4))
                                                             .hint_text(RichText::new("Username").color(MUTED.gamma_multiply(0.65))),
                                                     );
@@ -23710,7 +23709,7 @@ impl CaperApp {
         context
             .layer_painter(egui::LayerId::new(
                 egui::Order::Background,
-                egui::Id::new("dialog-backdrop"),
+                egui::Id::unique("dialog-backdrop"),
             ))
             .rect_filled(
                 context.viewport_rect(),
@@ -23722,7 +23721,7 @@ impl CaperApp {
             // closes; a drag or scroll that starts on the backdrop does not.
             // A fast click can deliver press and release in the opening
             // frame: the press must come while the dialog already showed.
-            let pressed_outside = egui::Id::new("dialog-backdrop-press");
+            let pressed_outside = egui::Id::unique("dialog-backdrop-press");
             let outside = |input: &egui::InputState| {
                 input
                     .pointer
@@ -23746,7 +23745,7 @@ impl CaperApp {
                 close |= started_outside && clicked;
             }
         } else {
-            context.data_mut(|data| data.remove::<bool>(egui::Id::new("dialog-backdrop-press")));
+            context.data_mut(|data| data.remove::<bool>(egui::Id::unique("dialog-backdrop-press")));
         }
         // A join navigates when it finishes, so its dialog stays until then.
         let joining = join_dialog && self.invite_join.joining;
@@ -24206,7 +24205,7 @@ impl CaperApp {
         let field = ui.add_sized(
             [ui.available_width(), 42.0],
             egui::TextEdit::singleline(&mut self.username)
-                .vertical_align(egui::Align::Center)
+                .align(egui::Align2::LEFT_CENTER)
                 .char_limit(32),
         );
         focus_frame(ui, &field);
@@ -24222,7 +24221,7 @@ impl CaperApp {
         let field = ui.add_sized(
             [ui.available_width(), 42.0],
             egui::TextEdit::singleline(&mut self.display_name)
-                .vertical_align(egui::Align::Center)
+                .align(egui::Align2::LEFT_CENTER)
                 .char_limit(64),
         );
         focus_frame(ui, &field);
@@ -24450,7 +24449,7 @@ impl CaperApp {
         let mut cancel = false;
         let mut save = false;
         let mut load = false;
-        let modal = egui::Modal::new(egui::Id::new("avatar-gallery")).show(context, |ui| {
+        let modal = egui::Modal::new(egui::Id::unique("avatar-gallery")).show(context, |ui| {
             ui.set_width(420.0);
             ui.heading("Previous pictures");
             ui.label("Choose a picture to preview. Use it in your profile draft.");
@@ -24489,7 +24488,7 @@ impl CaperApp {
                                     );
                                     response.widget_info(|| {
                                         egui::WidgetInfo::labeled(
-                                            egui::WidgetType::Button,
+                                            egui::Role::Button,
                                             !pending,
                                             format!("Previous picture {}", index + 1),
                                         )
@@ -24681,7 +24680,7 @@ impl CaperApp {
         }
         if let Some((target, path, scratch, gif)) = self.picture_edit.choice.take() {
             let mut action = 0;
-            let modal = egui::Modal::new(egui::Id::new("picture-animation-choice")).show(context, |ui| {
+            let modal = egui::Modal::new(egui::Id::unique("picture-animation-choice")).show(context, |ui| {
                 ui.set_max_width(420.0);
                 ui.heading("Animated picture");
                 ui.label("Editing saves a still frame and removes animation. Original animation upload is available for GIFs only.");
@@ -24890,8 +24889,7 @@ impl CaperApp {
                 egui::Sense::hover()
             },
         );
-        response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
         let response = if enabled {
             response.on_hover_cursor(egui::CursorIcon::PointingHand)
         } else {
@@ -24927,7 +24925,7 @@ impl CaperApp {
                     .raw
                     .dropped_files
                     .first()
-                    .and_then(|file| file.path.clone())
+                    .map(|file| file.path().to_path_buf())
             })
         } else {
             None
@@ -25076,7 +25074,7 @@ impl CaperApp {
                 );
             }
             regenerate.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Regenerate avatar")
+                egui::WidgetInfo::labeled(egui::Role::Button, enabled, "Regenerate avatar")
             });
             if regenerate.on_hover_text("Regenerate avatar").clicked()
                 && idle
@@ -25739,11 +25737,11 @@ impl CaperApp {
         let field = ui.add_sized(
             [ui.available_width(), 42.0],
             egui::TextEdit::singleline(&mut self.invite_join.input)
-                .vertical_align(egui::Align::Center)
+                .align(egui::Align2::LEFT_CENTER)
                 .margin(egui::Margin::symmetric(8, 4)),
         );
         field.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, field.enabled(), "Invite link")
+            egui::WidgetInfo::labeled(egui::Role::TextInput, field.enabled(), "Invite link")
         });
         if self.invite_join.input.is_empty() {
             let color = MUTED.gamma_multiply(0.65);
@@ -26077,7 +26075,7 @@ impl CaperApp {
     fn members_dialog(&mut self, ui: &mut egui::Ui, channel: Option<String>) {
         let people = self.member_suggestions(channel.is_some());
         ui.horizontal(|ui| {
-            let id = egui::Id::new("member-username");
+            let id = egui::Id::unique("member-username");
             let field = people_field(
                 ui,
                 id,
@@ -26089,7 +26087,7 @@ impl CaperApp {
                         [(ui.available_width() - 80.0).max(1.0), 38.0],
                         egui::TextEdit::singleline(value)
                             .id(id)
-                            .vertical_align(egui::Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .char_limit(32)
                             .hint_text(
                                 RichText::new("Exact username").color(MUTED.gamma_multiply(0.65)),
@@ -26542,7 +26540,7 @@ fn corner_button(
         );
     }
     let label = label.to_owned();
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
     response
 }
 
@@ -26591,7 +26589,7 @@ fn tile_retry_button(ui: &egui::Ui, tile: egui::Rect, id: egui::Id, label: &str)
         painter.circle_stroke(rect.center(), 17.0, Stroke::new(2.0_f32, TERRACOTTA));
     }
     let label = label.to_owned();
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
     response
 }
 
@@ -26703,8 +26701,7 @@ fn spoiler_hide_button(ui: &egui::Ui, bounds: egui::Rect, id: egui::Id) -> egui:
         label,
         TEXT,
     );
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Hide spoiler"));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Hide spoiler"));
     response
 }
 
@@ -26863,9 +26860,7 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> ChipClicks {
     }
     // The name and status remain available to assistive technology and on hover.
     let accessible = format!("{}\n{}\n{}", chip.name, chip.detail, chip.status);
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, accessible.clone())
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, accessible.clone()));
     response.on_hover_text(accessible.clone());
     if chip.spoiler {
         paint_draft_spoiler(&painter, rect.center());
@@ -26882,9 +26877,8 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> ChipClicks {
         choice = tile_context_menu(&response, chip.removable, editable, chip.spoiler);
         if let Some(url) = chip.url {
             let label = format!("Preview {accessible}");
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
-            });
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label.clone()));
             if response
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text(label)
@@ -26988,7 +26982,7 @@ fn send_icon_button_sized(
             MUTED.gamma_multiply(0.5)
         },
     );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     response.on_hover_text(label)
 }
 
@@ -27018,9 +27012,7 @@ fn drawn_icon_button_sized(
         icon,
         if response.hovered() { TEXT } else { MUTED },
     );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     response.on_hover_text(label)
 }
 
@@ -27129,8 +27121,11 @@ fn device_picker_with_icon(
             egui::Sense::hover()
         },
     );
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, enabled, selected));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, enabled, selected));
+    // The choice is the value: a visible heading may name the picker
+    // (`labelled_by` then replaces the label).
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_value(selected));
     let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
     let fade = if enabled { 1.0 } else { 0.5 };
     let border = if open || response.has_focus() {
@@ -27240,7 +27235,7 @@ fn invite_number_field(
             enabled,
             egui::TextEdit::singleline(text)
                 .hint_text(hint)
-                .vertical_align(egui::Align::Center)
+                .align(egui::Align2::LEFT_CENTER)
                 .char_limit(6)
                 .min_size(egui::vec2(width, 36.0))
                 .desired_width(width),
@@ -27275,14 +27270,18 @@ fn settings_switch(
     });
     let rect = row.inner;
     // The whole labelled row activates the switch, including with keyboard or AX.
-    let mut response = ui.interact(row.response.rect, ui.id().with(label), egui::Sense::click());
+    let mut response = ui.interact(
+        row.response.rect,
+        ui.scope_id().with(label),
+        egui::Sense::click(),
+    );
     if response.clicked() {
         response.request_focus();
         *value = !*value;
         response.mark_changed();
     }
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *value, label)
+        egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), *value, label)
     });
     // Web's switch hover (call.css): a neutral wash while off, terracotta
     // once on. Focus keeps its terracotta ring either way.
@@ -27358,7 +27357,7 @@ fn chevron_button(ui: &mut egui::Ui, open: bool, label: &str) -> egui::Response 
         if response.hovered() { TEXT } else { MUTED },
     );
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), open, label)
+        egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), open, label)
     });
     response.on_hover_text(label)
 }
@@ -27379,9 +27378,7 @@ fn drawn_icon_button_with_tooltip(
         icon,
         if response.hovered() { TEXT } else { MUTED },
     );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     response.on_hover_text(tooltip)
 }
 
@@ -27419,9 +27416,7 @@ fn audio_icon_button(
         icon,
         color,
     );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     response
 }
 
@@ -27556,8 +27551,7 @@ fn header_menu_item(
             MUTED,
         );
     }
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), text));
     response
 }
 
@@ -27795,7 +27789,7 @@ fn fit_call_status(
 /// chat on a primary click.
 fn face_pick(face: &egui::Response, label: &str, audio: Option<String>) -> FacePick {
     use egui::accesskit::Action;
-    face.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label));
+    face.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));
     face.ctx
         .accesskit_node_builder(face.id, |node| node.add_action(Action::ShowContextMenu));
     let action = face
@@ -27921,12 +27915,12 @@ fn place_live_timer(ui: &egui::Ui, text: &str, right: f32, y: f32, size: f32, sh
     );
     let timer = ui.interact(
         rect,
-        ui.id().with(("live-timer", text)),
+        ui.scope_id().with(("live-timer", text)),
         egui::Sense::hover(),
     );
     timer.widget_info(|| {
         egui::WidgetInfo::labeled(
-            egui::WidgetType::Label,
+            egui::Role::Label,
             true,
             format!("Voice session duration: {text}"),
         )
@@ -28010,7 +28004,7 @@ fn call_toggle(
         color,
     );
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), pressed, label)
+        egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), pressed, label)
     });
     response
 }
@@ -28104,7 +28098,7 @@ fn strip_call_faces(
     };
     let label = |rect: egui::Rect, id: egui::Id, label: &str| {
         ui.interact(rect, id, egui::Sense::hover())
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label));
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));
     };
     // Each face goes over the one before, so every face shows some of
     // itself; the strip's color parts them.
@@ -28118,7 +28112,7 @@ fn strip_call_faces(
         }
         label(
             rect,
-            ui.id().with(("strip-face", &person.id)),
+            ui.scope_id().with(("strip-face", &person.id)),
             &labels[index],
         );
     }
@@ -28139,7 +28133,7 @@ fn strip_call_faces(
         );
         label(
             rect,
-            ui.id().with("strip-more"),
+            ui.scope_id().with("strip-more"),
             &format!("{more} more in the call"),
         );
     }
@@ -28194,7 +28188,7 @@ fn muted_color(color: Color32) -> Color32 {
 /// accessible name.
 fn muted_indicator(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, label: &str) {
     let indicator = ui.interact(rect, id, egui::Sense::hover());
-    indicator.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label));
+    indicator.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));
     paint_icon(ui.painter(), rect, NavIcon::BellOff, MUTED);
     indicator.on_hover_text(label);
 }
@@ -28212,7 +28206,7 @@ fn channel_button(
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::SelectableLabel,
+            egui::Role::Button,
             ui.is_enabled(),
             active,
             if extras.feedback_waiting > 0 {
@@ -28310,7 +28304,7 @@ fn channel_button(
         );
         let indicator = ui.interact(live, response.id.with("live"), egui::Sense::hover());
         indicator.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("{count} in voice"))
+            egui::WidgetInfo::labeled(egui::Role::Image, true, format!("{count} in voice"))
         });
         let revealed = (row_hovered || response.has_focus())
             && (extras.voice.is_some() || extras.menu.is_some());
@@ -28364,7 +28358,7 @@ fn channel_button(
             galley.size(),
         );
         let indicator = ui.interact(state, response.id.with("call"), egui::Sense::hover());
-        indicator.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &status));
+        indicator.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &status));
         if !revealed {
             ui.painter().galley(state.min, galley, mark.tone);
         }
@@ -28526,7 +28520,7 @@ fn channel_button(
             );
         }
         settings.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &menu.label)
+            egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &menu.label)
         });
         popup
             .align(egui::RectAlign::BOTTOM_END)
@@ -28674,7 +28668,7 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     paint_icon(ui.painter(), rect.shrink(5.0), NavIcon::Users, color);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             ui.is_enabled(),
             if active {
                 "Hide member list"
@@ -28700,7 +28694,7 @@ struct ReplyStringMotion {
 
 fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str) {
     let target = egui::pos2(ui.cursor().left() + 18.0, avatar_top + 16.0);
-    let id = ui.id().with(("reply-string", key));
+    let id = ui.scope_id().with(("reply-string", key));
     // Match the other clients: stable per-reply settings, not per quoted source.
     let seed = key.bytes().fold(2166136261_u32, |hash, byte| {
         (hash ^ u32::from(byte)).wrapping_mul(16777619)
@@ -28926,7 +28920,7 @@ fn feedback_row(
     let response = ui
         .interact(
             rect,
-            ui.id().with(("feedback-report", &report.id)),
+            ui.scope_id().with(("feedback-report", &report.id)),
             egui::Sense::click(),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -28937,7 +28931,7 @@ fn feedback_row(
             report.status()
         };
         egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             true,
             format!(
                 "{}, {}, {status}",
@@ -28954,7 +28948,7 @@ fn feedback_row(
     let button = ui
         .interact(
             button_rect,
-            ui.id().with(("feedback-archive", &report.id)),
+            ui.scope_id().with(("feedback-archive", &report.id)),
             egui::Sense::click(),
         )
         .on_hover_text(if archived_view {
@@ -28963,7 +28957,7 @@ fn feedback_row(
             "Archive"
         });
     let label = report.action_label(archived_view);
-    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    button.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
     if ui.rect_contains_pointer(rect) || response.has_focus() || button.has_focus() {
         ui.painter().set(
             tint,
@@ -29022,7 +29016,7 @@ fn message_row<R>(
     let mut profile_response = |ui: &egui::Ui, response: egui::Response, corner: f32| {
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
+                egui::Role::Button,
                 true,
                 format!("Open profile for {}", author.name),
             )
@@ -29057,7 +29051,7 @@ fn message_row<R>(
                         ui.allocate_exact_size(egui::vec2(34.0, line), egui::Sense::hover());
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Label,
+                            egui::Role::Label,
                             true,
                             format!("{} {time}", author.name),
                         )
@@ -29448,7 +29442,7 @@ impl CaperApp {
             .and_then(|state| state.cursor.char_range())
             .map_or((length, length), |range| {
                 let [a, b] = range.sorted_cursors();
-                (a.index.min(length), b.index.min(length))
+                (a.index.0.min(length), b.index.0.min(length))
             });
         let before: String = text.chars().take(start).collect();
         let after: String = text.chars().skip(end).collect();
@@ -30143,8 +30137,11 @@ impl CaperApp {
         let mut discard = false;
         let mut send = false;
         let mut as_voice = false;
-        let progress =
-            motion::entrance(ui.ctx(), egui::Id::new("voice-recording-bar"), motion::FAST);
+        let progress = motion::entrance(
+            ui.ctx(),
+            egui::Id::unique("voice-recording-bar"),
+            motion::FAST,
+        );
         let width = ui.available_width();
         motion::arrive(ui, progress, egui::vec2(0.0, 4.0), |ui| {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
@@ -30183,7 +30180,7 @@ impl CaperApp {
             row.add(egui::Label::new(bold(timer.clone()).size(13.0).color(TEXT)).selectable(false))
                 .widget_info(|| {
                     egui::WidgetInfo::labeled(
-                        egui::WidgetType::Label,
+                        egui::Role::Label,
                         true,
                         format!("Recording voice message, {timer}"),
                     )
@@ -30374,7 +30371,7 @@ impl CaperApp {
             state,
             Some((player::State::Playing | player::State::Loading, _))
         );
-        let scrub_id = egui::Id::new(("voice-scrub", &attachment.id));
+        let scrub_id = egui::Id::unique(("voice-scrub", &attachment.id));
         let scrub: Option<f32> = ui.ctx().data(|data| data.get_temp(scrub_id));
         let played = scrub.unwrap_or_else(|| match state {
             Some((_, position)) if duration > 0 => position as f32 / duration as f32,
@@ -30401,7 +30398,7 @@ impl CaperApp {
             );
             let button = ui.interact(
                 play,
-                egui::Id::new(("voice-play", &attachment.id)),
+                egui::Id::unique(("voice-play", &attachment.id)),
                 egui::Sense::click(),
             );
             let fill = if button.is_pointer_button_down_on() {
@@ -30431,7 +30428,7 @@ impl CaperApp {
             } else {
                 "Play voice message"
             };
-            button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+            button.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
             toggle = button
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .clicked();
@@ -30461,7 +30458,7 @@ impl CaperApp {
             paint_waveform(&painter, wave, attachment.waveform.as_deref(), played);
             let seek = ui.interact(
                 wave,
-                egui::Id::new(("voice-seek", &attachment.id)),
+                egui::Id::unique(("voice-seek", &attachment.id)),
                 egui::Sense::click_and_drag(),
             );
             seek.widget_info(|| {
@@ -30507,7 +30504,7 @@ fn voice_transcript(ui: &mut egui::Ui, attachment: &model::Attachment) {
         model::TranscriptView::Pending => None,
         model::TranscriptView::Text(text) => Some(text),
     };
-    let expanded_id = egui::Id::new(("voice-transcript", &attachment.id));
+    let expanded_id = egui::Id::unique(("voice-transcript", &attachment.id));
     let expanded = ui
         .ctx()
         .data(|data| data.get_temp::<bool>(expanded_id))
@@ -30796,7 +30793,7 @@ fn stop_button(
             glyph,
         );
     }
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     response.on_hover_text(label)
 }
 
@@ -30860,7 +30857,7 @@ fn voice_chip(
     } else {
         "Play voice message"
     };
-    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    button.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     clicks.toggle = button
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .clicked();
@@ -30880,7 +30877,7 @@ fn voice_chip(
             if response.hovered() { TEXT } else { MUTED },
         );
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Remove voice message")
+            egui::WidgetInfo::labeled(egui::Role::Button, true, "Remove voice message")
         });
         clicks.remove = response
             .on_hover_text("Remove voice message")
@@ -30944,7 +30941,7 @@ fn voice_chip(
             (None, None) => String::new(),
         }
     );
-    chip.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &accessible));
+    chip.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &accessible));
     clicks
 }
 
@@ -31053,9 +31050,9 @@ fn file_card(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             if clickable {
-                egui::WidgetType::Button
+                egui::Role::Button
             } else {
-                egui::WidgetType::Label
+                egui::Role::Label
             },
             clickable,
             label.clone(),
@@ -31206,7 +31203,10 @@ fn draft_link_ranges(job: &egui::text::LayoutJob) -> Vec<std::ops::Range<usize>>
     let mut offset = 0;
     let mut in_link = false;
     for section in &job.sections {
-        let end = offset + job.text[section.byte_range.clone()].chars().count();
+        let end = offset
+            + job.text[section.byte_range.start.0..section.byte_range.end.0]
+                .chars()
+                .count();
         if section.leading_space == LINK_ICON_SPACE {
             ranges.push(offset..end);
             in_link = true;
@@ -31266,7 +31266,7 @@ fn layout_inline_links(
                 .mesh_bounds
                 .union(row.visuals.mesh_bounds.translate(row.pos.to_vec2()));
         }
-        offset += row.char_count_including_newline();
+        offset += row.char_count_including_newline().0;
     }
     galley
 }
@@ -31474,7 +31474,7 @@ fn rich_text_rows(
             egui::Label::new(RichText::new(text).font(plain.font_id).color(plain.color))
                 .layout_in_ui(ui);
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
+            egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), galley.text())
         });
         message_selection::paint(ui, &response, position, galley);
         return Body::default();
@@ -31584,7 +31584,7 @@ fn rich_text_rows(
         egui::Label::new(job).layout_in_ui(ui)
     };
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
+        egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), galley.text())
     });
     let characters = |range: &std::ops::Range<usize>| {
         text[..range.start].chars().count()..text[..range.end].chars().count()
@@ -31653,7 +31653,7 @@ fn rich_text_rows(
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             if row == 0 {
                 target.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, describe(entry))
+                    egui::WidgetInfo::labeled(egui::Role::Button, true, describe(entry))
                 });
             }
             is_hot |= target.hovered() || target.has_focus();
@@ -31703,7 +31703,7 @@ fn rich_text_rows(
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
             if row == 0 {
                 target.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &text[range.clone()])
+                    egui::WidgetInfo::labeled(egui::Role::Link, true, &text[range.clone()])
                 });
             }
             if target.has_focus() {
@@ -31887,8 +31887,7 @@ fn message_menu_item_in(
             galley,
             color,
         );
-        response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
         response.on_hover_text(label)
     })
     .inner
@@ -31974,7 +31973,7 @@ fn external_link(
             );
         }
     }
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, label));
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.clicked() {
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -32018,7 +32017,7 @@ fn thread_summary_link(ui: &mut egui::Ui, replies: u64, unread: bool) -> egui::R
         .inner;
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             true,
             format!(
                 "{count}{} · View thread",
@@ -32059,7 +32058,7 @@ fn pill_rects(galley: &egui::Galley, range: std::ops::Range<usize>) -> Vec<egui:
         if rect.is_positive() {
             rects.push(rect);
         }
-        offset += placed.row.char_count_including_newline();
+        offset += placed.char_count_including_newline().0;
     }
     rects
 }
@@ -32143,7 +32142,7 @@ fn suggestion_row(
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 44.0), egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
+            egui::Role::Button,
             ui.is_enabled(),
             format!("{title} {detail}"),
         )
@@ -32564,6 +32563,54 @@ fn presence_avatar_on(
     );
 }
 
+/// A chat window needs little GPU: small memory blocks instead of wgpu's
+/// 256 MiB-per-block performance default, and the integrated GPU on
+/// dual-GPU machines (`WGPU_POWER_PREF` still overrides it).
+fn low_footprint_wgpu() -> eframe::egui_wgpu::WgpuConfiguration {
+    use eframe::{egui_wgpu, wgpu};
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    setup.power_preference =
+        wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::LowPower);
+    let device = setup.device_descriptor.clone();
+    setup.device_descriptor = std::sync::Arc::new(move |adapter| wgpu::DeviceDescriptor {
+        memory_hints: wgpu::MemoryHints::MemoryUsage,
+        ..device(adapter)
+    });
+    egui_wgpu::WgpuConfiguration {
+        wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),
+        ..egui_wgpu::WgpuConfiguration::default()
+            .with_surface_config(egui_wgpu::SurfaceConfig::LOW_LATENCY)
+    }
+}
+
+/// Headless passes for tests. egui asserts in debug builds that every
+/// pass's texture delta reaches a painter; tests have none, so drop it.
+#[cfg(test)]
+pub(crate) trait TestPass {
+    fn test_pass(&self, input: egui::RawInput, run: impl FnMut(&egui::Context))
+    -> egui::FullOutput;
+    fn test_ui(&self, input: egui::RawInput, run: impl FnMut(&mut egui::Ui)) -> egui::FullOutput;
+}
+
+#[cfg(test)]
+impl TestPass for egui::Context {
+    fn test_pass(
+        &self,
+        input: egui::RawInput,
+        run: impl FnMut(&egui::Context),
+    ) -> egui::FullOutput {
+        let mut output = self.run_pass(input, run);
+        output.textures_delta.clear();
+        output
+    }
+
+    fn test_ui(&self, input: egui::RawInput, run: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
+        let mut output = self.run_ui(input, run);
+        output.textures_delta.clear();
+        output
+    }
+}
+
 #[cfg(test)]
 mod avatar_tests {
     use super::caper_avatar_index;
@@ -32896,7 +32943,7 @@ fn configure(context: &egui::Context) {
         .insert(0, "Satoshi Regular".into());
     context.set_fonts(fonts);
 
-    let mut style = (*context.style()).clone();
+    let mut style = (*context.global_style()).clone();
     style.visuals.dark_mode = true;
     style.visuals.panel_fill = BLACKOUT;
     style.visuals.window_fill = SURFACE;
@@ -32927,11 +32974,34 @@ fn configure(context: &egui::Context) {
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
     style.spacing.button_padding = egui::vec2(10.0, 7.0);
     style.spacing.interact_size.y = 36.0;
+    // egui's own fades and disclosures: 0.37 doubled its default to 0.2s.
+    style.animation_time = 0.1;
     style.visuals.window_corner_radius = CornerRadius::same(8);
     // Menus and windows use the shared border and 8px corners, not egui's grey.
     style.visuals.window_stroke = Stroke::new(1.0_f32, BORDER);
     style.visuals.menu_corner_radius = CornerRadius::same(8);
-    context.set_style(style);
+    context.set_global_style(style);
+    context.replace_widget_theme(TextFields);
+}
+
+/// egui 0.37 sizes text fields like buttons: Caper's 36px control height and
+/// button padding. Caper's fields set their own heights, so keep egui's
+/// earlier metrics: rows decide the height, inside a 4×2 margin.
+struct TextFields;
+
+impl egui::theme::StyleProvider<egui::widget_style::TextEditStyle> for TextFields {
+    fn style(
+        &mut self,
+        args: &egui::widget_style::StyleArgs<'_>,
+    ) -> egui::widget_style::TextEditStyle {
+        let mut style: egui::widget_style::TextEditStyle = egui::theme::DefaultStyle.style(args);
+        let frame = &mut style.atom_layout.frame;
+        // Keep the stroke and hover-expansion compensation the theme added.
+        let padding = egui::Margin::from(args.style.spacing.button_padding);
+        frame.inner_margin = frame.inner_margin - padding + egui::Margin::symmetric(4, 2);
+        style.atom_layout.min_size = egui::Vec2::ZERO;
+        style
+    }
 }
 
 fn bold(text: impl Into<String>) -> RichText {
@@ -33072,7 +33142,7 @@ fn outlined_button(ui: &mut egui::Ui, text: &str, pressed: bool) -> egui::Respon
         })
         .inner;
     button.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, button.enabled(), pressed, text)
+        egui::WidgetInfo::selected(egui::Role::Button, button.enabled(), pressed, text)
     });
     button
 }
@@ -33083,7 +33153,7 @@ fn input_meter(ui: &mut egui::Ui, levels: &std::collections::VecDeque<f32>, acti
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::hover());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
-            egui::WidgetType::Other,
+            egui::Role::Unknown,
             true,
             if active {
                 "Received microphone level"
@@ -33136,7 +33206,7 @@ fn name_field(
     let response = ui.add_sized(
         [ui.available_width(), 42.0],
         egui::TextEdit::singleline(value)
-            .vertical_align(egui::Align::Center)
+            .align(egui::Align2::LEFT_CENTER)
             .char_limit(80)
             .hint_text(RichText::new(placeholder).color(MUTED.gamma_multiply(0.65)))
             .margin(egui::Margin {
@@ -33389,7 +33459,7 @@ fn tabular_galley(
             };
             job.sections.push(egui::text::LayoutSection {
                 leading_space: carry + pad,
-                byte_range: start..start + c.len_utf8(),
+                byte_range: start.into()..(start + c.len_utf8()).into(),
                 format: egui::TextFormat::simple(font.clone(), color),
             });
             carry = pad;
@@ -33411,7 +33481,7 @@ fn tabular_label(
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, galley.size().y), egui::Sense::hover());
     ui.painter().galley(rect.min, galley, color);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text));
     response
 }
 
@@ -33502,7 +33572,7 @@ fn dialog_buttons(
 fn message_skeleton(ui: &mut egui::Ui) {
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Other, ui.is_enabled(), "Loading messages")
+        egui::WidgetInfo::labeled(egui::Role::Unknown, ui.is_enabled(), "Loading messages")
     });
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     let width = (rect.width() - 80.0).max(0.0);
@@ -33641,8 +33711,7 @@ fn navigation_toggle(ui: &mut egui::Ui, icon: NavIcon, text: &str) -> egui::Resp
         galley,
         color,
     );
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), text));
     response
 }
 
@@ -33777,6 +33846,7 @@ fn main() -> eframe::Result {
         "Caper",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
+            wgpu_options: low_footprint_wgpu(),
             // Cache usable normal bounds ourselves; eframe otherwise saves
             // minimized/maximized geometry instead of the restore rectangle.
             persist_window: false,
@@ -33818,8 +33888,26 @@ mod tests {
         pill_rects, projected_reactions, redundant_invitation, resend_countdown, resend_wait,
         short_time, take_date_divider, timestamp_parts, voice,
     };
+    use crate::TestPass as _;
     use crate::{mentions, navigation, uploads, voice_note, whats_new, worker};
     use std::time::{Duration, Instant};
+
+    /// A file dropped on the window, as egui-winit reports a native drop.
+    #[derive(Debug)]
+    struct DroppedPath(std::path::PathBuf);
+
+    impl egui::DroppedFile for DroppedPath {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            std::fs::read(&self.0).map_err(|error| error.to_string())
+        }
+    }
+
+    fn dropped(path: &str) -> egui::DroppedFileHandle {
+        std::sync::Arc::new(DroppedPath(path.into()))
+    }
 
     #[test]
     fn all_wordmark_characters_render_without_the_avatar_tile() {
@@ -34015,7 +34103,7 @@ mod tests {
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
         context.enable_accesskit();
-        context.run(
+        context.test_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -34024,7 +34112,7 @@ mod tests {
                 events,
                 ..Default::default()
             },
-            |context| app.page(context),
+            |ui| app.page(ui),
         )
     }
 
@@ -34144,18 +34232,20 @@ mod tests {
                     app.pending = Some(pending);
                 }
                 let mut frame = || {
-                    context.run(
+                    context.test_pass(
                         egui::RawInput {
                             screen_rect: Some(screen),
                             ..Default::default()
                         },
                         |context| {
-                            egui::CentralPanel::default().frame(egui::Frame::NONE).show(
-                                context,
-                                |ui| {
-                                    app.thread_panel(ui, false);
-                                },
-                            );
+                            context.root_ui(|root| {
+                                egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                                    root,
+                                    |ui| {
+                                        app.thread_panel(ui, false);
+                                    },
+                                )
+                            });
                         },
                     )
                 };
@@ -34254,7 +34344,7 @@ mod tests {
             let mut output = None;
             for _ in 0..3 {
                 app.history_offset = Some(0.0);
-                output = Some(context.run(
+                output = Some(context.test_pass(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -34263,12 +34353,14 @@ mod tests {
                         ..Default::default()
                     },
                     |context| {
-                        egui::CentralPanel::default().frame(egui::Frame::NONE).show(
-                            context,
-                            |ui| {
-                                app.channel_conversation(ui, width < 760.0);
-                            },
-                        );
+                        context.root_ui(|root| {
+                            egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                                root,
+                                |ui| {
+                                    app.channel_conversation(ui, width < 760.0);
+                                },
+                            )
+                        });
                     },
                 ));
             }
@@ -34309,18 +34401,20 @@ mod tests {
                 });
                 let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0));
                 let mut frame = || {
-                    context.run(
+                    context.test_pass(
                         egui::RawInput {
                             screen_rect: Some(screen),
                             ..Default::default()
                         },
                         |context| {
-                            egui::CentralPanel::default().frame(egui::Frame::NONE).show(
-                                context,
-                                |ui| {
-                                    app.conversation(ui, width <= 760.0);
-                                },
-                            );
+                            context.root_ui(|root| {
+                                egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                                    root,
+                                    |ui| {
+                                        app.conversation(ui, width <= 760.0);
+                                    },
+                                )
+                            });
                         },
                     )
                 };
@@ -34430,7 +34524,7 @@ mod tests {
             serde_json::from_str(r#"{"id":"legacy","lastSeq":"9"}"#).unwrap();
         assert!(legacy.read_seq.is_none());
         let draw = |app: &mut CaperApp| {
-            let output = context.run(
+            let output = context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -34438,7 +34532,7 @@ mod tests {
                     )),
                     ..Default::default()
                 },
-                |context| app.page(context),
+                |ui| app.page(ui),
             );
             output
                 .shapes
@@ -34534,7 +34628,7 @@ mod tests {
         let cursor = app.timeline.cursor();
         app.timeline.reset(messages.clone(), &cursor).unwrap();
         for width in [1440.0, 840.0, 390.0, 1440.0] {
-            let _ = context.run(
+            let _ = context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -34542,7 +34636,7 @@ mod tests {
                     )),
                     ..Default::default()
                 },
-                |context| app.page(context),
+                |ui| app.page(ui),
             );
             assert_eq!(app.timeline.cursor(), cursor);
             assert_eq!(
@@ -34687,6 +34781,8 @@ mod tests {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(0.0, 20_000.0),
                     modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
                 },
             ],
         );
@@ -34735,6 +34831,8 @@ mod tests {
                 unit: egui::MouseWheelUnit::Point,
                 delta: egui::vec2(0.0, delta),
                 modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
             },
         ]
     }
@@ -35000,6 +35098,8 @@ mod tests {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(0.0, 450.0),
                     modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
                 },
             ],
         );
@@ -35436,12 +35536,12 @@ mod tests {
         );
         // This is a new single click, not egui's time-based double/triple click.
         let time = context.input(|input| input.time) + 1.0;
-        let _ = context.run(
+        let _ = context.test_ui(
             egui::RawInput {
                 time: Some(time),
                 ..Default::default()
             },
-            |context| app.page(context),
+            |ui| app.page(ui),
         );
         click(&mut app, &context, start);
         click_with(&mut app, &context, start, egui::PointerButton::Secondary);
@@ -35649,13 +35749,13 @@ mod tests {
                 Some("parity-pins"),
             );
             let frame = |app: &mut CaperApp, screen_size, events| {
-                context.run(
+                context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_size)),
                         events,
                         ..Default::default()
                     },
-                    |context| app.page(context),
+                    |ui| app.page(ui),
                 )
             };
             for _ in 0..3 {
@@ -35803,25 +35903,22 @@ mod tests {
         app.updates.dismiss();
         app.draft = "Keep this draft".into();
         render(&mut app, &context, vec![]);
-        context.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
+        context.memory_mut(|memory| memory.request_focus(egui::Id::unique("message-composer")));
         app.updates.show_available();
         let frame = |app: &mut CaperApp, events| {
-            context.run(
+            context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
                         egui::vec2(960.0, 540.0),
                     )),
                     events,
-                    dropped_files: vec![egui::DroppedFile {
-                        path: Some(std::path::PathBuf::from("/tmp/update-review-drop.txt")),
-                        ..Default::default()
-                    }],
+                    dropped_files: vec![dropped("/tmp/update-review-drop.txt")],
                     ..Default::default()
                 },
-                |context| {
-                    app.update_notice(context);
-                    app.page(context);
+                |ui| {
+                    app.update_notice(&ui.ctx().clone());
+                    app.page(ui);
                 },
             )
         };
@@ -35845,7 +35942,7 @@ mod tests {
         assert_eq!(app.draft, "Keep this draft");
         assert!(app.pending.is_none());
         assert!(app.draft_files.is_empty(), "review must not accept drops");
-        assert!(!context.memory(|memory| memory.has_focus(egui::Id::new("message-composer"))));
+        assert!(!context.memory(|memory| memory.has_focus(egui::Id::unique("message-composer"))));
         frame(&mut app, vec![]);
         app.updates.show_available();
         for _ in 0..4 {
@@ -35924,7 +36021,7 @@ mod tests {
                 .unwrap();
             // A known update remains visible; it never hides behind the profile.
             for time in [0.15, 1.5, 6.5, 15.0] {
-                let output = context.run(
+                let output = context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -35933,7 +36030,7 @@ mod tests {
                         time: Some(time),
                         ..Default::default()
                     },
-                    |context| app.page(context),
+                    |ui| app.page(ui),
                 );
                 let current = output
                     .platform_output
@@ -36001,7 +36098,7 @@ mod tests {
             );
             let mut output = egui::FullOutput::default();
             for _ in 0..4 {
-                output = context.run(
+                output = context.test_pass(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -36030,7 +36127,7 @@ mod tests {
         let (events, receiver) = std::sync::mpsc::channel();
         app.worker.events = receiver;
         let frame = |app: &mut CaperApp, events| {
-            context.run(
+            context.test_pass(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -36152,7 +36249,7 @@ mod tests {
             Some("parity-update"),
         );
         let frame = |app: &mut CaperApp, events| {
-            context.run(
+            context.test_pass(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -36224,7 +36321,7 @@ mod tests {
                 Some(fixture),
             );
             let mut frame = |events| {
-                context.run(
+                context.test_pass(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -36294,7 +36391,7 @@ mod tests {
                 let mut time = 0.0;
                 let mut frame = |events| {
                     time += 1.0 / 60.0;
-                    context.run(
+                    context.test_pass(
                         egui::RawInput {
                             screen_rect: Some(screen),
                             time: Some(time),
@@ -36373,6 +36470,8 @@ mod tests {
                             unit: egui::MouseWheelUnit::Point,
                             delta: egui::vec2(0.0, -40.0),
                             modifiers: egui::Modifiers::NONE,
+                            phase: egui::TouchPhase::Move,
+                            source: egui::MouseWheelSource::Wheel,
                         },
                     ]);
                     for _ in 0..4 {
@@ -37176,17 +37275,16 @@ mod tests {
     }
 
     fn node_bounds(output: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
-        output
-            .platform_output
-            .accesskit_update
-            .as_ref()?
-            .nodes
-            .iter()
-            .find_map(|(_, node)| {
-                (node.label() == Some(label))
-                    .then(|| node.bounds())
-                    .flatten()
-            })
+        let nodes = &output.platform_output.accesskit_update.as_ref()?.nodes;
+        let find = |matches: &dyn Fn(&egui::accesskit::Node) -> bool| {
+            nodes
+                .iter()
+                .find_map(|(_, node)| matches(node).then(|| node.bounds()).flatten())
+        };
+        // A picker named by a visible heading carries its choice as its
+        // value (`labelled_by` clears the label).
+        find(&|node| node.label() == Some(label))
+            .or_else(|| find(&|node| node.value() == Some(label)))
             .map(|bounds| {
                 egui::Rect::from_min_max(
                     egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
@@ -37322,7 +37420,7 @@ mod tests {
         scroll_modal_to_bottom(&mut app, &context);
         // Up a little, past Privacy and Delete account, to the Notifications heading.
         let bounds =
-            context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+            context.memory(|memory| memory.area_rect(egui::Id::unique("caper-dialog")).unwrap());
         render(
             &mut app,
             &context,
@@ -37330,6 +37428,8 @@ mod tests {
                 unit: egui::MouseWheelUnit::Point,
                 delta: egui::vec2(0.0, 220.0),
                 modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
             }],
         );
         for _ in 0..30 {
@@ -37389,6 +37489,8 @@ mod tests {
                 unit: egui::MouseWheelUnit::Point,
                 delta: egui::vec2(0.0, 120.0),
                 modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
             }],
         );
         for _ in 0..30 {
@@ -37943,7 +38045,7 @@ mod tests {
 
     fn scroll_modal_to_bottom(app: &mut CaperApp, context: &egui::Context) -> egui::FullOutput {
         let bounds =
-            context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+            context.memory(|memory| memory.area_rect(egui::Id::unique("caper-dialog")).unwrap());
         render(
             app,
             context,
@@ -37953,6 +38055,8 @@ mod tests {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(0.0, -2000.0),
                     modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
                 },
             ],
         );
@@ -37973,7 +38077,7 @@ mod tests {
                     Some(name),
                 );
                 let mut frame = |events| {
-                    context.run(
+                    context.test_pass(
                         egui::RawInput {
                             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                             events,
@@ -37989,14 +38093,17 @@ mod tests {
                             unit: egui::MouseWheelUnit::Point,
                             delta: egui::vec2(0.0, delta),
                             modifiers: egui::Modifiers::NONE,
+                            phase: egui::TouchPhase::Move,
+                            source: egui::MouseWheelSource::Wheel,
                         },
                     ]);
                     for _ in 0..60 {
                         frame(vec![]);
                     }
                     let output = frame(vec![]);
-                    let bounds = context
-                        .memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+                    let bounds = context.memory(|memory| {
+                        memory.area_rect(egui::Id::unique("caper-dialog")).unwrap()
+                    });
                     let mut visible = 0;
                     for shape in &output.shapes {
                         if let egui::Shape::Text(text) = &shape.shape {
@@ -38050,7 +38157,7 @@ mod tests {
                 render(&mut app, &context, vec![]);
             }
             let bounds = || {
-                context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap())
+                context.memory(|memory| memory.area_rect(egui::Id::unique("caper-dialog")).unwrap())
             };
             let before = bounds();
             app.error = Some("Test-only asynchronous error content. ".repeat(100));
@@ -38111,8 +38218,8 @@ mod tests {
             for _ in 0..3 {
                 render(&mut app, &context, vec![]);
             }
-            let bounds =
-                context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+            let bounds = context
+                .memory(|memory| memory.area_rect(egui::Id::unique("caper-dialog")).unwrap());
             click(
                 &mut app,
                 &context,
@@ -38161,7 +38268,7 @@ mod tests {
             render(&mut app, &context, vec![]);
         }
         let bounds =
-            context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+            context.memory(|memory| memory.area_rect(egui::Id::unique("caper-dialog")).unwrap());
         click(
             &mut app,
             &context,
@@ -38196,8 +38303,8 @@ mod tests {
             for _ in 0..3 {
                 render(&mut app, &context, vec![]);
             }
-            let bounds =
-                context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+            let bounds = context
+                .memory(|memory| memory.area_rect(egui::Id::unique("caper-dialog")).unwrap());
             click(
                 &mut app,
                 &context,
@@ -38266,7 +38373,7 @@ mod tests {
     fn message_editor_opens_with_the_caret_after_the_draft() {
         let context = egui::Context::default();
         // The editor's fixed id keeps an earlier session's caret at the start.
-        let id = egui::Id::new("edit-message-text");
+        let id = egui::Id::unique("edit-message-text");
         let mut stale = egui::text_edit::TextEditState::default();
         stale
             .cursor
@@ -38288,7 +38395,8 @@ mod tests {
             .char_range()
             .unwrap()
             .primary
-            .index;
+            .index
+            .0;
         assert!(draft > 0);
         assert_eq!(caret, draft);
         assert!(context.memory(|memory| memory.has_focus(id)));
@@ -38754,7 +38862,8 @@ mod tests {
             vec![egui::Event::AccessKitActionRequest(
                 egui::accesskit::ActionRequest {
                     action: egui::accesskit::Action::Focus,
-                    target,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: target,
                     data: None,
                 },
             )],
@@ -38838,7 +38947,8 @@ mod tests {
             vec![egui::Event::AccessKitActionRequest(
                 egui::accesskit::ActionRequest {
                     action: egui::accesskit::Action::ShowContextMenu,
-                    target: maya.0,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: maya.0,
                     data: None,
                 },
             )],
@@ -38867,7 +38977,8 @@ mod tests {
             vec![egui::Event::AccessKitActionRequest(
                 egui::accesskit::ActionRequest {
                     action: egui::accesskit::Action::Focus,
-                    target: row,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: row,
                     data: None,
                 },
             )],
@@ -39370,7 +39481,7 @@ mod tests {
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
             egui::epaint::Shape::Text(text) if text.galley.job.text == "Join #design to interact with people here"
                 && text.galley.job.sections.iter().any(|section|
-                    &text.galley.job.text[section.byte_range.clone()] == "#design"
+                    &text.galley.job.text[section.byte_range.start.0..section.byte_range.end.0] == "#design"
                         && section.format.font_id.family == egui::FontFamily::Name("Satoshi Bold".into())
                 )
         )), "preview channel name must be bold");
@@ -39549,7 +39660,7 @@ mod tests {
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
         context.enable_accesskit();
-        context.run(
+        context.test_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -39559,7 +39670,7 @@ mod tests {
                 events,
                 ..Default::default()
             },
-            |context| app.page(context),
+            |ui| app.page(ui),
         )
     }
 
@@ -40045,7 +40156,7 @@ mod tests {
         assert!(!has_members(&render(&mut app, &context, vec![])));
         app.members_visible = true;
         let narrow = |app: &mut CaperApp| {
-            context.run(
+            context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -40053,7 +40164,7 @@ mod tests {
                     )),
                     ..Default::default()
                 },
-                |context| app.shell(context),
+                |ui| app.shell(ui),
             )
         };
         narrow(&mut app);
@@ -40083,7 +40194,7 @@ mod tests {
             app.members_visible = true;
             app.narrow_members_visible = true;
             let frame = |app: &mut CaperApp, events| {
-                context.run(
+                context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -40092,7 +40203,7 @@ mod tests {
                         events,
                         ..Default::default()
                     },
-                    |context| app.page(context),
+                    |ui| app.page(ui),
                 )
             };
             frame(&mut app, vec![]);
@@ -40163,7 +40274,7 @@ mod tests {
                         });
                     }
                 }
-                context.run(
+                context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -40173,7 +40284,7 @@ mod tests {
                         events,
                         ..Default::default()
                     },
-                    |context| app.shell(context),
+                    |ui| app.shell(ui),
                 )
             };
         use egui::TouchPhase::{Cancel, End, Move, Start};
@@ -40287,7 +40398,7 @@ mod tests {
                     force: None,
                 })
                 .collect();
-            let _ = context.run(
+            let _ = context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -40297,7 +40408,7 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |context| app.shell(context),
+                |ui| app.shell(ui),
             );
         };
         use egui::TouchPhase::{End, Move, Start};
@@ -40341,7 +40452,7 @@ mod tests {
                     });
                 }
             }
-            let output = context.run(
+            let output = context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -40351,7 +40462,7 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |context| app.shell(context),
+                |ui| app.shell(ui),
             );
             // The conversation's Browse button rides with the conversation.
             node_center(&output, "Browse").x
@@ -40597,7 +40708,7 @@ mod tests {
             Some("parity-voice-connected"),
         );
         let narrow = |app: &mut CaperApp, time: f64, events: Vec<egui::Event>| {
-            context.run(
+            context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -40607,7 +40718,7 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |context| app.shell(context),
+                |ui| app.shell(ui),
             )
         };
         let tap = |app: &mut CaperApp, time: f64, pos: egui::Pos2| {
@@ -40808,7 +40919,7 @@ mod tests {
         );
         app.token = Some("fixture-only".into());
         let narrow = |app: &mut CaperApp| {
-            context.run(
+            context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -40816,7 +40927,7 @@ mod tests {
                     )),
                     ..Default::default()
                 },
-                |context| app.shell(context),
+                |ui| app.shell(ui),
             )
         };
         narrow(&mut app);
@@ -40836,7 +40947,7 @@ mod tests {
         let selected = app.selected_channel.clone();
         let pos = join.center();
         for pressed in [true, false] {
-            let _ = context.run(
+            let _ = context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -40853,7 +40964,7 @@ mod tests {
                     ],
                     ..Default::default()
                 },
-                |context| app.shell(context),
+                |ui| app.shell(ui),
             );
         }
         assert_eq!(
@@ -40929,7 +41040,7 @@ mod tests {
             Some("parity-voice-error"),
         );
         let frame = |app: &mut CaperApp, width: f32, time: f64, events: Vec<egui::Event>| {
-            context.run(
+            context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -40939,7 +41050,7 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |context| app.shell(context),
+                |ui| app.shell(ui),
             )
         };
         let shown = |output: &egui::FullOutput| -> Vec<egui::Rect> {
@@ -41500,7 +41611,7 @@ mod tests {
             app.channel_rosters
                 .insert("chan00000001".into(), everyone.clone());
             let mut frame = || {
-                context.run(
+                context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -41508,7 +41619,7 @@ mod tests {
                         )),
                         ..Default::default()
                     },
-                    |context| app.page(context),
+                    |ui| app.page(ui),
                 )
             };
             frame();
@@ -42088,7 +42199,7 @@ mod tests {
             app.members_visible = true;
             app.sidebar_width = sidebar;
             let mut frame = || {
-                context.run(
+                context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -42096,7 +42207,7 @@ mod tests {
                         )),
                         ..Default::default()
                     },
-                    |context| app.shell(context),
+                    |ui| app.shell(ui),
                 )
             };
             frame();
@@ -42423,7 +42534,7 @@ mod tests {
         );
         app.session = Some(session());
         render(&mut app, &context, vec![]);
-        let id = egui::Id::new("message-composer");
+        let id = egui::Id::unique("message-composer");
         context.memory_mut(|memory| memory.request_focus(id));
         render(
             &mut app,
@@ -42464,7 +42575,8 @@ mod tests {
                 .char_range()
                 .unwrap()
                 .primary
-                .index,
+                .index
+                .0,
             "👩‍💻 hi 🚀".chars().count()
         );
         assert!(app.pending.is_none());
@@ -42513,7 +42625,7 @@ mod tests {
     }
 
     fn place_caret(context: &egui::Context, draft: &str, app: &mut CaperApp) {
-        let id = egui::Id::new("message-composer");
+        let id = egui::Id::unique("message-composer");
         app.draft = draft.replace('|', "");
         let mut state = egui::TextEdit::load_state(context, id).unwrap();
         state
@@ -42525,13 +42637,14 @@ mod tests {
     }
 
     fn caret(context: &egui::Context) -> usize {
-        egui::TextEdit::load_state(context, egui::Id::new("message-composer"))
+        egui::TextEdit::load_state(context, egui::Id::unique("message-composer"))
             .unwrap()
             .cursor
             .char_range()
             .unwrap()
             .primary
             .index
+            .0
     }
 
     fn text_shapes(output: &egui::FullOutput) -> Vec<String> {
@@ -42558,7 +42671,7 @@ mod tests {
     /// composer has a control with the same label (Insert emoji).
     fn card_control(context: &egui::Context, output: &egui::FullOutput, label: &str) -> egui::Pos2 {
         let card = context
-            .memory(|memory| memory.area_rect(egui::Id::new("mention-card")))
+            .memory(|memory| memory.area_rect(egui::Id::unique("mention-card")))
             .expect("mention card is open");
         output
             .platform_output
@@ -42656,7 +42769,7 @@ mod tests {
         );
         app.session = Some(session());
         render(&mut app, &context, vec![]);
-        let id = egui::Id::new("message-composer");
+        let id = egui::Id::unique("message-composer");
         context.memory_mut(|memory| memory.request_focus(id));
         render(&mut app, &context, vec![egui::Event::Text("@".into())]);
         let output = render(&mut app, &context, vec![]);
@@ -42759,10 +42872,21 @@ mod tests {
         assert!(!maya(&output), "selection");
         place_caret(&context, "hi @ma|", &mut app);
         let ime = |event| vec![egui::Event::Ime(event)];
-        render(&mut app, &context, ime(egui::ImeEvent::Enabled));
+        render(
+            &mut app,
+            &context,
+            ime(egui::ImeEvent::Preedit {
+                text: "m".into(),
+                active_range_chars: Some(0..1),
+            }),
+        );
         let output = render(&mut app, &context, vec![]);
         assert!(!maya(&output), "IME composition");
-        render(&mut app, &context, ime(egui::ImeEvent::Disabled));
+        render(
+            &mut app,
+            &context,
+            ime(egui::ImeEvent::Commit(String::new())),
+        );
         // The bottom-anchored popup settles a pass after it shrinks.
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
@@ -42784,7 +42908,7 @@ mod tests {
         );
         app.session = Some(session());
         render(&mut app, &context, vec![]);
-        let id = egui::Id::new("message-composer");
+        let id = egui::Id::unique("message-composer");
         context.memory_mut(|memory| memory.request_focus(id));
         render(&mut app, &context, vec![egui::Event::Text("@ma".into())]);
         let output = render(&mut app, &context, vec![]);
@@ -42929,7 +43053,7 @@ mod tests {
         let root = app.timeline.messages().next().unwrap().id.clone();
         open_loaded_thread(&mut app, &root);
         render(&mut app, &context, vec![]);
-        let id = egui::Id::new(("thread-draft", &root));
+        let id = egui::Id::unique(("thread-draft", &root));
         context.memory_mut(|memory| memory.request_focus(id));
         render(&mut app, &context, vec![egui::Event::Text("@ma".into())]);
         let output = render(&mut app, &context, vec![]);
@@ -42969,7 +43093,7 @@ mod tests {
         assert!(app.composer_suggestions[&id].dismissed.is_some());
         assert!(
             app.composer_suggestions
-                .get(&egui::Id::new("message-composer"))
+                .get(&egui::Id::unique("message-composer"))
                 .is_none_or(|state| state.dismissed.is_none()),
             "the channel composer keeps its own suggestion state"
         );
@@ -43234,7 +43358,7 @@ mod tests {
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let label = text_position(&output, ":thumbs-up:");
-        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("reactors"));
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("reactors"));
         assert_eq!(context.layer_id_at(label), Some(layer), "drawn above Pins");
         assert!(
             context.memory(|memory| memory.is_above_modal_layer(layer)),
@@ -43249,7 +43373,7 @@ mod tests {
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let title = text_position(&output, "Add a reaction");
-        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("emoji-picker"));
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("emoji-picker"));
         assert_eq!(context.layer_id_at(title), Some(layer));
         assert!(context.memory(|memory| memory.is_above_modal_layer(layer)));
         render(&mut app, &context, press(egui::Key::Escape));
@@ -43270,7 +43394,7 @@ mod tests {
         assert!(app.reaction_picker.is_some(), "clicks inside keep it open");
         // Inside Pins (its title row or footer), outside the picker.
         let pins = context
-            .memory(|memory| memory.area_rect(egui::Id::new("pinned-messages")))
+            .memory(|memory| memory.area_rect(egui::Id::unique("pinned-messages")))
             .expect("Pins drawn");
         let outside = [
             pins.left_top() + egui::vec2(30.0, 30.0),
@@ -43312,7 +43436,7 @@ mod tests {
         );
         render(&mut app, &context, vec![]);
         assert!(
-            context.memory(|memory| memory.has_focus(egui::Id::new("message-composer"))),
+            context.memory(|memory| memory.has_focus(egui::Id::unique("message-composer"))),
             "focus returns to the composer"
         );
     }
@@ -43470,7 +43594,9 @@ mod tests {
         app.browse_focus = true;
         render(&mut app, &context, vec![]);
         render(&mut app, &context, vec![]);
-        assert!(context.memory(|memory| memory.has_focus(egui::Id::new("browse-channels-search"))));
+        assert!(
+            context.memory(|memory| memory.has_focus(egui::Id::unique("browse-channels-search")))
+        );
     }
 
     #[test]
@@ -43505,6 +43631,8 @@ mod tests {
                 unit: egui::MouseWheelUnit::Point,
                 delta: egui::vec2(0.0, -2000.0),
                 modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
             },
         ];
         for _ in 0..30 {
@@ -43678,7 +43806,7 @@ mod tests {
         }
         let output = scroll_modal_to_bottom(&mut app, &context);
         let bounds =
-            context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+            context.memory(|memory| memory.area_rect(egui::Id::unique("caper-dialog")).unwrap());
         let heading = |label: &str| {
             output
                 .shapes
@@ -43826,7 +43954,7 @@ mod tests {
         let (_events, receiver) = std::sync::mpsc::channel();
         app.worker.events = receiver;
         app.token = Some("fixture-token".into());
-        let id = egui::Id::new("member-username");
+        let id = egui::Id::unique("member-username");
         let list = id.with("people");
         render(&mut app, &context, vec![]);
         // Scroll past the Invite link section to Members, as a person would.
@@ -43898,7 +44026,7 @@ mod tests {
             .map(|person| person.username)
             .collect();
         assert_eq!(names, ["alex"], "space members without you or access");
-        let id = egui::Id::new("member-username");
+        let id = egui::Id::unique("member-username");
         render(&mut app, &context, vec![]);
         assert_eq!(type_username(&mut app, &context, id, "a"), ["Alex @alex"]);
         render(&mut app, &context, press(egui::Key::Enter));
@@ -43908,7 +44036,7 @@ mod tests {
 
         let context = egui::Context::default();
         let mut app = CaperApp::new(&context, api(), Some("parity-direct-new"));
-        let id = egui::Id::new("direct-username");
+        let id = egui::Id::unique("direct-username");
         render(&mut app, &context, vec![]);
         assert_eq!(
             type_username(&mut app, &context, id, " @AL"),
@@ -43933,7 +44061,7 @@ mod tests {
             );
             app.account = None;
             let frame = |app: &mut CaperApp, events| {
-                context.run(
+                context.test_pass(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -43943,7 +44071,9 @@ mod tests {
                         ..Default::default()
                     },
                     |context| {
-                        egui::CentralPanel::default().show(context, |ui| app.settings_dialog(ui));
+                        context.root_ui(|root| {
+                            egui::CentralPanel::default().show(root, |ui| app.settings_dialog(ui))
+                        });
                     },
                 )
             };
@@ -44310,7 +44440,7 @@ mod tests {
                     end: query.len() + 1,
                     query: query.into(),
                 }),
-                egui::Id::new("channel-composer"),
+                egui::Id::unique("channel-composer"),
             )
             .into_iter()
             .map(|choice| match choice {
@@ -44476,7 +44606,7 @@ mod tests {
                 }
                 .into();
                 let mut frame = |events| {
-                    context.run(
+                    context.test_pass(
                         egui::RawInput {
                             screen_rect: Some(egui::Rect::from_min_size(
                                 egui::Pos2::ZERO,
@@ -44486,8 +44616,10 @@ mod tests {
                             ..Default::default()
                         },
                         |context| {
-                            egui::CentralPanel::default().show(context, |ui| {
-                                app.message_in(ui, &message, false, false, grouped);
+                            context.root_ui(|root| {
+                                egui::CentralPanel::default().show(root, |ui| {
+                                    app.message_in(ui, &message, false, false, grouped);
+                                })
                             });
                         },
                     )
@@ -44551,13 +44683,15 @@ mod tests {
             let space = app.spaces.iter().find(|space| !space.demo).unwrap().clone();
             app.selected_space = selected.then(|| space.id.clone());
             let mut frame = |events| {
-                context.run(
+                context.test_pass(
                     egui::RawInput {
                         events,
                         ..Default::default()
                     },
                     |context| {
-                        egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+                        context.root_ui(|root| {
+                            egui::CentralPanel::default().show(root, |ui| app.rail(ui))
+                        });
                     },
                 )
             };
@@ -44618,8 +44752,8 @@ mod tests {
         ] {
             let connected = matches!(phase, Phase::Connected(_));
             app.voice.state.phase = phase;
-            let output = context.run(egui::RawInput::default(), |context| {
-                egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+            let output = context.test_pass(egui::RawInput::default(), |context| {
+                context.root_ui(|root| egui::CentralPanel::default().show(root, |ui| app.rail(ui)));
             });
             let label = format!(
                 "{}, {}",
@@ -44634,8 +44768,8 @@ mod tests {
         }
         // Local connection does not wait for (or depend on) a successful poll.
         app.voice_activity_spaces.clear();
-        let output = context.run(egui::RawInput::default(), |context| {
-            egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+        let output = context.test_pass(egui::RawInput::default(), |context| {
+            context.root_ui(|root| egui::CentralPanel::default().show(root, |ui| app.rail(ui)));
         });
         assert!(
             node_bounds(
@@ -44645,8 +44779,8 @@ mod tests {
             .is_some()
         );
         app.voice.state.phase = Phase::Idle;
-        let output = context.run(egui::RawInput::default(), |context| {
-            egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+        let output = context.test_pass(egui::RawInput::default(), |context| {
+            context.root_ui(|root| egui::CentralPanel::default().show(root, |ui| app.rail(ui)));
         });
         assert!(node_bounds(&output, &space.name).is_some());
     }
@@ -44668,8 +44802,8 @@ mod tests {
             .unwrap()
             .clone();
         app.voice_activity_spaces.insert(space.id.clone());
-        let output = context.run(egui::RawInput::default(), |context| {
-            egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+        let output = context.test_pass(egui::RawInput::default(), |context| {
+            context.root_ui(|root| egui::CentralPanel::default().show(root, |ui| app.rail(ui)));
         });
         let label = format!(
             "{}, {}, Voice active in this space, Unread messages",
@@ -44706,8 +44840,8 @@ mod tests {
                 .unwrap()
                 .channels[0]
                 .mention_count = Some(count);
-            let output = context.run(egui::RawInput::default(), |context| {
-                egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+            let output = context.test_pass(egui::RawInput::default(), |context| {
+                context.root_ui(|root| egui::CentralPanel::default().show(root, |ui| app.rail(ui)));
             });
             let counted_label = format!(
                 "{label}, {count} {}",
@@ -44798,7 +44932,7 @@ mod tests {
             if case == "account-switched" {
                 app.account_epoch += 1;
             }
-            let _ = context.run(
+            let _ = context.test_pass(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -44807,11 +44941,13 @@ mod tests {
                     ..Default::default()
                 },
                 |context| {
-                    egui::CentralPanel::default().show(context, |ui| {
-                        if case == "clipped" {
-                            ui.set_clip_rect(egui::Rect::NOTHING);
-                        }
-                        app.message_in(ui, &reply, case != "channel", false, false);
+                    context.root_ui(|root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            if case == "clipped" {
+                                ui.set_clip_rect(egui::Rect::NOTHING);
+                            }
+                            app.message_in(ui, &reply, case != "channel", false, false);
+                        })
                     });
                 },
             );
@@ -44900,19 +45036,21 @@ mod tests {
             let context = egui::Context::default();
             configure(&context);
             context.enable_accesskit();
-            let output = context.run(egui::RawInput::default(), |context| {
-                egui::CentralPanel::default().show(context, |ui| {
-                    channel_button(
-                        ui,
-                        egui::vec2(width, 36.0),
-                        name,
-                        None,
-                        false,
-                        RowExtras {
-                            suffix,
-                            ..Default::default()
-                        },
-                    );
+            let output = context.test_pass(egui::RawInput::default(), |context| {
+                context.root_ui(|root| {
+                    egui::CentralPanel::default().show(root, |ui| {
+                        channel_button(
+                            ui,
+                            egui::vec2(width, 36.0),
+                            name,
+                            None,
+                            false,
+                            RowExtras {
+                                suffix,
+                                ..Default::default()
+                            },
+                        );
+                    })
                 });
             });
             let images: Vec<_> = output
@@ -45735,7 +45873,9 @@ mod tests {
                 .job
                 .sections
                 .iter()
-                .find(|section| &text[section.byte_range.clone()] == token)
+                .find(|section| {
+                    &text[section.byte_range.start.0..section.byte_range.end.0] == token
+                })
                 .map(|section| section.format.background),
             _ => None,
         })
@@ -45818,17 +45958,19 @@ mod tests {
         )];
         crate::pictures::Shared::of(&context).insert(&context, "ring-picture", frames);
         let picture = Some("ring-picture".to_owned());
-        let output = context.run(egui::RawInput::default(), |context| {
-            egui::CentralPanel::default().show(context, |ui| {
-                super::avatar(
-                    ui,
-                    "Maya",
-                    Some(3),
-                    crate::pictures::Source::new(&picture, &None),
-                    28.0,
-                    true,
-                );
-                super::avatar(ui, "Alex", Some(4), None, 28.0, true);
+        let output = context.test_pass(egui::RawInput::default(), |context| {
+            context.root_ui(|root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    super::avatar(
+                        ui,
+                        "Maya",
+                        Some(3),
+                        crate::pictures::Source::new(&picture, &None),
+                        28.0,
+                        true,
+                    );
+                    super::avatar(ui, "Alex", Some(4), None, 28.0, true);
+                })
             });
         });
         let rings: Vec<_> = output
@@ -46465,7 +46607,7 @@ mod tests {
     fn zoom_shortcuts_show_percentage_then_hide_without_changing_focus() {
         let (context, mut app) = fixture("parity-channel");
         let frame = |app: &mut CaperApp, time, events| {
-            context.run(
+            context.test_ui(
                 egui::RawInput {
                     time: Some(time),
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -46475,7 +46617,7 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |context| app.page(context),
+                |ui| app.page(ui),
             )
         };
         frame(&mut app, 1.0, vec![]);
@@ -47004,7 +47146,7 @@ mod tests {
         assert!(!shows(&output, "Invite to space") && !shows(&output, "Block"));
         // The rail also contains space names: constrain this assertion to the card.
         let card = context
-            .memory(|memory| memory.area_rect(egui::Id::new("mention-card")))
+            .memory(|memory| memory.area_rect(egui::Id::unique("mention-card")))
             .unwrap();
         let card_labels: Vec<_> = output
             .shapes
@@ -47035,6 +47177,8 @@ mod tests {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(0.0, -500.0),
                     modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
                 },
             ],
         );
@@ -47061,6 +47205,8 @@ mod tests {
                     unit: egui::MouseWheelUnit::Point,
                     delta: egui::vec2(0.0, -500.0),
                     modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
                 },
             ],
         );
@@ -47278,7 +47424,7 @@ mod tests {
             }];
             app.timeline.reset(messages, "4").unwrap();
             let frame = |app: &mut CaperApp, events| {
-                context.run(
+                context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -47287,7 +47433,7 @@ mod tests {
                         events,
                         ..Default::default()
                     },
-                    |context| app.page(context),
+                    |ui| app.page(ui),
                 )
             };
             frame(&mut app, vec![]);
@@ -47310,7 +47456,7 @@ mod tests {
             frame(&mut app, vec![]);
             frame(&mut app, vec![]);
             let card = context
-                .memory(|memory| memory.area_rect(egui::Id::new("mention-card")))
+                .memory(|memory| memory.area_rect(egui::Id::unique("mention-card")))
                 .unwrap();
             (pill, card)
         };
@@ -47730,7 +47876,7 @@ mod tests {
                 if uncertain { "Retry send" } else { "Send" }
             ));
         }
-        let id = egui::Id::new(("profile-composer", "fixture-alex"));
+        let id = egui::Id::unique(("profile-composer", "fixture-alex"));
         context.memory_mut(|memory| memory.request_focus(id));
         render(&mut app, &context, vec![egui::Event::Text("!".into())]);
         assert!(app.profile_drafts["fixture-alex"].text.contains('!'));
@@ -47766,7 +47912,7 @@ mod tests {
             );
             render(&mut app, &context, vec![]);
             app.profile_drafts.get_mut("fixture-alex").unwrap().text = text;
-            let id = egui::Id::new(("profile-composer", "fixture-alex"));
+            let id = egui::Id::unique(("profile-composer", "fixture-alex"));
             let mut state = egui::TextEdit::load_state(&context, id).unwrap();
             state
                 .cursor
@@ -47921,12 +48067,12 @@ mod tests {
                 Some("parity-thread-loading"),
             );
             let frame = |app: &mut CaperApp| {
-                context.run(
+                context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                         ..Default::default()
                     },
-                    |context| app.page(context),
+                    |ui| app.page(ui),
                 )
             };
             frame(&mut app);
@@ -48291,7 +48437,7 @@ mod tests {
                 matches!(&shape.shape,
                 egui::epaint::Shape::Text(shape) if shape.galley.job.text == text
                     && shape.galley.job.sections.iter().any(|section|
-                        &text[section.byte_range.clone()] == token
+                        &text[section.byte_range.start.0..section.byte_range.end.0] == token
                             && section.format.background == TERRACOTTA.gamma_multiply(0.24)))
             })
         };
@@ -48367,7 +48513,7 @@ mod tests {
                 matches!(&shape.shape,
                 egui::epaint::Shape::Text(galley) if galley.galley.job.text == text
                     && galley.galley.job.sections.iter().any(|section|
-                        &text[section.byte_range.clone()] == token
+                        &text[section.byte_range.start.0..section.byte_range.end.0] == token
                             && section.format.background == TERRACOTTA.gamma_multiply(0.24)
                             && section.format.color == TEXT
                             && section.format.font_id.family
@@ -48406,7 +48552,9 @@ mod tests {
                     .job
                     .sections
                     .iter()
-                    .find(|section| &text[section.byte_range.clone()] == token)
+                    .find(|section| {
+                        &text[section.byte_range.start.0..section.byte_range.end.0] == token
+                    })
                     .map(|section| section.format.clone()),
                 _ => None,
             })
@@ -48452,35 +48600,38 @@ mod tests {
         let context = egui::Context::default();
         super::configure(&context);
         let text = "**bold _🙂_** https://example.com/a_b";
-        let _ = context.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let galley = super::draft_layout(
-                    ui,
-                    text,
-                    500.0,
-                    &[],
-                    mentions::Specials::default(),
-                    egui::FontId::proportional(13.6),
-                );
-                assert_eq!(galley.job.text.chars().count(), text.chars().count());
-                assert_eq!(
-                    galley.job.text.replace('\u{200b}', ""),
-                    "bold 🙂 https://example.com/a_b"
-                );
-                let hidden: Vec<_> = galley
-                    .rows
-                    .iter()
-                    .flat_map(|row| &row.glyphs)
-                    .filter(|glyph| glyph.chr == '\u{200b}')
-                    .collect();
-                assert_eq!(hidden.len(), 6);
-                assert!(hidden.iter().all(|glyph| glyph.advance_width == 0.0));
-                assert!(galley.job.sections.iter().any(|section| {
-                    section.format.italics
-                        && section.format.font_id.family
-                            == egui::FontFamily::Name("Satoshi Bold".into())
-                        && galley.job.text[section.byte_range.clone()].contains('🙂')
-                }));
+        let _ = context.test_pass(egui::RawInput::default(), |ctx| {
+            ctx.root_ui(|root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let galley = super::draft_layout(
+                        ui,
+                        text,
+                        500.0,
+                        &[],
+                        mentions::Specials::default(),
+                        egui::FontId::proportional(13.6),
+                    );
+                    assert_eq!(galley.job.text.chars().count(), text.chars().count());
+                    assert_eq!(
+                        galley.job.text.replace('\u{200b}', ""),
+                        "bold 🙂 https://example.com/a_b"
+                    );
+                    let hidden: Vec<_> = galley
+                        .rows
+                        .iter()
+                        .flat_map(|row| &row.glyphs)
+                        .filter(|glyph| glyph.chr == '\u{200b}')
+                        .collect();
+                    assert_eq!(hidden.len(), 6);
+                    assert!(hidden.iter().all(|glyph| glyph.advance_width == 0.0));
+                    assert!(galley.job.sections.iter().any(|section| {
+                        section.format.italics
+                            && section.format.font_id.family
+                                == egui::FontFamily::Name("Satoshi Bold".into())
+                            && galley.job.text[section.byte_range.start.0..section.byte_range.end.0]
+                                .contains('🙂')
+                    }));
+                })
             });
         });
     }
@@ -48506,79 +48657,87 @@ mod tests {
             for &(text, expected) in cases {
                 let context = egui::Context::default();
                 super::configure(&context);
-                let _ = context.run(egui::RawInput::default(), |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        let galley = super::draft_layout(
-                            ui,
-                            text,
-                            width,
-                            &[],
-                            mentions::Specials::default(),
-                            egui::FontId::proportional(13.6),
-                        );
-                        assert_eq!(galley.text().chars().count(), text.chars().count());
-                        assert_eq!(
-                            galley.text().replace('\u{200b}', ""),
-                            crate::formatting::projection(text).0
-                        );
-                        let ranges = super::draft_link_ranges(&galley.job);
-                        assert_eq!(ranges.len(), expected.len(), "{text}");
-                        assert_eq!(
-                            galley
-                                .job
-                                .sections
-                                .iter()
-                                .filter(|section| section.leading_space == super::LINK_ICON_SPACE)
-                                .count(),
-                            expected.len(),
-                            "one icon per URL, not per style section"
-                        );
-                        for (range, expected) in ranges.into_iter().zip(expected) {
-                            let selection = egui::text::CCursorRange::two(
-                                egui::text::CCursor::new(range.start),
-                                egui::text::CCursor::new(range.end),
+                let _ = context.test_pass(egui::RawInput::default(), |ctx| {
+                    ctx.root_ui(|root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            let galley = super::draft_layout(
+                                ui,
+                                text,
+                                width,
+                                &[],
+                                mentions::Specials::default(),
+                                egui::FontId::proportional(13.6),
                             );
+                            assert_eq!(galley.text().chars().count(), text.chars().count());
                             assert_eq!(
-                                crate::formatting::copied_text(text, selection),
-                                *expected,
-                                "complete URL across formatting sections"
+                                galley.text().replace('\u{200b}', ""),
+                                crate::formatting::projection(text).0
                             );
-                            let rects = super::inline_link_rects(&galley, range.clone());
-                            assert!(
-                                rects[0].left() >= -0.1,
-                                "leading icon gutter survives hidden delimiters and wrapping"
-                            );
-                            assert!(rects.iter().all(|rect| rect.right() <= width + 0.1));
-                            let caret = galley.pos_from_cursor(egui::text::CCursor {
-                                index: range.start,
-                                prefer_next_row: true,
-                            });
-                            assert!(
-                                (caret.left() - rects[0].left() - super::LINK_ICON_SPACE).abs()
-                                    < 0.1
-                            );
-                        }
-                        if text.starts_with("**www.") {
-                            let sections: Vec<_> = galley
-                                .job
-                                .sections
-                                .iter()
-                                .filter(|section| {
-                                    section.format.color == super::LINK
-                                        && !galley.job.text[section.byte_range.clone()]
-                                            .contains('\u{200b}')
-                                })
-                                .collect();
-                            assert_eq!(sections.len(), 2);
+                            let ranges = super::draft_link_ranges(&galley.job);
+                            assert_eq!(ranges.len(), expected.len(), "{text}");
                             assert_eq!(
-                                sections[0].format.font_id.family,
-                                egui::FontFamily::Name("Satoshi Bold".into())
+                                galley
+                                    .job
+                                    .sections
+                                    .iter()
+                                    .filter(
+                                        |section| section.leading_space == super::LINK_ICON_SPACE
+                                    )
+                                    .count(),
+                                expected.len(),
+                                "one icon per URL, not per style section"
                             );
-                            assert_eq!(
-                                sections[1].format.font_id.family,
-                                egui::FontFamily::Proportional
-                            );
-                        }
+                            for (range, expected) in ranges.into_iter().zip(expected) {
+                                let selection = egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(range.start),
+                                    egui::text::CCursor::new(range.end),
+                                );
+                                assert_eq!(
+                                    crate::formatting::copied_text(text, selection),
+                                    *expected,
+                                    "complete URL across formatting sections"
+                                );
+                                let rects = super::inline_link_rects(&galley, range.clone());
+                                assert!(
+                                    rects[0].left() >= -0.1,
+                                    "leading icon gutter survives hidden delimiters and wrapping"
+                                );
+                                assert!(rects.iter().all(|rect| rect.right() <= width + 0.1));
+                                let caret = galley.pos_from_cursor(egui::text::CCursor {
+                                    index: range.start.into(),
+                                    prefer_next_row: true,
+                                });
+                                assert!(
+                                    (caret.left() - rects[0].left() - super::LINK_ICON_SPACE).abs()
+                                        < 0.1
+                                );
+                            }
+                            if text.starts_with("**www.") {
+                                let sections: Vec<_> = galley
+                                    .job
+                                    .sections
+                                    .iter()
+                                    .filter(|section| {
+                                        // Hidden delimiters share a section with
+                                        // the text they precede when formats match.
+                                        section.format.color == super::LINK
+                                            && !galley.job.text[section.byte_range.start.0
+                                                ..section.byte_range.end.0]
+                                                .trim_start_matches('\u{200b}')
+                                                .is_empty()
+                                    })
+                                    .collect();
+                                assert_eq!(sections.len(), 2);
+                                assert_eq!(
+                                    sections[0].format.font_id.family,
+                                    egui::FontFamily::Name("Satoshi Bold".into())
+                                );
+                                assert_eq!(
+                                    sections[1].format.font_id.family,
+                                    egui::FontFamily::Proportional
+                                );
+                            }
+                        })
                     });
                 });
             }
@@ -48589,39 +48748,41 @@ mod tests {
     fn draft_links_highlight_and_preserve_cursor_metrics() {
         let context = egui::Context::default();
         let text = "Join HTTPS://Caper.Example/invite/AbC or www.Example.com/Path.";
-        let _ = context.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let font = egui::FontId::proportional(13.6);
-                let galley = super::draft_layout(
-                    ui,
-                    text,
-                    300.0,
-                    &[],
-                    mentions::Specials::default(),
-                    font.clone(),
-                );
-                assert_eq!(galley.job.text, text);
-                let links: Vec<_> = galley
-                    .job
-                    .sections
-                    .iter()
-                    .filter(|section| section.leading_space == super::LINK_ICON_SPACE)
-                    .map(|section| {
-                        assert_eq!(section.format.color, super::LINK);
-                        &text[section.byte_range.clone()]
-                    })
-                    .collect();
-                assert_eq!(
-                    links,
-                    ["HTTPS://Caper.Example/invite/AbC", "www.Example.com/Path"]
-                );
-                assert!(
-                    galley
+        let _ = context.test_pass(egui::RawInput::default(), |ctx| {
+            ctx.root_ui(|root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let font = egui::FontId::proportional(13.6);
+                    let galley = super::draft_layout(
+                        ui,
+                        text,
+                        300.0,
+                        &[],
+                        mentions::Specials::default(),
+                        font.clone(),
+                    );
+                    assert_eq!(galley.job.text, text);
+                    let links: Vec<_> = galley
                         .job
                         .sections
                         .iter()
-                        .all(|section| section.format.font_id == font)
-                );
+                        .filter(|section| section.leading_space == super::LINK_ICON_SPACE)
+                        .map(|section| {
+                            assert_eq!(section.format.color, super::LINK);
+                            &text[section.byte_range.start.0..section.byte_range.end.0]
+                        })
+                        .collect();
+                    assert_eq!(
+                        links,
+                        ["HTTPS://Caper.Example/invite/AbC", "www.Example.com/Path"]
+                    );
+                    assert!(
+                        galley
+                            .job
+                            .sections
+                            .iter()
+                            .all(|section| section.format.font_id == font)
+                    );
+                })
             });
         });
     }
@@ -48634,68 +48795,70 @@ mod tests {
             let original =
                 "https://example.com/start\n語 (www.example.org/path), https://example.net/end";
             let mut draft = original.to_owned();
-            let id = egui::Id::new("draft-link-test");
+            let id = egui::Id::unique("draft-link-test");
             let mut draw = |events| {
-                context.run(
+                context.test_pass(
                     egui::RawInput {
                         events,
                         ..Default::default()
                     },
                     |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
-                            ui.set_width(width);
-                            let mut layouter =
-                                |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
-                                    super::draft_layout(
-                                        ui,
-                                        text.as_str(),
-                                        width,
-                                        &[],
-                                        mentions::Specials::default(),
-                                        egui::FontId::proportional(13.6),
-                                    )
-                                };
-                            let background = ui.painter().add(egui::Shape::Noop);
-                            let output = egui::TextEdit::multiline(&mut draft)
-                                .id(id)
-                                .frame(false)
-                                .desired_width(width)
-                                .layouter(&mut layouter)
-                                .show(ui);
-                            super::paint_draft_links(ui, &output, background);
-                            output.response.request_focus();
-                            let galley = &output.galley;
-                            let mut offset = 0;
-                            for row in &galley.rows {
-                                for (index, glyph) in row.glyphs.iter().enumerate() {
-                                    let cursor = egui::text::CCursor {
-                                        index: offset + index,
-                                        prefer_next_row: true,
+                        ctx.root_ui(|root| {
+                            egui::CentralPanel::default().show(root, |ui| {
+                                ui.set_width(width);
+                                let mut layouter =
+                                    |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
+                                        super::draft_layout(
+                                            ui,
+                                            text.as_str(),
+                                            width,
+                                            &[],
+                                            mentions::Specials::default(),
+                                            egui::FontId::proportional(13.6),
+                                        )
                                     };
-                                    let position = galley.pos_from_cursor(cursor).center();
-                                    assert!(
-                                        (position.x - glyph.pos.x - row.pos.x).abs() < 0.1,
-                                        "caret follows shifted glyph"
-                                    );
-                                    assert_eq!(
-                                        galley.cursor_from_pos(position.to_vec2()).index,
-                                        cursor.index
-                                    );
+                                let background = ui.painter().add(egui::Shape::Noop);
+                                let output = egui::TextEdit::multiline(&mut draft)
+                                    .id(id)
+                                    .frame(egui::Frame::NONE)
+                                    .desired_width(width)
+                                    .layouter(&mut layouter)
+                                    .show(ui);
+                                super::paint_draft_links(ui, &output, background);
+                                output.response.request_focus();
+                                let galley = &output.galley;
+                                let mut offset = 0;
+                                for row in &galley.rows {
+                                    for (index, glyph) in row.glyphs.iter().enumerate() {
+                                        let cursor = egui::text::CCursor {
+                                            index: (offset + index).into(),
+                                            prefer_next_row: true,
+                                        };
+                                        let position = galley.pos_from_cursor(cursor).center();
+                                        assert!(
+                                            (position.x - glyph.pos.x - row.pos.x).abs() < 0.1,
+                                            "caret follows shifted glyph"
+                                        );
+                                        assert_eq!(
+                                            galley.cursor_from_pos(position.to_vec2()).index,
+                                            cursor.index
+                                        );
+                                    }
+                                    offset += row.char_count_including_newline().0;
                                 }
-                                offset += row.char_count_including_newline();
-                            }
-                            assert_eq!(offset, galley.text().chars().count());
-                            for run in message_runs(galley.text(), &[]) {
-                                let Run::Link(range, _) = run else { continue };
-                                let chars = galley.text()[..range.start].chars().count()
-                                    ..galley.text()[..range.end].chars().count();
-                                let rects = super::inline_link_rects(galley, chars);
-                                assert!(
-                                    rects[0].left() >= -0.1,
-                                    "leading icon is not clipped at a wrap"
-                                );
-                                assert!(rects.iter().all(|rect| rect.right() <= width + 0.1));
-                            }
+                                assert_eq!(offset, galley.text().chars().count());
+                                for run in message_runs(galley.text(), &[]) {
+                                    let Run::Link(range, _) = run else { continue };
+                                    let chars = galley.text()[..range.start].chars().count()
+                                        ..galley.text()[..range.end].chars().count();
+                                    let rects = super::inline_link_rects(galley, chars);
+                                    assert!(
+                                        rects[0].left() >= -0.1,
+                                        "leading icon is not clipped at a wrap"
+                                    );
+                                    assert!(rects.iter().all(|rect| rect.right() <= width + 0.1));
+                                }
+                            })
                         });
                     },
                 )
@@ -48755,7 +48918,7 @@ mod tests {
                 2
             );
             let draw = |events| {
-                context.run(
+                context.test_pass(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -48765,15 +48928,17 @@ mod tests {
                         ..Default::default()
                     },
                     |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
-                            super::message_body(
-                                ui,
-                                "icon-test",
-                                text,
-                                &[],
-                                |_| String::new(),
-                                true,
-                            );
+                        ctx.root_ui(|root| {
+                            egui::CentralPanel::default().show(root, |ui| {
+                                super::message_body(
+                                    ui,
+                                    "icon-test",
+                                    text,
+                                    &[],
+                                    |_| String::new(),
+                                    true,
+                                );
+                            })
                         });
                     },
                 )
@@ -49183,7 +49348,7 @@ mod tests {
                 "We sent a new code. Earlier codes no longer work."
             ));
             assert!(
-                context.memory(|memory| memory.has_focus(egui::Id::new("sign-in-code"))),
+                context.memory(|memory| memory.has_focus(egui::Id::unique("sign-in-code"))),
                 "focus stays in the code field"
             );
             if resend < MAX_RESENDS {
@@ -49497,7 +49662,7 @@ mod tests {
         );
         app.session = Some(session());
         render(&mut app, &context, vec![]);
-        context.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
+        context.memory_mut(|memory| memory.request_focus(egui::Id::unique("message-composer")));
         for text in ["", " \t\n "] {
             app.draft = text.into();
             render(&mut app, &context, press(egui::Key::Enter));
@@ -49544,7 +49709,7 @@ mod tests {
         // Window creation/minimization can report a height below the configured
         // minimum. The first Windows crash reported 64 points (40% = 25.6).
         for height in [64.0, 104.0, 106.0] {
-            let output = context.run(
+            let output = context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -49552,7 +49717,7 @@ mod tests {
                     )),
                     ..Default::default()
                 },
-                |context| app.page(context),
+                |ui| app.page(ui),
             );
             assert_eq!(editor_height(&output), 42.0);
             assert_eq!(app.draft, "first");
@@ -49560,7 +49725,7 @@ mod tests {
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         assert_eq!(editor_height(&output), 42.0);
-        let id = egui::Id::new("message-composer");
+        let id = egui::Id::unique("message-composer");
         context.memory_mut(|memory| memory.request_focus(id));
         let enter = |pressed, modifiers| egui::Event::Key {
             key: egui::Key::Enter,
@@ -50235,33 +50400,35 @@ mod tests {
         );
         let frame = |events| {
             let mut row = None;
-            let output = context.run(
+            let output = context.test_pass(
                 egui::RawInput {
                     events,
                     ..Default::default()
                 },
                 |context| {
-                    egui::CentralPanel::default().show(context, |ui| {
-                        row = Some(
-                            super::channel_button(
-                                ui,
-                                egui::vec2(280.0, 32.0),
-                                "general",
-                                Some(super::NavIcon::Hash),
-                                true,
-                                super::RowExtras {
-                                    menu: Some(super::RowMenu {
-                                        label: "Channel options for general".into(),
-                                        on_hover: true,
-                                        content: Box::new(|ui| {
-                                            ui.label("Options");
+                    context.root_ui(|root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            row = Some(
+                                super::channel_button(
+                                    ui,
+                                    egui::vec2(280.0, 32.0),
+                                    "general",
+                                    Some(super::NavIcon::Hash),
+                                    true,
+                                    super::RowExtras {
+                                        menu: Some(super::RowMenu {
+                                            label: "Channel options for general".into(),
+                                            on_hover: true,
+                                            content: Box::new(|ui| {
+                                                ui.label("Options");
+                                            }),
                                         }),
-                                    }),
-                                    ..Default::default()
-                                },
-                            )
-                            .0,
-                        );
+                                        ..Default::default()
+                                    },
+                                )
+                                .0,
+                            );
+                        })
                     });
                 },
             );
@@ -50308,7 +50475,7 @@ mod tests {
         render(&mut app, &context, vec![]);
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
-        let id = egui::Id::new("direct-heading-plus");
+        let id = egui::Id::unique("direct-heading-plus");
         let button = context
             .read_response(id)
             .expect("hidden button remains focusable")
@@ -50675,8 +50842,10 @@ mod tests {
         assert!(app.invite_links.default_link.is_none());
         assert!(!app.invite_links.creating);
         assert_eq!(app.invite_join.request, request);
-        let output = context.run(egui::RawInput::default(), |context| {
-            egui::CentralPanel::default().show(context, |ui| app.invite_people_dialog(ui));
+        let output = context.test_pass(egui::RawInput::default(), |context| {
+            context.root_ui(|root| {
+                egui::CentralPanel::default().show(root, |ui| app.invite_people_dialog(ui))
+            });
         });
         let texts = texts(&output);
         assert!(texts.contains(&"Invite by username"), "{texts:?}");
@@ -50962,7 +51131,7 @@ mod tests {
             assert_eq!(card_faces.len(), people.min(10), "{people}: {card_faces:?}");
             // The strip under a narrow chat header.
             let narrow = |app: &mut CaperApp| {
-                context.run(
+                context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -50970,7 +51139,7 @@ mod tests {
                         )),
                         ..Default::default()
                     },
-                    |context| app.shell(context),
+                    |ui| app.shell(ui),
                 )
             };
             narrow(&mut app);
@@ -51134,7 +51303,7 @@ mod tests {
         );
         app.token = Some("fixture-only".into());
         let narrow = |app: &mut CaperApp| {
-            context.run(
+            context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -51143,7 +51312,7 @@ mod tests {
                     time: Some(10.0),
                     ..Default::default()
                 },
-                |context| app.shell(context),
+                |ui| app.shell(ui),
             )
         };
         narrow(&mut app);
@@ -51340,6 +51509,8 @@ mod tests {
                         unit: egui::MouseWheelUnit::Point,
                         delta: egui::vec2(0.0, -200.0),
                         modifiers: egui::Modifiers::NONE,
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Wheel,
                     },
                 ],
             );
@@ -51394,7 +51565,7 @@ mod tests {
             hovered_files: Vec<egui::HoveredFile>,
             time: f64,
         ) -> egui::FullOutput {
-            context.run(
+            context.test_ui(
                 egui::RawInput {
                     time: Some(time),
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -51404,7 +51575,7 @@ mod tests {
                     hovered_files,
                     ..Default::default()
                 },
-                |context| app.page(context),
+                |ui| app.page(ui),
             )
         }
         let has_text = |output: &egui::FullOutput, label: &str| {
@@ -51582,7 +51753,7 @@ mod tests {
             events: Vec<egui::Event>,
         ) -> egui::FullOutput {
             context.enable_accesskit();
-            context.run(
+            context.test_pass(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -51592,9 +51763,11 @@ mod tests {
                     ..Default::default()
                 },
                 |context| {
-                    egui::CentralPanel::default().show(context, |ui| {
-                        app.attachment_list_inset(ui, files, false, 0);
-                        ui.label("After gallery");
+                    context.root_ui(|root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            app.attachment_list_inset(ui, files, false, 0);
+                            ui.label("After gallery");
+                        })
                     });
                 },
             )
@@ -52398,6 +52571,9 @@ mod tests {
             fn get_string(&self, key: &str) -> Option<String> {
                 self.0.get(key).cloned()
             }
+            fn remove_string(&mut self, key: &str) {
+                self.0.remove(key);
+            }
             fn set_string(&mut self, key: &str, value: String) {
                 self.0.insert(key.into(), value);
             }
@@ -52478,7 +52654,7 @@ mod tests {
             // File order must not affect visual slot order or gallery counts.
             let visual = 2;
             let draw = |app: &mut CaperApp, events| {
-                context.run(
+                context.test_pass(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -52488,8 +52664,10 @@ mod tests {
                         ..Default::default()
                     },
                     |context| {
-                        egui::CentralPanel::default().show(context, |ui| {
-                            app.attachment_list(ui, &files, false);
+                        context.root_ui(|root| {
+                            egui::CentralPanel::default().show(root, |ui| {
+                                app.attachment_list(ui, &files, false);
+                            })
                         });
                     },
                 )
@@ -52590,7 +52768,7 @@ mod tests {
             // so the message cover returns without changing saved metadata.
             let mut show_viewer = |viewer: &mut crate::viewer::Viewer, events| {
                 let mut keep = true;
-                let output = context.run(
+                let output = context.test_pass(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -52656,9 +52834,15 @@ mod tests {
                 let bounds =
                     egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(width, 200.0));
                 let draw = || {
-                    context.run(egui::RawInput::default(), |context| {
-                        egui::CentralPanel::default().show(context, |ui| {
-                            super::spoiler_hide_button(ui, bounds, ui.id().with("spoiler"));
+                    context.test_pass(egui::RawInput::default(), |context| {
+                        context.root_ui(|root| {
+                            egui::CentralPanel::default().show(root, |ui| {
+                                super::spoiler_hide_button(
+                                    ui,
+                                    bounds,
+                                    ui.scope_id().with("spoiler"),
+                                );
+                            })
                         });
                     })
                 };
@@ -55511,22 +55695,19 @@ mod tests {
             app.thread_drop_rect.unwrap().center(),
             egui::pos2(700.0, 300.0),
         ] {
-            let _ = context.run(
+            let _ = context.test_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
                         egui::vec2(1440.0, 900.0),
                     )),
                     events: vec![egui::Event::PointerMoved(pos)],
-                    dropped_files: vec![egui::DroppedFile {
-                        path: Some("dropped.txt".into()),
-                        ..Default::default()
-                    }],
+                    dropped_files: vec![dropped("dropped.txt")],
                     ..Default::default()
                 },
-                |context| {
-                    app.attachment_housekeeping(context);
-                    app.page(context);
+                |ui| {
+                    app.attachment_housekeeping(&ui.ctx().clone());
+                    app.page(ui);
                 },
             );
         }
@@ -55617,7 +55798,7 @@ mod tests {
         click(&mut app, &context, text_position(&output, "Edit"));
         assert_eq!(app.draft, "rejected original");
         assert!(app.pending.is_none());
-        assert!(context.memory(|memory| memory.has_focus(egui::Id::new("message-composer"))));
+        assert!(context.memory(|memory| memory.has_focus(egui::Id::unique("message-composer"))));
         app.send_message();
         assert_ne!(app.pending.as_ref().unwrap().id, second_id);
     }
@@ -55840,7 +56021,7 @@ mod tests {
             (1440.0, 440.0),
         ] {
             let mut frame = || {
-                context.run(
+                context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -55848,7 +56029,7 @@ mod tests {
                         )),
                         ..Default::default()
                     },
-                    |context| app.page(context),
+                    |ui| app.page(ui),
                 )
             };
             frame();
@@ -55882,7 +56063,8 @@ mod tests {
             output.platform_output.cursor_icon,
             egui::CursorIcon::ResizeVertical
         );
-        context.memory_mut(|memory| memory.request_focus(egui::Id::new("sidebar-height-resize")));
+        context
+            .memory_mut(|memory| memory.request_focus(egui::Id::unique("sidebar-height-resize")));
         render(&mut app, &context, vec![]);
         render(
             &mut app,
@@ -55914,6 +56096,9 @@ mod tests {
             fn get_string(&self, key: &str) -> Option<String> {
                 self.0.get(key).cloned()
             }
+            fn remove_string(&mut self, key: &str) {
+                self.0.remove(key);
+            }
             fn set_string(&mut self, key: &str, value: String) {
                 self.0.insert(key.into(), value);
             }
@@ -55926,7 +56111,7 @@ mod tests {
             Some("parity-desktop"),
         );
         render(&mut app, &context, vec![]);
-        context.memory_mut(|memory| memory.request_focus(egui::Id::new("sidebar-resize")));
+        context.memory_mut(|memory| memory.request_focus(egui::Id::unique("sidebar-resize")));
         render(&mut app, &context, vec![]);
         render(&mut app, &context, vec![]);
         for (key, width) in [
@@ -56192,7 +56377,7 @@ mod tests {
             );
             app.email = "fixture@example.test".into();
             app.challenge = verifying.then(|| "fixture-challenge".into());
-            let field = egui::Id::new(if verifying {
+            let field = egui::Id::unique(if verifying {
                 "sign-in-code"
             } else {
                 "sign-in-email"
@@ -56245,7 +56430,7 @@ mod tests {
                 app.code = "ABC234".into();
             }
             let mut frame = || {
-                context.run(
+                context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -56253,14 +56438,14 @@ mod tests {
                         )),
                         ..Default::default()
                     },
-                    |context| app.page(context),
+                    |ui| app.page(ui),
                 )
             };
             frame();
             // The field takes focus when the page opens, as on web. Measure its
             // resting frame, without egui's 1px focus expansion.
             context.memory_mut(|memory| {
-                memory.surrender_focus(egui::Id::new(if verifying {
+                memory.surrender_focus(egui::Id::unique(if verifying {
                     "sign-in-code"
                 } else {
                     "sign-in-email"
@@ -56962,13 +57147,13 @@ mod tests {
             app.members_visible = true;
             app.draft = "Unsent draft".into();
             let frame = |app: &mut CaperApp, events| {
-                context.run(
+                context.test_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                         events,
                         ..Default::default()
                     },
-                    |context| app.page(context),
+                    |ui| app.page(ui),
                 )
             };
             frame(&mut app, vec![]);

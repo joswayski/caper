@@ -3,27 +3,55 @@ use eframe::egui::{self, Pos2, Vec2};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
-// This is eframe 0.33's persisted `window` format. Writing the same record lets
-// eframe retain its monitor/DPI-aware placement and off-screen clamping.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[derive(Clone, Debug)]
 pub struct WindowState {
-    inner_position_pixels: Option<Pos2>,
     outer_position_pixels: Option<Pos2>,
+    scale_factor: f32,
     fullscreen: bool,
     maximized: bool,
     inner_size_points: Option<Vec2>,
-    #[serde(skip)]
     restore_pending: bool,
-    #[serde(skip)]
     restore_deadline: Option<Instant>,
+}
+
+// eframe 0.37's persisted `window` record (`egui_winit::WindowSettings`), so
+// eframe restores the normal geometry with its monitor/DPI placement and
+// off-screen clamping. Its own `fullscreen`/`maximized` stay false: eframe
+// would apply them to the still-hidden window, so Caper restores the mode after
+// the first paint from `mode`, which eframe ignores.
+#[derive(Default, Deserialize, Serialize)]
+#[serde(default)]
+struct Record {
+    normal_geometry: Geometry,
+    fullscreen: bool,
+    maximized: bool,
+    mode: Option<Mode>,
+    // eframe 0.33's flat record, from older builds: geometry and Caper's mode.
+    #[serde(skip_serializing)]
+    outer_position_pixels: Option<Pos2>,
+    #[serde(skip_serializing)]
+    inner_size_points: Option<Vec2>,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(default)]
+struct Geometry {
+    outer_position_pixels: Option<Pos2>,
+    scale_factor: f32,
+    inner_size_points: Vec2,
+}
+
+#[derive(Deserialize, Serialize)]
+struct Mode {
+    fullscreen: bool,
+    maximized: bool,
 }
 
 impl Default for WindowState {
     fn default() -> Self {
         Self {
-            inner_position_pixels: None,
             outer_position_pixels: None,
+            scale_factor: 1.0,
             fullscreen: false,
             maximized: true,
             inner_size_points: Some(egui::vec2(1440.0, 900.0)),
@@ -36,13 +64,48 @@ impl Default for WindowState {
 impl WindowState {
     pub fn load(storage: Option<&dyn eframe::Storage>) -> Self {
         storage
-            .and_then(|storage| eframe::get_value::<Self>(storage, "window"))
+            .and_then(|storage| eframe::get_value::<Record>(storage, "window"))
+            .map(|record| {
+                let mode = record.mode.unwrap_or(Mode {
+                    fullscreen: record.fullscreen,
+                    maximized: record.maximized,
+                });
+                let geometry = record.normal_geometry;
+                Self {
+                    outer_position_pixels: geometry
+                        .outer_position_pixels
+                        .or(record.outer_position_pixels),
+                    scale_factor: if geometry.scale_factor > 0.0 {
+                        geometry.scale_factor
+                    } else {
+                        1.0
+                    },
+                    fullscreen: mode.fullscreen,
+                    maximized: mode.maximized,
+                    inner_size_points: record
+                        .inner_size_points
+                        .or(Some(geometry.inner_size_points)),
+                    ..Default::default()
+                }
+            })
             .filter(|state| state.inner_size_points.is_some_and(valid_size))
             .unwrap_or_default()
     }
 
     pub fn save(&self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, "window", self);
+        let record = Record {
+            normal_geometry: Geometry {
+                outer_position_pixels: self.outer_position_pixels,
+                scale_factor: self.scale_factor,
+                inner_size_points: self.inner_size_points.unwrap_or_default(),
+            },
+            mode: Some(Mode {
+                fullscreen: self.fullscreen,
+                maximized: self.maximized,
+            }),
+            ..Default::default()
+        };
+        eframe::set_value(storage, "window", &record);
     }
 
     pub fn update(&mut self, context: &egui::Context) {
@@ -96,9 +159,8 @@ impl WindowState {
         };
         self.inner_size_points = Some(rect.size());
         if let Some(scale) = viewport.native_pixels_per_point {
-            let scale = scale * zoom;
-            self.inner_position_pixels = Some(rect.min * scale);
-            self.outer_position_pixels = viewport.outer_rect.map(|rect| rect.min * scale);
+            self.scale_factor = scale;
+            self.outer_position_pixels = viewport.outer_rect.map(|rect| rect.min * scale * zoom);
         }
     }
 }
@@ -122,6 +184,7 @@ pub fn window_builder(mut builder: egui::ViewportBuilder) -> egui::ViewportBuild
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestPass as _;
     use std::collections::HashMap;
 
     #[derive(Default)]
@@ -129,6 +192,9 @@ mod tests {
     impl eframe::Storage for Storage {
         fn get_string(&self, key: &str) -> Option<String> {
             self.0.get(key).cloned()
+        }
+        fn remove_string(&mut self, key: &str) {
+            self.0.remove(key);
         }
         fn set_string(&mut self, key: &str, value: String) {
             self.0.insert(key.into(), value);
@@ -142,7 +208,7 @@ mod tests {
         input
             .viewports
             .insert(egui::ViewportId::ROOT, viewport.clone());
-        context.run(input, |context| state.update(context))
+        context.test_pass(input, |context| state.update(context))
     }
 
     #[test]
@@ -213,6 +279,52 @@ mod tests {
         assert!(commands.contains(&egui::ViewportCommand::Fullscreen(true)));
         assert!(commands.contains(&egui::ViewportCommand::Maximized(true)));
         assert_eq!(restored.inner_size_points, Some(egui::vec2(830.0, 670.0)));
+    }
+
+    #[test]
+    fn eframe_restores_geometry_but_never_the_mode() {
+        let state = WindowState {
+            outer_position_pixels: Some(egui::pos2(168.0, 75.0)),
+            scale_factor: 1.5,
+            fullscreen: true,
+            maximized: true,
+            inner_size_points: Some(egui::vec2(830.0, 670.0)),
+            ..Default::default()
+        };
+        let mut storage = Storage::default();
+        state.save(&mut storage);
+        let eframe = eframe::get_value::<egui_winit::WindowSettings>(&storage, "window")
+            .expect("eframe parses the record");
+        assert_eq!(eframe.inner_size_points(), egui::vec2(830.0, 670.0));
+        let record = eframe::get_value::<Record>(&storage, "window").unwrap();
+        assert!(!record.fullscreen && !record.maximized);
+        let restored = WindowState::load(Some(&storage));
+        assert!(restored.fullscreen && restored.maximized);
+        assert_eq!(restored.scale_factor, 1.5);
+        assert_eq!(
+            restored.outer_position_pixels,
+            Some(egui::pos2(168.0, 75.0))
+        );
+    }
+
+    #[test]
+    fn migrates_eframe_0_33_records() {
+        let mut storage = Storage::default();
+        for maximized in [false, true] {
+            eframe::Storage::set_string(
+                &mut storage,
+                "window",
+                format!(
+                    "(inner_position_pixels:Some((x:180.0,y:120.0)),\
+                     outer_position_pixels:Some((x:168.0,y:75.0)),fullscreen:false,\
+                     maximized:{maximized},inner_size_points:Some((x:830.0,y:670.0)))"
+                ),
+            );
+            let state = WindowState::load(Some(&storage));
+            assert_eq!(state.maximized, maximized);
+            assert_eq!(state.inner_size_points, Some(egui::vec2(830.0, 670.0)));
+            assert_eq!(state.outer_position_pixels, Some(egui::pos2(168.0, 75.0)));
+        }
     }
 
     #[test]
