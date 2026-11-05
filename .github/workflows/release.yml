@@ -747,10 +747,14 @@ jobs:
           # The tag moves through Git: the Releases API cannot create an older
           # tag with GITHUB_TOKEN when main's workflows changed during a build.
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" --clobber "${files[@]}"
-            git push origin "+$RELEASE_SHA:refs/tags/$RELEASE_TAG"
-            gh release edit "$RELEASE_TAG" --target "$RELEASE_SHA" \
-              --title "Caper apps (latest)" --notes-file notes.md
+            # Downloads first, then the manifest that points at them.
+            gh release upload "$RELEASE_TAG" --clobber "${files[@]:0:${#files[@]}-2}"
+            gh release upload "$RELEASE_TAG" --clobber latest.json latest.json.sig
+            # GITHUB_TOKEN may not move a tag across workflow changes; the
+            # manifest, not the tag, tells clients which build is current.
+            git push origin "+$RELEASE_SHA:refs/tags/$RELEASE_TAG" \
+              || echo "::warning::Kept the $RELEASE_TAG tag; GitHub refused to move it to $RELEASE_SHA."
+            gh release edit "$RELEASE_TAG" --title "Caper apps (latest)" --notes-file notes.md
           else
             git push origin "$RELEASE_SHA:refs/tags/$RELEASE_TAG"
             gh release create "$RELEASE_TAG" --verify-tag --prerelease --target "$RELEASE_SHA" \
@@ -789,9 +793,11 @@ jobs:
           cd release
           intel=(Caper-macOS-Intel.dmg Caper-macOS-Intel.zip)
           for asset in "${intel[@]}"; do test -s "$asset"; done
-          # Only extend the release this run published.
-          target="$(gh release view "$RELEASE_TAG" --json targetCommitish --jq .targetCommitish)"
-          [[ "$target" == "$RELEASE_SHA" ]] || { echo "native-latest now targets $target, not $RELEASE_SHA." >&2; exit 1; }
+          # Only extend the release this run published: its manifest names the
+          # build (the tag may stay behind when GitHub refuses to move it).
+          gh release download "$RELEASE_TAG" --pattern latest.json --pattern latest.json.sig
+          current="$(jq -r .commit latest.json)"
+          [[ "$current" == "$RELEASE_SHA" ]] || { echo "native-latest now holds $current, not $RELEASE_SHA." >&2; exit 1; }
           gh release download "$RELEASE_TAG" --pattern SHA256SUMS
           { grep -v -E '  Caper-macOS-Intel\.(dmg|zip)$' SHA256SUMS || true; sha256sum "${intel[@]}"; } >SHA256SUMS.new
           mv SHA256SUMS.new SHA256SUMS
@@ -799,7 +805,6 @@ jobs:
           [[ -n "$UPDATE_PUBLIC_KEY" ]] || exit 0
           # Files first, then the manifest that points self-updaters at them.
           { printf '%s' "$UPDATE_PUBLIC_KEY" | base64 -d | cat <(printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00') -; } >"$RUNNER_TEMP/update-public.der"
-          gh release download "$RELEASE_TAG" --pattern latest.json --pattern latest.json.sig
           base64 -d latest.json.sig >"$RUNNER_TEMP/current.sig.bin"
           openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/update-public.der" \
             -in latest.json -sigfile "$RUNNER_TEMP/current.sig.bin"
