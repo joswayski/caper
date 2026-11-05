@@ -28,7 +28,8 @@ pub struct Row {
     pub plain: String,
     pub plain16: Vec<u16>,
     pub mentions: Vec<(u32, u32)>,
-    pub links: Vec<(u32, u32)>,
+    /// Links: UTF-16 start, length and address.
+    pub links: Vec<(u32, u32, String)>,
     pub header: Option<Header>,
     pub text_y: f32,
     pub picture_y: f32,
@@ -208,20 +209,21 @@ fn text_range(start: usize, len: usize) -> DWRITE_TEXT_RANGE {
 
 fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
     let m = &c.messages[i];
-    let (plain, spans) = c.plain(i);
+    let (plain, spans, hrefs) = c.plain(i);
     let plain16 = gfx::wide(&plain);
     let text = g.layout(&plain16, &g.formats.message, width)?;
-    let (mut mentions, mut links) = (Vec::new(), Vec::new());
+    let mut mentions = Vec::new();
+    let links = hrefs
+        .into_iter()
+        .map(|(s, l, href)| (s as u32, l as u32, href))
+        .collect();
     unsafe {
         for &(s, l, k) in &spans {
             let r = text_range(s, l);
             match k {
                 SpanKind::Bold => text.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r)?,
                 SpanKind::Italic => text.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, r)?,
-                SpanKind::Link => {
-                    text.SetDrawingEffect(&g.brushes.link, r)?;
-                    links.push((s as u32, l as u32));
-                }
+                SpanKind::Link => text.SetDrawingEffect(&g.brushes.link, r)?,
                 SpanKind::Mention => {
                     text.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r)?;
                     mentions.push((s as u32, l as u32));
@@ -353,7 +355,7 @@ pub fn draw_row(
         for &(s, l) in &row.mentions {
             fill(s, l, &g.brushes.mention, 2.0, 4.0);
         }
-        for &(s, l) in &row.links {
+        for &(s, l, _) in &row.links {
             fill(s, l, &g.brushes.link_bg, 2.0, 4.0);
         }
         if let Some((s, e)) = sel

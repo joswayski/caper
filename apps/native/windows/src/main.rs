@@ -16,7 +16,14 @@
 mod bench;
 mod composer;
 mod emoji;
+// The message grammar every client shares.
+#[allow(dead_code)]
+#[path = "../../../../shared/messages/formatting.rs"]
+mod formatting;
 mod gfx;
+#[allow(dead_code)]
+#[path = "../../../../shared/messages/links.rs"]
+mod links;
 mod list;
 mod live;
 mod model;
@@ -1031,8 +1038,14 @@ impl App {
                 unsafe {
                     let _ = ReleaseCapture();
                 }
+                // A click (not a drag-selection) on a link opens it.
+                let clicked = self.selecting && self.sel.is_none_or(|(a, b)| a == b);
                 self.selecting = false;
                 self.composer_drag = false;
+                if clicked && let Some(href) = self.link_at(x, y) {
+                    self.set_sel(None);
+                    open_link(&href);
+                }
             }
             WM_MOUSEWHEEL => {
                 let delta = ((wp.0 >> 16) & 0xffff) as i16 as f64;
@@ -1047,7 +1060,11 @@ impl App {
                 let beam = self
                     .pointer
                     .is_some_and(|(x, y)| self.in_box(x, y) || self.in_history(x, y));
-                let hand = self.hover_channel.is_some() || self.hover_space.is_some();
+                let hand = self.hover_channel.is_some()
+                    || self.hover_space.is_some()
+                    || self
+                        .pointer
+                        .is_some_and(|(x, y)| self.link_at(x, y).is_some());
                 unsafe {
                     SetCursor(
                         LoadCursorW(
@@ -1257,6 +1274,18 @@ impl App {
             }
             _ => None,
         }
+    }
+
+    /// The address of the link under client point (x, y) in the history.
+    fn link_at(&self, x: f32, y: f32) -> Option<String> {
+        if !self.in_history(x, y) {
+            return None;
+        }
+        let (i, p) = self.msg_hit(x, y)?;
+        self.rows.row(i)?.links.iter().find_map(|(s, l, href)| {
+            // A hit at a link's end position is just past its last character.
+            (p >= *s && p < s + l).then(|| href.clone())
+        })
     }
 
     pub fn scroll_by(&mut self, dy: f64) {
@@ -2040,6 +2069,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             return r;
         }
         DefWindowProcW(hwnd, msg, wp, lp)
+    }
+}
+
+/// Opens a message link in the default browser. `links::segments` only
+/// yields web addresses.
+fn open_link(href: &str) {
+    unsafe {
+        let _ = windows::Win32::UI::Shell::ShellExecuteW(
+            None,
+            w!("open"),
+            &HSTRING::from(href),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        );
     }
 }
 

@@ -13,6 +13,14 @@ pub struct Person {
 
 pub enum Span {
     Text(String),
+    /// A live message's text run: the shared bold/italic grammar, and the
+    /// link it belongs to (its address) when it is part of one.
+    Rich {
+        text: String,
+        bold: bool,
+        italic: bool,
+        href: Option<String>,
+    },
     Bold(String),
     Italic(String),
     Link(String),
@@ -92,17 +100,45 @@ impl Conversation {
 
     /// The message's plain text (what selection copies and screen readers
     /// read) and its styled spans as (UTF-16 start, length, kind).
-    pub fn plain(&self, i: usize) -> (String, Vec<(usize, usize, SpanKind)>) {
+    /// Row `i`'s plain text, its styled UTF-16 ranges, and each link's
+    /// range and address.
+    pub fn plain(&self, i: usize) -> (String, Vec<(usize, usize, SpanKind)>, Vec<Href>) {
         let mut out = String::new();
         let mut len16 = 0;
         let mut spans = Vec::new();
+        let mut hrefs = Vec::new();
         for span in &self.messages[i].spans {
             let start = len16;
+            if let Span::Rich {
+                text,
+                bold,
+                italic,
+                href,
+            } = span
+            {
+                len16 += text.encode_utf16().count();
+                out.push_str(text);
+                let len = len16 - start;
+                for (on, kind) in [(*bold, SpanKind::Bold), (*italic, SpanKind::Italic)] {
+                    if on {
+                        spans.push((start, len, kind));
+                    }
+                }
+                if let Some(href) = href {
+                    spans.push((start, len, SpanKind::Link));
+                    hrefs.push((start, len, href.clone()));
+                }
+                continue;
+            }
             let (text, kind) = match span {
                 Span::Text(t) => (t.clone(), None),
                 Span::Bold(t) => (t.clone(), Some(SpanKind::Bold)),
                 Span::Italic(t) => (t.clone(), Some(SpanKind::Italic)),
-                Span::Link(u) => (u.clone(), Some(SpanKind::Link)),
+                Span::Link(u) => {
+                    hrefs.push((start, u.encode_utf16().count(), u.clone()));
+                    (u.clone(), Some(SpanKind::Link))
+                }
+                Span::Rich { .. } => unreachable!("handled above"),
                 Span::Mention(a) => (
                     format!("@{}", self.members[*a].name),
                     Some(SpanKind::Mention),
@@ -114,9 +150,12 @@ impl Conversation {
                 spans.push((start, len16 - start, kind));
             }
         }
-        (out, spans)
+        (out, spans, hrefs)
     }
 }
+
+/// A link's UTF-16 start and length in its row's text, and its address.
+pub type Href = (usize, usize, String);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SpanKind {

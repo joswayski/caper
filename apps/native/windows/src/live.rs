@@ -467,15 +467,56 @@ pub fn conversation(
     (c, ids)
 }
 
-/// One displayed message. Its text is shown as written for now (Markdown
-/// rendering, attachments and embeds are not drawn yet).
+/// Message text as styled runs: the shared bold/italic grammar
+/// (`shared/messages/formatting.rs`) and links (`shared/messages/links.rs`),
+/// as the egui client draws them. Mentions are plain text until their
+/// matching moves into caper-client.
+pub fn spans(text: &str) -> Vec<Span> {
+    let mut links = Vec::new();
+    let mut offset = 0;
+    for segment in crate::links::segments(text) {
+        let end = offset + segment.text.len();
+        if let Some(href) = segment.href {
+            links.push((offset..end, href));
+        }
+        offset = end;
+    }
+    let mut out = Vec::new();
+    crate::formatting::visit_runs(text, |range, bold, italic| {
+        let mut cuts = vec![range.start, range.end];
+        for (link, _) in &links {
+            for edge in [link.start, link.end] {
+                if range.start < edge && edge < range.end {
+                    cuts.push(edge);
+                }
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for piece in cuts.windows(2) {
+            let (start, end) = (piece[0], piece[1]);
+            out.push(Span::Rich {
+                text: text[start..end].to_owned(),
+                bold,
+                italic,
+                href: links
+                    .iter()
+                    .find(|(link, _)| link.contains(&start))
+                    .map(|(_, href)| href.clone()),
+            });
+        }
+    });
+    out
+}
+
+/// One displayed message (attachments and embeds are not drawn yet).
 pub fn message(m: &core::Message, author: usize, grouped: bool) -> model::Message {
     model::Message {
         id: m.id.clone(),
         author,
         time: time_label(&m.created_at),
         grouped,
-        spans: vec![Span::Text(m.content.text.clone())],
+        spans: spans(&m.content.text),
         picture: None,
         reactions: m
             .reactions
@@ -485,5 +526,37 @@ pub fn message(m: &core::Message, author: usize, grouped: bool) -> model::Messag
                 count: r.author_ids.len() as u32,
             })
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shown(spans: &[Span]) -> Vec<(String, bool, bool, Option<String>)> {
+        spans
+            .iter()
+            .map(|s| match s {
+                Span::Rich {
+                    text,
+                    bold,
+                    italic,
+                    href,
+                } => (text.clone(), *bold, *italic, href.clone()),
+                _ => panic!("live messages are rich runs"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn styles_and_links_split_into_runs_without_their_markers() {
+        let runs = shown(&spans("**see https://caper.chat/x** and _this_"));
+        let text: String = runs.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(text, "see https://caper.chat/x and this");
+        let link = runs.iter().find(|r| r.3.is_some()).expect("a link run");
+        assert_eq!(link.0, "https://caper.chat/x");
+        assert!(link.1, "the link keeps the bold around it");
+        assert!(runs.iter().any(|r| r.0 == "this" && r.2 && !r.1));
+        assert!(runs.iter().any(|r| r.0 == "see " && r.1 && r.3.is_none()));
     }
 }
