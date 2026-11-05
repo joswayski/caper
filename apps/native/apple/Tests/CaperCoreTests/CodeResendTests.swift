@@ -2,6 +2,12 @@ import XCTest
 @testable import CaperCore
 
 final class CodeResendTests: XCTestCase {
+    func testCodeInputUsesTheSharedSixCharacterAlphabet() {
+        XCTAssertEqual(NativePresentation.signInCode("a-bc 2349"), "ABC234")
+        XCTAssertEqual(NativePresentation.signInCode("OILUV01é中"), "")
+        XCTAssertEqual(NativePresentation.signInCode("zxk789"), "ZXK789")
+    }
+
     func testWaitsAMinuteAfterEachCode() {
         let sent = Date(timeIntervalSince1970: 1_000_000)
         XCTAssertEqual(CodeResend.secondsRemaining(sentAt: sent, now: sent), 60)

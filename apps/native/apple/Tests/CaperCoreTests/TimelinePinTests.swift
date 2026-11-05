@@ -159,4 +159,49 @@ final class TimelinePinTests: XCTestCase {
         XCTAssertFalse(follow.needsReveal(to: pin(contentHeight: 944, offset: 400, atBottom: false, reacted: true)))
         XCTAssertFalse(follow.atBottom)
     }
+
+    func testNativeTimelineMeasuresOnlyTheVisibleWindowAndHonorsBoundaries() {
+        var layout = NativeTimelineLayout(estimatedHeight: 50)
+        layout.replace(ids: (0..<3000).map(String.init), width: 600)
+        XCTAssertEqual(layout.measuredCount, 0)
+        XCTAssertEqual(layout.contentHeight, 150_000)
+        XCTAssertEqual(layout.visibleRange(offset: 50, height: 100), 1..<3)
+        XCTAssertEqual(layout.visibleRange(offset: 49, height: 102), 0..<4)
+        let visible = layout.visibleRange(offset: 149_500, height: 500)
+        XCTAssertEqual(visible, 2990..<3000)
+        for index in visible { layout.measure(index, height: index.isMultiple(of: 2) ? 31 : 89) }
+        XCTAssertEqual(layout.measuredCount, 10, "History outside the viewport stays estimated")
+        XCTAssertEqual(layout.contentHeight, 150_100)
+        XCTAssertEqual(layout.index(at: 149_530), 2990)
+        XCTAssertEqual(layout.index(at: 149_531), 2991)
+        XCTAssertEqual(layout.origin(of: 2992), 149_620)
+        XCTAssertEqual(layout.visibleRange(offset: 150_100, height: 500), 0..<0)
+        layout.replace(ids: [], width: 600)
+        XCTAssertEqual(layout.contentHeight, 0)
+        XCTAssertEqual(layout.visibleRange(offset: 0, height: 500), 0..<0)
+        XCTAssertNil(layout.anchor(at: 0))
+    }
+
+    func testNativeTimelinePreservesAnAnchorAcrossPrependEditAndResize() throws {
+        var layout = NativeTimelineLayout(estimatedHeight: 50)
+        layout.replace(ids: ["a", "b", "c", "d"], width: 400)
+        layout.measure(0, height: 70)
+        layout.measure(1, height: 30)
+        let anchor = try XCTUnwrap(layout.anchor(at: 108))
+        XCTAssertEqual(anchor.id, "c")
+        XCTAssertEqual(anchor.offset, 8)
+        layout.replace(ids: ["older", "a", "b", "c", "d", "newer"], width: 400)
+        XCTAssertEqual(layout.offset(for: anchor), 158)
+        XCTAssertEqual(layout.measuredCount, 2)
+        layout.measure(0, height: 120)
+        XCTAssertEqual(layout.offset(for: anchor), 228)
+        layout.replace(ids: layout.ids, width: 400, invalidating: ["b"])
+        XCTAssertEqual(layout.offset(for: anchor), 248)
+        XCTAssertEqual(layout.measuredCount, 2)
+        layout.replace(ids: layout.ids, width: 200)
+        XCTAssertEqual(layout.measuredCount, 0, "Old-width heights cannot clip reflowed text")
+        XCTAssertEqual(layout.offset(for: anchor), 158)
+        layout.replace(ids: ["a", "b"], width: 200)
+        XCTAssertNil(layout.offset(for: anchor), "A removed row cannot anchor a different message")
+    }
 }

@@ -9199,8 +9199,7 @@ private struct LoginPage: View {
                             // A keystroke during a request is put back by `input`, not filtered into the code.
                             guard !model.busy else { return }
                             // Web accepts the unambiguous code alphabet only, uppercased, six characters.
-                            let allowed = Set("ABCDEFGHJKMNPQRSTWXYZ23456789")
-                            let filtered = String(value.uppercased().filter { allowed.contains($0) }.prefix(6))
+                            let filtered = NativePresentation.signInCode(value)
                             guard filtered != value else { return }
                             #if os(macOS)
                             // AppKit's field editor ignores a rewrite inside its own edit; apply it next turn.

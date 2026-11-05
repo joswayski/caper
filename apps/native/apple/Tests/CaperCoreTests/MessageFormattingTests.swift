@@ -1,7 +1,43 @@
 import XCTest
 @testable import CaperCore
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 final class MessageFormattingTests: XCTestCase {
+    @MainActor func testNativeTextKeepsResolvedMentionBoundariesAcrossFormatting() throws {
+        let source = "👩‍💻 **@ali**ce bob**@alice** @bob @everyone @here @feedback **https://example.com/a_b**"
+        let text = NativePresentation.messageText(source, mentions: [
+            .user(id: "alice-id", username: "alice"), .everyone, .feedback,
+        ])
+        XCTAssertEqual(text.string, "👩‍💻 @alice bob@alice @bob @everyone @here @feedback https://example.com/a_b")
+        let visible = text.string as NSString
+        var pills: [(String, String)] = []
+        text.enumerateAttribute(NativePresentation.mentionAttribute, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            if let id = value as? String { pills.append((visible.substring(with: range), id)) }
+        }
+        XCTAssertEqual(pills.map { $0.0 }, ["@alice", "@everyone", "@feedback"])
+        XCTAssertEqual(pills.map { $0.1 }, ["alice-id", "", ""])
+        let alice = visible.range(of: "@alice")
+        #if os(macOS)
+        let color = try XCTUnwrap(text.attribute(.backgroundColor, at: alice.location, effectiveRange: nil) as? NSColor)
+        #else
+        let color = try XCTUnwrap(text.attribute(.backgroundColor, at: alice.location, effectiveRange: nil) as? UIColor)
+        #endif
+        XCTAssertEqual(color.cgColor.alpha, 0.24, accuracy: 0.001)
+        XCTAssertNil(text.attribute(.link, at: alice.location, effectiveRange: nil), "Hosts handle person pills, not the URL opener")
+        let link = visible.range(of: "https://example.com/a_b")
+        XCTAssertEqual(text.attribute(.link, at: link.location, effectiveRange: nil) as? URL,
+            URL(string: "https://example.com/a_b"))
+        let unresolved = NativePresentation.messageText(source)
+        XCTAssertEqual(unresolved.string, text.string)
+        unresolved.enumerateAttribute(NativePresentation.mentionAttribute, in: NSRange(location: 0, length: unresolved.length)) { value, _, _ in
+            XCTAssertNil(value, "A plain @name without server-resolved metadata is not a pill")
+        }
+    }
+
     func testVisibleNavigationDeletionAndClipboard() {
         let text = "**a👩‍💻b**"
         XCTAssertEqual(MessageFormatting.normalizedSelection(text, selection: NSRange(location: 1, length: 0)), NSRange(location: 2, length: 0))
