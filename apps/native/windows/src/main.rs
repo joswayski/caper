@@ -431,6 +431,25 @@ impl App {
                     self.composer_changed();
                 }
                 live::Update::Message(m) => {
+                    let me = self.live.as_ref().and_then(|l| l.me.clone());
+                    if let Some(&i) = self.ids.rows.get(&m.id) {
+                        // A shown message changed: rebuild only its row, and
+                        // redraw below it when its height changed.
+                        let old = &self.c.messages[i];
+                        let new = live::message(&m, old.author, old.grouped, me.as_deref());
+                        if new == *old {
+                            continue;
+                        }
+                        self.c.messages[i] = new;
+                        if self.rows.replace(&self.g, &self.c, i)? {
+                            self.drawn = None;
+                        } else {
+                            self.redraw.push(i);
+                        }
+                        self.events |= EV_ROWS;
+                        self.need = true;
+                        continue;
+                    }
                     let Some((author, grouped)) = self.ids.place(&m) else {
                         continue;
                     };
@@ -439,7 +458,9 @@ impl App {
                             .members
                             .push(live::person(&m.author.id, &m.author.name));
                     }
-                    self.c.messages.push(live::message(&m, author, grouped));
+                    self.c
+                        .messages
+                        .push(live::message(&m, author, grouped, me.as_deref()));
                     self.rows.append(&self.g, &self.c)?;
                     self.need = true;
                 }

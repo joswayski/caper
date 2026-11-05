@@ -57,6 +57,9 @@ pub struct Brushes {
     /// Field placeholders: muted text at 65%.
     pub hint: ID2D1SolidColorBrush,
     pub error: ID2D1SolidColorBrush,
+    /// Your reaction chips: pressed fill and light terracotta label.
+    pub pressed: ID2D1SolidColorBrush,
+    pub own: ID2D1SolidColorBrush,
 }
 
 pub struct Formats {
@@ -83,6 +86,8 @@ pub struct Formats {
     pub action: IDWriteTextFormat,
     pub link_small: IDWriteTextFormat,
     pub error: IDWriteTextFormat,
+    /// A grouped row's "(edited)" marker.
+    pub edited: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -169,6 +174,8 @@ impl Gfx {
                 blackout: brush(theme::BLACKOUT, 1.0)?,
                 hint: brush(theme::TEXT_MUTED, 0.65)?,
                 error: brush(theme::ERROR, 1.0)?,
+                pressed: brush(0x39231E, 1.0)?,
+                own: brush(0xF2AE9C, 1.0)?,
             };
             let fmt = |size: f32, weight: DWRITE_FONT_WEIGHT| {
                 dwrite.CreateTextFormat(
@@ -209,6 +216,7 @@ impl Gfx {
                 action: fmt(16.0, DWRITE_FONT_WEIGHT_MEDIUM)?,
                 link_small: fmt(13.6, DWRITE_FONT_WEIGHT_NORMAL)?,
                 error: fmt(13.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                edited: fmt(10.0, DWRITE_FONT_WEIGHT_NORMAL)?,
             };
             let f = &formats;
             for f in [

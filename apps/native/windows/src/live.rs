@@ -7,7 +7,7 @@
 use crate::model::{self, Conversation, Person, Reaction, Span};
 use caper_client::worker::{Command, Event, Worker};
 use caper_client::{Host, api::Api, gateway, grouping, model as core};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -75,6 +75,8 @@ pub enum Update {
     /// Signed in: the account's spaces are loading.
     SignedIn,
     Loaded(Box<(Conversation, Ids)>),
+    /// A new message, or the latest state of a shown one (its reactions,
+    /// text or deletion changed), whose row is then rebuilt.
     Message(Box<core::Message>),
     /// Online account ids in the open space.
     Presence(HashSet<String>),
@@ -95,6 +97,8 @@ pub struct Ids {
     last: Option<grouping::Row>,
     /// Messages shown, so a send's reply and its gateway echo appear once.
     seen: HashSet<String>,
+    /// Each shown message's index in `Conversation::messages`.
+    pub rows: HashMap<String, usize>,
 }
 
 impl Ids {
@@ -105,6 +109,7 @@ impl Ids {
         if !self.seen.insert(m.id.clone()) {
             return None;
         }
+        self.rows.insert(m.id.clone(), self.rows.len());
         let author = self
             .members
             .iter()
@@ -129,8 +134,14 @@ pub struct Live {
     token: Option<String>,
     name: String,
     spaces: Option<core::Spaces>,
+    space: Option<String>,
     channel: Option<String>,
     chat_token: Option<String>,
+    /// The signed-in author's public id, for "your" reactions.
+    pub me: Option<String>,
+    /// The open channel's history as the core keeps it: gateway messages,
+    /// reactions and edits apply here in sequence, then reach the rows.
+    timeline: core::Timeline,
 }
 
 /// Starts the worker and restores the stored session; `None` without
@@ -159,8 +170,11 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         token: None,
         name: String::new(),
         spaces: None,
+        space: None,
         channel: None,
         chat_token: None,
+        me: None,
+        timeline: core::Timeline::default(),
     })
 }
 
@@ -240,6 +254,44 @@ impl Live {
         });
     }
 
+    /// The open channel's gateway position.
+    fn seq(&self) -> u64 {
+        self.timeline.cursor().parse().unwrap_or(0)
+    }
+
+    /// After a gateway update for message `id`: the messages it (and any
+    /// buffered ones it released) made visible, past sequence `old`, and the
+    /// message's own new state. A gap the core cannot bridge reloads the
+    /// channel, as the egui client does.
+    fn publish(
+        &mut self,
+        old: u64,
+        applied: Result<core::Apply, String>,
+        id: &str,
+        out: &mut Vec<Update>,
+    ) {
+        match applied {
+            Ok(core::Apply::Resync) | Err(_) => return self.reload(),
+            Ok(core::Apply::Buffered) => return,
+            Ok(core::Apply::Applied | core::Apply::Duplicate) => {}
+        }
+        for m in self.timeline.messages() {
+            if m.seq.parse::<u64>().is_ok_and(|seq| seq > old) && m.id != id {
+                out.push(Update::Message(Box::new(m.clone())));
+            }
+        }
+        if let Some(m) = self.timeline.messages().find(|m| m.id == id) {
+            out.push(Update::Message(Box::new(m.clone())));
+        }
+    }
+
+    /// Reloads the open channel from history.
+    fn reload(&mut self) {
+        if let Some(channel) = self.channel.clone() {
+            self.navigate(self.space.clone(), Some(channel));
+        }
+    }
+
     /// The visible conversation, so the worker suppresses its notifications.
     pub fn showing(&self, visible: bool) {
         self.worker
@@ -310,12 +362,18 @@ impl Live {
                         return;
                     }
                     match session {
-                        Ok(s) => self.chat_token = Some(s.token),
+                        Ok(s) => {
+                            self.chat_token = Some(s.token);
+                            self.me = Some(s.author.id);
+                        }
                         Err(e) => out.push(Update::Failed(e)),
                     }
                     let channel = history.channel.id.clone();
                     self.channel = Some(channel.clone());
+                    self.space = Some(detail.space.id.clone());
                     let messages: Vec<core::Message> = timeline.messages().cloned().collect();
+                    let cursor = timeline.cursor();
+                    self.timeline = timeline;
                     let spaces = self.spaces.as_ref().map_or_else(
                         || core::Spaces {
                             spaces: Vec::new(),
@@ -324,13 +382,14 @@ impl Live {
                         },
                         Clone::clone,
                     );
-                    let (conversation, ids) = conversation(&spaces, &detail, &channel, &messages);
+                    let (conversation, ids) =
+                        conversation(&spaces, &detail, &channel, &messages, self.me.as_deref());
                     out.push(Update::Loaded(Box::new((conversation, ids))));
                     self.worker.send(Command::Connect {
                         generation: current,
                         token: self.token.clone(),
                         channel,
-                        cursor: timeline.cursor(),
+                        cursor,
                         presence: Some((detail.space.id.clone(), Vec::new())),
                         media: gateway::MediaWatch::default(),
                     });
@@ -340,7 +399,12 @@ impl Live {
             Event::Sent {
                 generation, result, ..
             } if generation == current => match result {
-                Ok(m) => out.push(Update::Message(Box::new(m))),
+                Ok(m) => {
+                    if self.timeline.merge_sent(m.clone()).is_err() {
+                        self.reload();
+                    }
+                    out.push(Update::Message(Box::new(m)));
+                }
                 Err(f) => out.push(Update::Failed(f.message)),
             },
             Event::Gateway(gateway::GatewayEvent::Message {
@@ -348,7 +412,30 @@ impl Live {
                 channel,
                 message,
             }) if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
-                out.push(Update::Message(message))
+                let id = message.id.clone();
+                let old = self.seq();
+                let applied = self.timeline.apply(*message);
+                self.publish(old, applied, &id, out);
+            }
+            Event::Gateway(gateway::GatewayEvent::Reactions {
+                generation,
+                channel,
+                update,
+            }) if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                let id = update.message_id.clone();
+                let old = self.seq();
+                let applied = self.timeline.apply_reactions(update);
+                self.publish(old, applied, &id, out);
+            }
+            Event::Gateway(gateway::GatewayEvent::Edit {
+                generation,
+                channel,
+                update,
+            }) if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                let id = update.message.id.clone();
+                let old = self.seq();
+                let applied = self.timeline.apply_edit(*update);
+                self.publish(old, applied, &id, out);
             }
             Event::Gateway(gateway::GatewayEvent::Presence {
                 generation,
@@ -418,6 +505,7 @@ pub fn conversation(
     detail: &core::SpaceDetail,
     channel: &str,
     messages: &[core::Message],
+    me: Option<&str>,
 ) -> (Conversation, Ids) {
     let order = detail.member_order(Some(channel));
     let mut ids = Ids {
@@ -431,14 +519,14 @@ pub fn conversation(
         .collect();
     let listed = members.len();
     let mut out = Vec::with_capacity(messages.len());
-    for m in messages.iter().filter(|m| m.deleted_at.is_none()) {
+    for m in messages {
         let Some((author, grouped)) = ids.place(m) else {
             continue;
         };
         if author == members.len() {
             members.push(person(&m.author.id, &m.author.name));
         }
-        out.push(message(m, author, grouped));
+        out.push(message(m, author, grouped, me));
     }
     let joined: Vec<&core::Channel> = detail.channels.iter().filter(|c| c.joined).collect();
     ids.channels = joined.iter().map(|c| c.id.clone()).collect();
@@ -530,23 +618,55 @@ pub fn spans(text: &str, mentions: &[core::Mention]) -> Vec<Span> {
     out
 }
 
-/// One displayed message (attachments and embeds are not drawn yet).
-pub fn message(m: &core::Message, author: usize, grouped: bool) -> model::Message {
+/// One displayed message (attachments and embeds are not drawn yet). `me`
+/// is the signed-in author, whose reactions are highlighted.
+pub fn message(
+    m: &core::Message,
+    author: usize,
+    grouped: bool,
+    me: Option<&str>,
+) -> model::Message {
+    let deleted = m.is_deleted();
+    // As in the egui client: a deleted message keeps its place as a muted
+    // notice without reactions; an edit marks the time, or follows the text
+    // of a grouped row.
+    let edited = m.revision > 1 && !deleted;
+    let mut time = time_label(&m.created_at);
+    if edited && !grouped {
+        time.push_str(" (edited)");
+    }
     model::Message {
         id: m.id.clone(),
         author,
-        time: time_label(&m.created_at),
+        time,
         grouped,
-        spans: spans(&m.content.text, &m.content.mentions),
+        spans: if deleted {
+            vec![Span::Rich {
+                text: "This message was deleted.".into(),
+                bold: false,
+                italic: true,
+                mention: false,
+                href: None,
+            }]
+        } else {
+            spans(&m.content.text, &m.content.mentions)
+        },
         picture: None,
-        reactions: m
-            .reactions
-            .iter()
-            .map(|r| Reaction {
-                emoji: r.emoji.clone(),
-                count: r.author_ids.len() as u32,
-            })
-            .collect(),
+        reactions: if deleted {
+            Vec::new()
+        } else {
+            m.reactions
+                .iter()
+                .filter(|r| !r.author_ids.is_empty())
+                .map(|r| Reaction {
+                    emoji: r.emoji.clone(),
+                    count: r.author_ids.len() as u32,
+                    mine: me.is_some_and(|me| r.author_ids.iter().any(|id| id == me)),
+                })
+                .collect()
+        },
+        edited_inline: edited && grouped,
+        deleted,
     }
 }
 
@@ -554,6 +674,60 @@ pub fn message(m: &core::Message, author: usize, grouped: bool) -> model::Messag
 mod tests {
     use super::*;
 
+    fn core_message(extra: serde_json::Value) -> core::Message {
+        let mut m = serde_json::json!({
+            "id": "b00000000000001",
+            "channelId": "general",
+            "seq": "1",
+            "author": { "id": "member000002", "name": "Alex", "isGuest": false },
+            "content": { "version": 1, "type": "text", "text": "hello **there**" },
+            "clientMessageId": "00000000-0000-4000-9000-000000000001",
+            "createdAt": "2026-10-01T09:00:00Z",
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            m[k] = v.clone();
+        }
+        serde_json::from_value(m).unwrap()
+    }
+
+    #[test]
+    fn rows_show_your_reactions_edits_and_deletions_as_the_egui_client_does() {
+        let reacted = core_message(serde_json::json!({ "reactions": [
+            { "emoji": "👍", "authorIds": ["member000002", "owner0000001"] },
+            { "emoji": "🎉", "authorIds": ["member000002"] },
+        ]}));
+        let row = message(&reacted, 0, false, Some("owner0000001"));
+        let chips: Vec<_> = row
+            .reactions
+            .iter()
+            .map(|r| (r.emoji.as_str(), r.count, r.mine))
+            .collect();
+        assert_eq!(chips, [("👍", 2, true), ("🎉", 1, false)]);
+        assert!(!row.time.contains("edited") && !row.edited_inline && !row.deleted);
+        assert!(
+            row != message(&reacted, 0, false, Some("member000003")),
+            "mine changes the row"
+        );
+
+        let edited = core_message(serde_json::json!({
+            "revision": 2, "editedAt": "2026-10-01T09:05:00Z", "editSeq": "2",
+        }));
+        assert!(message(&edited, 0, false, None).time.ends_with(" (edited)"));
+        let grouped = message(&edited, 0, true, None);
+        assert!(grouped.edited_inline && !grouped.time.contains("edited"));
+
+        let deleted = core_message(serde_json::json!({
+            "revision": 2, "editedAt": "2026-10-01T09:05:00Z", "editSeq": "2",
+            "deletedAt": "2026-10-01T09:05:00Z",
+            "content": { "version": 1, "type": "text", "text": "" },
+            "reactions": [{ "emoji": "👍", "authorIds": ["member000002"] }],
+        }));
+        let row = message(&deleted, 0, false, None);
+        assert!(row.deleted && row.reactions.is_empty() && !row.time.contains("edited"));
+        assert!(
+            matches!(&row.spans[..], [Span::Rich { text, italic: true, .. }] if text == "This message was deleted.")
+        );
+    }
     fn shown(spans: &[Span]) -> Vec<(String, bool, bool, Option<String>)> {
         spans
             .iter()

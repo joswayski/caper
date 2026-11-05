@@ -11,6 +11,7 @@ pub struct Person {
     pub online: bool,
 }
 
+#[derive(PartialEq)]
 pub enum Span {
     Text(String),
     /// A live message's text run: the shared bold/italic grammar, and the
@@ -30,6 +31,7 @@ pub enum Span {
     Mention(usize),
 }
 
+#[derive(PartialEq)]
 pub struct Picture {
     pub width: u32,
     pub height: u32,
@@ -37,11 +39,15 @@ pub struct Picture {
     pub seed: u32,
 }
 
+#[derive(PartialEq)]
 pub struct Reaction {
     pub emoji: String,
     pub count: u32,
+    /// The signed-in account reacted with it.
+    pub mine: bool,
 }
 
+#[derive(PartialEq)]
 pub struct Message {
     pub id: String,
     pub author: usize,
@@ -51,6 +57,11 @@ pub struct Message {
     pub spans: Vec<Span>,
     pub picture: Option<Picture>,
     pub reactions: Vec<Reaction>,
+    /// A grouped row's "(edited)" marker after its text (ungrouped rows
+    /// carry it in `time`).
+    pub edited_inline: bool,
+    /// A tombstone: its notice is drawn muted.
+    pub deleted: bool,
 }
 
 pub struct Channel {
@@ -464,6 +475,7 @@ impl Conversation {
                 .map(|i| Reaction {
                     emoji: REACTIONS[(i as usize * 2 + author) % REACTIONS.len()].into(),
                     count: 1 + rng.below(9) as u32,
+                    mine: false,
                 })
                 .collect()
         } else {
@@ -489,6 +501,8 @@ impl Conversation {
             spans,
             picture,
             reactions,
+            edited_inline: false,
+            deleted: false,
         });
     }
 }
@@ -512,6 +526,8 @@ impl Conversation {
             spans: vec![Span::Text(text)],
             picture: None,
             reactions: Vec::new(),
+            edited_inline: false,
+            deleted: false,
         });
     }
 }

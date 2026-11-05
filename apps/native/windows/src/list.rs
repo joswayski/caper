@@ -33,8 +33,12 @@ pub struct Row {
     pub header: Option<Header>,
     pub text_y: f32,
     pub picture_y: f32,
-    pub reactions: Vec<(IDWriteTextLayout, f32)>,
+    /// Each reaction chip's label, its width and whether it is yours.
+    pub reactions: Vec<(IDWriteTextLayout, f32, bool)>,
     pub reactions_y: f32,
+    /// A grouped row's "(edited)" marker, its width and its position
+    /// from the text's origin.
+    pub edited: Option<(IDWriteTextLayout, f32, f32, f32)>,
 }
 
 pub struct Header {
@@ -138,6 +142,28 @@ impl Rows {
         Ok(())
     }
 
+    /// Message `i` changed: an already built row is rebuilt at once and
+    /// the measured rows below it move by its change in height. Returns
+    /// whether the change has to be redrawn beyond the row itself.
+    pub fn replace(&mut self, g: &Gfx, c: &Conversation, i: usize) -> Result<bool> {
+        self.pictures.remove(&i);
+        let Some(old) = self.rows[i].as_ref().map(|r| r.height) else {
+            return Ok(false);
+        };
+        let row = build(g, c, i, self.width)?;
+        let delta = (row.height - old) as f64;
+        self.rows[i] = Some(row);
+        if delta == 0.0 {
+            return Ok(false);
+        }
+        if i >= self.lo {
+            for top in &mut self.top[i + 1..] {
+                *top += delta;
+            }
+        }
+        Ok(true)
+    }
+
     /// A message was appended to the conversation.
     pub fn append(&mut self, g: &Gfx, c: &Conversation) -> Result<()> {
         let bottom = self.bottom();
@@ -231,7 +257,17 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
             }
         }
     }
+    if m.deleted {
+        unsafe { text.SetDrawingEffect(&g.brushes.muted, text_range(0, plain16.len()))? };
+    }
     emoji::apply(&text, &plain, 15.0, INLINE_EMOJI_SCALE)?;
+    let edited = if m.edited_inline {
+        let l = g.layout(&gfx::wide("(edited)"), &g.formats.edited, 10_000.0)?;
+        let w = gfx::metrics(&l).widthIncludingTrailingWhitespace;
+        Some((l, w, 0.0, 0.0))
+    } else {
+        None
+    };
     let header = if m.grouped {
         None
     } else {
@@ -253,7 +289,11 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         let label = format!("{} {}", r.emoji, r.count);
         let l = g.layout(&gfx::wide(&label), &g.formats.reaction, 10_000.0)?;
         emoji::apply(&l, &label, 12.0, 1.35)?;
-        reactions.push((l.clone(), gfx::metrics(&l).widthIncludingTrailingWhitespace));
+        reactions.push((
+            l.clone(),
+            gfx::metrics(&l).widthIncludingTrailingWhitespace,
+            r.mine,
+        ));
     }
     let mut row = Row {
         height: 0.0,
@@ -268,6 +308,7 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         picture_y: 0.0,
         reactions,
         reactions_y: 0.0,
+        edited,
     };
     place(&mut row, m);
     Ok(row)
@@ -275,7 +316,28 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
 
 /// Vertical layout of a row from its wrapped text height.
 fn place(row: &mut Row, m: &crate::model::Message) {
-    let text_h = gfx::metrics(&row.text).height;
+    let mut text_h = gfx::metrics(&row.text).height;
+    if let Some((_, w, x, y)) = &mut row.edited {
+        // After the text's last character, as egui places it; on its own
+        // line when the last line is full.
+        let (mut px, mut py) = (0.0, 0.0);
+        let mut hit = DWRITE_HIT_TEST_METRICS::default();
+        unsafe {
+            let _ = row.text.HitTestTextPosition(
+                row.plain16.len() as u32,
+                false,
+                &mut px,
+                &mut py,
+                &mut hit,
+            );
+        }
+        let line = hit.height.max(15.0 * 1.35);
+        (*x, *y) = (px + 4.0, hit.top + (line - 13.0) / 2.0);
+        if *x + *w > row.width {
+            (*x, *y) = (0.0, text_h + 2.0);
+            text_h += 15.0;
+        }
+    }
     let mut y = if row.header.is_some() {
         NAME_H + 2.0
     } else {
@@ -390,16 +452,25 @@ pub fn draw_row(
             );
         }
         let mut x = BODY_X;
-        for (l, w) in &row.reactions {
+        if let Some((l, _, ex, ey)) = &row.edited {
+            crate::text::draw(dc, l, BODY_X + ex, ty + ey, &g.brushes.muted);
+        }
+        for (l, w, mine) in &row.reactions {
             let r = rect(
                 x,
                 top + row.reactions_y,
                 x + w + 16.0,
                 top + row.reactions_y + REACTION_H,
             );
-            fill_round(dc, r, 8.0, &g.brushes.raised);
-            stroke_round(dc, r, 8.0, &g.brushes.border);
-            crate::text::draw(dc, l, x + 8.0, r.top + 3.0, &g.brushes.text);
+            // Yours, as on web: a pressed terracotta chip.
+            let (fill, border, label) = if *mine {
+                (&g.brushes.pressed, &g.brushes.terracotta, &g.brushes.own)
+            } else {
+                (&g.brushes.raised, &g.brushes.border, &g.brushes.text)
+            };
+            fill_round(dc, r, 8.0, fill);
+            stroke_round(dc, r, 8.0, border);
+            crate::text::draw(dc, l, x + 8.0, r.top + 3.0, label);
             x = r.right + 6.0;
         }
     }

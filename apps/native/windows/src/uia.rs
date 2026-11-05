@@ -137,7 +137,18 @@ fn name(a: &App, id: Id) -> String {
         Id::Row(i) => {
             let m = &c.messages[i];
             let text = a.rows.row(i).map(|r| r.plain.clone()).unwrap_or_default();
-            format!("{}, {}: {}", c.members[m.author].name, m.time, text)
+            let mut name = format!("{}, {}: {}", c.members[m.author].name, m.time, text);
+            if m.edited_inline {
+                name.push_str(" (edited)");
+            }
+            // Each chip as the egui client labels it.
+            for r in &m.reactions {
+                let n = r.count;
+                let s = if n == 1 { "reaction" } else { "reactions" };
+                let you = if r.mine { ", including you" } else { "" };
+                name.push_str(&format!(". {} {n} {s}{you}", r.emoji));
+            }
+            name
         }
         Id::Members => format!("Members, {}", c.members.len()),
         Id::Member(i) => format!(
