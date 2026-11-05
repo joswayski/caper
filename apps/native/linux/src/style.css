@@ -288,12 +288,24 @@ listview.messages > row:hover {
   min-height: 0;
 }
 
-.tint-0 { background: #637a43; }
-.tint-1 { background: #b64d32; }
-.tint-2 { background: #4a6ab0; }
-.tint-3 { background: #7c55a8; }
-.tint-4 { background: #b08a2e; }
-.tint-5 { background: #2f8c86; }
+.tint-0 {
+  background: #637a43;
+}
+.tint-1 {
+  background: #b64d32;
+}
+.tint-2 {
+  background: #4a6ab0;
+}
+.tint-3 {
+  background: #7c55a8;
+}
+.tint-4 {
+  background: #b08a2e;
+}
+.tint-5 {
+  background: #2f8c86;
+}
 
 .composer {
   background: @caper_surface_composer;
