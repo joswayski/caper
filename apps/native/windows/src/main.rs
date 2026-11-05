@@ -18,6 +18,7 @@ mod composer;
 mod emoji;
 mod gfx;
 mod list;
+mod live;
 mod model;
 mod text;
 mod theme;
@@ -60,6 +61,7 @@ const EV_FOCUS: u8 = 2;
 const EV_ROWS: u8 = 4;
 const TIMER_BENCH: usize = 1;
 const TIMER_CARET: usize = 2;
+const TIMER_LIVE: usize = 3;
 const WHEEL_STEP: f64 = 48.0;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -189,6 +191,11 @@ pub struct App {
     visible: Range<usize>,
     channel_layouts: Vec<IDWriteTextLayout>,
     member_layouts: Vec<IDWriteTextLayout>,
+    live: Option<live::Live>,
+    ids: live::Ids,
+    /// Shown in the header: the last error (true), or the gateway's
+    /// connection state while it is not live (false).
+    status: Option<(String, bool)>,
     quit: bool,
 }
 
@@ -240,20 +247,7 @@ impl App {
                 root.AddVisual(v, true, &prev)?;
                 prev = v.cast()?;
             }
-            let channel_layouts = c
-                .channels
-                .iter()
-                .map(|ch| g.layout(&gfx::wide(&ch.name), &g.formats.channel, 10_000.0))
-                .collect::<Result<_>>()?;
-            let member_layouts = c
-                .members
-                .iter()
-                .map(|m| {
-                    let l = g.layout(&gfx::wide(&m.name), &g.formats.member, 10_000.0)?;
-                    emoji::apply(&l, &m.name, 14.0, 1.0)?;
-                    Ok(l)
-                })
-                .collect::<Result<_>>()?;
+            let (channel_layouts, member_layouts) = side_layouts(&g, &c)?;
             let n = c.messages.len();
             let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
             let mut rc = RECT::default();
@@ -303,9 +297,104 @@ impl App {
                 visible: 0..0,
                 channel_layouts,
                 member_layouts,
+                live: None,
+                ids: live::Ids::default(),
+                status: None,
                 quit: false,
             })
         }
+    }
+
+    /// Shows another conversation (the live one replacing the mock).
+    fn set_conversation(&mut self, c: Conversation) -> Result<()> {
+        let (channels, members) = side_layouts(&self.g, &c)?;
+        self.rows = Rows::new(c.messages.len());
+        self.c = c;
+        self.channel_layouts = channels;
+        self.member_layouts = members;
+        self.sel = None;
+        self.hover_row = None;
+        self.scroll_top = 0.0;
+        self.at_end = true;
+        self.drawn = None;
+        self.dirty = Dirty::all();
+        self.events |= EV_ROWS;
+        self.need = true;
+        Ok(())
+    }
+
+    fn drain_live(&mut self) -> Result<()> {
+        let Some(live) = self.live.as_mut() else {
+            return Ok(());
+        };
+        let updates = live.drain();
+        let requests = live
+            .host
+            .requests
+            .lock()
+            .map(|mut r| std::mem::take(&mut *r))
+            .unwrap_or_default();
+        unsafe {
+            if let Some(delay) = requests.wake_after {
+                SetTimer(
+                    Some(self.hwnd),
+                    TIMER_LIVE,
+                    delay.as_millis().clamp(1, u32::MAX as u128) as u32,
+                    None,
+                );
+            }
+            if requests.front {
+                let _ = ShowWindow(self.hwnd, SW_RESTORE);
+                let _ = SetForegroundWindow(self.hwnd);
+            }
+            if let Some(title) = requests.title {
+                let _ = SetWindowTextW(self.hwnd, &HSTRING::from(title));
+            }
+        }
+        for u in updates {
+            match u {
+                live::Update::Loaded(loaded) => {
+                    let (c, ids) = *loaded;
+                    self.ids = ids;
+                    self.status = None;
+                    self.set_conversation(c)?;
+                }
+                live::Update::Message(m) => {
+                    let Some((author, grouped)) = self.ids.place(&m) else {
+                        continue;
+                    };
+                    if author >= self.c.members.len() {
+                        self.c
+                            .members
+                            .push(live::person(&m.author.id, &m.author.name));
+                    }
+                    self.c.messages.push(live::message(&m, author, grouped));
+                    self.rows.append(&self.g, &self.c)?;
+                    self.need = true;
+                }
+                live::Update::Presence(online) => {
+                    self.c.presence = true;
+                    for (person, id) in self.c.members.iter_mut().zip(&self.ids.members) {
+                        person.online = online.contains(id);
+                    }
+                    self.dirty.members = true;
+                    self.need = true;
+                }
+                live::Update::Connection(state) => {
+                    if self.status.as_ref().is_none_or(|(_, error)| !error) {
+                        self.status = state.map(|s| (s, false));
+                        self.dirty.header = true;
+                        self.need = true;
+                    }
+                }
+                live::Update::Failed(e) => {
+                    self.status = Some((e, true));
+                    self.dirty.header = true;
+                    self.need = true;
+                }
+            }
+        }
+        Ok(())
     }
 
     // ---- geometry (client DIPs) ----
@@ -538,7 +627,7 @@ impl App {
         if let Some((x, y)) = self.pointer {
             space = (0..self.c.spaces.len()).find(|&i| inside(Self::space_rect(i), x, y));
             channel = (0..self.c.channels.len()).find(|&i| inside(Self::channel_rect(i), x, y));
-            member = (0..self.c.members.len()).find(|&i| inside(self.member_rect(i), x, y));
+            member = (0..self.c.listed_members).find(|&i| inside(self.member_rect(i), x, y));
         }
         if space != self.hover_space {
             self.hover_space = space;
@@ -574,9 +663,13 @@ impl App {
         if text.is_empty() {
             return Ok(());
         }
-        self.c.send_local(text);
-        self.rows.append(&self.g, &self.c)?;
-        self.at_end = true;
+        if let Some(live) = &self.live {
+            live.send(text);
+        } else {
+            self.c.send_local(text);
+            self.rows.append(&self.g, &self.c)?;
+            self.at_end = true;
+        }
         self.composer.text.clear();
         self.composer.caret = 0;
         self.composer.anchor = 0;
@@ -603,6 +696,10 @@ impl App {
             }
             WM_TIMER => match wp.0 {
                 TIMER_BENCH if self.bench.tick() => self.quit = true,
+                TIMER_LIVE => unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_LIVE);
+                    let _ = PostMessageW(Some(self.hwnd), live::WM_LIVE, WPARAM(0), LPARAM(0));
+                },
                 TIMER_CARET => {
                     self.composer.caret_on = !self.composer.caret_on;
                     self.dirty.composer = true;
@@ -1290,14 +1387,28 @@ impl App {
             })?;
         }
         if d.header {
-            let name = c.channels[c.channel].name.clone();
+            let name = c
+                .channels
+                .get(c.channel)
+                .map_or_else(String::new, |ch| ch.name.clone());
             let lw = self.list_w();
+            let status = self.status.as_ref().map(|(s, e)| (s.as_str(), *e));
             self.header.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
                 let hash = g.layout(&gfx::wide("#"), &g.formats.header, 40.0)?;
                 text::draw(dc, &hash, 24.0, 16.0, &g.brushes.muted);
                 let l = g.layout(&gfx::wide(&name), &g.formats.header, 10_000.0)?;
                 text::draw(dc, &l, 40.0, 16.0, &g.brushes.text);
+                if let Some((status, error)) = status {
+                    let l =
+                        g.layout(&gfx::wide(status), &g.formats.time, (lw - 200.0).max(40.0))?;
+                    let brush = if error {
+                        &g.brushes.terracotta
+                    } else {
+                        &g.brushes.muted
+                    };
+                    text::draw(dc, &l, 200.0, 21.0, brush);
+                }
                 dc.FillRectangle(&rect(0.0, HEADER_H - 1.0, lw, HEADER_H), &g.brushes.border);
                 Ok(())
             })?;
@@ -1308,7 +1419,7 @@ impl App {
                 dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
                 dc.FillRectangle(&rect(0.0, 0.0, 1.0, 100_000.0), &g.brushes.border);
                 let t = g.layout(
-                    &gfx::wide(&format!("Members  {}", c.members.len())),
+                    &gfx::wide(&format!("Members  {}", c.listed_members)),
                     &g.formats.section,
                     10_000.0,
                 )?;
@@ -1317,12 +1428,16 @@ impl App {
                     &rect(0.0, HEADER_H - 1.0, MEMBERS_W, HEADER_H),
                     &g.brushes.border,
                 );
-                let online = c.members.iter().filter(|m| m.online).count();
-                let o = g.layout(
-                    &gfx::wide(&format!("Online  {online}")),
-                    &g.formats.section,
-                    10_000.0,
-                )?;
+                let online = c.members[..c.listed_members]
+                    .iter()
+                    .filter(|m| m.online)
+                    .count();
+                let label = if c.presence {
+                    format!("Online  {online}")
+                } else {
+                    "Everyone".to_owned()
+                };
+                let o = g.layout(&gfx::wide(&label), &g.formats.section, 10_000.0)?;
                 text::draw(dc, &o, 12.0, SECTION_TOP + 4.0, &g.brushes.muted);
                 for (i, l) in layouts.iter().enumerate() {
                     let top = MEMBER_TOP + MEMBER_H * i as f32;
@@ -1418,9 +1533,34 @@ impl App {
         self.update_history()?;
         self.draw_panels()?;
         unsafe { self.g.dcomp.Commit()? };
+        if let Some(live) = &self.live {
+            // Renews the worker's lease on the open conversation while focused.
+            live.showing(unsafe { GetForegroundWindow() } == self.hwnd);
+        }
         self.bench.log_frame(started.elapsed());
         Ok(())
     }
+}
+
+/// Text layouts of the channel and member names.
+fn side_layouts(
+    g: &Gfx,
+    c: &Conversation,
+) -> Result<(Vec<IDWriteTextLayout>, Vec<IDWriteTextLayout>)> {
+    let channels = c
+        .channels
+        .iter()
+        .map(|ch| g.layout(&gfx::wide(&ch.name), &g.formats.channel, 10_000.0))
+        .collect::<Result<_>>()?;
+    let members = c.members[..c.listed_members]
+        .iter()
+        .map(|m| {
+            let l = g.layout(&gfx::wide(&m.name), &g.formats.member, 10_000.0)?;
+            emoji::apply(&l, &m.name, 14.0, 1.0)?;
+            Ok(l)
+        })
+        .collect::<Result<_>>()?;
+    Ok((channels, members))
 }
 
 fn set_clipboard(hwnd: HWND, text: &[u16]) {
@@ -1483,6 +1623,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             // An Alt tap must not enter menu mode (there is no menu bar).
             WM_SYSCOMMAND if (wp.0 & 0xFFF0) as u32 == SC_KEYMENU => return LRESULT(0),
             WM_ERASEBKGND => return LRESULT(1),
+            live::WM_LIVE => {
+                if let Some(Err(e)) = with_app(App::drain_live) {
+                    eprintln!("live update failed: {e:?}");
+                }
+                return LRESULT(0);
+            }
             WM_PAINT => {
                 let _ = ValidateRect(Some(hwnd), None);
                 return LRESULT(0);
@@ -1587,6 +1733,7 @@ fn main() -> Result<()> {
         let active = bench.active();
         let app = App::new(hwnd, Gfx::new()?, Conversation::demo(messages), bench)?;
         APP.with(|a| *a.borrow_mut() = Some(app));
+        with_app(|a| a.live = live::start(hwnd));
         if active {
             SetTimer(Some(hwnd), TIMER_BENCH, 50, None);
         }

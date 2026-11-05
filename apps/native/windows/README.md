@@ -6,9 +6,12 @@ shipped: it is outside the release workflow and the installers, and the egui
 client (`apps/native/desktop`) stays the Windows app until this one reaches
 feature, screenshot, performance and accessibility parity.
 
-It currently shows a labelled development mock conversation (3000 generated
-messages, 48 members). The shared client core (`apps/native/client`: API,
-gateway, model, worker, uploads) replaces the mock once it lands.
+By default it shows a labelled development mock conversation (3000 generated
+messages, 48 members). With `CAPER_API_URL` set and a session already in the
+credential store, it loads the account's first space and joined channel
+through the shared client core (`apps/native/client`) and sends messages
+there. Sign-in, live gateway updates, attachments and Markdown rendering are
+not wired in yet.
 
 ## How it draws
 
@@ -41,14 +44,19 @@ text, and selecting a range selects it in the history.
 
 Satoshi must be in `shared/fonts/cache` first (`python3 scripts/native_fonts.py`).
 
+It is a member of the desktop workspace (`apps/native/desktop/Cargo.toml`),
+which needs the same environment as `apps/native/desktop/build.ps1`; the
+desktop builds and the release workflow build only `caper-desktop`.
+
 ```powershell
-cd apps/native/windows
-cargo build --release
+cd apps/native/desktop
+cargo build --package caper-windows --release
 ./target/release/caper-windows.exe
 ```
 
-`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and
-`cargo test` run from this directory; the crate is its own workspace.
+Check it with `cargo fmt --package caper-windows -- --check`,
+`cargo clippy --package caper-windows --all-targets --no-deps -- -D warnings`
+and `cargo test --package caper-windows`.
 
 ## Scripted scenarios
 

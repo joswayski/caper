@@ -58,11 +58,38 @@ pub struct Conversation {
     pub channels: Vec<Channel>,
     pub channel: usize,
     pub members: Vec<Person>,
+    /// The first `listed_members` of `members` are the member list; the
+    /// rest are authors who are no longer members.
+    pub listed_members: usize,
+    /// Whether `Person::online` is known (the gateway reports presence).
+    pub presence: bool,
     pub messages: Vec<Message>,
     demo: Option<Demo>,
 }
 
 impl Conversation {
+    pub fn live(
+        spaces: Vec<Space>,
+        space: usize,
+        channels: Vec<Channel>,
+        channel: usize,
+        members: Vec<Person>,
+        messages: Vec<Message>,
+    ) -> Self {
+        let listed_members = members.len();
+        Self {
+            spaces,
+            space,
+            channels,
+            channel,
+            members,
+            listed_members,
+            presence: false,
+            messages,
+            demo: None,
+        }
+    }
+
     /// The message's plain text (what selection copies and screen readers
     /// read) and its styled spans as (UTF-16 start, length, kind).
     pub fn plain(&self, i: usize) -> (String, Vec<(usize, usize, SpanKind)>) {
@@ -309,6 +336,8 @@ impl Conversation {
             channels,
             channel: 0,
             members,
+            listed_members: AUTHORS,
+            presence: true,
             messages: Vec::with_capacity(count + 512),
             demo: Some(demo),
         };

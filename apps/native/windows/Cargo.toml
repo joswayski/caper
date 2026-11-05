@@ -7,14 +7,17 @@ license = "Apache-2.0"
 description = "Native Windows Caper client (Win32, DirectComposition, Direct2D, DirectWrite, UI Automation); not shipped yet"
 publish = false
 
-# Its own workspace: not part of the repository's root workspace, the desktop
-# client's workspace, or any release build.
-[workspace]
+# A member of the desktop workspace (../desktop/Cargo.toml) like caper-client;
+# no build or release names this package.
+workspace = "../desktop"
 
 [dependencies]
+caper-client = { path = "../client" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 unicode-segmentation = "1"
+uuid = { version = "1.18", features = ["v4"] }
 windows-core = "0.62"
 windows-numerics = "0.3"
 windows = { version = "0.62", features = [
@@ -54,6 +57,3 @@ all = { level = "deny", priority = -1 }
 pedantic = { level = "allow", priority = -1 }
 too_many_arguments = "allow"
 type_complexity = "allow"
-
-[profile.release]
-debug = "line-tables-only"
