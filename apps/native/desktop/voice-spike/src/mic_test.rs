@@ -1304,8 +1304,8 @@ mod tests {
     async fn speaker_test_loops_its_sound_at_live_volume_until_stopped() {
         // Synthetic ADMs: the decoded receiver track is what the chosen
         // output's ADM would mix, observed here through a WebRTC sink.
-        let output = PeerConnectionFactory::default();
-        let input = PeerConnectionFactory::default();
+        let output = PeerConnectionFactory::loopback_only();
+        let input = PeerConnectionFactory::loopback_only();
         let mut config = RtcConfiguration::default();
         config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
         let sender = input.create_peer_connection(config.clone()).unwrap();

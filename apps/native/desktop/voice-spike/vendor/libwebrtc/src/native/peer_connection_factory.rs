@@ -83,6 +83,14 @@ impl PeerConnectionFactory {
         Self { sys_handle }
     }
 
+    /// Creates a [`PeerConnectionFactory`] that gathers ICE candidates on
+    /// loopback adapters only.
+    pub fn loopback_only() -> Self {
+        ensure_log_sink();
+        let sys_handle = sys_pcf::ffi::create_peer_connection_factory_loopback_only();
+        Self { sys_handle }
+    }
+
     #[cfg(test)]
     pub(crate) fn zero_playout_delay_enabled(&self) -> bool {
         self.sys_handle.zero_playout_delay_enabled()

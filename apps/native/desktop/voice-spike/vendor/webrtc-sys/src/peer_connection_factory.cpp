@@ -35,6 +35,10 @@
 #include "api/video_codecs/builtin_video_encoder_factory.h"
 #include "api/audio/audio_device.h"
 #include "api/audio_options.h"
+#include "api/task_queue/pending_task_safety_flag.h"
+#include "p2p/base/basic_packet_socket_factory.h"
+#include "p2p/client/basic_port_allocator.h"
+#include "rtc_base/network.h"
 #include "livekit/adm_proxy.h"
 #include "livekit/audio_track.h"
 #include "livekit/peer_connection.h"
@@ -138,6 +142,49 @@ webrtc::Environment CreateEnvironment(bool zero_playout_delay,
       std::make_unique<CompositeFieldTrials>(std::move(views)));
 }
 
+// Offers ICE a single 127.0.0.1 network, so local peer-to-peer tests never
+// listen on a LAN, VPN or virtual adapter (which prompts Windows Firewall).
+class LoopbackNetworkManager : public webrtc::NetworkManagerBase {
+ public:
+  void StartUpdating() override {
+    webrtc::Thread::Current()->PostTask(
+        webrtc::SafeTask(safety_.flag(), [this] {
+          const webrtc::IPAddress loopback(0x7F000001u);
+          auto network = std::make_unique<webrtc::Network>(
+              "loopback", "loopback", loopback, 32,
+              webrtc::ADAPTER_TYPE_LOOPBACK);
+          network->AddIP(loopback);
+          std::vector<std::unique_ptr<webrtc::Network>> list;
+          list.push_back(std::move(network));
+          bool changed = false;
+          MergeNetworkList(std::move(list), &changed);
+          NotifyNetworksChanged();
+        }));
+  }
+  void StopUpdating() override {}
+
+ private:
+  webrtc::ScopedTaskSafety safety_;
+};
+
+// Owns the network list and socket factory it points at. They are base
+// classes declared before BasicPortAllocator so they outlive it.
+struct LoopbackPortAllocatorParts {
+  explicit LoopbackPortAllocatorParts(webrtc::SocketFactory* sockets)
+      : packet_sockets(sockets) {}
+  LoopbackNetworkManager network;
+  webrtc::BasicPacketSocketFactory packet_sockets;
+};
+
+class LoopbackPortAllocator : private LoopbackPortAllocatorParts,
+                              public webrtc::BasicPortAllocator {
+ public:
+  LoopbackPortAllocator(const webrtc::Environment& env,
+                        webrtc::SocketFactory* sockets)
+      : LoopbackPortAllocatorParts(sockets),
+        webrtc::BasicPortAllocator(env, &network, &packet_sockets) {}
+};
+
 }  // namespace
 
 class PeerConnectionObserver;
@@ -219,7 +266,13 @@ std::shared_ptr<PeerConnection> PeerConnectionFactory::create_peer_connection(
   std::shared_ptr<PeerConnection> pc = std::make_shared<PeerConnection>(
       rtc_runtime_, peer_factory_, std::move(observer));
 
-  if (!pc->Initialize(to_native_rtc_configuration(config))) {
+  std::unique_ptr<webrtc::PortAllocator> allocator;
+  if (loopback_only_) {
+    allocator = std::make_unique<LoopbackPortAllocator>(
+        env_, rtc_runtime_->network_thread()->socketserver());
+  }
+  if (!pc->Initialize(to_native_rtc_configuration(config),
+                      std::move(allocator))) {
     throw std::runtime_error(serialize_error(to_error(webrtc::RTCError(
         webrtc::RTCErrorType::INTERNAL_ERROR, "failed to initialize pc"))));
   }
@@ -300,6 +353,22 @@ create_peer_connection_factory_with_options(bool zero_playout_delay,
   return std::make_shared<PeerConnectionFactory>(RtcRuntime::create(),
                                                  zero_playout_delay,
                                                  enable_warp);
+}
+
+void PeerConnectionFactory::restrict_to_loopback() {
+  // The factory applies this mask to every allocator, including ours; the
+  // default would ignore the loopback network.
+  webrtc::PeerConnectionFactoryInterface::Options options;
+  options.network_ignore_mask = ~webrtc::ADAPTER_TYPE_LOOPBACK;
+  peer_factory_->SetOptions(options);
+  loopback_only_ = true;
+}
+
+std::shared_ptr<PeerConnectionFactory>
+create_peer_connection_factory_loopback_only() {
+  auto factory = create_peer_connection_factory();
+  factory->restrict_to_loopback();
+  return factory;
 }
 
 }  // namespace livekit_ffi

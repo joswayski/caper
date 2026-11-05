@@ -94,6 +94,7 @@ pub mod ffi {
             zero_playout_delay: bool,
             enable_warp: bool,
         ) -> SharedPtr<PeerConnectionFactory>;
+        fn create_peer_connection_factory_loopback_only() -> SharedPtr<PeerConnectionFactory>;
 
         fn zero_playout_delay_enabled(self: &PeerConnectionFactory) -> bool;
 

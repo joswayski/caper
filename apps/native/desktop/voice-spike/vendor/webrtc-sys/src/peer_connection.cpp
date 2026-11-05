@@ -89,8 +89,10 @@ PeerConnection::~PeerConnection() {
 }
 
 bool PeerConnection::Initialize(
-    webrtc::PeerConnectionInterface::RTCConfiguration config) {
+    webrtc::PeerConnectionInterface::RTCConfiguration config,
+    std::unique_ptr<webrtc::PortAllocator> allocator) {
   webrtc::PeerConnectionDependencies deps{this};
+  deps.allocator = std::move(allocator);
   auto result =
       pc_factory_->CreatePeerConnectionOrError(config, std::move(deps));
 

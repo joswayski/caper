@@ -53,7 +53,8 @@ class PeerConnection : webrtc::PeerConnectionObserver {
 
   ~PeerConnection();
 
-  bool Initialize(webrtc::PeerConnectionInterface::RTCConfiguration config);
+  bool Initialize(webrtc::PeerConnectionInterface::RTCConfiguration config,
+                  std::unique_ptr<webrtc::PortAllocator> allocator = nullptr);
 
   void set_configuration(RtcConfiguration config) const;
 

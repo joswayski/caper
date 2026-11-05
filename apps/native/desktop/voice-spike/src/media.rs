@@ -3206,8 +3206,8 @@ mod tests {
     async fn subscription_answer_receives_rtp_on_existing_transport() {
         // No platform ADM: both factories use synthetic audio only. Model the
         // SFU adding a send-only MID after our send-only publication connects.
-        let client_factory = PeerConnectionFactory::default();
-        let server_factory = PeerConnectionFactory::default();
+        let client_factory = PeerConnectionFactory::loopback_only();
+        let server_factory = PeerConnectionFactory::loopback_only();
         let mut config = RtcConfiguration::default();
         config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
         let client = client_factory
@@ -3561,7 +3561,7 @@ mod tests {
 
     #[tokio::test]
     async fn initial_offer_serializes_pending_local_not_missing_current() {
-        let factory = PeerConnectionFactory::default();
+        let factory = PeerConnectionFactory::loopback_only();
         let mut config = RtcConfiguration::default();
         config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
         let peer = factory.create_peer_connection(config).unwrap();

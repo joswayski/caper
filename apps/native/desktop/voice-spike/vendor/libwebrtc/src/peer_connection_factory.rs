@@ -102,6 +102,16 @@ impl PeerConnectionFactory {
         }
     }
 
+    /// Creates a native peer connection factory that gathers ICE candidates
+    /// on loopback adapters only, for local peer-to-peer tests that must not
+    /// listen on the network.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn loopback_only() -> Self {
+        Self {
+            handle: imp_pcf::PeerConnectionFactory::loopback_only(),
+        }
+    }
+
     pub fn create_peer_connection(
         &self,
         config: RtcConfiguration,

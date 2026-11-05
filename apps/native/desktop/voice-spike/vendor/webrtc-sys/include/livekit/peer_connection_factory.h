@@ -52,6 +52,9 @@ class PeerConnectionFactory {
                         bool enable_warp);
   ~PeerConnectionFactory();
 
+  // Later peer connections gather ICE candidates on 127.0.0.1 only.
+  void restrict_to_loopback();
+
   std::shared_ptr<PeerConnection> create_peer_connection(
       RtcConfiguration config,
       rust::Box<PeerConnectionObserverWrapper> observer) const;
@@ -87,6 +90,7 @@ class PeerConnectionFactory {
   std::shared_ptr<AudioDeviceController> audio_device_;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> peer_factory_;
   webrtc::Environment env_;
+  bool loopback_only_ = false;
 };
 
 std::shared_ptr<PeerConnectionFactory> create_peer_connection_factory();
@@ -95,4 +99,7 @@ create_peer_connection_factory_with_zero_playout_delay();
 std::shared_ptr<PeerConnectionFactory>
 create_peer_connection_factory_with_options(bool zero_playout_delay,
                                             bool enable_warp);
+
+std::shared_ptr<PeerConnectionFactory>
+create_peer_connection_factory_loopback_only();
 }  // namespace livekit_ffi

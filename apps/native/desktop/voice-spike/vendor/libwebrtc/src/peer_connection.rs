@@ -287,13 +287,11 @@ mod tests {
     async fn create_pc() {
         let _ = env_logger::builder().is_test(true).try_init();
 
-        let factory = PeerConnectionFactory::default();
+        // Loopback host candidates only: no public STUN server, and nothing
+        // listens on the network (which would prompt Windows Firewall).
+        let factory = PeerConnectionFactory::loopback_only();
         let config = RtcConfiguration {
-            ice_servers: vec![IceServer {
-                urls: vec!["stun:stun1.l.google.com:19302".to_string()],
-                username: "".into(),
-                password: "".into(),
-            }],
+            ice_servers: vec![],
             continual_gathering_policy: ContinualGatheringPolicy::GatherOnce,
             ice_transport_type: IceTransportsType::All,
             enable_sctp_snap: false,
