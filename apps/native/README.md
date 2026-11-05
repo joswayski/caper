@@ -212,6 +212,11 @@ conversations. It supports profile edits, space/channel/member management,
 private grants, history/pagination, idempotent sends, gateway replay, typing
 and deterministic presence. Authentication and authorization are simplified.
 
+For screenshot and performance gates, `CAPER_BENCH_MESSAGES=3000 node scripts/native-parity-fixture.mjs`
+adds 45 members to Fixture Studio and replaces `#general` with 3,000 generated messages (fixed seed, so
+every run and client gets the same text, mentions, links, emoji and reactions). `CAPER_FIXTURE_PORT` and
+`CAPER_FIXTURE_GATEWAY_PORT` move it off 3001/3002.
+
 `POST /__fixture/control` accepts:
 
 - `{ "reset": true }`, `{ "disconnect": true }`;

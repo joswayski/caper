@@ -33,7 +33,84 @@ const members = [
   { id: ids.member, username: "maya", displayName: "Maya", owner: false, avatarId: 31 },
   { id: ids.other, username: "alex", displayName: "Alex", owner: false, avatarId: 799 },
 ];
-const accounts = [...members, { id: ids.invitee, username: "sam", displayName: "Sam", owner: false, avatarId: 719 }];
+// Performance runs (CAPER_BENCH_MESSAGES=N): 45 more members and N generated messages in #general.
+const benchCount = Number(process.env.CAPER_BENCH_MESSAGES ?? 0);
+const benchFirstNames =
+  "Ana Bruno Chen Dalia Emeka Fatima Gus Hana Ivan Jules Kai Lena Mateo Nia Omar Priya Quinn Rosa Sam Tomas Uma Viktor Wren Yuki".split(
+    " ",
+  );
+const benchLastNames = ["Okafor", "Silva", "Nakamura", "Kowalski", "Haddad", "Reyes"];
+const benchMembers = Array.from({ length: benchCount > 0 ? 45 : 0 }, (_, i) => ({
+  id: `bench${String(i).padStart(7, "0")}`,
+  username: `bench_${i}`,
+  displayName: `${benchFirstNames[i % benchFirstNames.length]} ${benchLastNames[i % benchLastNames.length]}`,
+  owner: false,
+  avatarId: (i * 37) % 1000,
+}));
+const accounts = [
+  ...members,
+  { id: ids.invitee, username: "sam", displayName: "Sam", owner: false, avatarId: 719 },
+  ...benchMembers,
+];
+/** Deterministic (fixed-seed) messages: short to long text, bold/italic, mentions, links, emoji and some reactions. */
+function benchMessages(count, people) {
+  let seed = 0x9e3779b9;
+  const rnd = (n) => {
+    seed ^= seed << 13;
+    seed >>>= 0;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    seed >>>= 0;
+    return seed % n;
+  };
+  const words =
+    "the voice channel is pretty good today but we should probably ship it after lunch anyone seen my headphones latency feels lower than yesterday release notes look great can you check staging again I think the invite link expired already lol honestly that was fast nice work everyone meeting moved to tomorrow morning coffee first then bugs".split(
+      " ",
+    );
+  const emoji = ["😅", "🎉", "👍", "✨", "🤔", "🚀", "🙌🏽", "☕", "🔥", "💯", "😂"];
+  const word = () => words[rnd(words.length)];
+  const rows = [];
+  let speaker = people[3] ?? people[0];
+  let minute = 0;
+  for (let i = 0; i < count; i++) {
+    if (rnd(100) > 45) speaker = people[rnd(people.length)];
+    minute += rnd(100) < 70 ? 1 : 1 + rnd(12);
+    const length = [3 + rnd(10), 12 + rnd(25), 40 + rnd(70)][rnd(10) < 5 ? 0 : rnd(10) < 8 ? 1 : 2];
+    const parts = [];
+    const mentions = [];
+    for (let w = 0; w < length; w++) {
+      const r = rnd(100);
+      if (r < 3) parts.push(`**${word()} ${word()}**`);
+      else if (r < 5) parts.push(`*${word()}*`);
+      else if (r < 6) {
+        const person = people[rnd(people.length)];
+        parts.push(`@${person.username}`);
+        if (!mentions.some((m) => m.id === person.id))
+          mentions.push({ type: "user", id: person.id, username: person.username });
+      } else if (r < 7) parts.push(`https://caper.chat/s/${rnd(9000)}`);
+      else if (r < 10) parts.push(emoji[rnd(emoji.length)]);
+      else parts.push(word());
+    }
+    const reactions =
+      rnd(100) < 12
+        ? [...new Set(Array.from({ length: 1 + rnd(3) }, () => emoji[rnd(emoji.length)]))].map((e) => ({
+            emoji: e,
+            authorIds: people.slice(0, 1 + rnd(8)).map((p) => p.id),
+          }))
+        : undefined;
+    rows.push({
+      id: `b${String(i + 1).padStart(14, "0")}`,
+      channelId: ids.general,
+      seq: String(i + 1),
+      author: author(speaker),
+      content: { version: 1, type: "text", text: parts.join(" "), ...(mentions.length ? { mentions } : {}) },
+      ...(reactions ? { reactions } : {}),
+      clientMessageId: `00000000-0000-4000-9000-${String(i + 1).padStart(12, "0")}`,
+      createdAt: new Date(Date.UTC(2026, 9, 1, 9, 0) + minute * 60000).toISOString(),
+    });
+  }
+  return rows;
+}
 // Shares no space with the owner, so a DM with Jordan is a message request.
 const stranger = { id: ids.stranger, username: "jordan", displayName: "Jordan", avatarId: 412 };
 const author = (member) => ({
@@ -114,8 +191,10 @@ function initialState() {
       })),
     ]),
   );
+  const spaceMembers = clone([...members, ...benchMembers]);
+  if (benchCount > 0) messages.set(ids.general, benchMessages(benchCount, spaceMembers));
   return {
-    spaces: [{ space, channels, members: clone(members) }],
+    spaces: [{ space, channels, members: spaceMembers }],
     messages,
     directs: [],
     blocks: [],
@@ -139,7 +218,7 @@ function initialState() {
     joins: new Map(
       channels.map((channel) => [
         channel.id,
-        channel.private ? [ids.owner, ids.member] : members.map((member) => member.id),
+        channel.private ? [ids.owner, ids.member] : spaceMembers.map((member) => member.id),
       ]),
     ),
     grants: new Map([[ids.private, [ids.owner, ids.member]]]),
