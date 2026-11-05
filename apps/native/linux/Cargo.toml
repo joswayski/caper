@@ -1,0 +1,32 @@
+[package]
+name = "caper-linux"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+description = "Caper's native Linux client (GTK 4), in development and not shipped"
+publish = false
+# A member of the desktop workspace (../desktop/Cargo.toml), like ../client.
+workspace = "../desktop"
+
+[dependencies]
+# Wakes the GTK main loop from the worker's threads.
+async-channel = "2.5"
+# The UI-free client core: API, gateway, model and credentials (../client).
+caper-client = { path = "../client" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Only API up to GTK 4.8 (Debian 12); releases would build against 4.14.
+# Derives for the shared formatting grammar (shared/messages/formatting.rs).
+serde = { version = "1.0", features = ["derive"] }
+gtk = { package = "gtk4", version = "0.11.5", features = ["v4_8"] }
+uuid = { version = "1.18", features = ["v4"] }
+
+[dev-dependencies]
+# The shared formatting and link case files.
+serde_json = "1.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"

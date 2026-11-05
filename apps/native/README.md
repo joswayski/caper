@@ -15,6 +15,12 @@ system widgets. Apple and Android have separate native UI implementations. All
 clients talk directly to the same Caper API. No server or Cloudflare credentials
 belong in an app.
 
+`linux/` (package `caper-linux`) is a GTK 4 Linux client in development, built on
+the shared `client/` core: sign-in, spaces, channels, members, the message list
+and the composer. It is not packaged or released; run it with
+`cargo run -p caper-linux` from `desktop/` (`CAPER_API_URL` or `--api-url` picks
+the server).
+
 ## Shared behavior
 
 - First launch without a valid session opens email sign-in (no Guest workspace).

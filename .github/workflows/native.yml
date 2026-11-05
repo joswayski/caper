@@ -120,6 +120,52 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # The GTK 4 Linux client (apps/native/linux) is in development: check and
+  # test it here, but never package or release it.
+  linux-gtk:
+    name: Linux GTK / development check
+    needs: route
+    runs-on: ${{ needs.route.outputs.linux == 'true' && fromJSON('["self-hosted","joselinux"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+          cache-workspaces: apps/native/desktop
+          # Separate from the desktop job's cache, which also holds release builds.
+          cache-key: linux-gtk
+          # Pull requests restore main's cache but do not upload their own.
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Linux native build dependencies
+        run: |
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 3 \
+            https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /usr/share/keyrings/caper-llvm.asc >/dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/caper-llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' \
+            | sudo tee /etc/apt/sources.list.d/caper-llvm.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang-21 lld-21 libglib2.0-dev libpulse0 libasound2t64 libasound2-dev \
+            pkg-config libssl-dev libdbus-1-dev libgtk-4-dev
+      - name: Format, lint and test caper-linux
+        env:
+          CARGO_BUILD_JOBS: '2'
+          CC: clang-21
+          CXX: clang++-21
+        run: |
+          # The client embeds Satoshi, and caper-client links the pinned libwebrtc.
+          python3 scripts/native_fonts.py
+          export LK_CUSTOM_WEBRTC="$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux)"
+          manifest=apps/native/desktop/Cargo.toml
+          cargo fmt --manifest-path "$manifest" --package caper-linux -- --check
+          cargo clippy --manifest-path "$manifest" --locked --package caper-linux --all-targets --no-deps -- -D warnings
+          cargo test --manifest-path "$manifest" --locked --package caper-linux
+
   apple:
     name: Apple / ${{ matrix.target }}
     needs: route

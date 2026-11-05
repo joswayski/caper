@@ -1,0 +1,348 @@
+/* Caper's tokens (shared/design.css), as GTK named colours. GTK 4.8 has no
+   CSS custom properties; keep these in step with the web's. */
+@define-color caper_blackout #0c0d0f;
+@define-color caper_surface #151719;
+@define-color caper_surface_raised #1c1f21;
+@define-color caper_surface_sidebar #151c1e;
+@define-color caper_surface_conversation #192123;
+@define-color caper_surface_composer #283133;
+@define-color caper_surface_hover rgba(255, 255, 255, 0.06);
+@define-color caper_border #34383b;
+@define-color caper_text #f3f4f5;
+@define-color caper_text_muted #b9bcbe;
+@define-color caper_link #69cfff;
+@define-color caper_link_hover #a9e5ff;
+@define-color caper_terracotta #b64d32;
+@define-color caper_terracotta_bright #db6849;
+@define-color caper_action #f1ede4;
+@define-color caper_action_hover #fbf9f4;
+@define-color caper_action_press #ddd7cb;
+@define-color caper_on_action #0c0d0f;
+@define-color caper_green #637a43;
+@define-color caper_error_text #ff9b82;
+
+window.caper {
+  background-color: @caper_blackout;
+  color: @caper_text;
+  font-family: Satoshi, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+window.caper label selection,
+window.caper text selection {
+  background-color: alpha(@caper_terracotta, 0.55);
+  color: @caper_text;
+}
+
+window.caper button:focus-visible,
+window.caper row:focus-visible {
+  outline: 2px solid @caper_terracotta;
+  outline-offset: 1px;
+}
+
+window.caper label link {
+  color: @caper_link;
+}
+
+window.caper label link:hover {
+  color: @caper_link_hover;
+}
+
+.muted,
+.placeholder {
+  color: @caper_text_muted;
+}
+
+.error {
+  color: @caper_error_text;
+}
+
+/* Buttons: eggshell primary actions; disabled steps back to neutral chrome. */
+button {
+  border-radius: 8px;
+}
+
+button.primary {
+  background: @caper_action;
+  color: @caper_on_action;
+  border: none;
+  box-shadow: none;
+  font-weight: 700;
+  min-height: 40px;
+}
+
+button.primary:hover {
+  background: @caper_action_hover;
+}
+
+button.primary:active {
+  background: @caper_action_press;
+}
+
+button.primary:disabled {
+  background: @caper_surface_raised;
+  color: @caper_text_muted;
+}
+
+button.flat {
+  color: @caper_text_muted;
+}
+
+button.flat:hover {
+  background: @caper_surface_hover;
+  color: @caper_text;
+}
+
+button.flat:checked {
+  background: alpha(@caper_terracotta, 0.22);
+  color: @caper_text;
+}
+
+entry {
+  background: @caper_blackout;
+  color: @caper_text;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  box-shadow: none;
+  min-height: 40px;
+  padding: 0 12px;
+}
+
+entry:focus-within {
+  border-color: @caper_terracotta;
+  outline: none;
+}
+
+/* Sign-in */
+.signin {
+  background: @caper_blackout;
+}
+
+.card {
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+  border-radius: 12px;
+  padding: 32px;
+}
+
+.title {
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.field {
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+/* Space rail */
+.rail {
+  background: @caper_blackout;
+  padding: 12px 12px;
+}
+
+.rail button {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border-radius: 12px;
+  border: none;
+  box-shadow: none;
+  background: @caper_surface;
+  color: @caper_text;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.rail button:hover {
+  background: @caper_surface_raised;
+}
+
+.rail button.selected {
+  background: @caper_terracotta;
+}
+
+/* Channels */
+.sidebar {
+  background: @caper_surface_sidebar;
+  border-right: 1px solid @caper_border;
+}
+
+.space-name {
+  font-weight: 700;
+  font-size: 15px;
+  padding: 14px 16px 10px;
+}
+
+list.channels,
+list.member-list {
+  background: transparent;
+  color: @caper_text_muted;
+}
+
+list.channels > row {
+  border-radius: 8px;
+  margin: 1px 10px;
+  padding: 6px 10px;
+}
+
+list.channels > row:hover {
+  background: @caper_surface_hover;
+  color: @caper_text;
+}
+
+list.channels > row:selected {
+  background: alpha(@caper_terracotta, 0.22);
+  box-shadow: inset 2px 0 @caper_terracotta;
+  color: @caper_text;
+}
+
+/* Conversation */
+.conversation {
+  background: @caper_surface_conversation;
+}
+
+.header {
+  min-height: 52px;
+  padding: 0 12px 0 20px;
+  border-bottom: 1px solid @caper_border;
+}
+
+.channel-title {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.status {
+  font-size: 12px;
+}
+
+.banner {
+  padding: 8px 20px;
+}
+
+listview.messages {
+  background: transparent;
+  color: @caper_text;
+  padding-bottom: 12px;
+}
+
+listview.messages > row {
+  padding: 0;
+}
+
+listview.messages > row:hover {
+  background: @caper_surface_hover;
+}
+
+.message {
+  padding: 8px 20px 2px 20px;
+}
+
+.message.grouped {
+  padding-top: 2px;
+}
+
+.message.pending {
+  opacity: 0.6;
+}
+
+.day {
+  color: @caper_text_muted;
+  font-size: 12px;
+  font-weight: 700;
+  margin: 12px 0 6px;
+}
+
+.author {
+  font-weight: 700;
+}
+
+.time {
+  color: @caper_text_muted;
+  font-size: 11px;
+}
+
+.body {
+  font-weight: 400;
+}
+
+.avatar {
+  min-width: 36px;
+  min-height: 36px;
+  border-radius: 11px;
+  color: @caper_text;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.avatar.small {
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: 9px;
+  font-size: 11px;
+}
+
+.avatar.gap {
+  min-height: 0;
+}
+
+.tint-0 { background: #637a43; }
+.tint-1 { background: #b64d32; }
+.tint-2 { background: #4a6ab0; }
+.tint-3 { background: #7c55a8; }
+.tint-4 { background: #b08a2e; }
+.tint-5 { background: #2f8c86; }
+
+.composer {
+  background: @caper_surface_composer;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  margin: 4px 20px 16px;
+  padding: 6px 6px 6px 12px;
+}
+
+.composer textview,
+.composer textview text {
+  background: transparent;
+  color: @caper_text;
+}
+
+.composer textview {
+  padding: 6px 0;
+}
+
+.composer .placeholder {
+  padding: 6px 0;
+}
+
+.composer-error {
+  padding: 0 20px;
+}
+
+/* Members */
+.members {
+  background: @caper_surface_sidebar;
+  border-left: 1px solid @caper_border;
+}
+
+.section {
+  color: @caper_text_muted;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 16px 16px 8px;
+}
+
+list.member-list > row {
+  padding: 4px 12px;
+  color: @caper_text;
+}
+
+list.member-list > row:hover {
+  background: @caper_surface_hover;
+}
+
+.badge {
+  font-size: 11px;
+}

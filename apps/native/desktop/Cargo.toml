@@ -7,7 +7,7 @@ license = "Apache-2.0"
 description = "Native Caper desktop client"
 
 [workspace]
-members = ["../client", "voice-spike/vendor/libwebrtc", "voice-spike/vendor/webrtc-sys", "voice-spike/vendor/webrtc-sys/build", "web-player"]
+members = ["../client", "../linux", "voice-spike/vendor/libwebrtc", "voice-spike/vendor/webrtc-sys", "voice-spike/vendor/webrtc-sys/build", "web-player"]
 exclude = ["vendor/egui-winit"]
 
 [patch.crates-io]
