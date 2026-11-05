@@ -58,6 +58,8 @@ pub struct Row {
     /// The quoted message: its author and a short plain preview.
     pub reply: Option<(String, String)>,
     pub reactions: Vec<Chip>,
+    /// Your reaction failed: shown under the row with Retry and Dismiss.
+    pub reaction_error: Option<String>,
     /// "3 replies", on a thread root in the main list.
     pub replies: Option<String>,
     /// It mentions you or replies to you: a terracotta-tinted row.
@@ -209,6 +211,15 @@ pub struct Viewer<'a> {
     /// Rows in the thread pane: no thread action or reply counts.
     pub in_thread: bool,
     pub images: &'a Images,
+    /// Your reactions still on their way, drawn over the server's counts.
+    pub reactions: &'a caper_client::reactions::Reactions,
+}
+
+impl Viewer<'_> {
+    /// The id reactions list you by: your chat author, else your account.
+    pub fn reactor(&self) -> Option<&str> {
+        self.author.or(self.me)
+    }
 }
 
 fn author_avatar(author: &Author) -> crate::images::Avatar {
@@ -291,18 +302,24 @@ pub fn build<'a>(
                 };
                 (reply.author.name.clone(), text)
             }),
-            reactions: message
-                .reactions
-                .iter()
-                .filter(|reaction| !reaction.author_ids.is_empty())
-                .map(|reaction| Chip {
-                    emoji: reaction.emoji.clone(),
-                    count: reaction.author_ids.len(),
-                    mine: viewer
-                        .me
-                        .is_some_and(|me| reaction.author_ids.iter().any(|id| id == me)),
-                })
-                .collect(),
+            reactions: if deleted {
+                Vec::new()
+            } else {
+                viewer
+                    .reactions
+                    .projected(&message.reactions, &message.id, viewer.reactor())
+                    .into_iter()
+                    .filter(|reaction| !reaction.author_ids.is_empty())
+                    .map(|reaction| Chip {
+                        mine: viewer
+                            .reactor()
+                            .is_some_and(|me| reaction.author_ids.iter().any(|id| id == me)),
+                        count: reaction.author_ids.len(),
+                        emoji: reaction.emoji,
+                    })
+                    .collect()
+            },
+            reaction_error: viewer.reactions.error(&message.id).map(str::to_owned),
             replies: message
                 .thread
                 .as_ref()
@@ -353,6 +370,7 @@ pub fn build<'a>(
             pinned_by: None,
             reply: None,
             reactions: Vec::new(),
+            reaction_error: None,
             replies: None,
             mentioned: false,
             team_notice: false,
@@ -386,6 +404,10 @@ pub enum Action {
         id: String,
         anchor: gtk::Widget,
     },
+    /// Send your failed reaction again.
+    RetryReaction(String),
+    /// Drop your failed reaction and its error.
+    DismissReaction(String),
     Reply(String),
     Thread(String),
     /// Edit, delete and pin, anchored to `anchor`.
@@ -413,6 +435,10 @@ struct Widgets {
     notice: gtk::Label,
     card: gtk::Overlay,
     reactions: gtk::Box,
+    reaction_error: gtk::Box,
+    reaction_error_label: gtk::Label,
+    retry_reaction: gtk::Button,
+    dismiss_reaction: gtk::Button,
     replies: gtk::Button,
     tools: gtk::Box,
     quick: Vec<gtk::Button>,
@@ -497,6 +523,18 @@ fn build_widgets(images: &Images) -> Widgets {
     notice.set_label(caper_client::mentions::FEEDBACK_NOTICE);
     let reactions = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     reactions.add_css_class("reactions");
+    let reaction_error = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    reaction_error.add_css_class("reaction-error");
+    let reaction_error_label = label("error");
+    let retry_reaction = gtk::Button::with_label("Retry");
+    let dismiss_reaction = gtk::Button::with_label("Dismiss");
+    for button in [&retry_reaction, &dismiss_reaction] {
+        button.add_css_class("flat");
+        button.add_css_class("inline");
+    }
+    reaction_error.append(&reaction_error_label);
+    reaction_error.append(&retry_reaction);
+    reaction_error.append(&dismiss_reaction);
     let replies = gtk::Button::new();
     replies.add_css_class("flat");
     replies.add_css_class("replies");
@@ -509,6 +547,7 @@ fn build_widgets(images: &Images) -> Widgets {
     content.append(&body);
     content.append(&notice);
     content.append(&reactions);
+    content.append(&reaction_error);
     content.append(&replies);
     line.append(&avatar.root);
     line.append(&gap);
@@ -561,6 +600,10 @@ fn build_widgets(images: &Images) -> Widgets {
         pinned,
         body,
         reactions,
+        reaction_error,
+        reaction_error_label,
+        retry_reaction,
+        dismiss_reaction,
         replies,
         tools,
         quick,
@@ -595,7 +638,11 @@ fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
         });
     }
     type Make = fn(String, gtk::Widget) -> Action;
-    let actions: [(&gtk::Button, Make); 5] = [
+    let actions: [(&gtk::Button, Make); 7] = [
+        (&widgets.retry_reaction, |id, _| Action::RetryReaction(id)),
+        (&widgets.dismiss_reaction, |id, _| {
+            Action::DismissReaction(id)
+        }),
         (&widgets.pick, |id, anchor| Action::Pick { id, anchor }),
         (&widgets.reply_button, |id, _| Action::Reply(id)),
         (&widgets.thread_button, |id, _| Action::Thread(id)),
@@ -687,6 +734,13 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
         widgets.reactions.append(&button);
     }
     widgets.reactions.set_visible(!row.reactions.is_empty());
+    widgets
+        .reaction_error
+        .set_visible(row.reaction_error.is_some());
+    widgets
+        .reaction_error_label
+        .set_label(row.reaction_error.as_deref().unwrap_or_default());
+    widgets.retry_reaction.set_visible(row.offers.act);
     widgets.replies.set_visible(row.replies.is_some());
     widgets
         .replies
@@ -716,6 +770,7 @@ mod tests {
             pinned_by: None,
             reply: None,
             reactions: Vec::new(),
+            reaction_error: None,
             replies: None,
             mentioned: false,
             team_notice: false,

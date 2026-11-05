@@ -372,6 +372,17 @@ button.reaction.mine {
   background: alpha(@caper_terracotta, 0.22);
 }
 
+.reaction-error {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+button.inline {
+  min-height: 20px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
 button.replies {
   color: @caper_link;
   font-weight: 700;

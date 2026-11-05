@@ -14,6 +14,7 @@ use caper_client::gateway::GatewayEvent;
 use caper_client::model::{
     Account, Apply, ChatSession, DirectConversation, Message, Space, SpaceDetail, Timeline,
 };
+use caper_client::reactions::Reacted;
 use caper_client::sign_in::{MAX_RESENDS, resend_countdown, resend_wait};
 use caper_client::worker::{AdminOperation, AdminResult, Command, Event, Worker, current};
 use gtk::{gdk, gio, glib, prelude::*};
@@ -142,7 +143,7 @@ struct State {
     compose: Option<Compose>,
     edit_request: u64,
     delete_request: u64,
-    reacting: HashSet<(String, String)>,
+    reactions: caper_client::reactions::Reactions,
     joining: bool,
     thread: Option<Thread>,
     rows: Vec<Row>,
@@ -626,7 +627,7 @@ impl App {
         state.compose = None;
         state.thread = None;
         state.typers.clear();
-        state.reacting.clear();
+        state.reactions.clear();
         state.direct = None;
         state.status = "Loading…".into();
         state.error = None;
@@ -1056,20 +1057,31 @@ impl App {
 
     fn react(self: &Rc<Self>, id: String, emoji: String, active: bool) {
         let mut state = self.state.borrow_mut();
+        if state.session.is_none() || state.channel.is_none() || !state.joined() {
+            return;
+        }
+        state.reactions.set(&id, &emoji, active);
+        self.send_next_reaction(&mut state, &id);
+        drop(state);
+        self.render();
+    }
+
+    /// Sends the message's next queued reaction unless one is in flight.
+    fn send_next_reaction(&self, state: &mut State, message: &str) {
         let (Some(session), Some(channel)) = (state.session.clone(), state.channel.clone()) else {
             return;
         };
-        if !state.reacting.insert((id.clone(), emoji.clone())) {
+        let Some(next) = state.reactions.next(message) else {
             return;
-        }
+        };
         self.worker.send(Command::React {
             generation: state.generation,
             token: state.token.clone(),
             chat_token: session.token,
             channel,
-            message: id,
-            emoji,
-            active,
+            message: next.message,
+            emoji: next.emoji,
+            active: next.active,
         });
     }
 
@@ -1105,6 +1117,16 @@ impl App {
         match action {
             Action::React { id, emoji, active } => self.react(id, emoji, active),
             Action::Pick { id, anchor } => self.reaction_picker(id, &anchor),
+            Action::RetryReaction(id) => {
+                let retry = self.state.borrow().reactions.retry(&id);
+                if let Some((emoji, active)) = retry {
+                    self.react(id, emoji, active);
+                }
+            }
+            Action::DismissReaction(id) => {
+                self.state.borrow_mut().reactions.dismiss(&id);
+                self.render();
+            }
             Action::Reply(id) => {
                 {
                     let mut state = self.state.borrow_mut();
@@ -1178,18 +1200,23 @@ impl App {
     fn reaction_picker(self: &Rc<Self>, id: String, anchor: &gtk::Widget) {
         let mine: HashSet<String> = {
             let state = self.state.borrow();
-            let me = state.account.as_ref().map(|account| account.id.clone());
+            let me = state
+                .session
+                .as_ref()
+                .map(|session| session.author.id.clone())
+                .or_else(|| state.account.as_ref().map(|account| account.id.clone()));
             state
                 .message(&id)
                 .map(|message| {
-                    message
+                    state
                         .reactions
-                        .iter()
+                        .projected(&message.reactions, &message.id, me.as_deref())
+                        .into_iter()
                         .filter(|reaction| {
                             me.as_ref()
                                 .is_some_and(|me| reaction.author_ids.contains(me))
                         })
-                        .map(|reaction| reaction.emoji.clone())
+                        .map(|reaction| reaction.emoji)
                         .collect()
                 })
                 .unwrap_or_default()
@@ -1459,6 +1486,7 @@ impl App {
                 channel,
                 message,
                 emoji,
+                active,
                 result,
                 ..
             } if current(
@@ -1468,15 +1496,22 @@ impl App {
                 state.channel.as_deref(),
             ) =>
             {
-                state.reacting.remove(&(message.clone(), emoji));
-                match result {
-                    Ok(update) if update.channel_id == channel && update.message_id == message => {
+                match state
+                    .reactions
+                    .reacted(&channel, &message, &emoji, active, result)
+                {
+                    Reacted::Acknowledged(update) => {
                         if state.timeline.merge_reaction_ack(update).is_err() {
                             self.reload(state);
                         }
+                        self.send_next_reaction(state, &message);
                     }
-                    Ok(_) => self.reload(state),
-                    Err(error) => state.send_error = Some(error.message),
+                    Reacted::Reload => self.reload(state),
+                    Reacted::ClearChannel(error) => {
+                        self.reload(state);
+                        state.error = Some(error);
+                    }
+                    Reacted::Failed => self.send_next_reaction(state, &message),
                 }
             }
             Event::Pinned {
@@ -2002,6 +2037,7 @@ impl App {
                 joined,
                 in_thread,
                 images: &self.images,
+                reactions: &state.reactions,
             };
             let draft = |thread: Option<&str>| {
                 state
