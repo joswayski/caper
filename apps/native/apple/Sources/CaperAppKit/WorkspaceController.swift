@@ -22,13 +22,11 @@ import CaperCore
     private let memberList = NativeView()
     private let memberScroll = NSScrollView()
     private lazy var send = NativeButton("Send", primary: true) { [weak self] in self?.submit() }
-    private lazy var older = NativeButton("Load older messages") { [weak self] in
-        guard let self else { return }; Task { await self.model.chat.loadOlder() }
-    }
     private lazy var retry = NativeButton("Retry") { [weak self] in
         guard let self else { return }
         Task {
             if self.model.chat.loadFailed { await self.model.chat.retryLoad() }
+            else if self.model.chat.olderError != nil { await self.model.chat.loadOlder() }
             else if self.model.chat.sessionError != nil { await self.model.chat.retrySession() }
             else { await self.model.chat.send(retryPending: true) }
         }
@@ -53,7 +51,7 @@ import CaperCore
     override func viewDidLoad() {
         super.viewDidLoad()
         [rail, sidebar, stage, members].forEach { view.addSubview($0) }
-        [timeline, header, status, older, retry, editRejected, composerScroll, send].forEach { stage.addSubview($0) }
+        [timeline, header, status, retry, editRejected, composerScroll, send].forEach { stage.addSubview($0) }
         [account, mute, deafen, logout, channelScroll].forEach { sidebar.addSubview($0) }
         setupList(channels, in: channelScroll)
         setupList(memberList, in: memberScroll)
@@ -81,6 +79,11 @@ import CaperCore
         composerScroll.backgroundColor = NativeStyle.composer
         composerScroll.wantsLayer = true; composerScroll.layer?.cornerRadius = 8
         send.setAccessibilityIdentifier("send-message")
+        retry.setAccessibilityIdentifier("conversation-retry")
+        timeline.loadOlder = { [weak self] in
+            guard let self else { return }
+            Task { await self.model.chat.loadOlder() }
+        }
         timeline.react = { [weak self] id, emoji in
             guard let self, self.model.chat.canInteract,
                   let message = self.model.chat.displayedMessages.first(where: { $0.id == id }) else { return }
@@ -91,6 +94,7 @@ import CaperCore
         timelineObservation.start { [weak self] in
             guard let self else { return }
             let chat = self.model.chat
+            self.timeline.canLoadOlder = chat.hasMore && !chat.loading && !chat.loadingOlder && chat.olderError == nil
             let visible = chat.displayedMessages.filter {
                 $0.isChannelMessage && !chat.blockedAuthorIDs.contains($0.author.id)
             }
@@ -117,9 +121,7 @@ import CaperCore
         stage.frame = NSRect(x: 344, y: 0, width: width - 344 - memberWidth, height: height)
         let center = stage.bounds.width
         header.frame = NSRect(x: 20, y: 14, width: center - 40, height: 26)
-        older.frame = NSRect(x: 20, y: 48, width: 180, height: 28)
-        timeline.frame = NSRect(x: 0, y: older.isHidden ? 48 : 82, width: center,
-            height: height - (older.isHidden ? 48 : 82) - 138)
+        timeline.frame = NSRect(x: 0, y: 48, width: center, height: height - 48 - 138)
         status.frame = NSRect(x: 20, y: height - 132, width: center - 40, height: 24)
         composerScroll.frame = NSRect(x: 20, y: height - 102, width: center - 116, height: 70)
         composer.frame.size.width = composerScroll.contentSize.width
@@ -201,15 +203,12 @@ import CaperCore
         composer.isEditable = chat.canInteract && !chat.sending && !chat.sendRejected && chat.pendingMessage == nil
         send.isEnabled = chat.canInteract && chat.canPressSend(inThread: false)
         send.title = chat.sending ? "Sending…" : "Send"
-        // Keystrokes change only the composer; do not lay out the timeline on
-        // every draft observation. Its viewport changes only with history UI.
-        if older.isHidden == chat.hasMore { view.needsLayout = true }
-        older.isHidden = !chat.hasMore
-        older.isEnabled = !chat.loadingOlder
-        retry.isHidden = !(chat.loadFailed || chat.sessionError != nil || (chat.pendingMessage != nil && !chat.sending && !chat.sendRejected))
+        // Keystrokes change only the composer, not timeline geometry.
+        retry.isHidden = !(chat.loadFailed || chat.olderError != nil || chat.sessionError != nil || (chat.pendingMessage != nil && !chat.sending && !chat.sendRejected))
+        retry.isEnabled = !chat.loadingOlder
         editRejected.isHidden = !chat.sendRejected
         status.stringValue = chat.error ?? chat.olderError ?? chat.sessionError ?? model.navigationError
-            ?? (chat.loading ? "Loading messages…" : chat.typingNames.isEmpty ? "" : "\(chat.typingNames.joined(separator: ", ")) typing…")
+            ?? (chat.loading ? "Loading messages…" : chat.loadingOlder ? "Loading older messages…" : chat.typingNames.isEmpty ? "" : "\(chat.typingNames.joined(separator: ", ")) typing…")
         mute.title = model.voice.muted ? "Unmute" : "Mute"
         deafen.title = model.voice.deafened ? "Undeafen" : "Deafen"
         mute.setAccessibilityLabel(mute.title); deafen.setAccessibilityLabel(deafen.title)

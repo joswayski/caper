@@ -22,13 +22,48 @@ import XCTest
         add(screenshot)
     }
 
-    private nonisolated static func resetFixture() async throws {
+    private nonisolated static func control(_ body: [String: Any]) async throws {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["reset": true])
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (_, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+
+    private nonisolated static func resetFixture() async throws { try await control(["reset": true]) }
+
+    func testScrollUpHistoryRetriesFailureAndPreservesTheVisibleMessage() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        for index in 1...55 {
+            try await Self.control(["incomingMessage": ["channelId": "chan00000001", "text": "History row \(index) 🔥 🚀 🎉"]])
+        }
+        let app = launch()
+        defer { app.terminate() }
+        let latest = app.textViews["message-fixture00000059"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["Load older messages"].exists)
+        try await Self.control(["failure": ["path": "/api/chat/channels/chan00000001/messages", "method": "GET",
+            "status": 503, "error": "TEST FIXTURE: older history unavailable."]])
+        latest.hover()
+        latest.scroll(byDeltaX: 0, deltaY: 2400)
+        let retry = app.buttons["conversation-retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        let anchor = app.textViews["message-fixture00000010"]
+        XCTAssertTrue(anchor.exists)
+        let before = anchor.frame.minY
+        capture("history error", app: app)
+        retry.hover()
+        app.buttons["send-message"].hover()
+        retry.click()
+        XCTAssertTrue(retry.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(anchor.exists)
+        XCTAssertEqual(anchor.frame.minY, before, accuracy: 1, "Prepending a page keeps the same text at the same screen position")
+        anchor.hover()
+        anchor.scroll(byDeltaX: 0, deltaY: 900)
+        XCTAssertTrue(app.textViews["message-chan00000001m01"].waitForExistence(timeout: 10))
+        capture("older history loaded", app: app)
     }
 
     func testConversationSendNavigationAndSelection() async throws {

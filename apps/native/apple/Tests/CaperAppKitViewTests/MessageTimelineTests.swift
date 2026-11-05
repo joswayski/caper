@@ -14,6 +14,71 @@ import XCTest
         timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? NSTextView } } ?? []
     }
 
+    func testScrollingIntoHistoryLoadsAPageWithoutMovingTheReader() throws {
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 360))
+        let history = (50..<100).map { message($0) }
+        var requested = false
+        timeline.canLoadOlder = true
+        timeline.loadOlder = { requested = true }
+        timeline.update(history, conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertFalse(requested, "Opening the latest page must not fetch the entire history")
+        timeline.contentView.scroll(to: NSPoint(x: 0, y: 0))
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertTrue(requested, "Scrolling to the start requests older messages without a button")
+        XCTAssertFalse(timeline.canLoadOlder, "Do not issue another request before the model updates")
+        let first = try XCTUnwrap(bodies(in: timeline).first { $0.string == history.first?.content.text })
+        let before = first.convert(.zero, to: timeline.contentView).y - timeline.contentView.bounds.minY
+        timeline.update((0..<50).map { message($0) } + history, conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        let retained = try XCTUnwrap(bodies(in: timeline).first { $0.string == first.string })
+        XCTAssertEqual(retained.convert(.zero, to: timeline.contentView).y - timeline.contentView.bounds.minY, before, accuracy: 0.5,
+            "Text stays put when grouping hides its header: body \(retained.frame), row \(String(describing: retained.superview?.frame)), clip \(timeline.contentView.bounds)")
+
+        // A live arrival while reading history must not steal the viewport.
+        timeline.update((0..<101).map { message($0) }, conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(retained.convert(.zero, to: timeline.contentView).y - timeline.contentView.bounds.minY, before, accuracy: 0.5)
+        timeline.update([message(101)], conversationID: "other-channel")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(bodies(in: timeline).map(\.string), [message(101).content.text])
+    }
+
+    func testEmojiKeepsLinePitchAndTimestampsFollowAuthorNames() throws {
+        CaperFontLoader.register()
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        var plain = message(0, author: "Li")
+        plain.content = ChatContent(version: 1, type: "text", text: "First line\nSecond line\nThird line")
+        var emoji = message(1, author: "A much longer author name")
+        emoji.content = ChatContent(version: 1, type: "text", text: "First 🔥 line\nSecond 🚀 line\nThird 🎉 line")
+        timeline.update([plain, emoji], conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        let plainBody = try XCTUnwrap(bodies(in: timeline).first { $0.string == plain.content.text })
+        let emojiBody = try XCTUnwrap(bodies(in: timeline).first { $0.string == emoji.content.text })
+        XCTAssertEqual(plainBody.frame.height, emojiBody.frame.height, accuracy: 0.5)
+        for body in [plainBody, emojiBody] {
+            let layout = try XCTUnwrap(body.layoutManager)
+            var origins: [CGFloat] = []
+            layout.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: layout.numberOfGlyphs)) { rect, _, _, _, _ in
+                origins.append(rect.minY)
+            }
+            XCTAssertEqual(origins.count, 3)
+            for index in 1..<origins.count { XCTAssertEqual(origins[index] - origins[index - 1], 20, accuracy: 0.5) }
+            let row = try XCTUnwrap(body.superview)
+            let labels = row.subviews.compactMap { $0 as? NSTextField }
+            let name = try XCTUnwrap(labels.first { [plain.author.name, emoji.author.name].contains($0.stringValue) })
+            let time = try XCTUnwrap(labels.first { $0.stringValue == NativePresentation.time(plain.createdAt) })
+            XCTAssertGreaterThanOrEqual(name.frame.width, try XCTUnwrap(name.cell).cellSize.width, "The full author name must fit when space is available")
+            XCTAssertGreaterThanOrEqual(time.frame.width, try XCTUnwrap(time.cell).cellSize.width, "The time must not be ellipsized")
+            XCTAssertGreaterThanOrEqual(time.frame.minX, name.frame.maxX)
+            XCTAssertLessThanOrEqual(time.frame.minX - name.frame.maxX, 10)
+            XCTAssertLessThanOrEqual(time.frame.maxX, row.bounds.maxX)
+        }
+        let rocket = (emojiBody.string as NSString).range(of: "🚀")
+        emojiBody.setSelectedRange(rocket)
+        XCTAssertEqual(emojiBody.accessibilitySelectedText(), "🚀")
+    }
+
     func testThreeThousandRowsExposeOnlyRealizedSelectableTextAndKeepHistoryAnchor() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
