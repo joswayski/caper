@@ -157,6 +157,9 @@ fn name(a: &App, id: Id) -> String {
                     name.push_str(&format!("Replying to {}: {}. ", r.author.name, r.text));
                 }
             }
+            if let Some(who) = &m.pinned_by {
+                name.push_str(&format!("Pinned by {who}. "));
+            }
             if m.thread_context {
                 name.push_str("Replied to a thread. ");
             }

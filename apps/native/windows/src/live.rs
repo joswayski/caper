@@ -565,6 +565,16 @@ impl Live {
                 let applied = self.timeline.apply_reactions(update);
                 self.publish(old, applied, &id, out);
             }
+            Event::Gateway(gateway::GatewayEvent::Pin {
+                generation,
+                channel,
+                update,
+            }) if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                let id = update.message.id.clone();
+                let old = self.seq();
+                let applied = self.timeline.apply_pin(*update);
+                self.publish(old, applied, &id, out);
+            }
             Event::Gateway(gateway::GatewayEvent::Edit {
                 generation,
                 channel,
@@ -832,6 +842,13 @@ pub fn message(
         thread_context: m.thread_root_id.is_some() && m.broadcast,
         reaction_error: None,
         date: None,
+        pinned_by: m.pin.as_ref().filter(|_| !deleted).map(|p| {
+            if me == Some(p.author.id.as_str()) {
+                "you".to_owned()
+            } else {
+                p.author.name.clone()
+            }
+        }),
     }
 }
 
@@ -947,6 +964,25 @@ mod tests {
             "thread": { "replyCount": 2, "participants": [], "seq": "5" },
         }));
         assert_eq!(message(&root, 0, false, None).thread_replies, Some(2));
+        let pin = |by: &str| {
+            core_message(serde_json::json!({ "pin": {
+                "author": { "id": by, "name": "Alex", "isGuest": false },
+                "createdAt": "2026-10-01T09:01:00Z",
+            }}))
+        };
+        let me = Some("owner0000001");
+        assert_eq!(
+            message(&pin("owner0000001"), 0, false, me)
+                .pinned_by
+                .as_deref(),
+            Some("you")
+        );
+        assert_eq!(
+            message(&pin("member000002"), 0, false, me)
+                .pinned_by
+                .as_deref(),
+            Some("Alex")
+        );
         let broadcast = core_message(serde_json::json!({
             "threadRootId": "b00000000000009", "broadcast": true,
         }));

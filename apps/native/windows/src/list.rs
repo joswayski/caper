@@ -56,6 +56,9 @@ pub struct Row {
     /// it takes; everything else in the row sits below it.
     pub date: Option<(IDWriteTextLayout, f32)>,
     pub lead: f32,
+    /// "Pinned by …" above the message's header.
+    pub pin: Option<IDWriteTextLayout>,
+    pub pin_y: f32,
 }
 
 /// What a click on a row's controls does.
@@ -87,6 +90,7 @@ const QUOTE_LINES: usize = 3;
 const THREAD_H: f32 = 22.0;
 const ERROR_H: f32 = 24.0;
 const DATE_H: f32 = 30.0;
+const PIN_H: f32 = 20.0;
 
 pub struct Header {
     pub name: IDWriteTextLayout,
@@ -449,6 +453,15 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
             None => None,
         },
         lead: 0.0,
+        pin: match &m.pinned_by {
+            Some(who) => Some(g.layout(
+                &gfx::wide(&format!("Pinned by {who}")),
+                &g.formats.quote_meta,
+                10_000.0,
+            )?),
+            None => None,
+        },
+        pin_y: 0.0,
     };
     place(&mut row, m);
     Ok(row)
@@ -504,6 +517,10 @@ fn place(row: &mut Row, m: &crate::model::Message) {
         };
         q.height = QUOTE_PAD_Y + QUOTE_HEADING + 2.0 + shown + QUOTE_PAD_Y;
         y = row.lead + 4.0 - top + q.height + 8.0;
+    }
+    if row.pin.is_some() {
+        row.pin_y = y;
+        y += PIN_H;
     }
     row.header_y = y;
     if row.header.is_some() {
@@ -630,6 +647,25 @@ pub fn draw_row(
                 &g.brushes.muted,
             );
             crate::text::draw(dc, &q.text, x, hy + QUOTE_HEADING + 2.0, &g.brushes.muted);
+        }
+        if let Some(l) = &row.pin {
+            // egui's muted pin icon, drawn: a head and its needle.
+            let (px, py) = (BODY_X, top + row.pin_y + 2.0);
+            fill_round(
+                dc,
+                rect(px + 3.0, py, px + 9.0, py + 6.0),
+                2.0,
+                &g.brushes.muted,
+            );
+            dc.FillRectangle(
+                &rect(px + 1.0, py + 6.0, px + 11.0, py + 7.5),
+                &g.brushes.muted,
+            );
+            dc.FillRectangle(
+                &rect(px + 5.4, py + 7.5, px + 6.6, py + 12.0),
+                &g.brushes.muted,
+            );
+            crate::text::draw(dc, l, px + 16.0, py - 1.0, &g.brushes.muted);
         }
         let hy = top + row.header_y;
         if let Some(h) = &row.header {

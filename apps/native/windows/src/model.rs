@@ -81,6 +81,8 @@ pub struct Message {
     pub reaction_error: Option<String>,
     /// The date divider above the message, when it starts a new local day.
     pub date: Option<String>,
+    /// Who pinned it ("you" for yourself), shown above it.
+    pub pinned_by: Option<String>,
 }
 
 pub struct Channel {
@@ -527,6 +529,7 @@ impl Conversation {
             thread_context: false,
             reaction_error: None,
             date: None,
+            pinned_by: None,
         });
     }
 }
@@ -557,6 +560,7 @@ impl Conversation {
             thread_context: false,
             reaction_error: None,
             date: None,
+            pinned_by: None,
         });
     }
 }
