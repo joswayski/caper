@@ -723,7 +723,7 @@ impl Picker {
             context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let mut chosen = None;
         let mut window = egui::Window::new("GIFs")
-            .id(egui::Id::new("gif-picker"))
+            .id(egui::Id::unique("gif-picker"))
             .title_bar(false)
             .order(egui::Order::Foreground)
             .collapsible(false)
@@ -749,7 +749,7 @@ impl Picker {
                         ui.allocate_exact_size(egui::vec2(tab_width, 36.0), egui::Sense::click());
                     let selected = self.kind == kind;
                     response.widget_info(|| {
-                        egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, name)
+                        egui::WidgetInfo::selected(egui::Role::Button, true, selected, name)
                     });
                     if response.hovered() || response.has_focus() {
                         ui.painter()
@@ -777,7 +777,7 @@ impl Picker {
                 }
             });
             ui.add_space(10.0);
-            let search_id = egui::Id::new("gif-picker-search");
+            let search_id = egui::Id::unique("gif-picker-search");
             // KLIPY requires exactly this placeholder.
             let search = ui.add(
                 egui::TextEdit::singleline(&mut self.search)
@@ -852,7 +852,7 @@ impl Picker {
                                     let response = response.on_hover_text(gif.alt());
                                     response.widget_info(|| {
                                         egui::WidgetInfo::labeled(
-                                            egui::WidgetType::Button,
+                                            egui::Role::Button,
                                             true,
                                             gif.alt(),
                                         )
@@ -888,8 +888,8 @@ impl Picker {
                         }
                     });
                 // Load more as the grid nears its end.
-                let remaining =
-                    output.content_size.y - (output.state.offset.y + output.inner_rect.height());
+                let remaining = output.content_size.y
+                    - (output.state.clamped_offset().y + output.inner_rect.height());
                 more = remaining < cell * 2.0;
             });
             if retry {
@@ -1064,11 +1064,7 @@ pub fn message(ui: &mut egui::Ui, media: &mut Media, gif: &Gif) -> egui::Respons
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let label = gif.alt().to_owned();
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            true,
-            format!("Open {label} in viewer"),
-        )
+        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Open {label} in viewer"))
     });
     if !ui.is_rect_visible(rect) {
         return response;
@@ -1139,7 +1135,7 @@ pub fn button(ui: &mut egui::Ui, size: f32) -> egui::Response {
         color,
     );
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Send a GIF")
+        egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), "Send a GIF")
     });
     response.on_hover_text("Send a GIF")
 }

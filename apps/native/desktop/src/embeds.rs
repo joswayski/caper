@@ -449,7 +449,7 @@ pub fn composer_card(ui: &mut egui::Ui, media: &mut Media, embed: &Embed, arriva
                 );
                 let button = ui.interact(
                     rect,
-                    ui.id().with(("embed-remove", "composer")),
+                    ui.scope_id().with(("embed-remove", "composer")),
                     egui::Sense::click(),
                 );
                 let hot = button.hovered() || button.has_focus();
@@ -478,7 +478,7 @@ pub fn composer_card(ui: &mut egui::Ui, media: &mut Media, embed: &Embed, arriva
 
 /// Reports a control's name and pointer state; returns whether it was clicked.
 fn clicked(response: &egui::Response, label: &str, shown: &mut Shown) -> bool {
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     if response.has_focus() {
         response.ctx.layer_painter(response.layer_id).rect_stroke(
             response.rect.expand(2.0),
@@ -528,7 +528,7 @@ fn text_link(
         ui.data_mut(|data| data.insert_temp(id, now));
         ui.ctx().request_repaint();
     }
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, text));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, text));
     shown.hovered |= response.hovered();
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     response.context_menu(|ui| {
@@ -557,7 +557,7 @@ fn site_line(ui: &mut egui::Ui, id: (&str, usize), embed: &Embed, shown: &mut Sh
     };
     text_link(
         ui,
-        egui::Id::new(("embed-site", id)),
+        egui::Id::unique(("embed-site", id)),
         &text,
         egui::FontId::proportional(11.5),
         MUTED,
@@ -606,7 +606,7 @@ fn draw_block(
                 ui.spacing_mut().item_spacing.x = 6.0;
                 text_link(
                     ui,
-                    egui::Id::new(("embed-author", id)),
+                    egui::Id::unique(("embed-author", id)),
                     name,
                     bold(13.0),
                     TEXT,
@@ -617,7 +617,7 @@ fn draw_block(
                 if let Some(handle) = handle.as_deref().filter(|handle| !handle.is_empty()) {
                     text_link(
                         ui,
-                        egui::Id::new(("embed-handle", id)),
+                        egui::Id::unique(("embed-handle", id)),
                         handle,
                         egui::FontId::proportional(13.0),
                         MUTED,
@@ -631,7 +631,7 @@ fn draw_block(
         EmbedBlock::Title { text, url } => {
             text_link(
                 ui,
-                egui::Id::new(("embed-title", id)),
+                egui::Id::unique(("embed-title", id)),
                 text,
                 bold(14.4),
                 TEXT,
@@ -665,7 +665,7 @@ fn draw_block(
                 let rect = rect.translate(origin.to_vec2());
                 let response = ui.interact(
                     rect,
-                    ui.id().with(("embed-image", id, index)),
+                    ui.scope_id().with(("embed-image", id, index)),
                     egui::Sense::click(),
                 );
                 let state = media.image(&key(&image.url), Some(&image.url));

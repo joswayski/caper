@@ -95,8 +95,8 @@ pub fn normalized_selection(
     let (_, indices) = projection(text);
     source_selection(
         &indices,
-        indices.partition_point(|index| *index < range.primary.index),
-        indices.partition_point(|index| *index < range.secondary.index),
+        indices.partition_point(|index| *index < range.primary.index.0),
+        indices.partition_point(|index| *index < range.secondary.index.0),
     )
 }
 
@@ -104,7 +104,7 @@ pub fn copied_text(text: &str, range: egui::text::CCursorRange) -> String {
     let (visible, indices) = projection(text);
     let [start, end] = range
         .sorted_cursors()
-        .map(|cursor| indices.partition_point(|index| *index < cursor.index));
+        .map(|cursor| indices.partition_point(|index| *index < cursor.index.0));
     visible.chars().skip(start).take(end - start).collect()
 }
 
@@ -144,7 +144,8 @@ pub fn prepare(ui: &mut egui::Ui, text: &str, id: egui::Id, enabled: bool) {
         for event in &input.events {
             if let egui::Event::Ime(event) = event {
                 ime_event = true;
-                composing = matches!(event, egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_));
+                composing =
+                    matches!(event, egui::ImeEvent::Preedit { text, .. } if !text.is_empty());
             }
         }
     });
@@ -157,8 +158,8 @@ pub fn prepare(ui: &mut egui::Ui, text: &str, id: egui::Id, enabled: bool) {
     let mut copied = None;
     ui.input_mut(|input| {
         input.events.retain_mut(|event| {
-            let primary = indices.partition_point(|index| *index < range.primary.index);
-            let secondary = indices.partition_point(|index| *index < range.secondary.index);
+            let primary = indices.partition_point(|index| *index < range.primary.index.0);
+            let secondary = indices.partition_point(|index| *index < range.secondary.index.0);
             match event {
                 egui::Event::Copy | egui::Event::Cut => {
                     if primary == secondary {
@@ -427,6 +428,27 @@ pub fn composer_controls(
     }
 }
 
+/// egui collapses an unfocused editor's selection to its caret every pass, and
+/// the emoji picker and toolbar buttons take focus before they read it. Keep
+/// the editor's last focused selection while the draft is unchanged.
+pub fn keep_selection(ui: &egui::Ui, text: &str, output: &mut egui::text_edit::TextEditOutput) {
+    let id = output.response.id;
+    let kept_id = id.with("kept-selection");
+    let digest = egui::util::hash(text);
+    if output.response.has_focus() {
+        let range = output.state.cursor.char_range();
+        ui.data_mut(|data| data.insert_temp(kept_id, (digest, range)));
+    } else if let Some((kept, Some(range))) =
+        ui.data(|data| data.get_temp::<(u64, Option<egui::text::CCursorRange>)>(kept_id))
+        && kept == digest
+        && output.state.cursor.char_range() != Some(range)
+    {
+        output.state.cursor.set_char_range(Some(range));
+        output.cursor_range = Some(range);
+        output.state.clone().store(ui.ctx(), id);
+    }
+}
+
 /// Small selection toolbar; the draft retains wire markers, hidden by its layouter.
 pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response, enabled: bool) {
     if !enabled || !response.enabled() {
@@ -448,12 +470,16 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
         && !native_transaction
         && let Some(previous) = previous
     {
-        let (repaired, primary, secondary) =
-            repair_edit(&previous, text, range.primary.index, range.secondary.index);
+        let (repaired, primary, secondary) = repair_edit(
+            &previous,
+            text,
+            range.primary.index.0,
+            range.secondary.index.0,
+        );
         if repaired != *text {
             *text = repaired;
-            range.primary.index = primary;
-            range.secondary.index = secondary;
+            range.primary.index = primary.into();
+            range.secondary.index = secondary.into();
             state.cursor.set_char_range(Some(range));
             state.clone().store(ui.ctx(), response.id);
             ui.ctx().request_repaint();
@@ -464,7 +490,7 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
         state.cursor.set_char_range(Some(range));
         state.clone().store(ui.ctx(), response.id);
     }
-    let [start, end] = range.sorted_cursors().map(|c| c.index);
+    let [start, end] = range.sorted_cursors().map(|c| c.index.0);
     let mut chosen = None;
     if response.has_focus() && !native_transaction {
         ui.input_mut(|i| {
@@ -574,7 +600,7 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
                                     crate::TEXT,
                                 );
                                 button.widget_info(|| {
-                                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
+                                    egui::WidgetInfo::labeled(egui::Role::Button, true, label)
                                 });
                                 if button
                                     .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -615,11 +641,12 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestPass as _;
     #[test]
     fn visible_navigation_clipboard_and_link_edges() {
         let text = "**a👩‍💻b**";
-        let caret = |index| egui::text::CCursorRange::one(egui::text::CCursor::new(index));
-        assert_eq!(normalized_selection(text, caret(1)).primary.index, 2);
+        let caret = |index: usize| egui::text::CCursorRange::one(egui::text::CCursor::new(index));
+        assert_eq!(normalized_selection(text, caret(1)).primary.index.0, 2);
         assert_eq!(adjacent_grapheme("a👩‍💻b", 1, false), 4);
         assert_eq!(adjacent_grapheme("a👩‍💻b", 4, true), 1);
         assert_eq!(
@@ -652,38 +679,40 @@ mod tests {
         for original in ["**a👩‍💻b**", "**https://example.com/a👩‍💻b**"] {
             let context = egui::Context::default();
             crate::configure(&context);
-            let id = egui::Id::new("visible-edit-test");
+            let id = egui::Id::unique("visible-edit-test");
             let mut text = original.to_owned();
             let frame = |text: &mut String, events| {
-                context.run(
+                context.test_pass(
                     egui::RawInput {
                         events,
                         ..Default::default()
                     },
                     |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
-                            prepare(ui, text, id, true);
-                            let mut layouter =
-                                |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
-                                    crate::draft_layout(
-                                        ui,
-                                        text.as_str(),
-                                        width,
-                                        &[],
-                                        crate::mentions::Specials::default(),
-                                        egui::FontId::proportional(13.6),
-                                    )
-                                };
-                            let background = ui.painter().add(egui::Shape::Noop);
-                            let mut output = egui::TextEdit::multiline(text)
-                                .id(id)
-                                .desired_width(140.0)
-                                .frame(false)
-                                .layouter(&mut layouter)
-                                .show(ui);
-                            crate::paint_draft_links(ui, &output, background);
-                            composer_controls(ui, text, &mut output, true);
-                            output.response.request_focus();
+                        ctx.root_ui(|root| {
+                            egui::CentralPanel::default().show(root, |ui| {
+                                prepare(ui, text, id, true);
+                                let mut layouter =
+                                    |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
+                                        crate::draft_layout(
+                                            ui,
+                                            text.as_str(),
+                                            width,
+                                            &[],
+                                            crate::mentions::Specials::default(),
+                                            egui::FontId::proportional(13.6),
+                                        )
+                                    };
+                                let background = ui.painter().add(egui::Shape::Noop);
+                                let mut output = egui::TextEdit::multiline(text)
+                                    .id(id)
+                                    .desired_width(140.0)
+                                    .frame(egui::Frame::NONE)
+                                    .layouter(&mut layouter)
+                                    .show(ui);
+                                crate::paint_draft_links(ui, &output, background);
+                                composer_controls(ui, text, &mut output, true);
+                                output.response.request_focus();
+                            })
                         });
                     },
                 )
@@ -871,19 +900,21 @@ mod tests {
     fn composer_shortcuts_retain_selection_and_respect_limits_and_disabled_state() {
         let context = egui::Context::default();
         crate::configure(&context);
-        let id = egui::Id::new("format-test");
+        let id = egui::Id::unique("format-test");
         let mut text = "é🙂".to_owned();
         let frame = |text: &mut String, events, enabled| {
-            let _ = context.run(
+            let _ = context.test_pass(
                 egui::RawInput {
                     events,
                     ..Default::default()
                 },
                 |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        let mut output = egui::TextEdit::multiline(text).id(id).show(ui);
-                        composer_controls(ui, text, &mut output, enabled);
-                        output.response.request_focus();
+                    ctx.root_ui(|root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            let mut output = egui::TextEdit::multiline(text).id(id).show(ui);
+                            composer_controls(ui, text, &mut output, enabled);
+                            output.response.request_focus();
+                        })
                     });
                 },
             );
@@ -915,7 +946,7 @@ mod tests {
                 .char_range()
                 .unwrap()
                 .as_sorted_char_range(),
-            2..4
+            2.into()..4.into()
         );
         frame(&mut text, key(), false);
         assert_eq!(text, "**é🙂**");

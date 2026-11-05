@@ -486,7 +486,7 @@ impl crate::CaperApp {
             || self.activity.reacting.is_some()
             || self.profile_emoji_open()
             || self.activity.gif_picker.is_some();
-        let response = egui::Modal::new(egui::Id::new("activity-inbox")).show(context, |ui| {
+        let response = egui::Modal::new(egui::Id::unique("activity-inbox")).show(context, |ui| {
             ui.set_width((context.content_rect().width() - 48.0).clamp(260.0, 600.0));
             ui.horizontal(|ui| {
                 ui.heading("Notifications");
@@ -673,7 +673,7 @@ impl crate::CaperApp {
                             if self.activity.expanded.contains_key(&item.id) {
                                 let progress = crate::motion::entrance(
                                     context,
-                                    egui::Id::new(("inbox-reply", &item.id)),
+                                    egui::Id::unique(("inbox-reply", &item.id)),
                                     crate::motion::FAST,
                                 );
                                 crate::motion::arrive(ui, progress, egui::vec2(0.0, 4.0), |ui| {
@@ -724,12 +724,12 @@ impl crate::CaperApp {
                 });
             context.set_sublayer(
                 ui.layer_id(),
-                egui::LayerId::new(egui::Order::Foreground, egui::Id::new("emoji-picker")),
+                egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("emoji-picker")),
             );
             self.emoji_picker(context);
             context.set_sublayer(
                 ui.layer_id(),
-                egui::LayerId::new(egui::Order::Foreground, egui::Id::new("gif-picker")),
+                egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("gif-picker")),
             );
             let choice = self.activity.gif_picker.as_mut().map(|(item, picker)| {
                 (

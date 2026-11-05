@@ -403,6 +403,7 @@ fn hide_console(_: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestPass as _;
 
     fn release(version: &str) -> Available {
         Available {
@@ -593,7 +594,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         app.updates.requests = Some(sender);
         let frame = |app: &mut crate::CaperApp, events| {
-            context.run(
+            context.test_pass(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -603,7 +604,9 @@ mod tests {
                     ..Default::default()
                 },
                 |context| {
-                    egui::CentralPanel::default().show(context, |ui| app.settings_dialog(ui));
+                    context.root_ui(|root| {
+                        egui::CentralPanel::default().show(root, |ui| app.settings_dialog(ui))
+                    });
                 },
             )
         };

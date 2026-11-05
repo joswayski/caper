@@ -187,7 +187,7 @@ impl CaperApp {
         }
         let mut close = false;
         let mut confirm = false;
-        let modal = egui::Modal::new(egui::Id::new("message-delete"))
+        let modal = egui::Modal::new(egui::Id::unique("message-delete"))
             .frame(dialog_frame(context))
             .show(context, |ui| {
                 ui.set_width(420.0_f32.min(context.content_rect().width() - 48.0));
@@ -414,7 +414,7 @@ impl CaperApp {
             let mut save = false;
             let mut reload = false;
             let mut close = false;
-            let id = egui::Id::new("message-editor");
+            let id = egui::Id::unique("message-editor");
             let previous_size =
                 context.memory(|memory| memory.area_rect(id).map(|rect| rect.size()));
             // The app's dialog surface, title and action row, as on web.
@@ -432,7 +432,7 @@ impl CaperApp {
                         .color(MUTED),
                     );
                     ui.add_space(12.0);
-                    let text_id = egui::Id::new("edit-message-text");
+                    let text_id = egui::Id::unique("edit-message-text");
                     if std::mem::take(&mut editor.caret_end) {
                         // Continue editing where the message ends, as on web.
                         let mut state =
@@ -539,7 +539,7 @@ impl CaperApp {
         if let Some(mut history) = self.edit_history.take() {
             let mut close = false;
             let mut load = false;
-            let id = egui::Id::new("message-history");
+            let id = egui::Id::unique("message-history");
             let previous_size =
                 context.memory(|memory| memory.area_rect(id).map(|rect| rect.size()));
             let previous_selection = history.selected;
@@ -660,7 +660,7 @@ impl CaperApp {
 
 /// The app's dialog surface: web's 24px inset, 8px corners and border.
 fn dialog_frame(context: &egui::Context) -> egui::Frame {
-    egui::Frame::popup(&context.style())
+    egui::Frame::popup(&context.global_style())
         .fill(SURFACE)
         .stroke(egui::Stroke::new(1.0_f32, BORDER))
         .corner_radius(8)

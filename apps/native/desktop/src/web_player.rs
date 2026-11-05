@@ -803,6 +803,7 @@ mod engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestPass as _;
 
     fn key(scope: &str) -> Key {
         Key {
@@ -877,17 +878,19 @@ mod tests {
     fn overlays_are_what_egui_paints_above_the_timeline() {
         let context = egui::Context::default();
         let player = rect(100.0, 100.0, 200.0, 120.0);
-        let backdrop = egui::LayerId::new(egui::Order::Background, egui::Id::new("backdrop"));
+        let backdrop = egui::LayerId::new(egui::Order::Background, egui::Id::unique("backdrop"));
         let frame = |menu: Option<egui::Pos2>, scrim: bool| {
             let mut covering = Vec::new();
-            let _ = context.run(egui::RawInput::default(), |context| {
-                egui::CentralPanel::default().show(context, |ui| {
-                    // The card itself and anything else in its own layer.
-                    ui.painter().rect_filled(player, 6.0, egui::Color32::RED);
-                    ui.label("timeline");
+            let _ = context.test_pass(egui::RawInput::default(), |context| {
+                context.root_ui(|root| {
+                    egui::CentralPanel::default().show(root, |ui| {
+                        // The card itself and anything else in its own layer.
+                        ui.painter().rect_filled(player, 6.0, egui::Color32::RED);
+                        ui.label("timeline");
+                    })
                 });
                 if let Some(position) = menu {
-                    egui::Area::new(egui::Id::new("menu"))
+                    egui::Area::new(egui::Id::unique("menu"))
                         .order(egui::Order::Foreground)
                         .fixed_pos(position)
                         .show(context, |ui| {

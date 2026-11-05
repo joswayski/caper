@@ -19,8 +19,7 @@ fn shine(ui: &egui::Ui, response: &egui::Response) {
     let mut corners = Vec::new();
     egui::epaint::tessellator::path::rounded_rectangle(
         &mut corners,
-        rect,
-        egui::epaint::CornerRadiusF32::same(8.0),
+        egui::epaint::RoundedRect::new(rect, egui::epaint::CornerRadiusF32::same(8.0)),
     );
     // The stroke colors interpolate between vertices, so sample the long
     // straight edges as well as the corners to retain every rainbow stop.

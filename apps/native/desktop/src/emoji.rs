@@ -188,48 +188,50 @@ pub fn inline(text: &str) -> Vec<(std::ops::Range<usize>, &'static Entry)> {
 }
 
 /// Lay out names with a square for each emoji, independent of installed fonts.
-/// Keep the original Unicode text for accessibility. Leading space reserves
-/// one em for a grapheme and cancels the advances of sequence continuations.
+/// Keep the original Unicode text for accessibility. Each emoji is one
+/// section whose leading space pads its shaped width out to one em.
 pub fn layout_job(ui: &egui::Ui, mut job: egui::text::LayoutJob) -> Arc<egui::Galley> {
     let emojis = inline(&job.text);
     if !emojis.is_empty() {
         let sections = std::mem::take(&mut job.sections);
         for section in sections {
-            let mut start = section.byte_range.start;
+            let mut start = section.byte_range.start.0;
             let mut gap = section.leading_space;
             for (range, _) in emojis.iter().filter(|(range, _)| {
-                range.start >= section.byte_range.start && range.end <= section.byte_range.end
+                range.start >= section.byte_range.start.0 && range.end <= section.byte_range.end.0
             }) {
                 if start < range.start {
                     job.sections.push(egui::text::LayoutSection {
                         leading_space: gap,
-                        byte_range: start..range.start,
+                        byte_range: start.into()..range.start.into(),
                         format: section.format.clone(),
                     });
                     gap = 0.0;
                 }
-                for (offset, character) in job.text[range.clone()].char_indices() {
-                    let format = section.format.clone();
-                    let width = ui.fonts_mut(|fonts| fonts.glyph_width(&format.font_id, character));
-                    let advance = if offset == 0 {
-                        format.font_id.size
-                    } else {
-                        0.0
-                    };
-                    let start = range.start + offset;
-                    job.sections.push(egui::text::LayoutSection {
-                        leading_space: gap + advance - width,
-                        byte_range: start..start + character.len_utf8(),
-                        format,
-                    });
-                    gap = 0.0;
-                }
+                // Shaping lays a sequence out as one cluster, so measure it whole.
+                let format = section.format.clone();
+                let width = ui.fonts_mut(|fonts| {
+                    fonts
+                        .layout_no_wrap(
+                            job.text[range.clone()].to_owned(),
+                            format.font_id.clone(),
+                            format.color,
+                        )
+                        .size()
+                        .x
+                });
+                job.sections.push(egui::text::LayoutSection {
+                    leading_space: gap + format.font_id.size - width,
+                    byte_range: range.start.into()..range.end.into(),
+                    format,
+                });
+                gap = 0.0;
                 start = range.end;
             }
-            if start < section.byte_range.end {
+            if start < section.byte_range.end.0 {
                 job.sections.push(egui::text::LayoutSection {
                     leading_space: gap,
-                    byte_range: start..section.byte_range.end,
+                    byte_range: start.into()..section.byte_range.end,
                     format: section.format,
                 });
             }
@@ -244,10 +246,11 @@ pub fn layout_job(ui: &egui::Ui, mut job: egui::text::LayoutJob) -> Arc<egui::Ga
         let row = Arc::make_mut(&mut Arc::make_mut(&mut galley).rows[0].row);
         for (range, _) in emojis {
             let start = text[..range.start].chars().count();
-            for (index, character) in text[range].chars().enumerate() {
-                let index = start + index;
+            // One glyph per character; continuations carry the cluster's
+            // first character. Keep an overflow ellipsis visible.
+            for index in start..start + text[range].chars().count() {
                 if let Some(glyph) = row.glyphs.get(index)
-                    && glyph.chr == character
+                    && glyph.chr != '…'
                 {
                     let first = glyph.first_vertex as usize;
                     let end = row
@@ -293,7 +296,7 @@ pub fn paint_inline(painter: &egui::Painter, position: egui::Pos2, galley: &egui
                 .job
                 .sections
                 .iter()
-                .find(|section| section.byte_range.start == range.start)
+                .find(|section| section.byte_range.start.0 == range.start)
                 .unwrap()
                 .format
                 .font_id
@@ -326,7 +329,7 @@ pub fn name_label(
     let galley = layout_job(ui, job);
     let (rect, response) = ui.allocate_exact_size(galley.size(), sense);
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
+        egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), galley.text())
     });
     paint_galley(ui.painter(), rect.min, galley, ui.visuals().text_color());
     response
@@ -350,7 +353,7 @@ pub fn name(value: &str) -> Option<&'static str> {
 
 /// Observe the editor's rendered glyphs without adding interactive widgets or changing selection.
 pub fn editor_tooltip(output: &egui::text_edit::TextEditOutput, text: &str) {
-    let response = &output.response;
+    let response = &output.response.response;
     let hold_id = response.id.with("emoji-name-hold");
     let held = response
         .ctx
@@ -541,7 +544,7 @@ pub struct Textures(Arc<Mutex<BTreeMap<usize, egui::TextureHandle>>>);
 impl Textures {
     /// The context's shared sheets, so free functions drawing text reuse them.
     pub fn shared(context: &egui::Context) -> Self {
-        let id = egui::Id::new("emoji-textures");
+        let id = egui::Id::unique("emoji-textures");
         context.data_mut(|data| data.get_temp_mut_or_default::<Self>(id).clone())
     }
 
@@ -626,6 +629,7 @@ fn sheet(page: usize) -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestPass as _;
 
     #[test]
     fn inline_finds_emoji_graphemes_with_and_without_variation_marks() {
@@ -734,12 +738,12 @@ mod tests {
     #[test]
     fn composer_names_follow_graphemes_and_persist_during_a_touch_hold() {
         let context = egui::Context::default();
-        context.style_mut(|style| style.interaction.tooltip_delay = 0.0);
+        context.global_style_mut(|style| style.interaction.tooltip_delay = 0.0);
         let original = "prefix 🚀\n👩‍💻 🎎 suffix";
         let mut text = original.to_owned();
         let mut frame = |time, events| {
             let mut editor = None;
-            let painted = context.run(
+            let painted = context.test_pass(
                 egui::RawInput {
                     time: Some(time),
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -750,10 +754,12 @@ mod tests {
                     ..Default::default()
                 },
                 |context| {
-                    egui::CentralPanel::default().show(context, |ui| {
-                        let output = egui::TextEdit::multiline(&mut text).show(ui);
-                        editor_tooltip(&output, &text);
-                        editor = Some(output);
+                    context.root_ui(|root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            let output = egui::TextEdit::multiline(&mut text).show(ui);
+                            editor_tooltip(&output, &text);
+                            editor = Some(output);
+                        })
                     });
                 },
             );

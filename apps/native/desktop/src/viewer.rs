@@ -424,7 +424,7 @@ impl Viewer {
         {
             player.toggle();
         }
-        let response = egui::Modal::new(egui::Id::new("media-viewer"))
+        let response = egui::Modal::new(egui::Id::unique("media-viewer"))
             .frame(egui::Frame::NONE)
             // Nearly opaque: GPUs that blend in linear light make lighter
             // alphas look much brighter than on web.
@@ -704,7 +704,8 @@ impl Viewer {
                 top.left_bottom(),
                 egui::pos2(top.right() - 12.0, top.bottom() + 38.0),
             );
-            if crate::spoiler_hide_button(ui, bounds, ui.id().with("viewer-hide-spoiler")).clicked()
+            if crate::spoiler_hide_button(ui, bounds, ui.scope_id().with("viewer-hide-spoiler"))
+                .clicked()
             {
                 self.hide_spoiler(ui.ctx(), current);
                 return true;
@@ -822,7 +823,7 @@ impl Viewer {
             }
             swipe.follow(pos);
             if swipe.axis.is_some() {
-                context.set_dragged_id(egui::Id::new("viewer-swipe"));
+                context.set_dragged_id(egui::Id::unique("viewer-swipe"));
             }
             if phase != egui::TouchPhase::End {
                 continue;
@@ -942,7 +943,7 @@ impl Viewer {
         let shown = image_rect.size();
         let response = ui.interact(
             image_rect.intersect(stage),
-            ui.id().with(("viewer-image", &current.id)),
+            ui.scope_id().with(("viewer-image", &current.id)),
             egui::Sense::click_and_drag(),
         );
         if let Some(texture) = texture {
@@ -956,11 +957,7 @@ impl Viewer {
         }
         self.zoom.interact(ui, &response, stage, base);
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Image,
-                true,
-                format!("Image {}", current.name),
-            )
+            egui::WidgetInfo::labeled(egui::Role::Image, true, format!("Image {}", current.name))
         });
         response.context_menu(|ui| self.picture_menu(ui, current, media));
         response.hovered() || response.dragged()
@@ -1057,14 +1054,14 @@ impl Viewer {
                 }
                 let response = ui.interact(
                     picture,
-                    ui.id().with(("viewer-video", &current.id)),
+                    ui.scope_id().with(("viewer-video", &current.id)),
                     egui::Sense::click(),
                 );
                 if response.clicked() {
                     player.toggle();
                 }
                 response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Play or pause")
+                    egui::WidgetInfo::labeled(egui::Role::Button, true, "Play or pause")
                 });
                 over |= response.hovered();
                 if matches!(player.state(), State::Paused | State::Ended)
@@ -1319,7 +1316,7 @@ fn controls(
     if !compact {
         let volume = ui.interact(
             volume_slider,
-            ui.id().with("viewer-volume"),
+            ui.scope_id().with("viewer-volume"),
             egui::Sense::click_and_drag(),
         );
         if let Some(pointer) = volume.interact_pointer_pos()
@@ -1346,7 +1343,7 @@ fn controls(
     if seek_rect.width() > 40.0 && duration > 0 {
         let seek = ui.interact(
             seek_rect,
-            ui.id().with("viewer-seek"),
+            ui.scope_id().with("viewer-seek"),
             egui::Sense::click_and_drag(),
         );
         let fraction_at = |pointer: egui::Pos2| {
@@ -1392,7 +1389,7 @@ fn icon_button(
 ) -> egui::Response {
     let response = ui.interact(
         rect,
-        ui.id().with(("viewer-button", label)),
+        ui.scope_id().with(("viewer-button", label)),
         if enabled {
             egui::Sense::click()
         } else {
@@ -1428,9 +1425,7 @@ fn icon_button(
         },
     );
     let label = label.to_owned();
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label.clone())
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label.clone()));
     if enabled {
         response.on_hover_text(hover_text(icon))
     } else {
@@ -1682,6 +1677,7 @@ fn color_image(image: image::RgbaImage) -> egui::ColorImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestPass as _;
 
     fn attachment(id: &str, kind: AttachmentKind) -> Attachment {
         Attachment {
@@ -1804,7 +1800,7 @@ mod tests {
                 })
                 .collect();
             let mut close = false;
-            let _ = context.run(
+            let _ = context.test_pass(
                 egui::RawInput {
                     screen_rect: Some(screen),
                     time: Some(time),

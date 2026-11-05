@@ -326,7 +326,7 @@ pub fn paint(
 ) -> bool {
     let reduced = crate::motion::reduced();
     let pose = Pose::at(plan, elapsed, reduced);
-    egui::Area::new(egui::Id::new("file-drop"))
+    egui::Area::new(egui::Id::unique("file-drop"))
         .order(egui::Order::Foreground)
         .fixed_pos(area.min)
         .interactable(false)

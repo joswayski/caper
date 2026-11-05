@@ -1285,10 +1285,45 @@ impl Worker {
     pub fn showing(&self, conversation: Option<&str>) {
         *self.visible_conversation.lock().unwrap() =
             conversation.map(|id| (id.to_owned(), Instant::now()));
-        if conversation.is_some() {
-            self.context.request_repaint_after(Duration::from_secs(1));
+    }
+}
+
+/// Whether the focused UI is showing `conversation`. Every UI pass renews the
+/// lease, so an idle window needn't repaint on a timer: a stale lease asks for
+/// one pass and waits for it. An unfocused or minimized window doesn't renew,
+/// so stale focus can't suppress alerts.
+fn reading(
+    visible: &Mutex<Option<(String, Instant)>>,
+    context: &egui::Context,
+    conversation: Option<&str>,
+) -> bool {
+    let renewed_since = |since: Instant| {
+        visible
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|(id, at)| Some(id.as_str()) == conversation && *at >= since)
+    };
+    let asked = Instant::now();
+    if renewed_since(asked.checked_sub(Duration::from_secs(2)).unwrap_or(asked)) {
+        return true;
+    }
+    if !visible
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|(id, _)| Some(id.as_str()) == conversation)
+    {
+        return false;
+    }
+    context.request_repaint();
+    while asked.elapsed() < Duration::from_millis(500) {
+        thread::sleep(Duration::from_millis(10));
+        if renewed_since(asked) {
+            return true;
         }
     }
+    false
 }
 
 fn manage(
@@ -1320,14 +1355,7 @@ fn manage(
                             let context = context.clone();
                             move |alert, lifetime| {
                                 send(&events, &context, Event::NotificationActivity { epoch });
-                                // A focused UI publishes a short lease. If minimized
-                                // windows stop repainting, stale focus cannot suppress alerts.
-                                if !alert.fresh()
-                                    || visible.lock().unwrap().as_ref().is_some_and(|(id, at)| {
-                                        Some(id.as_str()) == alert.conversation()
-                                            && at.elapsed() < Duration::from_secs(2)
-                                    })
-                                {
+                                if !alert.fresh() {
                                     return;
                                 }
                                 let events = events.clone();
@@ -1341,14 +1369,7 @@ fn manage(
                                     if let Err(error) = crate::os_notifications::show(
                                         alert,
                                         lifetime,
-                                        || {
-                                            visible.lock().unwrap().as_ref().is_some_and(
-                                                |(id, at)| {
-                                                    Some(id.as_str()) == conversation.as_deref()
-                                                        && at.elapsed() < Duration::from_secs(2)
-                                                },
-                                            )
-                                        },
+                                        || reading(&visible, &context, conversation.as_deref()),
                                         move || {
                                             repaint.send_viewport_cmd(
                                                 egui::ViewportCommand::Minimized(false),

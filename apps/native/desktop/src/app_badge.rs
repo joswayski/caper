@@ -159,6 +159,7 @@ fn platform(_: u64) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TestPass as _;
     use std::{
         io::{BufRead, BufReader, Write},
         net::TcpListener,
@@ -223,7 +224,7 @@ mod tests {
         let mut wait_for = |wanted: &str| {
             let until = Instant::now() + Duration::from_secs(5);
             loop {
-                let output = context.run(egui::RawInput::default(), |_| {});
+                let output = context.test_pass(egui::RawInput::default(), |_| {});
                 titles.extend(output.viewport_output.values().flat_map(|viewport| {
                     viewport
                         .commands
