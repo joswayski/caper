@@ -1,22 +1,66 @@
-//! The window, its state, and the worker events that change them.
+//! The window's state and the worker events that change it.
 //!
-//! Widgets are built once and stay alive; worker events update the state,
-//! then only the widgets whose content changed. The message list is a
-//! `GtkListView` over a `GListStore` that receives row diffs, so unchanged
-//! rows keep their items and widgets.
+//! Widgets are built once (`ui`) and stay alive; worker events update the
+//! state, then only the widgets whose content changed. The message lists are
+//! `GtkListView`s over `GListStore`s that receive row diffs, so unchanged rows
+//! keep their items and widgets.
 
 use crate::host::{Signal, Wakes};
-use crate::rows::{self, Op, Row};
+use crate::images::{Avatar, AvatarView, Icon, Images};
+use crate::rows::{self, Action, Row};
+use crate::ui::{Ui, label};
 use caper_client::api::Api;
 use caper_client::gateway::GatewayEvent;
-use caper_client::model::{Account, Apply, ChatSession, Space, SpaceDetail, Timeline};
-use caper_client::worker::{Command, Event, Worker, current};
+use caper_client::model::{
+    Account, Apply, ChatSession, DirectConversation, Message, Space, SpaceDetail, Timeline,
+};
+use caper_client::sign_in::{MAX_RESENDS, resend_countdown, resend_wait};
+use caper_client::worker::{AdminOperation, AdminResult, Command, Event, Worker, current};
 use gtk::{gdk, gio, glib, prelude::*};
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::collections::{HashMap, HashSet};
+use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 const STYLE: &str = include_str!("style.css");
+/// The reaction picker's emoji, after the toolbar's quick three.
+const PICKER: [&str; 24] = [
+    "👍", "❤️", "😂", "🎉", "😮", "😢", "🔥", "👀", "🙏", "👏", "💯", "✅", "🚀", "🤔", "😅", "🙌",
+    "😍", "😎", "🥳", "👋", "💪", "✨", "☕", "👎",
+];
+/// Others' typing shows this long after their last update (desktop's).
+const TYPING_SHOWN: Duration = Duration::from_secs(6);
+/// Your typing is re-announced this often while you type, and ends this
+/// long after your last keystroke.
+const TYPING_PULSE: Duration = Duration::from_secs(2);
+const TYPING_IDLE: Duration = Duration::from_secs(3);
+
+/// A widget of GType `class` with the accessible name `name`. gtk4-rs binds
+/// `gtk_accessible_update_property` only from GTK 4.10 (`v4_10`), so this uses
+/// GtkBuilder's `<accessibility>` element, which GTK 4.0 already reads.
+pub fn named<T: IsA<glib::Object>>(class: &str, name: &str) -> T {
+    let xml = format!(
+        "<interface><object class=\"{class}\" id=\"widget\"><accessibility><property name=\"label\">{}</property></accessibility></object></interface>",
+        glib::markup_escape_text(name)
+    );
+    gtk::Builder::from_string(&xml)
+        .object("widget")
+        .expect("a GTK widget class")
+}
+
+fn clear(container: &gtk::Box) {
+    while let Some(child) = container.first_child() {
+        container.remove(&child);
+    }
+}
+
+/// `gtk_list_box_remove_all` is GTK 4.12; rows must leave through `remove`
+/// so the list's own bookkeeping forgets them.
+fn clear_list(list: &gtk::ListBox) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -29,24 +73,61 @@ struct Pending {
     client_id: String,
     text: String,
     created_at: String,
+    thread: Option<String>,
 }
 
+/// What the main composer is doing besides a new message.
+enum Compose {
+    Reply {
+        id: String,
+        author: String,
+    },
+    Edit {
+        original: Box<Message>,
+        request: u64,
+    },
+}
+
+struct Thread {
+    root: String,
+    /// The root as the thread read returned it (it may be outside history).
+    message: Option<Message>,
+    request: u64,
+    loading: bool,
+}
+
+struct Typer {
+    name: String,
+    revision: u64,
+    expires: Instant,
+}
+
+#[derive(Default)]
 struct State {
-    page: Page,
-    /// Fences events: advanced by every conversation load.
+    page: Option<Page>,
+    /// Fences conversation events: advanced by every conversation load.
     generation: u64,
+    /// Fences account events: advanced by every sign-in and sign-out.
+    epoch: u64,
     navigation: u64,
     request: u64,
     busy: bool,
     error: Option<String>,
     email: String,
     challenge: Option<String>,
+    code_sent_at: Option<Instant>,
+    resends: u8,
+    resending: bool,
+    signin_status: Option<&'static str>,
     token: Option<String>,
     account: Option<Account>,
     spaces: Vec<Space>,
     space: Option<String>,
     detail: Option<SpaceDetail>,
     channel: Option<String>,
+    /// The open DM, when `channel` is one.
+    direct: Option<String>,
+    directs: Vec<DirectConversation>,
     channel_name: String,
     session: Option<ChatSession>,
     session_error: Option<String>,
@@ -57,45 +138,72 @@ struct State {
     pending: Option<Pending>,
     send_error: Option<String>,
     /// A draft that failed to send, returned to an empty composer.
-    returned_draft: Option<String>,
+    returned_draft: Option<(String, bool)>,
+    compose: Option<Compose>,
+    edit_request: u64,
+    delete_request: u64,
+    reacting: HashSet<(String, String)>,
+    joining: bool,
+    thread: Option<Thread>,
     rows: Vec<Row>,
+    thread_rows: Vec<Row>,
     markup: rows::Markup,
-    /// Advanced when the rail, channel list or member list changes.
+    /// Unread messages and mentions per space, then channel.
+    unread: HashMap<String, HashMap<String, (u64, u64)>>,
+    unread_revision: u64,
+    /// The newest sequence each conversation was marked read through.
+    read_through: HashMap<String, u64>,
+    presence: HashMap<String, String>,
+    typers: HashMap<String, Typer>,
+    typing_sent: Option<Instant>,
+    typing_edited: Option<Instant>,
+    /// Advanced when the rail, sidebar or member list changes.
     layout: u64,
 }
 
-struct Ui {
-    window: gtk::ApplicationWindow,
-    pages: gtk::Stack,
-    steps: gtk::Stack,
-    email: gtk::Entry,
-    email_button: gtk::Button,
-    code: gtk::Entry,
-    code_button: gtk::Button,
-    other_email: gtk::Button,
-    code_hint: gtk::Label,
-    signin_error: gtk::Label,
-    rail: gtk::Box,
-    space_name: gtk::Label,
-    channels: gtk::ListBox,
-    channel_title: gtk::Label,
-    status: gtk::Label,
-    members_toggle: gtk::ToggleButton,
-    members_panel: gtk::Box,
-    members_title: gtk::Label,
-    members: gtk::ListBox,
-    store: gio::ListStore,
-    list: gtk::ListView,
-    scroller: gtk::ScrolledWindow,
-    composer: gtk::TextView,
-    placeholder: gtk::Label,
-    send: gtk::Button,
-    composer_error: gtk::Label,
-    error: gtk::Label,
+impl State {
+    fn page(&self) -> Page {
+        self.page.unwrap_or(Page::Loading)
+    }
+
+    fn joined(&self) -> bool {
+        self.direct.is_some()
+            || self
+                .detail
+                .as_ref()
+                .and_then(|detail| {
+                    detail
+                        .channels
+                        .iter()
+                        .find(|channel| Some(&channel.id) == self.channel.as_ref())
+                })
+                .is_none_or(|channel| channel.joined)
+    }
+
+    fn message(&self, id: &str) -> Option<&Message> {
+        self.timeline
+            .messages()
+            .find(|message| message.id == id)
+            .or_else(|| {
+                self.thread
+                    .as_ref()
+                    .and_then(|thread| thread.message.as_ref())
+                    .filter(|message| message.id == id)
+            })
+    }
+
+    fn name(&self) -> String {
+        self.account
+            .as_ref()
+            .and_then(|account| account.display_name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "Guest".into())
+    }
 }
 
 pub struct App {
     ui: Ui,
+    images: Rc<Images>,
     worker: Worker<Wakes>,
     state: RefCell<State>,
     /// Keep the newest message in view as rows arrive and are measured.
@@ -104,7 +212,14 @@ pub struct App {
     settling: Cell<bool>,
     rendered_layout: Cell<u64>,
     channel_ids: RefCell<Vec<String>>,
+    direct_ids: RefCell<Vec<String>>,
+    /// Member avatars by account id, for presence changes in place.
+    member_views: RefCell<HashMap<String, AvatarView>>,
     activity: Cell<Instant>,
+    /// The typing timer runs only while someone types.
+    ticking: Cell<bool>,
+    /// The sign-in countdown's pending redraw.
+    countdown: Cell<bool>,
 }
 
 pub fn start(application: &gtk::Application, base: &str) {
@@ -129,45 +244,36 @@ pub fn start(application: &gtk::Application, base: &str) {
         );
     }
     let (sender, receiver) = async_channel::unbounded();
+    let images = Rc::new(Images::new(api.clone(), sender.clone()));
+    // Rows reach the app once it exists.
+    let slot: Rc<RefCell<Weak<App>>> = Rc::default();
+    let handler = |thread: bool| -> rows::Handler {
+        let slot = slot.clone();
+        Rc::new(move |action| {
+            if let Some(app) = slot.borrow().upgrade() {
+                app.row_action(action, thread);
+            }
+        })
+    };
+    let ui = Ui::build(application, &images, handler(false), handler(true));
     let app = Rc::new(App {
-        ui: Ui::build(application),
+        ui,
+        images,
         worker: Worker::new(api, Wakes(sender)),
-        state: RefCell::new(State {
-            page: Page::Loading,
-            generation: 0,
-            navigation: 0,
-            request: 0,
-            busy: false,
-            error: None,
-            email: String::new(),
-            challenge: None,
-            token: None,
-            account: None,
-            spaces: Vec::new(),
-            space: None,
-            detail: None,
-            channel: None,
-            channel_name: String::new(),
-            session: None,
-            session_error: None,
-            timeline: Timeline::default(),
-            has_more: false,
-            loading_older: false,
-            status: String::new(),
-            pending: None,
-            send_error: None,
-            returned_draft: None,
-            rows: Vec::new(),
-            markup: rows::Markup::default(),
-            layout: 0,
-        }),
+        state: RefCell::new(State::default()),
         follow: Cell::new(true),
         settling: Cell::new(false),
         rendered_layout: Cell::new(u64::MAX),
-        channel_ids: RefCell::new(Vec::new()),
+        channel_ids: RefCell::default(),
+        direct_ids: RefCell::default(),
+        member_views: RefCell::default(),
         activity: Cell::new(Instant::now()),
+        ticking: Cell::new(false),
+        countdown: Cell::new(false),
     });
+    *slot.borrow_mut() = Rc::downgrade(&app);
     app.connect();
+    app.install_actions();
     app.render();
     // The window shows before any network request finishes.
     app.ui.window.present();
@@ -178,281 +284,56 @@ pub fn start(application: &gtk::Application, base: &str) {
                 Signal::Wake => app.receive(),
                 Signal::Title(title) => app.ui.window.set_title(Some(&title)),
                 Signal::Front => app.ui.window.present(),
+                Signal::Picture { asset, url, image } => {
+                    app.images.loaded(asset, url, image);
+                    app.state.borrow_mut().layout += 1;
+                    app.render();
+                }
             }
         }
     });
-}
-
-fn label(text: &str, classes: &[&str]) -> gtk::Label {
-    let label = gtk::Label::builder().label(text).xalign(0.0).build();
-    for class in classes {
-        label.add_css_class(class);
-    }
-    label
-}
-
-/// A widget of GType `class` with the accessible name `name`. gtk4-rs binds
-/// `gtk_accessible_update_property` only from GTK 4.10 (`v4_10`), so this uses
-/// GtkBuilder's `<accessibility>` element, which GTK 4.0 already reads.
-fn named<T: IsA<glib::Object>>(class: &str, name: &str) -> T {
-    let xml = format!(
-        "<interface><object class=\"{class}\" id=\"widget\"><accessibility><property name=\"label\">{}</property></accessibility></object></interface>",
-        glib::markup_escape_text(name)
-    );
-    gtk::Builder::from_string(&xml)
-        .object("widget")
-        .expect("a GTK widget class")
-}
-
-fn clear(container: &impl IsA<gtk::Widget>) {
-    while let Some(child) = container.as_ref().first_child() {
-        child.unparent();
-    }
-}
-
-impl Ui {
-    fn build(application: &gtk::Application) -> Self {
-        let window = gtk::ApplicationWindow::builder()
-            .application(application)
-            .title("Caper")
-            .default_width(1440)
-            .default_height(900)
-            .build();
-        window.add_css_class("caper");
-        let pages = gtk::Stack::new();
-
-        let loading = label("Connecting to Caper…", &["muted"]);
-        loading.set_halign(gtk::Align::Center);
-        pages.add_named(&loading, Some("loading"));
-
-        // Sign-in: email, then the emailed code.
-        let card = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        card.add_css_class("card");
-        card.set_halign(gtk::Align::Center);
-        card.set_valign(gtk::Align::Center);
-        card.set_size_request(400, -1);
-        let steps = gtk::Stack::new();
-        steps.set_vhomogeneous(false);
-        let email_step = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        email_step.append(&label("Sign in to Caper", &["title"]));
-        let intro = label(
-            "Use your email to create an account or log back in.",
-            &["muted"],
-        );
-        intro.set_wrap(true);
-        intro.set_max_width_chars(44);
-        email_step.append(&intro);
-        let email_label = label("Email", &["field"]);
-        email_step.append(&email_label);
-        let email = gtk::Entry::builder()
-            .placeholder_text("you@example.com")
-            .input_purpose(gtk::InputPurpose::Email)
-            .build();
-        // The label names the field for assistive technologies.
-        email_label.set_mnemonic_widget(Some(&email));
-        email_step.append(&email);
-        let email_button = gtk::Button::with_label("Continue");
-        email_button.add_css_class("primary");
-        email_step.append(&email_button);
-        steps.add_named(&email_step, Some("email"));
-        let code_step = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        code_step.append(&label("Check your email", &["title"]));
-        let code_hint = label("", &["muted"]);
-        code_hint.set_wrap(true);
-        // Wrapped labels ask for their whole text's width; keep the card's.
-        code_hint.set_max_width_chars(44);
-        code_step.append(&code_hint);
-        let code_label = label("Sign-in code", &["field"]);
-        code_step.append(&code_label);
-        let code = gtk::Entry::builder()
-            .placeholder_text("e.g. ABC234")
-            .build();
-        code_label.set_mnemonic_widget(Some(&code));
-        code_step.append(&code);
-        let code_button = gtk::Button::with_label("Continue");
-        code_button.add_css_class("primary");
-        code_step.append(&code_button);
-        let other_email = gtk::Button::with_label("Use a different email");
-        other_email.add_css_class("flat");
-        code_step.append(&other_email);
-        steps.add_named(&code_step, Some("code"));
-        card.append(&steps);
-        let signin_error = label("", &["error"]);
-        signin_error.set_wrap(true);
-        card.append(&signin_error);
-        let signin = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        signin.add_css_class("signin");
-        signin.append(&card);
-        card.set_vexpand(true);
-        pages.add_named(&signin, Some("signin"));
-
-        // Chat: rail, channels, conversation, members.
-        let chat = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let rail: gtk::Box = named("GtkBox", "Spaces");
-        rail.set_orientation(gtk::Orientation::Vertical);
-        rail.set_spacing(8);
-        rail.add_css_class("rail");
-        chat.append(&rail);
-
-        let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        sidebar.add_css_class("sidebar");
-        sidebar.set_size_request(240, -1);
-        let space_name = label("", &["space-name"]);
-        space_name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        sidebar.append(&space_name);
-        let channels: gtk::ListBox = named("GtkListBox", "Channels");
-        channels.add_css_class("channels");
-        let channel_scroller = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
-            .child(&channels)
-            .build();
-        sidebar.append(&channel_scroller);
-        chat.append(&sidebar);
-
-        let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        conversation.add_css_class("conversation");
-        conversation.set_hexpand(true);
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        header.add_css_class("header");
-        let channel_title = label("", &["channel-title"]);
-        header.append(&channel_title);
-        let status = label("", &["muted", "status"]);
-        status.set_hexpand(true);
-        header.append(&status);
-        let members_toggle: gtk::ToggleButton = named("GtkToggleButton", "Members");
-        members_toggle.set_icon_name("system-users-symbolic");
-        members_toggle.set_tooltip_text(Some("Members"));
-        members_toggle.set_active(true);
-        members_toggle.set_valign(gtk::Align::Center);
-        members_toggle.add_css_class("flat");
-        header.append(&members_toggle);
-        conversation.append(&header);
-
-        let error = label("", &["error", "banner"]);
-        error.set_wrap(true);
-        conversation.append(&error);
-
-        let store = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let list: gtk::ListView = named("GtkListView", "Messages");
-        list.set_model(Some(&gtk::NoSelection::new(Some(store.clone()))));
-        list.set_factory(Some(&rows::factory()));
-        list.add_css_class("messages");
-        let scroller = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
-            .child(&list)
-            .build();
-        conversation.append(&scroller);
-
-        let composer_error = label("", &["error", "composer-error"]);
-        composer_error.set_wrap(true);
-        conversation.append(&composer_error);
-        let composer_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        composer_box.add_css_class("composer");
-        let composer: gtk::TextView = named("GtkTextView", "Message");
-        composer.set_wrap_mode(gtk::WrapMode::WordChar);
-        composer.set_accepts_tab(false);
-        composer.set_hexpand(true);
-        let placeholder = label("", &["placeholder"]);
-        placeholder.set_can_target(false);
-        placeholder.set_valign(gtk::Align::Start);
-        let field = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_height(true)
-            .max_content_height(200)
-            .child(&composer)
-            .hexpand(true)
-            .build();
-        let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&field));
-        overlay.add_overlay(&placeholder);
-        overlay.set_hexpand(true);
-        composer_box.append(&overlay);
-        let send: gtk::Button = named("GtkButton", "Send message");
-        send.set_icon_name("mail-send-symbolic");
-        send.set_tooltip_text(Some("Send"));
-        send.set_valign(gtk::Align::End);
-        send.add_css_class("flat");
-        composer_box.append(&send);
-        conversation.append(&composer_box);
-        chat.append(&conversation);
-
-        let members_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        members_panel.add_css_class("members");
-        members_panel.set_size_request(220, -1);
-        let members_title = label("", &["section"]);
-        members_panel.append(&members_title);
-        let members: gtk::ListBox = named("GtkListBox", "Members");
-        members.set_selection_mode(gtk::SelectionMode::None);
-        members.add_css_class("member-list");
-        members_panel.append(
-            &gtk::ScrolledWindow::builder()
-                .hscrollbar_policy(gtk::PolicyType::Never)
-                .vexpand(true)
-                .child(&members)
-                .build(),
-        );
-        chat.append(&members_panel);
-        pages.add_named(&chat, Some("chat"));
-        window.set_child(Some(&pages));
-
-        Self {
-            window,
-            pages,
-            steps,
-            email,
-            email_button,
-            code,
-            code_button,
-            other_email,
-            code_hint,
-            signin_error,
-            rail,
-            space_name,
-            channels,
-            channel_title,
-            status,
-            members_toggle,
-            members_panel,
-            members_title,
-            members,
-            store,
-            list,
-            scroller,
-            composer,
-            placeholder,
-            send,
-            composer_error,
-            error,
-        }
-    }
 }
 
 impl App {
     fn connect(self: &Rc<Self>) {
         let ui = &self.ui;
         let app = self.clone();
-        ui.email.connect_activate(move |_| app.request_code());
+        ui.email.connect_activate(move |_| app.request_code(false));
         let app = self.clone();
-        ui.email_button.connect_clicked(move |_| app.request_code());
+        ui.email_button
+            .connect_clicked(move |_| app.request_code(false));
         let app = self.clone();
         ui.code.connect_activate(move |_| app.verify());
         let app = self.clone();
         ui.code_button.connect_clicked(move |_| app.verify());
+        let app = self.clone();
+        ui.resend.connect_clicked(move |_| app.request_code(true));
         let app = self.clone();
         ui.other_email.connect_clicked(move |_| {
             {
                 let mut state = app.state.borrow_mut();
                 state.challenge = None;
                 state.error = None;
+                state.signin_status = None;
+                state.resends = 0;
             }
             app.render();
         });
+        let app = self.clone();
+        ui.sign_out.connect_clicked(move |_| app.sign_out());
 
-        let panel = ui.members_panel.clone();
-        ui.members_toggle
-            .connect_toggled(move |toggle| panel.set_visible(toggle.is_active()));
+        let app = self.clone();
+        ui.members_toggle.connect_toggled(move |toggle| {
+            if toggle.is_active() {
+                app.state.borrow_mut().thread = None;
+            }
+            app.render();
+        });
+        let app = self.clone();
+        ui.thread_close.connect_clicked(move |_| {
+            app.state.borrow_mut().thread = None;
+            app.render();
+        });
 
         let app = self.clone();
         ui.channels.connect_row_activated(move |_, row| {
@@ -469,30 +350,60 @@ impl App {
                 app.render();
             }
         });
-
-        // Enter sends; Shift+Enter is a new line.
-        let keys = gtk::EventControllerKey::new();
-        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let app = self.clone();
-        keys.connect_key_pressed(move |_, key, _, modifiers| {
-            app.active();
-            if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
-                && !modifiers.contains(gdk::ModifierType::SHIFT_MASK)
-            {
-                app.send_message();
-                return glib::Propagation::Stop;
+        ui.directs.connect_row_activated(move |_, row| {
+            let id = usize::try_from(row.index())
+                .ok()
+                .and_then(|index| app.direct_ids.borrow().get(index).cloned());
+            if let Some(id) = id {
+                app.open_direct(id);
             }
-            glib::Propagation::Proceed
         });
-        ui.composer.add_controller(keys);
         let app = self.clone();
-        ui.send.connect_clicked(move |_| app.send_message());
-        let placeholder = ui.placeholder.clone();
-        ui.composer
-            .buffer()
-            .connect_changed(move |buffer| placeholder.set_visible(buffer.char_count() == 0));
+        ui.join.connect_clicked(move |_| app.join());
+        let app = self.clone();
+        ui.compose_cancel
+            .connect_clicked(move |_| app.cancel_compose());
 
-        let adjustment = ui.scroller.vadjustment();
+        for thread in [false, true] {
+            let composer = if thread {
+                &ui.thread_composer
+            } else {
+                &ui.composer
+            };
+            // Enter sends; Shift+Enter is a new line; Escape cancels a
+            // reply or an edit.
+            let keys = gtk::EventControllerKey::new();
+            keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let app = self.clone();
+            keys.connect_key_pressed(move |_, key, _, modifiers| {
+                app.active();
+                if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
+                    && !modifiers.contains(gdk::ModifierType::SHIFT_MASK)
+                {
+                    app.send_message(thread);
+                    return glib::Propagation::Stop;
+                }
+                if key == gdk::Key::Escape && !thread && app.state.borrow().compose.is_some() {
+                    app.cancel_compose();
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            composer.view.add_controller(keys);
+            let app = self.clone();
+            composer
+                .send
+                .connect_clicked(move |_| app.send_message(thread));
+            let app = self.clone();
+            composer.view.buffer().connect_changed(move |buffer| {
+                if buffer.char_count() > 0 {
+                    app.typed();
+                }
+            });
+        }
+
+        let adjustment = ui.list.scroller.vadjustment();
         let app = self.clone();
         adjustment.connect_value_changed(move |adjustment| {
             if app.settling.get() {
@@ -511,6 +422,37 @@ impl App {
         });
     }
 
+    /// The row menu's actions, each taking the message id.
+    fn install_actions(self: &Rc<Self>) {
+        let group = gio::SimpleActionGroup::new();
+        type Run = fn(&Rc<App>, String);
+        let actions: [(&str, Run); 5] = [
+            ("edit", |app, id| app.start_edit(&id)),
+            ("delete", |app, id| app.confirm_delete(id)),
+            ("pin", |app, id| app.pin(id, true)),
+            ("unpin", |app, id| app.pin(id, false)),
+            ("copy", |app, id| {
+                if let Some(message) = app.state.borrow().message(&id) {
+                    app.ui.window.clipboard().set_text(&message.content.text);
+                }
+            }),
+        ];
+        for (name, run) in actions {
+            let action = gio::SimpleAction::new(name, Some(glib::VariantTy::STRING));
+            let app = Rc::downgrade(self);
+            action.connect_activate(move |_, parameter| {
+                if let (Some(app), Some(id)) = (
+                    app.upgrade(),
+                    parameter.and_then(|value| value.get::<String>()),
+                ) {
+                    run(&app, id);
+                }
+            });
+            group.add_action(&action);
+        }
+        self.ui.window.insert_action_group("row", Some(&group));
+    }
+
     /// Tells the gateway someone is here, at most every few seconds.
     fn active(&self) {
         if self.activity.get().elapsed() > Duration::from_secs(5) {
@@ -519,16 +461,28 @@ impl App {
         }
     }
 
-    fn request_code(self: &Rc<Self>) {
+    // ---------------------------------------------------------------------
+    // Sign-in and sign-out.
+
+    fn request_code(self: &Rc<Self>, resend: bool) {
         {
             let mut state = self.state.borrow_mut();
             if state.busy {
                 return;
             }
-            let email = self.ui.email.text().trim().to_owned();
+            let email = if resend {
+                state.email.clone()
+            } else {
+                self.ui.email.text().trim().to_owned()
+            };
             if email.contains('@') {
                 state.busy = true;
                 state.error = None;
+                state.signin_status = None;
+                state.resending = resend;
+                if !resend {
+                    state.resends = 0;
+                }
                 state.email.clone_from(&email);
                 self.worker.send(Command::RequestCode {
                     generation: state.generation,
@@ -568,28 +522,65 @@ impl App {
     }
 
     fn establish(&self, state: &mut State, token: String, account: Account, spaces: Vec<Space>) {
+        state.epoch += 1;
         state.token = Some(token);
         state.account = Some(account);
         state.spaces = spaces;
-        state.page = Page::Chat;
+        state.page = Some(Page::Chat);
         state.layout += 1;
+        self.load_directs(state);
+        self.refresh_unread(state);
         if let Some(space) = state.spaces.first().map(|space| space.id.clone()) {
             self.navigate(state, Some(space), None);
         }
     }
 
+    /// Desktop's sign-out: stop the gateway, forget the saved session, revoke
+    /// it on the server, and return to sign-in.
+    fn sign_out(self: &Rc<Self>) {
+        {
+            let mut state = self.state.borrow_mut();
+            let token = state.token.take();
+            state.generation += 1;
+            self.worker.send(Command::StopGateway);
+            self.worker.send(Command::ClearCredential {
+                generation: state.generation,
+            });
+            if let Some(token) = token {
+                self.worker.send(Command::Logout {
+                    generation: state.generation,
+                    token,
+                });
+            }
+            self.worker.showing(None);
+            let keep = (state.generation, state.epoch + 1, state.email.clone());
+            *state = State {
+                page: Some(Page::SignIn),
+                generation: keep.0,
+                epoch: keep.1,
+                email: keep.2,
+                layout: state.layout + 1,
+                rows: std::mem::take(&mut state.rows),
+                thread_rows: std::mem::take(&mut state.thread_rows),
+                ..State::default()
+            };
+        }
+        self.images.clear_pictures();
+        self.ui.code.set_text("");
+        self.ui.composer.view.buffer().set_text("");
+        self.ui.thread_composer.view.buffer().set_text("");
+        self.render();
+    }
+
+    // ---------------------------------------------------------------------
+    // Navigation.
+
     fn navigate(&self, state: &mut State, space: Option<String>, channel: Option<String>) {
-        state.generation += 1;
-        state.navigation += 1;
-        state.loading_older = false;
-        state.session = None;
-        state.session_error = None;
-        state.pending = None;
-        state.status = "Loading…".into();
-        state.error = None;
+        self.leave_conversation(state);
         if state.space != space {
             state.detail = None;
             state.space.clone_from(&space);
+            state.presence.clear();
         }
         if let Some(name) = state.detail.as_ref().and_then(|detail| {
             detail
@@ -601,20 +592,58 @@ impl App {
             state.channel_name = name;
         }
         state.channel.clone_from(&channel);
+        self.prepare(state, space, channel);
+    }
+
+    fn open_direct(self: &Rc<Self>, id: String) {
+        {
+            let mut state = self.state.borrow_mut();
+            if state.channel.as_deref() == Some(&id) {
+                return;
+            }
+            self.leave_conversation(&mut state);
+            state.channel_name = state
+                .directs
+                .iter()
+                .find(|direct| direct.id == id)
+                .map(|direct| direct.peer.display_name.clone())
+                .unwrap_or_default();
+            state.channel = Some(id.clone());
+            state.direct = Some(id.clone());
+            self.prepare(&mut state, None, Some(id));
+        }
+        self.render();
+    }
+
+    fn leave_conversation(&self, state: &mut State) {
+        self.set_typing(state, false);
+        state.generation += 1;
+        state.navigation += 1;
+        state.loading_older = false;
+        state.session = None;
+        state.session_error = None;
+        state.pending = None;
+        state.compose = None;
+        state.thread = None;
+        state.typers.clear();
+        state.reacting.clear();
+        state.direct = None;
+        state.status = "Loading…".into();
+        state.error = None;
+        state.send_error = None;
         state.layout += 1;
-        let name = state
-            .account
-            .as_ref()
-            .and_then(|account| account.display_name.clone())
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| "Guest".into());
+        // DMs started or answered elsewhere appear as you move around.
+        self.load_directs(state);
+    }
+
+    fn prepare(&self, state: &mut State, space: Option<String>, channel: Option<String>) {
         self.worker.send(Command::PrepareNavigation {
             generation: state.generation,
             navigation: state.navigation,
             token: state.token.clone(),
             space,
             channel,
-            name,
+            name: state.name(),
             cached: None,
             visit: false,
             preferred: None,
@@ -624,7 +653,7 @@ impl App {
     fn select_space(self: &Rc<Self>, id: String) {
         {
             let mut state = self.state.borrow_mut();
-            if state.space.as_deref() == Some(&id) {
+            if state.space.as_deref() == Some(&id) && state.direct.is_none() {
                 return;
             }
             self.navigate(&mut state, Some(id), None);
@@ -633,8 +662,58 @@ impl App {
     }
 
     fn reload(&self, state: &mut State) {
-        let (space, channel) = (state.space.clone(), state.channel.clone());
-        self.navigate(state, space, channel);
+        match state.direct.clone() {
+            Some(direct) => {
+                self.leave_conversation(state);
+                state.channel = Some(direct.clone());
+                state.direct = Some(direct.clone());
+                self.prepare(state, None, Some(direct));
+            }
+            None => {
+                let (space, channel) = (state.space.clone(), state.channel.clone());
+                self.navigate(state, space, channel);
+            }
+        }
+    }
+
+    fn connect_gateway(&self, state: &mut State, channel: String) {
+        state.status = "Connecting…".into();
+        self.worker.send(Command::Connect {
+            generation: state.generation,
+            token: state.token.clone(),
+            channel,
+            cursor: state.timeline.cursor(),
+            presence: state
+                .detail
+                .as_ref()
+                .filter(|_| state.token.is_some())
+                .map(|detail| (detail.space.id.clone(), Vec::new())),
+            media: Default::default(),
+        });
+    }
+
+    fn join(self: &Rc<Self>) {
+        {
+            let mut state = self.state.borrow_mut();
+            let (Some(token), Some(space), Some(channel)) = (
+                state.token.clone(),
+                state.space.clone(),
+                state.channel.clone(),
+            ) else {
+                return;
+            };
+            if state.joining {
+                return;
+            }
+            state.joining = true;
+            state.error = None;
+            self.worker.send(Command::Admin {
+                generation: state.generation,
+                token,
+                operation: AdminOperation::JoinChannel { space, channel },
+            });
+        }
+        self.render();
     }
 
     fn load_older(self: &Rc<Self>) {
@@ -666,36 +745,212 @@ impl App {
         });
     }
 
-    fn send_message(self: &Rc<Self>) {
-        let buffer = self.ui.composer.buffer();
-        let draft = buffer
-            .text(&buffer.start_iter(), &buffer.end_iter(), false)
-            .to_string();
+    // ---------------------------------------------------------------------
+    // Unread state and DMs.
+
+    fn load_directs(&self, state: &State) {
+        if let Some(token) = state.token.clone() {
+            // Fenced by the account, not a conversation: navigation follows.
+            self.worker.send(Command::LoadDirects {
+                generation: state.epoch,
+                token,
+            });
+        }
+    }
+
+    fn refresh_unread(&self, state: &mut State) {
+        if let Some(token) = state.token.clone() {
+            state.unread_revision += 1;
+            self.worker.send(Command::LoadUnread {
+                epoch: state.epoch,
+                revision: state.unread_revision,
+                visit: None,
+                token,
+            });
+        }
+    }
+
+    /// Marks the open conversation read through its newest message.
+    fn mark_read(&self, state: &mut State) {
+        let (Some(token), Some(channel)) = (state.token.clone(), state.channel.clone()) else {
+            return;
+        };
+        let seq = state.timeline.cursor();
+        let through = seq.parse::<u64>().unwrap_or(0);
+        if through == 0
+            || state
+                .read_through
+                .get(&channel)
+                .is_some_and(|read| *read >= through)
+        {
+            return;
+        }
+        state.read_through.insert(channel.clone(), through);
+        if let Some(direct) = state.direct.clone() {
+            if let Some(entry) = state.directs.iter_mut().find(|entry| entry.id == direct) {
+                entry.unread_count = Some(0);
+                entry.read_seq.clone_from(&seq);
+                state.layout += 1;
+            }
+            self.worker.send(Command::ReadDirect {
+                token,
+                id: direct,
+                seq,
+            });
+        } else if let Some(space) = state.space.clone() {
+            self.worker.send(Command::ReadChannel {
+                epoch: state.epoch,
+                token,
+                space,
+                channel,
+                seq,
+            });
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Typing.
+
+    /// The composer changed: announce typing, at most every pulse.
+    fn typed(self: &Rc<Self>) {
+        let Ok(mut state) = self.state.try_borrow_mut() else {
+            return;
+        };
+        if matches!(state.compose, Some(Compose::Edit { .. })) {
+            return;
+        }
+        let now = Instant::now();
+        state.typing_edited = Some(now);
+        if state
+            .typing_sent
+            .is_none_or(|sent| now.duration_since(sent) >= TYPING_PULSE)
+        {
+            self.set_typing(&mut state, true);
+        }
+        drop(state);
+        self.tick();
+    }
+
+    fn set_typing(&self, state: &mut State, typing: bool) {
+        if !typing && state.typing_sent.is_none() {
+            return;
+        }
+        let (Some(session), Some(channel)) = (&state.session, &state.channel) else {
+            state.typing_sent = None;
+            return;
+        };
+        self.worker.send(Command::Typing {
+            token: state.token.clone(),
+            chat_token: session.token.clone(),
+            channel: channel.clone(),
+            typing,
+        });
+        state.typing_sent = typing.then(Instant::now);
+    }
+
+    /// While anyone types: expire typing indicators, and end your own after
+    /// a pause. Stops itself once nobody is typing.
+    fn tick(self: &Rc<Self>) {
+        if self.ticking.replace(true) {
+            return;
+        }
+        let app = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_millis(500), move || {
+            let Some(app) = app.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let busy = {
+                let mut state = app.state.borrow_mut();
+                let now = Instant::now();
+                state.typers.retain(|_, typer| typer.expires > now);
+                if state.typing_sent.is_some()
+                    && state
+                        .typing_edited
+                        .is_none_or(|edited| now.duration_since(edited) >= TYPING_IDLE)
+                {
+                    app.set_typing(&mut state, false);
+                }
+                state.typing_sent.is_some() || !state.typers.is_empty()
+            };
+            app.render_typing();
+            if busy {
+                glib::ControlFlow::Continue
+            } else {
+                app.ticking.set(false);
+                glib::ControlFlow::Break
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------------
+    // Sending, replies, edits, deletes, pins and reactions.
+
+    fn send_message(self: &Rc<Self>, thread: bool) {
+        let composer = if thread {
+            &self.ui.thread_composer
+        } else {
+            &self.ui.composer
+        };
+        let draft = composer.text();
         let text = draft.trim();
         if text.is_empty() {
             return;
         }
         {
             let mut state = self.state.borrow_mut();
+            let Some(chat_token) = state.session.as_ref().map(|session| session.token.clone())
+            else {
+                return;
+            };
+            let Some(channel) = state.channel.clone() else {
+                return;
+            };
+            if !thread && let Some(Compose::Edit { original, .. }) = &state.compose {
+                let original = original.clone();
+                state.edit_request += 1;
+                let request = state.edit_request;
+                self.worker.send(Command::EditMessage {
+                    generation: state.generation,
+                    request,
+                    token: state.token.clone(),
+                    chat_token,
+                    original: original.clone(),
+                    text: text.to_owned(),
+                });
+                state.compose = Some(Compose::Edit { original, request });
+                state.send_error = None;
+                drop(state);
+                self.render();
+                return;
+            }
             if state.pending.is_some() {
                 state.send_error = Some("Wait for your last message to send first.".into());
                 drop(state);
                 self.render();
                 return;
             }
-            let (Some(chat_token), Some(channel)) = (
-                state.session.as_ref().map(|session| session.token.clone()),
-                state.channel.clone(),
-            ) else {
+            let thread_root = thread
+                .then(|| state.thread.as_ref().map(|thread| thread.root.clone()))
+                .flatten();
+            if thread && thread_root.is_none() {
                 return;
+            }
+            let reply_to_id = match (&state.compose, thread) {
+                (Some(Compose::Reply { id, .. }), false) => Some(id.clone()),
+                _ => None,
             };
             let client_id = uuid::Uuid::new_v4().to_string();
             state.pending = Some(Pending {
                 client_id: client_id.clone(),
                 text: text.to_owned(),
                 created_at: chrono::Local::now().to_rfc3339(),
+                thread: thread_root.clone(),
             });
+            if !thread {
+                state.compose = None;
+            }
             state.send_error = None;
+            self.set_typing(&mut state, false);
             self.worker.send(Command::Send {
                 generation: state.generation,
                 token: state.token.clone(),
@@ -703,51 +958,281 @@ impl App {
                 channel,
                 client_id,
                 text: text.to_owned(),
-                thread_root_id: None,
+                thread_root_id: thread_root,
                 broadcast: false,
-                reply_to_id: None,
+                reply_to_id,
                 attachment_ids: Vec::new(),
                 spoiler_attachment_ids: Vec::new(),
                 gif: None,
                 suppress_embeds: false,
             });
         }
-        self.follow.set(true);
-        buffer.set_text("");
+        if !thread {
+            self.follow.set(true);
+        }
+        composer.view.buffer().set_text("");
         self.render();
     }
 
-    /// Scrolls to the newest row, again on each frame while rows near it
-    /// are measured (heights start as estimates), until it stays at the end.
-    fn pin_tail(self: &Rc<Self>) {
-        if self.settling.replace(true) {
-            return;
+    fn cancel_compose(self: &Rc<Self>) {
+        let editing = matches!(
+            self.state.borrow_mut().compose.take(),
+            Some(Compose::Edit { .. })
+        );
+        if editing {
+            self.ui.composer.view.buffer().set_text("");
+        }
+        self.render();
+    }
+
+    fn start_edit(self: &Rc<Self>, id: &str) {
+        let text = {
+            let mut state = self.state.borrow_mut();
+            let Some(message) = state.message(id).cloned() else {
+                return;
+            };
+            let text = message.content.text.clone();
+            state.compose = Some(Compose::Edit {
+                original: Box::new(message),
+                request: 0,
+            });
+            text
+        };
+        self.ui.composer.view.buffer().set_text(&text);
+        self.ui.composer.view.grab_focus();
+        self.render();
+    }
+
+    fn confirm_delete(self: &Rc<Self>, id: String) {
+        #[allow(deprecated)]
+        let dialog = gtk::MessageDialog::builder()
+            .transient_for(&self.ui.window)
+            .modal(true)
+            .message_type(gtk::MessageType::Question)
+            .text("Delete this message?")
+            .secondary_text("It will be removed for everyone. This can’t be undone.")
+            .build();
+        dialog.add_css_class("caper");
+        #[allow(deprecated)]
+        {
+            dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+            dialog.add_button("Delete", gtk::ResponseType::Accept);
+            if let Some(button) = dialog.widget_for_response(gtk::ResponseType::Accept) {
+                button.add_css_class("destructive-action");
+            }
         }
         let app = self.clone();
-        let frames = Cell::new(0);
-        self.ui.list.add_tick_callback(move |list, _| {
-            let frames = frames.replace(frames.get() + 1) + 1;
-            let count = app.ui.store.n_items();
-            let adjustment = app.ui.scroller.vadjustment();
-            let settled = frames > 2
-                && adjustment.value() >= adjustment.upper() - adjustment.page_size() - 1.0;
-            if count == 0 || settled || frames > 60 {
-                app.settling.set(false);
-                return glib::ControlFlow::Break;
+        dialog.connect_response(move |dialog, response| {
+            if response == gtk::ResponseType::Accept {
+                let mut state = app.state.borrow_mut();
+                if let (Some(session), Some(channel)) =
+                    (state.session.clone(), state.channel.clone())
+                {
+                    state.delete_request += 1;
+                    self_send_delete(&app, &state, session.token, channel, id.clone());
+                }
             }
-            // Moving the adjustment alone leaves the list anchored where it was.
-            let _ = list.activate_action("list.scroll-to-item", Some(&(count - 1).to_variant()));
-            glib::ControlFlow::Continue
+            dialog.close();
+            // Focus would otherwise return to a selectable body label, which
+            // selects its whole text.
+            app.ui.composer.view.grab_focus();
+        });
+        dialog.present();
+    }
+
+    fn pin(self: &Rc<Self>, id: String, active: bool) {
+        let state = self.state.borrow();
+        if let (Some(session), Some(channel)) = (&state.session, &state.channel) {
+            self.worker.send(Command::Pin {
+                generation: state.generation,
+                token: state.token.clone(),
+                chat_token: session.token.clone(),
+                channel: channel.clone(),
+                message: id,
+                active,
+            });
+        }
+    }
+
+    fn react(self: &Rc<Self>, id: String, emoji: String, active: bool) {
+        let mut state = self.state.borrow_mut();
+        let (Some(session), Some(channel)) = (state.session.clone(), state.channel.clone()) else {
+            return;
+        };
+        if !state.reacting.insert((id.clone(), emoji.clone())) {
+            return;
+        }
+        self.worker.send(Command::React {
+            generation: state.generation,
+            token: state.token.clone(),
+            chat_token: session.token,
+            channel,
+            message: id,
+            emoji,
+            active,
         });
     }
 
+    fn open_thread(self: &Rc<Self>, root: String) {
+        {
+            let mut state = self.state.borrow_mut();
+            let Some(channel) = state.channel.clone() else {
+                return;
+            };
+            state.request += 1;
+            let message = state.message(&root).cloned();
+            state.thread = Some(Thread {
+                root: root.clone(),
+                message,
+                request: state.request,
+                loading: true,
+            });
+            self.worker.send(Command::LoadThread {
+                generation: state.generation,
+                request: state.request,
+                token: state.token.clone(),
+                channel,
+                root,
+                before: None,
+            });
+        }
+        self.ui.members_toggle.set_active(false);
+        self.render();
+        self.ui.thread_composer.view.grab_focus();
+    }
+
+    fn row_action(self: &Rc<Self>, action: Action, _thread: bool) {
+        match action {
+            Action::React { id, emoji, active } => self.react(id, emoji, active),
+            Action::Pick { id, anchor } => self.reaction_picker(id, &anchor),
+            Action::Reply(id) => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    let Some(author) = state
+                        .message(&id)
+                        .map(|message| message.author.name.clone())
+                    else {
+                        return;
+                    };
+                    if matches!(state.compose, Some(Compose::Edit { .. })) {
+                        self.ui.composer.view.buffer().set_text("");
+                    }
+                    state.compose = Some(Compose::Reply { id, author });
+                }
+                self.ui.composer.view.grab_focus();
+                self.render();
+            }
+            Action::Thread(id) => {
+                // A reply in the thread pane opens its root's thread.
+                let root = self
+                    .state
+                    .borrow()
+                    .message(&id)
+                    .and_then(|message| message.thread_root_id.clone())
+                    .unwrap_or(id);
+                self.open_thread(root);
+            }
+            Action::Menu { id, anchor } => self.row_menu(&id, &anchor),
+        }
+    }
+
+    fn row_menu(self: &Rc<Self>, id: &str, anchor: &gtk::Widget) {
+        let (mine, pinned) = {
+            let state = self.state.borrow();
+            let Some(message) = state.message(id) else {
+                return;
+            };
+            (
+                state.session.as_ref().is_some_and(|session| {
+                    !session.author.is_guest && session.author.id == message.author.id
+                }),
+                message.pin.is_some(),
+            )
+        };
+        let menu = gio::Menu::new();
+        let item = |label: &str, action: &str| {
+            let item = gio::MenuItem::new(Some(label), None);
+            item.set_action_and_target_value(Some(action), Some(&id.to_variant()));
+            item
+        };
+        let actions = gio::Menu::new();
+        if mine {
+            actions.append_item(&item("Edit message", "row.edit"));
+        }
+        actions.append_item(&if pinned {
+            item("Unpin message", "row.unpin")
+        } else {
+            item("Pin message", "row.pin")
+        });
+        actions.append_item(&item("Copy text", "row.copy"));
+        menu.append_section(None, &actions);
+        if mine {
+            let danger = gio::Menu::new();
+            danger.append_item(&item("Delete message", "row.delete"));
+            menu.append_section(None, &danger);
+        }
+        let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        popup(&popover, anchor);
+    }
+
+    fn reaction_picker(self: &Rc<Self>, id: String, anchor: &gtk::Widget) {
+        let mine: HashSet<String> = {
+            let state = self.state.borrow();
+            let me = state.account.as_ref().map(|account| account.id.clone());
+            state
+                .message(&id)
+                .map(|message| {
+                    message
+                        .reactions
+                        .iter()
+                        .filter(|reaction| {
+                            me.as_ref()
+                                .is_some_and(|me| reaction.author_ids.contains(me))
+                        })
+                        .map(|reaction| reaction.emoji.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let popover = gtk::Popover::new();
+        let grid = gtk::Grid::new();
+        grid.add_css_class("picker");
+        for (index, emoji) in PICKER.iter().enumerate() {
+            let button: gtk::Button = named("GtkButton", &format!("React {emoji}"));
+            button.set_label(emoji);
+            button.add_css_class("flat");
+            if mine.contains(*emoji) {
+                button.add_css_class("mine");
+            }
+            let (app, id, popover_ref) = (self.clone(), id.clone(), popover.downgrade());
+            let active = !mine.contains(*emoji);
+            button.connect_clicked(move |_| {
+                app.react(id.clone(), emoji.to_string(), active);
+                if let Some(popover) = popover_ref.upgrade() {
+                    popover.popdown();
+                }
+            });
+            grid.attach(&button, (index % 8) as i32, (index / 8) as i32, 1, 1);
+        }
+        popover.set_child(Some(&grid));
+        popup(&popover, anchor);
+    }
+
+    // ---------------------------------------------------------------------
+    // Worker events.
+
     /// Drains the worker's events, then updates what they changed.
     fn receive(self: &Rc<Self>) {
+        let mut typing = false;
         {
             let mut state = self.state.borrow_mut();
             while let Ok(event) = self.worker.events.try_recv() {
+                typing |= matches!(event, Event::Gateway(GatewayEvent::Typing { .. }));
                 self.handle(&mut state, event);
             }
+        }
+        if typing {
+            self.tick();
         }
         self.render();
     }
@@ -759,17 +1244,26 @@ impl App {
                     Ok(Some((token, account, spaces))) => {
                         self.establish(state, token, account, spaces.spaces)
                     }
-                    Ok(None) => state.page = Page::SignIn,
+                    Ok(None) => state.page = Some(Page::SignIn),
                     Err(error) => {
-                        state.page = Page::SignIn;
+                        state.page = Some(Page::SignIn);
                         state.error = Some(error);
                     }
                 }
             }
             Event::CodeRequested { generation, result } if generation == state.generation => {
                 state.busy = false;
+                let resend = std::mem::take(&mut state.resending);
                 match result {
-                    Ok(challenge) => state.challenge = Some(challenge),
+                    Ok(challenge) => {
+                        state.challenge = Some(challenge);
+                        state.code_sent_at = Some(Instant::now());
+                        if resend {
+                            state.resends = state.resends.saturating_add(1);
+                            state.signin_status =
+                                Some("We sent a new code. Earlier codes no longer work.");
+                        }
+                    }
                     Err(error) => state.error = Some(error),
                 }
             }
@@ -782,6 +1276,7 @@ impl App {
                 match result {
                     Ok((token, account, spaces)) => {
                         state.challenge = None;
+                        state.signin_status = None;
                         self.worker.send(Command::PersistCredential {
                             generation: state.generation,
                             token: token.clone(),
@@ -799,55 +1294,79 @@ impl App {
             Event::Credential {
                 result: Err(error), ..
             } => state.error = Some(error),
+            Event::LoggedOut {
+                generation,
+                result: Err(error),
+            } if generation == state.generation => {
+                state.error = Some(format!(
+                    "Signed out locally; server revocation failed: {error}"
+                ));
+            }
+            Event::DirectsLoaded {
+                generation,
+                result: Ok(directs),
+            } if generation == state.epoch => {
+                state.directs = directs;
+                if let Some(direct) = &state.direct
+                    && let Some(entry) = state.directs.iter().find(|entry| &entry.id == direct)
+                {
+                    state.channel_name = entry.peer.display_name.clone();
+                }
+                state.layout += 1;
+            }
+            Event::UnreadLoaded {
+                epoch,
+                revision,
+                result: Ok(unread),
+                ..
+            } if epoch == state.epoch && revision == state.unread_revision => {
+                state.unread = unread
+                    .spaces
+                    .into_iter()
+                    .map(|space| {
+                        let channels = space
+                            .channels
+                            .into_iter()
+                            .map(|channel| {
+                                let read = channel
+                                    .read_seq
+                                    .as_deref()
+                                    .and_then(|seq| seq.parse::<u64>().ok())
+                                    .unwrap_or(0);
+                                let last = channel.last_seq.parse::<u64>().unwrap_or(0);
+                                let count = channel.unread_count.unwrap_or(u64::from(last > read));
+                                (channel.id, (count, channel.mention_count.unwrap_or(0)))
+                            })
+                            .collect();
+                        (space.id, channels)
+                    })
+                    .collect();
+                state.layout += 1;
+                self.clear_open_unread(state);
+            }
+            Event::ChannelRead {
+                epoch,
+                space,
+                channel,
+                result: Ok(()),
+                ..
+            } if epoch == state.epoch => {
+                if let Some(entry) = state
+                    .unread
+                    .get_mut(&space)
+                    .and_then(|channels| channels.get_mut(&channel))
+                {
+                    *entry = (0, 0);
+                    state.layout += 1;
+                }
+            }
             Event::NavigationPrepared {
                 generation,
                 navigation,
                 result,
-            } if generation == state.generation && navigation == state.navigation => match result {
-                Ok(prepared) => {
-                    if let Some(detail) = prepared.detail {
-                        state.detail = Some(detail);
-                    }
-                    match prepared.conversation {
-                        Some((history, session)) => {
-                            state.channel = Some(history.channel.id.clone());
-                            state.channel_name = history.channel.name.clone();
-                            state.markup.clear();
-                            if let Err(error) =
-                                state.timeline.reset(history.messages, &history.cursor)
-                            {
-                                state.error = Some(error);
-                            }
-                            state.has_more = history.has_more;
-                            match session {
-                                Ok(session) => state.session = Some(session),
-                                Err(error) => state.session_error = Some(error),
-                            }
-                            self.follow.set(true);
-                            state.status = "Connecting…".into();
-                            self.worker.send(Command::Connect {
-                                generation: state.generation,
-                                token: state.token.clone(),
-                                channel: history.channel.id,
-                                cursor: state.timeline.cursor(),
-                                presence: None,
-                                media: Default::default(),
-                            });
-                        }
-                        None => {
-                            state.channel = None;
-                            state.channel_name.clear();
-                            state.timeline = Timeline::default();
-                            state.status.clear();
-                        }
-                    }
-                    state.layout += 1;
-                }
-                Err(error) => {
-                    state.status.clear();
-                    state.error = Some(error.message);
-                }
-            },
+            } if generation == state.generation && navigation == state.navigation => {
+                self.navigation_prepared(state, result)
+            }
             Event::OlderLoaded {
                 generation,
                 request,
@@ -866,6 +1385,42 @@ impl App {
                         }
                     }
                     Err(error) => state.error = Some(error.message),
+                }
+            }
+            Event::ThreadLoaded {
+                generation,
+                request,
+                channel,
+                root,
+                result,
+            } if generation == state.generation
+                && state.channel.as_deref() == Some(&channel)
+                && state
+                    .thread
+                    .as_ref()
+                    .is_some_and(|thread| thread.root == root && thread.request == request) =>
+            {
+                match result {
+                    Ok(history)
+                        if history.root.channel_id == channel
+                            && history
+                                .messages
+                                .iter()
+                                .all(|message| message.channel_id == channel) =>
+                    {
+                        if let Some(thread) = &mut state.thread {
+                            thread.loading = false;
+                            thread.message = Some(history.root);
+                        }
+                        if let Err(error) = state.timeline.prepend(history.messages) {
+                            state.error = Some(error);
+                        }
+                    }
+                    Ok(_) => state.error = Some("Caper returned another conversation.".into()),
+                    Err(error) => {
+                        state.thread = None;
+                        state.error = Some(error.message);
+                    }
                 }
             }
             Event::Sent {
@@ -890,15 +1445,202 @@ impl App {
                             state.send_error =
                                 Some("Caper returned an invalid send confirmation.".into());
                         }
+                        self.mark_read(state);
                     }
                     Err(failure) => {
                         state.send_error = Some(failure.message);
-                        state.returned_draft = pending.map(|pending| pending.text);
+                        state.returned_draft =
+                            pending.map(|pending| (pending.text, pending.thread.is_some()));
                     }
+                }
+            }
+            Event::Reacted {
+                generation,
+                channel,
+                message,
+                emoji,
+                result,
+                ..
+            } if current(
+                generation,
+                state.generation,
+                Some(&channel),
+                state.channel.as_deref(),
+            ) =>
+            {
+                state.reacting.remove(&(message.clone(), emoji));
+                match result {
+                    Ok(update) if update.channel_id == channel && update.message_id == message => {
+                        if state.timeline.merge_reaction_ack(update).is_err() {
+                            self.reload(state);
+                        }
+                    }
+                    Ok(_) => self.reload(state),
+                    Err(error) => state.send_error = Some(error.message),
+                }
+            }
+            Event::Pinned {
+                generation,
+                channel,
+                message,
+                result,
+                ..
+            } if current(
+                generation,
+                state.generation,
+                Some(&channel),
+                state.channel.as_deref(),
+            ) =>
+            {
+                match result {
+                    Ok(update) if update.channel_id == channel && update.message.id == message => {
+                        if state.timeline.merge_pin_ack(update).is_err() {
+                            self.reload(state);
+                        }
+                    }
+                    Ok(_) => self.reload(state),
+                    Err(error) => state.send_error = Some(error.message),
+                }
+            }
+            Event::EditSnapshot {
+                generation,
+                request,
+                channel,
+                message,
+                result,
+                ..
+            } if current(
+                generation,
+                state.generation,
+                Some(&channel),
+                state.channel.as_deref(),
+            ) =>
+            {
+                let ours = matches!(&state.compose, Some(Compose::Edit { original, request: sent })
+                    if original.id == message && *sent == request);
+                match result {
+                    Ok(snapshot) => {
+                        if ours {
+                            state.compose = None;
+                            state.returned_draft = None;
+                            self.ui.composer.view.buffer().set_text("");
+                        }
+                        if state.timeline.merge_edit_ack(*snapshot).is_err() {
+                            self.reload(state);
+                        }
+                    }
+                    Err(error) if ours => state.send_error = Some(error),
+                    Err(_) => {}
+                }
+            }
+            Event::Deleted {
+                generation,
+                channel,
+                result,
+                ..
+            } if current(
+                generation,
+                state.generation,
+                Some(&channel),
+                state.channel.as_deref(),
+            ) =>
+            {
+                match result {
+                    Ok(snapshot) => {
+                        if state.timeline.merge_edit_ack(*snapshot).is_err() {
+                            self.reload(state);
+                        }
+                    }
+                    Err(error) => {
+                        state.send_error = Some(if error.trim().is_empty() {
+                            "Couldn’t delete the message. Try again.".into()
+                        } else {
+                            error
+                        })
+                    }
+                }
+            }
+            Event::Admin { generation, result } if generation == state.generation => {
+                state.joining = false;
+                match result {
+                    Ok(AdminResult::ChannelMembership {
+                        detail, channel, ..
+                    }) => {
+                        let space = Some(detail.space.id.clone());
+                        state.detail = Some(detail);
+                        self.navigate(state, space, Some(channel));
+                    }
+                    Ok(_) => {}
+                    Err(error) => state.error = Some(error),
                 }
             }
             Event::Gateway(event) => self.gateway(state, event),
             _ => {}
+        }
+    }
+
+    fn navigation_prepared(
+        &self,
+        state: &mut State,
+        result: Result<caper_client::worker::PreparedNavigation, caper_client::worker::LoadError>,
+    ) {
+        match result {
+            Ok(prepared) => {
+                if let Some(detail) = prepared.detail {
+                    state.detail = Some(detail);
+                }
+                match prepared.conversation {
+                    Some((history, session)) => {
+                        state.channel = Some(history.channel.id.clone());
+                        if state.direct.is_none() {
+                            state.channel_name = history.channel.name.clone();
+                        }
+                        state.markup.clear();
+                        if let Err(error) = state.timeline.reset(history.messages, &history.cursor)
+                        {
+                            state.error = Some(error);
+                        }
+                        state.has_more = history.has_more;
+                        match session {
+                            Ok(session) => state.session = Some(session),
+                            Err(error) => state.session_error = Some(error),
+                        }
+                        self.follow.set(true);
+                        self.connect_gateway(state, history.channel.id);
+                        self.worker.showing(state.channel.as_deref());
+                        if state.joined() {
+                            self.mark_read(state);
+                        }
+                        self.clear_open_unread(state);
+                    }
+                    None => {
+                        state.channel = None;
+                        state.channel_name.clear();
+                        state.timeline = Timeline::default();
+                        state.status.clear();
+                    }
+                }
+                state.layout += 1;
+            }
+            Err(error) => {
+                state.status.clear();
+                state.error = Some(error.message);
+            }
+        }
+    }
+
+    /// The open conversation shows no unread badge while you read it.
+    fn clear_open_unread(&self, state: &mut State) {
+        if let (Some(space), Some(channel)) = (&state.space, &state.channel)
+            && state.direct.is_none()
+            && let Some(entry) = state
+                .unread
+                .get_mut(space)
+                .and_then(|channels| channels.get_mut(channel))
+            && *entry != (0, 0)
+        {
+            *entry = (0, 0);
+            state.layout += 1;
         }
     }
 
@@ -920,6 +1662,9 @@ impl App {
                 detail,
             } if fresh(generation, &channel) => {
                 state.status = if online { "Live".into() } else { detail };
+                if !online {
+                    state.typers.clear();
+                }
                 Ok(Apply::Applied)
             }
             GatewayEvent::Message {
@@ -934,7 +1679,13 @@ impl App {
                 }) {
                     state.pending = None;
                 }
-                state.timeline.apply(*message)
+                // Their message ends their typing.
+                state.typers.remove(&message.author.id);
+                let applied = state.timeline.apply(*message);
+                if matches!(applied, Ok(Apply::Applied)) && self.follow.get() {
+                    self.mark_read(state);
+                }
+                applied
             }
             GatewayEvent::Reactions {
                 generation,
@@ -969,6 +1720,51 @@ impl App {
                 channel,
                 update,
             } if fresh(generation, &channel) => state.timeline.apply_edit(*update),
+            GatewayEvent::Typing {
+                generation,
+                channel,
+                author,
+                typing,
+                revision,
+            } if fresh(generation, &channel) => {
+                let revision = revision.parse::<u64>().unwrap_or(0);
+                let me = state
+                    .session
+                    .as_ref()
+                    .map(|session| session.author.id.as_str());
+                if Some(author.id.as_str()) != me
+                    && state
+                        .typers
+                        .get(&author.id)
+                        .is_none_or(|typer| revision > typer.revision)
+                    && (state.typers.contains_key(&author.id) || state.typers.len() < 64)
+                {
+                    if typing {
+                        state.typers.insert(
+                            author.id.clone(),
+                            Typer {
+                                name: author.name,
+                                revision,
+                                expires: Instant::now() + TYPING_SHOWN,
+                            },
+                        );
+                    } else {
+                        state.typers.remove(&author.id);
+                    }
+                }
+                Ok(Apply::Duplicate)
+            }
+            GatewayEvent::Presence {
+                generation,
+                space,
+                members,
+            } if generation == state.generation && state.space.as_deref() == Some(&space) => {
+                state.presence = members
+                    .into_iter()
+                    .map(|presence| (presence.user_id, presence.status))
+                    .collect();
+                Ok(Apply::Duplicate)
+            }
             GatewayEvent::Resync {
                 generation,
                 channel,
@@ -989,12 +1785,17 @@ impl App {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Rendering: each part updates only when its content changed.
+
     fn render(self: &Rc<Self>) {
         self.render_rows();
         self.render_layout();
+        self.render_presence();
+        self.render_typing();
         let ui = &self.ui;
         let mut state = self.state.borrow_mut();
-        ui.pages.set_visible_child_name(match state.page {
+        ui.pages.set_visible_child_name(match state.page() {
             Page::Loading => "loading",
             Page::SignIn => "signin",
             Page::Chat => "chat",
@@ -1012,38 +1813,97 @@ impl App {
         ui.email_button.set_sensitive(!state.busy);
         ui.code_button.set_sensitive(!state.busy);
         ui.email_button
-            .set_label(if state.busy { "Sending…" } else { "Continue" });
-        ui.code_button.set_label(if state.busy {
+            .set_label(if state.busy && !state.resending {
+                "Sending…"
+            } else {
+                "Continue"
+            });
+        ui.code_button.set_label(if state.busy && !state.resending {
             "Checking…"
         } else {
             "Continue"
         });
+        self.render_resend(&state);
+        let status = state.signin_status.unwrap_or_default();
+        ui.signin_status.set_label(status);
+        ui.signin_status.set_visible(!status.is_empty());
         let error = state.error.as_deref().unwrap_or_default();
         ui.signin_error.set_label(error);
         ui.signin_error.set_visible(!error.is_empty());
         ui.error.set_label(error);
         ui.error.set_visible(!error.is_empty());
 
+        let direct = state.direct.is_some();
         ui.channel_title
             .set_label(&if state.channel_name.is_empty() {
                 String::new()
+            } else if direct {
+                format!("@ {}", state.channel_name)
             } else {
                 format!("# {}", state.channel_name)
             });
         ui.status.set_label(&state.status);
+        let joined = state.joined();
         let can_send = state.session.is_some();
-        ui.composer.set_sensitive(can_send);
-        ui.send.set_sensitive(can_send);
+        ui.composer.root.set_visible(joined);
+        ui.composer.view.set_sensitive(can_send);
+        ui.composer.send.set_sensitive(can_send);
+        ui.join_bar
+            .set_visible(!joined && state.channel.is_some() && state.page() == Page::Chat);
+        ui.join_label.set_label(&format!(
+            "You’re previewing #{}. Join to send messages and react.",
+            state.channel_name
+        ));
+        ui.join.set_sensitive(!state.joining);
+        ui.join.set_label(if state.joining {
+            "Joining…"
+        } else {
+            "Join channel"
+        });
         let prompt = match &state.session_error {
             Some(error) => error.clone(),
+            None if direct => format!("Message @{}", state.channel_name),
             None => format!("Message #{}", state.channel_name),
         };
-        ui.placeholder.set_label(&prompt);
+        ui.composer.placeholder.set_label(&prompt);
+        match &state.compose {
+            Some(Compose::Reply { author, .. }) => {
+                ui.compose_label.set_markup(&format!(
+                    "Replying to <b>{}</b>",
+                    glib::markup_escape_text(author)
+                ));
+                ui.compose_bar.set_visible(true);
+            }
+            Some(Compose::Edit { .. }) => {
+                ui.compose_label
+                    .set_label("Editing message · Enter to save, Escape to cancel");
+                ui.compose_bar.set_visible(true);
+            }
+            None => ui.compose_bar.set_visible(false),
+        }
+        let thread_open = state.thread.is_some();
+        ui.thread_panel.set_visible(thread_open);
+        ui.members_panel
+            .set_visible(!thread_open && ui.members_toggle.is_active());
+        ui.thread_composer.view.set_sensitive(can_send && joined);
+        ui.thread_composer.send.set_sensitive(can_send && joined);
+        ui.thread_composer.placeholder.set_label("Reply in thread");
         let send_error = state.send_error.as_deref().unwrap_or_default();
+        let in_thread = state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.thread.is_some());
         ui.composer_error.set_label(send_error);
         ui.composer_error.set_visible(!send_error.is_empty());
-        if let Some(draft) = state.returned_draft.take() {
-            let buffer = ui.composer.buffer();
+        ui.thread_error.set_label(send_error);
+        ui.thread_error
+            .set_visible(!send_error.is_empty() && thread_open && in_thread);
+        if let Some((draft, thread)) = state.returned_draft.take() {
+            let buffer = if thread {
+                ui.thread_composer.view.buffer()
+            } else {
+                ui.composer.view.buffer()
+            };
             if buffer.char_count() == 0 {
                 drop(state);
                 buffer.set_text(&draft);
@@ -1051,47 +1911,163 @@ impl App {
         }
     }
 
-    /// Applies the row diff to the list's model: only new or changed rows
+    fn render_resend(self: &Rc<Self>, state: &State) {
+        let ui = &self.ui;
+        ui.resend.set_visible(state.resends < MAX_RESENDS);
+        match state
+            .code_sent_at
+            .and_then(|sent| resend_wait(sent.elapsed()))
+        {
+            Some(wait) => {
+                let (label, next) = resend_countdown(wait);
+                ui.resend.set_label(&label);
+                ui.resend.set_sensitive(false);
+                if state.challenge.is_some() && !self.countdown.replace(true) {
+                    let app = Rc::downgrade(self);
+                    glib::timeout_add_local_once(next, move || {
+                        if let Some(app) = app.upgrade() {
+                            app.countdown.set(false);
+                            let state = app.state.borrow();
+                            app.render_resend(&state);
+                        }
+                    });
+                }
+            }
+            None => {
+                ui.resend.set_label("Resend code");
+                ui.resend.set_sensitive(!state.busy);
+            }
+        }
+    }
+
+    fn render_typing(&self) {
+        let state = self.state.borrow();
+        let mut names: Vec<&str> = state
+            .typers
+            .values()
+            .map(|typer| typer.name.as_str())
+            .collect();
+        names.sort_unstable();
+        let text = match names.as_slice() {
+            [] => String::new(),
+            [one] => format!("{one} is typing…"),
+            [one, two] => format!("{one} and {two} are typing…"),
+            [one, two, three] => format!("{one}, {two} and {three} are typing…"),
+            _ => "Several people are typing…".into(),
+        };
+        if self.ui.typing.label() != text {
+            self.ui.typing.set_label(&text);
+        }
+    }
+
+    /// Scrolls to the newest row, again on each frame while rows near it
+    /// are measured (heights start as estimates), until it stays at the end.
+    fn pin_tail(self: &Rc<Self>) {
+        if self.settling.replace(true) {
+            return;
+        }
+        let app = self.clone();
+        let frames = Cell::new(0);
+        self.ui.list.view.add_tick_callback(move |list, _| {
+            let frames = frames.replace(frames.get() + 1) + 1;
+            let count = app.ui.list.store.n_items();
+            let adjustment = app.ui.list.scroller.vadjustment();
+            let settled = frames > 2
+                && adjustment.value() >= adjustment.upper() - adjustment.page_size() - 1.0;
+            if count == 0 || settled || frames > 60 {
+                app.settling.set(false);
+                return glib::ControlFlow::Break;
+            }
+            // Moving the adjustment alone leaves the list anchored where it was.
+            let _ = list.activate_action("list.scroll-to-item", Some(&(count - 1).to_variant()));
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Applies the row diffs to the lists' models: only new or changed rows
     /// get new items, so only they are bound again.
     fn render_rows(self: &Rc<Self>) {
-        let changes: Vec<(usize, usize, Vec<glib::BoxedAnyObject>)> = {
+        let (changed, thread_changed) = {
             let mut state = self.state.borrow_mut();
             let state = &mut *state;
-            let draft =
+            let me = state.account.as_ref().map(|account| account.id.clone());
+            let author = state
+                .session
+                .as_ref()
+                .map(|session| session.author.id.clone());
+            let joined = state.session.is_some() && state.joined();
+            let viewer = |in_thread| rows::Viewer {
+                me: me.as_deref(),
+                author: author.as_deref(),
+                joined,
+                in_thread,
+                images: &self.images,
+            };
+            let draft = |thread: Option<&str>| {
                 state
                     .pending
                     .as_ref()
+                    .filter(|pending| pending.thread.as_deref() == thread)
                     .zip(state.session.as_ref())
-                    .map(|(pending, session)| {
-                        (
-                            pending.client_id.as_str(),
-                            &session.author,
-                            pending.created_at.as_str(),
-                            pending.text.as_str(),
-                        )
-                    });
-            let rows = rows::build(state.timeline.messages(), draft, &mut state.markup);
-            let item = |index: usize| glib::BoxedAnyObject::new(rows[index].clone());
-            let changes = rows::diff(&state.rows, &rows)
-                .into_iter()
-                .map(|op| match op {
-                    Op::Replace(index) => (index, 1, vec![item(index)]),
-                    Op::Splice {
-                        position,
-                        remove,
-                        insert,
-                    } => (position, remove, insert.map(item).collect()),
-                })
-                .collect();
-            state.rows = rows;
-            changes
+                    .map(|(pending, session)| rows::Draft {
+                        id: &pending.client_id,
+                        author: &session.author,
+                        created_at: &pending.created_at,
+                        text: &pending.text,
+                    })
+            };
+            let main = rows::build(
+                state
+                    .timeline
+                    .messages()
+                    .filter(|message| message.is_channel_message()),
+                draft(None),
+                &mut state.markup,
+                &viewer(false),
+            );
+            let changed = rows::apply(&self.ui.list.store, &state.rows, &main);
+            state.rows = main;
+            let thread = match &state.thread {
+                Some(thread) => {
+                    let root = state
+                        .timeline
+                        .messages()
+                        .find(|message| message.id == thread.root)
+                        .or(thread.message.as_ref());
+                    rows::build(
+                        root.into_iter()
+                            .chain(state.timeline.messages().filter(|message| {
+                                message.thread_root_id.as_deref() == Some(thread.root.as_str())
+                            })),
+                        draft(Some(&thread.root)),
+                        &mut state.markup,
+                        &viewer(true),
+                    )
+                }
+                None => Vec::new(),
+            };
+            let thread_changed =
+                rows::apply(&self.ui.thread_list.store, &state.thread_rows, &thread);
+            state.thread_rows = thread;
+            (changed, thread_changed)
         };
-        let changed = !changes.is_empty();
-        for (position, remove, items) in changes {
-            self.ui.store.splice(position as u32, remove as u32, &items);
-        }
         if changed && self.follow.get() {
             self.pin_tail();
+        }
+        let count = self.ui.thread_list.store.n_items();
+        if thread_changed && count > 0 {
+            let _ = self
+                .ui
+                .thread_list
+                .view
+                .activate_action("list.scroll-to-item", Some(&(count - 1).to_variant()));
+        }
+    }
+
+    fn render_presence(&self) {
+        let state = self.state.borrow();
+        for (id, view) in self.member_views.borrow().iter() {
+            view.set_presence(state.presence.get(id).map_or("offline", String::as_str));
         }
     }
 
@@ -1101,63 +2077,252 @@ impl App {
             return;
         }
         let ui = &self.ui;
+        let space_unread = |space: &str| {
+            state
+                .unread
+                .get(space)
+                .is_some_and(|channels| channels.values().any(|(count, _)| *count > 0))
+        };
         clear(&ui.rail);
         for space in &state.spaces {
-            // The visible label is two letters; the space's name is its accessible name.
-            let button: gtk::Button = named("GtkButton", &space.name);
+            let button: gtk::Button = named(
+                "GtkButton",
+                &if space_unread(&space.id) {
+                    format!("{} (unread)", space.name)
+                } else {
+                    space.name.clone()
+                },
+            );
             button.set_label(&space_initials(&space.name));
             button.set_tooltip_text(Some(&space.name));
-            if state.space.as_deref() == Some(&space.id) {
+            if state.space.as_deref() == Some(&space.id) && state.direct.is_none() {
                 button.add_css_class("selected");
+            }
+            let overlay = gtk::Overlay::new();
+            overlay.set_child(Some(&button));
+            if space_unread(&space.id) {
+                let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                dot.add_css_class("unread-dot");
+                dot.set_halign(gtk::Align::Start);
+                dot.set_valign(gtk::Align::Center);
+                dot.set_can_target(false);
+                overlay.add_overlay(&dot);
             }
             let app = self.clone();
             let id = space.id.clone();
             button.connect_clicked(move |_| app.select_space(id.clone()));
-            ui.rail.append(&button);
+            ui.rail.append(&overlay);
         }
 
         let detail = state.detail.as_ref();
         ui.space_name
             .set_label(detail.map_or("", |detail| detail.space.name.as_str()));
-        clear(&ui.channels);
+        clear_list(&ui.channels);
         let mut ids = Vec::new();
+        let unread = detail.and_then(|detail| state.unread.get(&detail.space.id));
         for channel in detail.map_or(&[][..], |detail| &detail.channels) {
-            let name = label(&format!("# {}", channel.name), &[]);
+            let (count, mentions) = unread
+                .and_then(|channels| channels.get(&channel.id))
+                .copied()
+                .unwrap_or_default();
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            line.append(&self.images.icon_image(
+                if channel.private {
+                    Icon::Lock
+                } else {
+                    Icon::Hash
+                },
+                "#b9bcbe",
+                14,
+            ));
+            let name = label(&channel.name, &[]);
             name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            name.set_hexpand(true);
             if !channel.joined {
                 name.add_css_class("muted");
+            } else if count > 0 {
+                name.add_css_class("unread");
             }
-            ui.channels.append(&name);
-            if state.channel.as_deref() == Some(&channel.id)
+            line.append(&name);
+            if count > 0 {
+                line.append(&badge(count, mentions > 0));
+            }
+            ui.channels.append(&line);
+            if state.direct.is_none()
+                && state.channel.as_deref() == Some(&channel.id)
                 && let Some(row) = ui.channels.row_at_index(ids.len() as i32)
             {
                 ui.channels.select_row(Some(&row));
             }
             ids.push(channel.id.clone());
         }
+        if state.direct.is_some() {
+            ui.channels.unselect_all();
+        }
         *self.channel_ids.borrow_mut() = ids;
 
-        clear(&ui.members);
-        let members = detail.map_or_else(Vec::new, |detail| {
-            detail.member_order(state.channel.as_deref())
-        });
+        clear_list(&ui.directs);
+        let mut ids = Vec::new();
+        let me = state.account.as_ref().map(|account| account.id.as_str());
+        for direct in &state.directs {
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let avatar = AvatarView::new(22, false);
+            avatar.set(&self.images, &peer_avatar(direct));
+            line.append(&avatar.root);
+            let you = Some(direct.peer.id.as_str()) == me;
+            let name = label(
+                &if you {
+                    format!("{} (you)", direct.peer.display_name)
+                } else {
+                    direct.peer.display_name.clone()
+                },
+                &[],
+            );
+            name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            name.set_hexpand(true);
+            let count = direct.unread_count.unwrap_or(0);
+            if count > 0 {
+                name.add_css_class("unread");
+            }
+            line.append(&name);
+            if count > 0 {
+                line.append(&badge(count, true));
+            }
+            ui.directs.append(&line);
+            if state.direct.as_deref() == Some(&direct.id)
+                && let Some(row) = ui.directs.row_at_index(ids.len() as i32)
+            {
+                ui.directs.select_row(Some(&row));
+            }
+            ids.push(direct.id.clone());
+        }
+        if state.direct.is_none() {
+            ui.directs.unselect_all();
+        }
+        *self.direct_ids.borrow_mut() = ids;
+
+        if let Some(account) = &state.account {
+            ui.account_name.set_label(&state.name());
+            ui.account_avatar.set(
+                &self.images,
+                &Avatar::new(
+                    &state.name(),
+                    account.avatar_id,
+                    &account.avatar_asset,
+                    &account.avatar_url,
+                ),
+            );
+        }
+
+        clear_list(&ui.members);
+        let mut views = HashMap::new();
+        let members: Vec<(String, Avatar, bool)> = match &state.direct {
+            Some(direct) => state
+                .directs
+                .iter()
+                .filter(|entry| &entry.id == direct)
+                .map(|entry| (entry.peer.id.clone(), peer_avatar(entry), false))
+                .collect(),
+            None => detail.map_or_else(Vec::new, |detail| {
+                detail
+                    .member_order(state.channel.as_deref())
+                    .into_iter()
+                    .map(|member| {
+                        (
+                            member.id.clone(),
+                            Avatar::new(
+                                &member.display_name,
+                                member.avatar_id,
+                                &member.avatar_asset,
+                                &member.avatar_url,
+                            ),
+                            member.owner,
+                        )
+                    })
+                    .collect()
+            }),
+        };
         ui.members_title
             .set_label(&format!("Members — {}", members.len()));
-        for member in members {
+        for (id, avatar, owner) in members {
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            let avatar = label(&rows::initials(&member.display_name), &["avatar", "small"]);
-            avatar.add_css_class(&format!("tint-{}", rows::tint(&member.id)));
-            avatar.set_xalign(0.5);
-            line.append(&avatar);
-            let name = label(&member.display_name, &[]);
+            let view = AvatarView::new(28, true);
+            view.set(&self.images, &avatar);
+            line.append(&view.root);
+            let name = label(&avatar.name, &[]);
             name.set_ellipsize(gtk::pango::EllipsizeMode::End);
             line.append(&name);
-            if member.owner {
+            if owner {
                 line.append(&label("Owner", &["muted", "badge"]));
             }
             ui.members.append(&line);
+            views.insert(id, view);
         }
+        *self.member_views.borrow_mut() = views;
     }
+}
+
+/// Sends the delete once the dialog is confirmed.
+fn self_send_delete(app: &App, state: &State, chat_token: String, channel: String, id: String) {
+    app.worker.send(Command::DeleteMessage {
+        generation: state.generation,
+        request: state.delete_request,
+        token: state.token.clone(),
+        chat_token,
+        channel,
+        message: id,
+    });
+}
+
+fn peer_avatar(direct: &DirectConversation) -> Avatar {
+    Avatar::new(
+        &direct.peer.display_name,
+        direct.peer.avatar_id,
+        &direct.peer.avatar_asset,
+        &direct.peer.avatar_url,
+    )
+}
+
+/// An unread count; terracotta when it mentions you (or in a DM).
+fn badge(count: u64, mention: bool) -> gtk::Label {
+    let text = if count > 99 {
+        "99+".to_owned()
+    } else {
+        count.to_string()
+    };
+    let badge = label(&text, &["count"]);
+    if mention {
+        badge.add_css_class("mention");
+    }
+    badge.set_tooltip_text(Some(&format!(
+        "{count} unread message{}",
+        if count == 1 { "" } else { "s" }
+    )));
+    badge
+}
+
+/// Shows `popover` from `anchor`, and detaches it once it closes.
+fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {
+    let popover = popover.as_ref();
+    popover.set_parent(anchor);
+    popover.set_has_arrow(false);
+    // X11 clips rather than flips a popover at the screen edge, so open
+    // toward whichever half of the window has room.
+    if let Some(root) = anchor.root() {
+        let low = anchor
+            .compute_point(&root, &gtk::graphene::Point::new(0.0, 0.0))
+            .is_some_and(|point| point.y() > root.height() as f32 / 2.0);
+        popover.set_position(if low {
+            gtk::PositionType::Top
+        } else {
+            gtk::PositionType::Bottom
+        });
+    }
+    popover.connect_closed(|popover| {
+        let popover = popover.clone();
+        glib::idle_add_local_once(move || popover.unparent());
+    });
+    popover.popup();
 }
 
 /// The rail's label: the first word's first two letters, as desktop shows.

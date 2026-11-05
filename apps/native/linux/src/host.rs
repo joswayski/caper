@@ -11,6 +11,12 @@ pub enum Signal {
     Wake,
     Title(String),
     Front,
+    /// An uploaded picture finished loading (`image` is `None` on failure).
+    Picture {
+        asset: String,
+        url: String,
+        image: Option<caper_client::Rgba>,
+    },
 }
 
 #[derive(Clone)]

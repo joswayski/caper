@@ -9,30 +9,12 @@ use std::ops::Range;
 
 /// Mention pills: a terracotta wash with bright text.
 const MENTION: &str = "background=\"#3a2620\" foreground=\"#f3a58f\" weight=\"bold\"";
-const MAX_NAME: usize = 32;
-/// `@feedback` and its aliases resolve to the Caper team (desktop `mentions.rs`).
-const FEEDBACK_ALIASES: [&str; 17] = [
-    "feedback",
-    "caper",
-    "capers",
-    "caperchat",
-    "caper_feedback",
-    "caper_support",
-    "support",
-    "team",
-    "staff",
-    "admin",
-    "admins",
-    "administrator",
-    "administrators",
-    "mod",
-    "mods",
-    "moderator",
-    "moderators",
-];
 
 pub fn message(text: &str, mentions: &[Mention]) -> String {
-    let pills = highlights(text, mentions);
+    let pills: Vec<Range<usize>> = caper_client::mentions::highlights(text, mentions)
+        .into_iter()
+        .map(|(range, _)| range)
+        .collect();
     let mut links: Vec<(Range<usize>, String)> = Vec::new();
     // Links only in the plain text between mentions.
     let mut gap_start = 0;
@@ -96,57 +78,6 @@ pub fn message(text: &str, mentions: &[Mention]) -> String {
         }
     });
     out
-}
-
-/// Byte ranges of `@name` tokens that resolve to one of `mentions`.
-fn highlights(text: &str, mentions: &[Mention]) -> Vec<Range<usize>> {
-    if mentions.is_empty() {
-        return Vec::new();
-    }
-    tokens(text)
-        .into_iter()
-        .filter(|(_, name)| {
-            mentions.iter().any(|entry| match entry.kind.as_str() {
-                "everyone" | "here" => entry.kind == *name,
-                "feedback" => FEEDBACK_ALIASES.contains(&name.as_str()),
-                "user" => entry
-                    .username
-                    .as_deref()
-                    .is_some_and(|username| username.eq_ignore_ascii_case(name)),
-                _ => false,
-            })
-        })
-        .map(|(range, _)| range)
-        .collect()
-}
-
-/// Every mention token: byte ranges and lowercase names (desktop `mentions.rs`).
-fn tokens(text: &str) -> Vec<(Range<usize>, String)> {
-    let mut found = Vec::new();
-    let mut previous: Option<char> = None;
-    let mut chars = text.char_indices().peekable();
-    while let Some((index, character)) = chars.next() {
-        let starts = character == '@'
-            && previous
-                .is_none_or(|value| value.is_whitespace() || matches!(value, '(' | '[' | '{'));
-        previous = Some(character);
-        if !starts {
-            continue;
-        }
-        let mut end = index + 1;
-        while let Some(&(next_index, next)) = chars.peek() {
-            if !(next.is_ascii_alphanumeric() || next == '_') {
-                break;
-            }
-            end = next_index + next.len_utf8();
-            previous = Some(next);
-            chars.next();
-        }
-        if (1..=MAX_NAME).contains(&(end - index - 1)) {
-            found.push((index..end, text[index + 1..end].to_ascii_lowercase()));
-        }
-    }
-    found
 }
 
 #[cfg(test)]

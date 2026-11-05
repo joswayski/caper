@@ -7,11 +7,13 @@ mod fonts;
 #[path = "../../../../shared/messages/formatting.rs"]
 mod formatting;
 mod host;
+mod images;
 #[allow(dead_code)]
 #[path = "../../../../shared/messages/links.rs"]
 mod links;
 mod markup;
 mod rows;
+mod ui;
 
 use gtk::{gio, glib, prelude::*};
 

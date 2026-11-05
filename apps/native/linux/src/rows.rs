@@ -1,12 +1,38 @@
-//! The message list's rows: what each shows, how a new list differs from the
-//! shown one, and the recycled row widgets of the `GtkListView`.
+//! The message lists' rows: what each shows, how a new list differs from the
+//! shown one, and the recycled row widgets of a `GtkListView`.
 
+use crate::images::{AvatarView, Icon, Images};
 use caper_client::grouping;
 use caper_client::model::{Author, Mention, Message};
 use chrono::{DateTime, Local};
 use gtk::{glib, pango, prelude::*};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
+
+/// The quick reactions on each row's toolbar, as desktop shows them.
+pub const QUICK_REACTIONS: [&str; 3] = ["👍", "❤️", "😂"];
+
+/// One reaction chip: the emoji, how many reacted, and whether you did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chip {
+    pub emoji: String,
+    pub count: usize,
+    pub mine: bool,
+}
+
+/// What a row offers from its toolbar and menu.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Offers {
+    /// React, reply and pin: a sent message in a joined conversation.
+    pub act: bool,
+    /// Edit and delete: your own message.
+    pub mine: bool,
+    pub pinned: bool,
+    /// Open its thread (main-list messages only).
+    pub thread: bool,
+}
 
 /// One message row, compared whole: an unchanged row keeps its item and
 /// widget.
@@ -19,12 +45,26 @@ pub struct Row {
     /// Drawn under the previous row by the same author (no avatar or name).
     pub grouped: bool,
     pub author: String,
-    pub initials: String,
-    pub tint: u8,
+    pub avatar: crate::images::Avatar,
+    /// The uploaded picture loaded, so a row redraws once it arrives.
+    pub picture_ready: bool,
     pub time: String,
     /// Pango markup for the text.
     pub markup: String,
     pub pending: bool,
+    pub edited: bool,
+    /// "Pinned by …".
+    pub pinned_by: Option<String>,
+    /// The quoted message: its author and a short plain preview.
+    pub reply: Option<(String, String)>,
+    pub reactions: Vec<Chip>,
+    /// "3 replies", on a thread root in the main list.
+    pub replies: Option<String>,
+    /// It mentions you or replies to you: a terracotta-tinted row.
+    pub mentioned: bool,
+    /// It asked the Caper team, so it carries their notice.
+    pub team_notice: bool,
+    pub offers: Offers,
 }
 
 /// One change to the shown list, applied in order. Positions are already
@@ -75,6 +115,25 @@ pub fn diff(old: &[Row], new: &[Row]) -> Vec<Op> {
             .map(|(_, after)| Op::Replace(after)),
     );
     ops
+}
+
+/// Applies `new` to `store`, which shows `old`: only new or changed rows get
+/// new items, so only they are bound again. Returns whether anything changed.
+pub fn apply(store: &gtk::gio::ListStore, old: &[Row], new: &[Row]) -> bool {
+    let item = |index: usize| glib::BoxedAnyObject::new(new[index].clone());
+    let ops = diff(old, new);
+    for op in &ops {
+        let (position, remove, items): (usize, usize, Vec<_>) = match op {
+            Op::Replace(index) => (*index, 1, vec![item(*index)]),
+            Op::Splice {
+                position,
+                remove,
+                insert,
+            } => (*position, *remove, insert.clone().map(item).collect()),
+        };
+        store.splice(position as u32, remove as u32, &items);
+    }
+    !ops.is_empty()
 }
 
 /// Message markup by id, rebuilt only when the text or its mentions change.
@@ -132,38 +191,46 @@ fn body(message: &Message, markup: &mut Markup) -> String {
 }
 
 /// Your message while it sends: its client id, author, time and text.
-pub type Draft<'a> = (&'a str, &'a Author, &'a str, &'a str);
+pub struct Draft<'a> {
+    pub id: &'a str,
+    pub author: &'a Author,
+    pub created_at: &'a str,
+    pub text: &'a str,
+}
 
-/// The channel's rows, oldest first: channel messages, then `draft`.
+/// Who is reading, for reactions and the actions each row offers.
+pub struct Viewer<'a> {
+    /// Your account id, as reactions list it.
+    pub me: Option<&'a str>,
+    /// Your chat author id, which your messages carry.
+    pub author: Option<&'a str>,
+    /// You can write here (a joined channel or a DM, with a chat session).
+    pub joined: bool,
+    /// Rows in the thread pane: no thread action or reply counts.
+    pub in_thread: bool,
+    pub images: &'a Images,
+}
+
+fn author_avatar(author: &Author) -> crate::images::Avatar {
+    crate::images::Avatar::new(
+        &author.name,
+        author.avatar_id,
+        &author.avatar_asset,
+        &author.avatar_url,
+    )
+}
+
+/// The rows for `messages`, oldest first, then `draft`.
 pub fn build<'a>(
     messages: impl Iterator<Item = &'a Message>,
     draft: Option<Draft<'a>>,
     markup: &mut Markup,
+    viewer: &Viewer<'_>,
 ) -> Vec<Row> {
-    let items = messages
-        .filter(|message| message.is_channel_message())
-        .map(|message| {
-            (
-                message.id.as_str(),
-                &message.author,
-                message.created_at.as_str(),
-                body(message, markup),
-                false,
-            )
-        })
-        .chain(draft.map(|(id, author, created_at, text)| {
-            (
-                id,
-                author,
-                created_at,
-                crate::markup::message(text, &[]),
-                true,
-            )
-        }));
     let mut rows = Vec::new();
     let mut previous: Option<grouping::Row> = None;
     let mut day: Option<String> = None;
-    for (id, author, created_at, markup, pending) in items {
+    let mut push = |rows: &mut Vec<Row>, id: &str, author: &Author, created_at: &str, row: Row| {
         let local = DateTime::parse_from_rfc3339(created_at)
             .ok()
             .map(|date| date.with_timezone(&Local));
@@ -173,98 +240,252 @@ pub fn build<'a>(
             previous = None;
             day.clone_from(&this_day);
         }
-        let current = grouping::Row::new(&author.id, created_at, false);
+        // A reply quote or pin keeps its header, like desktop.
+        let header = row.reply.is_some() || row.pinned_by.is_some();
+        let current = grouping::Row::new(&author.id, created_at, header);
         let grouped = grouping::grouped(previous.as_ref(), &current);
         previous = Some(current);
         rows.push(Row {
             id: id.to_owned(),
             day: this_day.filter(|_| first_of_day),
             grouped,
-            author: author.name.clone(),
-            initials: initials(&author.name),
-            tint: tint(&author.id),
             time: local
                 .map(|date| date.format("%-I:%M %p").to_string())
                 .unwrap_or_default(),
-            markup,
-            pending,
+            ..row
         });
+    };
+    for message in messages {
+        let avatar = author_avatar(&message.author);
+        let deleted = message.is_deleted();
+        let act = viewer.joined && !deleted;
+        let replies_to_me = viewer.me.is_some_and(|me| {
+            message.author.id != me
+                && message
+                    .reply_to
+                    .as_ref()
+                    .is_some_and(|reply| reply.author.id == me)
+        });
+        let row = Row {
+            id: String::new(),
+            day: None,
+            grouped: false,
+            author: message.author.name.clone(),
+            picture_ready: viewer.images.picture_ready(&avatar),
+            avatar,
+            time: String::new(),
+            markup: body(message, markup),
+            pending: false,
+            edited: message.edited_at.is_some() && !deleted,
+            pinned_by: message
+                .pin
+                .as_ref()
+                .map(|pin| format!("Pinned by {}", pin.author.name)),
+            reply: message.reply_to.as_ref().map(|reply| {
+                let text = if reply.deleted {
+                    "Original message was deleted".to_owned()
+                } else if reply.text.trim().is_empty() && reply.has_attachments {
+                    caper_client::model::attachments_label(&reply.attachments).to_owned()
+                } else {
+                    preview(&reply.text)
+                };
+                (reply.author.name.clone(), text)
+            }),
+            reactions: message
+                .reactions
+                .iter()
+                .filter(|reaction| !reaction.author_ids.is_empty())
+                .map(|reaction| Chip {
+                    emoji: reaction.emoji.clone(),
+                    count: reaction.author_ids.len(),
+                    mine: viewer
+                        .me
+                        .is_some_and(|me| reaction.author_ids.iter().any(|id| id == me)),
+                })
+                .collect(),
+            replies: message
+                .thread
+                .as_ref()
+                .filter(|thread| !viewer.in_thread && thread.reply_count > 0)
+                .map(|thread| match thread.reply_count {
+                    1 => "1 reply".to_owned(),
+                    count => format!("{count} replies"),
+                }),
+            // As desktop: a pinned row keeps its pin wash instead.
+            mentioned: !deleted
+                && message.pin.is_none()
+                && (replies_to_me
+                    || caper_client::mentions::mentions_me(
+                        &message.content.mentions,
+                        &message.author.id,
+                        viewer.me,
+                    )),
+            team_notice: !deleted
+                && caper_client::mentions::notifies_team(&message.content.mentions),
+            offers: Offers {
+                act,
+                mine: act && viewer.author == Some(message.author.id.as_str()),
+                pinned: message.pin.is_some(),
+                thread: act && !viewer.in_thread && message.thread_root_id.is_none(),
+            },
+        };
+        push(
+            &mut rows,
+            &message.id,
+            &message.author,
+            &message.created_at,
+            row,
+        );
+    }
+    if let Some(draft) = draft {
+        let avatar = author_avatar(draft.author);
+        let row = Row {
+            id: String::new(),
+            day: None,
+            grouped: false,
+            author: draft.author.name.clone(),
+            picture_ready: viewer.images.picture_ready(&avatar),
+            avatar,
+            time: String::new(),
+            markup: crate::markup::message(draft.text, &[]),
+            pending: true,
+            edited: false,
+            pinned_by: None,
+            reply: None,
+            reactions: Vec::new(),
+            replies: None,
+            mentioned: false,
+            team_notice: false,
+            offers: Offers::default(),
+        };
+        push(&mut rows, draft.id, draft.author, draft.created_at, row);
     }
     rows
 }
 
-/// Up to two letters: the first of the first two words.
-pub fn initials(name: &str) -> String {
-    let letters: String = name
-        .split_whitespace()
-        .filter_map(|word| word.chars().next())
-        .take(2)
-        .flat_map(char::to_uppercase)
-        .collect();
-    if letters.is_empty() {
-        "?".into()
-    } else {
-        letters
+/// A reply quote: the first line, at most 120 characters.
+fn preview(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default();
+    let mut short: String = line.chars().take(120).collect();
+    if short.len() < line.len() || text.lines().nth(1).is_some() {
+        short.push('…');
     }
+    short
 }
 
-/// A stable avatar colour (`tint-0`…`tint-5` in the stylesheet).
-pub fn tint(id: &str) -> u8 {
-    (id.bytes().fold(0u32, |sum, byte| {
-        sum.wrapping_mul(31).wrapping_add(byte.into())
-    }) % 6) as u8
+/// What a row's controls ask for.
+pub enum Action {
+    /// Add (`active`) or remove your reaction.
+    React {
+        id: String,
+        emoji: String,
+        active: bool,
+    },
+    /// The full reaction picker, anchored to `anchor`.
+    Pick {
+        id: String,
+        anchor: gtk::Widget,
+    },
+    Reply(String),
+    Thread(String),
+    /// Edit, delete and pin, anchored to `anchor`.
+    Menu {
+        id: String,
+        anchor: gtk::Widget,
+    },
 }
 
-/// Recycled message row widgets: setup builds one, bind fills it from its
-/// item.
-pub fn factory() -> gtk::SignalListItemFactory {
+pub type Handler = Rc<dyn Fn(Action)>;
+
+/// One recycled row's widgets and the row it shows.
+struct Widgets {
+    root: gtk::Box,
+    day: gtk::Label,
+    reply: gtk::Label,
+    avatar: AvatarView,
+    gap: gtk::Box,
+    header: gtk::Box,
+    author: gtk::Label,
+    time: gtk::Label,
+    edited: gtk::Label,
+    pinned: gtk::Label,
+    body: gtk::Label,
+    notice: gtk::Label,
+    card: gtk::Overlay,
+    reactions: gtk::Box,
+    replies: gtk::Button,
+    tools: gtk::Box,
+    quick: Vec<gtk::Button>,
+    pick: gtk::Button,
+    reply_button: gtk::Button,
+    thread_button: gtk::Button,
+    more: gtk::Button,
+    row: RefCell<Option<Row>>,
+}
+
+fn tool(images: &Images, icon: Icon, label: &str) -> gtk::Button {
+    let button = crate::app::named::<gtk::Button>("GtkButton", label);
+    button.set_child(Some(&images.icon_image(icon, "#b9bcbe", 16)));
+    button.set_tooltip_text(Some(label));
+    button.add_css_class("flat");
+    button.add_css_class("tool");
+    button
+}
+
+/// Recycled message row widgets: each list item builds its widgets once and
+/// fills them whenever it is bound to another row.
+pub fn factory(images: Rc<Images>, handler: Handler) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
+    factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
         item.set_activatable(false);
         item.set_selectable(false);
-        item.set_child(Some(&widget()));
-    });
-    factory.connect_bind(|_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        if let (Some(object), Some(root)) = (
-            item.item().and_downcast::<glib::BoxedAnyObject>(),
-            item.child().and_downcast::<gtk::Box>(),
-        ) {
-            fill(&root, &object.borrow::<Row>());
-        }
+        let widgets = Rc::new(build_widgets(&images));
+        connect(&widgets, &handler);
+        item.set_child(Some(&widgets.root));
+        let (images, handler) = (images.clone(), handler.clone());
+        item.connect_item_notify(move |item| {
+            if let Some(object) = item.item().and_downcast::<glib::BoxedAnyObject>() {
+                let row = object.borrow::<Row>().clone();
+                fill(&widgets, &images, &row, &handler);
+                *widgets.row.borrow_mut() = Some(row);
+            }
+        });
     });
     factory
 }
 
-fn widget() -> gtk::Box {
+fn build_widgets(images: &Images) -> Widgets {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let day = gtk::Label::builder()
         .xalign(0.0)
         .css_classes(["day"])
         .build();
-    let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    let avatar = gtk::Label::builder()
-        .valign(gtk::Align::Start)
-        .halign(gtk::Align::Start)
-        .css_classes(["avatar"])
+    let reply = gtk::Label::builder()
+        .xalign(0.0)
+        .ellipsize(pango::EllipsizeMode::End)
+        .css_classes(["quote"])
         .build();
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let avatar = AvatarView::new(36, false);
+    let gap = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    gap.set_size_request(36, 1);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.set_hexpand(true);
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let author = gtk::Label::builder()
-        .xalign(0.0)
-        .css_classes(["author"])
-        .build();
-    let time = gtk::Label::builder()
-        .xalign(0.0)
-        .valign(gtk::Align::Baseline)
-        .css_classes(["time"])
-        .build();
+    let label = |class: &str| {
+        gtk::Label::builder()
+            .xalign(0.0)
+            .css_classes([class])
+            .build()
+    };
+    let author = label("author");
+    let time = label("time");
+    let edited = label("time");
+    edited.set_label("(edited)");
+    let pinned = label("pinned");
     let body = gtk::Label::builder()
         .xalign(0.0)
         .wrap(true)
@@ -272,25 +493,126 @@ fn widget() -> gtk::Box {
         .selectable(true)
         .css_classes(["body"])
         .build();
+    let notice = label("notice");
+    notice.set_label(caper_client::mentions::FEEDBACK_NOTICE);
+    let reactions = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    reactions.add_css_class("reactions");
+    let replies = gtk::Button::new();
+    replies.add_css_class("flat");
+    replies.add_css_class("replies");
+    replies.set_halign(gtk::Align::Start);
     header.append(&author);
     header.append(&time);
+    header.append(&edited);
+    header.append(&pinned);
     content.append(&header);
     content.append(&body);
-    line.append(&avatar);
+    content.append(&notice);
+    content.append(&reactions);
+    content.append(&replies);
+    line.append(&avatar.root);
+    line.append(&gap);
     line.append(&content);
+
+    let tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    tools.add_css_class("tools");
+    tools.set_halign(gtk::Align::End);
+    tools.set_valign(gtk::Align::Start);
+    let quick: Vec<gtk::Button> = QUICK_REACTIONS
+        .iter()
+        .map(|emoji| {
+            let button = crate::app::named::<gtk::Button>("GtkButton", &format!("React {emoji}"));
+            button.set_label(emoji);
+            button.add_css_class("flat");
+            button.add_css_class("tool");
+            button.set_focus_on_click(false);
+            tools.append(&button);
+            button
+        })
+        .collect();
+    let pick = tool(images, Icon::SmilePlus, "Add reaction");
+    let reply_button = tool(images, Icon::Reply, "Reply");
+    let thread_button = tool(images, Icon::Thread, "Reply in thread");
+    let more = tool(images, Icon::More, "More actions");
+    for button in [&pick, &reply_button, &thread_button, &more] {
+        // A click should not leave the toolbar pinned open by focus; keyboard
+        // focus still reveals it through `:focus-within`.
+        button.set_focus_on_click(false);
+        tools.append(button);
+    }
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&line));
+    overlay.add_overlay(&tools);
     root.append(&day);
-    root.append(&line);
-    root
+    root.append(&reply);
+    root.append(&overlay);
+    Widgets {
+        notice,
+        card: overlay.clone(),
+        root,
+        day,
+        reply,
+        avatar,
+        gap,
+        header,
+        author,
+        time,
+        edited,
+        pinned,
+        body,
+        reactions,
+        replies,
+        tools,
+        quick,
+        pick,
+        reply_button,
+        thread_button,
+        more,
+        row: RefCell::new(None),
+    }
 }
 
-fn fill(root: &gtk::Box, row: &Row) -> Option<()> {
-    let day = root.first_child()?.downcast::<gtk::Label>().ok()?;
-    let line = day.next_sibling()?;
-    let avatar = line.first_child()?.downcast::<gtk::Label>().ok()?;
-    let header = avatar.next_sibling()?.first_child()?;
-    let author = header.first_child()?.downcast::<gtk::Label>().ok()?;
-    let time = author.next_sibling()?.downcast::<gtk::Label>().ok()?;
-    let body = header.next_sibling()?.downcast::<gtk::Label>().ok()?;
+fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
+    let id = |widgets: &Widgets| widgets.row.borrow().as_ref().map(|row| row.id.clone());
+    for (button, emoji) in widgets.quick.iter().zip(QUICK_REACTIONS) {
+        let (weak, handler) = (Rc::downgrade(widgets), handler.clone());
+        button.connect_clicked(move |_| {
+            let Some(widgets) = weak.upgrade() else {
+                return;
+            };
+            let row = widgets.row.borrow().clone();
+            if let Some(row) = row {
+                let mine = row
+                    .reactions
+                    .iter()
+                    .any(|chip| chip.emoji == emoji && chip.mine);
+                handler(Action::React {
+                    id: row.id,
+                    emoji: emoji.to_owned(),
+                    active: !mine,
+                });
+            }
+        });
+    }
+    type Make = fn(String, gtk::Widget) -> Action;
+    let actions: [(&gtk::Button, Make); 5] = [
+        (&widgets.pick, |id, anchor| Action::Pick { id, anchor }),
+        (&widgets.reply_button, |id, _| Action::Reply(id)),
+        (&widgets.thread_button, |id, _| Action::Thread(id)),
+        (&widgets.replies, |id, _| Action::Thread(id)),
+        (&widgets.more, |id, anchor| Action::Menu { id, anchor }),
+    ];
+    for (button, action) in actions {
+        let (weak, handler) = (Rc::downgrade(widgets), handler.clone());
+        button.connect_clicked(move |button| {
+            if let Some(id) = weak.upgrade().and_then(|widgets| id(&widgets)) {
+                handler(action(id, button.clone().upcast()));
+            }
+        });
+    }
+}
+
+fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
     let mut classes = vec!["message"];
     if row.grouped {
         classes.push("grouped");
@@ -298,21 +620,81 @@ fn fill(root: &gtk::Box, row: &Row) -> Option<()> {
     if row.pending {
         classes.push("pending");
     }
-    root.set_css_classes(&classes);
-    day.set_visible(row.day.is_some());
-    day.set_label(row.day.as_deref().unwrap_or_default());
-    header.set_visible(!row.grouped);
-    if row.grouped {
-        avatar.set_label("");
-        avatar.set_css_classes(&["avatar", "gap"]);
+    widgets.root.set_css_classes(&classes);
+    if row.mentioned {
+        widgets.card.add_css_class("mentioned");
     } else {
-        avatar.set_label(&row.initials);
-        avatar.set_css_classes(&["avatar", &format!("tint-{}", row.tint)]);
+        widgets.card.remove_css_class("mentioned");
     }
-    author.set_label(&row.author);
-    time.set_label(&row.time);
-    body.set_markup(&row.markup);
-    Some(())
+    widgets.notice.set_visible(row.team_notice);
+    widgets.day.set_visible(row.day.is_some());
+    widgets
+        .day
+        .set_label(row.day.as_deref().unwrap_or_default());
+    match &row.reply {
+        Some((author, text)) => {
+            widgets.reply.set_markup(&format!(
+                "↱ <b>{}</b>  {}",
+                glib::markup_escape_text(author),
+                glib::markup_escape_text(text)
+            ));
+            widgets.reply.set_visible(true);
+        }
+        None => widgets.reply.set_visible(false),
+    }
+    widgets.header.set_visible(!row.grouped);
+    widgets.avatar.root.set_visible(!row.grouped);
+    widgets.gap.set_visible(row.grouped);
+    if !row.grouped {
+        widgets.avatar.set(images, &row.avatar);
+    }
+    widgets.author.set_label(&row.author);
+    widgets.time.set_label(&row.time);
+    widgets.edited.set_visible(row.edited);
+    widgets.pinned.set_visible(row.pinned_by.is_some());
+    widgets
+        .pinned
+        .set_label(row.pinned_by.as_deref().unwrap_or_default());
+    widgets.body.set_markup(&row.markup);
+    while let Some(child) = widgets.reactions.first_child() {
+        widgets.reactions.remove(&child);
+    }
+    for chip in &row.reactions {
+        let button = gtk::Button::with_label(&format!("{} {}", chip.emoji, chip.count));
+        button.add_css_class("reaction");
+        if chip.mine {
+            button.add_css_class("mine");
+        }
+        button.set_sensitive(row.offers.act);
+        button.set_tooltip_text(Some(if chip.mine {
+            "Remove your reaction"
+        } else {
+            "Add this reaction"
+        }));
+        let (handler, id, emoji, active) = (
+            handler.clone(),
+            row.id.clone(),
+            chip.emoji.clone(),
+            !chip.mine,
+        );
+        button.connect_clicked(move |_| {
+            handler(Action::React {
+                id: id.clone(),
+                emoji: emoji.clone(),
+                active,
+            })
+        });
+        widgets.reactions.append(&button);
+    }
+    widgets.reactions.set_visible(!row.reactions.is_empty());
+    widgets.replies.set_visible(row.replies.is_some());
+    widgets
+        .replies
+        .set_label(row.replies.as_deref().unwrap_or_default());
+    let offers = row.offers;
+    widgets.tools.set_visible(offers.act);
+    widgets.thread_button.set_visible(offers.thread);
+    widgets.more.set_visible(offers.act);
 }
 
 #[cfg(test)]
@@ -325,11 +707,19 @@ mod tests {
             day: None,
             grouped: false,
             author: "Maya".into(),
-            initials: "M".into(),
-            tint: 0,
+            avatar: crate::images::Avatar::new("Maya", Some(31), &None, &None),
+            picture_ready: false,
             time: String::new(),
             markup: text.into(),
             pending: false,
+            edited: false,
+            pinned_by: None,
+            reply: None,
+            reactions: Vec::new(),
+            replies: None,
+            mentioned: false,
+            team_notice: false,
+            offers: Offers::default(),
         }
     }
 
@@ -380,12 +770,17 @@ mod tests {
     }
 
     #[test]
-    fn edits_replace_their_row_in_place_at_either_end() {
+    fn reactions_pictures_and_edits_replace_only_their_row() {
         let old = rows(&["a", "b", "c", "d"]);
         let mut new = old.clone();
         new.insert(2, row("x", ""));
-        new[0].markup = "edited".into();
+        new[0].reactions.push(Chip {
+            emoji: "👍".into(),
+            count: 1,
+            mine: true,
+        });
         new[4].markup = "edited".into();
+        new[4].picture_ready = true;
         assert_eq!(
             diff(&old, &new),
             [
@@ -413,9 +808,9 @@ mod tests {
     }
 
     #[test]
-    fn initials_take_two_words() {
-        assert_eq!(initials("Mateo Silva Ruiz"), "MS");
-        assert_eq!(initials("maya"), "M");
-        assert_eq!(initials("  "), "?");
+    fn reply_previews_keep_one_short_line() {
+        assert_eq!(preview("short"), "short");
+        assert_eq!(preview("first\nsecond"), "first…");
+        assert_eq!(preview(&"a".repeat(130)).chars().count(), 121);
     }
 }

@@ -16,8 +16,10 @@ clients talk directly to the same Caper API. No server or Cloudflare credentials
 belong in an app.
 
 `linux/` (package `caper-linux`) is a GTK 4 Linux client in development, built on
-the shared `client/` core: sign-in, spaces, channels, members, the message list
-and the composer. It is not packaged or released; run it with
+the shared `client/` core: sign-in and sign-out, spaces, channels (joining),
+DMs, members with presence, unread badges, typing, the message list with
+avatars, reactions, replies, edit/delete/pin and a thread pane, and the
+composer. It is not packaged or released; run it with
 `cargo run -p caper-linux` from `desktop/` (`CAPER_API_URL` or `--api-url` picks
 the server).
 

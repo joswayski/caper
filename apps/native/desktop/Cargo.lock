@@ -939,6 +939,7 @@ dependencies = [
  "caper-client",
  "chrono",
  "gtk4",
+ "resvg",
  "serde",
  "serde_json",
  "uuid",

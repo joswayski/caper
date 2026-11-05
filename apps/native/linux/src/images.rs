@@ -1,0 +1,350 @@
+//! Textures for the client: the web's Lucide icons, Caper's avatar mascots
+//! (`caper_client::avatar_images`) and uploaded profile pictures.
+//!
+//! Every texture is made once and shared by every widget that shows it.
+//! Uploaded pictures are cached by asset id, never by URL (signed URLs
+//! re-sign daily), fetched and decoded off the main loop, and reported back
+//! through the host channel; until one is ready, or if it fails, callers show
+//! the person's mascot or initial.
+
+use crate::host::Signal;
+use caper_client::Rgba;
+use caper_client::api::Api;
+use gtk::{gdk, glib, prelude::*};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+
+/// Avatar textures are drawn at this size and scaled down by GTK.
+const AVATAR_EDGE: u32 = 72;
+/// Icons are drawn at twice their display size, for HiDPI.
+const ICON_EDGE: u32 = 40;
+const MAX_FETCHES: usize = 4;
+
+/// The Lucide icons the client draws (`desktop/resources/icons`, white
+/// strokes recoloured per use).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Icon {
+    Send,
+    Users,
+    SmilePlus,
+    Reply,
+    Thread,
+    More,
+    Hash,
+    Lock,
+    Close,
+    LogOut,
+}
+
+fn icon_source(icon: Icon) -> &'static str {
+    match icon {
+        Icon::Send => include_str!("../../desktop/resources/icons/send.svg"),
+        Icon::Users => include_str!("../../desktop/resources/icons/users.svg"),
+        Icon::SmilePlus => include_str!("../../desktop/resources/icons/smile-plus.svg"),
+        Icon::Reply => include_str!("../../desktop/resources/icons/reply.svg"),
+        Icon::Thread => include_str!("../../desktop/resources/icons/thread.svg"),
+        Icon::More => include_str!("../../desktop/resources/icons/ellipsis.svg"),
+        Icon::Hash => include_str!("../../desktop/resources/icons/hash.svg"),
+        Icon::Lock => include_str!("../../desktop/resources/icons/lock.svg"),
+        Icon::Close => include_str!("../../desktop/resources/icons/x.svg"),
+        Icon::LogOut => include_str!("../../desktop/resources/icons/log-out.svg"),
+    }
+}
+
+/// What an avatar shows: an uploaded picture, a Caper mascot, or the
+/// person's initial.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Avatar {
+    pub name: String,
+    pub mascot: Option<u16>,
+    /// The uploaded picture's asset id and signed URL.
+    pub picture: Option<(String, String)>,
+}
+
+impl Avatar {
+    pub fn new(
+        name: &str,
+        avatar_id: Option<i32>,
+        asset: &Option<String>,
+        url: &Option<String>,
+    ) -> Self {
+        Self {
+            name: name.to_owned(),
+            mascot: caper_client::caper_avatar_index(avatar_id),
+            picture: caper_client::pictures::Source::new(asset, url).map(|_| {
+                (
+                    asset.clone().unwrap_or_default(),
+                    url.clone().unwrap_or_default(),
+                )
+            }),
+        }
+    }
+
+    pub fn initial(&self) -> String {
+        self.name
+            .chars()
+            .next()
+            .unwrap_or('C')
+            .to_uppercase()
+            .collect()
+    }
+}
+
+#[derive(Default)]
+struct Pictures {
+    ready: HashMap<String, gdk::Texture>,
+    /// Asset ids being fetched, and the URL each last failed with (a
+    /// re-signed URL tries again).
+    loading: HashSet<String>,
+    failed: HashMap<String, String>,
+}
+
+pub struct Images {
+    api: Api,
+    signals: async_channel::Sender<Signal>,
+    icons: RefCell<HashMap<(Icon, &'static str), gdk::Texture>>,
+    mascots: RefCell<HashMap<u16, gdk::Texture>>,
+    pictures: RefCell<Pictures>,
+}
+
+impl Images {
+    pub fn new(api: Api, signals: async_channel::Sender<Signal>) -> Self {
+        Self {
+            api,
+            signals,
+            icons: RefCell::default(),
+            mascots: RefCell::default(),
+            pictures: RefCell::default(),
+        }
+    }
+
+    /// `icon` stroked in `color` (`#rrggbb`).
+    pub fn icon(&self, icon: Icon, color: &'static str) -> Option<gdk::Texture> {
+        if let Some(texture) = self.icons.borrow().get(&(icon, color)) {
+            return Some(texture.clone());
+        }
+        let svg = icon_source(icon).replace("#ffffff", color);
+        let texture = render_svg(svg.as_bytes(), ICON_EDGE)?;
+        self.icons
+            .borrow_mut()
+            .insert((icon, color), texture.clone());
+        Some(texture)
+    }
+
+    pub fn icon_image(&self, icon: Icon, color: &'static str, size: i32) -> gtk::Image {
+        let image = gtk::Image::new();
+        if let Some(texture) = self.icon(icon, color) {
+            image.set_paintable(Some(&texture));
+        }
+        image.set_pixel_size(size);
+        image
+    }
+
+    /// The texture `avatar` shows now: its picture once loaded (starting
+    /// the load otherwise), else its mascot. `None` draws the initial.
+    pub fn avatar(&self, avatar: &Avatar) -> Option<gdk::Texture> {
+        if let Some((asset, url)) = &avatar.picture
+            && let Some(texture) = self.picture(asset, url)
+        {
+            return Some(texture);
+        }
+        avatar.mascot.and_then(|index| self.mascot(index))
+    }
+
+    /// Whether `avatar`'s uploaded picture has loaded, so rows can tell
+    /// when theirs changed.
+    pub fn picture_ready(&self, avatar: &Avatar) -> bool {
+        avatar
+            .picture
+            .as_ref()
+            .is_some_and(|(asset, _)| self.pictures.borrow().ready.contains_key(asset))
+    }
+
+    fn mascot(&self, index: u16) -> Option<gdk::Texture> {
+        if let Some(texture) = self.mascots.borrow().get(&index) {
+            return Some(texture.clone());
+        }
+        let texture = render_svg(
+            caper_client::avatar_images::SVG[usize::from(index)],
+            AVATAR_EDGE,
+        )?;
+        self.mascots.borrow_mut().insert(index, texture.clone());
+        Some(texture)
+    }
+
+    fn picture(&self, asset: &str, url: &str) -> Option<gdk::Texture> {
+        let mut pictures = self.pictures.borrow_mut();
+        if let Some(texture) = pictures.ready.get(asset) {
+            return Some(texture.clone());
+        }
+        if pictures.loading.contains(asset)
+            || pictures
+                .failed
+                .get(asset)
+                .is_some_and(|failed| failed == url)
+            || pictures.loading.len() >= MAX_FETCHES
+        {
+            return None;
+        }
+        pictures.loading.insert(asset.to_owned());
+        let (api, signals) = (self.api.clone(), self.signals.clone());
+        let (asset, url) = (asset.to_owned(), url.to_owned());
+        std::thread::spawn(move || {
+            let image = api
+                .fetch_media(&url)
+                .ok()
+                .and_then(|bytes| caper_client::pictures::decode(&bytes, false))
+                .and_then(|frames| frames.into_iter().next())
+                .map(|(image, _)| image);
+            let _ = signals.try_send(Signal::Picture { asset, url, image });
+        });
+        None
+    }
+
+    /// A fetch finished: keep the picture, or remember the URL that failed.
+    pub fn loaded(&self, asset: String, url: String, image: Option<Rgba>) {
+        let mut pictures = self.pictures.borrow_mut();
+        pictures.loading.remove(&asset);
+        match image.and_then(|image| texture(&image)) {
+            Some(texture) => {
+                pictures.failed.remove(&asset);
+                pictures.ready.insert(asset, texture);
+            }
+            None => {
+                pictures.failed.insert(asset, url);
+            }
+        }
+    }
+
+    pub fn clear_pictures(&self) {
+        let mut pictures = self.pictures.borrow_mut();
+        pictures.ready.clear();
+        pictures.failed.clear();
+    }
+}
+
+fn render_svg(svg: &[u8], edge: u32) -> Option<gdk::Texture> {
+    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(edge, edge)?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(
+            edge as f32 / tree.size().width(),
+            edge as f32 / tree.size().height(),
+        ),
+        &mut pixmap.as_mut(),
+    );
+    let bytes = glib::Bytes::from_owned(pixmap.take());
+    Some(
+        gdk::MemoryTexture::new(
+            edge as i32,
+            edge as i32,
+            gdk::MemoryFormat::R8g8b8a8Premultiplied,
+            &bytes,
+            edge as usize * 4,
+        )
+        .into(),
+    )
+}
+
+fn texture(image: &Rgba) -> Option<gdk::Texture> {
+    let [width, height] = image.size;
+    if width == 0 || height == 0 || image.pixels.len() != width * height * 4 {
+        return None;
+    }
+    let bytes = glib::Bytes::from(&image.pixels[..]);
+    Some(
+        gdk::MemoryTexture::new(
+            width as i32,
+            height as i32,
+            gdk::MemoryFormat::R8g8b8a8,
+            &bytes,
+            width * 4,
+        )
+        .into(),
+    )
+}
+
+/// An avatar widget: the picture or mascot, else the initial on a raised
+/// circle, with an optional presence dot.
+#[derive(Clone)]
+pub struct AvatarView {
+    pub root: gtk::Overlay,
+    picture: gtk::Picture,
+    initial: gtk::Label,
+    dot: Option<gtk::Box>,
+}
+
+impl AvatarView {
+    pub fn new(size: i32, presence: bool) -> Self {
+        let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        frame.add_css_class("avatar");
+        frame.set_size_request(size, size);
+        frame.set_overflow(gtk::Overflow::Hidden);
+        frame.set_valign(gtk::Align::Start);
+        frame.set_halign(gtk::Align::Start);
+        let picture = gtk::Picture::new();
+        picture.set_can_shrink(true);
+        picture.set_size_request(size, size);
+        picture.set_content_fit(gtk::ContentFit::Cover);
+        let initial = gtk::Label::new(None);
+        initial.add_css_class("initial");
+        initial.set_size_request(size, size);
+        frame.append(&picture);
+        frame.append(&initial);
+        let root = gtk::Overlay::new();
+        root.set_child(Some(&frame));
+        root.set_valign(gtk::Align::Start);
+        root.set_halign(gtk::Align::Start);
+        let dot = presence.then(|| {
+            let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            dot.add_css_class("presence");
+            dot.set_halign(gtk::Align::End);
+            dot.set_valign(gtk::Align::End);
+            dot.set_size_request(10, 10);
+            root.add_overlay(&dot);
+            dot
+        });
+        Self {
+            root,
+            picture,
+            initial,
+            dot,
+        }
+    }
+
+    pub fn set(&self, images: &Images, avatar: &Avatar) {
+        match images.avatar(avatar) {
+            Some(texture) => {
+                self.picture.set_paintable(Some(&texture));
+                self.picture.set_visible(true);
+                self.initial.set_visible(false);
+            }
+            None => {
+                self.picture.set_paintable(gdk::Paintable::NONE);
+                self.picture.set_visible(false);
+                self.initial.set_label(&avatar.initial());
+                self.initial.set_visible(true);
+            }
+        }
+    }
+
+    /// `online`, `idle`, or anything else for offline.
+    pub fn set_presence(&self, status: &str) {
+        if let Some(dot) = &self.dot {
+            dot.set_css_classes(&[
+                "presence",
+                match status {
+                    "online" => "online",
+                    "idle" => "idle",
+                    _ => "offline",
+                },
+            ]);
+            dot.set_tooltip_text(Some(match status {
+                "online" => "Online",
+                "idle" => "Idle",
+                _ => "Offline",
+            }));
+        }
+    }
+}

@@ -15,9 +15,11 @@ async-channel = "2.5"
 # The UI-free client core: API, gateway, model and credentials (../client).
 caper-client = { path = "../client" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# Only API up to GTK 4.8 (Debian 12); releases would build against 4.14.
 # Derives for the shared formatting grammar (shared/messages/formatting.rs).
 serde = { version = "1.0", features = ["derive"] }
+# Caper mascots and Lucide icons, the version caper-client already uses.
+resvg = { version = "=0.45.1", default-features = false }
+# Only API up to GTK 4.8 (Debian 12); releases would build against 4.14.
 gtk = { package = "gtk4", version = "0.11.5", features = ["v4_8"] }
 uuid = { version = "1.18", features = ["v4"] }
 

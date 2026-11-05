@@ -20,6 +20,8 @@
 @define-color caper_on_action #0c0d0f;
 @define-color caper_green #637a43;
 @define-color caper_error_text #ff9b82;
+@define-color caper_danger #b93646;
+@define-color caper_danger_hover #d44355;
 
 window.caper {
   background-color: @caper_blackout;
@@ -87,6 +89,31 @@ button.primary:disabled {
 
 button.flat {
   color: @caper_text_muted;
+}
+
+button.destructive-action {
+  background: @caper_danger;
+  color: #ffffff;
+  border: none;
+  box-shadow: none;
+  font-weight: 700;
+}
+
+button.destructive-action:hover {
+  background: @caper_danger_hover;
+}
+
+/* Confirmation dialogs: a raised surface in neutral chrome. */
+window.caper.dialog,
+window.caper.dialog .dialog-action-area button:not(.destructive-action) {
+  background: @caper_surface_raised;
+  color: @caper_text;
+}
+
+window.caper.dialog .dialog-action-area button {
+  border: 1px solid @caper_border;
+  box-shadow: none;
+  min-height: 36px;
 }
 
 button.flat:hover {
@@ -244,6 +271,18 @@ listview.messages > row:hover {
   padding-top: 2px;
 }
 
+/* Messages that mention or reply to you: an 8% terracotta wash with a 2px
+   edge, as desktop draws them. */
+.message .mentioned {
+  background: alpha(@caper_terracotta, 0.08);
+  box-shadow: inset 2px 0 @caper_terracotta;
+}
+
+.notice {
+  color: @caper_text_muted;
+  font-size: 11px;
+}
+
 .message.pending {
   opacity: 0.6;
 }
@@ -268,43 +307,178 @@ listview.messages > row:hover {
   font-weight: 400;
 }
 
+/* Avatars: Caper mascots are already round; pictures and initials are
+   clipped to the same circle. */
 .avatar {
-  min-width: 36px;
-  min-height: 36px;
-  border-radius: 11px;
+  border-radius: 9999px;
+}
+
+.avatar .initial {
+  background: @caper_surface_raised;
   color: @caper_text;
   font-weight: 700;
   font-size: 13px;
 }
 
-.avatar.small {
-  min-width: 28px;
-  min-height: 28px;
-  border-radius: 9px;
+.presence {
+  min-width: 10px;
+  min-height: 10px;
+  border-radius: 9999px;
+  border: 2px solid @caper_surface_sidebar;
+  margin: 0 -2px -2px 0;
+}
+
+.presence.online {
+  background: @caper_green;
+}
+
+.presence.idle {
+  background: #cd9e52;
+}
+
+.presence.offline {
+  background: @caper_border;
+}
+
+.quote {
+  color: @caper_text_muted;
+  font-size: 12px;
+  margin: 0 0 2px 48px;
+}
+
+.pinned {
+  color: #e4c76a;
   font-size: 11px;
 }
 
-.avatar.gap {
-  min-height: 0;
+/* Reactions: counted chips, terracotta when yours. */
+.reactions {
+  margin-top: 4px;
 }
 
-.tint-0 {
-  background: #637a43;
+button.reaction {
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid @caper_border;
+  background: @caper_surface;
+  box-shadow: none;
+  color: @caper_text;
+  font-size: 12px;
 }
-.tint-1 {
-  background: #b64d32;
+
+button.reaction.mine {
+  border-color: @caper_terracotta;
+  background: alpha(@caper_terracotta, 0.22);
 }
-.tint-2 {
-  background: #4a6ab0;
+
+button.replies {
+  color: @caper_link;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 2px 6px;
+  margin-left: -6px;
 }
-.tint-3 {
-  background: #7c55a8;
+
+/* The row toolbar appears while the row is hovered or focused. */
+.tools {
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  margin: 0 16px;
+  padding: 2px;
+  opacity: 0;
 }
-.tint-4 {
-  background: #b08a2e;
+
+listview.messages > row:hover .tools,
+.tools:focus-within {
+  opacity: 1;
 }
-.tint-5 {
-  background: #2f8c86;
+
+button.tool {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
+.picker button {
+  min-width: 36px;
+  min-height: 36px;
+  font-size: 18px;
+}
+
+.picker button.mine {
+  background: alpha(@caper_terracotta, 0.22);
+}
+
+.typing {
+  color: @caper_text_muted;
+  font-size: 12px;
+  padding: 0 22px;
+  min-height: 18px;
+}
+
+.compose-bar {
+  margin: 0 20px;
+  padding: 4px 4px 4px 12px;
+  border: 1px solid @caper_border;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: @caper_surface;
+}
+
+.join-bar {
+  margin: 4px 20px 16px;
+  padding: 12px 12px 12px 16px;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  background: @caper_surface;
+}
+
+.join-bar button.primary {
+  padding: 0 16px;
+}
+
+/* Unread: terracotta counts, bold names, a dot on the rail. */
+.count {
+  background: @caper_surface_raised;
+  color: @caper_text;
+  border-radius: 9999px;
+  min-width: 18px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.count.mention {
+  background: @caper_terracotta;
+}
+
+.unread {
+  color: @caper_text;
+  font-weight: 700;
+}
+
+.unread-dot {
+  min-width: 6px;
+  min-height: 8px;
+  border-radius: 0 4px 4px 0;
+  background: @caper_text;
+  margin-left: -12px;
+}
+
+.dock {
+  border-top: 1px solid @caper_border;
+  padding: 10px 12px;
+}
+
+.thread {
+  background: @caper_surface_conversation;
+  border-left: 1px solid @caper_border;
+}
+
+button.send:not(:disabled) {
+  background: @caper_surface_raised;
 }
 
 .composer {
@@ -357,4 +531,9 @@ list.member-list > row:hover {
 
 .badge {
   font-size: 11px;
+}
+
+/* Sections in the sidebar. */
+.sidebar .section {
+  padding: 14px 16px 6px;
 }
