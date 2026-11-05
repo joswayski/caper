@@ -88,6 +88,9 @@ pub enum Update {
 pub struct Ids {
     /// Account id of each `Conversation::members` entry.
     pub members: Vec<String>,
+    /// Id of each `Conversation::spaces` and `Conversation::channels` entry.
+    pub spaces: Vec<String>,
+    pub channels: Vec<String>,
     /// The newest row, for grouping the next message under it.
     last: Option<grouping::Row>,
     /// Messages shown, so a send's reply and its gateway echo appear once.
@@ -121,6 +124,8 @@ pub struct Live {
     worker: Worker<WinHost>,
     pub host: WinHost,
     generation: u64,
+    /// The latest navigation; results for earlier ones are dropped.
+    navigation: u64,
     token: Option<String>,
     name: String,
     spaces: Option<core::Spaces>,
@@ -150,6 +155,7 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         worker,
         host,
         generation,
+        navigation: 0,
         token: None,
         name: String::new(),
         spaces: None,
@@ -182,7 +188,6 @@ impl Live {
         spaces: core::Spaces,
         out: &mut Vec<Update>,
     ) {
-        let current = self.generation;
         self.name = account
             .display_name
             .or(account.username)
@@ -191,14 +196,21 @@ impl Live {
             out.push(Update::Failed("This account has no spaces.".into()));
             return;
         };
-        self.token = Some(token.clone());
+        self.token = Some(token);
         self.spaces = Some(spaces);
+        self.navigate(Some(space), None);
+    }
+
+    /// Opens a space (its first joined channel unless `channel` is given)
+    /// or a channel. The open conversation stays until the new one loads.
+    pub fn navigate(&mut self, space: Option<String>, channel: Option<String>) {
+        self.navigation += 1;
         self.worker.send(Command::PrepareNavigation {
-            generation: current,
-            navigation: 1,
-            token: Some(token),
-            space: Some(space),
-            channel: None,
+            generation: self.generation,
+            navigation: self.navigation,
+            token: self.token.clone(),
+            space,
+            channel,
             name: self.name.clone(),
             cached: None,
             visit: false,
@@ -277,9 +289,15 @@ impl Live {
                 out.push(Update::Failed(format!("Could not save the session: {e}")));
             }
             Event::NavigationPrepared {
-                generation, result, ..
-            } if generation == current => match result {
+                generation,
+                navigation,
+                result,
+            } if generation == current && navigation == self.navigation => match result {
                 Ok(prepared) => {
+                    // Events still in flight for the previous conversation
+                    // (its gateway, sends) carry the old generation and drop.
+                    self.generation += 1;
+                    let current = self.generation;
                     let (Some(detail), Some((history, session))) =
                         (prepared.detail, prepared.conversation)
                     else {
@@ -404,6 +422,7 @@ pub fn conversation(
     let order = detail.member_order(Some(channel));
     let mut ids = Ids {
         members: order.iter().map(|m| m.id.clone()).collect(),
+        spaces: spaces.spaces.iter().map(|s| s.id.clone()).collect(),
         ..Ids::default()
     };
     let mut members: Vec<Person> = order
@@ -422,6 +441,7 @@ pub fn conversation(
         out.push(message(m, author, grouped));
     }
     let joined: Vec<&core::Channel> = detail.channels.iter().filter(|c| c.joined).collect();
+    ids.channels = joined.iter().map(|c| c.id.clone()).collect();
     let channels = joined
         .iter()
         .map(|c| model::Channel {

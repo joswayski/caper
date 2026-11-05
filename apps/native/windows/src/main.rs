@@ -205,6 +205,8 @@ pub struct App {
     status: Option<(String, bool)>,
     /// The signed-out screens, over everything else while shown.
     pub signin: Option<signin::SignIn>,
+    /// Unsent composer text of channels not on screen, by channel id.
+    drafts: std::collections::HashMap<String, Vec<u16>>,
     signin_p: Panel,
     quit: bool,
 }
@@ -313,6 +315,7 @@ impl App {
                 ids: live::Ids::default(),
                 status: None,
                 signin: None,
+                drafts: Default::default(),
                 signin_p,
                 quit: false,
             })
@@ -398,10 +401,27 @@ impl App {
                 }
                 live::Update::Loaded(loaded) => {
                     let (c, ids) = *loaded;
+                    // Unsent text stays with its channel, as in the egui client.
+                    if let Some(old) = self.ids.channels.get(self.c.channel).cloned() {
+                        let text = std::mem::take(&mut self.composer.text);
+                        if text.is_empty() {
+                            self.drafts.remove(&old);
+                        } else {
+                            self.drafts.insert(old, text);
+                        }
+                    }
                     self.ids = ids;
                     self.status = None;
                     self.close_signin()?;
                     self.set_conversation(c)?;
+                    let new = self.ids.channels.get(self.c.channel);
+                    self.composer.text = new
+                        .and_then(|id| self.drafts.remove(id))
+                        .unwrap_or_default();
+                    self.composer.caret = self.composer.text.len();
+                    self.composer.anchor = self.composer.caret;
+                    self.composer.comp.clear();
+                    self.composer_changed();
                 }
                 live::Update::Message(m) => {
                     let Some((author, grouped)) = self.ids.place(&m) else {
@@ -704,6 +724,15 @@ impl App {
     }
 
     pub fn select_space(&mut self, i: usize) {
+        if let Some(live) = &mut self.live {
+            // Its first joined channel opens once the worker has read it.
+            if i != self.c.space
+                && let Some(id) = self.ids.spaces.get(i)
+            {
+                live.navigate(Some(id.clone()), None);
+            }
+            return;
+        }
         if i != self.c.space && i < self.c.spaces.len() {
             self.c.space = i;
             self.dirty.rail = true;
@@ -713,6 +742,15 @@ impl App {
     }
 
     pub fn select_channel(&mut self, i: usize) {
+        if let Some(live) = &mut self.live {
+            if i != self.c.channel
+                && let Some(id) = self.ids.channels.get(i)
+            {
+                let space = self.ids.spaces.get(self.c.space).cloned();
+                live.navigate(space, Some(id.clone()));
+            }
+            return;
+        }
         if i != self.c.channel && i < self.c.channels.len() {
             self.c.channel = i;
             self.dirty.sidebar = true;
