@@ -371,7 +371,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = AppUiState(screen = SessionScreen.Loading, busy = true)
         viewModelScope.launch {
             try {
-                val stored = tokens.read()
+                // Android Keystore decryption is a binder round trip: keep it off the main thread at launch.
+                val stored = withContext(Dispatchers.IO) { tokens.read() }
                 val account = if (stored == null) null else try {
                     api.me(stored).also { accountToken = stored }
                 } catch (error: ApiException) {

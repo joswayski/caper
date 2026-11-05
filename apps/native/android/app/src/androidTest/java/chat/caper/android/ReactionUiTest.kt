@@ -47,8 +47,8 @@ class ReactionUiTest {
         var pickers = 0
         compose.setContent {
             CaperTheme {
-                ReactionMessageRow(message.copy(reactions = if (showReactions.value) message.reactions else emptyList()), AppUiState(chatAuthorId = "self",
-                    selectedChannel = Channel("channel00001", "space0000001", "general", private = false, joined = true)),
+                ReactionMessageRow(message.copy(reactions = if (showReactions.value) message.reactions else emptyList()), rememberMessageRowState(AppUiState(chatAuthorId = "self",
+                    selectedChannel = Channel("channel00001", "space0000001", "general", private = false, joined = true))),
                     { _, _, _ -> reactions++ }, { _, _ -> }, { _, _ -> },
                     openReactors = { _, _ -> }, openAuthor = { profiles++ },
                     openPicker = { pickers++ },
@@ -94,7 +94,7 @@ class ReactionUiTest {
                 Scaffold(containerColor = Blackout) { padding ->
                     Column(Modifier.padding(padding)) {
                         Text("Reaction UI test fixture")
-                        ReactionMessageRow(message, state.value,
+                        ReactionMessageRow(message, rememberMessageRowState(state.value),
                             { id, emoji, active -> submitted = Triple(id, emoji, active) }, { _, _ -> }, { _, _ -> },
                             openReactors = { _, _ -> }, openPicker = { picker.value = true }) { target.value = it }
                     }
@@ -204,7 +204,7 @@ class ReactionUiTest {
                 Scaffold(containerColor = Blackout) { padding ->
                     Column(Modifier.padding(padding)) {
                         Text("Who reacted UI test fixture")
-                        ReactionMessageRow(message.value, state.value,
+                        ReactionMessageRow(message.value, rememberMessageRowState(state.value),
                             { id, emoji, active -> submitted = Triple(id, emoji, active) }, { _, _ -> }, { _, _ -> },
                             openReactors = { _, emoji -> target.value = emoji }) {}
                     }

@@ -41,7 +41,7 @@ import java.util.UUID
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable private fun SharedOriginal(
-    message: ChatMessage, state: AppUiState? = null, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
+    message: ChatMessage, state: MessageRowState? = null, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
     forwardOwnerId: String? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -83,7 +83,7 @@ import java.util.UUID
 }
 
 @Composable internal fun ForwardCard(
-    message: ChatMessage, state: AppUiState? = null, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> }, open: () -> Unit,
+    message: ChatMessage, state: MessageRowState? = null, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> }, open: () -> Unit,
 ) {
     val forward = message.forward ?: return
     Surface(Modifier.padding(start = 62.dp, end = 18.dp, bottom = 8.dp).fillMaxWidth(), shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {

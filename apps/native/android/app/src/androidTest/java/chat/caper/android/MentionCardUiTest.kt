@@ -51,7 +51,7 @@ class MentionCardUiTest {
                 Scaffold(containerColor = Blackout) { padding ->
                     Column(Modifier.padding(padding)) {
                         Text("Mention card UI test fixture")
-                        ReactionMessageRow(message, state, { _, _, _ -> }, { _, _ -> }, { _, _ -> },
+                        ReactionMessageRow(message, rememberMessageRowState(state), { _, _, _ -> }, { _, _ -> }, { _, _ -> },
                             openReactors = { _, _ -> }, openMention = { target.value = it }) { actions++ }
                     }
                 }

@@ -1328,8 +1328,8 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
                 )
                 sections.forEach { (title, rows) ->
                     if (rows.isNotEmpty()) {
-                        item(key = "${quiet}-$title") { GroupLabel(title, rows.size, primary = false) }
-                        items(rows, key = { it.id }) { member ->
+                        item(key = "${quiet}-$title", contentType = "label") { GroupLabel(title, rows.size, primary = false) }
+                        items(rows, key = { it.id }, contentType = { "member" }) { member ->
                             MemberRow(member, quiet = quiet || state.presence[member.id] == "offline", ring = ring)
                         }
                     }
@@ -1341,11 +1341,11 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
                 val rest = shown.filter { it.id !in readers }
                 // Private readers lead; the rest of the space follows, quieter.
                 if (top.isNotEmpty()) {
-                    item(key = "in-channel") { GroupLabel("In #${channel?.name.orEmpty()}", top.size, primary = true) }
+                    item(key = "in-channel", contentType = "label") { GroupLabel("In #${channel?.name.orEmpty()}", top.size, primary = true) }
                     presenceSections(top, quiet = false, ring = SurfaceSidebar)
                 }
                 if (rest.isNotEmpty()) {
-                    item(key = "others") { GroupLabel("Others in this space", rest.size, primary = false) }
+                    item(key = "others", contentType = "label") { GroupLabel("Others in this space", rest.size, primary = false) }
                     presenceSections(rest, quiet = true, ring = SurfaceSidebar)
                 }
             } else {
@@ -2291,15 +2291,24 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var mentionTarget by remember { mutableStateOf<MentionCard?>(null) }
     // Above the list, so new messages scrolling a row away don't close its viewer.
     val viewerHost = remember { MediaViewerHost() }
-    val messages = (if (inThread) state.displayedMessages else state.displayedChannelMessages).filter { it.deletedAt == null }
+    // Remembered from the fields they derive from: typing, presence and the composer recompose this
+    // timeline, and must not refilter, reproject and deep-compare the whole history each time.
+    val messages = remember(inThread, state.messages, state.threadOnlyRows, state.contextStart, state.contextEnd, state.pinIntents, state.editIntents) {
+        (if (inThread) state.displayedMessages else state.displayedChannelMessages).filter { it.deletedAt == null }
+    }
+    val rowState = rememberMessageRowState(state)
+    // Profile and mention taps read the newest state, so the row callbacks stay the same instances.
+    val latest by rememberUpdatedState(state)
     // Runs of blocked authors' messages collapse; Show reveals one run, in memory only.
     var revealedRuns by remember { mutableStateOf(emptySet<String>()) }
     var blockTarget by remember { mutableStateOf<BlockedAccount?>(null) }
     val selfId = state.chatAuthorId ?: state.account?.id
-    val blocked = state.blockedIds
+    val blocked = rowState.blockedIds
     val rows = remember(messages, blocked, selfId, revealedRuns) { timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns)) }
     val newMessagesId = if (!inThread && state.visit == null && !state.feedbackShown && state.selectedDirectId == null && state.selectedChannel?.direct == false)
-        chat.caper.android.data.channelNewMessagesId(state.channelMessages, state.channelVisitUnread, state.hasMoreMessages, blocked, selfId) else null
+        remember(state.messages, state.threadOnlyRows, state.contextStart, state.contextEnd, state.channelVisitUnread, state.hasMoreMessages, blocked, selfId) {
+            chat.caper.android.data.channelNewMessagesId(state.channelMessages, state.channelVisitUnread, state.hasMoreMessages, blocked, selfId)
+        } else null
     // Recheck while stationary too: foreground return and failed acknowledgements need no scroll.
     // The bottom of a real reply must be visible (also works for replies taller than the viewport).
     LaunchedEffect(inThread, state.selectedChannel?.id, state.thread, rows) {
@@ -2318,12 +2327,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
     }
     val listedPending = state.pendingMessage?.takeIf { inThread || it.threadRootId == null }
+    val clientIds = remember(messages, listedPending?.clientMessageId) { messages.map { it.clientMessageId } + listOfNotNull(listedPending?.clientMessageId) }
     // Rows sent or received while the reader is at the live end settle in; see Arrivals.
     val arrivals = remember { Arrivals() }
     arrivals.observe(
         if (inThread) "thread" else "channel",
         (if (inThread) state.thread?.rootId else state.selectedChannel?.id).orEmpty(),
-        messages.map { it.clientMessageId } + listOfNotNull(listedPending?.clientMessageId),
+        clientIds,
         !state.messagesLoading && state.messagesError == null &&
             if (inThread) state.thread?.let { !it.loading && !it.hasNewer } == true else !state.hasNewerMessages && !state.loadingNewer,
     )
@@ -2372,7 +2382,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val keys = remember(rows) { rows.map { it.key } }
     val threadPaging = state.thread?.loading == true && !skeleton
     FollowLatest(listState, follow, FollowFrame(keys, listedPending?.clientMessageId,
-        clientIds = messages.map { it.clientMessageId } + listOfNotNull(listedPending?.clientMessageId),
+        clientIds = clientIds,
         loadingOlder = if (inThread) threadPaging else state.loadingOlder,
         historical = if (inThread) state.thread?.hasNewer == true else state.hasNewerMessages,
         loadingNewer = if (inThread) threadPaging && state.thread?.hasNewer == true else state.loadingNewer,
@@ -2380,7 +2390,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
         firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton, displacement = displacement)
     CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth().displacementViewport(displacement), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
-        if (!inThread) item {
+        if (!inThread) item(contentType = "history") {
             HistoryRow {
                 when {
                     state.olderError != null -> { Text("Couldn’t load older messages.", color = TextMuted, fontSize = 11.sp); HistoryButton("Retry", onClick = viewModel::loadOlder) }
@@ -2390,7 +2400,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
         // Keep the message keys stable while inserting purely presentational day boundaries.
-        items(rows, key = { it.key }) { row ->
+        items(rows, key = { it.key }, contentType = { if (it is TimelineRow.Blocked) "blocked" else "message" }) { row ->
             val message = row.first
             val previous = row.previous
             val divider = previous == null || !sameLocalDay(previous.createdAt, message.createdAt)
@@ -2426,11 +2436,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         if (message.pin.author.id == (state.account?.id ?: state.chatAuthorId)) Terracotta.copy(alpha = 0.12f) else PinGoldWash
                     } else Color.Transparent))) {
                     ReactionMessageRow(
-                        message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
+                        message, rowState, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                         openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
                         openPicker = { pickerTarget = it },
-                        openMention = { mentionTarget = mentionCard(it.id, it.username, state) },
-                        openAuthor = { mentionTarget = authorCard(it, state) },
+                        openMention = { mentionTarget = mentionCard(it.id, it.username, latest) },
+                        openAuthor = { mentionTarget = authorCard(it, latest) },
                         openActions = { actionTarget = it },
                         // A reply to a deleted or unavailable message says so instead of doing nothing.
                         openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId), notify = true) {} },
@@ -2464,10 +2474,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         }
-        if (skeleton) item("thread-loading") {
+        if (skeleton) item("thread-loading", contentType = "skeleton") {
             MessageSkeleton(rows = 2, label = "Loading thread replies")
         }
-        listedPending?.let { pending -> item("pending:${pending.clientMessageId}") {
+        listedPending?.let { pending -> item("pending:${pending.clientMessageId}", contentType = "pending") {
             Column(Modifier.displacement(displacement, listState, "pending:${pending.clientMessageId}")) {
                 if (messages.lastOrNull()?.createdAt?.let { sameLocalDay(it, pending.createdAt) } != true) {
                     DateDivider(pending.createdAt)
@@ -2476,14 +2486,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 val grouped = groupsWithPrevious((rows.lastOrNull() as? TimelineRow.Message)?.message, pending.author?.id ?: selfId, pending.createdAt,
                     pending.threadRootId, threadContext = pending.replyTo != null, jumpTarget = state.focusedMessageId)
                 Column(Modifier.arrival(arrivals, pending.clientMessageId)) {
-                    pending.replyTo?.let { ReplyContext(it, state, pending.clientMessageId) }
+                    pending.replyTo?.let { ReplyContext(it, rowState, pending.clientMessageId) }
                     MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped,
                         avatarAsset = pending.author?.avatarAsset, avatarUrl = pending.author?.avatarUrl, gif = pending.gif, embeds = pending.embeds)
                     Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
                 }
             }
         } }
-        if (empty) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+        if (empty) item(contentType = "empty") { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
             // Inset like messages, so longer notes wrap clear of the edges on phones.
             Column(Modifier.padding(horizontal = 18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 if (state.selectedDirect?.let { it.peer.id == state.account?.id } == true) {
@@ -2500,7 +2510,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         } }
-        if (newer) item {
+        if (newer) item(contentType = "history") {
             HistoryRow {
                 HistoryButton(if (state.loadingNewer) "Loading…" else "Load newer messages", !state.loadingNewer, viewModel::loadNewer)
                 HistoryButton("Back to latest", onClick = viewModel::retryMessages)
@@ -2778,9 +2788,49 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     }
 }
 
+/**
+ * The part of [AppUiState] that message rows read ([rememberMessageRowState]). Rows take this instead
+ * of the whole state, so presence, typing, voice and other conversation-wide updates skip them.
+ */
+@androidx.compose.runtime.Immutable internal class MessageRowState(
+    /** For mention and profile lookups ([mentionCard]): only the account, people, space members and DM peers are set. */
+    val directory: AppUiState,
+    val canParticipate: Boolean,
+    val focusedMessageId: String?,
+    val threadRootId: String?,
+    val blockedIds: Set<String>,
+    /** Failed reaction saves by message ID, in save order. */
+    val reactionErrors: Map<String, List<ReactionSaveUi>>,
+    val pinSaves: Map<String, PinSaveUi>,
+    val freshAttachmentUrls: Map<String, AttachmentUrls>,
+    val attachmentProgress: Map<String, Int>,
+    val localAttachmentPreviews: Map<String, String>,
+) {
+    val account get() = directory.account
+    val chatAuthorId get() = directory.chatAuthorId
+}
+
+/** Keeps the same [MessageRowState] while the fields rows read are unchanged. */
+@Composable internal fun rememberMessageRowState(state: AppUiState): MessageRowState {
+    val directory = remember(state.account, state.chatAuthorId, state.people, state.selectedSpace, state.directConversations) {
+        AppUiState(account = state.account, chatAuthorId = state.chatAuthorId, people = state.people, selectedSpace = state.selectedSpace, directConversations = state.directConversations)
+    }
+    val blockedIds = remember(state.blocks) { state.blockedIds }
+    // Reaction keys are "<message ID>:<emoji>"; message IDs never contain a colon.
+    val reactionErrors = remember(state.reactionSaves) {
+        state.reactionSaves.entries.filter { it.value.error != null }.groupBy({ it.key.substringBefore(':') }, { it.value })
+    }
+    val canParticipate = state.canParticipate
+    return remember(directory, canParticipate, state.focusedMessageId, state.thread?.rootId, blockedIds, reactionErrors,
+        state.pinSaves, state.freshAttachmentUrls, state.attachmentProgress, state.localAttachmentPreviews) {
+        MessageRowState(directory, canParticipate, state.focusedMessageId, state.thread?.rootId, blockedIds, reactionErrors,
+            state.pinSaves, state.freshAttachmentUrls, state.attachmentProgress, state.localAttachmentPreviews)
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun ReactionMessageRow(
-    message: ChatMessage, state: AppUiState,
+    message: ChatMessage, state: MessageRowState,
     setReaction: (String, String, Boolean) -> Unit,
     retryReaction: (String, String) -> Unit,
     dismissReactionError: (String, String) -> Unit,
@@ -2803,14 +2853,13 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
 ) {
     val own = state.chatAuthorId ?: state.account?.id
     val canReact = state.canParticipate && own != null
-    val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
     val interaction = remember(message.id) { MutableInteractionSource() }
     val pressing by interaction.collectIsPressedAsState()
     // A deleted message keeps its header and place, without its content, quote, forward, pin or reactions.
     val deleted = message.deletedAt != null
     // Pin ownership takes precedence over the mention wash; inline mention pills remain visible.
     val mentioned = message.pin == null && mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
-    val replyWash = !deleted && message.replyTo != null && message.pin == null && state.focusedMessageId != message.id && state.thread?.rootId != message.id
+    val replyWash = !deleted && message.replyTo != null && message.pin == null && state.focusedMessageId != message.id && state.threadRootId != message.id
     val replyToMe = replyWash && own != null && message.author.id != own && message.replyTo?.author?.id == own
     Column((if (!mentioned && !replyToMe) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = if (replyToMe) 0.12f else 0.08f)).drawBehind {
         val edge = 2.dp.toPx()
@@ -2841,7 +2890,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
             onClick = { openMessage?.invoke() },
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
-        )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
+        )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state.directory).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
         // A team mention (`@feedback`, `@admin`, …): the server told the Caper team, who can read and reply here.
         if (!deleted && notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 2.dp), color = TextMuted, fontSize = 11.sp)
         if (!deleted) Box(Modifier.combinedClickable(
@@ -2864,7 +2913,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
                 }
             }
         }
-        saves.filter { it.error != null }.forEach { save ->
+        state.reactionErrors[message.id].orEmpty().forEach { save ->
             Column(Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp)) {
                 Text(save.error ?: "Reaction could not be saved.", color = ErrorText, fontSize = 11.sp)
                 Row {
@@ -3013,13 +3062,14 @@ private val quickReactions = listOf("👍", "❤️", "😂")
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pinnerTarget by remember { mutableStateOf<ChatAuthor?>(null) }
     LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { conversationTarget = null; editTarget = null; deleteTarget = null; historyTarget = null; pinnerTarget = null }
+    val rowState = rememberMessageRowState(state)
     // Each pin is its own card: a gap keeps their washes from running together.
     LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         state.messageContextError?.let { error -> item { Text(error, Modifier.padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText) } }
         if (state.displayedPins.isEmpty()) item {
             Text("No pinned messages.", Modifier.fillMaxWidth().padding(24.dp), color = TextMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
         }
-        items(state.displayedPins, key = { "pin:${it.id}" }) { message ->
+        items(state.displayedPins, key = { "pin:${it.id}" }, contentType = { "pin" }) { message ->
             val goToMessage: () -> Unit = {
                 if (!state.loadingMessageContext) {
                     pinnerTarget = null
@@ -3027,7 +3077,7 @@ private val quickReactions = listOf("👍", "❤️", "😂")
                 }
             }
             Column(Modifier.clip(MaterialTheme.shapes.small).background(if (message.pin?.author?.id == (state.account?.id ?: state.chatAuthorId)) Terracotta.copy(alpha = 0.12f) else PinGoldWash)) {
-                ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
+                ReactionMessageRow(message, rowState, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
                     openPicker = { pickerTarget = it },
                     inPins = true, openMessage = goToMessage,
@@ -3159,7 +3209,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
         }
     }
 }
-@Composable private fun ReplyContext(reference: MessageReply, state: AppUiState, motionKey: String, onOpen: (() -> Unit)? = null) {
+@Composable private fun ReplyContext(reference: MessageReply, state: MessageRowState, motionKey: String, onOpen: (() -> Unit)? = null) {
     val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
     val text = if (reference.deleted) DELETED_REPLY else (reference.fullText ?: reference.text).ifEmpty { VoiceMessages.excerptLabel(reference.attachments, reference.hasAttachments) }
     var expanded by rememberSaveable(reference.id, hidden) { mutableStateOf(false) }
@@ -3298,7 +3348,7 @@ internal const val DELETED_REPLY = "Original message was deleted."
 
 /** A delivered message: its files on fresh URLs with their live processing state, and its resolved mentions. */
 @Composable private fun MessageRow(
-    message: ChatMessage, state: AppUiState, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
+    message: ChatMessage, state: MessageRowState, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
     openMention: ((MessageMention) -> Unit)? = null, mentionLabel: (MessageMention) -> String = { "@${it.username}" },
     openAuthor: ((ChatAuthor) -> Unit)? = null,
     grouped: Boolean = false, openHistory: () -> Unit = {},
