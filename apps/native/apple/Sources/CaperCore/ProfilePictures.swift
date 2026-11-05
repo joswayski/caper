@@ -377,14 +377,14 @@ public enum ProfilePictureUploader {
 
 /// A decoded picture: every frame of an animated GIF within the display
 /// budget, or one still. Immutable, so the cache and views share it.
-final class ProfilePictureFrames: @unchecked Sendable {
-    let images: [CGImage]
+public final class ProfilePictureFrames: @unchecked Sendable {
+    public let images: [CGImage]
     /// Seconds per frame; empty for a still.
-    let durations: [Double]
+    public let durations: [Double]
 
     init(images: [CGImage], durations: [Double]) { self.images = images; self.durations = durations }
 
-    var animated: Bool { images.count > 1 }
+    public var animated: Bool { images.count > 1 }
     /// Retained pixel bytes, the cache cost.
     var cost: Int { images.reduce(0) { $0 + $1.bytesPerRow * $1.height } }
 }
@@ -426,8 +426,8 @@ enum ProfilePictureDecoder {
 /// share a single download and decode. The downloaded files are cached by
 /// asset too (the session is ephemeral), within a smaller budget.
 @MainActor
-final class ProfilePictureLoader {
-    static let shared = ProfilePictureLoader()
+public final class ProfilePictureLoader {
+    public static let shared = ProfilePictureLoader()
 
     private let cache = NSCache<NSString, ProfilePictureFrames>()
     private let files = NSCache<NSString, NSData>()
@@ -446,13 +446,13 @@ final class ProfilePictureLoader {
         files.totalCostLimit = ProfilePicturePolicy.fileCacheBytes
     }
 
-    nonisolated static func key(asset: String, pixelSize: Int) -> String { "\(asset):\(pixelSize)" }
+    public nonisolated static func key(asset: String, pixelSize: Int) -> String { "\(asset):\(pixelSize)" }
 
-    func cached(_ key: String) -> ProfilePictureFrames? { cache.object(forKey: key as NSString) }
+    public func cached(_ key: String) -> ProfilePictureFrames? { cache.object(forKey: key as NSString) }
 
     /// The decoded picture, or nil when it can't load (the caller keeps
     /// showing the mascot or initial).
-    func load(asset: String, url: URL, pixelSize: Int) async -> ProfilePictureFrames? {
+    public func load(asset: String, url: URL, pixelSize: Int) async -> ProfilePictureFrames? {
         let key = Self.key(asset: asset, pixelSize: pixelSize)
         if let hit = cached(key) { return hit }
         if let failure = failures[key],

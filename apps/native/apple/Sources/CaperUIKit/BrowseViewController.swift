@@ -178,7 +178,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         let account = model.account
         let name = account?.displayName ?? account?.username ?? ""
         accountName.text = name
-        accountAvatar.show(name: name, avatarID: account?.avatarId)
+        accountAvatar.show(name: name, avatarID: account?.avatarId, picture: account?.avatarPicture)
         identity.accessibilityLabel = name.isEmpty ? nil : "Signed in as \(name)"
     }
 

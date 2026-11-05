@@ -20,12 +20,14 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     var browse: (() -> Void)?
 
     private let header = UIView()
-    private let channelTitle = UIKitStyle.label(size: 17, weight: .bold)
-    private let subtitle = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
-    private lazy var back = IconButton(icon: "arrow-left", label: "Back to Browse", size: 22) { [weak self] in self?.browse?() }
+    private let channelTitle = UIKitStyle.label(size: 14, weight: .bold)
+    private let subtitle = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
+    private lazy var back = IconButton(icon: "arrow-left", label: "Back to Browse", size: 20) { [weak self] in self?.browse?() }
     private let status = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
     private let typing = UIKitStyle.label(size: 11, weight: .medium, color: UIKitStyle.muted)
     private let composer = ComposerView()
+    private lazy var members = MembersPanel(model: model)
+    private var lastFocusRevision = 0
     private var collection: UICollectionView!
     private var dataSource: UICollectionViewDiffableDataSource<Int, Item>!
 
@@ -56,6 +58,14 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         buildHeader()
         buildTimeline()
         buildComposer()
+        view.addSubview(members)
+        NSLayoutConstraint.activate([
+            members.topAnchor.constraint(equalTo: header.bottomAnchor),
+            members.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            members.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            members.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        lastFocusRevision = model.chat.focusRevision
         timelineObserver.start { [weak self] in self?.render() }
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _) in
             // Message text is sized from the reader's text size; re-render every row.
@@ -71,41 +81,101 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private func buildHeader() {
         header.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(header)
-        let titles = UIStackView(arrangedSubviews: [channelTitle, subtitle])
-        titles.axis = .vertical
-        titles.spacing = 0
-        titles.translatesAutoresizingMaskIntoConstraints = false
-        titles.isAccessibilityElement = true
-        titles.accessibilityTraits = .header
-        titles.accessibilityIdentifier = "conversation-title"
-        self.titles = titles
-        back.tintColor = UIKitStyle.text
+        back.tintColor = UIKitStyle.muted
         back.accessibilityIdentifier = "back-to-browse"
+
+        // Phones: the name is the conversation's menu, as in Slack, holding Pins
+        // and Members. It fills the header's width.
+        chevron.tintColor = UIKitStyle.muted
+        chevron.contentMode = .center
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+        channelTitle.lineBreakMode = .byTruncatingTail
+        channelTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let titleRow = UIStackView(arrangedSubviews: [channelTitle, chevron])
+        titleRow.spacing = 4
+        titleRow.alignment = .center
+        let titles = UIStackView(arrangedSubviews: [titleRow, subtitle])
+        titles.axis = .vertical
+        titles.alignment = .leading
+        titles.spacing = 1
+        titles.isUserInteractionEnabled = false
+        titles.translatesAutoresizingMaskIntoConstraints = false
+        titleMenu.translatesAutoresizingMaskIntoConstraints = false
+        titleMenu.showsMenuAsPrimaryAction = true
+        titleMenu.accessibilityIdentifier = "channel-title-menu"
+        titleMenu.addSubview(titles)
+        titleMenu.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            completion(self?.titleMenuItems() ?? [])
+        }])
+        connection.setContentHuggingPriority(.required, for: .horizontal)
+        connection.setContentCompressionResistancePriority(.required, for: .horizontal)
+        connection.accessibilityIdentifier = "chat-connection-status"
+        connection.isHidden = true
         let rule = UIView()
         rule.backgroundColor = UIKitStyle.border
         rule.translatesAutoresizingMaskIntoConstraints = false
-        header.addSubview(back)
-        header.addSubview(titles)
-        header.addSubview(rule)
+        [back, titleMenu, connection, rule].forEach(header.addSubview)
+        // The conversation's name for VoiceOver's heading rotor, beside its menu, as on web.
+        heading.accessibilityTraits = .header
+        heading.accessibilityIdentifier = "selected-channel-name"
+        header.accessibilityElements = [back, heading, titleMenu, connection]
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             header.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            header.heightAnchor.constraint(equalToConstant: 52).withPriority(.defaultHigh),
+            header.heightAnchor.constraint(equalToConstant: 50),
             back.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 13),
             back.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            titles.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 8),
-            titles.trailingAnchor.constraint(lessThanOrEqualTo: header.trailingAnchor, constant: -18),
-            titles.topAnchor.constraint(greaterThanOrEqualTo: header.topAnchor, constant: 4),
-            titles.bottomAnchor.constraint(lessThanOrEqualTo: header.bottomAnchor, constant: -4),
-            titles.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            titleMenu.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 5),
+            titleMenu.topAnchor.constraint(equalTo: header.topAnchor, constant: 3),
+            titleMenu.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -3),
+            titles.leadingAnchor.constraint(equalTo: titleMenu.leadingAnchor, constant: 6),
+            titles.trailingAnchor.constraint(lessThanOrEqualTo: titleMenu.trailingAnchor, constant: -6),
+            titles.centerYAnchor.constraint(equalTo: titleMenu.centerYAnchor),
+            connection.leadingAnchor.constraint(equalTo: titleMenu.trailingAnchor, constant: 5),
+            connection.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -10),
+            connection.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             rule.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             rule.trailingAnchor.constraint(equalTo: header.trailingAnchor),
             rule.bottomAnchor.constraint(equalTo: header.bottomAnchor),
             rule.heightAnchor.constraint(equalToConstant: 1),
         ])
     }
-    private var titles: UIStackView!
+    private let titleMenu = UIButton(type: .custom)
+    private let chevron = UIImageView(image: UIKitStyle.icon("chevron-down")?.resized(to: 14))
+    private let connection = UIKitStyle.label(size: 11, weight: .bold, color: UIKitStyle.muted)
+    private lazy var heading = UIAccessibilityElement(accessibilityContainer: header)
+    private var connectionTimer: Timer?
+
+    /// Pins, then Members with the space's count.
+    private func titleMenuItems() -> [UIMenuElement] {
+        var items: [UIMenuElement] = [
+            UIAction(title: "Pins", image: UIKitStyle.icon("pin")) { [weak self] _ in self?.showPins() },
+        ]
+        if membersAvailable {
+            let title = members.isOpen ? "Hide members" : "Members"
+            items.append(UIAction(title: memberCount.map { "\(title) · \($0)" } ?? title, image: UIKitStyle.icon("users")) { [weak self] _ in
+                self?.toggleMembers()
+            })
+        }
+        return items
+    }
+
+    private func toggleMembers() {
+        if members.isOpen { members.close() } else { view.endEditing(true); members.open() }
+    }
+
+    private func showPins() {
+        let pins = PinsViewController(model: model)
+        if let sheet = pins.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+        }
+        present(pins, animated: true)
+    }
+
+    /// The member list applies to a channel, not a preview.
+    private var membersAvailable: Bool { isLive && !model.previewingChannel && model.detail != nil }
 
     private func buildTimeline() {
         let size = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .estimated(64))
@@ -199,9 +269,15 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let live = isLive
         let channelID = live ? model.selectedChannelID : cached?.channelID
         let channelName = live ? (model.selectedChannel?.name ?? chat.channelName) : (cached?.channelName ?? "")
-        channelTitle.text = channelName.isEmpty ? "" : "# \(channelName)"
+        let title = channelName.isEmpty ? "" : "# \(channelName.lowercased())"
+        channelTitle.text = title
         subtitle.text = memberSummary(live: live, channelID: channelID)
-        titles.accessibilityLabel = [channelName.isEmpty ? nil : "\(channelName) channel", subtitle.text].compactMap { $0 }.joined(separator: ", ")
+        subtitle.isHidden = subtitle.text == nil
+        heading.accessibilityLabel = title
+        titleMenu.accessibilityLabel = "#\(channelName.lowercased()) options"
+        titleMenu.accessibilityValue = subtitle.text
+        titleMenu.isEnabled = live
+        renderConnection(live ? chat.liveState : .connected)
 
         var messages: [ChatMessage]
         var pending: PendingMessage?
@@ -258,7 +334,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             let next = index + 1 < messages.count ? messages[index + 1] : nil
             let grouped = NativePresentation.grouped(message, after: previous)
             let continued = next.map { NativePresentation.sameDay(message.createdAt, $0.createdAt) && NativePresentation.grouped($0, after: message) } ?? false
-            nextRows[message.clientMessageId] = MessageRowState(message: message, grouped: grouped, continued: continued, viewerID: viewerID)
+            nextRows[message.clientMessageId] = MessageRowState(message: message, grouped: grouped, continued: continued, viewerID: viewerID,
+                                                                focused: live && model.chat.focusedMessageID == message.id)
             items.append(.row(message.clientMessageId))
             previous = message
         }
@@ -299,9 +376,18 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         self.live = live
         arriving.formUnion(appended)
 
+        // A jump (Go to message) replaces the window and centres its target.
+        let jump = live && model.chat.focusRevision != lastFocusRevision ? model.chat.focusedMessageID : nil
+        if live { lastFocusRevision = model.chat.focusRevision }
+        let jumpItem = jump.flatMap { id in messages.first { $0.id == id } }.map { Item.row($0.clientMessageId) }
+        if jumpItem != nil { followingTail = false }
+
         dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
             guard let self else { return }
-            if atTail && !(prepended && anchor != nil) {
+            if let jumpItem, let path = self.dataSource.indexPath(for: jumpItem) {
+                self.collection.layoutIfNeeded()
+                self.collection.scrollToItem(at: path, at: .centeredVertically, animated: false)
+            } else if atTail && jump == nil && !(prepended && anchor != nil) {
                 self.scrollToTail(animated: !switched && !appended.isEmpty && !UIKitStyle.reduceMotion)
             } else if let anchor {
                 self.restore(anchor)
@@ -360,8 +446,13 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let bottom = scrollView.contentSize.height + scrollView.adjustedContentInset.bottom - scrollView.bounds.height
         // Only the reader's own scrolling changes following or pages history.
         guard scrollView.isTracking || scrollView.isDecelerating else { return }
-        followingTail = scrollView.contentOffset.y >= bottom - 48
+        // After a jump the window ends before the live end: page newer history instead of following it.
+        let nearBottom = scrollView.contentOffset.y >= bottom - 48
+        followingTail = nearBottom && !model.chat.hasNewer
         if scrollView.contentOffset.y + scrollView.adjustedContentInset.top < 800 { loadOlder(force: false) }
+        if scrollView.contentOffset.y > bottom - 800, live, model.chat.hasNewer, !model.chat.loadingNewer {
+            Task { await model.chat.loadNewer() }
+        }
     }
 
     private func loadOlder(force: Bool) {
@@ -395,11 +486,35 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     // MARK: Text
 
+    /// The space's member count, under a joined channel's name (SwiftUI's headerSubtitle).
     private func memberSummary(live: Bool, channelID: String?) -> String? {
-        guard let detail = live ? model.detail : cached?.detail, let channelID,
-              let channel = detail.channels.first(where: { $0.id == channelID }) else { return nil }
-        let count = channel.private ? (detail.channelMembers[channelID]?.count ?? 0) : detail.members.count
+        guard let detail = live ? model.detail : cached?.detail, detail.space.demo != true, let channelID,
+              let channel = detail.channels.first(where: { $0.id == channelID }), channel.joined,
+              !live || !model.previewingChannel else { return nil }
+        let count = detail.members.count
         return count == 1 ? "1 member" : "\(count) members"
+    }
+
+    private var memberCount: Int? {
+        guard membersAvailable, let detail = model.detail, detail.space.demo != true, model.selectedChannel?.joined == true else { return nil }
+        return detail.members.count
+    }
+
+    /// "Offline" or "Connecting…" once the live connection has been down for a second.
+    private func renderConnection(_ state: GatewayState) {
+        guard state != .connected else {
+            connectionTimer?.invalidate(); connectionTimer = nil
+            connection.isHidden = true
+            return
+        }
+        connection.text = state == .disconnected ? "Offline" : "Connecting…"
+        guard connection.isHidden, connectionTimer == nil else { return }
+        connectionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.connectionTimer = nil
+                self?.connection.isHidden = self?.model.chat.liveState == .connected
+            }
+        }
     }
 
     static func typingLabel(_ names: [String]) -> String {

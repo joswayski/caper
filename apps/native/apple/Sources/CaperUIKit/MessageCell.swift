@@ -5,8 +5,11 @@ import UIKit
 /// read it only when they are realized.
 struct MessageRowState: Equatable {
     var id: String
+    /// The server's id; pending rows have none.
+    var messageID: String
     var authorName: String
     var avatarID: Int?
+    var picture: CaperPicture?
     var createdAt: String
     var text: String
     var mentions: [MessageMention]
@@ -19,11 +22,20 @@ struct MessageRowState: Equatable {
     var pending: Bool
     var pendingError: String?
     var pendingRejected: Bool
+    /// "you" or the pinner's name, on a pinned message.
+    var pinnedBy: String?
+    var pinMine = false
+    /// The jump target (a link or Go to message): terracotta, like web.
+    var focused = false
+    /// Pins list rows: the full date, and the card paints the background.
+    var inPins = false
 
-    init(message: ChatMessage, grouped: Bool, continued: Bool, viewerID: String?) {
+    init(message: ChatMessage, grouped: Bool, continued: Bool, viewerID: String?, focused: Bool = false, inPins: Bool = false) {
         id = message.clientMessageId
+        messageID = message.id
         authorName = message.author.name
         avatarID = message.author.avatarId
+        picture = message.author.avatarPicture
         createdAt = message.createdAt
         text = message.isDeleted ? "" : message.content.text
         mentions = message.content.mentions
@@ -36,12 +48,20 @@ struct MessageRowState: Equatable {
         pending = false
         pendingError = nil
         pendingRejected = false
+        if let pin = message.pin, !message.isDeleted {
+            pinMine = pin.author.id == viewerID
+            pinnedBy = pinMine ? "you" : pin.author.name
+        }
+        self.focused = focused && !inPins
+        self.inPins = inPins
     }
 
     init(pending: PendingMessage, author: ChatAuthor?, grouped: Bool, error: String?, rejected: Bool) {
         id = pending.id
+        messageID = ""
         authorName = author?.name ?? "Guest"
         avatarID = author?.avatarId
+        picture = author?.avatarPicture
         createdAt = pending.createdAt
         text = pending.text
         mentions = []
@@ -104,8 +124,9 @@ final class MessageTextView: UITextView, NSTextLayoutManagerDelegate {
     }
 }
 
-final class MessageCell: UICollectionViewCell {
-    static let reuse = "message"
+/// One message: avatar or grouped gutter, header, text and its notes. The
+/// timeline's cells and the Pins cards host it.
+final class MessageRowView: UIView {
     private let avatar = AvatarView(side: 34)
     private let gutter = UIView()
     private let name = UIKitStyle.label(size: 13, weight: .bold)
@@ -117,7 +138,10 @@ final class MessageCell: UICollectionViewCell {
     private let column = UIStackView()
     private let accent = UIView()
     private let tint = UIView()
+    private let pinBadge = UIKitStyle.label(size: 10, weight: .medium, color: UIKitStyle.muted)
     private var top: NSLayoutConstraint!
+    private var badgeTop: NSLayoutConstraint!
+    private var columnUnderBadge: NSLayoutConstraint!
     private var bottom: NSLayoutConstraint!
     private var avatarWidth: NSLayoutConstraint!
     private var state: MessageRowState?
@@ -128,8 +152,8 @@ final class MessageCell: UICollectionViewCell {
         tint.translatesAutoresizingMaskIntoConstraints = false
         accent.translatesAutoresizingMaskIntoConstraints = false
         accent.backgroundColor = UIKitStyle.terracotta
-        contentView.addSubview(tint)
-        contentView.addSubview(accent)
+        self.addSubview(tint)
+        self.addSubview(accent)
 
         header.axis = .horizontal
         header.alignment = .firstBaseline
@@ -155,37 +179,42 @@ final class MessageCell: UICollectionViewCell {
         gutter.addSubview(avatar)
         // The header names the author; the picture adds nothing for VoiceOver.
         gutter.accessibilityElementsHidden = true
-        contentView.addSubview(gutter)
-        contentView.addSubview(column)
+        self.addSubview(gutter)
+        self.addSubview(column)
+        pinBadge.isHidden = true
+        self.addSubview(pinBadge)
 
-        top = column.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10)
-        bottom = column.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -10)
+        top = column.topAnchor.constraint(equalTo: self.topAnchor, constant: 10)
+        badgeTop = pinBadge.topAnchor.constraint(equalTo: self.topAnchor, constant: 10)
+        columnUnderBadge = column.topAnchor.constraint(equalTo: pinBadge.bottomAnchor, constant: 5)
+        bottom = column.bottomAnchor.constraint(equalTo: self.bottomAnchor, constant: -10)
         bottom.priority = .init(999)
         avatarWidth = gutter.widthAnchor.constraint(equalToConstant: 34)
         NSLayoutConstraint.activate([
-            tint.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            tint.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            tint.topAnchor.constraint(equalTo: contentView.topAnchor),
-            tint.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            accent.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            tint.leadingAnchor.constraint(equalTo: self.leadingAnchor),
+            tint.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+            tint.topAnchor.constraint(equalTo: self.topAnchor),
+            tint.bottomAnchor.constraint(equalTo: self.bottomAnchor),
+            accent.leadingAnchor.constraint(equalTo: self.leadingAnchor),
             accent.widthAnchor.constraint(equalToConstant: 3),
-            accent.topAnchor.constraint(equalTo: contentView.topAnchor),
-            accent.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            gutter.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
+            accent.topAnchor.constraint(equalTo: self.topAnchor),
+            accent.bottomAnchor.constraint(equalTo: self.bottomAnchor),
+            gutter.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: 18),
             gutter.topAnchor.constraint(equalTo: column.topAnchor),
             avatarWidth,
             avatar.topAnchor.constraint(equalTo: gutter.topAnchor),
             avatar.leadingAnchor.constraint(equalTo: gutter.leadingAnchor),
             gutter.heightAnchor.constraint(greaterThanOrEqualToConstant: 1),
             column.leadingAnchor.constraint(equalTo: gutter.trailingAnchor, constant: 10),
-            column.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
-            top, bottom,
-            contentView.heightAnchor.constraint(greaterThanOrEqualTo: gutter.heightAnchor),
+            column.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -18),
+            pinBadge.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+            pinBadge.trailingAnchor.constraint(lessThanOrEqualTo: column.trailingAnchor),
+            badgeTop, top, bottom,
+            self.heightAnchor.constraint(greaterThanOrEqualTo: gutter.heightAnchor),
         ])
         // The row contains its header and text as separate VoiceOver elements,
         // so readers can move into the text and select it.
         isAccessibilityElement = false
-        contentView.isAccessibilityElement = false
         accessibilityContainerType = .semanticGroup
     }
 
@@ -193,22 +222,31 @@ final class MessageCell: UICollectionViewCell {
 
     func configure(_ row: MessageRowState) {
         state = row
-        accessibilityIdentifier = row.pending ? "pending-message-\(row.id)" : "message-row-\(row.id)"
         // SwiftUI's grouped rows read about 4pt further apart than their 2pt padding.
-        top.constant = row.grouped ? 6 : 10
+        let topPadding: CGFloat = row.grouped ? 6 : 10
+        top.constant = topPadding
+        badgeTop.constant = topPadding
         bottom.constant = row.continued ? -2 : -10
+        // "Pinned by …" heads the row, over the text column.
+        pinBadge.isHidden = row.pinnedBy == nil
+        top.isActive = row.pinnedBy == nil
+        columnUnderBadge.isActive = row.pinnedBy != nil
+        if let pinnedBy = row.pinnedBy {
+            pinBadge.attributedText = Self.pinBadge("Pinned by \(pinnedBy)")
+            pinBadge.accessibilityLabel = "Pinned by \(pinnedBy)"
+        }
         header.isHidden = row.grouped
         avatar.isHidden = row.grouped
-        if !row.grouped { avatar.show(name: row.authorName, avatarID: row.avatarID) }
+        if !row.grouped { avatar.show(name: row.authorName, avatarID: row.avatarID, picture: row.picture) }
         name.text = row.authorName
-        let timeText = NativePresentation.time(row.createdAt)
+        let timeText = row.inPins ? Self.fullDate(row.createdAt) : NativePresentation.time(row.createdAt)
         time.text = row.pending ? (row.pendingError == nil ? "Sending…" : "") : timeText
         edited.isHidden = !row.edited
         header.accessibilityLabel = [row.authorName, row.pending ? "sending" : timeText, row.edited ? "edited" : ""]
             .filter { !$0.isEmpty }.joined(separator: ", ")
 
-        tint.backgroundColor = row.mentionsViewer ? UIKitStyle.terracotta.withAlphaComponent(0.08) : .clear
-        accent.isHidden = !row.mentionsViewer
+        tint.backgroundColor = Self.background(row)
+        accent.isHidden = !(row.focused || (row.pinnedBy == nil && row.mentionsViewer))
 
         if row.deleted {
             body.isHidden = true
@@ -226,10 +264,37 @@ final class MessageCell: UICollectionViewCell {
             note.text = lines.joined(separator: "\n")
             note.textColor = row.pendingError == nil ? UIKitStyle.muted : UIKitStyle.error
         }
-        contentView.alpha = row.pending && row.pendingError == nil ? 0.6 : 1
+        self.alpha = row.pending && row.pendingError == nil ? 0.6 : 1
         body.accessibilityLabel = row.grouped ? "\(row.authorName), \(timeText): \(body.plainText)" : body.plainText
         body.accessibilityIdentifier = "message-text-\(row.id)"
         body.accessibilityCustomActions = actions(for: row)
+    }
+
+    /// SwiftUI's rowBackground: the jump target, then pins, then mentions of you.
+    private static func background(_ row: MessageRowState) -> UIColor {
+        if row.inPins { return .clear }
+        if row.focused { return UIKitStyle.terracotta.withAlphaComponent(0.12) }
+        if row.pinnedBy != nil { return row.pinMine ? UIKitStyle.terracotta.withAlphaComponent(0.12) : UIKitStyle.pinGold.withAlphaComponent(0.06) }
+        if row.mentionsViewer { return UIKitStyle.terracotta.withAlphaComponent(0.08) }
+        return .clear
+    }
+
+    private static func pinBadge(_ text: String) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        if let icon = UIKitStyle.icon("pin")?.resized(to: 12).withTintColor(UIKitStyle.muted, renderingMode: .alwaysOriginal) {
+            let attachment = NSTextAttachment(image: icon)
+            attachment.bounds = CGRect(x: 0, y: -2, width: 12, height: 12)
+            result.append(NSAttributedString(attachment: attachment))
+            result.append(NSAttributedString(string: " "))
+        }
+        result.append(NSAttributedString(string: text))
+        return result
+    }
+
+    /// Pins show when, not just the time: "Nov 5, 2026 at 2:14 AM".
+    static func fullDate(_ value: String) -> String {
+        guard let date = UIKitStyle.date(value) else { return NativePresentation.time(value) }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 
     /// Plain runs in the body colour; pills and links keep their own.
@@ -274,24 +339,60 @@ final class MessageCell: UICollectionViewCell {
     /// everything else, and everything with Reduce Motion, appears in place.
     func arrive() {
         guard !UIKitStyle.reduceMotion else { return }
-        contentView.alpha = 0
-        contentView.transform = CGAffineTransform(translationX: 0, y: 8)
+        self.alpha = 0
+        self.transform = CGAffineTransform(translationX: 0, y: 8)
         let target = state?.pending == true && state?.pendingError == nil ? 0.6 : 1
         let animator = UIViewPropertyAnimator(duration: UIKitStyle.motionFast, timingParameters: UIKitStyle.easeOut)
         animator.addAnimations { [weak self] in
-            self?.contentView.alpha = target
-            self?.contentView.transform = .identity
+            self?.alpha = target
+            self?.transform = .identity
         }
         animator.startAnimation()
     }
 
-    override func prepareForReuse() {
-        super.prepareForReuse()
-        contentView.layer.removeAllAnimations()
-        contentView.transform = .identity
+    func prepareForReuse() {
+        self.layer.removeAllAnimations()
+        self.transform = .identity
         retry = nil
     }
 }
+
+final class MessageCell: UICollectionViewCell {
+    static let reuse = "message"
+    let row = MessageRowView()
+    var retry: (() -> Void)? {
+        get { row.retry }
+        set { row.retry = newValue }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: contentView.topAnchor),
+            row.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            row.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
+        isAccessibilityElement = false
+        contentView.isAccessibilityElement = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(_ state: MessageRowState) {
+        row.configure(state)
+        accessibilityIdentifier = state.pending ? "pending-message-\(state.id)" : "message-row-\(state.id)"
+    }
+
+    func arrive() { row.arrive() }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        row.prepareForReuse()
+    }
+}
+
 
 /// "Beginning of conversation", a history spinner, or a retry after a failed page.
 final class TimelineEdgeCell: UICollectionViewCell {

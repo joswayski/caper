@@ -95,7 +95,7 @@ final class CaperUIKitTests: XCTestCase {
         let latest = row(Self.latest)
         XCTAssertTrue(latest.waitForExistence(timeout: 30))
         XCTAssertTrue(latest.isHittable, "Opens at the newest message")
-        XCTAssertEqual(app.otherElements["conversation-title"].label.hasPrefix("general channel"), true)
+        XCTAssertEqual(app.buttons["channel-title-menu"].label, "#general options")
         screenshot("uikit-conversation")
 
         let composer = app.textViews["message-composer"]
@@ -141,12 +141,43 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertEqual(app.cells["channel-general"].value as? String, "Selected")
         screenshot("uikit-browse")
         design.tap()
-        let title = app.otherElements["conversation-title"]
+        let title = app.buttons["channel-title-menu"]
         XCTAssertTrue(title.waitForExistence(timeout: 10))
-        let switched = NSPredicate(format: "label BEGINSWITH %@", "design channel")
+        let switched = NSPredicate(format: "label == %@", "#design options")
         expectation(for: switched, evaluatedWith: title)
         waitForExpectations(timeout: 10)
         XCTAssertEqual(app.textViews["message-composer"].label, "Message #design")
+    }
+
+    /// The title is the conversation's menu: Pins and Members.
+    func testTitleMenuOpensPinsAndMembers() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let menu = app.buttons["channel-title-menu"]
+        XCTAssertEqual(menu.value as? String, "48 members")
+        menu.tap()
+        let membersItem = app.buttons["Members · 48"]
+        XCTAssertTrue(membersItem.waitForExistence(timeout: 5))
+        screenshot("uikit-title-menu")
+        app.buttons["Pins"].tap()
+        XCTAssertTrue(app.staticTexts["No pinned messages"].waitForExistence(timeout: 5))
+        screenshot("uikit-pins-empty")
+        app.buttons["close-pins"].tap()
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+
+        menu.tap()
+        XCTAssertTrue(membersItem.waitForExistence(timeout: 5))
+        membersItem.tap()
+        let list = app.collectionViews["member-list"]
+        let shown = list.waitForExistence(timeout: 5)
+        sleep(1)
+        screenshot("uikit-members")
+        XCTAssertTrue(shown)
+        let owner = list.descendants(matching: .any)["member-fixture_owner"]
+        XCTAssertTrue(owner.waitForExistence(timeout: 10))
+        XCTAssertEqual(owner.value as? String, "online")
+        app.buttons["Close member list"].tap()
+        XCTAssertFalse(list.exists)
     }
 
     /// VoiceOver reads who and when from each row's header and can move into

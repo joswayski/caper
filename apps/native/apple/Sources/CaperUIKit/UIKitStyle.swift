@@ -88,6 +88,18 @@ enum UIKitStyle {
         UIImage(named: "caper-\(name)")?.withRenderingMode(.alwaysTemplate)
     }
 
+    static let pinGold = UIColor(CaperTheme.pinGold)
+    static let sidebarRaised = UIColor(CaperTheme.sidebarRaised)
+
+    private static let fractionalDates: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let wholeDates = ISO8601DateFormatter()
+    /// A server timestamp, with or without fractional seconds.
+    static func date(_ value: String) -> Date? { fractionalDates.date(from: value) ?? wholeDates.date(from: value) }
+
     static var reduceMotion: Bool { UIAccessibility.isReduceMotionEnabled }
     /// shared/design.css --motion-fast and --ease-out.
     static let motionFast: TimeInterval = 0.16
@@ -180,8 +192,7 @@ extension UIImage {
     }
 }
 
-/// The saved mascot for an account, or its initial (SwiftUI's Avatar). Custom
-/// pictures arrive in a later milestone; the mascot keeps its place meanwhile.
+/// The saved mascot for an account, or its initial (SwiftUI's Avatar).
 enum AvatarImages {
     private static let bundle = Bundle(for: AppModel.self)
     private static var cache: [Int: UIImage] = [:]
@@ -193,12 +204,23 @@ enum AvatarImages {
         cache[index] = image
         return image
     }
+
+    /// Decoded picture frames as a UIImage: GIFs play unless Reduce Motion is on.
+    static func image(_ frames: ProfilePictureFrames, scale: CGFloat) -> UIImage? {
+        guard let first = frames.images.first else { return nil }
+        guard frames.animated, !UIKitStyle.reduceMotion else { return UIImage(cgImage: first, scale: scale, orientation: .up) }
+        let images = frames.images.map { UIImage(cgImage: $0, scale: scale, orientation: .up) }
+        return UIImage.animatedImage(with: images, duration: frames.durations.reduce(0, +))
+    }
 }
 
+/// A person's custom picture, else their saved mascot, else their initial.
 final class AvatarView: UIView {
     private let imageView = UIImageView()
     private let initial = UILabel()
     private let side: CGFloat
+    private var pictureKey: String?
+    private var loading: Task<Void, Never>?
 
     init(side: CGFloat) {
         self.side = side
@@ -220,11 +242,37 @@ final class AvatarView: UIView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func show(name: String, avatarID: Int?) {
-        let image = AvatarImages.image(avatarID: avatarID)
+    func show(name: String, avatarID: Int?, picture: CaperPicture? = nil) {
+        let scale = window?.screen.scale ?? UIScreen.main.scale
+        let pixelSize = ProfilePicturePolicy.displayPixelSize(points: side, scale: scale)
+        let key = picture.map { ProfilePictureLoader.key(asset: $0.asset, pixelSize: pixelSize) }
+        if let key, key == pictureKey, imageView.contentMode == .scaleAspectFill { return }
+        loading?.cancel()
+        loading = nil
+        pictureKey = key
+        if let key, let frames = ProfilePictureLoader.shared.cached(key), let image = AvatarImages.image(frames, scale: scale) {
+            showPicture(image)
+            return
+        }
+        let mascot = AvatarImages.image(avatarID: avatarID)
+        imageView.contentMode = .scaleAspectFit
+        imageView.image = mascot
+        backgroundColor = mascot == nil ? UIKitStyle.raised : .clear
+        initial.text = mascot == nil ? String(name.prefix(1)).uppercased() : nil
+        guard let picture, let key else { return }
+        // The mascot holds the place until the picture decodes; a failure keeps it.
+        loading = Task { @MainActor [weak self] in
+            guard let frames = await ProfilePictureLoader.shared.load(asset: picture.asset, url: picture.url, pixelSize: pixelSize),
+                  !Task.isCancelled, let self, self.pictureKey == key, let image = AvatarImages.image(frames, scale: scale) else { return }
+            self.showPicture(image)
+        }
+    }
+
+    private func showPicture(_ image: UIImage) {
+        imageView.contentMode = .scaleAspectFill
         imageView.image = image
-        backgroundColor = image == nil ? UIKitStyle.raised : .clear
-        initial.text = image == nil ? String(name.prefix(1)).uppercased() : nil
+        backgroundColor = UIKitStyle.raised
+        initial.text = nil
     }
 }
 
