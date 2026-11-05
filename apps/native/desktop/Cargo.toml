@@ -56,7 +56,6 @@ egui_extras = { version = "=0.37.0", default-features = false, features = ["svg"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
 # File picker: Win32 dialogs on Windows; XDG desktop portal (libdbus loaded at runtime) on Linux.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
-reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rodio = { version = "=0.21.1", default-features = false, features = ["playback", "wav"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -79,7 +78,6 @@ egui-winit = { version = "=0.37.0", default-features = false, features = ["serde
 [target.'cfg(target_os = "linux")'.dependencies]
 # Caper's X11 window id for the web player helper.
 raw-window-handle = "0.6"
-zbus = "=5.19.0"
 wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", "vulkan", "gles"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -87,9 +85,8 @@ wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", 
 # system runtime at run time.
 caper-web-player = { path = "web-player", features = ["engine"] }
 wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", "dx12"] }
-windows = { version = "0.61.3", features = ["UI_ViewManagement", "UI_Notifications", "Data_Xml_Dom"] }
+windows = { version = "0.61.3", features = ["UI_ViewManagement"] }
 winreg = "0.55"
-winrt-toast-reborn = "0.3.8"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winresource = "0.1"

@@ -873,8 +873,10 @@ dependencies = [
  "url",
  "uuid",
  "webpx",
+ "windows 0.61.3",
  "winreg",
  "winrt-toast-reborn",
+ "zbus 5.19.0",
 ]
 
 [[package]]
@@ -891,7 +893,6 @@ dependencies = [
  "egui_extras",
  "image",
  "raw-window-handle",
- "reqwest",
  "rfd",
  "rodio",
  "serde",
@@ -905,8 +906,6 @@ dependencies = [
  "windows 0.61.3",
  "winreg",
  "winresource",
- "winrt-toast-reborn",
- "zbus 5.19.0",
 ]
 
 [[package]]

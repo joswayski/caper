@@ -184,8 +184,9 @@ Windows/Linux code signing.
 
 ## Checks
 
-The UI-free code (API, gateway, model, uploads, voice media, notifications)
-is the `caper-client` crate in `apps/native/client`, a member of this workspace.
+The UI-free code (API, gateway, model, uploads, voice media, notifications
+and the background worker) is the `caper-client` crate in `apps/native/client`,
+a member of this workspace.
 
 ```sh
 cargo fmt --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop -p caper-client -- --check

@@ -1,7 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod activity;
-mod app_badge;
 mod app_link;
 mod attach_drawer;
 mod attachment_editor;
@@ -15,6 +14,7 @@ mod ffmpeg;
 mod file_drop;
 mod formatting;
 mod forwarding;
+mod host;
 mod klipy;
 #[path = "../../../../shared/messages/links.rs"]
 mod links;
@@ -38,9 +38,9 @@ mod worker;
 
 use caper_client::caper_avatar_index;
 use caper_client::{
-    api, attachment_edit, avatar_images, blocking, compress, credentials, effects, feedback,
-    gateway, grouping, invites, media, media_gateway, media_proxy, model, names, navigation,
-    notifications, os_notifications, startup, state, uploads,
+    api, attachment_edit, avatar_images, blocking, compress, effects, feedback, gateway, grouping,
+    invites, media, media_gateway, media_proxy, model, names, navigation, notifications,
+    os_notifications, startup, state, uploads,
 };
 use chrono::{DateTime, Local, TimeZone};
 use default_slider::default_slider;
@@ -1615,7 +1615,7 @@ impl CaperApp {
             &api.base().origin().ascii_serialization(),
             whats_new::PLATFORM,
         );
-        let worker = Worker::new(api, context.clone());
+        let worker = Worker::new(api, host::Repaint(context.clone()));
         let now = Instant::now();
         // Shared with message text, which draws inline emoji from the same sheets.
         let reaction_textures = emoji::Textures::shared(context);
@@ -4215,7 +4215,10 @@ impl CaperApp {
                     draft.sending = false;
                     draft.status = None;
                     if !media && !send.voice_only {
-                        draft.files = send.files.clone();
+                        draft.files = profile_dm::returned(
+                            std::mem::take(&mut draft.files),
+                            send.files.clone(),
+                        );
                     }
                     match result {
                         Ok(()) => {
@@ -4324,7 +4327,8 @@ impl CaperApp {
                     let draft = self.profile_drafts.entry(person.clone()).or_default();
                     draft.sending = false;
                     draft.status = None;
-                    draft.files = send.files;
+                    draft.files =
+                        profile_dm::returned(std::mem::take(&mut draft.files), send.files);
                     match result {
                         Ok(direct) => {
                             if !send.open_only {
@@ -9068,9 +9072,9 @@ impl CaperApp {
                 token: token.clone(),
                 channel: channel.clone(),
                 name: file.name(),
-                path: file.path,
-                edit: file.edit,
-                source_scratch: file.scratch,
+                path: file.file.path,
+                edit: file.file.edit,
+                source_scratch: file.file.scratch,
                 prepared: None,
                 settings: settings.clone(),
                 cancel,
@@ -9208,6 +9212,7 @@ impl CaperApp {
                 draft.compressing = Some(fraction.max(draft.compressing.unwrap_or(0.0)));
             }
             worker::UploadUpdate::Thumbnail(image) => {
+                let image = host::color_image(image);
                 // The upload may have finished first.
                 if let Some(attachment) = &draft.attachment {
                     self.local_media
@@ -23080,7 +23085,7 @@ impl CaperApp {
                     .unwrap_or_default(),
                 client_id: id,
                 text: draft.text.clone(),
-                files: draft.files.clone(),
+                files: draft.files.iter().map(|file| file.file.clone()).collect(),
                 settings: self.uploads.clone(),
                 cancel,
                 retrying: draft.retry_id.is_some(),
@@ -24768,7 +24773,11 @@ impl CaperApp {
         match result {
             Ok(changed) => {
                 self.picture_edit.gallery = None;
-                self.local_pictures.extend(changed.local);
+                self.local_pictures.extend(
+                    changed
+                        .local
+                        .map(|(asset, frames)| (asset, pictures::frames(frames))),
+                );
                 match changed.applied {
                     pictures::Applied::Account(account) => self.account_changed(account),
                     pictures::Applied::Space(space) => self.space_icon_changed(&space),
@@ -29522,7 +29531,7 @@ impl CaperApp {
                             .unwrap_or_default(),
                         client_id: uuid::Uuid::new_v4().to_string(),
                         text: String::new(),
-                        files: vec![profile_dm::File::voice(prepared)],
+                        files: vec![caper_client::profile_dm::File::voice(prepared)],
                         settings: self.uploads.clone(),
                         cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                         retrying: false,
@@ -44934,7 +44943,10 @@ mod tests {
             (404, "{}".into())
         });
         let (context, mut app) = fixture("parity-thread");
-        app.worker = crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context);
+        app.worker = crate::worker::Worker::new(
+            crate::api::Api::new(&base).unwrap(),
+            crate::host::Repaint(context),
+        );
         app.token = Some("test-token".into());
         app.selected_channel = Some("test-channel".into());
         app.refresh_thread_unread();
@@ -46221,8 +46233,10 @@ mod tests {
             _ => (404, "{}".into()),
         });
         let (context, mut app) = fixture("parity-pictures-profile");
-        app.worker =
-            crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+        app.worker = crate::worker::Worker::new(
+            crate::api::Api::new(&base).unwrap(),
+            crate::host::Repaint(context.clone()),
+        );
         app.token = Some("fixture-token".into());
         for (asset, color) in [
             ("middle-portrait", egui::Color32::RED),
@@ -46470,8 +46484,10 @@ mod tests {
             _ => (404, "{}".into()),
         });
         let (context, mut app) = fixture("parity-pictures-profile");
-        app.worker =
-            crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+        app.worker = crate::worker::Worker::new(
+            crate::api::Api::new(&base).unwrap(),
+            crate::host::Repaint(context.clone()),
+        );
         app.open_profile_dialog();
         app.display_name = "Draft name".into();
         app.change_picture(crate::pictures::Target::Avatar, None);
@@ -46512,8 +46528,10 @@ mod tests {
     fn profile_crop_prepares_locally_without_saving_the_account() {
         let (context, mut app) = fixture("parity-pictures-editor");
         let (base, seen) = account_server(vec![]);
-        app.worker =
-            crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+        app.worker = crate::worker::Worker::new(
+            crate::api::Api::new(&base).unwrap(),
+            crate::host::Repaint(context.clone()),
+        );
         editor_ready(&mut app, &context);
         let original = app.account.clone().unwrap();
         click_label(&mut app, &context, "Apply crop");
@@ -46720,7 +46738,10 @@ mod tests {
         account.avatar_asset = Some("new-picture".into());
         account.avatar_url = Some("https://cdn.caper.chat/assets/new-picture?exp=1&sig=x".into());
         let frames = vec![(
-            egui::ColorImage::filled([4, 4], egui::Color32::WHITE),
+            caper_client::Rgba {
+                size: [4, 4],
+                pixels: vec![255; 4 * 4 * 4],
+            },
             Duration::ZERO,
         )];
         app.picture_changed(
@@ -48137,8 +48158,10 @@ mod tests {
                     (404, r#"{"error":"Not found"}"#.into())
                 }
             });
-            app.worker =
-                crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+            app.worker = crate::worker::Worker::new(
+                crate::api::Api::new(&base).unwrap(),
+                crate::host::Repaint(context.clone()),
+            );
             app.token = Some("fixture-token".into());
             // The original is outside the loaded channel history.
             app.timeline.reset(vec![wrapper], "6").unwrap();
@@ -48209,8 +48232,10 @@ mod tests {
             ),
         ]);
         // Fixture mode isolates this loopback worker from account credentials.
-        app.worker =
-            crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+        app.worker = crate::worker::Worker::new(
+            crate::api::Api::new(&base).unwrap(),
+            crate::host::Repaint(context.clone()),
+        );
         app.open_thread(root.id.clone());
         let pending_request = app.thread_request;
         app.open_thread(root.id.clone());
@@ -52272,7 +52297,7 @@ mod tests {
         assert_eq!(draft.text, typed);
         let voice = |client_id: &str| {
             let prepared = voice_note::prepare(&[2_000; 96_000], None).unwrap();
-            let mut file = crate::profile_dm::File::voice(std::sync::Arc::new(prepared));
+            let mut file = caper_client::profile_dm::File::voice(std::sync::Arc::new(prepared));
             file.attachment = Some(voice_attachment("voice-dm"));
             Box::new(crate::profile_dm::Send {
                 person: "fixture-alex".into(),
@@ -53781,10 +53806,10 @@ mod tests {
         assert_eq!(app.draft_files[0].stored_size, Some(146_432));
         app.upload_update(
             1,
-            crate::worker::UploadUpdate::Thumbnail(egui::ColorImage::filled(
-                [2, 2],
-                egui::Color32::WHITE,
-            )),
+            crate::worker::UploadUpdate::Thumbnail(caper_client::Rgba {
+                size: [2, 2],
+                pixels: vec![255; 2 * 2 * 4],
+            }),
         );
         assert!(app.local_media.iter().any(|(id, _)| id == "fixture-draft"));
         // Late updates for removed drafts are ignored.

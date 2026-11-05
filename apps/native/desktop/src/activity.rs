@@ -210,7 +210,7 @@ impl crate::CaperApp {
                 files: if media.is_some() {
                     Vec::new()
                 } else {
-                    draft.files.clone()
+                    draft.files.iter().map(|file| file.file.clone()).collect()
                 },
                 settings: self.uploads.clone(),
                 cancel,

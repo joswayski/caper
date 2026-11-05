@@ -50,9 +50,11 @@ avif-asm = ["rav1e/asm"]
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 notify-rust = { version = "4.18.2", default-features = false, features = ["z"] }
+zbus = "=5.19.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+windows = { version = "0.61.3", features = ["UI_Notifications", "Data_Xml_Dom"] }
 winreg = "0.55"
 winrt-toast-reborn = "0.3.8"
 

@@ -1,8 +1,8 @@
 //! Badge updates must keep running when a minimized window stops painting.
 //! No notification is created: Windows uses its badge API; Linux emits the
 //! Unity launcher protocol (only desktops implementing that protocol show it).
+use crate::Host;
 use crate::api::Api;
-use eframe::egui;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -13,16 +13,16 @@ struct State {
     stopped: bool,
 }
 
-pub struct Badge {
+pub struct Badge<H: Host> {
     shared: Arc<(Mutex<State>, Condvar)>,
-    context: egui::Context,
+    host: H,
 }
 
-impl Badge {
-    pub fn new(api: Api, context: egui::Context) -> Self {
+impl<H: Host> Badge<H> {
+    pub fn new(api: Api, host: H) -> Self {
         let shared = Arc::new((Mutex::new(State::default()), Condvar::new()));
         let worker = shared.clone();
-        let repaint = context.clone();
+        let repaint = host.clone();
         std::thread::spawn(move || {
             let (lock, wake) = &*worker;
             let mut state = lock.lock().unwrap();
@@ -56,14 +56,14 @@ impl Badge {
                 }
             }
         });
-        Self { shared, context }
+        Self { shared, host }
     }
 
     pub fn account(&self, token: Option<String>) {
         let mut state = self.shared.0.lock().unwrap();
         state.revision = state.revision.wrapping_add(1);
         state.token = token;
-        publish(&self.context, 0);
+        publish(&self.host, 0);
         self.shared.1.notify_one();
     }
 
@@ -74,23 +74,23 @@ impl Badge {
     }
 }
 
-impl Drop for Badge {
+impl<H: Host> Drop for Badge<H> {
     fn drop(&mut self) {
         let mut state = self.shared.0.lock().unwrap();
         state.stopped = true;
         state.revision = state.revision.wrapping_add(1);
-        publish(&self.context, 0);
+        publish(&self.host, 0);
         self.shared.1.notify_one();
     }
 }
 
-fn publish(context: &egui::Context, count: u64) {
-    context.send_viewport_cmd(egui::ViewportCommand::Title(if count == 0 {
+fn publish(host: &impl Host, count: u64) {
+    host.set_title(if count == 0 {
         "Caper".into()
     } else {
         format!("({count}) Caper")
-    }));
-    context.request_repaint();
+    });
+    host.wake();
     // Unsupported shell/settings, missing session bus, unpackaged Windows
     // execution, etc. leave the title fallback intact.
     let _ = platform(count);
@@ -159,13 +159,30 @@ fn platform(_: u64) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TestPass as _;
     use std::{
         io::{BufRead, BufReader, Write},
         net::TcpListener,
         sync::mpsc,
         time::Instant,
     };
+
+    /// Keeps every title and reports each wake.
+    #[derive(Clone)]
+    struct Recorder {
+        titles: Arc<Mutex<Vec<String>>>,
+        repaints: mpsc::Sender<()>,
+    }
+
+    impl Host for Recorder {
+        fn wake(&self) {
+            let _ = self.repaints.send(());
+        }
+        fn wake_after(&self, _: Duration) {}
+        fn bring_to_front(&self) {}
+        fn set_title(&self, title: String) {
+            self.titles.lock().unwrap().push(title);
+        }
+    }
 
     #[test]
     fn badge_counts_are_optional_unsigned_and_not_estimated_from_channel_sequences() {
@@ -212,32 +229,31 @@ mod tests {
                 write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
         });
-        let context = egui::Context::default();
         let (repaints, repaint_rx) = mpsc::channel();
-        context.set_request_repaint_callback(move |_| {
-            let _ = repaints.send(());
-        });
-        let badge = Badge::new(api, context.clone());
+        let host = Recorder {
+            titles: Arc::default(),
+            repaints,
+        };
+        let badge = Badge::new(api, host.clone());
         badge.account(Some("old-account".into()));
-        // No egui frame is needed for the authoritative fetch or platform update.
-        let mut titles = Vec::new();
-        let mut wait_for = |wanted: &str| {
+        // No UI pass is needed for the authoritative fetch or platform update.
+        let titles = &host.titles;
+        let wait_for = |wanted: &str| {
             let until = Instant::now() + Duration::from_secs(5);
             loop {
-                let output = context.test_pass(egui::RawInput::default(), |_| {});
-                titles.extend(output.viewport_output.values().flat_map(|viewport| {
-                    viewport
-                        .commands
-                        .iter()
-                        .filter_map(|command| match command {
-                            egui::ViewportCommand::Title(title) => Some(title.clone()),
-                            _ => None,
-                        })
-                }));
-                if titles.last().is_some_and(|title| title == wanted) {
+                if titles
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .is_some_and(|title| title == wanted)
+                {
                     break;
                 }
-                assert!(Instant::now() < until, "missing {wanted}: {titles:?}");
+                assert!(
+                    Instant::now() < until,
+                    "missing {wanted}: {:?}",
+                    titles.lock().unwrap()
+                );
                 let _ = repaint_rx.recv_timeout(Duration::from_millis(20));
             }
         };
@@ -249,7 +265,13 @@ mod tests {
         wait_for("(2) Caper");
         badge.account(None);
         wait_for("Caper");
-        assert!(!titles.iter().any(|title| title == "(99) Caper"));
+        assert!(
+            !titles
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|title| title == "(99) Caper")
+        );
         server.join().unwrap();
     }
 
