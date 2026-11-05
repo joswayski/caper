@@ -52,19 +52,19 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 python (Join-Path $Root "scripts\native_fonts.py")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --package caper-web-player -- --check
+cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --package caper-client --package caper-web-player -- --check
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # Link preview players' allowlist and WebView2 configuration (linked into Caper.exe).
 cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-web-player --features engine --target $Target --locked --lib
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked
+cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --package caper-client --target $Target --locked
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $env:CAPER_FFMPEG = Join-Path $FfmpegExtract 'ffmpeg.exe'
 cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked avif_originals_decode_for_inline_and_spoiler_display -- --ignored
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked native_inference_is_finite_and_owns_fresh_state -- --ignored
+cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-client --target $Target --locked native_inference_is_finite_and_owns_fresh_state -- --ignored
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked --all-targets --no-deps -- -D warnings
+cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --package caper-client --target $Target --locked --all-targets --no-deps -- -D warnings
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-web-player --features engine --target $Target --locked --lib --tests --no-deps -- -D warnings
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

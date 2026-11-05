@@ -45,13 +45,13 @@ chmod 0755 "$ffmpeg_dir/ffmpeg"
 "$ffmpeg_dir/ffmpeg" -hide_banner -version | sed -n 1p
 
 python3 "$root/scripts/native_fonts.py"
-cargo fmt --manifest-path "$native/Cargo.toml" --package caper-desktop --package caper-web-player -- --check
-cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop
+cargo fmt --manifest-path "$native/Cargo.toml" --package caper-desktop --package caper-client --package caper-web-player -- --check
+cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop --package caper-client
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine
 CAPER_FFMPEG="$ffmpeg_dir/ffmpeg" cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop avif_originals_decode_for_inline_and_spoiler_display -- --ignored
-CAPER_FFMPEG="$ffmpeg_dir/ffmpeg" cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop iphone_heic_photos_convert_upright_for_upload -- --ignored
-cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop native_inference_is_finite_and_owns_fresh_state -- --ignored
-cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-desktop --all-targets --no-deps -- -D warnings
+CAPER_FFMPEG="$ffmpeg_dir/ffmpeg" cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-client iphone_heic_photos_convert_upright_for_upload -- --ignored
+cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-client native_inference_is_finite_and_owns_fresh_state -- --ignored
+cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-desktop --package caper-client --all-targets --no-deps -- -D warnings
 cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine --all-targets --no-deps -- -D warnings
 # rav1e's assembly halves AVIF photo encode time when NASM is available.
 release_features=()

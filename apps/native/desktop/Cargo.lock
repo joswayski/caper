@@ -847,18 +847,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "caper-desktop"
+name = "caper-client"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
- "arboard",
  "avif-serialize",
- "caper-web-player",
  "chrono",
- "clipboard-rs",
- "eframe",
- "egui-winit",
- "egui_extras",
  "image",
  "jpeg-encoder",
  "keyring",
@@ -869,20 +863,44 @@ dependencies = [
  "ort",
  "png 0.18.1",
  "rav1e",
- "raw-window-handle",
  "reqwest",
  "resvg",
+ "rodio",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tungstenite",
+ "url",
+ "uuid",
+ "webpx",
+ "winreg",
+ "winrt-toast-reborn",
+]
+
+[[package]]
+name = "caper-desktop"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "caper-client",
+ "caper-web-player",
+ "chrono",
+ "clipboard-rs",
+ "eframe",
+ "egui-winit",
+ "egui_extras",
+ "image",
+ "raw-window-handle",
+ "reqwest",
  "rfd",
  "rodio",
  "serde",
  "serde_json",
  "similar",
  "tokio",
- "tungstenite",
  "unicode-segmentation",
  "url",
  "uuid",
- "webpx",
  "wgpu",
  "windows 0.61.3",
  "winreg",

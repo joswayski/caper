@@ -184,10 +184,13 @@ Windows/Linux code signing.
 
 ## Checks
 
+The UI-free code (API, gateway, model, uploads, voice media, notifications)
+is the `caper-client` crate in `apps/native/client`, a member of this workspace.
+
 ```sh
-cargo fmt --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop -- --check
-CC=clang-21 CXX=clang++-21 LK_CUSTOM_WEBRTC="$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux)" CARGO_BUILD_JOBS=2 cargo test --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop --locked
-CC=clang-21 CXX=clang++-21 LK_CUSTOM_WEBRTC="$PWD/apps/native/desktop/target/libwebrtc/linux-x64-release" CARGO_BUILD_JOBS=2 cargo clippy --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop --locked --all-targets --no-deps -- -D warnings
+cargo fmt --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop -p caper-client -- --check
+CC=clang-21 CXX=clang++-21 LK_CUSTOM_WEBRTC="$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux)" CARGO_BUILD_JOBS=2 cargo test --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop -p caper-client --locked
+CC=clang-21 CXX=clang++-21 LK_CUSTOM_WEBRTC="$PWD/apps/native/desktop/target/libwebrtc/linux-x64-release" CARGO_BUILD_JOBS=2 cargo clippy --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop -p caper-client --locked --all-targets --no-deps -- -D warnings
 cargo fmt --manifest-path apps/native/desktop/Cargo.toml -p caper-web-player -- --check
 cargo test --manifest-path apps/native/desktop/Cargo.toml -p caper-web-player --features engine --locked
 cargo clippy --manifest-path apps/native/desktop/Cargo.toml -p caper-web-player --features engine --locked --all-targets --no-deps -- -D warnings

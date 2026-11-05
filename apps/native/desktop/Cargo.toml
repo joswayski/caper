@@ -7,7 +7,7 @@ license = "Apache-2.0"
 description = "Native Caper desktop client"
 
 [workspace]
-members = ["voice-spike/vendor/libwebrtc", "voice-spike/vendor/webrtc-sys", "voice-spike/vendor/webrtc-sys/build", "web-player"]
+members = ["../client", "voice-spike/vendor/libwebrtc", "voice-spike/vendor/webrtc-sys", "voice-spike/vendor/webrtc-sys/build", "web-player"]
 exclude = ["vendor/egui-winit"]
 
 [patch.crates-io]
@@ -35,16 +35,13 @@ tokio = { version = "1", default-features = false }
 tokio-stream = "0.1"
 
 [dependencies]
-# Text drawn on edited attachments, from Satoshi Bold's outlines: the same
-# font parser egui already uses, pinned to its locked version.
-ab_glyph = "=0.2.32"
 # egui only pastes text; read native copied file lists and RGBA images too.
 arboard = { version = "=3.6.1", features = ["wayland-data-control"] }
 # Encoded clipboard attachments (including animated GIF), without image decoding.
 clipboard-rs = { version = "=0.3.5", default-features = false, features = ["wayland"] }
-# AVIF photos: rav1e (pure-Rust AV1, BSD-2-Clause) in an avif-serialize
-# (BSD-3-Clause) container; see src/avif.rs.
-avif-serialize = "=0.8.9"
+# The UI-free client core: API, gateway, model, uploads, voice media and
+# notifications (../client).
+caper-client = { path = "../client" }
 # Link preview players: the play-page allowlist and the Linux helper's line
 # protocol, without a web engine (see web-player/ and src/web_player.rs).
 caper-web-player = { path = "web-player" }
@@ -57,37 +54,23 @@ egui_extras = { version = "=0.37.0", default-features = false, features = ["svg"
 # Attachments decode PNG/JPEG/WebP/GIF/BMP/TIFF in pure Rust. AVIF inline
 # images and AVIF/HEIC full-size images use the bundled FFmpeg instead.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
-jpeg-encoder = "0.7"
-keyring = { version = "3.6.3", default-features = false }
-# libwebp 1.6.0, compiled from its vendored source with `cc` (no system
-# library); pinned here as webpx only asks for 0.14.
-libwebp-sys = { version = "=0.14.4", default-features = false, features = ["std"] }
-libwebrtc = { path = "voice-spike/vendor/libwebrtc" }
-nnnoiseless = { version = "=0.5.2", default-features = false }
-ort = { version = "=2.0.0-rc.11", default-features = false, features = ["load-dynamic"] }
-png = "0.18"
-rav1e = { version = "=0.8.1", default-features = false, features = ["threading"] }
 # File picker: Win32 dialogs on Windows; XDG desktop portal (libdbus loaded at runtime) on Linux.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rodio = { version = "=0.21.1", default-features = false, features = ["playback", "wav"] }
-resvg = { version = "0.45.1", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 similar = "2.7"
 tokio = { version = "1.47", features = ["rt-multi-thread", "time", "sync"] }
-tungstenite = { version = "0.27", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 unicode-segmentation = "=1.13.3"
 url = "2.5"
 uuid = { version = "1.18", features = ["v4"] }
-# Lossless (screenshots) and lossy (photos) WebP through libwebp.
-webpx = { version = "=0.4.0", default-features = false, features = ["encode", "icc", "std"] }
 
 [features]
 # rav1e's x86-64 assembly: about twice as fast AVIF photo encoding, identical
 # output. It needs NASM at build time, so build.sh/build.ps1 enable it for
 # release builds only when `nasm` is on PATH.
-avif-asm = ["rav1e/asm"]
+avif-asm = ["caper-client/avif-asm"]
 
 [dev-dependencies]
 # Tests check that eframe reads Caper's `window` record.
@@ -96,8 +79,6 @@ egui-winit = { version = "=0.37.0", default-features = false, features = ["serde
 [target.'cfg(target_os = "linux")'.dependencies]
 # Caper's X11 window id for the web player helper.
 raw-window-handle = "0.6"
-keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
-notify-rust = { version = "4.18.2", default-features = false, features = ["z"] }
 zbus = "=5.19.0"
 wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", "vulkan", "gles"] }
 
@@ -105,7 +86,6 @@ wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", 
 # WebView2 in process for link preview players; its loader finds the
 # system runtime at run time.
 caper-web-player = { path = "web-player", features = ["engine"] }
-keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl", "dx12"] }
 windows = { version = "0.61.3", features = ["UI_ViewManagement", "UI_Notifications", "Data_Xml_Dom"] }
 winreg = "0.55"

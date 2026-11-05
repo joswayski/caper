@@ -24,7 +24,7 @@ const RATE: u32 = 48_000;
 const FRAME: usize = 480;
 const CAPTURE_INITIALIZATION_ERROR: &str =
     "Microphone could not initialize. Check microphone access or choose another input.";
-pub(crate) const CAPTURE_START_ERROR: &str =
+pub const CAPTURE_START_ERROR: &str =
     "Microphone could not start. Check microphone access or choose another input.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -4,6 +4,7 @@
 //! reaches them. Without audio, a wall clock stands in. Seeking restarts both
 //! decoders at the new time.
 
+use caper_client::player::output_size;
 use std::io::Read;
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -98,7 +99,7 @@ impl Player {
         Self {
             binary: binary.to_owned(),
             input,
-            size: output_size(width, height, fit),
+            size: output_size(width, height, fit.into()),
             duration_ms,
             fps: fps
                 .filter(|fps| fps.is_finite() && *fps > 0.0)
@@ -580,15 +581,6 @@ impl Source for PcmSource {
     }
 }
 
-/// The largest even size within `fit` (and the video's own size) that keeps
-/// the aspect ratio.
-pub fn output_size(width: u32, height: u32, fit: egui::Vec2) -> [usize; 2] {
-    let (width, height) = (width.max(2) as f32, height.max(2) as f32);
-    let scale = (fit.x / width).min(fit.y / height).clamp(0.01, 1.0);
-    let even = |value: f32| ((value * scale / 2.0).round() as usize * 2).max(2);
-    [even(width), even(height)]
-}
-
 /// "1:05" / "1:02:03".
 pub fn time_label(ms: u64) -> String {
     let seconds = ms / 1000;
@@ -603,26 +595,6 @@ pub fn time_label(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn frames_fit_the_viewer_without_enlarging_and_stay_even() {
-        assert_eq!(
-            output_size(3840, 2160, egui::vec2(1280.0, 800.0)),
-            [1280, 720]
-        );
-        assert_eq!(
-            output_size(1080, 1920, egui::vec2(1280.0, 800.0)),
-            [450, 800]
-        );
-        assert_eq!(
-            output_size(640, 360, egui::vec2(1920.0, 1080.0)),
-            [640, 360]
-        );
-        assert_eq!(
-            output_size(641, 361, egui::vec2(1920.0, 1080.0)),
-            [642, 362]
-        );
-    }
 
     #[test]
     fn times_read_like_other_players() {

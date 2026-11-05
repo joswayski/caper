@@ -1,59 +1,32 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod activity;
-mod api;
 mod app_badge;
 mod app_link;
 mod attach_drawer;
-mod attachment_edit;
 mod attachment_editor;
 mod attachments;
-mod avatar_images;
-mod avif;
-mod blocking;
-mod compress;
-mod credentials;
 mod daily_icon;
 mod default_slider;
 mod edits;
-mod effects;
 mod embeds;
 mod emoji;
-mod feedback;
 mod ffmpeg;
 mod file_drop;
 mod formatting;
 mod forwarding;
-mod gateway;
-mod grouping;
-mod invites;
 mod klipy;
 #[path = "../../../../shared/messages/links.rs"]
 mod links;
-#[path = "../voice-spike/src/media.rs"]
-mod media;
-#[path = "../voice-spike/src/media_gateway.rs"]
-mod media_gateway;
-mod media_proxy;
 mod mentions;
 mod message_selection;
-mod metadata;
-mod model;
 mod motion;
-mod names;
-mod navigation;
-mod notifications;
-mod os_notifications;
 mod pictures;
 mod player;
 mod profile_dm;
 mod profile_edit;
-mod startup;
-#[path = "../voice-spike/src/state.rs"]
-mod state;
 mod update_art;
 mod updates;
-mod uploads;
 mod viewer;
 mod virtual_list;
 mod voice;
@@ -63,6 +36,12 @@ mod whats_new;
 mod window_state;
 mod worker;
 
+use caper_client::caper_avatar_index;
+use caper_client::{
+    api, attachment_edit, avatar_images, blocking, compress, credentials, effects, feedback,
+    gateway, grouping, invites, media, media_gateway, media_proxy, model, names, navigation,
+    notifications, os_notifications, startup, state, uploads,
+};
 use chrono::{DateTime, Local, TimeZone};
 use default_slider::default_slider;
 use effects::{Effect, Effects};
@@ -32408,10 +32387,6 @@ fn space_initial(name: &str) -> String {
         .to_string()
 }
 
-fn caper_avatar_index(avatar_id: Option<i32>) -> Option<u16> {
-    avatar_id.and_then(|index| u16::try_from(index).ok().filter(|index| *index < 800))
-}
-
 /// Profile and Manage space settings: the picture frame's side, and how far
 /// its edit badge reaches past the corner.
 const PICTURE_FRAME: f32 = 112.0;
@@ -32595,20 +32570,6 @@ impl TestPass for egui::Context {
         let mut output = self.run_ui(input, run);
         output.textures_delta.clear();
         output
-    }
-}
-
-#[cfg(test)]
-mod avatar_tests {
-    use super::caper_avatar_index;
-    #[test]
-    fn persisted_indices_and_fallback() {
-        for index in [0, 31, 32, 255, 256, 799] {
-            assert_eq!(caper_avatar_index(Some(index)), Some(index as u16));
-        }
-        assert_eq!(caper_avatar_index(None), None);
-        assert_eq!(caper_avatar_index(Some(-1)), None);
-        assert_eq!(caper_avatar_index(Some(800)), None);
     }
 }
 
@@ -33858,7 +33819,7 @@ fn main() -> eframe::Result {
             }
             app.pending_invite = launch_invite;
             if fixture.is_none() {
-                app.daily_icon = Some(daily_icon::DailyIcon::load(creation.storage));
+                app.daily_icon = Some(daily_icon::load(creation.storage));
             }
             Ok(Box::new(app))
         }),

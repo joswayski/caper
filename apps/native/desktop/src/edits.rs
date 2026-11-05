@@ -4,6 +4,7 @@ use crate::{
     BORDER, CAPER, CaperApp, ERROR, MUTED, RAISED, SURFACE, TERRACOTTA, TEXT, egui, model,
     worker::Command,
 };
+pub use caper_client::edits::valid_text;
 use model::{Message, MessageVersion, MessageVersions};
 use similar::{ChangeTag, TextDiff};
 
@@ -37,14 +38,6 @@ pub struct Deletion {
     pub busy: bool,
     pub error: Option<String>,
     pub request: u64,
-}
-
-pub fn valid_text(text: &str) -> bool {
-    !text.trim().is_empty()
-        && text.chars().count() <= 4000
-        && !text
-            .chars()
-            .any(|c| c.is_control() && c != '\n' && c != '\t')
 }
 
 type DiffTokens = Vec<(String, bool)>;

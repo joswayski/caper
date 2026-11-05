@@ -257,7 +257,7 @@ def path_platforms(path):
         return {"ios", "macos"}
     if path.startswith("apps/native/updater/"):
         return {"macos", "windows", "linux"}
-    if path.startswith("apps/native/desktop/"):
+    if path.startswith(("apps/native/client/", "apps/native/desktop/")):
         return {"windows", "linux"}
     return set()  # Server-only changes may provide context, never platform eligibility.
 

@@ -155,6 +155,74 @@ impl AvatarSave {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
+    use std::io::{BufRead, BufReader, Read, Write};
+
+    struct Request {
+        line: String,
+        body: Vec<u8>,
+    }
+
+    /// A loopback HTTP/1.1 server answering requests in order and recording
+    /// them. Responses are built from the server's own base URL, so presigned
+    /// storage URLs can point back at it like a local R2 fake.
+    fn serve(
+        responses: impl FnOnce(&str) -> Vec<(u16, String)>,
+    ) -> (String, std::thread::JoinHandle<Vec<Request>>) {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let responses = responses(&base);
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let (stream, _) = server.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let mut length = 0;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header == "\r\n" {
+                        break;
+                    }
+                    let (name, value) = header.trim_end().split_once(':').unwrap();
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                let mut content = vec![0; length];
+                reader.read_exact(&mut content).unwrap();
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+                requests.push(Request {
+                    line: line.trim_end().to_owned(),
+                    body: content,
+                });
+            }
+            requests
+        });
+        (base, handle)
+    }
+
+    fn reserved(base: &str) -> String {
+        json!({
+            "id": "asset0001",
+            "kind": "file",
+            "upload": {"method": "PUT", "url": format!("{base}/r2/original/asset0001?X-Amz-Signature=s"), "headers": {
+                "content-type": "application/octet-stream"
+            }},
+            "storage": {"used": 23, "limit": 1000}
+        })
+        .to_string()
+    }
 
     #[test]
     fn edits_are_private_and_removal_can_return_to_clean() {
@@ -182,5 +250,77 @@ mod tests {
         }
         assert_eq!(account.avatar_id, Some(799));
         assert_eq!(draft.baseline.avatar_id, Some(799));
+    }
+
+    #[test]
+    fn profile_picture_draft_completes_privately_and_reuses_upload_on_retry() {
+        let original =
+            json!({"id":"self", "username":"alice", "displayName":"Alice", "avatarId":17});
+        let saved = json!({"id":"self", "username":"alice", "displayName":"New name", "avatarId":17, "avatarAsset":"asset0001"});
+        let (base, server) = serve(|base| {
+            vec![
+                (201, reserved(base)),
+                (200, String::new()),
+                (
+                    200,
+                    json!({"id":"asset0001", "account":original}).to_string(),
+                ),
+                (409, r#"{"error":"taken","code":"username_taken"}"#.into()),
+                (200, saved.to_string()),
+                (200, saved.to_string()),
+            ]
+        });
+        let api = Api::new(&base).unwrap();
+        let account = serde_json::from_value(original).unwrap();
+        let mut draft = Draft::new(&account);
+        draft.picture = Some(Arc::new(pictures::Prepared {
+            bytes: b"prepared image bytes".to_vec(),
+            content_type: "image/webp",
+            width: 8,
+            height: 8,
+        }));
+        let avatar = draft.save().unwrap();
+        let payload = avatar.payload(&api, "token").unwrap();
+        assert_eq!(
+            payload,
+            json!({"avatarId":17,"avatarAsset":"asset0001","expectedAvatarId":17,"expectedAvatarAsset":null})
+        );
+        assert!(
+            api.update_profile("token", "alice", "New name", Some(payload.clone()))
+                .is_err()
+        );
+        assert_eq!(draft.uploaded.lock().unwrap().as_deref(), Some("asset0001"));
+        assert!(draft.picture.is_some());
+        assert!(account.avatar_asset.is_none());
+        let retry = draft.save().unwrap().payload(&api, "token").unwrap();
+        assert_eq!(retry, payload);
+        let result = api
+            .update_profile("token", "alice", "New name", Some(retry))
+            .unwrap();
+        assert_eq!(result.avatar_asset.as_deref(), Some("asset0001"));
+        api.update_profile("token", "alice", "Name only", None)
+            .unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.line.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "POST /api/assets HTTP/1.1",
+                "PUT /r2/original/asset0001?X-Amz-Signature=s HTTP/1.1",
+                "POST /api/assets/asset0001/complete?draft=true HTTP/1.1",
+                "POST /api/account/profile HTTP/1.1",
+                "POST /api/account/profile HTTP/1.1",
+                "POST /api/account/profile HTTP/1.1",
+            ]
+        );
+        let body: Value = serde_json::from_slice(&requests[4].body).unwrap();
+        assert_eq!(
+            body,
+            json!({"username":"alice","displayName":"New name","avatar":payload})
+        );
+        let body: Value = serde_json::from_slice(&requests[5].body).unwrap();
+        assert_eq!(body, json!({"username":"alice","displayName":"Name only"}));
     }
 }

@@ -204,7 +204,6 @@ impl Api {
         self.request(Method::GET, &path, Some(token), None, None)
     }
 
-    #[cfg(test)]
     pub fn select_avatar(
         &self,
         token: &str,
@@ -1597,7 +1596,7 @@ pub(crate) fn media_client(stall: Duration) -> reqwest::Result<Client> {
         .build()
 }
 
-pub(crate) fn media_url(url: &str) -> Option<Url> {
+pub fn media_url(url: &str) -> Option<Url> {
     let url = Url::parse(url).ok()?;
     let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
     (url.username().is_empty()

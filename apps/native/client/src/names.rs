@@ -56,7 +56,7 @@ enum Last {
 }
 
 /// Whether `value` holds a character a name may not (see above).
-pub(crate) fn has_hidden(value: &str) -> bool {
+pub fn has_hidden(value: &str) -> bool {
     let mut last = Last::Start;
     let mut joined = false;
     let mut tags = 0;
@@ -109,7 +109,7 @@ pub(crate) fn has_hidden(value: &str) -> bool {
 
 /// Shown before saving a display name; `saved` (the account's current name)
 /// stays savable unchanged even if it predates the invisible-character rule.
-pub(crate) fn display_name_error(value: &str, saved: Option<&str>) -> Option<&'static str> {
+pub fn display_name_error(value: &str, saved: Option<&str>) -> Option<&'static str> {
     let name = value.trim();
     (Some(name) != saved.map(str::trim) && has_hidden(name))
         .then_some("Display names cannot contain invisible or text-direction characters.")

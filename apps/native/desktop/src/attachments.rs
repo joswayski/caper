@@ -13,8 +13,8 @@
 //! use the same bundled FFmpeg decoder as the full-size viewer.
 
 use crate::model::{Attachment, AttachmentKind, AttachmentStatus};
+pub use caper_client::attachments::{FreshUrl, THUMBNAIL_EDGE};
 use eframe::egui;
-use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -38,16 +38,6 @@ const GIF_IDLE: Duration = Duration::from_secs(10);
 /// Retained GIF frame pixels across every tile (each GIF decodes to at most
 /// 32 MiB); the least recently drawn give way first.
 const GIF_BUDGET: usize = 128 * 1024 * 1024;
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct FreshUrl {
-    /// Absent while the file is still processing.
-    #[serde(default)]
-    pub url: Option<String>,
-    #[serde(default)]
-    pub preview_url: Option<String>,
-}
 
 /// Unix seconds at which a signed URL stops working, if it says.
 pub fn url_expiry(url: &str) -> Option<i64> {
@@ -119,9 +109,6 @@ pub fn inline_source(attachment: &Attachment) -> Option<&str> {
             .flatten()
     })
 }
-
-/// Locally shown images fit the largest inline frame at 2x.
-pub const THUMBNAIL_EDGE: u32 = 720;
 
 type ImageFrames = Vec<(egui::ColorImage, Duration)>;
 
@@ -1149,7 +1136,8 @@ mod tests {
                 image::Rgb([20, 20, 220])
             }
         });
-        let bytes = crate::avif::encode(&original, 85, crate::avif::Primaries::Srgb).unwrap();
+        let bytes =
+            caper_client::avif::encode(&original, 85, caper_client::avif::Primaries::Srgb).unwrap();
         let decoded = decode_thumbnail(&bytes).expect("AVIF original must render inline");
         assert_eq!(decoded.size, [720, 360]);
         let left = decoded.pixels[180 * 720 + 90];

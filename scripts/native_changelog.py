@@ -18,6 +18,7 @@ PRODUCT_ROOTS = (
     "apps/native/apple/Sources/",
     "apps/native/apple/Resources/",
     "apps/native/apple/Configuration/",
+    "apps/native/client/src/",
     "apps/native/desktop/src/",
     "apps/native/desktop/resources/",
     "apps/native/updater/src/",
