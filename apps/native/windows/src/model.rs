@@ -77,6 +77,8 @@ pub struct Message {
     pub thread_replies: Option<u64>,
     /// A thread reply also sent to the channel: "Replied to a thread".
     pub thread_context: bool,
+    /// Why your last reaction failed, shown with Retry and Dismiss.
+    pub reaction_error: Option<String>,
 }
 
 pub struct Channel {
@@ -521,6 +523,7 @@ impl Conversation {
             reply: None,
             thread_replies: None,
             thread_context: false,
+            reaction_error: None,
         });
     }
 }
@@ -549,6 +552,7 @@ impl Conversation {
             reply: None,
             thread_replies: None,
             thread_context: false,
+            reaction_error: None,
         });
     }
 }

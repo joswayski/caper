@@ -49,6 +49,18 @@ pub struct Row {
     /// A thread root's "N replies" (and its width) and "View thread".
     pub thread: Option<(IDWriteTextLayout, f32, IDWriteTextLayout)>,
     pub thread_y: f32,
+    /// A failed reaction's error (and its width), then Retry and Dismiss.
+    pub error: Option<(IDWriteTextLayout, f32, [(IDWriteTextLayout, f32); 2])>,
+    pub error_y: f32,
+}
+
+/// What a click on a row's controls does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Action {
+    /// Toggle your reaction on this chip.
+    Chip(usize),
+    Retry,
+    Dismiss,
 }
 
 /// The egui client's reply panel: the quoted author's avatar and name,
@@ -69,6 +81,7 @@ const QUOTE_HEADING: f32 = 20.0;
 const QUOTE_AVATAR: f32 = 16.0;
 const QUOTE_LINES: usize = 3;
 const THREAD_H: f32 = 22.0;
+const ERROR_H: f32 = 24.0;
 
 pub struct Header {
     pub name: IDWriteTextLayout,
@@ -384,6 +397,22 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         }
         None => None,
     };
+    let error = match &m.reaction_error {
+        Some(e) => {
+            let l = g.layout(&gfx::wide(e), &g.formats.error, 10_000.0)?;
+            let button = |s: &str| -> Result<(IDWriteTextLayout, f32)> {
+                let l = g.layout(&gfx::wide(s), &g.formats.reaction, 10_000.0)?;
+                let w = gfx::metrics(&l).widthIncludingTrailingWhitespace;
+                Ok((l, w))
+            };
+            Some((
+                l.clone(),
+                gfx::metrics(&l).widthIncludingTrailingWhitespace,
+                [button("Retry")?, button("Dismiss")?],
+            ))
+        }
+        None => None,
+    };
     let mut row = Row {
         height: 0.0,
         width,
@@ -404,6 +433,8 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         context_y: 0.0,
         thread,
         thread_y: 0.0,
+        error,
+        error_y: 0.0,
     };
     place(&mut row, m);
     Ok(row)
@@ -481,8 +512,43 @@ fn place(row: &mut Row, m: &crate::model::Message) {
     if row.thread.is_some() {
         y += 4.0 + THREAD_H;
     }
+    row.error_y = y + 4.0;
+    if row.error.is_some() {
+        y += 4.0 + ERROR_H;
+    }
     let body = y.max(row.header_y + if m.grouped { 18.0 } else { AVATAR });
     row.height = (top + body + 4.0).ceil();
+}
+
+/// The row's reaction chips, then its Retry and Dismiss buttons, with the
+/// content top at `top` (list coordinates).
+fn controls(row: &Row, top: f32) -> Vec<(Action, Common::D2D_RECT_F)> {
+    let mut out = Vec::new();
+    let mut x = BODY_X;
+    for (k, (_, w, _)) in row.reactions.iter().enumerate() {
+        let y = top + row.reactions_y;
+        out.push((Action::Chip(k), rect(x, y, x + w + 16.0, y + REACTION_H)));
+        x += w + 16.0 + 6.0;
+    }
+    if let Some((_, w, buttons)) = &row.error {
+        let y = top + row.error_y;
+        let mut x = BODY_X + w + 10.0;
+        for (action, (_, bw)) in [Action::Retry, Action::Dismiss].into_iter().zip(buttons) {
+            out.push((action, rect(x, y, x + bw + 12.0, y + ERROR_H - 2.0)));
+            x += bw + 12.0 + 6.0;
+        }
+    }
+    out
+}
+
+impl Rows {
+    /// Row `i`'s controls and their rectangles in list coordinates from the
+    /// row's top.
+    pub fn controls(&self, i: usize, grouped: bool) -> Vec<(Action, Common::D2D_RECT_F)> {
+        self.row(i)
+            .map(|row| controls(row, content_top(grouped)))
+            .unwrap_or_default()
+    }
 }
 
 /// Top padding of a row's content.
@@ -610,27 +676,40 @@ pub fn draw_row(
                 &brush,
             );
         }
-        let mut x = BODY_X;
         if let Some((l, _, ex, ey)) = &row.edited {
             crate::text::draw(dc, l, BODY_X + ex, ty + ey, &g.brushes.muted);
         }
-        for (l, w, mine) in &row.reactions {
-            let r = rect(
-                x,
-                top + row.reactions_y,
-                x + w + 16.0,
-                top + row.reactions_y + REACTION_H,
-            );
-            // Yours, as on web: a pressed terracotta chip.
-            let (fill, border, label) = if *mine {
-                (&g.brushes.pressed, &g.brushes.terracotta, &g.brushes.own)
-            } else {
-                (&g.brushes.raised, &g.brushes.border, &g.brushes.text)
+        if let Some((l, _, _)) = &row.error {
+            crate::text::draw(dc, l, BODY_X, top + row.error_y + 3.0, &g.brushes.error);
+        }
+        for (action, r) in controls(row, top) {
+            let (l, fill, border, label) = match action {
+                Action::Chip(k) => {
+                    let (l, _, mine) = &row.reactions[k];
+                    // Yours, as on web: a pressed terracotta chip.
+                    if *mine {
+                        (l, &g.brushes.pressed, &g.brushes.terracotta, &g.brushes.own)
+                    } else {
+                        (l, &g.brushes.raised, &g.brushes.border, &g.brushes.text)
+                    }
+                }
+                Action::Retry | Action::Dismiss => {
+                    let Some((_, _, buttons)) = &row.error else {
+                        continue;
+                    };
+                    let (l, _) = &buttons[usize::from(action == Action::Dismiss)];
+                    (l, &g.brushes.raised, &g.brushes.border, &g.brushes.text)
+                }
             };
-            fill_round(dc, r, 8.0, fill);
-            stroke_round(dc, r, 8.0, border);
-            crate::text::draw(dc, l, x + 8.0, r.top + 3.0, label);
-            x = r.right + 6.0;
+            // Chips round and pad by 8, the small buttons by 6.
+            let pad = if matches!(action, Action::Chip(_)) {
+                8.0
+            } else {
+                6.0
+            };
+            fill_round(dc, r, pad, fill);
+            stroke_round(dc, r, pad, border);
+            crate::text::draw(dc, l, r.left + pad, r.top + 3.0, label);
         }
     }
     Ok(())

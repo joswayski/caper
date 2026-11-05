@@ -5,6 +5,7 @@
 //! no session is stored. Only used when `CAPER_API_URL` is set; the rest
 //! of the egui client's commands come later.
 use crate::model::{self, Conversation, Person, Reaction, Span};
+use caper_client::reactions::{Reacted, Reactions};
 use caper_client::worker::{Command, Event, Worker};
 use caper_client::{Host, api::Api, gateway, grouping, model as core};
 use std::collections::{HashMap, HashSet};
@@ -147,6 +148,11 @@ pub struct Live {
     /// The open channel's history as the core keeps it: gateway messages,
     /// reactions and edits apply here in sequence, then reach the rows.
     timeline: core::Timeline,
+    /// Your reactions not yet acknowledged, drawn over the server's counts
+    /// (the shared queue: one request per message in flight).
+    pub reactions: Reactions,
+    /// Updates made on the UI thread (a reaction toggled), drained first.
+    queued: Vec<Update>,
 }
 
 /// Starts the worker and restores the stored session; `None` without
@@ -180,6 +186,8 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         chat_token: None,
         me: None,
         timeline: core::Timeline::default(),
+        reactions: Reactions::default(),
+        queued: Vec::new(),
     })
 }
 
@@ -289,7 +297,7 @@ impl Live {
                 && m.id != id
                 && m.is_channel_message()
             {
-                out.push(Update::Message(Box::new(m.clone())));
+                out.push(Update::Message(Box::new(self.shown(m))));
             }
         }
         // A thread reply also changes its root's summary.
@@ -299,8 +307,67 @@ impl Live {
                 .messages()
                 .find(|m| m.id == id && m.is_channel_message())
             {
-                out.push(Update::Message(Box::new(m.clone())));
+                out.push(Update::Message(Box::new(self.shown(m))));
             }
+        }
+    }
+
+    /// A message as the viewer sees it: your pending reactions drawn over
+    /// the server's counts.
+    fn shown(&self, m: &core::Message) -> core::Message {
+        let mut m = m.clone();
+        m.reactions = self
+            .reactions
+            .projected(&m.reactions, &m.id, self.me.as_deref());
+        m
+    }
+
+    /// Message `id` again, after its pending reactions changed.
+    fn republish(&mut self, id: &str) {
+        if let Some(m) = self.timeline.messages().find(|m| m.id == id) {
+            let shown = self.shown(m);
+            self.queued.push(Update::Message(Box::new(shown)));
+        }
+    }
+
+    /// You react with `emoji` to message `id` (or take it back): shown at
+    /// once, sent through the shared queue.
+    pub fn react(&mut self, id: &str, emoji: &str, active: bool) {
+        if self.chat_token.is_none() || self.channel.is_none() {
+            return;
+        }
+        self.reactions.set(id, emoji, active);
+        self.send_next_reaction(id);
+        self.republish(id);
+    }
+
+    /// Retry under a failed reaction.
+    pub fn retry_reaction(&mut self, id: &str) {
+        if let Some((emoji, active)) = self.reactions.retry(id) {
+            self.react(id, &emoji, active);
+        }
+    }
+
+    /// Dismiss under a failed reaction.
+    pub fn dismiss_reaction(&mut self, id: &str) {
+        self.reactions.dismiss(id);
+        self.republish(id);
+    }
+
+    fn send_next_reaction(&mut self, id: &str) {
+        let (Some(channel), Some(chat_token)) = (&self.channel, &self.chat_token) else {
+            return;
+        };
+        if let Some(send) = self.reactions.next(id) {
+            self.worker.send(Command::React {
+                generation: self.generation,
+                token: self.token.clone(),
+                chat_token: chat_token.clone(),
+                channel: channel.clone(),
+                message: send.message,
+                emoji: send.emoji,
+                active: send.active,
+            });
         }
     }
 
@@ -320,7 +387,7 @@ impl Live {
     /// Handles the worker's pending events; returns what the UI must show.
     pub fn drain(&mut self) -> Vec<Update> {
         let events: Vec<Event> = self.worker.events.try_iter().collect();
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.queued);
         for event in events {
             self.handle(event, &mut out);
         }
@@ -375,6 +442,7 @@ impl Live {
                         out.push(Update::Failed("No joined channel in this space.".into()));
                         return;
                     };
+                    self.reactions.clear();
                     let mut timeline = core::Timeline::default();
                     if let Err(e) = timeline.reset(history.messages, &history.cursor) {
                         out.push(Update::Failed(e));
@@ -435,6 +503,34 @@ impl Live {
                 let old = self.seq();
                 let applied = self.timeline.apply(*message);
                 self.publish(old, applied, &id, out);
+            }
+            Event::Reacted {
+                generation,
+                channel,
+                message,
+                emoji,
+                active,
+                result,
+            } if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                match self
+                    .reactions
+                    .reacted(&channel, &message, &emoji, active, result)
+                {
+                    Reacted::Acknowledged(update) => {
+                        if self.timeline.merge_reaction_ack(update).is_err() {
+                            self.reload();
+                        }
+                        self.send_next_reaction(&message);
+                    }
+                    Reacted::Reload => self.reload(),
+                    Reacted::ClearChannel(error) => {
+                        out.push(Update::Failed(error));
+                        self.reload();
+                    }
+                    Reacted::Failed => self.send_next_reaction(&message),
+                }
+                self.republish(&message);
+                out.append(&mut self.queued);
             }
             Event::Gateway(gateway::GatewayEvent::Reactions {
                 generation,
@@ -709,6 +805,7 @@ pub fn message(
             .map(|t| t.reply_count)
             .filter(|n| *n > 0 && m.thread_root_id.is_none()),
         thread_context: m.thread_root_id.is_some() && m.broadcast,
+        reaction_error: None,
     }
 }
 

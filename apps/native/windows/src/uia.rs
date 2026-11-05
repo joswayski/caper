@@ -8,6 +8,7 @@
 //! bounding rectangles). Each message row implements Text too, over its
 //! plain text: screen readers can read it by character, word and line, find
 //! its bounds and select in it (the selection is the history's selection).
+use crate::list::Action;
 use crate::signin::Part;
 use crate::{App, composer::Composer, gfx};
 use std::cell::Cell;
@@ -29,6 +30,8 @@ pub enum Id {
     Channel(usize),
     History,
     Row(usize),
+    /// A row's reaction chip or its error's Retry/Dismiss button.
+    Control(usize, Action),
     Members,
     Member(usize),
     Composer,
@@ -91,6 +94,11 @@ fn children(a: &App, id: Id) -> Vec<Id> {
         Id::Channels => (0..a.c.channels.len()).map(Id::Channel).collect(),
         Id::History => a.visible_rows().map(Id::Row).collect(),
         Id::Members => (0..a.c.members.len()).map(Id::Member).collect(),
+        Id::Row(i) => a
+            .row_controls(i)
+            .into_iter()
+            .map(|(action, _)| Id::Control(i, action))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -101,6 +109,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Space(_) => Id::Rail,
         Id::Channel(_) => Id::Channels,
         Id::Row(_) => Id::History,
+        Id::Control(i, _) => Id::Row(i),
         Id::Member(_) => Id::Members,
         _ => Id::Root,
     })
@@ -109,6 +118,9 @@ fn parent(id: Id) -> Option<Id> {
 fn exists(a: &App, id: Id) -> bool {
     match id {
         Id::Row(i) => a.visible_rows().contains(&i),
+        Id::Control(i, action) => {
+            a.visible_rows().contains(&i) && a.row_controls(i).iter().any(|(c, _)| *c == action)
+        }
         Id::Channel(i) => i < a.c.channels.len(),
         Id::Member(i) => i < a.c.members.len(),
         Id::Space(i) => i < a.c.spaces.len(),
@@ -159,15 +171,22 @@ fn name(a: &App, id: Id) -> String {
                 let s = if n == 1 { "reply" } else { "replies" };
                 name.push_str(&format!(". {n} {s}, View thread"));
             }
-            // Each chip as the egui client labels it.
-            for r in &m.reactions {
-                let n = r.count;
-                let s = if n == 1 { "reaction" } else { "reactions" };
-                let you = if r.mine { ", including you" } else { "" };
-                name.push_str(&format!(". {} {n} {s}{you}", r.emoji));
-            }
             name
         }
+        // Each chip as the egui client labels it.
+        Id::Control(i, Action::Chip(k)) => {
+            c.messages[i]
+                .reactions
+                .get(k)
+                .map_or_else(String::new, |r| {
+                    let n = r.count;
+                    let s = if n == 1 { "reaction" } else { "reactions" };
+                    let you = if r.mine { ", including you" } else { "" };
+                    format!("{}, {n} {s}{you}", r.emoji)
+                })
+        }
+        Id::Control(_, Action::Retry) => "Retry".into(),
+        Id::Control(_, Action::Dismiss) => "Dismiss".into(),
         Id::Members => format!("Members, {}", c.members.len()),
         Id::Member(i) => format!(
             "{}, {}",
@@ -204,7 +223,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Channel(_) | Id::Row(_) | Id::Member(_) => UIA_ListItemControlTypeId,
         Id::Composer | Id::Sign(Part::Field) => UIA_EditControlTypeId,
         Id::Sign(Part::Title | Part::Message) => UIA_TextControlTypeId,
-        Id::Sign(_) => UIA_ButtonControlTypeId,
+        Id::Sign(_) | Id::Control(..) => UIA_ButtonControlTypeId,
     }
 }
 
@@ -221,6 +240,15 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Member(i) => (8, i),
         Id::Composer => (9, 0),
         Id::Sign(p) => (10, p as usize),
+        Id::Control(i, action) => (
+            11,
+            i * 64
+                + match action {
+                    Action::Retry => 0,
+                    Action::Dismiss => 1,
+                    Action::Chip(k) => 2 + k.min(61),
+                },
+        ),
     };
     [UiaAppendRuntimeId as i32, k, i as i32]
 }
@@ -234,6 +262,20 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Channel(i) => App::channel_rect(i),
         Id::History => (a.list_x(), crate::theme::HEADER_H, a.list_w(), a.vh()),
         Id::Row(i) => a.row_rect(i),
+        Id::Control(i, action) => {
+            let (_, y, _, _) = a.row_rect(i);
+            a.row_controls(i)
+                .into_iter()
+                .find(|(c, _)| *c == action)
+                .map_or((0.0, 0.0, 0.0, 0.0), |(_, r)| {
+                    (
+                        a.list_x() + r.left,
+                        y + r.top,
+                        r.right - r.left,
+                        r.bottom - r.top,
+                    )
+                })
+        }
         Id::Members => (
             a.w - crate::theme::MEMBERS_W,
             0.0,
@@ -342,6 +384,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     || pattern == UIA_TextPattern2Id
             }
             Id::Row(_) => pattern == UIA_TextPatternId,
+            Id::Control(..) => pattern == UIA_InvokePatternId,
             _ => false,
         };
         if ok {
@@ -503,6 +546,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Space(i) => a.select_space(i),
                 Id::Channel(i) => a.select_channel(i),
                 Id::Sign(p) => a.signin_activate(Some(p)),
+                Id::Control(i, action) => a.row_action(i, action),
                 _ => {}
             }
             Ok(())

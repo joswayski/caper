@@ -432,11 +432,16 @@ impl App {
                 }
                 live::Update::Message(m) => {
                     let me = self.live.as_ref().and_then(|l| l.me.clone());
+                    let error = self
+                        .live
+                        .as_ref()
+                        .and_then(|l| l.reactions.error(&m.id).map(str::to_owned));
                     if let Some(&i) = self.ids.rows.get(&m.id) {
                         // A shown message changed: rebuild only its row, and
                         // redraw below it when its height changed.
                         let old = &self.c.messages[i];
-                        let new = live::message(&m, old.author, old.grouped, me.as_deref());
+                        let mut new = live::message(&m, old.author, old.grouped, me.as_deref());
+                        new.reaction_error = error;
                         if new == *old {
                             continue;
                         }
@@ -458,9 +463,9 @@ impl App {
                             .members
                             .push(live::person(&m.author.id, &m.author.name));
                     }
-                    self.c
-                        .messages
-                        .push(live::message(&m, author, grouped, me.as_deref()));
+                    let mut new = live::message(&m, author, grouped, me.as_deref());
+                    new.reaction_error = error;
+                    self.c.messages.push(new);
                     self.rows.append(&self.g, &self.c)?;
                     self.need = true;
                 }
@@ -1019,7 +1024,9 @@ impl App {
                     self.composer_changed();
                 } else {
                     self.set_composer_focus(false);
-                    if self.in_history(x, y) {
+                    if let Some((i, action)) = self.action_at(x, y) {
+                        self.row_action(i, action);
+                    } else if self.in_history(x, y) {
                         if let Some(h) = self.msg_hit(x, y) {
                             let anchor = if shift {
                                 self.sel.map_or(h, |s| s.0)
@@ -1083,9 +1090,9 @@ impl App {
                     .is_some_and(|(x, y)| self.in_box(x, y) || self.in_history(x, y));
                 let hand = self.hover_channel.is_some()
                     || self.hover_space.is_some()
-                    || self
-                        .pointer
-                        .is_some_and(|(x, y)| self.link_at(x, y).is_some());
+                    || self.pointer.is_some_and(|(x, y)| {
+                        self.link_at(x, y).is_some() || self.action_at(x, y).is_some()
+                    });
                 unsafe {
                     SetCursor(
                         LoadCursorW(
@@ -1294,6 +1301,53 @@ impl App {
                 done
             }
             _ => None,
+        }
+    }
+
+    /// The reaction chip or Retry/Dismiss button under client point (x, y),
+    /// on a live message you can react to.
+    fn action_at(&self, x: f32, y: f32) -> Option<(usize, list::Action)> {
+        if !self.in_history(x, y) {
+            return None;
+        }
+        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let i = self.rows.row_at(ay)?;
+        let ry = (ay - self.rows.top[i]) as f32;
+        let action = self.row_controls(i).into_iter().find(|(_, r)| {
+            let x = x - self.list_x();
+            x >= r.left && x < r.right && ry >= r.top && ry < r.bottom
+        })?;
+        Some((i, action.0))
+    }
+
+    /// Row `i`'s reaction chips and Retry/Dismiss, from the row's top in
+    /// list coordinates; none in the mock or on a deleted message.
+    pub fn row_controls(&self, i: usize) -> Vec<(list::Action, Common::D2D_RECT_F)> {
+        let m = &self.c.messages[i];
+        if self.live.is_none() || m.deleted {
+            return Vec::new();
+        }
+        self.rows.controls(i, m.grouped)
+    }
+
+    /// Clicks on a row's reaction chip (toggle yours) or its error's Retry
+    /// or Dismiss.
+    pub fn row_action(&mut self, i: usize, action: list::Action) {
+        let m = &self.c.messages[i];
+        let id = m.id.clone();
+        let Some(live) = &mut self.live else {
+            return;
+        };
+        match action {
+            list::Action::Chip(k) => {
+                let r = &m.reactions[k];
+                live.react(&id, &r.emoji, !r.mine);
+            }
+            list::Action::Retry => live.retry_reaction(&id),
+            list::Action::Dismiss => live.dismiss_reaction(&id),
+        }
+        if let Err(e) = self.drain_live() {
+            eprintln!("reaction update failed: {e:?}");
         }
     }
 
