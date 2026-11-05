@@ -31,6 +31,7 @@ pub mod media;
 #[path = "../../desktop/voice-spike/src/media_gateway.rs"]
 pub mod media_gateway;
 pub mod media_proxy;
+pub mod mentions;
 pub mod metadata;
 pub mod model;
 pub mod names;
