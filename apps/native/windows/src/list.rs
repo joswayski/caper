@@ -52,6 +52,10 @@ pub struct Row {
     /// A failed reaction's error (and its width), then Retry and Dismiss.
     pub error: Option<(IDWriteTextLayout, f32, [(IDWriteTextLayout, f32); 2])>,
     pub error_y: f32,
+    /// The date divider above the row (its label and width) and the space
+    /// it takes; everything else in the row sits below it.
+    pub date: Option<(IDWriteTextLayout, f32)>,
+    pub lead: f32,
 }
 
 /// What a click on a row's controls does.
@@ -82,6 +86,7 @@ const QUOTE_AVATAR: f32 = 16.0;
 const QUOTE_LINES: usize = 3;
 const THREAD_H: f32 = 22.0;
 const ERROR_H: f32 = 24.0;
+const DATE_H: f32 = 30.0;
 
 pub struct Header {
     pub name: IDWriteTextLayout,
@@ -435,6 +440,15 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         thread_y: 0.0,
         error,
         error_y: 0.0,
+        date: match &m.date {
+            Some(label) => {
+                let l = g.layout(&gfx::wide(label), &g.formats.quote_meta, 10_000.0)?;
+                let w = gfx::metrics(&l).widthIncludingTrailingWhitespace;
+                Some((l, w))
+            }
+            None => None,
+        },
+        lead: 0.0,
     };
     place(&mut row, m);
     Ok(row)
@@ -468,7 +482,8 @@ fn place(row: &mut Row, m: &crate::model::Message) {
     // message's own header, as in the egui client; positions below are from
     // the content top (`content_top`), so the panel starts above it.
     let top = content_top(m.grouped);
-    let mut y = 0.0;
+    row.lead = if row.date.is_some() { DATE_H } else { 0.0 };
+    let mut y = row.lead;
     if let Some(q) = &mut row.quote {
         let w = (row.width - 2.0 * QUOTE_PAD_X).max(20.0);
         let mut lines = [DWRITE_LINE_METRICS::default(); QUOTE_LINES + 1];
@@ -488,7 +503,7 @@ fn place(row: &mut Row, m: &crate::model::Message) {
             shown
         };
         q.height = QUOTE_PAD_Y + QUOTE_HEADING + 2.0 + shown + QUOTE_PAD_Y;
-        y = 4.0 - top + q.height + 8.0;
+        y = row.lead + 4.0 - top + q.height + 8.0;
     }
     row.header_y = y;
     if row.header.is_some() {
@@ -578,8 +593,23 @@ pub fn draw_row(
     };
     let top = y + content_top(m.grouped);
     unsafe {
+        // egui's date divider: the muted label between two border rules.
+        if let Some((l, w)) = &row.date {
+            let full = BODY_X + row.width + PAD_X;
+            let cy = y + row.lead / 2.0 + 4.0;
+            let lx = (full - w) / 2.0;
+            let rule = |x0: f32, x1: f32| {
+                if x1 > x0 {
+                    dc.FillRectangle(&rect(x0, cy, x1, cy + 1.0), &g.brushes.border);
+                }
+            };
+            rule(PAD_X, lx - 10.0);
+            rule(lx + w + 10.0, full - PAD_X);
+            crate::text::draw(dc, l, lx, cy - 7.0, &g.brushes.muted);
+        }
         if let Some(q) = &row.quote {
-            let p = rect(BODY_X, y + 4.0, BODY_X + row.width, y + 4.0 + q.height);
+            let qy = y + row.lead + 4.0;
+            let p = rect(BODY_X, qy, BODY_X + row.width, qy + q.height);
             fill_round(dc, p, 8.0, &g.brushes.surface);
             stroke_round(dc, p, 8.0, &g.brushes.border_soft);
             let (x, hy) = (p.left + QUOTE_PAD_X, p.top + QUOTE_PAD_Y);

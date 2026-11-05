@@ -79,6 +79,8 @@ pub struct Message {
     pub thread_context: bool,
     /// Why your last reaction failed, shown with Retry and Dismiss.
     pub reaction_error: Option<String>,
+    /// The date divider above the message, when it starts a new local day.
+    pub date: Option<String>,
 }
 
 pub struct Channel {
@@ -524,6 +526,7 @@ impl Conversation {
             thread_replies: None,
             thread_context: false,
             reaction_error: None,
+            date: None,
         });
     }
 }
@@ -553,6 +556,7 @@ impl Conversation {
             thread_replies: None,
             thread_context: false,
             reaction_error: None,
+            date: None,
         });
     }
 }

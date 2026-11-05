@@ -442,6 +442,7 @@ impl App {
                         let old = &self.c.messages[i];
                         let mut new = live::message(&m, old.author, old.grouped, me.as_deref());
                         new.reaction_error = error;
+                        new.date = old.date.clone();
                         if new == *old {
                             continue;
                         }
@@ -455,7 +456,7 @@ impl App {
                         self.need = true;
                         continue;
                     }
-                    let Some((author, grouped)) = self.ids.place(&m) else {
+                    let Some((author, grouped, date)) = self.ids.place(&m) else {
                         continue;
                     };
                     if author >= self.c.members.len() {
@@ -465,6 +466,7 @@ impl App {
                     }
                     let mut new = live::message(&m, author, grouped, me.as_deref());
                     new.reaction_error = error;
+                    new.date = date;
                     self.c.messages.push(new);
                     self.rows.append(&self.g, &self.c)?;
                     self.need = true;
@@ -1606,7 +1608,9 @@ impl App {
             dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
             for (i, y, h, rs) in tops {
                 if hover == Some(i) {
-                    dc.FillRectangle(&rect(0.0, y, lw, y + h), &g.brushes.hover);
+                    // The date divider above a row is not part of its hover.
+                    let lead = rows.row(i).map_or(0.0, |r| r.lead);
+                    dc.FillRectangle(&rect(0.0, y + lead, lw, y + h), &g.brushes.hover);
                 }
                 list::draw_row(g, dc, c, rows, i, y, rs)?;
             }

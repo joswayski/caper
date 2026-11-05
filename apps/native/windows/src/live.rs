@@ -100,13 +100,28 @@ pub struct Ids {
     seen: HashSet<String>,
     /// Each shown message's index in `Conversation::messages`.
     pub rows: HashMap<String, usize>,
+    /// The newest row's local day, for the next date divider.
+    last_date: Option<String>,
+}
+
+/// A timestamp's local day (its key) and divider label, as the egui client
+/// formats them ("Thursday, November 5, 2026").
+fn date_label(created_at: &str) -> Option<(String, String)> {
+    let local = chrono::DateTime::parse_from_rfc3339(created_at)
+        .ok()?
+        .with_timezone(&chrono::Local);
+    Some((
+        local.format("%Y-%m-%d").to_string(),
+        local.format("%A, %B %-d, %Y").to_string(),
+    ))
 }
 
 impl Ids {
     /// Where a new message goes: its author's index (one past the end for a
     /// new author, whom the caller adds) and whether it groups under the
-    /// previous one. `None` when it is already shown.
-    pub fn place(&mut self, m: &core::Message) -> Option<(usize, bool)> {
+    /// previous one, and the date divider above it when it starts a new
+    /// local day. `None` when it is already shown.
+    pub fn place(&mut self, m: &core::Message) -> Option<(usize, bool, Option<String>)> {
         if !self.seen.insert(m.id.clone()) {
             return None;
         }
@@ -125,9 +140,17 @@ impl Ids {
             &m.created_at,
             m.thread_root_id.is_some() || m.reply_to.is_some(),
         );
-        let grouped = grouping::grouped(self.last.as_ref(), &row);
+        // As in egui's history: a divider at the first message and at each
+        // new local day; it also ends the group above.
+        let date =
+            date_label(&m.created_at).filter(|(key, _)| self.last_date.as_ref() != Some(key));
+        let grouped = date.is_none() && grouping::grouped(self.last.as_ref(), &row);
         self.last = Some(row);
-        Some((author, grouped))
+        let date = date.map(|(key, label)| {
+            self.last_date = Some(key);
+            label
+        });
+        Some((author, grouped, date))
     }
 }
 
@@ -636,13 +659,15 @@ pub fn conversation(
     let mut out = Vec::with_capacity(messages.len());
     // Thread-only replies live in their thread, not the channel.
     for m in messages.iter().filter(|m| m.is_channel_message()) {
-        let Some((author, grouped)) = ids.place(m) else {
+        let Some((author, grouped, date)) = ids.place(m) else {
             continue;
         };
         if author == members.len() {
             members.push(person(&m.author.id, &m.author.name));
         }
-        out.push(message(m, author, grouped, me));
+        let mut row = message(m, author, grouped, me);
+        row.date = date;
+        out.push(row);
     }
     let joined: Vec<&core::Channel> = detail.channels.iter().filter(|c| c.joined).collect();
     ids.channels = joined.iter().map(|c| c.id.clone()).collect();
@@ -806,6 +831,7 @@ pub fn message(
             .filter(|n| *n > 0 && m.thread_root_id.is_none()),
         thread_context: m.thread_root_id.is_some() && m.broadcast,
         reaction_error: None,
+        date: None,
     }
 }
 
@@ -827,6 +853,25 @@ mod tests {
             m[k] = v.clone();
         }
         serde_json::from_value(m).unwrap()
+    }
+
+    #[test]
+    fn dates_divide_the_first_message_and_each_new_day_and_end_groups() {
+        let at =
+            |id: &str, time: &str| core_message(serde_json::json!({ "id": id, "createdAt": time }));
+        let mut ids = Ids::default();
+        let first = ids.place(&at("a", "2026-10-01T12:00:00Z")).unwrap();
+        let same_day = ids.place(&at("b", "2026-10-01T12:02:00Z")).unwrap();
+        let next_day = ids.place(&at("c", "2026-10-02T12:03:00Z")).unwrap();
+        assert!(first.2.is_some() && !first.1);
+        assert!(
+            same_day.2.is_none() && same_day.1,
+            "same author and day groups"
+        );
+        let label = next_day.2.expect("a new day gets a divider");
+        assert!(label.contains("October 2, 2026"), "{label}");
+        assert!(!next_day.1, "a divider ends the group");
+        assert!(ids.place(&at("c", "2026-10-02T12:03:00Z")).is_none());
     }
 
     #[test]
