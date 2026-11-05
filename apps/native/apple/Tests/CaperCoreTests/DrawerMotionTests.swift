@@ -3,6 +3,23 @@ import SwiftUI
 @testable import CaperCore
 
 final class DrawerMotionTests: XCTestCase {
+    func testBrowseQuarterScreenThresholdInBothDirections() {
+        // 400 visible points plus 48 for the shadow. The pose lags the finger.
+        for open in [false, true] {
+            let direction: CGFloat = open ? -1 : 1
+            let position: CGFloat = open ? 0.82 : 0.18
+            for distance: CGFloat in [99, 100] {
+                let release = DrawerRelease(open: open, position: position, velocity: 0,
+                                            distance: direction * distance, travel: 448, shadow: 48, threshold: 0.25)
+                XCTAssertEqual(release.commit, distance == 100)
+                XCTAssertEqual(release.target, distance == 100 ? (open ? 0 : 1) : (open ? 1 : 0))
+            }
+            XCTAssertFalse(DrawerRelease(open: open, position: position, velocity: -direction * 300,
+                                         distance: direction * 140, travel: 448, shadow: 48, threshold: 0.25).commit,
+                           "A reverse fling still cancels a deliberate drag")
+        }
+    }
+
     func testHeldDragPastHalfwaySwitchesWithTheFullFinish() {
         // Conversation dragged 60% open and held still.
         let release = DrawerRelease(open: false, position: 0.6, velocity: 0, distance: 240, travel: 400)

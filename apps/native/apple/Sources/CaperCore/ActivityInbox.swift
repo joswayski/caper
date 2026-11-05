@@ -68,7 +68,7 @@ enum ActivityFilter: String, CaseIterable, Identifiable {
 struct ActivityInboxEntry: View {
     @Bindable var model: AppModel
     var body: some View {
-        Button { model.activityShown = true } label: {
+        Button(action: SwipeTapGuard.unlessSwiping { model.activityShown = true }) {
             HStack(spacing: 9) {
                 Image(systemName: "bell").frame(width: 24)
                 Text("Notifications")

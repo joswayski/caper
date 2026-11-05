@@ -721,7 +721,10 @@ final class CaperParityUITests: XCTestCase {
                        "Dragging message history through the keyboard must dismiss it")
         XCTAssertEqual(composer.value as? String, short, "Scrolling must keep the unsent draft")
         XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2)
-        XCTAssertTrue(focus(composer))
+        // Refocus beyond the single line's text so subsequent typing appends.
+        // A center tap can place the caret at the beginning instead.
+        composer.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        XCTAssertTrue(hasKeyboardFocus(composer))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
 
         let multiline = "\nSecond line\nThird line"
@@ -3520,6 +3523,60 @@ final class CaperParityUITests: XCTestCase {
     }
 
     #if os(iOS)
+    func testCenterStartedBrowseSwipesDoNotRequireAFling() throws {
+        let app = launch()
+        let navigation = try require(app.buttons["Back to Browse"], timeout: 30, "Missing conversation")
+        let close = app.buttons["Close navigation"]
+        navigation.tap()
+        let divider = try require(app.sliders["Channels and direct messages divider"], timeout: 5, "Missing Browse divider")
+        let dividerY = divider.frame.midY
+        close.tap()
+        let composer = app.descendants(matching: .any)["message-composer"]
+        let send = app.buttons["send-message-button"]
+        let restingBottom = send.frame.maxY
+        composer.tap()
+        composer.typeText("Keep this draft")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
+        XCTAssertEqual(divider.frame.midY, dividerY, accuracy: 2, "Browse behind chat keeps its full-height split while the keyboard is open")
+
+        let short = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        short.press(forDuration: 0.01, thenDragTo: short.withOffset(CGVector(dx: 32, dy: 0)),
+                    withVelocity: .slow, thenHoldForDuration: 0.25)
+        XCTAssertTrue(navigation.isHittable, "A short drag stays in chat")
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "A cancelled swipe keeps the keyboard")
+
+        // A thumb beginning in the middle has less than half a screen left.
+        // Hold before lifting so velocity cannot hide an unreachable distance threshold.
+        for _ in 0..<2 {
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+            start.press(forDuration: 0.01,
+                        thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.3)),
+                        withVelocity: .slow, thenHoldForDuration: 0.25)
+            let opened = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: close)
+            XCTAssertEqual(XCTWaiter.wait(for: [opened], timeout: 3), .completed, "A deliberate center-start right swipe opens Browse without a fling")
+            guard close.isHittable else { return }
+            XCTAssertFalse(app.keyboards.firstMatch.exists, "Opening Browse dismisses the keyboard")
+            XCTAssertEqual(divider.frame.midY, dividerY, accuracy: 2, "Revealing Browse does not shift the DM section")
+            capture("center-swipe-browse", app: app)
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).press(forDuration: 0.01,
+                thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.75)),
+                withVelocity: .slow, thenHoldForDuration: 0.25)
+            let returned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: navigation)
+            XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 3), .completed, "The same left swipe returns to chat")
+            XCTAssertEqual(composer.value as? String, "Keep this draft")
+            XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2, "Chat recovers its full height after keyboard dismissal")
+        }
+        let vertical = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        vertical.press(forDuration: 0.01, thenDragTo: vertical.withOffset(CGVector(dx: 0, dy: 140)),
+                       withVelocity: .slow, thenHoldForDuration: 0.25)
+        XCTAssertTrue(navigation.isHittable, "Vertical scrolling stays in chat")
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2, "The returned composer still docks above the keyboard")
+        XCTAssertEqual(divider.frame.midY, dividerY, accuracy: 2, "Reopening the keyboard leaves Browse's split in place")
+        capture("center-swipe-chat", app: app)
+    }
+
     /// Reopening Browse must retain a deliberately scrolled DM pane and its
     /// saved split, rather than restoring either as part of the horizontal slide.
     func testBrowseKeepsScrolledDirectMessagesAndSavedDivider() throws {
@@ -3531,7 +3588,7 @@ final class CaperParityUITests: XCTestCase {
         let navigation = try require(app.buttons["Back to Browse"], timeout: 30, "Missing conversation")
         navigation.tap()
         let close = try require(app.buttons["Close navigation"], timeout: 5, "Missing Browse")
-        let divider = try require(app.descendants(matching: .any)["sidebar-sections-resize"], timeout: 5, "Missing sidebar divider")
+        let divider = try require(app.sliders["Channels and direct messages divider"], timeout: 5, "Missing sidebar divider")
         let newMessage = try require(app.buttons["new-message"], timeout: 5, "Missing New message row")
         let dividerY = divider.frame.midY
         let beforeScrollY = newMessage.frame.minY
@@ -3549,7 +3606,12 @@ final class CaperParityUITests: XCTestCase {
 
         for useSwipe in [false, true, true] {
             if useSwipe {
-                let start = origin.withOffset(CGVector(dx: app.frame.width * 0.85, dy: newMessage.frame.midY))
+                // At the minimum pane height the row is partly clipped; its
+                // full frame's midpoint can land on the account bar below it.
+                let pane = app.scrollViews.containing(.button, identifier: "new-message").firstMatch
+                let visibleRow = newMessage.frame.intersection(pane.frame)
+                XCTAssertGreaterThan(visibleRow.height, 0)
+                let start = origin.withOffset(CGVector(dx: app.frame.width * 0.85, dy: visibleRow.midY))
                 start.press(forDuration: 0.01,
                             thenDragTo: start.withOffset(CGVector(dx: -app.frame.width * 0.7, dy: 0)),
                             withVelocity: .fast, thenHoldForDuration: 0)
@@ -3771,7 +3833,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Close navigation"].isHittable, "The search editor keeps its horizontal gestures")
         // Below the search field, above the account bar.
         swipeBrowseLeft(at: 0.6)
-        XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Channel-search content can still swipe back to chat")
+        let searchReturned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: navigation)
+        XCTAssertEqual(XCTWaiter.wait(for: [searchReturned], timeout: 3), .completed, "Channel-search content can still swipe back to chat")
+        XCTAssertFalse(app.buttons["Done"].exists, "Swiping across Notifications must not also open its sheet")
         XCTAssertEqual(composer.value as? String, draft)
         capture("narrow-conversation", app: app)
         chooseFromTitleMenu("Members", in: app)
@@ -3811,6 +3875,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(profile.frame.midY, settings.frame.midY, accuracy: 3)
         XCTAssertLessThan(settings.frame.maxY, app.frame.maxY - 16, "Account controls must clear the home indicator")
         capture("narrow-browse", app: app)
+        app.buttons["Notifications"].tap()
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 3), "An ordinary Notifications tap still opens the sheet")
+        app.buttons["Done"].tap()
     }
     #endif
 }

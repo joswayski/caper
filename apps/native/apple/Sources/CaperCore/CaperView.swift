@@ -368,7 +368,7 @@ struct DrawerSettle {
 let drawerShadowRoom: CGFloat = 48
 
 /// Where a released drawer swipe goes and how fast, as web `releaseTiming`:
-/// past halfway (by the finger, across what is seen), or flung 40 points
+/// past its distance threshold (across what is seen), or flung 40 points
 /// toward the other view, it switches; a held drag gets the full finish, and a
 /// fling carries its bounded speed into a curve that cannot overshoot.
 struct DrawerRelease: Equatable {
@@ -387,18 +387,19 @@ struct DrawerRelease: Equatable {
     ///   - distance: How far the finger moved toward open, in points.
     ///   - travel: The drawer's travel, in points.
     ///   - shadow: The part of `travel` beyond what is seen (`drawerShadowRoom`).
-    init(open: Bool, position: CGFloat, velocity: CGFloat, distance: CGFloat, travel: CGFloat, shadow: CGFloat = 0) {
+    ///   - threshold: The fraction of the visible travel needed without a fling.
+    init(open: Bool, position: CGFloat, velocity: CGFloat, distance: CGFloat, travel: CGFloat, shadow: CGFloat = 0, threshold: CGFloat = 0.5) {
         // Toward the other view, in points per second.
         let toward = open ? -velocity : velocity
         // The view follows from the finger's first reported move, a pickup
-        // distance (12 pt or more) behind it. A slow release past halfway
+        // distance (12 pt or more) behind it. A slow release past the threshold
         // still switches by where the finger took it, not only where the lagging
         // view is drawn, which snapped such swipes back.
         let reached = (open ? -distance : distance) / max(travel, 1)
         let travelled = max(abs(position - (open ? 1 : 0)), reached)
-        // Halfway across what is seen: the shadow's room past the edge doesn't count.
-        let halfway = 0.5 * max(travel - shadow, 1) / max(travel, 1)
-        commit = toward > -300 && (travelled >= halfway || (toward >= 300 && abs(distance) >= 40))
+        // The shadow's room past the edge doesn't count.
+        let required = threshold * max(travel - shadow, 1) / max(travel, 1)
+        commit = toward > -300 && (travelled >= required || (toward >= 300 && abs(distance) >= 40))
         target = commit != open ? 1 : 0
         let remaining = target - position
         let left = Double(abs(remaining))
@@ -723,9 +724,11 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     }
 
     private func release(_ drawer: Drawer, from position: CGFloat, _ value: DragGesture.Value) {
+        // As on web, a center-start thumb swipe can cross a quarter-screen,
+        // but cannot cross half before reaching the edge. Members stays halfway.
         let release = DrawerRelease(open: open, position: position, velocity: Drawer.opening * value.velocity.width,
                                     distance: Drawer.opening * value.translation.width, travel: drawer.travel,
-                                    shadow: drawerShadowRoom)
+                                    shadow: drawerShadowRoom, threshold: drawer is BrowseDrawer ? 0.25 : 0.5)
         let timing = DrawerSettle.Timing.release(release)
         drawer.settle = reduceMotion ? nil : DrawerSettle(from: position, to: release.target, timing: timing, leads: release.commit)
         SwipeTapGuard.release()
@@ -856,6 +859,7 @@ private struct WorkspaceView: View {
                 // Past the width, so the edge shadow leaves too.
                 // And past a status column, where the conversation keeps its actions.
                 let travel = geometry.size.width + statusColumn.width + drawerShadowRoom
+                GeometryReader { viewport in
                 layout {
                     VStack(spacing: 0) {
                         HStack(spacing: 0) {
@@ -928,6 +932,10 @@ private struct WorkspaceView: View {
                         if narrow { AccountBar(model: model, sheet: $sheet) }
                     }
                     .frame(width: narrow ? nil : navigationWidth)
+                    #if os(iOS)
+                    // Browse stays full-height behind the keyboard-sized conversation.
+                    .ignoresSafeArea(narrow ? .keyboard : [], edges: .bottom)
+                    #endif
                     .allowsHitTesting(showsBrowse)
                     .accessibilityElement(children: .contain)
                     .accessibilityHidden(!showsBrowse)
@@ -960,6 +968,11 @@ private struct WorkspaceView: View {
                             // And under a status column, so no blackout shows beside the conversation.
                             .ignoresSafeArea(.container, edges: [.vertical, .trailing])
                     }
+                    #if os(iOS)
+                    // Avoid the keyboard once, before transforming the conversation.
+                    .frame(height: narrow ? viewport.size.height : nil, alignment: .top)
+                    .ignoresSafeArea(narrow ? .keyboard : [], edges: .bottom)
+                    #endif
                     .modifier(BrowseLayer(showsBrowse: narrow && showsBrowse) { CGSize(width: narrow ? $0 * travel : 0, height: 0) })
                     .allowsHitTesting(!narrow || !showsBrowse)
                     .accessibilityElement(children: .contain)
@@ -980,13 +993,13 @@ private struct WorkspaceView: View {
                 // A model change (a channel that finished opening) slides too:
                 // `DrawerPose` records it, so a finger can catch the conversation mid-slide.
                 .onChange(of: showsBrowse) { _, shows in if narrow && shows { endEditing() } }
+                }
             }
             #if os(iOS)
-            // The reader already measures the keyboard-avoiding viewport. Keep
-            // keyboard resizing at that boundary, not in each transformed layer.
+            // The reader measures the keyboard-avoiding viewport; each layer
+            // owns whether its contents resize or remain behind the keyboard.
             .frame(width: narrow ? geometry.size.width : nil, height: narrow ? geometry.size.height : nil, alignment: .topLeading)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: narrow ? .topLeading : .center)
-            .ignoresSafeArea(narrow ? .keyboard : [], edges: .bottom)
             #else
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             #endif
