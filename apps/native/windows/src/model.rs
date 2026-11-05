@@ -19,6 +19,8 @@ pub enum Span {
         text: String,
         bold: bool,
         italic: bool,
+        /// A resolved `@` mention, drawn as a pill.
+        mention: bool,
         href: Option<String>,
     },
     Bold(String),
@@ -113,13 +115,18 @@ impl Conversation {
                 text,
                 bold,
                 italic,
+                mention,
                 href,
             } = span
             {
                 len16 += text.encode_utf16().count();
                 out.push_str(text);
                 let len = len16 - start;
-                for (on, kind) in [(*bold, SpanKind::Bold), (*italic, SpanKind::Italic)] {
+                for (on, kind) in [
+                    (*bold, SpanKind::Bold),
+                    (*italic, SpanKind::Italic),
+                    (*mention, SpanKind::Mention),
+                ] {
                     if on {
                         spans.push((start, len, kind));
                     }

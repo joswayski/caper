@@ -467,25 +467,45 @@ pub fn conversation(
     (c, ids)
 }
 
-/// Message text as styled runs: the shared bold/italic grammar
-/// (`shared/messages/formatting.rs`) and links (`shared/messages/links.rs`),
-/// as the egui client draws them. Mentions are plain text until their
-/// matching moves into caper-client.
-pub fn spans(text: &str) -> Vec<Span> {
+/// Message text as styled runs, as the egui client draws it: the shared
+/// bold/italic grammar (`shared/messages/formatting.rs`) removes its markers
+/// first; then, in the text that remains, the mentions the server resolved
+/// (`caper_client::mentions`) become pills and links
+/// (`shared/messages/links.rs`) are found between them.
+pub fn spans(text: &str, mentions: &[core::Mention]) -> Vec<Span> {
+    let mut visible = String::with_capacity(text.len());
+    let mut styles = Vec::new();
+    crate::formatting::visit_runs(text, |range, bold, italic| {
+        let start = visible.len();
+        visible.push_str(&text[range]);
+        styles.push((start..visible.len(), bold, italic));
+    });
+    let pills: Vec<_> = caper_client::mentions::highlights(&visible, mentions)
+        .into_iter()
+        .map(|(range, _)| range)
+        .collect();
     let mut links = Vec::new();
-    let mut offset = 0;
-    for segment in crate::links::segments(text) {
-        let end = offset + segment.text.len();
-        if let Some(href) = segment.href {
-            links.push((offset..end, href));
+    let mut gap = 0;
+    for (start, end) in pills
+        .iter()
+        .map(|p| (p.start, p.end))
+        .chain([(visible.len(), visible.len())])
+    {
+        let mut offset = gap;
+        for segment in crate::links::segments(&visible[gap..start]) {
+            let next = offset + segment.text.len();
+            if let Some(href) = segment.href {
+                links.push((offset..next, href));
+            }
+            offset = next;
         }
-        offset = end;
+        gap = end;
     }
     let mut out = Vec::new();
-    crate::formatting::visit_runs(text, |range, bold, italic| {
+    for (range, bold, italic) in styles {
         let mut cuts = vec![range.start, range.end];
-        for (link, _) in &links {
-            for edge in [link.start, link.end] {
+        for span in pills.iter().chain(links.iter().map(|(link, _)| link)) {
+            for edge in [span.start, span.end] {
                 if range.start < edge && edge < range.end {
                     cuts.push(edge);
                 }
@@ -496,16 +516,17 @@ pub fn spans(text: &str) -> Vec<Span> {
         for piece in cuts.windows(2) {
             let (start, end) = (piece[0], piece[1]);
             out.push(Span::Rich {
-                text: text[start..end].to_owned(),
+                text: visible[start..end].to_owned(),
                 bold,
                 italic,
+                mention: pills.iter().any(|p| p.contains(&start)),
                 href: links
                     .iter()
                     .find(|(link, _)| link.contains(&start))
                     .map(|(_, href)| href.clone()),
             });
         }
-    });
+    }
     out
 }
 
@@ -516,7 +537,7 @@ pub fn message(m: &core::Message, author: usize, grouped: bool) -> model::Messag
         author,
         time: time_label(&m.created_at),
         grouped,
-        spans: spans(&m.content.text),
+        spans: spans(&m.content.text, &m.content.mentions),
         picture: None,
         reactions: m
             .reactions
@@ -542,6 +563,7 @@ mod tests {
                     bold,
                     italic,
                     href,
+                    ..
                 } => (text.clone(), *bold, *italic, href.clone()),
                 _ => panic!("live messages are rich runs"),
             })
@@ -550,7 +572,7 @@ mod tests {
 
     #[test]
     fn styles_and_links_split_into_runs_without_their_markers() {
-        let runs = shown(&spans("**see https://caper.chat/x** and _this_"));
+        let runs = shown(&spans("**see https://caper.chat/x** and _this_", &[]));
         let text: String = runs.iter().map(|r| r.0.as_str()).collect();
         assert_eq!(text, "see https://caper.chat/x and this");
         let link = runs.iter().find(|r| r.3.is_some()).expect("a link run");
@@ -558,5 +580,27 @@ mod tests {
         assert!(link.1, "the link keeps the bold around it");
         assert!(runs.iter().any(|r| r.0 == "this" && r.2 && !r.1));
         assert!(runs.iter().any(|r| r.0 == "see " && r.1 && r.3.is_none()));
+    }
+
+    #[test]
+    fn resolved_mentions_become_pills_and_unresolved_ones_stay_text() {
+        let maya = core::Mention {
+            kind: "user".into(),
+            id: Some("member000001".into()),
+            username: Some("maya".into()),
+        };
+        let text = "hi @maya and @nobody, see **@maya's** https://x.example";
+        let pills: Vec<String> = spans(text, std::slice::from_ref(&maya))
+            .into_iter()
+            .filter_map(|s| match s {
+                Span::Rich {
+                    text,
+                    mention: true,
+                    ..
+                } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pills, ["@maya", "@maya"]);
     }
 }
