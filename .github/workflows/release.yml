@@ -743,13 +743,19 @@ jobs:
           set -euo pipefail
           cd release
           read -r -a files <<<"$RELEASE_ASSETS"
-          gh release delete "$RELEASE_TAG" --cleanup-tag --yes 2>/dev/null || true
-          # The Releases API cannot create an older tag with GITHUB_TOKEN when
-          # main's workflows changed during the build. Push the built commit's
-          # tag through Git first; never let release creation choose main's tip.
-          git push origin "$RELEASE_SHA:refs/tags/$RELEASE_TAG"
-          gh release create "$RELEASE_TAG" --verify-tag --prerelease --target "$RELEASE_SHA" \
-            --title "Caper apps (latest)" --notes-file notes.md "${files[@]}"
+          # Keep the release and its history available if publishing fails.
+          # The tag moves through Git: the Releases API cannot create an older
+          # tag with GITHUB_TOKEN when main's workflows changed during a build.
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" --clobber "${files[@]}"
+            git push origin "+$RELEASE_SHA:refs/tags/$RELEASE_TAG"
+            gh release edit "$RELEASE_TAG" --target "$RELEASE_SHA" \
+              --title "Caper apps (latest)" --notes-file notes.md
+          else
+            git push origin "$RELEASE_SHA:refs/tags/$RELEASE_TAG"
+            gh release create "$RELEASE_TAG" --verify-tag --prerelease --target "$RELEASE_SHA" \
+              --title "Caper apps (latest)" --notes-file notes.md "${files[@]}"
+          fi
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/update-key.pem"
