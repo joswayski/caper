@@ -37,6 +37,7 @@ mod text;
 mod theme;
 mod thread;
 mod uia;
+mod versions;
 
 use bench::{Action, Bench};
 use composer::Composer;
@@ -575,6 +576,7 @@ impl App {
                     self.need = true;
                 }
                 live::Update::Message(m) => {
+                    self.history_follow(&m);
                     let me = self.live.as_ref().and_then(|l| l.me.clone());
                     let error = self
                         .live
@@ -622,6 +624,11 @@ impl App {
                     result,
                 } => self.edited(request, reloaded, result),
                 live::Update::Deleted(request, error) => self.deleted(request, error),
+                live::Update::Versions {
+                    request,
+                    message,
+                    result,
+                } => self.versions_loaded(request, &message, result),
                 live::Update::Presence(online) => {
                     self.c.presence = true;
                     for (person, id) in self.c.members.iter_mut().zip(&self.ids.members) {
@@ -1342,6 +1349,8 @@ impl App {
                         self.foot_activate(k);
                     } else if let Some(i) = self.quote_link_at(x, y) {
                         self.view_original_of(i);
+                    } else if let Some(i) = self.edited_at(x, y) {
+                        self.open_history_of(i);
                     } else if let Some((i, action)) = self.action_at(x, y) {
                         self.row_action(i, action);
                     } else if self.in_history(x, y) {
@@ -1416,6 +1425,7 @@ impl App {
                             || self.thread_link_at(x, y).is_some()
                             || self.foot_at(x, y).is_some()
                             || self.quote_link_at(x, y).is_some()
+                            || self.edited_at(x, y).is_some()
                             || self.reply_cancel_rect().is_some_and(|(l, t, w, h)| {
                                 x >= l && x < l + w && y >= t && y < t + h
                             })

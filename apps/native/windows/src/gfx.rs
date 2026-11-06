@@ -121,6 +121,8 @@ pub struct Formats {
     /// The history's head: its 11.52px label and bold button.
     pub head: IDWriteTextFormat,
     pub head_button: IDWriteTextFormat,
+    /// Message history's compared text: egui's 12px monospace.
+    pub mono: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -279,6 +281,15 @@ impl Gfx {
                 menu_item: fmt(12.48, DWRITE_FONT_WEIGHT_NORMAL)?,
                 head: fmt(11.52, DWRITE_FONT_WEIGHT_NORMAL)?,
                 head_button: fmt(11.52, DWRITE_FONT_WEIGHT_BOLD)?,
+                mono: dwrite.CreateTextFormat(
+                    w!("Consolas"),
+                    None,
+                    DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    12.0,
+                    w!("en-us"),
+                )?,
             };
             let f = &formats;
             for f in [

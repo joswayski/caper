@@ -61,6 +61,8 @@ pub enum Id {
     Newer(usize),
     /// View original on row `i`'s quote.
     Original(usize),
+    /// Row `i`'s "(edited)" marker, which opens its message history.
+    Edited(usize),
     /// The thread beside the conversation, and its parts.
     Thread,
     ThreadPart(TPart),
@@ -186,6 +188,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .map(|(action, _)| Id::Control(i, action))
             .chain(a.tools(i).into_iter().map(|t| Id::Tool(i, t.tool)))
             .chain(a.quote_link_rect(i).map(|_| Id::Original(i)))
+            .chain(a.edited_rect(i).map(|_| Id::Edited(i)))
             .collect(),
         Id::Thread => a
             .thread_parts()
@@ -211,7 +214,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Row(_) => Id::History,
         Id::Control(i, _) | Id::Tool(i, _) => Id::Row(i),
         Id::Older | Id::Newer(_) => Id::History,
-        Id::Original(i) => Id::Row(i),
+        Id::Original(i) | Id::Edited(i) => Id::Row(i),
         Id::MenuItem(_) | Id::MenuClose => Id::Menu,
         Id::Pick(_) => Id::Picker,
         Id::Member(_) => Id::Members,
@@ -248,6 +251,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Older => a.dialog.is_none() && a.head_rect().is_some(),
         Id::Newer(k) => a.dialog.is_none() && a.foot_rect(k).is_some(),
         Id::Original(i) => a.dialog.is_none() && a.quote_link_rect(i).is_some(),
+        Id::Edited(i) => a.dialog.is_none() && a.edited_rect(i).is_some(),
         Id::Thread => a.thread.is_some() && a.dialog.is_none() && a.signin.is_none(),
         Id::ThreadPart(p) => {
             a.dialog.is_none() && a.signin.is_none() && a.thread_parts().contains(&p)
@@ -326,6 +330,7 @@ fn name(a: &App, id: Id) -> String {
         Id::ReplyCancel => "Cancel reply".into(),
         Id::Newer(k) => a.foot_head(k).label.into(),
         Id::Original(_) => "View original".into(),
+        Id::Edited(_) => "Message history".into(),
         Id::Older => match a.live.as_ref().map(crate::live::Live::older) {
             Some(crate::live::Older::Failed) => "Couldn\u{2019}t load older messages. Retry".into(),
             Some(state) => crate::list::head_label(state).0.into(),
@@ -342,12 +347,16 @@ fn name(a: &App, id: Id) -> String {
             };
             match p {
                 DPart::Title => d.title().into(),
-                DPart::Note => d.note().into(),
+                DPart::Note => d.note(),
                 DPart::Field => "Message".into(),
                 DPart::Error => d.error.clone().unwrap_or_default(),
                 DPart::Reload => "Discard draft and load latest".into(),
                 DPart::Cancel => "Cancel".into(),
                 DPart::Primary => d.primary_label().into(),
+                DPart::Version(k) if d.version_selected(k) => {
+                    format!("{}, selected", d.history_text(p))
+                }
+                _ => d.history_text(p),
             }
         }
         Id::Sign(p) => {
@@ -433,6 +442,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Reply => UIA_TextControlTypeId,
         Id::Older | Id::Newer(_) => UIA_ButtonControlTypeId,
         Id::Original(_) => UIA_HyperlinkControlTypeId,
+        Id::Edited(_) => UIA_ButtonControlTypeId,
         Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel => UIA_ButtonControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Thread => UIA_PaneControlTypeId,
@@ -441,7 +451,15 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::ThreadPart(TPart::Field) => UIA_EditControlTypeId,
         Id::ThreadPart(_) => UIA_ButtonControlTypeId,
         Id::Dialog(DPart::Field) => UIA_EditControlTypeId,
-        Id::Dialog(DPart::Title | DPart::Note | DPart::Error) => UIA_TextControlTypeId,
+        Id::Dialog(
+            DPart::Title
+            | DPart::Note
+            | DPart::Error
+            | DPart::Column(_)
+            | DPart::Choose
+            | DPart::Hint
+            | DPart::Loading,
+        ) => UIA_TextControlTypeId,
         Id::Dialog(_) => UIA_ButtonControlTypeId,
         Id::Sign(_) | Id::Control(..) => UIA_ButtonControlTypeId,
     }
@@ -462,7 +480,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Sign(p) => (10, p as usize),
         Id::Menu => (12, 0),
         Id::MenuItem(k) => (13, k),
-        Id::Dialog(p) => (14, p as usize),
+        Id::Dialog(p) => (14, p.index()),
         Id::Tool(i, t) => (
             15,
             i * 8
@@ -488,6 +506,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Older => (20, 0),
         Id::Newer(k) => (26, k),
         Id::Original(i) => (27, i),
+        Id::Edited(i) => (28, i),
         Id::ReplyCancel => (19, 1),
         Id::Thread => (21, 0),
         Id::ThreadPart(p) => match p {
@@ -580,6 +599,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Older => a.head_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Newer(k) => a.foot_rect(k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Original(i) => a.quote_link_rect(i).unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Edited(i) => a.edited_rect(i).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Thread => (a.thread_x(), 0.0, crate::thread::THREAD_W, a.h),
         Id::ThreadPart(p) => a.thread_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Sign(p) => a
@@ -680,7 +700,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             | Id::ReplyCancel
             | Id::Older
             | Id::Newer(_)
-            | Id::Original(_) => pattern == UIA_InvokePatternId,
+            | Id::Original(_)
+            | Id::Edited(_) => pattern == UIA_InvokePatternId,
             Id::Pick(PPart::Category(_)) => {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
@@ -695,9 +716,15 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     || pattern == UIA_TextPatternId
                     || pattern == UIA_TextPattern2Id
             }
-            Id::Dialog(DPart::Reload | DPart::Cancel | DPart::Primary) => {
-                pattern == UIA_InvokePatternId
-            }
+            Id::Dialog(
+                DPart::Reload
+                | DPart::Cancel
+                | DPart::Primary
+                | DPart::Close
+                | DPart::Version(_)
+                | DPart::Retry
+                | DPart::Older,
+            ) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
                 pattern == UIA_InvokePatternId
             }
@@ -926,6 +953,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Older => a.load_older(),
                 Id::Newer(k) => a.foot_activate(k),
                 Id::Original(i) => a.view_original_of(i),
+                Id::Edited(i) => a.open_history_of(i),
                 Id::ThreadPart(p) => a.thread_activate(p),
                 _ => {}
             }

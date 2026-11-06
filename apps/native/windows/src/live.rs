@@ -114,6 +114,13 @@ pub enum Update {
     },
     /// The reply to delete request `request`: None once deleted.
     Deleted(u64, Option<String>),
+    /// A page of message `message`'s versions for request `request`, or
+    /// why it failed (for its history).
+    Versions {
+        request: u64,
+        message: String,
+        result: Result<core::MessageVersions, String>,
+    },
     /// Online account ids in the open space.
     Presence(HashSet<String>),
     /// The gateway's state while not live ("Connecting…"); None once live.
@@ -708,6 +715,21 @@ impl Live {
             token: self.token.clone(),
             channel: original.channel_id.clone(),
             message: original.id.clone(),
+        });
+        self.request
+    }
+
+    /// Reads message `m`'s versions, newest first, or with `before` the
+    /// page older than that revision; returns the request its reply carries.
+    pub fn load_versions(&mut self, m: &core::Message, before: Option<u32>) -> u64 {
+        self.request += 1;
+        self.worker.send(Command::MessageVersions {
+            generation: self.generation,
+            request: self.request,
+            token: self.token.clone(),
+            channel: m.channel_id.clone(),
+            message: m.id.clone(),
+            before,
         });
         self.request
     }
@@ -1492,6 +1514,19 @@ impl Live {
                 self.republish(&message);
                 out.append(&mut self.queued);
                 out.push(Update::Deleted(request, result.err()));
+            }
+            Event::MessageVersions {
+                generation,
+                request,
+                channel,
+                message,
+                result,
+            } if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                out.push(Update::Versions {
+                    request,
+                    message,
+                    result,
+                });
             }
             Event::Pinned {
                 generation,

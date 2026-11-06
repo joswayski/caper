@@ -676,6 +676,26 @@ impl Rows {
 }
 
 impl Rows {
+    /// Row `i`'s "(edited)" marker after its text, or with `in_time` its
+    /// header's time, which carries the marker on an ungrouped row,
+    /// relative to the row's top-left.
+    pub fn edited_marker(&self, i: usize, in_time: bool) -> Option<Common::D2D_RECT_F> {
+        let row = self.row(i)?;
+        if let Some((l, w, x, y)) = &row.edited {
+            let (x, y) = (BODY_X + x, row.text_y + y);
+            return Some(rect(x, y, x + w, y + gfx::metrics(l).height));
+        }
+        let h = row.header.as_ref().filter(|_| in_time)?;
+        let m = gfx::metrics(&h.time);
+        let (x, y) = (BODY_X + h.name_w + 8.0, row.header_y + 4.0);
+        Some(rect(
+            x,
+            y,
+            x + m.widthIncludingTrailingWhitespace,
+            y + m.height,
+        ))
+    }
+
     /// Row `i`'s "View original" in its quote, relative to the row's
     /// top-left.
     pub fn quote_link(&self, i: usize) -> Option<Common::D2D_RECT_F> {

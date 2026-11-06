@@ -29,6 +29,7 @@ icons! {
     Close => "x.svg",
     Copy => "copy.svg",
     Hash => "hash.svg",
+    History => "history.svg",
     More => "ellipsis.svg",
     Pencil => "pencil.svg",
     Pin => "pin.svg",

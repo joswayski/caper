@@ -1,6 +1,6 @@
 //! Popups over the conversation, each on its own composition surface: the
 //! message menu that the hover toolbar's "More" opens, and the modal dialogs
-//! for editing and deleting a message. They look and behave like the egui
+//! for editing and deleting a message and for its history (`versions`). They look and behave like the egui
 //! client's: the same items in the same order, the same titles, notes,
 //! buttons and errors.
 use crate::composer::{Composer, LINE};
@@ -46,6 +46,7 @@ fn width(l: &IDWriteTextLayout) -> f32 {
 pub enum Item {
     Reply,
     Edit,
+    History,
     Pin,
     Unpin,
     /// "Saving…" while a pin change is in flight; not clickable.
@@ -60,6 +61,7 @@ impl Item {
         match self {
             Self::Reply => "Reply",
             Self::Edit => "Edit message",
+            Self::History => "Message history",
             Self::Pin => "Pin message",
             Self::Unpin => "Unpin message",
             Self::PinSaving => "Saving\u{2026}",
@@ -77,6 +79,7 @@ impl Item {
         match self {
             Self::Reply => Icon::Reply,
             Self::Edit => Icon::Pencil,
+            Self::History => Icon::History,
             Self::Pin | Self::PinSaving => Icon::Pin,
             Self::Unpin => Icon::PinOff,
             Self::CopyText => Icon::Copy,
@@ -236,6 +239,8 @@ impl Menu {
 pub enum Kind {
     Edit,
     Delete,
+    /// Message history: its retained versions, compared word by word.
+    History,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -248,9 +253,49 @@ pub enum Part {
     Reload,
     Cancel,
     Primary,
+    /// The history's parts: its Close button; a comparison column
+    /// (`versions::Dialog::column`); "View previous versions" and the
+    /// earlier version `k` to compare; the hint that an older page is
+    /// needed; "Loading versions…"; Retry; "Load older versions".
+    Close,
+    Column(u8),
+    Choose,
+    Version(usize),
+    Hint,
+    Loading,
+    Retry,
+    Older,
 }
 
-const CARD_PAD: f32 = 24.0;
+impl Part {
+    /// A stable number per part, for UI Automation's runtime ids.
+    pub fn index(self) -> usize {
+        match self {
+            Self::Title => 0,
+            Self::Note => 1,
+            Self::Field => 2,
+            Self::Error => 3,
+            Self::Reload => 4,
+            Self::Cancel => 5,
+            Self::Primary => 6,
+            Self::Close => 7,
+            Self::Choose => 8,
+            Self::Hint => 9,
+            Self::Loading => 10,
+            Self::Retry => 11,
+            Self::Older => 12,
+            Self::Column(k) => 16 + k as usize,
+            Self::Version(k) => 32 + k,
+        }
+    }
+
+    /// Whether the part scrolls with the history's body (all but its head).
+    fn in_body(self) -> bool {
+        !matches!(self, Self::Title | Self::Note | Self::Close)
+    }
+}
+
+pub(crate) const CARD_PAD: f32 = 24.0;
 const BUTTON_H: f32 = 36.0;
 const FIELD_PAD_X: f32 = 10.0;
 const FIELD_PAD_Y: f32 = 8.0;
@@ -271,8 +316,13 @@ pub struct Dialog {
     pub pressed: Option<Part>,
     /// Client DIP origin of the field's text, before it scrolls.
     pub field_origin: (f32, f32),
-    parts: Vec<(Part, Rect)>,
-    card: Rect,
+    /// The history's versions, while `kind` is History.
+    pub history: Option<Box<crate::versions::Versions>>,
+    /// How far the history's body is scrolled, and where it shows.
+    pub scroll: f32,
+    pub body: Rect,
+    pub(crate) parts: Vec<(Part, Rect)>,
+    pub(crate) card: Rect,
 }
 
 impl Dialog {
@@ -291,7 +341,7 @@ impl Dialog {
         Self::new(Kind::Delete, message, Composer::default())
     }
 
-    fn new(kind: Kind, message: core::Message, field: Composer) -> Self {
+    pub(crate) fn new(kind: Kind, message: core::Message, field: Composer) -> Self {
         Self {
             kind,
             message: Box::new(message),
@@ -302,6 +352,9 @@ impl Dialog {
             hover: None,
             pressed: None,
             field_origin: (0.0, 0.0),
+            history: None,
+            scroll: 0.0,
+            body: (0.0, 0.0, 0.0, 0.0),
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -315,13 +368,22 @@ impl Dialog {
         match self.kind {
             Kind::Edit => "Edit message",
             Kind::Delete => "Delete message?",
+            Kind::History => "Message history",
         }
     }
 
-    pub fn note(&self) -> &'static str {
+    pub fn note(&self) -> String {
         match self.kind {
-            Kind::Edit => "Previous versions remain visible to people who can read this message.",
-            Kind::Delete => "This removes the message for everyone. This can\u{2019}t be undone.",
+            Kind::Edit => {
+                "Previous versions remain visible to people who can read this message.".into()
+            }
+            Kind::Delete => {
+                "This removes the message for everyone. This can\u{2019}t be undone.".into()
+            }
+            Kind::History => format!(
+                "{} \u{b7} Previous versions are retained.",
+                self.message.author.name
+            ),
         }
     }
 
@@ -331,6 +393,7 @@ impl Dialog {
             (Kind::Edit, true) => "Saving\u{2026}",
             (Kind::Delete, false) => "Delete",
             (Kind::Delete, true) => "Deleting\u{2026}",
+            (Kind::History, _) => "Close",
         }
     }
 
@@ -348,10 +411,23 @@ impl Dialog {
         match part {
             Part::Primary => {
                 !self.busy
-                    && (self.kind == Kind::Delete || caper_client::edits::valid_text(&self.draft()))
+                    && match self.kind {
+                        Kind::Edit => caper_client::edits::valid_text(&self.draft()),
+                        Kind::Delete => true,
+                        Kind::History => false,
+                    }
             }
             Part::Cancel | Part::Reload | Part::Field => !self.busy,
-            Part::Title | Part::Note | Part::Error => true,
+            Part::Retry | Part::Older => self.history.as_ref().is_some_and(|v| !v.loading),
+            Part::Title
+            | Part::Note
+            | Part::Error
+            | Part::Close
+            | Part::Column(_)
+            | Part::Choose
+            | Part::Version(_)
+            | Part::Hint
+            | Part::Loading => true,
         }
     }
 
@@ -369,8 +445,18 @@ impl Dialog {
         self.parts
             .iter()
             .find(|(p, r)| {
-                matches!(p, Part::Field | Part::Reload | Part::Cancel | Part::Primary)
-                    && contains(*r, x, y)
+                matches!(
+                    p,
+                    Part::Field
+                        | Part::Reload
+                        | Part::Cancel
+                        | Part::Primary
+                        | Part::Close
+                        | Part::Version(_)
+                        | Part::Retry
+                        | Part::Older
+                ) && contains(*r, x, y)
+                    && (self.kind != Kind::History || !p.in_body() || contains(self.body, x, y))
             })
             .map(|(p, _)| *p)
     }
@@ -396,9 +482,12 @@ impl Dialog {
     /// Lays out the card for a `w` × `h` window: the field's text and every
     /// part's rectangle.
     pub fn relayout(&mut self, g: &Gfx, w: f32, h: f32) -> Result<()> {
+        if self.kind == Kind::History {
+            return self.relayout_history(g, w, h);
+        }
         let card_w = match self.kind {
             Kind::Edit => 500.0_f32,
-            Kind::Delete => 420.0,
+            _ => 420.0,
         }
         .min(w - 48.0)
         .max(200.0);
@@ -409,10 +498,10 @@ impl Dialog {
         parts.push((Part::Title, (0.0, y, inner, height(&title))));
         y += height(&title) + 4.0;
         let note_format = match self.kind {
-            Kind::Edit => &g.formats.dialog_note,
             Kind::Delete => &g.formats.note,
+            _ => &g.formats.dialog_note,
         };
-        let note = layout(g, self.note(), note_format, inner)?;
+        let note = layout(g, &self.note(), note_format, inner)?;
         parts.push((Part::Note, (0.0, y, inner, height(&note))));
         y += height(&note);
         if self.kind == Kind::Edit {
@@ -470,6 +559,9 @@ impl Dialog {
             let card = rect(cx, cy, cx + cw, cy + ch);
             fill_round(dc, card, RADIUS, &g.brushes.surface);
             stroke_round(dc, card, RADIUS, &g.brushes.border);
+            if self.kind == Kind::History {
+                return self.draw_history(g, dc);
+            }
             for (part, (x, y, pw, ph)) in &self.parts {
                 let (x, y, pw, ph) = (*x, *y, *pw, *ph);
                 match part {
@@ -479,10 +571,10 @@ impl Dialog {
                     }
                     Part::Note => {
                         let format = match self.kind {
-                            Kind::Edit => &g.formats.dialog_note,
                             Kind::Delete => &g.formats.note,
+                            _ => &g.formats.dialog_note,
                         };
-                        let l = layout(g, self.note(), format, pw)?;
+                        let l = layout(g, &self.note(), format, pw)?;
                         crate::text::draw(dc, &l, x, y, &g.brushes.muted);
                     }
                     Part::Field => {
@@ -534,18 +626,19 @@ impl Dialog {
                     }
                     Part::Primary => {
                         let tone = match self.kind {
-                            Kind::Edit => Tone::Primary,
                             Kind::Delete => Tone::Danger,
+                            _ => Tone::Primary,
                         };
                         self.button(g, dc, *part, self.primary_label(), (x, y, pw, ph), tone)?;
                     }
+                    _ => {}
                 }
             }
         }
         Ok(())
     }
 
-    fn button(
+    pub(crate) fn button(
         &self,
         g: &Gfx,
         dc: &ID2D1DeviceContext,
@@ -584,7 +677,7 @@ impl Dialog {
 /// The egui client's button tones (web's `.primary`, `.secondary` and
 /// danger buttons): fill, border and label at rest, hovered and pressed.
 #[derive(Clone, Copy)]
-enum Tone {
+pub(crate) enum Tone {
     Primary,
     Secondary,
     Danger,
@@ -633,6 +726,10 @@ impl App {
         if live.can_edit(&m) {
             items.push(Item::Edit);
         }
+        // As in egui: an edited message's history, after Edit message.
+        if m.forward.is_none() && m.revision > 1 && !m.is_deleted() {
+            items.push(Item::History);
+        }
         if live.can_pin(&m) {
             items.push(if live.pin_pending(&m.id) {
                 Item::PinSaving
@@ -675,6 +772,7 @@ impl App {
             Item::Reply => return self.select_reply(menu.row),
             Item::Edit if live.can_edit(&m) => self.open_dialog(Dialog::edit(m)),
             Item::Delete if live.can_delete(&m) => self.open_dialog(Dialog::delete(m)),
+            Item::History => return self.open_history(m),
             Item::Pin => live.pin(&m, true),
             Item::Unpin => live.pin(&m, false),
             Item::CopyText => crate::set_clipboard(self.hwnd, &gfx::wide(&m.content.text)),
@@ -686,7 +784,7 @@ impl App {
         }
     }
 
-    fn open_dialog(&mut self, d: Dialog) {
+    pub(crate) fn open_dialog(&mut self, d: Dialog) {
         self.set_composer_focus(false);
         let editing = d.kind == Kind::Edit;
         self.dialog = Some(d);
@@ -742,7 +840,21 @@ impl App {
             return;
         }
         match part {
-            Part::Cancel => return self.close_dialog(),
+            Part::Cancel | Part::Close => return self.close_dialog(),
+            Part::Version(k) => {
+                if let Some(v) = &mut d.history {
+                    let revision = v.list.get(k).map(|v| v.revision);
+                    v.selected = if v.selected == revision {
+                        None
+                    } else {
+                        revision
+                    };
+                }
+            }
+            Part::Retry | Part::Older => {
+                let older = d.history.as_ref().is_some_and(|v| !v.list.is_empty());
+                return self.history_load(older);
+            }
             Part::Field => {
                 d.field.focused = true;
                 self.events |= EV_FOCUS;
@@ -755,9 +867,16 @@ impl App {
                     (Kind::Edit, Part::Reload) => live.reload_message(&d.message),
                     (Kind::Edit, _) => live.edit(&d.message, d.draft()),
                     (Kind::Delete, _) => live.delete(&d.message),
+                    (Kind::History, _) => d.request,
                 };
             }
-            Part::Title | Part::Note | Part::Error => {}
+            Part::Title
+            | Part::Note
+            | Part::Error
+            | Part::Column(_)
+            | Part::Choose
+            | Part::Hint
+            | Part::Loading => {}
         }
         self.dialog_changed();
         if let Err(e) = self.drain_live() {
@@ -952,6 +1071,12 @@ impl App {
                 }
                 done
             }
+            WM_MOUSEWHEEL if d.kind == Kind::History => {
+                let notches = (wp.0 >> 16) as u16 as i16 as f32 / 120.0;
+                d.scroll -= notches * 3.0 * LINE;
+                self.dialog_changed();
+                done
+            }
             WM_LBUTTONDBLCLK | WM_MOUSEWHEEL => done,
             WM_SETCURSOR => {
                 let cursor = match self.pointer.and_then(|(x, y)| d.hit(x, y)) {
@@ -968,6 +1093,21 @@ impl App {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
                 match vk {
                     VK_ESCAPE if !d.busy => self.close_dialog(),
+                    // The history's body scrolls from the keyboard too.
+                    VK_UP | VK_DOWN | VK_PRIOR | VK_NEXT | VK_HOME | VK_END
+                        if d.kind == Kind::History =>
+                    {
+                        let page = d.body.3 - 2.0 * LINE;
+                        d.scroll += match vk {
+                            VK_UP => -LINE,
+                            VK_DOWN => LINE,
+                            VK_PRIOR => -page,
+                            VK_NEXT => page,
+                            VK_HOME => -f32::MAX / 2.0,
+                            _ => f32::MAX / 2.0,
+                        };
+                        self.dialog_changed();
+                    }
                     // Ctrl+Enter saves, as in the egui client.
                     VK_RETURN if ctrl => self.dialog_activate(Part::Primary),
                     VK_RETURN if d.kind == Kind::Edit && d.field.focused && !d.busy => {
