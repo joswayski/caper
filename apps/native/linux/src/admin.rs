@@ -166,6 +166,17 @@ impl State {
             })
     }
 
+    /// Web's first-space page: a signed-in account whose loaded space list
+    /// is empty names its first space instead of seeing an empty workspace.
+    pub(super) fn needs_first_space(&self) -> bool {
+        self.account.is_some()
+            && self.admin.limits.is_some()
+            && self.admin.dialog.is_none()
+            && self.direct.is_none()
+            && self.admin.invitations.is_empty()
+            && !self.spaces.iter().any(|space| !space.demo)
+    }
+
     pub(super) fn can_create_space(&self) -> bool {
         let (Some(limits), Some(account)) = (&self.admin.limits, &self.account) else {
             return false;
@@ -390,7 +401,7 @@ impl App {
     pub(super) fn install_admin_actions(self: &Rc<Self>) {
         let group = gio::SimpleActionGroup::new();
         type Run = fn(&Rc<App>, String);
-        let actions: [(&str, Run); 8] = [
+        let actions: [(&str, Run); 9] = [
             ("create-space", |app, _| app.open_create_space()),
             ("join", |app, _| app.open_join_invite()),
             ("manage-space", |app, _| app.open_manage_space()),
@@ -398,6 +409,7 @@ impl App {
                 app.open_invite_people(Some(channel).filter(|id| !id.is_empty()))
             }),
             ("create-channel", |app, _| app.open_create_channel()),
+            ("browse", |app, _| app.open_browse()),
             ("manage-channel", |app, id| app.open_manage_channel(&id)),
             ("leave-space", |app, _| {
                 let confirm = {
@@ -510,8 +522,13 @@ impl App {
             let Some(detail) = state.detail.as_ref() else {
                 return;
             };
-            let menu = Self::admin_menu(&state, &Scope::Space(detail.space.id.clone()))
-                .unwrap_or_default();
+            let menu = gio::Menu::new();
+            let browse = gio::MenuItem::new(Some("Browse channels"), None);
+            browse.set_action_and_target_value(Some("admin.browse"), Some(&"".to_variant()));
+            menu.append_item(&browse);
+            if let Some(admin) = Self::admin_menu(&state, &Scope::Space(detail.space.id.clone())) {
+                menu.append_section(None, &admin);
+            }
             if state.owner() && state.can_create_channel() {
                 let item = gio::MenuItem::new(Some("Create channel"), None);
                 item.set_action_and_target_value(
@@ -540,6 +557,38 @@ impl App {
         admin.member_status = None;
         admin.icon.error = None;
         admin.revision += 1;
+    }
+
+    /// The first-space page's Create space, as the dialog's.
+    pub(super) fn create_first_space(self: &Rc<Self>) {
+        let name = self.ui.first_name.text().to_string();
+        {
+            let mut state = self.state.borrow_mut();
+            if state.admin.busy || !state.can_create_space() || name.trim().is_empty() {
+                return;
+            }
+            // Web validates on submit and keeps the name on failure.
+            match space_name_error(&name) {
+                Some(error) => state.error = Some(error.into()),
+                None => self.admin(&mut state, AdminOperation::CreateSpace { name }),
+            }
+        }
+        self.render();
+    }
+
+    pub(super) fn render_first_space(&self, state: &State) {
+        let ui = &self.ui;
+        let busy = state.admin.busy;
+        let allowed = state.can_create_space();
+        ui.first_limit.set_visible(!allowed);
+        ui.first_name.set_sensitive(!busy);
+        ui.first_create
+            .set_label(if busy { "Creating…" } else { "Create space" });
+        ui.first_create
+            .set_sensitive(!busy && allowed && !ui.first_name.text().trim().is_empty());
+        let error = state.error.as_deref().unwrap_or_default();
+        ui.first_error.set_label(error);
+        ui.first_error.set_visible(!error.is_empty());
     }
 
     pub(super) fn open_create_space(self: &Rc<Self>) {
@@ -1155,10 +1204,12 @@ impl App {
             }
         }
         let weak = Rc::downgrade(self);
+        self.load_voice_activity();
         glib::timeout_add_local(REFRESH, move || {
             let Some(app) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
+            app.load_voice_activity();
             if app
                 .state
                 .try_borrow()
@@ -1171,6 +1222,24 @@ impl App {
             }
             app.refresh_membership();
             glib::ControlFlow::Continue
+        });
+    }
+
+    /// Which spaces have someone in voice, for the rail's badges (desktop
+    /// polls every 15 seconds too).
+    fn load_voice_activity(&self) {
+        let Ok(mut state) = self.state.try_borrow_mut() else {
+            return;
+        };
+        let Some(token) = state.token.clone() else {
+            return;
+        };
+        if std::mem::replace(&mut state.voice_activity_loading, true) {
+            return;
+        }
+        self.worker.send(Command::LoadVoiceActivity {
+            epoch: state.epoch,
+            token,
         });
     }
 

@@ -151,10 +151,19 @@ pub struct Ui {
     pub code_hint: gtk::Label,
     pub signin_status: gtk::Label,
     pub signin_error: gtk::Label,
+    /// The first-space page: a signed-in account with no spaces names one.
+    pub first_name: gtk::Entry,
+    pub first_create: gtk::Button,
+    pub first_limit: gtk::Label,
+    pub first_error: gtk::Label,
+    pub first_logout: gtk::Button,
     pub rail: gtk::Box,
     pub space_name: gtk::Label,
     pub space_header: gtk::Button,
     pub new_channel: gtk::Button,
+    /// "Toggle channels": collapsed, only channels with live voice show.
+    pub channels_toggle: gtk::Button,
+    pub channels_count: gtk::Label,
     pub channel_invites: gtk::Box,
     pub channels: gtk::ListBox,
     pub directs: gtk::ListBox,
@@ -186,6 +195,13 @@ pub struct Ui {
     pub error: gtk::Label,
     /// The banner's way to try again: Retry, Try again or Retry session.
     pub error_retry: gtk::Button,
+    /// Over an empty conversation: "No messages yet." and its note, or
+    /// "No joined channels" with Create channel for owners.
+    pub empty: gtk::Box,
+    pub empty_icon: gtk::Image,
+    pub empty_title: gtk::Label,
+    pub empty_note: gtk::Label,
+    pub empty_action: gtk::Button,
     pub compose_bar: gtk::Box,
     pub compose_label: gtk::Label,
     pub compose_cancel: gtk::Button,
@@ -296,6 +312,70 @@ impl Ui {
         card.set_vexpand(true);
         pages.add_named(&signin, Some("signin"));
 
+        // Web's first-space page.
+        let first = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        first.add_css_class("first-space");
+        first.set_halign(gtk::Align::Center);
+        first.set_size_request(440, -1);
+        let wordmark = gtk::Picture::new();
+        if let Some(texture) = crate::images::wordmark(132, 35) {
+            wordmark.set_paintable(Some(&texture));
+        }
+        wordmark.set_size_request(132, 35);
+        wordmark.set_can_shrink(true);
+        wordmark.set_content_fit(gtk::ContentFit::ScaleDown);
+        wordmark.set_halign(gtk::Align::Start);
+        wordmark.set_alternative_text(Some("Caper"));
+        let wordmark_line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        wordmark_line.add_css_class("wordmark");
+        wordmark_line.set_halign(gtk::Align::Start);
+        wordmark_line.append(&wordmark);
+        first.append(&wordmark_line);
+        let first_title = label("Name your space", &["first-title"]);
+        first_title.set_xalign(0.0);
+        first.append(&first_title);
+        let first_intro = label(
+            "Choose something you will recognize easily. You can always change it later!",
+            &["first-intro"],
+        );
+        first_intro.set_wrap(true);
+        first_intro.set_xalign(0.0);
+        first_intro.set_max_width_chars(44);
+        first.append(&first_intro);
+        let first_label = label("Space name", &["field", "first-field"]);
+        first_label.set_xalign(0.0);
+        first.append(&first_label);
+        let first_name = gtk::Entry::builder()
+            .placeholder_text("Gaming nights")
+            .max_length(64)
+            .build();
+        first_label.set_mnemonic_widget(Some(&first_name));
+        first.append(&first_name);
+        let first_limit = label(
+            "You have reached your space limit.",
+            &["muted", "first-limit"],
+        );
+        first_limit.set_xalign(0.0);
+        first.append(&first_limit);
+        let first_error = label("", &["error", "first-error"]);
+        first_error.set_wrap(true);
+        first_error.set_xalign(0.0);
+        first.append(&first_error);
+        let first_create = gtk::Button::with_label("Create space");
+        first_create.add_css_class("primary");
+        first_create.add_css_class("first-create");
+        first.append(&first_create);
+        let first_logout = gtk::Button::with_label("Log out");
+        first_logout.add_css_class("flat");
+        first_logout.add_css_class("first-logout");
+        first_logout.set_halign(gtk::Align::End);
+        first.append(&first_logout);
+        let first_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(&first)
+            .build();
+        pages.add_named(&first_scroll, Some("first-space"));
+
         // Chat: rail, sidebar, conversation, then members or a thread.
         let chat = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         // Hosts popovers (`app::popup`): it outlives the rows they point at.
@@ -325,9 +405,23 @@ impl Ui {
         sidebar.append(&space_header);
         let lists = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let channel_header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let channels_title = label("Channels", &["section"]);
-        channels_title.set_hexpand(true);
-        channel_header.append(&channels_title);
+        let channels_toggle: gtk::Button = crate::app::named("GtkButton", "Toggle channels");
+        channels_toggle.add_css_class("flat");
+        channels_toggle.add_css_class("section-toggle");
+        channels_toggle.set_valign(gtk::Align::End);
+        let channels_title = label("Channels", &[]);
+        let channels_count = label("", &["section-count"]);
+        let toggle_line = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        toggle_line.append(&images.icon_image(Icon::ChevronDown, "#b9bcbe", 12));
+        toggle_line.append(&channels_title);
+        toggle_line.append(&channels_count);
+        channels_toggle.set_child(Some(&toggle_line));
+        channels_toggle.set_tooltip_text(Some("Toggle channels"));
+        let toggle_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        toggle_box.add_css_class("section");
+        toggle_box.set_hexpand(true);
+        toggle_box.append(&channels_toggle);
+        channel_header.append(&toggle_box);
         let new_channel: gtk::Button = crate::app::named("GtkButton", "Create channel");
         new_channel.set_child(Some(&images.icon_image(Icon::Plus, "#b9bcbe", 16)));
         new_channel.set_tooltip_text(Some("Create channel"));
@@ -469,7 +563,33 @@ impl Ui {
             .build();
         conversation.append(&error_bar);
         let list = List::new("Messages", images, main_rows);
-        conversation.append(&list.scroller);
+        let empty = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        empty.add_css_class("empty-state");
+        empty.set_halign(gtk::Align::Center);
+        empty.set_valign(gtk::Align::Center);
+        empty.set_visible(false);
+        let empty_icon = images.icon_image(Icon::Hash, "#db6849", 32);
+        empty_icon.set_visible(false);
+        let empty_title = label("", &["empty-title"]);
+        empty_title.set_justify(gtk::Justification::Center);
+        empty_title.set_xalign(0.5);
+        let empty_note = label("", &["empty-note"]);
+        empty_note.set_wrap(true);
+        empty_note.set_justify(gtk::Justification::Center);
+        empty_note.set_xalign(0.5);
+        empty_note.set_max_width_chars(48);
+        let empty_action = gtk::Button::with_label("Create channel");
+        empty_action.add_css_class("primary");
+        empty_action.set_halign(gtk::Align::Center);
+        empty_action.set_visible(false);
+        empty.append(&empty_icon);
+        empty.append(&empty_title);
+        empty.append(&empty_note);
+        empty.append(&empty_action);
+        let list_overlay = gtk::Overlay::new();
+        list_overlay.set_child(Some(&list.scroller));
+        list_overlay.add_overlay(&empty);
+        conversation.append(&list_overlay);
         let typing = label("", &["typing"]);
         typing.set_ellipsize(pango::EllipsizeMode::End);
         conversation.append(&typing);
@@ -613,10 +733,17 @@ impl Ui {
             code_hint,
             signin_status,
             signin_error,
+            first_name,
+            first_create,
+            first_limit,
+            first_error,
+            first_logout,
             rail,
             space_name,
             space_header,
             new_channel,
+            channels_toggle,
+            channels_count,
             channel_invites,
             channels,
             directs,
@@ -645,6 +772,11 @@ impl Ui {
             list,
             error,
             error_retry,
+            empty,
+            empty_icon,
+            empty_title,
+            empty_note,
+            empty_action,
             compose_bar,
             compose_label,
             compose_cancel,

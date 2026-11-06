@@ -12,6 +12,7 @@ use crate::ui::{Ui, label};
 use crate::uploads::{ChipAction, DraftFile};
 use caper_client::Host;
 use caper_client::api::Api;
+use caper_client::effects::Effect;
 use caper_client::gateway::GatewayEvent;
 use caper_client::mentions;
 use caper_client::model::{
@@ -238,6 +239,11 @@ struct State {
     unread_boundary: Option<(u64, u64)>,
     /// The visit's read snapshot is on its way; marking read waits for it.
     unread_visit_pending: bool,
+    /// Spaces with someone in voice, for the rail.
+    voice_activity: std::collections::BTreeSet<String>,
+    voice_activity_loading: bool,
+    /// "Toggle channels": only channels with live voice show.
+    channels_collapsed: bool,
     /// What the error banner's button tries again.
     retry: Option<Retry>,
     /// Unsent composer text by conversation, restored on return.
@@ -594,6 +600,21 @@ impl App {
             .connect_clicked(move |_| app.request_code(false));
         let app = self.clone();
         ui.code.connect_activate(move |_| app.verify());
+        let app = self.clone();
+        ui.first_name
+            .connect_activate(move |_| app.create_first_space());
+        let app = self.clone();
+        ui.first_create
+            .connect_clicked(move |_| app.create_first_space());
+        let app = self.clone();
+        ui.first_name.connect_changed(move |_| {
+            if let Ok(mut state) = app.state.try_borrow_mut() {
+                state.error = None;
+            }
+            app.render();
+        });
+        let app = self.clone();
+        ui.first_logout.connect_clicked(move |_| app.sign_out());
         // Your avatar and name open your own card (Edit profile).
         for target in [
             ui.account_avatar.root.clone().upcast::<gtk::Widget>(),
@@ -649,6 +670,9 @@ impl App {
         let app = self.clone();
         ui.error_retry.connect_clicked(move |_| app.retry());
         let app = self.clone();
+        ui.empty_action
+            .connect_clicked(move |_| app.open_create_channel());
+        let app = self.clone();
         ui.thread_close.connect_clicked(move |_| {
             {
                 let mut state = app.state.borrow_mut();
@@ -672,6 +696,21 @@ impl App {
                 drop(state);
                 app.render();
             }
+        });
+        let app = self.clone();
+        ui.channels_toggle.connect_clicked(move |_| {
+            let expanded = {
+                let mut state = app.state.borrow_mut();
+                state.channels_collapsed = !state.channels_collapsed;
+                state.layout += 1;
+                !state.channels_collapsed
+            };
+            app.play(if expanded {
+                Effect::ToggleOn
+            } else {
+                Effect::ToggleOff
+            });
+            app.render();
         });
         let app = self.clone();
         ui.directs.connect_row_activated(move |_, row| {
@@ -3148,6 +3187,17 @@ impl App {
                     }
                 }
             }
+            Event::VoiceActivityLoaded { epoch, result } if epoch == state.epoch => {
+                state.voice_activity_loading = false;
+                // A failed read keeps the last badges.
+                if let Ok(spaces) = result {
+                    let spaces = spaces.into_iter().collect();
+                    if spaces != state.voice_activity {
+                        state.voice_activity = spaces;
+                        state.layout += 1;
+                    }
+                }
+            }
             Event::SessionCreated { generation, result } if generation == state.generation => {
                 match result {
                     Ok(session) => {
@@ -3476,6 +3526,194 @@ impl App {
         }
     }
 
+    /// Browse channels: the space's channels outside your sidebar, searched
+    /// by name. Choosing one opens its preview with Join.
+    fn open_browse(self: &Rc<Self>) {
+        let popover = gtk::Popover::new();
+        popover.add_css_class("browse");
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        content.set_size_request(280, -1);
+        let search: gtk::SearchEntry = named("GtkSearchEntry", "Search channels");
+        search.set_placeholder_text(Some("Search channels"));
+        content.append(&search);
+        let list: gtk::ListBox = named("GtkListBox", "Channels to browse");
+        list.add_css_class("channels");
+        content.append(&list);
+        let empty = label("", &["browse-empty"]);
+        empty.set_xalign(0.0);
+        empty.set_wrap(true);
+        content.append(&empty);
+        popover.set_child(Some(&content));
+        let ids: Rc<RefCell<Vec<String>>> = Rc::default();
+        let fill = {
+            let (app, list, empty, ids) = (self.clone(), list.clone(), empty.clone(), ids.clone());
+            move |query: &str| {
+                let state = app.state.borrow();
+                // People often type the name as shown, with its `#`.
+                let query = query.trim().trim_start_matches('#').trim().to_lowercase();
+                let channels = state
+                    .detail
+                    .as_ref()
+                    .map_or(&[][..], |detail| &detail.channels);
+                clear_list(&list);
+                let mut found = Vec::new();
+                for channel in channels.iter().filter(|channel| {
+                    !channel.joined && channel.name.to_lowercase().contains(&query)
+                }) {
+                    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                    line.append(&app.images.icon_image(
+                        if channel.private {
+                            Icon::Lock
+                        } else {
+                            Icon::Hash
+                        },
+                        "#b9bcbe",
+                        14,
+                    ));
+                    let name = label(&channel.name, &[]);
+                    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                    line.append(&name);
+                    list.append(&line);
+                    found.push(channel.id.clone());
+                }
+                let message = if !found.is_empty() {
+                    ""
+                } else if !query.is_empty() {
+                    "No channels match your search."
+                } else if !channels.is_empty() {
+                    "You’ve joined every channel in this space."
+                } else {
+                    "This space has no channels yet."
+                };
+                empty.set_label(message);
+                empty.set_visible(!message.is_empty());
+                list.set_visible(!found.is_empty());
+                *ids.borrow_mut() = found;
+            }
+        };
+        fill("");
+        search.connect_search_changed(move |entry| fill(&entry.text()));
+        let (app, popover_ref) = (self.clone(), popover.downgrade());
+        list.connect_row_activated(move |_, row| {
+            let id = usize::try_from(row.index())
+                .ok()
+                .and_then(|index| ids.borrow().get(index).cloned());
+            if let Some(popover) = popover_ref.upgrade() {
+                popover.popdown();
+            }
+            if let Some(id) = id {
+                let app = app.clone();
+                glib::idle_add_local_once(move || {
+                    {
+                        let mut state = app.state.borrow_mut();
+                        let space = state.space.clone();
+                        app.navigate(&mut state, space, Some(id));
+                    }
+                    app.render();
+                });
+            }
+        });
+        // Enter opens the first match.
+        let list_ref = list.downgrade();
+        search.connect_activate(move |_| {
+            if let Some(row) = list_ref.upgrade().and_then(|list| list.row_at_index(0)) {
+                row.emit_activate();
+            }
+        });
+        let popover_ref = popover.downgrade();
+        search.connect_stop_search(move |_| {
+            if let Some(popover) = popover_ref.upgrade() {
+                popover.popdown();
+            }
+        });
+        popup(&popover, self.ui.space_header.upcast_ref());
+        search.grab_focus();
+    }
+
+    /// The desktop's empty conversation and empty channel stages.
+    fn render_empty(&self, state: &State) {
+        let ui = &self.ui;
+        // "Loading…" until the conversation arrives; then "Connecting…" or "Live".
+        let settled = state.status != "Loading…" && state.error.is_none();
+        let (title, note, stage) = if state.channel.is_none() {
+            if !settled || state.space.is_some() && state.detail.is_none() {
+                (String::new(), String::new(), false)
+            } else if state.space.is_none() {
+                (
+                    "Select a direct message".to_owned(),
+                    "Open a conversation from Direct messages.".to_owned(),
+                    true,
+                )
+            } else {
+                let note = if state.owner() {
+                    "Create a channel to start a conversation."
+                } else {
+                    "Browse public channels or accept a private invitation."
+                };
+                ("No joined channels".to_owned(), note.to_owned(), true)
+            }
+        } else if settled
+            && state.pending.is_none()
+            && !state
+                .timeline
+                .messages()
+                .any(|message| message.is_channel_message())
+        {
+            let direct = state
+                .direct
+                .as_ref()
+                .and_then(|id| state.directs.iter().find(|direct| &direct.id == id));
+            let me = state.account.as_ref().map(|account| account.id.as_str());
+            match direct {
+                Some(direct) if Some(direct.peer.id.as_str()) == me => (
+                    String::new(),
+                    "You can message yourself here to keep notes, reminders, and ideas.".to_owned(),
+                    false,
+                ),
+                Some(direct) if direct.peer.team => (
+                    "No messages yet.".to_owned(),
+                    "Messages here go to the Caper team.".to_owned(),
+                    false,
+                ),
+                Some(direct) => (
+                    "No messages yet.".to_owned(),
+                    format!(
+                        "Only you and {} can read this conversation.",
+                        direct.peer.display_name
+                    ),
+                    false,
+                ),
+                None if state.direct.is_some() => (
+                    "No messages yet.".to_owned(),
+                    "Only you and this person can read this conversation.".to_owned(),
+                    false,
+                ),
+                None => (
+                    "No messages yet.".to_owned(),
+                    format!("Start the conversation in #{}.", state.channel_name),
+                    false,
+                ),
+            }
+        } else {
+            (String::new(), String::new(), false)
+        };
+        ui.empty.set_visible(!title.is_empty() || !note.is_empty());
+        ui.empty_title.set_label(&title);
+        ui.empty_title.set_visible(!title.is_empty());
+        ui.empty_note.set_label(&note);
+        ui.empty_icon.set_visible(stage);
+        if stage {
+            ui.empty.add_css_class("stage");
+        } else {
+            ui.empty.remove_css_class("stage");
+        }
+        let create = stage && state.space.is_some() && state.owner();
+        ui.empty_action.set_visible(create);
+        ui.empty_action.set_sensitive(state.can_create_channel());
+        ui.empty_action
+            .set_tooltip_text(Some(&state.create_channel_tooltip()));
+    }
+
     /// The error banner's button.
     fn retry(self: &Rc<Self>) {
         {
@@ -3705,11 +3943,16 @@ impl App {
         self.render_typing();
         let ui = &self.ui;
         let mut state = self.state.borrow_mut();
+        let first_space = state.page() == Page::Chat && state.needs_first_space();
         ui.pages.set_visible_child_name(match state.page() {
             Page::Loading => "loading",
             Page::SignIn => "signin",
+            Page::Chat if first_space => "first-space",
             Page::Chat => "chat",
         });
+        if first_space {
+            self.render_first_space(&state);
+        }
         ui.steps
             .set_visible_child_name(if state.challenge.is_some() {
                 "code"
@@ -3740,8 +3983,9 @@ impl App {
         let error = state.error.as_deref().unwrap_or_default();
         ui.signin_error.set_label(error);
         ui.signin_error.set_visible(!error.is_empty());
-        // A missing session shows in the banner when nothing else does.
-        let session = (error.is_empty() && state.retry == Some(Retry::Session))
+        // A missing session shows in the banner when nothing else does. A
+        // preview has none by design: its Join bar says so.
+        let session = (error.is_empty() && state.retry == Some(Retry::Session) && state.joined())
             .then(|| state.session_error.clone())
             .flatten()
             .unwrap_or_default();
@@ -3775,9 +4019,12 @@ impl App {
         ui.thread_composer
             .broadcast
             .set_label(Some(&format!("Also send to {destination}")));
+        self.render_empty(&state);
         let joined = state.joined();
         let can_send = state.session.is_some();
-        ui.composer.root.set_visible(joined);
+        ui.composer
+            .root
+            .set_visible(joined && state.channel.is_some());
         ui.composer.view.set_sensitive(can_send);
         ui.composer.send.set_sensitive(can_send);
         let attach = Self::can_attach(&state);
@@ -4012,6 +4259,11 @@ impl App {
             {
                 row.unread = true;
             }
+            if !state.has_more
+                && let Some(first) = main.first_mut()
+            {
+                first.beginning = true;
+            }
             let changed = rows::apply(&self.ui.list.store, &state.rows, &main);
             state.rows = main;
             let thread = match &state.thread {
@@ -4165,14 +4417,25 @@ impl App {
         };
         clear(&ui.rail);
         for space in &state.spaces {
-            let button: gtk::Button = named(
-                "GtkButton",
-                &if space_unread(&space.id) {
-                    format!("{} (unread)", space.name)
+            let connected = {
+                let voice = self.voice.borrow();
+                voice.active_space.as_deref() == Some(&space.id)
+                    && matches!(voice.state.phase, caper_client::state::Phase::Connected(_))
+            };
+            let voice =
+                (connected || state.voice_activity.contains(&space.id)).then_some(if connected {
+                    "Connected to voice in this space"
                 } else {
-                    space.name.clone()
-                },
-            );
+                    "Voice active in this space"
+                });
+            let mut name = space.name.clone();
+            if let Some(voice) = voice {
+                name.push_str(&format!(", {}", voice.to_lowercase()));
+            }
+            if space_unread(&space.id) {
+                name.push_str(" (unread)");
+            }
+            let button: gtk::Button = named("GtkButton", &name);
             // A ready icon fills the tile; the initials show while it loads
             // or when it fails.
             let icon = space.icon().map(|icon| crate::images::Avatar {
@@ -4207,6 +4470,19 @@ impl App {
                 dot.set_can_target(false);
                 overlay.add_overlay(&dot);
             }
+            if let Some(voice) = voice {
+                let badge = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                badge.add_css_class("rail-voice");
+                if connected {
+                    badge.add_css_class("connected");
+                }
+                badge.append(&self.images.icon_image(Icon::Volume, "#f3f4f5", 12));
+                badge.set_halign(gtk::Align::End);
+                badge.set_valign(gtk::Align::Start);
+                badge.set_can_target(false);
+                overlay.add_overlay(&badge);
+                button.set_tooltip_text(Some(&format!("{}\n{voice}", space.name)));
+            }
             let app = self.clone();
             let id = space.id.clone();
             button.connect_clicked(move |_| app.select_space(id.clone()));
@@ -4222,7 +4498,27 @@ impl App {
         self.room_timers.borrow_mut().clear();
         let mut ids = Vec::new();
         let unread = detail.and_then(|detail| state.unread.get(&detail.space.id));
+        let joined = detail.map_or(0, |detail| {
+            detail
+                .channels
+                .iter()
+                .filter(|channel| channel.joined)
+                .count()
+        });
+        ui.channels_count.set_label(&joined.to_string());
+        if state.channels_collapsed {
+            ui.channels_toggle.add_css_class("collapsed");
+        } else {
+            ui.channels_toggle.remove_css_class("collapsed");
+        }
         for channel in detail.map_or(&[][..], |detail| &detail.channels) {
+            let open = state.direct.is_none() && state.channel.as_deref() == Some(&channel.id);
+            let roster = self.channel_voice(&state, &channel.id);
+            // As web's `joinedChannels`: Browse finds the rest. A channel
+            // you're previewing stays while it's open.
+            if !channel.joined && !open || state.channels_collapsed && roster.is_none() {
+                continue;
+            }
             let (count, mentions) = unread
                 .and_then(|channels| channels.get(&channel.id))
                 .copied()
@@ -4260,7 +4556,7 @@ impl App {
                 line.append(&badge(count, mentions > 0));
             }
             self.scope_menu_on(&line, scope);
-            match self.channel_voice(&state, &channel.id) {
+            match roster {
                 Some(roster) => {
                     let entry = gtk::Box::new(gtk::Orientation::Vertical, 4);
                     entry.append(&line);
@@ -4269,10 +4565,7 @@ impl App {
                 }
                 None => ui.channels.append(&line),
             }
-            if state.direct.is_none()
-                && state.channel.as_deref() == Some(&channel.id)
-                && let Some(row) = ui.channels.row_at_index(ids.len() as i32)
-            {
+            if open && let Some(row) = ui.channels.row_at_index(ids.len() as i32) {
                 ui.channels.select_row(Some(&row));
             }
             ids.push(channel.id.clone());

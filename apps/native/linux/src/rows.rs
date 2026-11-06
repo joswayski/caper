@@ -74,6 +74,8 @@ pub struct Row {
     /// The first message that was unread when you opened the conversation:
     /// a "New messages" divider above it.
     pub unread: bool,
+    /// The oldest message there is: "Beginning of conversation" above it.
+    pub beginning: bool,
     /// It asked the Caper team, so it carries their notice.
     pub team_notice: bool,
     pub offers: Offers,
@@ -263,6 +265,7 @@ impl Row {
             mentioned: false,
             focused: false,
             unread: false,
+            beginning: false,
             team_notice: false,
             offers: Offers::default(),
             content: crate::content::Content::default(),
@@ -578,6 +581,7 @@ pub fn build<'a>(
             // As desktop: a pinned row keeps its pin wash instead.
             focused: false,
             unread: false,
+            beginning: false,
             mentioned: !deleted
                 && message.pin.is_none()
                 && (replies_to_me
@@ -661,6 +665,7 @@ pub fn build<'a>(
             mentioned: false,
             focused: false,
             unread: false,
+            beginning: false,
             team_notice: false,
             offers: Offers::default(),
             content: draft.content,
@@ -743,6 +748,7 @@ struct Widgets {
     root: gtk::Box,
     day: gtk::Label,
     unread: gtk::Box,
+    beginning: gtk::Label,
     reply: gtk::Label,
     avatar: AvatarView,
     gap: gtk::Box,
@@ -847,6 +853,11 @@ fn build_widgets(images: &Images) -> Widgets {
     unread.append(&rule);
     unread.append(&gtk::Label::new(Some("New messages")));
     unread.set_visible(false);
+    let beginning = gtk::Label::builder()
+        .label("Beginning of conversation")
+        .css_classes(["history-start"])
+        .visible(false)
+        .build();
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let avatar = AvatarView::new(36, false);
     let gap = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -958,6 +969,7 @@ fn build_widgets(images: &Images) -> Widgets {
     blocked_toggle.add_css_class("inline");
     blocked.append(&blocked_label);
     blocked.append(&blocked_toggle);
+    root.append(&beginning);
     root.append(&blocked);
     root.append(&day);
     root.append(&unread);
@@ -973,6 +985,7 @@ fn build_widgets(images: &Images) -> Widgets {
         root,
         day,
         unread,
+        beginning,
         reply,
         avatar,
         gap,
@@ -1104,6 +1117,7 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
         classes.push("blocked");
     }
     widgets.root.set_css_classes(&classes);
+    widgets.beginning.set_visible(row.beginning);
     widgets.blocked.set_visible(row.blocked_run.is_some());
     widgets.card.set_visible(row.blocked_run.is_none());
     if let Some((_, label, shown)) = &row.blocked_run {
@@ -1274,6 +1288,7 @@ mod tests {
             mentioned: false,
             focused: false,
             unread: false,
+            beginning: false,
             team_notice: false,
             offers: Offers::default(),
             content: Default::default(),

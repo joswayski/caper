@@ -388,6 +388,32 @@ fn render_svg(svg: &[u8], edge: u32) -> Option<gdk::Texture> {
     )
 }
 
+/// The Caper wordmark at `width`×`height` pixels.
+pub fn wordmark(width: u32, height: u32) -> Option<gdk::Texture> {
+    let svg = include_bytes!("../../../web/public/caper-wordmark.svg");
+    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(
+            width as f32 / tree.size().width(),
+            height as f32 / tree.size().height(),
+        ),
+        &mut pixmap.as_mut(),
+    );
+    let bytes = glib::Bytes::from_owned(pixmap.take());
+    Some(
+        gdk::MemoryTexture::new(
+            width as i32,
+            height as i32,
+            gdk::MemoryFormat::R8g8b8a8Premultiplied,
+            &bytes,
+            width as usize * 4,
+        )
+        .into(),
+    )
+}
+
 /// An animated picture's frames and how long each shows.
 type AnimationFrames = Vec<(gdk::Texture, Duration)>;
 

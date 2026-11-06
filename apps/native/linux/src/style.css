@@ -1340,3 +1340,131 @@ checkbutton.broadcast {
   font-weight: 700;
   font-size: 14px;
 }
+
+/* "Beginning of conversation", above the oldest message. */
+.history-start {
+  margin: 12px 0 4px 0;
+  color: @caper_text_muted;
+  font-size: 11.5px;
+}
+
+/* An empty conversation, or a space with no joined channels. */
+.empty-state {
+  margin: 24px;
+}
+
+.empty-title {
+  color: @caper_text;
+  font-size: 14px;
+}
+
+.empty-note {
+  color: @caper_text_muted;
+  font-size: 13px;
+}
+
+.empty-state.stage .empty-title {
+  margin-top: 6px;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.empty-state.stage button {
+  margin-top: 10px;
+  min-height: 38px;
+}
+
+/* Web's first-space page. */
+.first-space {
+  margin: 100px 24px 48px 24px;
+}
+
+.first-space .wordmark {
+  margin-bottom: 58px;
+}
+
+.first-title {
+  font-size: 40px;
+  font-weight: 900;
+  color: @caper_text;
+}
+
+.first-intro {
+  margin-top: 20px;
+  font-size: 16px;
+  color: @caper_text_muted;
+}
+
+.first-field {
+  margin-top: 24px;
+  margin-bottom: 4px;
+}
+
+.first-space entry {
+  min-height: 52px;
+}
+
+.first-limit {
+  margin-top: 6px;
+  font-size: 12.8px;
+}
+
+.first-error {
+  margin-top: 16px;
+}
+
+.first-create {
+  margin-top: 24px;
+  min-height: 44px;
+}
+
+.first-logout {
+  margin-top: 16px;
+  color: @caper_text_muted;
+  font-size: 13.6px;
+}
+
+/* "Channels N", which collapses the list to its live voice rooms. */
+.section-toggle {
+  padding: 0;
+  min-height: 0;
+  color: inherit;
+  font: inherit;
+}
+
+.section-toggle.collapsed image {
+  -gtk-icon-transform: rotate(-90deg);
+}
+
+.section-count {
+  margin-left: 2px;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+/* Browse channels: search the space's channels outside your sidebar. */
+.browse {
+  padding: 10px;
+}
+
+.browse list {
+  background: transparent;
+}
+
+.browse-empty {
+  color: @caper_text_muted;
+  font-size: 12px;
+  margin: 6px 4px;
+}
+
+/* Someone is in voice in this space; green while you're connected there. */
+.rail-voice {
+  margin: 0 2px 0 0;
+  padding: 3px;
+  border-radius: 9999px;
+  background: @caper_blackout;
+}
+
+.rail-voice.connected {
+  background: radial-gradient(circle, @caper_green 62%, @caper_blackout 64%);
+}
