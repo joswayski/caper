@@ -178,7 +178,12 @@ pub fn label(a: &Attachment, revealed: &HashSet<String>) -> String {
     }
 }
 
-fn line(g: &Gfx, text: &str, format: &IDWriteTextFormat, w: f32) -> Result<IDWriteTextLayout> {
+pub(crate) fn line(
+    g: &Gfx,
+    text: &str,
+    format: &IDWriteTextFormat,
+    w: f32,
+) -> Result<IDWriteTextLayout> {
     let l = g.layout(&gfx::wide(text), format, w.max(1.0))?;
     crate::emoji::apply(&l, text, 12.0, 1.0)?;
     Ok(l)
@@ -332,12 +337,17 @@ pub fn motion() -> bool {
     on.as_bool()
 }
 
-fn alpha(dc: &ID2D1DeviceContext, c: u32, a: f32) -> Result<ID2D1SolidColorBrush> {
+pub(crate) fn alpha(dc: &ID2D1DeviceContext, c: u32, a: f32) -> Result<ID2D1SolidColorBrush> {
     unsafe { dc.CreateSolidColorBrush(&gfx::color(c, a), None) }
 }
 
 /// Fills `r` with `bmp` scaled to cover it, centred (egui's uv crop).
-fn cover(dc: &ID2D1DeviceContext, bmp: &ID2D1Bitmap1, r: D2D_RECT_F, radius: f32) -> Result<()> {
+pub(crate) fn cover(
+    dc: &ID2D1DeviceContext,
+    bmp: &ID2D1Bitmap1,
+    r: D2D_RECT_F,
+    radius: f32,
+) -> Result<()> {
     unsafe {
         let size = bmp.GetPixelSize();
         let (bw, bh) = (size.width.max(1) as f32, size.height.max(1) as f32);

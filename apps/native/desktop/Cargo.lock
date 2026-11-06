@@ -963,6 +963,7 @@ version = "0.1.0"
 dependencies = [
  "caper-client",
  "chrono",
+ "image",
  "serde",
  "serde_json",
  "uuid",

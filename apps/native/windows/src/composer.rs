@@ -23,6 +23,9 @@ pub struct Composer {
     pub layout: Option<IDWriteTextLayout>,
     pub width: f32,
     pub text_h: f32,
+    /// Room before the text inside the box, left and top (the main
+    /// composer's Attach files button and staged files).
+    pub inset: (f32, f32),
 }
 
 fn is_word(c: u16) -> bool {
@@ -355,11 +358,12 @@ impl Composer {
                 crate::theme::RADIUS,
                 &g.brushes.composer,
             );
+            let (left, top) = self.inset;
             dc.PushAxisAlignedClip(
-                &rect(PAD, PAD, w - PAD, h - PAD),
+                &rect(PAD + left, PAD + top, w - PAD, h - PAD),
                 D2D1_ANTIALIAS_MODE_ALIASED,
             );
-            let (ox, oy) = (PAD, PAD - self.scroll());
+            let (ox, oy) = (PAD + left, PAD + top - self.scroll());
             let hint = if self.text.is_empty() && self.comp.is_empty() {
                 Some(g.layout(&gfx::wide(placeholder), &g.formats.composer, self.width)?)
             } else {

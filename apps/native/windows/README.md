@@ -7,11 +7,15 @@ client (`apps/native/desktop`) stays the Windows app until this one reaches
 feature, screenshot, performance and accessibility parity.
 
 By default it shows a labelled development mock conversation (3000 generated
-messages, 48 members). With `CAPER_API_URL` set and a session already in the
-credential store, it loads the account's first space and joined channel
-through the shared client core (`apps/native/client`) and sends messages
-there. Sign-in, live gateway updates, attachments and Markdown rendering are
-not wired in yet.
+messages, 48 members). With `CAPER_API_URL` set it signs in (or restores the
+stored session) and runs on the shared client core (`apps/native/client`):
+the account's spaces and channels, live gateway updates, replies, threads,
+reactions, edits and their history, pins, unread state, and attachments.
+Files attach from the composer's Attach files button (the system "Upload a
+file" dialog), by dropping them on the window or by pasting copied files or
+a picture; each uploads at once and the message waits for them. There is no
+in-app media viewer yet (images and videos open in the browser), and DMs,
+settings, notifications and voice are not wired in.
 
 ## How it draws
 

@@ -38,6 +38,7 @@ mod text;
 mod theme;
 mod thread;
 mod uia;
+mod uploads;
 mod versions;
 
 use bench::{Action, Bench};
@@ -262,6 +263,11 @@ pub struct App {
     /// the list has reached its newest message since it opened, so reaching
     /// its start loads the previous page (as in the egui client).
     redraw_head: bool,
+    /// The open "Upload a file" dialog, a send waiting for the composer's
+    /// files (its text and files), and why files could not be attached.
+    file_dialog: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    send_waiting: Option<(Vec<u16>, Vec<u64>)>,
+    attach_error: Option<String>,
     head_hover: bool,
     /// The foot (Load newer / Back to latest) needs drawing; the button
     /// under the pointer; View original's highlighted message.
@@ -416,6 +422,9 @@ impl App {
                 tool_hover: None,
                 bar_drawn: None,
                 redraw_head: false,
+                file_dialog: None,
+                send_waiting: None,
+                attach_error: None,
                 head_hover: false,
                 redraw_foot: false,
                 foot_hover: None,
@@ -460,6 +469,7 @@ impl App {
     }
 
     fn drain_live(&mut self) -> Result<()> {
+        self.poll_file_dialog();
         let Some(live) = self.live.as_mut() else {
             return Ok(());
         };
@@ -636,6 +646,7 @@ impl App {
                 } => self.edited(request, reloaded, result),
                 live::Update::Deleted(request, error) => self.deleted(request, error),
                 live::Update::Media => self.media_changed(),
+                live::Update::Drafts => self.drafts_changed(),
                 live::Update::Open(url) => open_link(&url),
                 live::Update::Versions {
                     request,
@@ -760,9 +771,10 @@ impl App {
 
     pub fn composer_text_origin(&self) -> (f32, f32) {
         let (x, y, _, _) = self.box_rect();
+        let (left, top) = self.composer.inset;
         (
-            x + composer::PAD,
-            y + composer::PAD - self.composer.scroll(),
+            x + composer::PAD + left,
+            y + composer::PAD + top - self.composer.scroll(),
         )
     }
 
@@ -824,7 +836,7 @@ impl App {
     pub fn composer_changed(&mut self) {
         self.composer.caret_on = true;
         let (_, _, bw, _) = self.box_rect();
-        if let Ok(h) = self.composer.relayout(&self.g, bw - 2.0 * composer::PAD)
+        if let Ok(h) = self.box_height(bw)
             && (h - self.box_h).abs() > 0.01
         {
             self.dirty.layout = true;
@@ -1194,23 +1206,32 @@ impl App {
         self.rows.row_at(self.scroll_top + (y - HEADER_H) as f64)
     }
 
-    /// Sends the composer's text. Until the client core is wired in, the
-    /// message only joins the local development mock.
+    /// Sends the composer's text and files (to the local development mock
+    /// without a server). With files still uploading it goes when they finish.
     fn send(&mut self) -> Result<()> {
         let text = String::from_utf16_lossy(&self.composer.text)
             .trim()
             .to_string();
-        if text.is_empty() {
+        let files = self
+            .live
+            .as_ref()
+            .is_some_and(|l| !l.open_drafts().is_empty());
+        if text.is_empty() && !files {
             return Ok(());
         }
-        if let Some(live) = &self.live {
+        if self.live.is_some() {
+            if files && !self.send_files(text.clone()) {
+                return Ok(());
+            }
             let reply = self.reply.take().map(|r| r.target.id);
             if reply.is_some() {
                 self.dirty.layout = true;
                 self.dirty.reply = true;
                 self.events |= EV_SCREEN;
             }
-            live.send(text, reply, None);
+            if !files && let Some(live) = &self.live {
+                live.send(text, reply, None);
+            }
             self.set_focused(None);
         } else {
             self.c.send_local(text);
@@ -1338,7 +1359,9 @@ impl App {
                 unsafe {
                     SetCapture(self.hwnd);
                 }
-                if self.in_box(x, y) {
+                if let Some(part) = self.box_part_at(x, y) {
+                    self.box_activate(part);
+                } else if self.in_box(x, y) {
                     self.set_thread_focus(false);
                     self.set_composer_focus(true);
                     let (tx, ty) = self.composer_text_origin();
@@ -1418,6 +1441,9 @@ impl App {
                     open_link(&href);
                 }
             }
+            WM_DROPFILES => {
+                self.dropped(windows::Win32::UI::Shell::HDROP(wp.0 as _));
+            }
             WM_MOUSEWHEEL => {
                 let delta = ((wp.0 >> 16) & 0xffff) as i16 as f64;
                 if self.pointer.is_some_and(|(x, y)| self.in_history(x, y)) {
@@ -1428,10 +1454,15 @@ impl App {
                 if (lp.0 & 0xffff) as u32 != HTCLIENT {
                     return None;
                 }
-                let beam = self
+                let part = self
                     .pointer
-                    .is_some_and(|(x, y)| self.in_box(x, y) || self.in_history(x, y));
-                let hand = self.hover_channel.is_some()
+                    .is_some_and(|(x, y)| self.box_part_at(x, y).is_some());
+                let beam = !part
+                    && self
+                        .pointer
+                        .is_some_and(|(x, y)| self.in_box(x, y) || self.in_history(x, y));
+                let hand = part
+                    || self.hover_channel.is_some()
                     || self.hover_space.is_some()
                     || self.pointer.is_some_and(|(x, y)| {
                         self.link_at(x, y).is_some()
@@ -1885,6 +1916,8 @@ impl App {
                 self.set_composer_focus(false);
                 return true;
             }
+            // Copied files or a picture attach; text pastes below.
+            _ if ctrl && vk == VIRTUAL_KEY('V' as u16) && self.paste_files() => return true,
             _ if self.composer.edit_key(self.hwnd, vk, ctrl, shift, true) => {}
             _ => return false,
         }
@@ -1995,7 +2028,7 @@ impl App {
         self.dirty.members |= self.members.ensure(&self.g, px(MEMBERS_W), px(h))?;
         self.members.offset(((w - MEMBERS_W) * s).round(), 0.0)?;
         let bw = lw - 36.0;
-        self.box_h = self.composer.relayout(&self.g, bw - 2.0 * composer::PAD)?;
+        self.box_h = self.box_height(bw)?;
         let (bx, by, _, _) = self.box_rect();
         self.composer_p.ensure(&self.g, px(bw), px(self.box_h))?;
         self.composer_p.offset((bx * s).round(), (by * s).round())?;
@@ -2594,8 +2627,23 @@ impl App {
             let (_, _, bw, bh) = self.box_rect();
             let placeholder = format!("Message #{}", c.channels[c.channel].name);
             let comp = &self.composer;
-            self.composer_p
-                .draw(s, |dc| comp.draw(g, dc, bw, bh, &placeholder))?;
+            let (drafts, tiles, top, notice) = self.box_files(bw);
+            let live = self.live.as_ref();
+            self.composer_p.draw(s, |dc| {
+                comp.draw(g, dc, bw, bh, &placeholder)?;
+                match live {
+                    Some(live) => uploads::draw(
+                        g,
+                        dc,
+                        &drafts,
+                        &tiles,
+                        top,
+                        notice.as_deref(),
+                        live.can_attach(),
+                    ),
+                    None => Ok(()),
+                }
+            })?;
         }
         Ok(())
     }
@@ -2845,6 +2893,8 @@ fn main() -> Result<()> {
             None,
         )?;
         resize_window(hwnd, 1440.0, 900.0);
+        // Files dropped from Explorer attach to the composer.
+        windows::Win32::UI::Shell::DragAcceptFiles(hwnd, true);
         let messages = std::env::var("MESSAGES")
             .ok()
             .and_then(|v| v.parse().ok())

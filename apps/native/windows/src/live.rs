@@ -120,6 +120,8 @@ pub enum Update {
     /// An attachment to open in the browser or player, once its URL was
     /// refreshed.
     Open(String),
+    /// The composer's files or whether uploads are available changed.
+    Drafts,
     /// A page of message `message`'s versions for request `request`, or
     /// why it failed (for its history).
     Versions {
@@ -273,6 +275,23 @@ pub struct Live {
     /// server last listed them; the last refresh (older replies drop).
     pub unread_spaces: Vec<core::UnreadSpace>,
     unread_revision: u64,
+    /// Files staged in composers (every channel's, as in the egui client),
+    /// the server's compression settings once uploads are known to work,
+    /// and own decoded images to show for sent attachments.
+    pub drafts: Vec<crate::uploads::Draft>,
+    draft_keys: u64,
+    pub uploads: Option<caper_client::compress::Compression>,
+    pub uploads_checked: bool,
+    local: Vec<(String, caper_client::Rgba)>,
+}
+
+/// What a send with composer files did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Sent {
+    Sent,
+    /// Files are still uploading (failed ones were restarted): the send
+    /// waits for them.
+    Waiting,
 }
 
 /// The thread beside the channel, as in the egui client's thread panel.
@@ -366,6 +385,11 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         reactors: HashMap::new(),
         unread_spaces: Vec::new(),
         unread_revision: 0,
+        drafts: Vec::new(),
+        draft_keys: 0,
+        uploads: None,
+        uploads_checked: false,
+        local: Vec::new(),
     })
 }
 
@@ -379,6 +403,12 @@ impl Live {
             .media_ready
             .swap(false, std::sync::atomic::Ordering::Acquire);
         self.media.poll(tex, now);
+        for (id, image) in self.local.drain(..) {
+            self.media.insert_local(tex, &id, image);
+        }
+        for draft in &mut self.drafts {
+            draft.prepare(tex);
+        }
         if let Some(token) = &self.token {
             let ids = self.media.take_refresh(now);
             if !ids.is_empty() {
@@ -422,9 +452,185 @@ impl Live {
             out.push(Update::Failed("This account has no spaces.".into()));
             return;
         };
+        // Uploads are offered once the server's usage answers.
+        self.worker.send(Command::AssetUsage {
+            token: token.clone(),
+        });
         self.token = Some(token);
         self.spaces = Some(spaces);
         self.navigate(Some(space), None);
+    }
+
+    /// Whether files can be attached to the open channel now.
+    pub fn can_attach(&self) -> bool {
+        self.token.is_some()
+            && self.uploads.is_some()
+            && self.channel.is_some()
+            && self.chat_token.is_some()
+    }
+
+    /// Why Attach files is unavailable, as the egui client words it.
+    pub fn attach_unavailable(&self) -> &'static str {
+        if self.token.is_some() && !self.uploads_checked {
+            "Checking file uploads\u{2026}"
+        } else {
+            "File uploads are unavailable"
+        }
+    }
+
+    fn is_open_draft(&self, draft: &crate::uploads::Draft) -> bool {
+        Some(&draft.upload.channel) == self.channel.as_ref()
+            && draft.upload.thread_root_id.is_none()
+    }
+
+    /// The open channel's composer files, in order.
+    pub fn open_drafts(&self) -> Vec<&crate::uploads::Draft> {
+        self.drafts
+            .iter()
+            .filter(|d| self.is_open_draft(d))
+            .collect()
+    }
+
+    /// Stages picked, dropped or pasted files in the open channel's
+    /// composer and starts uploading them; at most ten. Returns the
+    /// error to show when some (or all) did not fit.
+    pub fn add_files(
+        &mut self,
+        files: Vec<(
+            std::path::PathBuf,
+            Option<Arc<caper_client::uploads::Scratch>>,
+        )>,
+    ) -> Option<String> {
+        if files.is_empty() {
+            return None;
+        }
+        let (Some(token), Some(settings), Some(channel)) = (
+            self.token.clone(),
+            self.uploads.clone(),
+            self.channel.clone(),
+        ) else {
+            return Some(self.attach_unavailable().into());
+        };
+        let used = self.open_drafts().len();
+        let room = caper_client::uploads::MAX_ATTACHMENTS.saturating_sub(used);
+        if room == 0 {
+            return Some(caper_client::drafts::room_error(0));
+        }
+        let error = (files.len() > room).then(|| caper_client::drafts::room_error(room));
+        for (path, scratch) in files.into_iter().take(room) {
+            self.draft_keys += 1;
+            let name = if scratch.is_some() {
+                "Pasted image.png".to_owned()
+            } else {
+                path.file_name()
+                    .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned())
+            };
+            let mut upload = caper_client::drafts::Upload::picked(
+                self.draft_keys,
+                channel.clone(),
+                None,
+                name,
+                Some(path),
+            );
+            upload.source_scratch = scratch;
+            self.worker
+                .send(upload.command(token.clone(), settings.clone()));
+            self.drafts.push(crate::uploads::Draft::new(upload));
+        }
+        error
+    }
+
+    /// Removes a composer file, stopping its upload and giving up the
+    /// server's copy.
+    pub fn remove_draft(&mut self, key: u64) {
+        if let Some(i) = self.drafts.iter().position(|d| d.upload.key == key) {
+            let draft = self.drafts.remove(i);
+            draft.upload.abandon();
+            if let Some(file) = draft.upload.attachment {
+                self.cancel_assets(vec![file.id]);
+            }
+        }
+    }
+
+    pub fn toggle_spoiler(&mut self, key: u64) {
+        if let Some(d) = self.drafts.iter_mut().find(|d| d.upload.key == key) {
+            d.upload.spoiler = !d.upload.spoiler;
+        }
+    }
+
+    /// Uploads a failed or expired file again.
+    pub fn retry_draft(&mut self, key: u64) {
+        let (Some(token), Some(settings)) = (self.token.clone(), self.uploads.clone()) else {
+            return;
+        };
+        let Some(d) = self.drafts.iter_mut().find(|d| d.upload.key == key) else {
+            return;
+        };
+        let Some(old) = d.upload.restart() else {
+            return;
+        };
+        self.worker.send(d.upload.command(token, settings));
+        if let Some(old) = old {
+            self.cancel_assets(vec![old.id]);
+        }
+    }
+
+    fn cancel_assets(&self, ids: Vec<String>) {
+        if let Some(token) = &self.token
+            && !ids.is_empty()
+        {
+            self.worker.send(Command::CancelAssets {
+                token: token.clone(),
+                ids,
+            });
+        }
+    }
+
+    /// Sends `text` with the open channel's composer files once they are
+    /// all uploaded: failed or expired ones start again and the send waits
+    /// (`Sent::Waiting`). Sent files leave the composer.
+    pub fn send_with_files(&mut self, text: String, reply_to: Option<String>) -> Sent {
+        let keys: Vec<u64> = self.open_drafts().iter().map(|d| d.upload.key).collect();
+        for key in &keys {
+            self.retry_draft(*key);
+        }
+        if self
+            .open_drafts()
+            .iter()
+            .any(|d| d.upload.uploading || d.upload.needs_upload())
+        {
+            return Sent::Waiting;
+        }
+        let (Some(channel), Some(chat_token)) = (&self.channel, &self.chat_token) else {
+            return Sent::Waiting;
+        };
+        let files: Vec<_> = self
+            .open_drafts()
+            .iter()
+            .filter_map(|d| d.upload.send_attachment())
+            .collect();
+        self.worker.send(Command::Send {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token: chat_token.clone(),
+            channel: channel.clone(),
+            client_id: uuid::Uuid::new_v4().to_string(),
+            text,
+            broadcast: false,
+            thread_root_id: None,
+            reply_to_id: reply_to,
+            spoiler_attachment_ids: files
+                .iter()
+                .filter(|f| f.spoiler)
+                .map(|f| f.id.clone())
+                .collect(),
+            attachment_ids: files.into_iter().map(|f| f.id).collect(),
+            gif: None,
+            suppress_embeds: false,
+        });
+        // The message owns the files now: nothing is cancelled.
+        self.drafts.retain(|d| !keys.contains(&d.upload.key));
+        Sent::Sent
     }
 
     /// Opens a space (its first joined channel unless `channel` is given)
@@ -1648,6 +1854,36 @@ impl Live {
             }) if generation == current => out.push(Update::Connection(
                 (!online && !detail.is_empty()).then_some(detail),
             )),
+            Event::AssetUsage { token, settings } if self.token.as_ref() == Some(&token) => {
+                self.uploads = settings;
+                self.uploads_checked = true;
+                out.push(Update::Drafts);
+            }
+            Event::Upload { key, token, update } => {
+                let Some(d) = self.drafts.iter_mut().find(|d| d.upload.key == key) else {
+                    // Removed while it uploaded: give up the server's copy.
+                    if let caper_client::worker::UploadUpdate::Finished(Ok(file)) = update {
+                        self.worker.send(Command::CancelAssets {
+                            token,
+                            ids: vec![file.id],
+                        });
+                    }
+                    return;
+                };
+                let finished =
+                    matches!(update, caper_client::worker::UploadUpdate::Finished(Ok(_)));
+                if let Some(image) = d.upload.apply(update) {
+                    d.set_thumbnail(image);
+                }
+                // The sender sees its own copy without a download.
+                if (finished || d.thumb_changed)
+                    && let (Some(file), Some(image)) = (&d.upload.attachment, &d.thumb)
+                {
+                    self.local.push((file.id.clone(), image.clone()));
+                }
+                d.thumb_changed = false;
+                out.push(Update::Drafts);
+            }
             Event::AttachmentUrls {
                 ids,
                 result: Ok(urls),

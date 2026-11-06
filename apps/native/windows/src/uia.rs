@@ -65,6 +65,8 @@ pub enum Id {
     Edited(usize),
     /// Row `i`'s attachment `k`.
     File(usize, usize),
+    /// The composer box's Attach files and its staged files' controls.
+    BoxPart(crate::uploads::Part),
     /// The thread beside the conversation, and its parts.
     Thread,
     ThreadPart(TPart),
@@ -159,6 +161,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             if a.reply.is_some() {
                 out.extend([Id::Reply, Id::ReplyCancel]);
             }
+            out.extend(a.box_parts().into_iter().map(Id::BoxPart));
             out.extend([Id::Composer, Id::Members]);
             out.extend(a.menu.as_ref().map(|_| Id::Menu));
             out.extend(a.picker.as_ref().map(|_| Id::Picker));
@@ -256,6 +259,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Original(i) => a.dialog.is_none() && a.quote_link_rect(i).is_some(),
         Id::Edited(i) => a.dialog.is_none() && a.edited_rect(i).is_some(),
         Id::File(i, k) => a.dialog.is_none() && a.file_rect(i, k).is_some(),
+        Id::BoxPart(p) => a.dialog.is_none() && a.signin.is_none() && a.box_parts().contains(&p),
         Id::Thread => a.thread.is_some() && a.dialog.is_none() && a.signin.is_none(),
         Id::ThreadPart(p) => {
             a.dialog.is_none() && a.signin.is_none() && a.thread_parts().contains(&p)
@@ -336,6 +340,7 @@ fn name(a: &App, id: Id) -> String {
         Id::Original(_) => "View original".into(),
         Id::Edited(_) => "Message history".into(),
         Id::File(i, k) => a.file_label(i, k),
+        Id::BoxPart(p) => a.box_part_label(p),
         Id::Older => match a.live.as_ref().map(crate::live::Live::older) {
             Some(crate::live::Older::Failed) => "Couldn\u{2019}t load older messages. Retry".into(),
             Some(state) => crate::list::head_label(state).0.into(),
@@ -447,7 +452,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Reply => UIA_TextControlTypeId,
         Id::Older | Id::Newer(_) => UIA_ButtonControlTypeId,
         Id::Original(_) => UIA_HyperlinkControlTypeId,
-        Id::Edited(_) | Id::File(..) => UIA_ButtonControlTypeId,
+        Id::Edited(_) | Id::File(..) | Id::BoxPart(_) => UIA_ButtonControlTypeId,
         Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel => UIA_ButtonControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Thread => UIA_PaneControlTypeId,
@@ -513,6 +518,16 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Original(i) => (27, i),
         Id::Edited(i) => (28, i),
         Id::File(i, k) => (29, i * 16 + k.min(15)),
+        Id::BoxPart(p) => (
+            30,
+            match p {
+                crate::uploads::Part::Attach => 0,
+                crate::uploads::Part::Open(k) => 1 + 4 * k,
+                crate::uploads::Part::Spoiler(k) => 2 + 4 * k,
+                crate::uploads::Part::Remove(k) => 3 + 4 * k,
+                crate::uploads::Part::Retry(k) => 4 + 4 * k,
+            },
+        ),
         Id::ReplyCancel => (19, 1),
         Id::Thread => (21, 0),
         Id::ThreadPart(p) => match p {
@@ -607,6 +622,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Original(i) => a.quote_link_rect(i).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Edited(i) => a.edited_rect(i).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::File(i, k) => a.file_rect(i, k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::BoxPart(p) => a.box_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Thread => (a.thread_x(), 0.0, crate::thread::THREAD_W, a.h),
         Id::ThreadPart(p) => a.thread_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Sign(p) => a
@@ -709,7 +725,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             | Id::Newer(_)
             | Id::Original(_)
             | Id::Edited(_)
-            | Id::File(..) => pattern == UIA_InvokePatternId,
+            | Id::File(..)
+            | Id::BoxPart(_) => pattern == UIA_InvokePatternId,
             Id::Pick(PPart::Category(_)) => {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
@@ -814,6 +831,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     (Id::Sign(p), Some(s)) => s.part_rect(p).is_some_and(|(_, on)| on),
                     (Id::Tool(i, t), _) => a.tools(i).iter().any(|s| s.tool == t && s.enabled),
                     (Id::ThreadPart(p), _) => a.thread_part_enabled(p),
+                    (Id::BoxPart(crate::uploads::Part::Attach), _) => {
+                        a.live.as_ref().is_some_and(|l| l.can_attach())
+                    }
                     (Id::Newer(k), _) => a.foot_head(k).enabled,
                     (Id::Older, _) => a.live.as_ref().is_some_and(|l| {
                         matches!(
@@ -963,6 +983,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Original(i) => a.view_original_of(i),
                 Id::Edited(i) => a.open_history_of(i),
                 Id::File(i, k) => a.file_activate(i, k, false),
+                Id::BoxPart(p) => a.box_activate(p),
                 Id::ThreadPart(p) => a.thread_activate(p),
                 _ => {}
             }
