@@ -150,6 +150,7 @@ pub struct Ui {
     pub new_direct: gtk::Button,
     pub channel_title: gtk::Label,
     pub status: gtk::Label,
+    pub pins_button: gtk::Button,
     pub members_toggle: gtk::ToggleButton,
     pub members_panel: gtk::Box,
     pub members_title: gtk::Label,
@@ -336,6 +337,12 @@ impl Ui {
         let status = label("", &["muted", "status"]);
         status.set_hexpand(true);
         header.append(&status);
+        let pins_button: gtk::Button = crate::app::named("GtkButton", "Pins");
+        pins_button.set_child(Some(&images.icon_image(Icon::Pin, "#f3f4f5", 18)));
+        pins_button.set_tooltip_text(Some("Pins"));
+        pins_button.set_valign(gtk::Align::Center);
+        pins_button.add_css_class("flat");
+        header.append(&pins_button);
         let members_toggle: gtk::ToggleButton = crate::app::named("GtkToggleButton", "Members");
         members_toggle.set_child(Some(&images.icon_image(Icon::Users, "#f3f4f5", 18)));
         members_toggle.set_tooltip_text(Some("Members"));
@@ -471,6 +478,7 @@ impl Ui {
             new_direct,
             channel_title,
             status,
+            pins_button,
             members_toggle,
             members_panel,
             members_title,

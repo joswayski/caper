@@ -789,3 +789,17 @@ button.section-action {
   padding: 0;
   margin: 0 12px 4px 0;
 }
+
+popover.pins > contents {
+  padding: 18px 16px;
+}
+
+.pin-card {
+  background: alpha(@caper_terracotta, 0.12);
+  border-radius: 8px;
+  padding: 8px 8px 4px;
+}
+
+.pins-empty {
+  padding: 24px;
+}

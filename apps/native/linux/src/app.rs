@@ -179,6 +179,8 @@ struct State {
     direct_error: Option<String>,
     /// A DM created from the dialog, opened once events are handled.
     open_created: Option<String>,
+    /// "Go to message" from Pins: earlier pages load until it is in view.
+    jump_to: Option<String>,
 }
 
 impl State {
@@ -303,6 +305,16 @@ pub struct App {
     /// The channel and thread composers' `:`/`@` suggestions.
     suggestions: RefCell<Vec<Rc<crate::suggest::Popup>>>,
     direct_dialog: RefCell<Option<DirectDialog>>,
+    /// The open Pins view: its list and the rows it shows.
+    pins: RefCell<Option<PinsView>>,
+}
+
+struct PinsView {
+    popover: gtk::Popover,
+    list: gtk::Box,
+    rows: Vec<Row>,
+    /// Each card's widgets, alive while it shows.
+    cards: Vec<rows::Standalone>,
 }
 
 /// The new DM dialog's widgets.
@@ -366,6 +378,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         countdown: Cell::new(false),
         suggestions: RefCell::default(),
         direct_dialog: RefCell::default(),
+        pins: RefCell::default(),
     });
     *slot.borrow_mut() = Rc::downgrade(&app);
     for composer in [&app.ui.composer, &app.ui.thread_composer] {
@@ -474,6 +487,9 @@ impl App {
         });
         let app = self.clone();
         ui.join.connect_clicked(move |_| app.join());
+        let app = self.clone();
+        ui.pins_button
+            .connect_clicked(move |button| app.open_pins(button.upcast_ref()));
         let app = self.clone();
         ui.new_direct
             .connect_clicked(move |_| app.open_start_direct());
@@ -789,6 +805,10 @@ impl App {
         state.reactions.clear();
         state.files_revision += 1;
         state.direct = None;
+        state.jump_to = None;
+        if let Some(pins) = self.pins.borrow_mut().take() {
+            pins.popover.popdown();
+        }
         state.status = "Loading…".into();
         state.error = None;
         state.send_error = None;
@@ -1099,6 +1119,178 @@ impl App {
         let error = state.direct_error.as_deref().unwrap_or_default();
         dialog.error.set_label(error);
         dialog.error.set_visible(!error.is_empty());
+    }
+
+    /// The desktop's Pins: the conversation's pinned messages, newest pin
+    /// first, each with Go to message.
+    fn open_pins(self: &Rc<Self>, anchor: &gtk::Widget) {
+        if let Some(pins) = self.pins.borrow_mut().take() {
+            pins.popover.popdown();
+        }
+        let popover = gtk::Popover::new();
+        popover.add_css_class("pins");
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        root.set_size_request(560, -1);
+        root.append(&label("Pins", &["dialog-title"]));
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(640)
+            .child(&list)
+            .build();
+        root.append(&scroller);
+        popover.set_child(Some(&root));
+        let app = Rc::downgrade(self);
+        popover.connect_closed(move |_| {
+            if let Some(app) = app.upgrade()
+                && let Ok(mut pins) = app.pins.try_borrow_mut()
+            {
+                pins.take();
+            }
+        });
+        *self.pins.borrow_mut() = Some(PinsView {
+            popover: popover.clone(),
+            list,
+            rows: Vec::new(),
+            cards: Vec::new(),
+        });
+        popup(&popover, anchor);
+        self.render_pins();
+    }
+
+    fn render_pins(self: &Rc<Self>) {
+        let Ok(mut pins) = self.pins.try_borrow_mut() else {
+            return;
+        };
+        let Some(view) = pins.as_mut() else {
+            return;
+        };
+        let rows = {
+            let mut state = self.state.borrow_mut();
+            let state = &mut *state;
+            let me = state.account.as_ref().map(|account| account.id.clone());
+            let author = state
+                .session
+                .as_ref()
+                .map(|session| session.author.id.clone());
+            let joined = state.session.is_some() && state.joined();
+            let revealed = self.images.media.revealed.borrow();
+            let viewer = rows::Viewer {
+                revealed: &revealed,
+                me: me.as_deref(),
+                author: author.as_deref(),
+                joined,
+                in_thread: true,
+                images: &self.images,
+                reactions: &state.reactions,
+            };
+            let pinned: Vec<Message> = state.timeline.pinned_messages().cloned().collect();
+            pinned
+                .iter()
+                .flat_map(|message| {
+                    rows::build(std::iter::once(message), None, &mut state.markup, &viewer)
+                })
+                .map(|mut row| {
+                    row.grouped = false;
+                    row.day = None;
+                    row
+                })
+                .collect::<Vec<Row>>()
+        };
+        if rows == view.rows {
+            return;
+        }
+        while let Some(child) = view.list.first_child() {
+            view.list.remove(&child);
+        }
+        view.cards.clear();
+        if rows.is_empty() {
+            let empty = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            empty.add_css_class("pins-empty");
+            empty.append(&label("No pinned messages.", &["field"]));
+            empty.append(&label(
+                "Messages you pin will appear here.",
+                &["muted", "small"],
+            ));
+            view.list.append(&empty);
+        }
+        let weak = Rc::downgrade(self);
+        let handler: rows::Handler = Rc::new(move |action| {
+            if let Some(app) = weak.upgrade() {
+                app.row_action(action, true);
+            }
+        });
+        for row in &rows {
+            let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            card.add_css_class("pin-card");
+            let standalone = rows::Standalone::new(&self.images, row, &handler);
+            card.append(standalone.root());
+            let go = gtk::Button::with_label("Go to message");
+            go.add_css_class("flat");
+            go.set_halign(gtk::Align::End);
+            let (weak, id) = (Rc::downgrade(self), row.id.clone());
+            go.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.go_to_message(id.clone());
+                }
+            });
+            card.append(&go);
+            view.list.append(&card);
+            view.cards.push(standalone);
+        }
+        view.rows = rows;
+    }
+
+    /// Closes Pins and scrolls to `id`, loading earlier pages until it is
+    /// in the list; a thread reply opens its thread.
+    fn go_to_message(self: &Rc<Self>, id: String) {
+        if let Some(pins) = self.pins.borrow_mut().take() {
+            pins.popover.popdown();
+        }
+        let root = self
+            .state
+            .borrow()
+            .timeline
+            .pinned_messages()
+            .find(|message| message.id == id)
+            .and_then(|message| message.thread_root_id.clone());
+        if let Some(root) = root {
+            self.open_thread(root);
+            return;
+        }
+        self.state.borrow_mut().jump_to = Some(id);
+        self.continue_jump();
+    }
+
+    fn continue_jump(self: &Rc<Self>) {
+        let (position, more) = {
+            let state = self.state.borrow();
+            let Some(id) = &state.jump_to else {
+                return;
+            };
+            (
+                state.rows.iter().position(|row| &row.id == id),
+                state.has_more && !state.loading_older,
+            )
+        };
+        match position {
+            Some(position) => {
+                self.state.borrow_mut().jump_to = None;
+                self.follow.set(false);
+                let _ = self.ui.list.view.activate_action(
+                    "list.scroll-to-item",
+                    Some(&u32::try_from(position).unwrap_or_default().to_variant()),
+                );
+            }
+            None if more => self.load_older(),
+            None => {
+                let loading = self.state.borrow().loading_older;
+                if !loading {
+                    self.state.borrow_mut().jump_to = None;
+                }
+            }
+        }
     }
 
     /// Refreshes `GET /api/people`; the previous list stays until it answers.
@@ -2070,6 +2262,12 @@ impl App {
         if typing {
             self.tick();
         }
+        let jumping = self.state.borrow().jump_to.is_some();
+        if jumping {
+            self.render_rows();
+            self.continue_jump();
+        }
+        self.render_pins();
         let created = self.state.borrow_mut().open_created.take();
         if let Some(id) = created {
             self.close_start_direct();
@@ -2515,7 +2713,10 @@ impl App {
                             state.channel_name = history.channel.name.clone();
                         }
                         state.markup.clear();
-                        if let Err(error) = state.timeline.reset(history.messages, &history.cursor)
+                        if let Err(error) = state
+                            .timeline
+                            .reset(history.messages, &history.cursor)
+                            .and_then(|()| state.timeline.reset_pins(history.pinned_messages))
                         {
                             state.error = Some(error);
                         }

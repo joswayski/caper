@@ -506,6 +506,23 @@ pub fn factory(images: Rc<Images>, handler: Handler) -> gtk::SignalListItemFacto
     factory
 }
 
+/// One row outside a list (Pins): its widgets live as long as this does.
+pub struct Standalone(Rc<Widgets>);
+
+impl Standalone {
+    pub fn new(images: &Images, row: &Row, handler: &Handler) -> Self {
+        let widgets = Rc::new(build_widgets(images));
+        connect(&widgets, handler);
+        fill(&widgets, images, row, handler);
+        *widgets.row.borrow_mut() = Some(row.clone());
+        Self(widgets)
+    }
+
+    pub fn root(&self) -> &gtk::Box {
+        &self.0.root
+    }
+}
+
 fn build_widgets(images: &Images) -> Widgets {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let day = gtk::Label::builder()
