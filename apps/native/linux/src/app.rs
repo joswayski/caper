@@ -239,6 +239,13 @@ struct State {
     unread_boundary: Option<(u64, u64)>,
     /// The visit's read snapshot is on its way; marking read waits for it.
     unread_visit_pending: bool,
+    /// Thread roots in the open channel with unread replies, and the first
+    /// unread reply's seq (`ThreadUnread`). One request is in flight at a
+    /// time; `dirty` asks for a fresh snapshot after it.
+    thread_unread: std::collections::BTreeMap<String, String>,
+    thread_unread_busy: bool,
+    thread_unread_dirty: bool,
+    thread_unread_revision: u64,
     /// Spaces with someone in voice, for the rail.
     voice_activity: std::collections::BTreeSet<String>,
     voice_activity_loading: bool,
@@ -1158,6 +1165,8 @@ impl App {
         // this visit marks anything read, so the divider stays put.
         state.unread_boundary = None;
         state.unread_visit_pending = false;
+        state.thread_unread.clear();
+        state.thread_unread_dirty = true;
         state.restore_draft = Some(
             channel
                 .as_ref()
@@ -1592,6 +1601,7 @@ impl App {
             let revealed = self.images.media.revealed.borrow();
             let blocked = state.blocked_ids();
             let viewer = rows::Viewer {
+                thread_unread: &state.thread_unread,
                 revealed: &revealed,
                 blocked: &blocked,
                 shown_blocked: &state.shown_blocked,
@@ -2828,6 +2838,45 @@ impl App {
     // ---------------------------------------------------------------------
     // Worker events.
 
+    /// Keeps the open channel's thread dots current: marks the open thread
+    /// read through its newest reply, else asks for a fresh snapshot.
+    fn sync_thread_unread(&self, state: &mut State) {
+        if state.thread_unread_busy || state.direct.is_some() {
+            return;
+        }
+        let (Some(token), Some(channel)) = (state.token.clone(), state.channel.clone()) else {
+            return;
+        };
+        let read = state
+            .thread
+            .as_ref()
+            .filter(|thread| !thread.loading)
+            .and_then(|thread| {
+                let unread = state.thread_unread.get(&thread.root)?.parse::<u64>().ok()?;
+                let newest = state
+                    .timeline
+                    .messages()
+                    .filter(|message| message.thread_root_id.as_deref() == Some(&thread.root))
+                    .filter_map(|message| message.seq.parse::<u64>().ok())
+                    .max()?;
+                (newest >= unread).then(|| (thread.root.clone(), newest.to_string()))
+            });
+        if read.is_none() && !state.thread_unread_dirty {
+            return;
+        }
+        if read.is_none() {
+            state.thread_unread_dirty = false;
+        }
+        state.thread_unread_revision += 1;
+        state.thread_unread_busy = true;
+        self.worker.send(Command::ThreadUnread {
+            scope: (state.epoch, state.navigation, channel),
+            revision: state.thread_unread_revision,
+            token,
+            read,
+        });
+    }
+
     /// Drains the worker's events, then updates what they changed.
     fn receive(self: &Rc<Self>) {
         let mut typing = false;
@@ -2858,6 +2907,7 @@ impl App {
                     event => self.handle(&mut state, event),
                 }
             }
+            self.sync_thread_unread(&mut state);
         }
         for (generation, request, result) in forwards {
             self.forward_result(generation, request, result);
@@ -3185,6 +3235,38 @@ impl App {
                         state.error = Some("Couldn’t load older messages.".into());
                         state.retry = Some(Retry::Older);
                     }
+                }
+            }
+            Event::ThreadUnread {
+                scope,
+                revision,
+                read,
+                result,
+            } if scope
+                == (
+                    state.epoch,
+                    state.navigation,
+                    state.channel.clone().unwrap_or_default(),
+                )
+                && revision == state.thread_unread_revision =>
+            {
+                state.thread_unread_busy = false;
+                match result {
+                    Ok(threads) => {
+                        if let Some((root, seq)) = read {
+                            if state.thread_unread.get(&root).is_some_and(|unread| {
+                                unread.parse::<u64>().unwrap_or(0)
+                                    <= seq.parse::<u64>().unwrap_or(0)
+                            }) {
+                                state.thread_unread.remove(&root);
+                            }
+                            state.thread_unread_dirty = true;
+                        } else {
+                            state.thread_unread = threads;
+                        }
+                    }
+                    // Tried again with the next change or visit.
+                    Err(_) => state.thread_unread_dirty = true,
                 }
             }
             Event::VoiceActivityLoaded { epoch, result } if epoch == state.epoch => {
@@ -3812,6 +3894,9 @@ impl App {
                     .as_ref()
                     .is_some_and(|session| session.author.id != message.author.id)
                     && !state.blocked(&message.author.id);
+                if message.thread_root_id.is_some() {
+                    state.thread_unread_dirty = true;
+                }
                 let applied = state.timeline.apply(*message);
                 if matches!(applied, Ok(Apply::Applied)) {
                     if remote {
@@ -4194,6 +4279,7 @@ impl App {
             let revealed = self.images.media.revealed.borrow();
             let blocked = state.blocked_ids();
             let viewer = |in_thread| rows::Viewer {
+                thread_unread: &state.thread_unread,
                 revealed: &revealed,
                 blocked: &blocked,
                 shown_blocked: &state.shown_blocked,

@@ -62,7 +62,8 @@ pub struct Row {
     pub reactions: Vec<Chip>,
     /// Your reaction failed: shown under the row with Retry and Dismiss.
     pub reaction_error: Option<String>,
-    /// "3 replies", on a thread root in the main list.
+    /// "3 replies ● Unread View thread" (Pango markup), on a thread root in
+    /// the main list.
     pub replies: Option<String>,
     /// A thread reply also sent to the channel, in the main list: "Replied
     /// to a thread · View thread" above it.
@@ -411,6 +412,8 @@ pub struct Viewer<'a> {
     /// People you blocked, and the blocked runs you chose to show.
     pub blocked: &'a std::collections::BTreeSet<String>,
     pub shown_blocked: &'a std::collections::HashSet<String>,
+    /// Thread roots with replies you haven't read.
+    pub thread_unread: &'a std::collections::BTreeMap<String, String>,
 }
 
 impl Viewer<'_> {
@@ -573,9 +576,20 @@ pub fn build<'a>(
                 .filter(|thread| {
                     !viewer.in_thread && message.thread_root_id.is_none() && thread.reply_count > 0
                 })
-                .map(|thread| match thread.reply_count {
-                    1 => "1 reply".to_owned(),
-                    count => format!("{count} replies"),
+                .map(|thread| {
+                    let count = match thread.reply_count {
+                        1 => "1 reply".to_owned(),
+                        count => format!("{count} replies"),
+                    };
+                    // As desktop: "3 replies ● Unread View thread".
+                    let unread = if viewer.thread_unread.contains_key(&message.id) {
+                        "  <span foreground=\"#e4c76a\">● Unread</span>"
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "<b>{count}</b>{unread}  <span foreground=\"#b9bcbe\">View thread</span>"
+                    )
                 }),
             broadcast: !viewer.in_thread && message.broadcast && message.thread_root_id.is_some(),
             // As desktop: a pinned row keeps its pin wash instead.
@@ -907,6 +921,7 @@ fn build_widgets(images: &Images) -> Widgets {
     thread_context.set_halign(gtk::Align::Start);
     thread_context.set_visible(false);
     let replies = gtk::Button::new();
+    replies.set_child(Some(&gtk::Label::new(None)));
     replies.add_css_class("flat");
     replies.add_css_class("replies");
     replies.set_halign(gtk::Align::Start);
@@ -1245,9 +1260,13 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
     widgets.retry_reaction.set_visible(row.offers.act);
     widgets.replies.set_visible(row.replies.is_some());
     widgets.thread_context.set_visible(row.broadcast);
-    widgets
+    if let Some(label) = widgets
         .replies
-        .set_label(row.replies.as_deref().unwrap_or_default());
+        .child()
+        .and_then(|child| child.downcast::<gtk::Label>().ok())
+    {
+        label.set_markup(row.replies.as_deref().unwrap_or_default());
+    }
     let offers = row.offers;
     widgets.tools.set_visible(offers.act);
     widgets.thread_button.set_visible(offers.thread);
