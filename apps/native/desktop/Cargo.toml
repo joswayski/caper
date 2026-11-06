@@ -59,7 +59,6 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 rodio = { version = "=0.21.1", default-features = false, features = ["playback", "wav"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-similar = "2.7"
 tokio = { version = "1.47", features = ["rt-multi-thread", "time", "sync"] }
 unicode-segmentation = "=1.13.3"
 url = "2.5"
