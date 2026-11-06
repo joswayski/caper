@@ -2,6 +2,7 @@ import CaperCore
 import Darwin
 import os
 import UIKit
+import UserNotifications
 
 final class CaperUIKitAppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
@@ -80,7 +81,34 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.window = window
         self.root = root
         measureFirstFrame(cached: cached != nil)
+        notifications.model = model
+        UNUserNotificationCenter.current().delegate = notifications
+        // A link that launched the app; the model holds it until the workspace is ready.
+        for context in connectionOptions.urlContexts { model.openInviteLink(context.url) }
+        if let url = connectionOptions.userActivities.first(where: { $0.activityType == NSUserActivityTypeBrowsingWeb })?.webpageURL {
+            model.openInviteLink(url)
+        }
+        if let route = connectionOptions.notificationResponse.flatMap({ NotificationRoute(userInfo: $0.notification.request.content.userInfo) }) {
+            Task { await model.open(route) }
+        }
+        // Parity launches stand in for a link opened from another app.
+        if CaperUIKitLaunch.parityFixture, let raw = ProcessInfo.processInfo.environment["CAPER_TEST_OPEN_URL"], let url = URL(string: raw) {
+            model.openInviteLink(url)
+        }
         Task { await model.start() }
+    }
+
+    private let notifications = NotificationTaps()
+
+    /// Invite links (`caper://invite/<code>`, https://caper.chat/invite/<code>),
+    /// as CaperIOSApp's onOpenURL and onContinueUserActivity route them. This
+    /// development app registers neither, so the shipping app keeps both.
+    func scene(_ scene: UIScene, openURLContexts contexts: Set<UIOpenURLContext>) {
+        for context in contexts { root?.model.openInviteLink(context.url) }
+    }
+
+    func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+        if let url = userActivity.webpageURL { root?.model.openInviteLink(url) }
     }
 
     /// The first display refresh after the window is committed: the frame the
@@ -102,6 +130,23 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
     func sceneDidBecomeActive(_ scene: UIScene) { root?.model.applicationActivityChanged(active: true) }
     func sceneWillResignActive(_ scene: UIScene) { root?.model.applicationActivityChanged(active: false) }
     func sceneDidEnterBackground(_ scene: UIScene) { root?.saveNow() }
+}
+
+/// A tapped notification opens its channel, DM or feedback visit, as the
+/// shipping app's PushNotifications does; the open conversation shows no banner.
+@MainActor private final class NotificationTaps: NSObject, UNUserNotificationCenterDelegate {
+    weak var model: AppModel?
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard let model, let route = NotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
+        await model.open(route)
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        guard let model, model.account != nil else { return [] }
+        if let route = NotificationRoute(userInfo: notification.request.content.userInfo), model.isShowing(route) { return [] }
+        return [.banner, .list, .sound]
+    }
 }
 
 private final class FirstFrame: NSObject {

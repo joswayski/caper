@@ -13,8 +13,9 @@ final class CaperUIKitTests: XCTestCase {
         control(["reset": true])
     }
 
-    private func launch(signedIn: Bool = true, cache: Bool = false) -> XCUIApplication {
+    private func launch(signedIn: Bool = true, cache: Bool = false, openURL: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
+        if let openURL { app.launchEnvironment["CAPER_TEST_OPEN_URL"] = openURL }
         app.launchArguments += ["-caper.space-landing.owner0000001", ""]
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
@@ -428,6 +429,14 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(strip.waitForExistence(timeout: 10), "The open channel's strip offers its voice")
         XCTAssertTrue(strip.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Join")).firstMatch.exists)
         screenshot("uikit-voice-strip")
+    }
+
+    /// A caper:// invite link opened from another app shows Join with invite link
+    /// once the workspace is ready.
+    func testOpenedInviteLinkShowsJoinDialog() {
+        let app = launch(openURL: "caper://invite/ABCDEFGHJK")
+        XCTAssertTrue(app.staticTexts["Join with invite link"].firstMatch.waitForExistence(timeout: 30))
+        screenshot("uikit-join-invite")
     }
 
     /// Browse lists DMs under the channels; New message opens a DM by exact

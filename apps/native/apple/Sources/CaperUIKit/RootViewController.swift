@@ -11,6 +11,7 @@ final class RootViewController: UIViewController {
     private var currentKind: Kind?
     private let observer = ModelObserver()
     private let saver = ModelObserver()
+    private let deliveries = ModelObserver()
     private var saveWork: DispatchWorkItem?
 
     private enum Kind: Equatable { case loading, signIn, onboarding, empty, workspace }
@@ -27,6 +28,23 @@ final class RootViewController: UIViewController {
         view.backgroundColor = UIKitStyle.blackout
         observer.start { [weak self] in self?.render() }
         saver.start { [weak self] in self?.scheduleSave() }
+        deliveries.start { [weak self] in self?.deliver() }
+    }
+
+    /// As CaperView does: an opened invite link, or a tapped invitation
+    /// notification, replaces whatever dialog is open with its own.
+    private func deliver() {
+        let item: WorkspaceSheet
+        if model.deliverableInviteLink != nil, let link = model.takeInviteLink() { item = .joinInvite(link) }
+        else if let invitation = model.notificationInvitation { model.notificationInvitation = nil; item = .invitation(invitation) }
+        else if let invitation = model.notificationChannelInvitation { model.notificationChannelInvitation = nil; item = .channelInvitation(invitation) }
+        else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let dialog = UIKitHosting.workspaceDialog(model: self.model, item)
+            if self.presentedViewController != nil { self.dismiss(animated: false) { self.present(dialog, animated: false) } }
+            else { self.present(dialog, animated: false) }
+        }
     }
 
     override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
