@@ -751,6 +751,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           state.channelReads = body.channelReads && { ...body.channelReads };
           state.channelReadLog = [];
         }
+        // With it, `{ channelMentions: { [channelId]: count } }` adds mention counts.
+        if (body.channelMentions !== undefined) state.channelMentions = body.channelMentions;
         if (body.reset || typeof body.holdSends === "boolean") {
           holdSends = !body.reset && body.holdSends;
           if (!holdSends) for (const release of heldSends) release();
@@ -1527,16 +1529,20 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       // their unread behavior: the unread snapshot and channel reads.
       if (path === "/api/spaces/unread" && method === "GET" && user && state.channelReads)
         return json(response, 200, {
+          // Like the API: only channels with something new, and only spaces with such channels.
           spaces: [
             {
               id: ids.space,
-              channels: Object.entries(state.channelReads).map(([id, readSeq]) => ({
-                id,
-                lastSeq: channelHead(id),
-                readSeq,
-              })),
+              channels: Object.entries(state.channelReads)
+                .filter(([id, readSeq]) => BigInt(channelHead(id)) > BigInt(readSeq))
+                .map(([id, readSeq]) => ({
+                  id,
+                  lastSeq: channelHead(id),
+                  readSeq,
+                  ...(state.channelMentions?.[id] ? { mentionCount: state.channelMentions[id] } : {}),
+                })),
             },
-          ],
+          ].filter((space) => space.channels.length),
           feedbackWaiting: 0,
         });
       const channelRead = /^\/api\/spaces\/([^/]+)\/channels\/([^/]+)\/read$/.exec(path);
@@ -1544,6 +1550,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const [, , channelId] = channelRead;
         state.channelReadLog.push({ channelId, seq: body.seq });
         if (BigInt(body.seq) > BigInt(state.channelReads[channelId] ?? "0")) state.channelReads[channelId] = body.seq;
+        if (state.channelMentions && BigInt(body.seq) >= BigInt(channelHead(channelId)))
+          delete state.channelMentions[channelId];
         return json(response, 204);
       }
       // Only with feedback-team state, so other runs keep their unread behavior.

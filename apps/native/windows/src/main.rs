@@ -81,6 +81,8 @@ const TIMER_LIVE: usize = 3;
 const TIMER_SIGNIN: usize = 4;
 /// A chip's who-reacted card, once the pointer rests on it.
 pub(crate) const TIMER_CARD: usize = 5;
+/// Re-reads the unread badges, as egui does every 15 s.
+const TIMER_UNREAD: usize = 6;
 pub(crate) const WHEEL_STEP: f64 = 48.0;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -558,6 +560,12 @@ impl App {
                 live::Update::Focus(id) => self.focus_message(&id)?,
                 // Names for a chip's card arrived; the next frame shows them.
                 live::Update::Reactors => self.need = true,
+                live::Update::Badges => {
+                    self.dirty.rail = true;
+                    self.dirty.sidebar = true;
+                    self.events |= EV_ROWS;
+                    self.need = true;
+                }
                 live::Update::Unread(id) => self.mark_unread(&id)?,
                 live::Update::Thread => self.thread_refresh()?,
                 live::Update::OlderState => {
@@ -661,6 +669,46 @@ impl App {
             keep = keep.start.min(a.min(b))..keep.end.max(a.max(b) + 1);
         }
         self.rows.trim(keep);
+    }
+
+    /// Unread state for the rail and sidebar, as egui shows it: per space,
+    /// anything new and the mentions of you; per joined channel, anything new.
+    pub fn badges(&self) -> (Vec<(bool, u64)>, Vec<bool>) {
+        let unread = self
+            .live
+            .as_ref()
+            .map_or(&[][..], |l| l.unread_spaces.as_slice());
+        let spaces = self
+            .ids
+            .spaces
+            .iter()
+            .map(|id| {
+                unread
+                    .iter()
+                    .filter(|s| s.id == *id)
+                    .fold((false, 0), |(any, n), s| {
+                        (
+                            any || !s.channels.is_empty(),
+                            n + s
+                                .channels
+                                .iter()
+                                .filter_map(|c| c.mention_count)
+                                .sum::<u64>(),
+                        )
+                    })
+            })
+            .collect();
+        let channels = self
+            .ids
+            .channels
+            .iter()
+            .map(|id| {
+                unread
+                    .iter()
+                    .any(|s| s.channels.iter().any(|c| c.id == *id))
+            })
+            .collect();
+        (spaces, channels)
     }
 
     pub fn list_x(&self) -> f32 {
@@ -1216,6 +1264,11 @@ impl App {
                     self.need = true;
                 }
                 TIMER_CARD => self.show_card(),
+                TIMER_UNREAD => {
+                    if let Some(l) = &mut self.live {
+                        l.refresh_unread();
+                    }
+                }
                 TIMER_SIGNIN => {
                     if let Some(s) = &mut self.signin {
                         s.spin = (s.spin + 0.21) % std::f32::consts::TAU;
@@ -2251,6 +2304,7 @@ impl App {
 
     fn draw_panels(&mut self) -> Result<()> {
         let s = self.scale;
+        let (space_badges, channel_badges) = self.badges();
         let g = &self.g;
         let c = &self.c;
         let d = std::mem::take(&mut self.dirty);
@@ -2288,6 +2342,40 @@ impl App {
                     let l = g.layout(&gfx::wide(&initial), &g.formats.rail, w)?;
                     l.SetMaxHeight(h)?;
                     text::draw(dc, &l, r.left, r.top, &g.brushes.text);
+                    // egui's unread dot in the rail margin, and the
+                    // terracotta mention count on the tile's corner.
+                    let (unread, mentions) = space_badges.get(i).copied().unwrap_or_default();
+                    let cy = r.top + h / 2.0;
+                    if unread {
+                        fill_round(
+                            dc,
+                            rect(r.left - 7.0, cy - 3.0, r.left - 1.0, cy + 3.0),
+                            3.0,
+                            &g.brushes.text,
+                        );
+                    }
+                    if mentions > 0 {
+                        let label = if mentions > 99 {
+                            "99+".to_owned()
+                        } else {
+                            mentions.to_string()
+                        };
+                        let n = g.layout(&gfx::wide(&label), &g.formats.badge, 100.0)?;
+                        let bw =
+                            (gfx::metrics(&n).widthIncludingTrailingWhitespace + 10.0).max(20.0);
+                        let b = rect(
+                            r.right + 3.0 - bw,
+                            r.bottom - 17.0,
+                            r.right + 3.0,
+                            r.bottom + 3.0,
+                        );
+                        fill_round(dc, b, 10.0, &g.solid(BLACKOUT));
+                        let inner = rect(b.left + 2.0, b.top + 2.0, b.right - 2.0, b.bottom - 2.0);
+                        fill_round(dc, inner, 8.0, &g.brushes.terracotta);
+                        n.SetMaxWidth(inner.right - inner.left)?;
+                        n.SetMaxHeight(inner.bottom - inner.top)?;
+                        text::draw(dc, &n, inner.left, inner.top, &g.brushes.text);
+                    }
                 }
                 Ok(())
             })?;
@@ -2319,6 +2407,16 @@ impl App {
                         fill_round(dc, r, RADIUS, &g.brushes.selected);
                     } else if hover == Some(i) {
                         fill_round(dc, r, RADIUS, &g.brushes.hover);
+                    }
+                    // A channel with anything new: egui's small text-coloured dot.
+                    if channel_badges.get(i).copied().unwrap_or(false) {
+                        let cy = y + h / 2.0;
+                        fill_round(
+                            dc,
+                            rect(r.right - 17.0, cy - 3.0, r.right - 11.0, cy + 3.0),
+                            3.0,
+                            &g.brushes.text,
+                        );
                     }
                     let mark = g.layout(
                         &gfx::wide(if c.channels[i].private { "🔒" } else { "#" }),
@@ -2728,6 +2826,9 @@ fn main() -> Result<()> {
         });
         if active {
             SetTimer(Some(hwnd), TIMER_BENCH, 50, None);
+        }
+        if with_app(|a| a.live.is_some()) == Some(true) {
+            SetTimer(Some(hwnd), TIMER_UNREAD, 15_000, None);
         }
         let _ = ShowWindow(hwnd, SW_SHOW);
         let mut clock = true;

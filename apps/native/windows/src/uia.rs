@@ -261,13 +261,29 @@ fn name(a: &App, id: Id) -> String {
     match id {
         Id::Root => "Caper".into(),
         Id::Rail => "Spaces".into(),
-        Id::Space(i) => c.spaces[i].name.clone(),
+        Id::Space(i) => {
+            let (unread, mentions) = a.badges().0.get(i).copied().unwrap_or_default();
+            let mut n = c.spaces[i].name.clone();
+            if unread {
+                n.push_str(", unread messages");
+            }
+            if mentions > 0 {
+                let unit = if mentions == 1 { "mention" } else { "mentions" };
+                n.push_str(&format!(", {mentions} {unit}"));
+            }
+            n
+        }
         Id::Channels => format!("Channels in {}", c.spaces[c.space].name),
         Id::Channel(i) => format!(
-            "{}{}",
+            "{}{}{}",
             c.channels[i].name,
             if c.channels[i].private {
                 ", private"
+            } else {
+                ""
+            },
+            if a.badges().1.get(i).copied().unwrap_or(false) {
+                ", unread activity"
             } else {
                 ""
             }

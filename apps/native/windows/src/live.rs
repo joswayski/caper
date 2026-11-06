@@ -5,7 +5,9 @@
 //! no session is stored. Only used when `CAPER_API_URL` is set; the rest
 //! of the egui client's commands come later.
 use crate::model::{self, Conversation, Person, Reaction, Span};
-use caper_client::reactions::{REACTOR_CACHE_LIMIT, Reacted, ReactorCache, ReactorState, Reactions};
+use caper_client::reactions::{
+    REACTOR_CACHE_LIMIT, Reacted, Reactions, ReactorCache, ReactorState,
+};
 use caper_client::worker::{Command, Event, Worker};
 use caper_client::{Host, api::Api, gateway, grouping, model as core};
 use std::collections::{HashMap, HashSet};
@@ -94,6 +96,9 @@ pub enum Update {
     Unread(String),
     /// Who reacted to a message loaded (for a chip's card).
     Reactors,
+    /// The account's unread state changed: the rail's dots and mention
+    /// counts and the sidebar's dots.
+    Badges,
     /// The open thread's messages or state changed (or it closed): the
     /// pane rebuilds from `Live::thread_view`.
     Thread,
@@ -247,6 +252,10 @@ pub struct Live {
     foreground: bool,
     /// Who reacted, per message, for the chips' cards (the shared cache).
     reactors: HashMap<String, ReactorCache>,
+    /// Spaces and channels with anything new (and mentions of you), as the
+    /// server last listed them; the last refresh (older replies drop).
+    pub unread_spaces: Vec<core::UnreadSpace>,
+    unread_revision: u64,
 }
 
 /// The thread beside the channel, as in the egui client's thread panel.
@@ -328,6 +337,8 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         reads: HashMap::new(),
         foreground: false,
         reactors: HashMap::new(),
+        unread_spaces: Vec::new(),
+        unread_revision: 0,
     })
 }
 
@@ -954,15 +965,25 @@ impl Live {
         self.visit_channel = self.channel.clone();
         self.unread = None;
         self.unread_pending = false;
-        if let Some(token) = self.token.clone() {
+        if self.token.is_some() {
             self.unread_pending = true;
-            self.worker.send(Command::LoadUnread {
-                epoch: 0,
-                revision: 0,
-                visit: Some(self.visit),
-                token,
-            });
+            self.refresh_unread();
         }
+    }
+
+    /// Reads the account's unread state again (the badges); while a visit
+    /// waits for its snapshot, this is that snapshot too.
+    pub fn refresh_unread(&mut self) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        self.unread_revision += 1;
+        self.worker.send(Command::LoadUnread {
+            epoch: 0,
+            revision: self.unread_revision,
+            visit: self.unread_pending.then_some(self.visit),
+            token,
+        });
     }
 
     /// The shown message the "New messages" divider goes above: the first
@@ -1334,29 +1355,40 @@ impl Live {
                 self.mark_read();
             }
             Event::UnreadLoaded {
-                visit: Some(visit),
+                revision,
+                visit,
                 result,
                 ..
-            } if visit == self.visit && self.unread_pending => {
-                // The snapshot taken as the channel opened, so the divider
-                // marks what was new then even as reads move on.
-                self.unread_pending = false;
-                if let Ok(unread) = result {
-                    self.unread = unread
-                        .spaces
-                        .iter()
-                        .flat_map(|space| &space.channels)
-                        .find(|c| self.visit_channel.as_ref() == Some(&c.id))
-                        .and_then(|c| {
-                            let read = core::sequence(c.read_seq.as_deref()?).ok()?;
-                            let last = core::sequence(&c.last_seq).ok()?;
-                            (read < last).then_some((read, last))
-                        });
+            } => {
+                // The visit's snapshot, taken as the channel opened, so the
+                // divider marks what was new then even as reads move on.
+                if visit.is_some_and(|v| v == self.visit) && self.unread_pending {
+                    self.unread_pending = false;
+                    if let Ok(unread) = &result {
+                        self.unread = unread
+                            .spaces
+                            .iter()
+                            .flat_map(|space| &space.channels)
+                            .find(|c| self.visit_channel.as_ref() == Some(&c.id))
+                            .and_then(|c| {
+                                let read = core::sequence(c.read_seq.as_deref()?).ok()?;
+                                let last = core::sequence(&c.last_seq).ok()?;
+                                (read < last).then_some((read, last))
+                            });
+                    }
+                    if let Some(id) = self.unread_row() {
+                        out.push(Update::Unread(id));
+                    }
+                    self.mark_read();
                 }
-                if let Some(id) = self.unread_row() {
-                    out.push(Update::Unread(id));
+                // Any snapshot a later read has not made stale feeds the
+                // rail and sidebar badges.
+                if revision == self.unread_revision
+                    && let Ok(unread) = result
+                {
+                    self.unread_spaces = unread.spaces;
+                    out.push(Update::Badges);
                 }
-                self.mark_read();
             }
             Event::Reactors {
                 generation,
@@ -1371,13 +1403,27 @@ impl Live {
                 out.push(Update::Reactors);
             }
             Event::ChannelRead {
+                space,
                 channel,
                 seq,
                 result: Ok(()),
                 ..
             } => {
+                // As in egui: a refresh already in flight predates the read.
+                self.unread_revision += 1;
+                let n = core::sequence(&seq).unwrap_or(0);
+                for entry in &mut self.unread_spaces {
+                    if entry.id == space {
+                        entry.channels.retain(|c| {
+                            c.id != channel || core::sequence(&c.last_seq).unwrap_or(0) > n
+                        });
+                    }
+                }
+                self.unread_spaces
+                    .retain(|entry| !entry.channels.is_empty());
+                out.push(Update::Badges);
                 let read = self.reads.entry(channel).or_insert_with(|| "0".into());
-                if core::sequence(&seq).unwrap_or(0) > core::sequence(read).unwrap_or(0) {
+                if n > core::sequence(read).unwrap_or(0) {
                     *read = seq;
                 }
             }

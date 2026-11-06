@@ -94,6 +94,8 @@ pub struct Formats {
     pub error: IDWriteTextFormat,
     /// The who-reacted card's summary.
     pub card: IDWriteTextFormat,
+    /// The rail's mention count.
+    pub badge: IDWriteTextFormat,
     /// A grouped row's "(edited)" marker.
     pub edited: IDWriteTextFormat,
     /// A reply's quote panel: its text (at most three lines, then an
@@ -252,6 +254,7 @@ impl Gfx {
                 link_small: fmt(13.6, DWRITE_FONT_WEIGHT_NORMAL)?,
                 error: fmt(13.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 card: fmt(13.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                badge: centered(11.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 edited: fmt(10.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 quote: fmt(12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 quote_deleted: dwrite.CreateTextFormat(
