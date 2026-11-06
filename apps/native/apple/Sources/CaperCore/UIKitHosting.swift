@@ -100,14 +100,22 @@ import UIKit
     /// the card first; the conversation then asks to confirm.
     private static func profileCard(model: AppModel, person: MentionCardPerson, requestBlock: @escaping (BlockTarget) -> Void) -> UIViewController {
         let box = WeakController()
+        let guardian = DismissGuard()
         var pendingBlock: BlockTarget?
         let host = DisappearingHostingController(rootView: AnyView(
             MentionCardView(model: model, person: person, requestBlock: { target in
                 pendingBlock = target
                 if box.value?.presentingViewController != nil { box.value?.dismiss(animated: true) }
             }, close: { box.value?.dismiss(animated: true) })
+            .onPreferenceChange(ProfileDismissPreference.self) { action in MainActor.assumeIsolated { guardian.profileEditor = action } }
             .preferredColorScheme(.dark)))
         box.value = host
+        // Like MentionCardHost: a swipe down asks an open profile editor to
+        // close itself, and never drops an unsent draft.
+        let draft = model.profileMessageDraft(person: person)
+        guardian.allow = { !draft.preventsImplicitDismissal }
+        host.dismissGuard = guardian
+        host.presentationController?.delegate = guardian
         host.overrideUserInterfaceStyle = .dark
         host.disappeared = { if let target = pendingBlock { pendingBlock = nil; requestBlock(target) } }
         sheet(host, background: CaperTheme.surface)
@@ -146,9 +154,21 @@ import UIKit
 /// Reports when its sheet has finished closing, so a follow-up can present.
 private final class DisappearingHostingController: UIHostingController<AnyView> {
     var disappeared: (() -> Void)?
+    var dismissGuard: DismissGuard?
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isBeingDismissed || presentingViewController == nil { disappeared?() }
+    }
+}
+
+/// Refuses a swipe-down while a profile edit or a draft is unsaved.
+@MainActor private final class DismissGuard: NSObject, UIAdaptivePresentationControllerDelegate {
+    var profileEditor: ProfileDismissAction?
+    var allow: () -> Bool = { true }
+
+    func presentationControllerShouldDismiss(_ presentationController: UIPresentationController) -> Bool {
+        if let profileEditor { profileEditor.action(); return false }
+        return allow()
     }
 }
 
