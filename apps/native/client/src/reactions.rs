@@ -248,6 +248,55 @@ impl ReactorCache {
     }
 }
 
+/// Starts reading who reacted to `message` at `revision` unless that is
+/// cached or already loading. True when the caller should send
+/// `Command::LoadReactors` for it.
+pub fn start_reactors(
+    cache: &mut BTreeMap<String, ReactorCache>,
+    message: &str,
+    revision: &str,
+) -> bool {
+    if cache
+        .get(message)
+        .is_some_and(|cached| !cached.wants_request(revision))
+    {
+        return false;
+    }
+    if cache.len() >= REACTOR_CACHE_LIMIT && !cache.contains_key(message) {
+        cache.clear();
+    }
+    let now = Instant::now();
+    cache
+        .entry(message.to_owned())
+        .and_modify(|cached| {
+            revision.clone_into(&mut cached.revision);
+            cached.state = ReactorState::Loading(now);
+        })
+        .or_insert_with(|| ReactorCache {
+            revision: revision.to_owned(),
+            state: ReactorState::Loading(now),
+            groups: Vec::new(),
+        });
+    true
+}
+
+/// Who reacted with `reaction`, as every client words it: the known names
+/// (yours as "You"), else a count until they load.
+pub fn reactor_summary(
+    cache: Option<&ReactorCache>,
+    reaction: &Reaction,
+    self_id: Option<&str>,
+) -> String {
+    let name = crate::emoji::name(&reaction.emoji);
+    let groups = cache.map_or(&[][..], |cached| cached.groups.as_slice());
+    match crate::model::reactor_list(groups, reaction, self_id) {
+        Some(authors) => crate::model::reactor_summary(&authors, self_id, name, &reaction.emoji),
+        None => {
+            crate::model::reactor_fallback(&reaction.author_ids, self_id, name, &reaction.emoji)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

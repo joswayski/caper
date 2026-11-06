@@ -20715,17 +20715,9 @@ impl CaperApp {
             );
             return;
         }
-        self.reactors
-            .entry(message.id.clone())
-            .and_modify(|cached| {
-                cached.revision = revision.clone();
-                cached.state = ReactorState::Loading(Instant::now());
-            })
-            .or_insert_with(|| ReactorCache {
-                revision: revision.clone(),
-                state: ReactorState::Loading(Instant::now()),
-                groups: Vec::new(),
-            });
+        if !caper_client::reactions::start_reactors(&mut self.reactors, &message.id, &revision) {
+            return;
+        }
         self.worker.send(Command::LoadReactors {
             generation: self.generation,
             token: self.token.clone(),
@@ -20738,16 +20730,11 @@ impl CaperApp {
     /// Project known names onto the displayed IDs, including pending own toggles.
     /// A refresh must not replace those names with a temporary count.
     fn reactor_summary(&self, message: &model::Message, reaction: &model::Reaction) -> String {
-        let self_id = self.reactor_self_id();
-        let name = emoji::name(&reaction.emoji);
-        let groups = self
-            .reactors
-            .get(&message.id)
-            .map_or(&[][..], |cached| cached.groups.as_slice());
-        match model::reactor_list(groups, reaction, self_id) {
-            Some(authors) => model::reactor_summary(&authors, self_id, name, &reaction.emoji),
-            None => model::reactor_fallback(&reaction.author_ids, self_id, name, &reaction.emoji),
-        }
+        caper_client::reactions::reactor_summary(
+            self.reactors.get(&message.id),
+            reaction,
+            self.reactor_self_id(),
+        )
     }
 
     /// The reactions window's Retry: ask again now rather than after
