@@ -1,6 +1,7 @@
 import { test, vi } from "vitest";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { inflateSync } from "node:zlib";
 import { startFixture, fixtureIDs as ids } from "../scripts/native-parity-fixture.mjs";
 
 async function setup(t) {
@@ -1414,4 +1415,463 @@ test("attachment uploads go to absolute URLs on the origin the client called", a
   // Behind the web's dev proxy, the browser uploads through the web origin.
   const proxied = (await reserve({ "x-forwarded-host": "localhost:5174", "x-forwarded-proto": "http" })).value;
   assert.equal(proxied.upload.url, `http://localhost:5174/api/assets/${proxied.id}/fixture-upload`);
+});
+
+// Real, non-square PNGs with different colours at every position. These are
+// prepared upload bytes, not a placeholder or a symmetric one-pixel image.
+const preparedImage = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFElEQVR4nGP4z8DAAMH//zOA4X8ASskI+C0xXWQAAAAASUVORK5CYII=",
+  "base64",
+);
+const preparedPreview = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGMQMglLdVYEAASlAWaFxYIeAAAAAElFTkSuQmCC",
+  "base64",
+);
+const imageInput = {
+  channelId: ids.general,
+  filename: "asymmetric prepared.png",
+  contentType: "image/png",
+  byteSize: preparedImage.length,
+  sourceByteSize: preparedImage.length * 3,
+  width: 3,
+  height: 2,
+};
+
+async function readPreparedImage(url, preview = false) {
+  const response = await fetch(url);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "image/png");
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.equal(response.headers.get("content-length"), String(bytes.length));
+  assert.deepEqual(bytes, preview ? preparedPreview : preparedImage);
+  // Decode these known RGB8/filter-0 PNGs with Node's zlib, checking row order
+  // and pixels as well as byte equality. This is not a native-renderer test.
+  assert.equal(bytes.readUInt32BE(16), preview ? 2 : 3);
+  assert.equal(bytes.readUInt32BE(20), preview ? 1 : 2);
+  assert.deepEqual([...bytes.subarray(24, 29)], [8, 2, 0, 0, 0]);
+  const idat = [];
+  for (let offset = 8; offset < bytes.length;) {
+    const size = bytes.readUInt32BE(offset);
+    if (bytes.toString("ascii", offset + 4, offset + 8) === "IDAT")
+      idat.push(bytes.subarray(offset + 8, offset + 8 + size));
+    offset += 12 + size;
+  }
+  assert.deepEqual(
+    [...inflateSync(Buffer.concat(idat))],
+    preview
+      ? [0, 18, 52, 86, 101, 67, 33]
+      : [0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 255, 255, 0, 255, 0, 255, 0, 255, 255],
+  );
+}
+
+test.for([
+  { multipart: false, preview: false },
+  { multipart: false, preview: true },
+  { multipart: true, preview: false },
+  { multipart: true, preview: true },
+])("prepared images survive upload, send and read (multipart=$multipart, preview=$preview)", async (options, t) => {
+  const { fixture, base, request } = await setup(t);
+  const path = `/api/chat/channels/${ids.general}/messages`;
+  const seeded = (await request(path, { auth: true })).value.messages;
+  assert.equal(seeded.length, 4);
+  assert.ok(seeded.every((message) => !message.content.attachments));
+  assert.equal((await request("/api/assets", { auth: true, method: "POST", body: imageInput })).response.status, 503);
+  await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true, multipartPartBytes: 32 } });
+  const reserved = await request("/api/assets", {
+    auth: true,
+    method: "POST",
+    body: {
+      ...imageInput,
+      multipart: options.multipart,
+      ...(options.preview ? { preview: { contentType: "image/png", byteSize: preparedPreview.length } } : {}),
+    },
+  });
+  assert.equal(reserved.response.status, 200);
+  const asset = reserved.value;
+  assert.equal(asset.kind, "image");
+  assert.match(asset.id, /^[a-zA-Z0-9]{16}$/);
+  const media = `${base}/api/assets/${asset.id}/fixture-file`;
+  const complete = () => request(`/api/assets/${asset.id}/complete`, { auth: true, method: "POST" });
+  const put = (url, body) => fetch(url, { method: "PUT", body });
+  assert.equal((await fetch(media)).status, 404, "an uncompleted image is not public");
+  if (options.preview) {
+    assert.equal(asset.previewUpload.url, `${base}/api/assets/${asset.id}/fixture-preview`);
+    assert.equal((await complete()).response.status, 422);
+    assert.equal((await put(asset.previewUpload.url, preparedPreview)).status, 204);
+    assert.equal((await fetch(asset.previewUpload.url)).status, 404, "a staged preview is not public either");
+  }
+  let uploadedURL;
+  if (options.multipart) {
+    assert.equal(asset.upload, undefined);
+    assert.deepEqual(asset.multipart, { partBytes: 32, partCount: 3 });
+    const parts = (
+      await request(`/api/assets/${asset.id}/parts`, {
+        auth: true,
+        method: "POST",
+        body: { parts: [3, 1, 2, 1] },
+      })
+    ).value.parts;
+    assert.deepEqual(
+      parts.map(({ number }) => number),
+      [1, 2, 3],
+    );
+    assert.equal(parts[0].url, `${base}/api/assets/${asset.id}/fixture-part/1`);
+    uploadedURL = parts[0].url;
+    assert.equal((await put(parts[2].url, preparedImage.subarray(64))).status, 204, "last part can arrive first");
+    assert.equal((await put(parts[0].url, preparedImage.subarray(0, 31))).status, 204);
+    assert.equal((await complete()).response.status, 422, "wrong-sized parts still fail completion");
+    assert.equal((await put(parts[0].url, preparedImage.subarray(0, 32))).status, 204, "a retry replaces the part");
+    await request("/__fixture/control", { method: "POST", body: { failPart: 2 } });
+    assert.equal((await put(parts[1].url, preparedImage.subarray(32, 64))).status, 500);
+    const missing = await complete();
+    assert.equal(missing.response.status, 409);
+    assert.equal(missing.value.code, "upload_incomplete");
+    assert.equal((await put(parts[1].url, preparedImage.subarray(32, 64))).status, 204);
+  } else {
+    assert.equal(asset.multipart, undefined);
+    assert.equal(asset.upload.url, `${base}/api/assets/${asset.id}/fixture-upload`);
+    uploadedURL = asset.upload.url;
+    assert.equal((await put(uploadedURL, preparedImage.subarray(1))).status, 204);
+    assert.equal((await complete()).response.status, 422, "a truncated single PUT still fails completion");
+    assert.equal((await put(uploadedURL, preparedImage)).status, 204);
+  }
+  if (options.preview) {
+    assert.equal((await put(asset.previewUpload.url, preparedPreview.subarray(1))).status, 204);
+    assert.equal((await complete()).response.status, 422, "a valid original cannot publish a truncated preview");
+    assert.equal((await put(asset.previewUpload.url, preparedPreview)).status, 204);
+  }
+  assert.equal((await fetch(media)).status, 404, "PUT does not publish a prepared image");
+  assert.equal(
+    (
+      await request(`/api/assets/${asset.id}/complete`, {
+        auth: "fixture-member-token",
+        method: "POST",
+      })
+    ).response.status,
+    404,
+  );
+  const completed = await complete();
+  assert.equal(completed.response.status, 200);
+  // The production completion endpoint returns describe(row), without URLs or status.
+  const description = {
+    id: asset.id,
+    name: imageInput.filename,
+    kind: "image",
+    contentType: "image/png",
+    size: preparedImage.length,
+    width: 3,
+    height: 2,
+    ...(options.preview ? { preview: {} } : {}),
+  };
+  assert.deepEqual(completed.value, description);
+  assert.deepEqual((await complete()).value, description, "completion retries retain the same metadata and bytes");
+  if (options.multipart) {
+    assert.equal(
+      (await request(`/__fixture/assets/${asset.id}`)).value.sha256,
+      createHash("sha256").update(preparedImage).digest("hex"),
+    );
+    assert.equal(
+      (
+        await request(`/api/assets/${asset.id}/parts`, {
+          auth: true,
+          method: "POST",
+          body: { parts: [1] },
+        })
+      ).response.status,
+      404,
+    );
+  }
+  const session = (await request("/api/chat/session", { auth: true, method: "POST", body: { name: "ignored" } })).value;
+  const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`, {
+    headers: { authorization: "Bearer fixture-owner-token" },
+  });
+  t.onTestFinished(() => stream.ws.close());
+  await stream.opened;
+  await stream.next();
+  stream.ws.send(JSON.stringify({ type: "subscribe", id: "images", kind: "chat", channelId: ids.general, after: "4" }));
+  await stream.next();
+  await stream.next();
+  const send = {
+    auth: true,
+    method: "POST",
+    headers: { "x-caper-chat-token": session.token },
+    body: { clientMessageId: randomUUID(), text: "", attachmentIds: [asset.id] },
+  };
+  await request("/__fixture/control", { method: "POST", body: { holdSends: true } });
+  const sending = request(path, send);
+  await vi.waitFor(async () => {
+    assert.equal((await request("/__fixture/control", { method: "POST", body: {} })).value.heldSends, 1);
+  });
+  assert.equal((await request(path, { auth: true })).value.messages.length, 4, "held image sends stay out of history");
+  await request("/__fixture/control", { method: "POST", body: { holdSends: false } });
+  const sent = await sending;
+  assert.equal(sent.response.status, 200);
+  const attachment = {
+    ...description,
+    url: media,
+    ...(options.preview ? { previewUrl: asset.previewUpload.url } : {}),
+  };
+  assert.deepEqual(sent.value.content.attachments, [attachment]);
+  assert.deepEqual((await stream.next()).event.message.content.attachments, [attachment]);
+  assert.deepEqual((await request(path, send)).value, sent.value, "send retries preserve image delivery URLs");
+  assert.deepEqual((await request(`${path}/${sent.value.id}`, { auth: true })).value.content.attachments, [attachment]);
+  const history = (await request(path, { auth: true })).value.messages;
+  assert.equal(history.length, 5);
+  assert.deepEqual(history.at(-1).content.attachments, [attachment]);
+  await readPreparedImage(attachment.url);
+  if (options.preview) await readPreparedImage(attachment.previewUrl, true);
+  else assert.equal((await fetch(`${base}/api/assets/${asset.id}/fixture-preview`)).status, 404);
+  assert.equal(
+    (await put(uploadedURL, preparedImage.subarray(0, 1))).status,
+    404,
+    "late PUTs cannot replace published bytes",
+  );
+  await readPreparedImage(attachment.url);
+  // Preserve the fixture's existing completed-asset cancellation behaviour.
+  assert.equal((await request(`/api/assets/${asset.id}/cancel`, { auth: true, method: "POST" })).response.status, 204);
+  await readPreparedImage(attachment.url);
+  await request("/__fixture/control", {
+    method: "POST",
+    body: {
+      failure: { path: new URL(attachment.url).pathname, method: "GET", status: 404, persistent: true },
+    },
+  });
+  assert.equal((await fetch(attachment.url)).status, 404, "existing failure controls can make media unavailable");
+  assert.equal((await fetch(attachment.url)).status, 404);
+  await request("/__fixture/control", { method: "POST", body: { clearFailures: true } });
+  await readPreparedImage(attachment.url);
+  await request("/__fixture/control", { method: "POST", body: { reset: true } });
+  assert.equal((await fetch(attachment.url)).status, 404, "reset revokes old media URLs");
+  if (options.preview) assert.equal((await fetch(attachment.previewUrl)).status, 404);
+  assert.deepEqual((await request(path, { auth: true })).value.messages, seeded);
+});
+
+test.for([false, true])(
+  "cancelled images discard pending original/preview media (multipart=%s)",
+  async (multipart, t) => {
+    const { base, request } = await setup(t);
+    await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true, multipartPartBytes: 32 } });
+    const asset = (
+      await request("/api/assets", {
+        auth: true,
+        method: "POST",
+        body: {
+          ...imageInput,
+          multipart,
+          preview: { contentType: "image/png", byteSize: preparedPreview.length },
+        },
+      })
+    ).value;
+    const upload = multipart
+      ? (await request(`/api/assets/${asset.id}/parts`, { auth: true, method: "POST", body: { parts: [1] } })).value
+          .parts[0].url
+      : asset.upload.url;
+    const bytes = multipart ? preparedImage.subarray(0, 32) : preparedImage;
+    assert.equal((await fetch(upload, { method: "PUT", body: bytes })).status, 204);
+    assert.equal((await fetch(asset.previewUpload.url, { method: "PUT", body: preparedPreview })).status, 204);
+    assert.equal(
+      (await request(`/api/assets/${asset.id}/cancel`, { auth: "fixture-member-token", method: "POST" })).response
+        .status,
+      404,
+    );
+    for (let attempt = 0; attempt < 2; attempt++)
+      assert.equal(
+        (await request(`/api/assets/${asset.id}/cancel`, { auth: true, method: "POST" })).response.status,
+        204,
+      );
+    assert.equal((await request(`/__fixture/assets/${asset.id}`)).value.deleted, true);
+    assert.equal(
+      (await request(`/api/assets/${asset.id}/complete`, { auth: true, method: "POST" })).response.status,
+      404,
+    );
+    assert.equal((await fetch(upload, { method: "PUT", body: bytes })).status, 404);
+    assert.equal((await fetch(asset.previewUpload.url, { method: "PUT", body: preparedPreview })).status, 404);
+    assert.equal((await fetch(asset.previewUpload.url)).status, 404);
+    assert.equal((await fetch(`${base}/api/assets/${asset.id}/fixture-file`)).status, 404);
+  },
+);
+
+test("image retention is bounded by validated reservations, request sizes, and a resettable fixture budget", async (t) => {
+  const { request } = await setup(t);
+  await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true, multipartPartBytes: 32 } });
+  const reserve = (input) => request("/api/assets", { auth: true, method: "POST", body: { ...imageInput, ...input } });
+  for (const input of [
+    { byteSize: 0 },
+    { byteSize: -1 },
+    { byteSize: 0.5 },
+    { byteSize: "77" },
+    { byteSize: Number.MAX_SAFE_INTEGER + 1 },
+    { width: 0 },
+    { height: 32_769 },
+    { durationMs: -1 },
+    { durationMs: 86_400_001 },
+    { preview: true },
+    { preview: { contentType: "image/svg+xml", byteSize: 10 } },
+    { preview: { contentType: "image/png", byteSize: 512 * 1024 + 1 } },
+  ])
+    assert.equal((await reserve(input)).response.status, 400, JSON.stringify(input));
+  for (const multipart of [false, true])
+    assert.equal((await reserve({ multipart, byteSize: 8 * 1024 * 1024 + 1 })).response.status, 413);
+  const single = (await reserve({ preview: { contentType: "image/png", byteSize: preparedPreview.length } })).value;
+  assert.equal(
+    (await fetch(single.upload.url, { method: "PUT", body: Buffer.alloc(preparedImage.length + 1) })).status,
+    413,
+  );
+  assert.equal(
+    (await fetch(single.previewUpload.url, { method: "PUT", body: Buffer.alloc(preparedPreview.length + 1) })).status,
+    413,
+  );
+  const multipart = (await reserve({ multipart: true })).value;
+  const parts = (
+    await request(`/api/assets/${multipart.id}/parts`, { auth: true, method: "POST", body: { parts: [1, 2] } })
+  ).value.parts;
+  assert.equal((await fetch(parts[0].url, { method: "PUT", body: preparedImage })).status, 204);
+  assert.equal(
+    (await fetch(parts[1].url, { method: "PUT", body: Buffer.from([1]) })).status,
+    413,
+    "parts cannot cumulatively exceed the declared size",
+  );
+  assert.equal(
+    (await request(`/api/assets/${multipart.id}/complete`, { auth: true, method: "POST" })).response.status,
+    422,
+  );
+  await request("/__fixture/control", { method: "POST", body: { reset: true, uploadsEnabled: true } });
+  const reservations = [];
+  for (let index = 0; index < 8; index++) {
+    const result = await reserve({ byteSize: 8 * 1024 * 1024 });
+    assert.equal(result.response.status, 200);
+    reservations.push(result.value.id);
+  }
+  assert.equal((await reserve({})).response.status, 413, "even valid images cannot grow retained memory indefinitely");
+  await request(`/api/assets/${reservations[0]}/cancel`, { auth: true, method: "POST" });
+  assert.equal((await reserve({})).response.status, 200, "cancellation releases its reservation");
+  await request("/__fixture/control", { method: "POST", body: { reset: true, uploadsEnabled: true } });
+  for (let index = 0; index < 128; index++) assert.equal((await reserve({})).response.status, 200);
+  assert.equal((await reserve({})).response.status, 413, "small image reservations also have a count bound");
+});
+
+test("image PUTs use the forwarded origin while media, like avatars and voice, uses direct loopback", async (t) => {
+  const { base, request } = await setup(t);
+  await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true } });
+  const asset = (
+    await request("/api/assets", {
+      auth: true,
+      method: "POST",
+      body: imageInput,
+      headers: { "x-forwarded-host": "web.fixture.test", "x-forwarded-proto": "https" },
+    })
+  ).value;
+  assert.equal(asset.upload.url, `https://web.fixture.test/api/assets/${asset.id}/fixture-upload`);
+  // Model the proxy forwarding the PUT, without contacting a real external host.
+  await fetch(base + new URL(asset.upload.url).pathname, { method: "PUT", body: preparedImage });
+  await request(`/api/assets/${asset.id}/complete`, { auth: true, method: "POST" });
+  const session = (await request("/api/chat/session", { auth: true, method: "POST", body: { name: "ignored" } })).value;
+  const message = (
+    await request(`/api/chat/channels/${ids.general}/messages`, {
+      auth: true,
+      method: "POST",
+      headers: { "x-caper-chat-token": session.token },
+      body: { clientMessageId: randomUUID(), text: "", attachmentIds: [asset.id] },
+    })
+  ).value;
+  assert.equal(message.content.attachments[0].url, `${base}/api/assets/${asset.id}/fixture-file`);
+  await readPreparedImage(message.content.attachments[0].url);
+});
+
+test("image descriptions omit absent dimensions, retain optional duration, and do not render unsupported MIME types", async (t) => {
+  const { base, request } = await setup(t);
+  await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true } });
+  for (const contentType of ["image/png", "image/svg+xml"]) {
+    const asset = (
+      await request("/api/assets", {
+        auth: true,
+        method: "POST",
+        body: {
+          ...imageInput,
+          contentType,
+          width: null,
+          height: null,
+          durationMs: 0,
+        },
+      })
+    ).value;
+    await fetch(asset.upload.url, { method: "PUT", body: preparedImage });
+    const completed = await request(`/api/assets/${asset.id}/complete`, { auth: true, method: "POST" });
+    assert.deepEqual(completed.value, {
+      id: asset.id,
+      name: imageInput.filename,
+      contentType,
+      size: preparedImage.length,
+      ...(contentType === "image/png" ? { kind: "image", durationMs: 0 } : { kind: "file", status: "ready" }),
+    });
+    const media = `${base}/api/assets/${asset.id}/fixture-file`;
+    if (contentType === "image/png") await readPreparedImage(media);
+    else assert.equal((await fetch(media)).status, 404, "unsupported image types are not exposed as inline media");
+  }
+});
+
+test("ordinary multipart file hashes and recorded voice media keep their existing fixture contracts", async (t) => {
+  const { request } = await setup(t);
+  await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true, multipartPartBytes: 3 } });
+  const file = (
+    await request("/api/assets", {
+      auth: true,
+      method: "POST",
+      body: {
+        channelId: ids.general,
+        filename: "notes.txt",
+        contentType: "text/plain",
+        byteSize: 5,
+        multipart: true,
+      },
+    })
+  ).value;
+  const parts = (await request(`/api/assets/${file.id}/parts`, { auth: true, method: "POST", body: { parts: [1, 2] } }))
+    .value.parts;
+  await fetch(parts[1].url, { method: "PUT", body: "lo" });
+  await fetch(parts[0].url, { method: "PUT", body: "hel" });
+  assert.deepEqual((await request(`/api/assets/${file.id}/complete`, { auth: true, method: "POST" })).value, {
+    id: file.id,
+    name: "notes.txt",
+    contentType: "text/plain",
+    size: 5,
+    kind: "file",
+    status: "ready",
+  });
+  assert.equal(
+    (await request(`/__fixture/assets/${file.id}`)).value.sha256,
+    createHash("sha256").update("hello").digest("hex"),
+  );
+  const voice = (
+    await request("/api/assets", {
+      auth: true,
+      method: "POST",
+      body: {
+        channelId: ids.general,
+        filename: "recorded.ogg",
+        contentType: "audio/ogg",
+        byteSize: 3,
+        voice: true,
+        durationMs: 1000,
+        waveform: "AQID",
+      },
+    })
+  ).value;
+  const bytes = Buffer.from([1, 2, 3]);
+  await fetch(voice.upload.url, { method: "PUT", body: bytes });
+  const completed = (await request(`/api/assets/${voice.id}/complete`, { auth: true, method: "POST" })).value;
+  assert.equal(completed.kind, "audio");
+  assert.equal(completed.contentType, "audio/mp4");
+  assert.equal(completed.waveform, "AQID");
+  assert.equal(completed.durationMs, 1000);
+  assert.deepEqual(completed.transcript, { status: "pending" });
+  const recorded = await fetch(completed.url);
+  assert.equal(
+    recorded.headers.get("content-type"),
+    "audio/ogg",
+    "the fixture still serves recorded bytes without transcoding",
+  );
+  assert.deepEqual(Buffer.from(await recorded.arrayBuffer()), bytes);
 });
