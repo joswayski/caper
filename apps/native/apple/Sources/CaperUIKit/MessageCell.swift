@@ -788,6 +788,8 @@ final class BlockedRunCell: UICollectionViewCell {
 final class DayDividerCell: UICollectionViewCell {
     static let reuse = "day"
     private let label = UIKitStyle.label(size: 10, weight: .bold, color: UIKitStyle.muted)
+    private var lines: [UIView] = []
+    private var stackInsets: [NSLayoutConstraint] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -799,15 +801,18 @@ final class DayDividerCell: UICollectionViewCell {
         }
         label.setContentHuggingPriority(.required, for: .horizontal)
         label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        lines = [left, right]
         let stack = UIStackView(arrangedSubviews: [left, label, right])
         stack.spacing = 10
         stack.alignment = .center
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
         left.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true
-        NSLayoutConstraint.activate([
+        stackInsets = [
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+        ]
+        NSLayoutConstraint.activate(stackInsets + [
             stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
             stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
         ])
@@ -816,9 +821,17 @@ final class DayDividerCell: UICollectionViewCell {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(_ text: String) {
+    /// A day, or SwiftUI's terracotta "New messages" line above the first
+    /// unread message.
+    func configure(_ text: String, unread: Bool = false) {
         label.text = text
+        label.font = UIKitStyle.font(unread ? 11 : 10, unread ? .medium : .bold)
+        label.textColor = unread ? UIKitStyle.terracotta : UIKitStyle.muted
+        lines.forEach { $0.backgroundColor = unread ? UIKitStyle.terracotta : UIKitStyle.border }
+        stackInsets[0].constant = unread ? 16 : 18
+        stackInsets[1].constant = unread ? -16 : -18
         accessibilityLabel = text
+        accessibilityIdentifier = unread ? "channel-new-messages" : nil
     }
 }
 

@@ -12,6 +12,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         case row(String)
         /// "N blocked messages — Show", keyed by the run's first message.
         case blocked(String)
+        /// "New messages", above the first unread message.
+        case newMessages
 
         var rowID: String? { if case let .row(id) = self { return id } else { return nil } }
         var isRow: Bool { rowID != nil }
@@ -264,6 +266,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: indexPath) as! DayDividerCell
                 cell.configure(self.days[key] ?? "")
                 return cell
+            case .newMessages:
+                let cell = collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: indexPath) as! DayDividerCell
+                cell.configure("New messages", unread: true)
+                return cell
             case let .blocked(key):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: BlockedRunCell.reuse, for: indexPath) as! BlockedRunCell
                 if let run = self.blockedRuns[key] {
@@ -360,7 +366,14 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     /// Your call, or Join for the open channel's voice: SwiftUI's PhoneVoiceStrip.
     private lazy var voiceStrip = Self.sized(UIKitVoiceStrip(model: model) { [weak self] in self?.browse?() })
     /// A failed action or a voice error, above the composer.
-    private lazy var notices = Self.sized(UIKitComposerNotices(model: model))
+    private lazy var notices = Self.sized(UIKitComposerNotices(model: model) { [weak self] in
+        guard let self else { return }
+        self.returningToLatest = true
+        let chat = self.model.chat
+        Task { await chat.retryLoad() }
+    })
+    /// Back to latest was pressed: once the reopened window is in, follow the tail.
+    private var returningToLatest = false
 
     /// A SwiftUI child that sizes to its content, collapsing when it draws nothing.
     private static func sized<Content: View>(_ root: Content) -> UIHostingController<Content> {
@@ -496,7 +509,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         if key != shownKey { revealedBlocked = [] }
         var built = TimelineRows.build(messages, pending: pending, author: author, viewerID: viewerID,
                                        focusedID: live ? model.chat.focusedMessageID : nil, chat: live ? model.chat : nil,
-                                       error: error, rejected: rejected, blocked: blocked, revealed: revealedBlocked)
+                                       error: error, rejected: rejected, blocked: blocked, revealed: revealedBlocked,
+                                       newMessagesID: live ? model.channelNewMessagesDividerID() : nil)
         if edge != nil { built.items.insert(.edge, at: 0) }
         let items = built.items, nextRows = built.rows, nextDays = built.days, nextRuns = built.runs
 
@@ -510,6 +524,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let oldItems = dataSource.snapshot().itemIdentifiers
         let oldFirstRow = oldItems.first(where: \.isRow)
         let anchor = switched ? nil : visibleAnchor()
+        if returningToLatest, live, !model.chat.loading, !model.chat.hasNewer {
+            returningToLatest = false
+            followingTail = true
+        }
         let atTail = switched || followingTail
         // Rows that are new at the live end while the reader watches it arrive with motion.
         let appended: Set<String> = !switched && live && self.live && atTail
@@ -527,6 +545,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             case let .day(day): return days[day] != nextDays[day]
             case let .blocked(run): return blockedRuns[run] != nextRuns[run]
             case .edge: return true
+            case .newMessages: return false
             }
         }
         let reload = changed.filter { if case let .row(id) = $0 { nextRows[id]?.remeasures(from: rows[id]) == true } else { false } }
@@ -759,7 +778,7 @@ enum TimelineRows {
 
     @MainActor static func build(_ messages: [ChatMessage], pending: PendingMessage?, author: ChatAuthor?, viewerID: String?,
                                  focusedID: String?, chat: ChatModel?, error: String?, rejected: Bool, inThread: Bool = false,
-                                 blocked: Set<String> = [], revealed: Set<String> = []) -> Built {
+                                 blocked: Set<String> = [], revealed: Set<String> = [], newMessagesID: String? = nil) -> Built {
         var built = Built()
         var previous: ChatMessage?
         // Runs of blocked authors' messages collapse to one row; a revealed run
@@ -789,10 +808,15 @@ enum TimelineRows {
                 previous = nil
             }
             if hidden.contains(message.id) { continue }
+            // As SwiftUI: the line breaks grouping on both sides.
+            if message.id == newMessagesID {
+                built.items.append(.newMessages)
+                previous = nil
+            }
             let next = index + 1 < messages.count ? messages[index + 1] : nil
             let grouped = NativePresentation.grouped(message, after: previous)
             let continued = next.map {
-                runStarts[$0.id] == nil && !hidden.contains($0.id)
+                runStarts[$0.id] == nil && !hidden.contains($0.id) && $0.id != newMessagesID
                     && NativePresentation.sameDay(message.createdAt, $0.createdAt) && NativePresentation.grouped($0, after: message)
             } ?? false
             built.rows[message.clientMessageId] = MessageRowState(message: message, grouped: grouped, continued: continued, viewerID: viewerID,

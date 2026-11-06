@@ -106,6 +106,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: path) as! DayDividerCell
                 cell.configure(self.days[key] ?? "")
                 return cell
+            case .newMessages:
+                // Channels only; threads have no unread line.
+                return collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: path)
             case let .blocked(key):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: BlockedRunCell.reuse, for: path) as! BlockedRunCell
                 if let run = self.runs[key] {
@@ -285,6 +288,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             case let .day(key): return days[key] != nextDays[key]
             case let .blocked(key): return runs[key] != built.runs[key]
             case .edge: return true
+            case .newMessages: return false
             }
         }
         let reload = changed.filter { if case let .row(id) = $0 { nextRows[id]?.remeasures(from: rows[id]) == true } else { false } }

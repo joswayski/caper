@@ -574,10 +574,24 @@ public struct UIKitComposerNotices: View {
     @Bindable var model: AppModel
     @Bindable var chat: ChatModel
     @Bindable var voice: VoiceClient
-    public init(model: AppModel) { self.model = model; chat = model.chat; voice = model.voice }
+    /// Back to latest: reopens at the live end; the host scrolls there.
+    let backToLatest: () -> Void
+    public init(model: AppModel, backToLatest: @escaping () -> Void) {
+        self.model = model; chat = model.chat; voice = model.voice; self.backToLatest = backToLatest
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // After a jump to an older message, as SwiftUI: page forward, or
+            // reopen at the live end.
+            if chat.hasNewer {
+                HStack {
+                    Button(chat.loadingNewer ? "Loading…" : "Load newer messages") { Task { await chat.loadNewer() } }
+                        .disabled(chat.loadingNewer)
+                    Button("Back to latest", action: backToLatest)
+                        .accessibilityIdentifier("back-to-latest")
+                }.font(CaperTheme.font(11)).buttonStyle(CaperSecondaryButton()).padding(10)
+            }
             if let error = chat.error, chat.pendingMessage == nil, !chat.loadFailed, !chat.displayedMessages.isEmpty {
                 Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)

@@ -157,6 +157,43 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertEqual((composer.value as? String) ?? "", "")
     }
 
+    /// With read state, the first unread message (seq 2998) gets SwiftUI's
+    /// terracotta "New messages" line, which starts a new author group.
+    func testNewMessagesDivider() {
+        control(["channelReads": ["chan00000001": "2997"]])
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let divider = app.cells["channel-new-messages"]
+        XCTAssertTrue(divider.waitForExistence(timeout: 10))
+        XCTAssertEqual(divider.label, "New messages")
+        let first = row("00000000-0000-4000-9000-000000002998")
+        XCTAssertTrue(first.exists)
+        XCTAssertEqual(divider.frame.maxY, first.frame.minY, accuracy: 1, "The line sits directly above the first unread message")
+        screenshot("uikit-new-messages")
+    }
+
+    /// A reply's context jumps to the old message; the bar then offers Load
+    /// newer messages and Back to latest, which returns to the live end.
+    func testJumpThenBackToLatest() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        control(["incomingMessage": ["channelId": "chan00000001", "text": "replying way back", "replyToId": "b00000000002000"]])
+        let context = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "View original message from")).firstMatch
+        XCTAssertTrue(context.waitForExistence(timeout: 10))
+        context.tap()
+        let target = row("00000000-0000-4000-9000-000000002000")
+        XCTAssertTrue(target.waitForExistence(timeout: 15), "Jumps to the replied-to message")
+        let latest = app.buttons["back-to-latest"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Load newer messages"].exists)
+        screenshot("uikit-back-to-latest")
+        latest.tap()
+        XCTAssertTrue(latest.waitForNonExistence(timeout: 15))
+        let reply = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "replying way back")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        XCTAssertTrue(reply.isHittable, "Back at the live end")
+    }
+
     func testLiveMessageFollowsTailAndHistoryLoadsOnScrollUp() {
         let app = launch()
         XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
@@ -881,6 +918,22 @@ final class CaperUIKitParityTests: XCTestCase {
                 capture("\(prefix)-pending-\(status)")
                 if status == 503 { app.buttons[action].firstMatch.tap(); sleep(2) }
             }
+            app.terminate()
+        }
+    }
+
+    /// The unread line in each app, with #general read through seq 2997.
+    func testNewMessagesPairs() throws {
+        try requireSwiftUI()
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            control(["channelReads": ["chan00000001": "2997"]])
+            let app = configured(bundle)
+            app.launch()
+            XCTAssertTrue(app.buttons["Back to Browse"].waitForExistence(timeout: 30))
+            sleep(4)
+            capture("\(prefix)-new-messages")
+            XCTAssertTrue(app.descendants(matching: .any)["channel-new-messages"].exists, prefix)
             app.terminate()
         }
     }
