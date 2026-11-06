@@ -1699,7 +1699,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 HorizontalDivider(color = Border)
                 thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread(older = thread.failedOlder, newer = thread.failedNewer) }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
                 if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
-                // Remembered: every keystroke in the reply draft recomposes this panel.
+                // Remembered, so a recomposition of this panel doesn't refilter the replies.
                 val rows = remember(state.messages, thread.rootId, thread.windowStart, thread.windowEnd) {
                     state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
                         (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
@@ -1723,7 +1723,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 if (!thread.loading && thread.error == null && rows.none { it.threadRootId == thread.rootId })
                     Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
             }
-            if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) {
+            // Its own scope: a keystroke recomposes the composer, not the thread's timeline.
+            if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) { OwnRecomposeScope {
                 state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
                 DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
@@ -1795,7 +1796,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
                 DraftCounter(draft.text)
                 if (state.pendingMessage?.error != null && pending == null) Text("Confirm or dismiss the pending message first.", color = TextMuted)
-            } else Text(when {
+            } } else Text(when {
                 state.selectedDirect?.incoming == true -> "Accept the request to reply."
                 direct -> "You can’t reply in this conversation."
                 else -> "Join the channel to reply."
