@@ -20,12 +20,16 @@ pub mod embeds;
 pub mod emoji;
 pub mod feedback;
 pub mod ffmpeg;
+pub mod formatting;
 pub mod forwarding;
 pub mod gateway;
 pub mod grouping;
 pub mod host;
 pub mod invites;
 pub mod klipy;
+/// Link segments in message text, shared by every client (`shared/messages`).
+#[path = "../../../../shared/messages/links.rs"]
+pub mod links;
 // Shared with the voice spike, whose controls are built only through `new`.
 #[allow(clippy::new_without_default)]
 #[path = "../../desktop/voice-spike/src/media.rs"]
