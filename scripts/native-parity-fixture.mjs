@@ -791,6 +791,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (Number.isInteger(body.releaseHighlightsDelay))
           state.releaseHighlightsDelay = Math.max(0, Math.min(5000, body.releaseHighlightsDelay));
         if (body.noSpaces) state.spaces = [];
+        // A new account that still has to choose a username and display name.
+        if (body.incompleteProfile) state.account = { ...state.account, username: null, displayName: null };
         if (body.feedbackTeam === true && !state.account.feedbackTeam) {
           state.account.feedbackTeam = true;
           const space = { id: ids.visitSpace, name: "Maya's Workshop", ownerId: ids.member };
