@@ -1,7 +1,9 @@
 //! Link preview cards: the text every client draws from a card's blocks.
 
 use crate::attachments::EMBED_KEY;
+use crate::links;
 use crate::model::{Attachment, AttachmentKind, AttachmentStatus, Embed, EmbedBlock, EmbedImage};
+use std::time::{Duration, Instant};
 
 /// The card's name for its link: its title, else its author, else the site.
 pub fn heading(embed: &Embed) -> &str {
@@ -141,9 +143,173 @@ pub fn gallery(items: &[EmbedImage], width: f32) -> Vec<[f32; 4]> {
     }
 }
 
+/// The composer waits this long after the link last changed before asking.
+pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(400);
+
+/// The first link in a draft that will get a card, for the composer preview
+/// (web `previewLink`): links written `<like this>` get none.
+pub fn preview_link(draft: &str) -> Option<String> {
+    let segments = links::segments(draft);
+    segments.iter().enumerate().find_map(|(index, segment)| {
+        let href = segment.href.as_ref()?;
+        let bracketed = index
+            .checked_sub(1)
+            .and_then(|previous| segments.get(previous))
+            .is_some_and(|previous| previous.text.ends_with('<'))
+            && segments
+                .get(index + 1)
+                .is_some_and(|next| next.text.starts_with('>'));
+        (!bracketed).then(|| href.clone())
+    })
+}
+
+/// The main composer's card for its first link (web `useLinkPreview`).
+/// Removing it means the message is sent without previews; the choice lasts
+/// while that link stays in the draft, and a sent or cleared draft starts
+/// over.
+#[derive(Default)]
+pub struct ComposerPreview {
+    /// The draft's preview link and when it became that link.
+    link: Option<(String, Instant)>,
+    /// The link last asked about.
+    asked: Option<String>,
+    /// The newest answer: a link and its card, if it has one.
+    shown: Option<(String, Option<Embed>)>,
+    removed: Option<String>,
+}
+
+impl ComposerPreview {
+    /// Track the draft; returns a link to ask about now, or how long until
+    /// one is due. Previews need a signed-in account.
+    pub fn due(
+        &mut self,
+        draft: &str,
+        signed_in: bool,
+        now: Instant,
+    ) -> (Option<String>, Option<Duration>) {
+        if draft.is_empty() {
+            self.removed = None;
+        }
+        let link = signed_in.then(|| preview_link(draft)).flatten();
+        if self.link.as_ref().map(|(link, _)| link) != link.as_ref() {
+            self.link = link.map(|link| (link, now));
+        }
+        let Some((link, since)) = &self.link else {
+            return (None, None);
+        };
+        if self.removed.as_ref() == Some(link) || self.asked.as_ref() == Some(link) {
+            return (None, None);
+        }
+        let waited = now.saturating_duration_since(*since);
+        if waited < PREVIEW_DEBOUNCE {
+            return (None, Some(PREVIEW_DEBOUNCE - waited));
+        }
+        self.asked = Some(link.clone());
+        (Some(link.clone()), None)
+    }
+
+    /// An answer for `url` arrived.
+    pub fn answer(&mut self, url: String, embed: Option<Embed>) {
+        self.shown = Some((url, embed));
+    }
+
+    /// The card to show for the draft's current link.
+    pub fn card(&self) -> Option<&Embed> {
+        let (link, _) = self.link.as_ref()?;
+        if self.removed.as_ref() == Some(link) {
+            return None;
+        }
+        self.shown
+            .as_ref()
+            .filter(|(url, _)| url == link)
+            .and_then(|(_, embed)| embed.as_ref())
+    }
+
+    pub fn remove(&mut self) {
+        self.removed = self.link.as_ref().map(|(link, _)| link.clone());
+    }
+
+    /// Whether `text` goes without previews: its preview link was removed.
+    pub fn removed(&self, text: &str) -> bool {
+        self.removed
+            .as_ref()
+            .is_some_and(|removed| preview_link(text).as_ref() == Some(removed))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn preview_link_is_the_first_link_not_written_in_angle_brackets() {
+        assert_eq!(preview_link("no links here"), None);
+        assert_eq!(
+            preview_link("see https://x.com/a and https://b.example/c"),
+            Some("https://x.com/a".into())
+        );
+        assert_eq!(
+            preview_link("skip <https://x.com/a> but https://b.example/c"),
+            Some("https://b.example/c".into())
+        );
+        assert_eq!(preview_link("<https://x.com/a>"), None);
+        assert_eq!(
+            preview_link("<https://x.com/a and more"),
+            Some("https://x.com/a".into()),
+            "only a link closed by `>` is skipped"
+        );
+        assert_eq!(
+            preview_link("www.example.com"),
+            Some("https://www.example.com".into())
+        );
+    }
+
+    #[test]
+    fn composer_preview_waits_for_the_link_to_settle_and_remembers_removal() {
+        let start = Instant::now();
+        let mut preview = ComposerPreview::default();
+        assert_eq!(
+            preview.due("hi https://x.com/a", false, start),
+            (None, None),
+            "signed out"
+        );
+        let (url, wait) = preview.due("hi https://x.com/a", true, start);
+        assert_eq!((url, wait), (None, Some(PREVIEW_DEBOUNCE)));
+        // Typing after the link does not restart the wait; changing it does.
+        let later = start + Duration::from_millis(300);
+        assert_eq!(preview.due("hi https://x.com/a ok", true, later).0, None);
+        let (url, _) = preview.due("hi https://x.com/a ok", true, start + PREVIEW_DEBOUNCE);
+        assert_eq!(url.as_deref(), Some("https://x.com/a"));
+        assert_eq!(
+            preview.due("hi https://x.com/a ok", true, start + PREVIEW_DEBOUNCE * 2),
+            (None, None),
+            "asked once"
+        );
+        assert!(preview.card().is_none());
+        let embed = Embed::parse(&json!({"version":1,"url":"https://x.com/a",
+            "site":{"name":"X","domain":"x.com"},"blocks":[{"type":"text","text":"a"}]}));
+        preview.answer("https://x.com/a".into(), embed.clone());
+        assert_eq!(preview.card(), embed.as_ref());
+        // An answer for an older link is not shown for the new one.
+        let moved = start + PREVIEW_DEBOUNCE * 3;
+        assert_eq!(
+            preview.due("https://b.example/c", true, moved).1,
+            Some(PREVIEW_DEBOUNCE)
+        );
+        assert!(preview.card().is_none());
+        preview.remove();
+        assert!(preview.removed("look https://b.example/c"));
+        assert!(!preview.removed("look https://x.com/a"));
+        assert_eq!(
+            preview.due("https://b.example/c", true, moved + PREVIEW_DEBOUNCE),
+            (None, None),
+            "a removed link is not asked about"
+        );
+        // A sent or cleared draft starts over.
+        preview.due("", true, moved + PREVIEW_DEBOUNCE);
+        assert!(!preview.removed("https://b.example/c"));
+    }
 
     #[test]
     fn media_fits_like_web_and_galleries_keep_to_the_card() {

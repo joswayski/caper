@@ -1468,3 +1468,8 @@ checkbutton.broadcast {
 .rail-voice.connected {
   background: radial-gradient(circle, @caper_green 62%, @caper_blackout 64%);
 }
+
+/* The draft's link preview, above the composer's text. */
+.composer-preview {
+  padding: 4px 4px 0 4px;
+}

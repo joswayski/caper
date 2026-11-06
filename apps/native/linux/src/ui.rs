@@ -26,6 +26,9 @@ pub struct Composer {
     /// A thread reply's "Also send to #channel" (hidden in the channel's
     /// composer).
     pub broadcast: gtk::CheckButton,
+    /// The draft's link preview card, with "Remove link preview" (main
+    /// composer only).
+    pub preview: gtk::Box,
 }
 
 impl Composer {
@@ -46,6 +49,11 @@ impl Composer {
             .sync_create()
             .build();
         root.append(&chip_scroller);
+        let preview = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        preview.add_css_class("composer-preview");
+        preview.set_halign(gtk::Align::Start);
+        preview.set_visible(false);
+        root.append(&preview);
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         root.append(&line);
         let attach: gtk::Button = crate::app::named("GtkButton", "Attach files");
@@ -98,6 +106,7 @@ impl Composer {
             placeholder,
             send,
             broadcast,
+            preview,
         }
     }
 

@@ -376,6 +376,10 @@ impl State {
 pub struct App {
     ui: Ui,
     api: Api,
+    /// The main composer's link preview (as desktop and web).
+    link_preview: RefCell<caper_client::embeds::ComposerPreview>,
+    /// Which link the shown preview card is for, so it redraws only on change.
+    shown_preview: RefCell<Option<String>>,
     admin_window: RefCell<Option<admin::AdminWindow>>,
     confirm_window: RefCell<Option<admin::ConfirmWindow>>,
     images: Rc<Images>,
@@ -530,6 +534,8 @@ pub fn start(application: &gtk::Application, base: &str) {
         rendered_files: Cell::new(u64::MAX),
         chooser: RefCell::default(),
         channel_ids: RefCell::default(),
+        link_preview: RefCell::default(),
+        shown_preview: RefCell::default(),
         direct_ids: RefCell::default(),
         members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
@@ -805,6 +811,9 @@ impl App {
             composer.view.buffer().connect_changed(move |buffer| {
                 if buffer.char_count() > 0 && !app.restoring.get() {
                     app.typed();
+                }
+                if !thread {
+                    app.update_link_preview();
                 }
             });
         }
@@ -1213,6 +1222,7 @@ impl App {
             }
         }
         self.set_typing(state, false);
+        *self.link_preview.borrow_mut() = Default::default();
         state.generation += 1;
         state.navigation += 1;
         state.loading_older = false;
@@ -2499,7 +2509,7 @@ impl App {
                 attachment_ids,
                 spoiler_attachment_ids,
                 gif: None,
-                suppress_embeds: false,
+                suppress_embeds: !thread && self.link_preview.borrow().removed(text),
             });
         }
         if !thread {
@@ -3721,6 +3731,82 @@ impl App {
         });
         popup(&popover, self.ui.space_header.upcast_ref());
         search.grab_focus();
+    }
+
+    /// Tracks the main draft's first link: asks for its card once the link
+    /// settles, then shows it above the composer.
+    fn update_link_preview(self: &Rc<Self>) {
+        let draft = self.ui.composer.text();
+        let token = self.state.borrow().token.clone();
+        let (url, wait) =
+            self.link_preview
+                .borrow_mut()
+                .due(&draft, token.is_some(), Instant::now());
+        if let (Some(url), Some(token)) = (url, token) {
+            let api = self.api.clone();
+            let (sender, receiver) = async_channel::bounded(1);
+            std::thread::spawn(move || {
+                let embed = api.embed_preview(&token, &url);
+                let _ = sender.send_blocking((url, embed));
+            });
+            let weak = Rc::downgrade(self);
+            glib::spawn_future_local(async move {
+                if let (Ok((url, embed)), Some(app)) = (receiver.recv().await, weak.upgrade()) {
+                    app.link_preview.borrow_mut().answer(url, embed);
+                    app.render_link_preview();
+                }
+            });
+        } else if let Some(wait) = wait {
+            let weak = Rc::downgrade(self);
+            glib::timeout_add_local_once(wait, move || {
+                if let Some(app) = weak.upgrade() {
+                    app.update_link_preview();
+                }
+            });
+        }
+        self.render_link_preview();
+    }
+
+    fn render_link_preview(self: &Rc<Self>) {
+        let preview = &self.ui.composer.preview;
+        let card = self.link_preview.borrow().card().cloned();
+        let url = card.as_ref().map(|card| card.url.clone());
+        if *self.shown_preview.borrow() == url {
+            return;
+        }
+        *self.shown_preview.borrow_mut() = url;
+        clear(preview);
+        preview.set_visible(card.is_some());
+        let Some(card) = card else {
+            return;
+        };
+        let weak = Rc::downgrade(self);
+        let handler: rows::Handler = Rc::new(move |action| {
+            if let Some(app) = weak.upgrade() {
+                app.row_action(action, false);
+            }
+        });
+        let content = crate::content::Content {
+            embeds: vec![card],
+            ..Default::default()
+        };
+        if let Some(view) = crate::content::view(&self.images, &content, &handler) {
+            preview.append(&view);
+        }
+        let remove: gtk::Button = named("GtkButton", "Remove link preview");
+        remove.set_child(Some(&self.images.icon_image(Icon::Close, "#b9bcbe", 14)));
+        remove.set_tooltip_text(Some("Remove link preview"));
+        remove.add_css_class("flat");
+        remove.set_valign(gtk::Align::Start);
+        let weak = Rc::downgrade(self);
+        remove.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.link_preview.borrow_mut().remove();
+                // The button goes with the card it belongs to.
+                glib::idle_add_local_once(move || app.render_link_preview());
+            }
+        });
+        preview.append(&remove);
     }
 
     /// The desktop's empty conversation and empty channel stages.

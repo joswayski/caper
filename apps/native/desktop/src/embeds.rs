@@ -18,8 +18,9 @@
 //! browser.
 
 use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
+pub use caper_client::embeds::PREVIEW_DEBOUNCE;
 pub use caper_client::embeds::footer_line;
 use caper_client::embeds::{heading, image_files, key};
 use eframe::egui::{self, Color32, CornerRadius, Stroke};
@@ -28,7 +29,7 @@ use crate::attachments::{ImageState, Media};
 use crate::model::{Attachment, AttachmentKind, AttachmentStatus, Embed, EmbedBlock, EmbedImage};
 use crate::web_player::{self, WebPlayer};
 use crate::{
-    ACTION, ACTION_HOVER, BORDER, MUTED, NavIcon, ON_ACTION, RAISED, SURFACE, TEXT, links, motion,
+    ACTION, ACTION_HOVER, BORDER, MUTED, NavIcon, ON_ACTION, RAISED, SURFACE, TEXT, motion,
     paint_icon,
 };
 
@@ -37,8 +38,6 @@ const CARD_WIDTH: f32 = 432.0;
 const THUMBNAIL: f32 = 80.0;
 /// Web clamps card text to 8 lines.
 const TEXT_ROWS: usize = 8;
-/// The composer waits this long after the link last changed before asking.
-pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(400);
 
 /// Display size that reserves layout space before media loads.
 pub fn fit(width: Option<u32>, height: Option<u32>) -> egui::Vec2 {
@@ -48,23 +47,6 @@ pub fn fit(width: Option<u32>, height: Option<u32>) -> egui::Vec2 {
 /// [`fit`] narrowed to `available`, keeping its aspect ratio.
 fn fit_within(size: egui::Vec2, available: f32) -> egui::Vec2 {
     egui::Vec2::from(caper_client::embeds::fit_within(size.into(), available))
-}
-
-/// The first link in a draft that will get a card, for the composer preview
-/// (web `previewLink`): links written `<like this>` get none.
-pub fn preview_link(draft: &str) -> Option<String> {
-    let segments = links::segments(draft);
-    segments.iter().enumerate().find_map(|(index, segment)| {
-        let href = segment.href.as_ref()?;
-        let bracketed = index
-            .checked_sub(1)
-            .and_then(|previous| segments.get(previous))
-            .is_some_and(|previous| previous.text.ends_with('<'))
-            && segments
-                .get(index + 1)
-                .is_some_and(|next| next.text.starts_with('>'));
-        (!bracketed).then(|| href.clone())
-    })
 }
 
 /// A player block's `play` page, only when it is HTTPS on Caper's embed
@@ -939,70 +921,16 @@ fn tile(
     );
 }
 
-/// The main composer's card for its first link (web `useLinkPreview`).
-/// Removing it means the message is sent without previews; the choice lasts
-/// while that link stays in the draft, and a sent or cleared draft starts
-/// over.
+/// The main composer's card for its first link: the shared state
+/// (`caper_client::embeds::ComposerPreview`) and the request in flight.
 #[derive(Default)]
 pub struct ComposerPreview {
-    /// The draft's preview link and when it became that link.
-    link: Option<(String, Instant)>,
-    /// The link last asked about.
-    asked: Option<String>,
-    /// The newest answer: a link and its card, if it has one.
-    shown: Option<(String, Option<Embed>)>,
-    removed: Option<String>,
+    state: caper_client::embeds::ComposerPreview,
     /// The request in flight; replacing it drops a stale answer.
     pending: Option<Receiver<(String, Option<Embed>)>>,
 }
 
 impl ComposerPreview {
-    /// Track the draft; returns a link to ask about now, or how long until
-    /// one is due. Previews need a signed-in account.
-    pub fn due(
-        &mut self,
-        draft: &str,
-        signed_in: bool,
-        now: Instant,
-    ) -> (Option<String>, Option<Duration>) {
-        if draft.is_empty() {
-            self.removed = None;
-        }
-        let link = signed_in.then(|| preview_link(draft)).flatten();
-        if self.link.as_ref().map(|(link, _)| link) != link.as_ref() {
-            self.link = link.map(|link| (link, now));
-        }
-        let Some((link, since)) = &self.link else {
-            return (None, None);
-        };
-        if self.removed.as_ref() == Some(link) || self.asked.as_ref() == Some(link) {
-            return (None, None);
-        }
-        let waited = now.saturating_duration_since(*since);
-        if waited < PREVIEW_DEBOUNCE {
-            return (None, Some(PREVIEW_DEBOUNCE - waited));
-        }
-        self.asked = Some(link.clone());
-        (Some(link.clone()), None)
-    }
-
-    /// An answer for `url` arrived.
-    pub fn answer(&mut self, url: String, embed: Option<Embed>) {
-        self.shown = Some((url, embed));
-    }
-
-    /// The card to show for the draft's current link.
-    pub fn card(&self) -> Option<&Embed> {
-        let (link, _) = self.link.as_ref()?;
-        if self.removed.as_ref() == Some(link) {
-            return None;
-        }
-        self.shown
-            .as_ref()
-            .filter(|(url, _)| url == link)
-            .and_then(|(_, embed)| embed.as_ref())
-    }
-
     /// Call on every pass with the main draft and the signed-in account's
     /// token. Without `api` (fixtures) nothing is fetched.
     pub fn update(
@@ -1016,9 +944,9 @@ impl ComposerPreview {
             && let Ok((url, embed)) = receiver.try_recv()
         {
             self.pending = None;
-            self.answer(url, embed);
+            self.state.answer(url, embed);
         }
-        match self.due(draft, token.is_some(), Instant::now()) {
+        match self.state.due(draft, token.is_some(), Instant::now()) {
             (Some(url), _) => {
                 if let (Some(api), Some(token)) = (api, token) {
                     let (sender, receiver) = mpsc::channel();
@@ -1034,18 +962,20 @@ impl ComposerPreview {
             (None, Some(wait)) => context.request_repaint_after(wait),
             (None, None) => {}
         }
-        self.card()
+        self.state.card()
     }
+}
 
-    pub fn remove(&mut self) {
-        self.removed = self.link.as_ref().map(|(link, _)| link.clone());
+impl std::ops::Deref for ComposerPreview {
+    type Target = caper_client::embeds::ComposerPreview;
+    fn deref(&self) -> &Self::Target {
+        &self.state
     }
+}
 
-    /// Whether `text` goes without previews: its preview link was removed.
-    pub fn removed(&self, text: &str) -> bool {
-        self.removed
-            .as_ref()
-            .is_some_and(|removed| preview_link(text).as_ref() == Some(removed))
+impl std::ops::DerefMut for ComposerPreview {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
     }
 }
 
@@ -1191,75 +1121,6 @@ mod tests {
         assert!(
             matches!(&images.blocks[0], EmbedBlock::Images { items, thumbnail: false } if items.len() == 4)
         );
-    }
-
-    #[test]
-    fn preview_link_is_the_first_link_not_written_in_angle_brackets() {
-        assert_eq!(preview_link("no links here"), None);
-        assert_eq!(
-            preview_link("see https://x.com/a and https://b.example/c"),
-            Some("https://x.com/a".into())
-        );
-        assert_eq!(
-            preview_link("skip <https://x.com/a> but https://b.example/c"),
-            Some("https://b.example/c".into())
-        );
-        assert_eq!(preview_link("<https://x.com/a>"), None);
-        assert_eq!(
-            preview_link("<https://x.com/a and more"),
-            Some("https://x.com/a".into()),
-            "only a link closed by `>` is skipped"
-        );
-        assert_eq!(
-            preview_link("www.example.com"),
-            Some("https://www.example.com".into())
-        );
-    }
-
-    #[test]
-    fn composer_preview_waits_for_the_link_to_settle_and_remembers_removal() {
-        let start = Instant::now();
-        let mut preview = ComposerPreview::default();
-        assert_eq!(
-            preview.due("hi https://x.com/a", false, start),
-            (None, None),
-            "signed out"
-        );
-        let (url, wait) = preview.due("hi https://x.com/a", true, start);
-        assert_eq!((url, wait), (None, Some(PREVIEW_DEBOUNCE)));
-        // Typing after the link does not restart the wait; changing it does.
-        let later = start + Duration::from_millis(300);
-        assert_eq!(preview.due("hi https://x.com/a ok", true, later).0, None);
-        let (url, _) = preview.due("hi https://x.com/a ok", true, start + PREVIEW_DEBOUNCE);
-        assert_eq!(url.as_deref(), Some("https://x.com/a"));
-        assert_eq!(
-            preview.due("hi https://x.com/a ok", true, start + PREVIEW_DEBOUNCE * 2),
-            (None, None),
-            "asked once"
-        );
-        assert!(preview.card().is_none());
-        let embed = Embed::parse(&json!({"version":1,"url":"https://x.com/a",
-            "site":{"name":"X","domain":"x.com"},"blocks":[{"type":"text","text":"a"}]}));
-        preview.answer("https://x.com/a".into(), embed.clone());
-        assert_eq!(preview.card(), embed.as_ref());
-        // An answer for an older link is not shown for the new one.
-        let moved = start + PREVIEW_DEBOUNCE * 3;
-        assert_eq!(
-            preview.due("https://b.example/c", true, moved).1,
-            Some(PREVIEW_DEBOUNCE)
-        );
-        assert!(preview.card().is_none());
-        preview.remove();
-        assert!(preview.removed("look https://b.example/c"));
-        assert!(!preview.removed("look https://x.com/a"));
-        assert_eq!(
-            preview.due("https://b.example/c", true, moved + PREVIEW_DEBOUNCE),
-            (None, None),
-            "a removed link is not asked about"
-        );
-        // A sent or cleared draft starts over.
-        preview.due("", true, moved + PREVIEW_DEBOUNCE);
-        assert!(!preview.removed("https://b.example/c"));
     }
 
     #[test]
