@@ -1633,7 +1633,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
                 })),
             },
           ].filter((space) => space.channels.length),
-          feedbackWaiting: 0,
+          // With feedback-team state too, the badge still counts waiting reports.
+          feedbackWaiting: user.feedbackTeam
+            ? (state.feedback ?? []).filter((report) => !report.answered && !report.archived).length
+            : 0,
         });
       const channelRead = /^\/api\/spaces\/([^/]+)\/channels\/([^/]+)\/read$/.exec(path);
       if (channelRead && method === "POST" && user && state.channelReads) {
