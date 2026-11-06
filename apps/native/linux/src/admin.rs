@@ -770,6 +770,7 @@ impl App {
                 self.navigate(state, Some(space.id), None);
             }
             AdminResult::SpaceUpdated(space) => {
+                self.voice.borrow_mut().rename_space(&space.id, &space.name);
                 if let Some(item) = state.spaces.iter_mut().find(|item| item.id == space.id) {
                     *item = space.clone();
                 }
@@ -822,6 +823,7 @@ impl App {
                 admin.dialog = None;
             }
             AdminResult::ChannelDeleted(id) => {
+                self.voice.borrow_mut().revoke_channel(&id);
                 if let Some(detail) = &mut state.detail {
                     detail.channels.retain(|channel| channel.id != id);
                 }
@@ -897,6 +899,7 @@ impl App {
                 }
             }
             AdminResult::ChannelLeft(channel) => {
+                self.voice.borrow_mut().revoke_channel(&channel);
                 admin.confirm = None;
                 if let Some(mut detail) = state.detail.clone() {
                     let owner = state.owner();
@@ -950,6 +953,7 @@ impl App {
     /// A space you can no longer open: it leaves the rail, and the first
     /// remaining space opens in its place.
     fn forget_space(&self, state: &mut State, id: &str) {
+        self.voice.borrow_mut().revoke_space(id);
         state.spaces.retain(|space| space.id != id);
         state.unread.remove(id);
         if state.space.as_deref() != Some(id) {
@@ -1210,6 +1214,10 @@ impl App {
         let available: BTreeSet<String> =
             spaces.spaces.iter().map(|space| space.id.clone()).collect();
         state.set_spaces(spaces);
+        let active = self.voice.borrow().active_space.clone();
+        if let Some(active) = active.filter(|active| !available.contains(active)) {
+            self.voice.borrow_mut().revoke_space(&active);
+        }
         if let Some(Confirm::Invitation(space)) = &state.admin.confirm
             && !state
                 .admin

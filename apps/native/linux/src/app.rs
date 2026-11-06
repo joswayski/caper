@@ -10,6 +10,7 @@ use crate::images::{Avatar, AvatarView, Icon, Images};
 use crate::rows::{self, Action, Row};
 use crate::ui::{Ui, label};
 use crate::uploads::{ChipAction, DraftFile};
+use caper_client::Host;
 use caper_client::api::Api;
 use caper_client::gateway::GatewayEvent;
 use caper_client::mentions;
@@ -32,6 +33,10 @@ use std::time::{Duration, Instant};
 mod account;
 #[path = "admin.rs"]
 mod admin;
+#[path = "audio.rs"]
+mod audio;
+#[path = "call.rs"]
+mod call;
 #[path = "forward.rs"]
 mod forward;
 #[path = "members.rs"]
@@ -219,6 +224,8 @@ struct State {
     settings: settings::AccountSettings,
     /// Space and channel management, invites and membership.
     admin: admin::Admin,
+    /// Voice rosters, availability and a join's membership check.
+    calls: call::Calls,
 }
 
 impl State {
@@ -359,6 +366,14 @@ pub struct App {
     effects: RefCell<caper_client::effects::Effects>,
     /// A redraw is waiting for the next timed mute to end.
     mute_timer: Cell<bool>,
+    /// The voice call, and what the call card last showed.
+    voice: RefCell<caper_client::voice::Voice>,
+    heard: RefCell<call::Heard>,
+    voice_ticking: Cell<bool>,
+    rendered_toggles: Cell<Option<(bool, bool)>>,
+    rendered_card: RefCell<String>,
+    voice_timer: RefCell<Option<gtk::Label>>,
+    audio: RefCell<Option<audio::AudioDialog>>,
 }
 
 struct PinsView {
@@ -414,8 +429,22 @@ pub fn start(application: &gtk::Application, base: &str) {
     let ui = Ui::build(application, &images, handler(false), handler(true));
     let prefs = Rc::new(crate::prefs::Prefs::load());
     prefs.follow_window(&ui.window);
+    let repaint = sender.clone();
+    let voice = caper_client::voice::Voice::new(
+        api.base().clone(),
+        caper_client::voice::Repaint::new(move |delay| {
+            Wakes(repaint.clone()).wake_after(delay.unwrap_or_default());
+        }),
+    );
     let app = Rc::new(App {
         ui,
+        voice: RefCell::new(voice),
+        heard: RefCell::default(),
+        voice_ticking: Cell::new(false),
+        rendered_toggles: Cell::new(None),
+        rendered_card: RefCell::default(),
+        voice_timer: RefCell::default(),
+        audio: RefCell::default(),
         images,
         worker: Worker::new(api.clone(), Wakes(sender.clone())),
         state: RefCell::new(State::default()),
@@ -457,7 +486,9 @@ pub fn start(application: &gtk::Application, base: &str) {
         });
         app.suggestions.borrow_mut().push(popup);
     }
+    app.restore_voice();
     app.connect();
+    app.connect_voice();
     app.connect_drop();
     app.install_actions();
     app.install_notification_actions();
@@ -541,7 +572,8 @@ impl App {
         let app = self.clone();
         ui.sign_out.connect_clicked(move |_| app.sign_out());
         let app = self.clone();
-        ui.settings.connect_clicked(move |_| app.open_settings());
+        ui.settings
+            .connect_clicked(move |button| app.settings_menu(button));
 
         let app = self.clone();
         ui.members_toggle.connect_toggled(move |toggle| {
@@ -818,6 +850,9 @@ impl App {
     /// Desktop's sign-out: stop the gateway, forget the saved session, revoke
     /// it on the server, and return to sign-in.
     fn sign_out(self: &Rc<Self>) {
+        self.close_audio();
+        self.voice.borrow_mut().leave();
+        self.voice.borrow_mut().error = None;
         self.close_forward();
         self.close_profile_editor();
         self.close_settings();
@@ -1001,7 +1036,7 @@ impl App {
                 .as_ref()
                 .filter(|_| state.token.is_some())
                 .map(|detail| (detail.space.id.clone(), Vec::new())),
-            media: Default::default(),
+            media: self.media_watch(state),
         });
     }
 
@@ -2590,6 +2625,7 @@ impl App {
         self.render_start_direct();
         self.start_membership_refresh();
         self.render_admin();
+        self.receive_voice();
         self.render();
     }
 
@@ -3048,7 +3084,23 @@ impl App {
                     crate::media::open_uri(&url);
                 }
             }
-            Event::Gateway(event) => self.gateway(state, event),
+            Event::Gateway(event) => {
+                if let Some(event) = self.voice_gateway(state, event) {
+                    self.gateway(state, event);
+                }
+            }
+            Event::MediaStatus {
+                generation,
+                root,
+                enabled,
+            } if generation == state.epoch => self.media_status(state, root, enabled),
+            Event::VoiceChecked {
+                request,
+                voice_generation,
+                space,
+                channel,
+                result,
+            } => self.voice_checked(state, request, voice_generation, &space, &channel, result),
             _ => {}
         }
     }
@@ -3284,6 +3336,7 @@ impl App {
 
     fn render(self: &Rc<Self>) {
         self.render_rows();
+        self.render_voice();
         self.render_layout();
         self.render_files();
         self.render_members();
@@ -3695,7 +3748,15 @@ impl App {
                 line.append(&badge(count, mentions > 0));
             }
             self.scope_menu_on(&line, scope);
-            ui.channels.append(&line);
+            match self.channel_voice(&state, &channel.id) {
+                Some(roster) => {
+                    let entry = gtk::Box::new(gtk::Orientation::Vertical, 4);
+                    entry.append(&line);
+                    entry.append(&roster);
+                    ui.channels.append(&entry);
+                }
+                None => ui.channels.append(&line),
+            }
             if state.direct.is_none()
                 && state.channel.as_deref() == Some(&channel.id)
                 && let Some(row) = ui.channels.row_at_index(ids.len() as i32)

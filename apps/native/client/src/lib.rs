@@ -52,6 +52,7 @@ pub mod startup;
 #[path = "../../desktop/voice-spike/src/state.rs"]
 pub mod state;
 pub mod uploads;
+pub mod voice;
 // Voice media, shared with the voice spike (where it is `crate::media`), whose
 // controls are built only through `new`.
 #[allow(clippy::new_without_default)]

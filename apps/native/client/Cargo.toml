@@ -48,6 +48,8 @@ webpx = { version = "=0.4.0", default-features = false, features = ["encode", "i
 # rav1e's x86-64 assembly: about twice as fast AVIF photo encoding, identical
 # output. It needs NASM at build time.
 avif-asm = ["rav1e/asm"]
+# Fixture audio devices instead of real hardware, for dependents' tests.
+test-fixtures = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }

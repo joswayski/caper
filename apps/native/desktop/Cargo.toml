@@ -71,6 +71,8 @@ uuid = { version = "1.18", features = ["v4"] }
 avif-asm = ["caper-client/avif-asm"]
 
 [dev-dependencies]
+# Tests enumerate fixture audio devices, never real hardware.
+caper-client = { path = "../client", features = ["test-fixtures"] }
 # Tests check that eframe reads Caper's `window` record.
 egui-winit = { version = "=0.37.0", default-features = false, features = ["serde"] }
 

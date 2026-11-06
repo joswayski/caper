@@ -152,6 +152,12 @@ pub struct Ui {
     pub sign_out: gtk::Button,
     pub settings: gtk::Button,
     pub new_direct: gtk::Button,
+    /// The call card above the account bar, and the bar's voice toggles.
+    pub call_card: gtk::Box,
+    pub mic: gtk::Button,
+    pub deafen: gtk::Button,
+    /// The header's Join voice, Switch here, Joining… or Leave voice.
+    pub voice_join: gtk::Button,
     pub channel_title: gtk::Label,
     pub status: gtk::Label,
     pub pins_button: gtk::Button,
@@ -355,14 +361,28 @@ impl Ui {
         settings.set_child(Some(&images.icon_image(Icon::Settings, "#b9bcbe", 18)));
         settings.set_tooltip_text(Some("User Settings"));
         settings.add_css_class("flat");
+        let mic: gtk::Button = crate::app::named("GtkButton", "Mute");
+        mic.set_child(Some(&images.icon_image(Icon::Mic, "#b9bcbe", 18)));
+        mic.set_tooltip_text(Some("Mute"));
+        mic.add_css_class("flat");
+        let deafen: gtk::Button = crate::app::named("GtkButton", "Deafen");
+        deafen.set_child(Some(&images.icon_image(Icon::Headphones, "#b9bcbe", 18)));
+        deafen.set_tooltip_text(Some("Deafen"));
+        deafen.add_css_class("flat");
         let sign_out: gtk::Button = crate::app::named("GtkButton", "Sign out");
         sign_out.set_child(Some(&images.icon_image(Icon::LogOut, "#b9bcbe", 18)));
         sign_out.set_tooltip_text(Some("Sign out"));
         sign_out.add_css_class("flat");
         dock.append(&account_avatar.root);
         dock.append(&account_name);
+        dock.append(&mic);
+        dock.append(&deafen);
         dock.append(&settings);
         dock.append(&sign_out);
+        let call_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        call_card.add_css_class("call-card");
+        call_card.set_visible(false);
+        sidebar.append(&call_card);
         sidebar.append(&dock);
         chat.append(&sidebar);
 
@@ -376,6 +396,12 @@ impl Ui {
         let status = label("", &["muted", "status"]);
         status.set_hexpand(true);
         header.append(&status);
+        let voice_join = gtk::Button::with_label("Join voice");
+        voice_join.add_css_class("primary");
+        voice_join.add_css_class("voice-join");
+        voice_join.set_valign(gtk::Align::Center);
+        voice_join.set_visible(false);
+        header.append(&voice_join);
         let pins_button: gtk::Button = crate::app::named("GtkButton", "Pins");
         pins_button.set_child(Some(&images.icon_image(Icon::Pin, "#f3f4f5", 18)));
         pins_button.set_tooltip_text(Some("Pins"));
@@ -541,6 +567,10 @@ impl Ui {
             sign_out,
             settings,
             new_direct,
+            call_card,
+            mic,
+            deafen,
+            voice_join,
             channel_title,
             status,
             pins_button,

@@ -1,5 +1,8 @@
-use crate::{media, media_gateway, state};
-use eframe::egui;
+//! A voice call and the audio tests: joining, the roster, mute and deafen,
+//! devices, the microphone test and the speaker test. UI-free: it reports
+//! through `Repaint`, and each client draws `Voice`'s fields its own way.
+
+use crate::{media_gateway, state, voice_media as media};
 use media::mic_test::{self, MicTest, MicTestControl, PlaybackToken, SpeakerTestControl};
 use media::{
     JoinControl, MediaApi, NativeSession, Participant, Snapshot, TrackPlayback, VoiceActivity,
@@ -8,9 +11,40 @@ use media::{
 use serde::{Deserialize, Serialize};
 use state::{CallContext, CallState, Phase};
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 use url::Url;
+
+/// Asks the UI to read `Voice`'s reports: now, or after a delay. Called
+/// from background threads.
+#[derive(Clone)]
+pub struct Repaint(Arc<dyn Fn(Option<Duration>) + Send + Sync>);
+
+impl Repaint {
+    pub fn new(wake: impl Fn(Option<Duration>) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(wake))
+    }
+
+    fn request_repaint(&self) {
+        (self.0)(None);
+    }
+
+    fn request_repaint_after(&self, delay: Duration) {
+        (self.0)(Some(delay));
+    }
+}
+
+/// A call's running time: `mm:ss`, then `h:mm:ss` from an hour (web's).
+pub fn session_duration(started_at: u64, now: u64) -> String {
+    let seconds = now.saturating_sub(started_at) / 1_000;
+    let tail = format!("{:02}:{:02}", seconds / 60 % 60, seconds % 60);
+    if seconds < 3_600 {
+        tail
+    } else {
+        format!("{}:{tail}", seconds / 3_600)
+    }
+}
 
 /// Web keeps a voice lit this long after its last loud 32 ms window.
 pub const SPEAKING_RELEASE: Duration = Duration::from_millis(180);
@@ -136,7 +170,7 @@ pub struct Voice {
     commands: Option<Sender<Operation>>,
     events: Sender<Report>,
     incoming: Receiver<Report>,
-    repaint: egui::Context,
+    repaint: Repaint,
 }
 
 enum Operation {
@@ -180,7 +214,7 @@ impl Voice {
         }))
     }
 
-    pub fn new(base: Url, repaint: egui::Context) -> Self {
+    pub fn new(base: Url, repaint: Repaint) -> Self {
         let (events, incoming) = mpsc::channel();
         Self {
             state: CallState::default(),
@@ -1138,7 +1172,7 @@ type SystemDevices = (
     Option<String>,
 );
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-fixtures")))]
 fn system_devices() -> SystemDevices {
     let devices = media::enumerate_audio_devices();
     // WASAPI's eConsole default matches our ADM selection. The ADM's
@@ -1156,7 +1190,7 @@ fn system_devices() -> SystemDevices {
     (devices, input, output)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 fn system_devices() -> SystemDevices {
     let device = |id: &str, name: &str| media::AudioDevice {
         id: id.into(),
@@ -1209,7 +1243,7 @@ pub fn windows_default_names() -> (Option<String>, Option<String>) {
     answer.recv().unwrap_or((None, None))
 }
 
-fn report(sender: &Sender<Report>, repaint: &egui::Context, event: Report) {
+fn report(sender: &Sender<Report>, repaint: &Repaint, event: Report) {
     let _ = sender.send(event);
     repaint.request_repaint();
 }
@@ -1287,7 +1321,7 @@ mod tests {
     fn roster_reports_cannot_roll_back_and_leave_resets_revision() {
         let mut voice = Voice::new(
             Url::parse("http://127.0.0.1:9/").unwrap(),
-            egui::Context::default(),
+            Repaint::new(|_| ()),
         );
         let generation = voice.state.generation;
         let snapshot = |revision: Option<u64>, started: u64| {
@@ -1338,7 +1372,7 @@ mod tests {
     fn participant_preferences_survive_roster_changes_but_not_call_replacement() {
         let mut voice = Voice::new(
             Url::parse("http://127.0.0.1:9/").unwrap(),
-            egui::Context::default(),
+            Repaint::new(|_| ()),
         );
         let snapshot: Snapshot = serde_json::from_str(r#"{"participants":[
             {"id":"self","name":"Me","muted":false,"deafened":false,"tracks":[{"id":"own","kind":"microphone"}]},
@@ -1401,7 +1435,7 @@ mod tests {
     fn recording_voice() -> (Voice, Receiver<MicCommand>) {
         let mut voice = Voice::new(
             Url::parse("http://127.0.0.1:9/").unwrap(),
-            egui::Context::default(),
+            Repaint::new(|_| ()),
         );
         let (sender, receiver) = mpsc::channel();
         voice.microphone_commands = Some(sender);
@@ -1527,7 +1561,7 @@ mod tests {
     fn speaker_volume_and_stop_reach_the_running_test() {
         let mut voice = Voice::new(
             Url::parse("http://127.0.0.1:9/").unwrap(),
-            egui::Context::default(),
+            Repaint::new(|_| ()),
         );
         let control = SpeakerTestControl::new(100);
         voice.speaker_control = Some(control.clone());
@@ -1551,7 +1585,7 @@ mod tests {
     fn mic_sample_commands_use_current_gain_and_discard_rejects_late_completion() {
         let mut voice = Voice::new(
             Url::parse("http://127.0.0.1:9/").unwrap(),
-            egui::Context::default(),
+            Repaint::new(|_| ()),
         );
         let (sender, receiver) = mpsc::channel();
         voice.microphone_commands = Some(sender);
@@ -1608,7 +1642,7 @@ mod tests {
 
         let mut voice = Voice::new(
             Url::parse("http://127.0.0.1:9/").unwrap(),
-            egui::Context::default(),
+            Repaint::new(|_| ()),
         );
         voice.self_id = "self".into();
         voice.activity = VoiceActivity {
@@ -1648,7 +1682,7 @@ mod tests {
     fn prejoin_controls_change_intent_without_starting_a_call() {
         let mut voice = Voice::new(
             Url::parse("https://caper.chat/").unwrap(),
-            egui::Context::default(),
+            Repaint::new(|_| ()),
         );
         voice.command(VoiceOperation::Mute(true));
         voice.command(VoiceOperation::Deafen(true));
@@ -1696,7 +1730,7 @@ mod tests {
             );
             stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 50\r\nConnection: close\r\n\r\n{\"code\":\"access_denied\",\"error\":\"No voice access\"}").unwrap();
         });
-        let mut voice = Voice::new(base, egui::Context::default());
+        let mut voice = Voice::new(base, Repaint::new(|_| ()));
         voice.join(
             context("general"),
             None,
@@ -1733,7 +1767,7 @@ mod tests {
             started.send(()).unwrap();
             std::thread::sleep(Duration::from_millis(200));
         });
-        let mut voice = Voice::new(base, egui::Context::default());
+        let mut voice = Voice::new(base, Repaint::new(|_| ()));
         voice.join(
             context("general"),
             None,

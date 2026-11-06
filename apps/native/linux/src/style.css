@@ -1086,3 +1086,104 @@ button.space-header .space-name {
   margin: 12px -22px -22px;
   padding: 14px 22px;
 }
+
+.voice-roster {
+  margin: 2px 0 4px 22px;
+}
+
+.voice-person {
+  min-height: 24px;
+}
+
+.avatar.speaking {
+  box-shadow: 0 0 0 2px @caper_green;
+}
+
+.call-card {
+  border-top: 1px solid @caper_border;
+  padding: 10px 12px;
+  background: @caper_surface;
+}
+
+.call-card .call-channel {
+  font-weight: 700;
+  padding: 0 4px;
+  min-height: 0;
+}
+
+.call-card .call-status,
+.call-card .call-timer {
+  color: @caper_text_muted;
+  font-feature-settings: "tnum";
+}
+
+.call-card button.call-toggle {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.call-card button.call-toggle.active {
+  background: alpha(@caper_terracotta, 0.18);
+}
+
+popover.menu button.menu-item {
+  padding: 6px 12px;
+  font-weight: 500;
+}
+
+popover.menu button.menu-item label {
+  margin-right: 24px;
+}
+
+.audio-panel {
+  background: @caper_blackout;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.audio-panel.latest {
+  border-color: #53633f;
+}
+
+.accent {
+  color: @caper_terracotta_bright;
+}
+
+levelbar.input-meter block.filled {
+  background: @caper_green;
+}
+
+levelbar.input-meter block.empty {
+  background: @caper_surface_raised;
+}
+
+scale highlight {
+  background: @caper_terracotta_bright;
+}
+
+.voice-join {
+  min-height: 30px;
+  padding: 2px 12px;
+}
+
+.call-card button.voice-person-button {
+  padding: 0 4px;
+  min-height: 0;
+  margin: 0 -4px;
+}
+
+popover.menu check {
+  border: 1px solid @caper_border;
+  background: @caper_blackout;
+  min-width: 14px;
+  min-height: 14px;
+}
+
+popover.menu check:checked {
+  background: @caper_terracotta;
+  border-color: @caper_terracotta;
+  color: @caper_text;
+}

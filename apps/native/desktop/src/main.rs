@@ -29,7 +29,6 @@ mod update_art;
 mod updates;
 mod viewer;
 mod virtual_list;
-mod voice;
 mod voice_note;
 mod web_player;
 mod whats_new;
@@ -47,8 +46,8 @@ use caper_client::reactions::{
 use caper_client::sign_in::{MAX_RESENDS, clean_sign_in_code, resend_countdown, resend_wait};
 use caper_client::{
     api, attachment_edit, avatar_images, blocking, compress, effects, feedback, gateway, grouping,
-    invites, media_gateway, media_proxy, model, names, navigation, notifications, os_notifications,
-    startup, state, uploads, voice_media as media,
+    invites, media_proxy, model, names, navigation, notifications, os_notifications, startup,
+    state, uploads, voice, voice_media as media,
 };
 use chrono::{DateTime, Local, TimeZone};
 use default_slider::default_slider;
@@ -1502,7 +1501,14 @@ enum ReportState {
 impl CaperApp {
     fn new(context: &egui::Context, api: api::Api, fixture: Option<&str>) -> Self {
         configure(context);
-        let voice = Voice::new(api.base().clone(), context.clone());
+        let repaint = context.clone();
+        let voice = Voice::new(
+            api.base().clone(),
+            voice::Repaint::new(move |delay| match delay {
+                None => repaint.request_repaint(),
+                Some(delay) => repaint.request_repaint_after(delay),
+            }),
+        );
         let api_base = api.base().clone();
         // Static fixtures never fetch media; the playback fixture enables
         // loopback attachment media explicitly below.
@@ -27292,16 +27298,6 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
     }
 }
 
-fn voice_session_duration(started_at: u64, now: u64) -> String {
-    let seconds = now.saturating_sub(started_at) / 1_000;
-    let tail = format!("{:02}:{:02}", seconds / 60 % 60, seconds % 60);
-    if seconds < 3_600 {
-        tail
-    } else {
-        format!("{}:{tail}", seconds / 3_600)
-    }
-}
-
 /// Design H's voice colors: your call's green-tinted card, other live
 /// rooms' quieter cards, and phones' strip under the chat header.
 const LIVE_CARD: Color32 = Color32::from_rgb(0x22, 0x38, 0x2c);
@@ -27507,7 +27503,7 @@ fn participant_label(name: &str, speaking: bool, muted: bool, deafened: bool) ->
 /// A live session's running time from `started`, repainting each second.
 fn live_timer(context: &egui::Context, started: u64) -> String {
     context.request_repaint_after(Duration::from_secs(1));
-    voice_session_duration(started, chrono::Utc::now().timestamp_millis().max(0) as u64)
+    voice::session_duration(started, chrono::Utc::now().timestamp_millis().max(0) as u64)
 }
 
 /// Paints a green session timer in tabular digits ending at `right`,
@@ -41834,11 +41830,11 @@ mod tests {
             (7_384_000, "2:03:04"),
         ] {
             assert_eq!(
-                crate::voice_session_duration(12_345, 12_345 + elapsed),
+                crate::voice::session_duration(12_345, 12_345 + elapsed),
                 expected
             );
         }
-        assert_eq!(crate::voice_session_duration(12_345, 12_000), "00:00");
+        assert_eq!(crate::voice::session_duration(12_345, 12_000), "00:00");
         let old: crate::media::Snapshot = serde_json::from_str(r#"{"participants":[]}"#).unwrap();
         assert_eq!(old.session_started_at, None);
         let current: crate::media::Snapshot =
