@@ -1227,6 +1227,26 @@ impl Api {
             .map_err(|_| UploadError::new("The upload service returned an invalid response."))
     }
 
+    /// `POST /api/assets/{id}/parts`: presigned `PUT`s for some parts
+    /// (numbered from 1) of a multipart upload, as `{"parts": [...]}`.
+    pub fn asset_parts(&self, token: &str, id: &str, parts: &[u64]) -> Result<Value, UploadError> {
+        let response = self
+            .raw(
+                Method::POST,
+                &format!("api/assets/{id}/parts"),
+                Some(token),
+                None,
+                Some(json!({ "parts": parts })),
+            )
+            .map_err(|error| UploadError::new(error.message))?;
+        if !response.status().is_success() {
+            return Err(upload_failure(response));
+        }
+        response
+            .json()
+            .map_err(|_| UploadError::new("The upload service returned an invalid response."))
+    }
+
     /// Best-effort cancellation; server expiry remains the offline fallback.
     pub fn cancel_asset(&self, token: &str, id: &str) {
         if id.is_empty()
@@ -1622,14 +1642,19 @@ fn upload_failure(response: Response) -> UploadError {
             code,
         };
     }
-    let mut error = if status == StatusCode::PAYLOAD_TOO_LARGE {
-        UploadError::new("This file is too large to upload.")
-    } else {
-        UploadError::new(
+    let mut error = match code.as_deref() {
+        Some("media_too_large") => UploadError::new("Photos, videos and audio can be up to 5 GB."),
+        Some("upload_incomplete") => {
+            UploadError::new("The upload did not arrive intact. Try again.")
+        }
+        _ if status == StatusCode::PAYLOAD_TOO_LARGE => {
+            UploadError::new("This file is too large to upload.")
+        }
+        _ => UploadError::new(
             body.as_ref()
                 .and_then(|body| body["error"].as_str())
                 .unwrap_or("This file could not be uploaded."),
-        )
+        ),
     };
     error.status = Some(status.as_u16());
     error.code = code;

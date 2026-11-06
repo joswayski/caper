@@ -100,9 +100,15 @@ pub struct Patched<R> {
 
 impl<R> Patched<R> {
     pub fn new(inner: R, patches: Vec<Patch>) -> Self {
+        Self::at(inner, 0, patches)
+    }
+
+    /// Reads a file already positioned at byte `position`, such as one part
+    /// of a multipart upload, patching it as if read from the start.
+    pub fn at(inner: R, position: u64, patches: Vec<Patch>) -> Self {
         Self {
             inner,
-            position: 0,
+            position,
             patches,
         }
     }

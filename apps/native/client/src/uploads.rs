@@ -13,11 +13,11 @@ use crate::api::Api;
 use crate::compress::{self, Compression};
 use crate::model::{Attachment, AttachmentKind};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
-use std::io::Read;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const MAX_ATTACHMENTS: usize = 10;
@@ -25,6 +25,18 @@ pub const MAX_ATTACHMENTS: usize = 10;
 const MAX_IMAGE_READ_BYTES: u64 = 200 * 1024 * 1024;
 /// Allow ten queued files to finish metadata processing (409 while queued).
 const COMPLETE_RETRY_DELAYS: [Duration; 240] = [Duration::from_secs(5); 240];
+/// Parts of a large file in flight at once, and part URLs asked for at a
+/// time (web `PART_CONCURRENCY`, `PART_BATCH`). Asking as parts go also keeps
+/// a long upload alive on the server.
+const PART_CONCURRENCY: u64 = 4;
+const PART_BATCH: usize = 4;
+/// A failed part is sent again with a fresh URL after each of these pauses.
+const PART_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_millis(500),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(15),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadError {
@@ -577,6 +589,9 @@ pub fn reservation(channel: &str, prepared: &Prepared) -> Value {
     if let Some(preview) = &prepared.preview {
         body["preview"] = json!({"contentType": "image/jpeg", "byteSize": preview.len()});
     }
+    // Files larger than one part may come back with a part plan instead of
+    // one upload.
+    body["multipart"] = json!(true);
     if let Some(voice) = &prepared.voice {
         // Voice needs a duration of 1 ms to 10 minutes; the recorder stops
         // at 10:00, so this only clamps rounding.
@@ -669,9 +684,11 @@ pub fn upload(
         progress,
         cancel,
         &COMPLETE_RETRY_DELAYS,
+        &PART_RETRY_DELAYS,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn upload_with_delays(
     api: &Api,
     token: &str,
@@ -680,6 +697,7 @@ fn upload_with_delays(
     progress: Arc<dyn Fn(f32) + Send + Sync>,
     cancel: Arc<AtomicBool>,
     delays: &[Duration],
+    part_delays: &[Duration],
 ) -> Result<Attachment, UploadError> {
     let request = reservation(channel, &prepared);
     transfer(
@@ -690,6 +708,7 @@ fn upload_with_delays(
         progress,
         cancel,
         delays,
+        part_delays,
         false,
         |id, completed| Attachment::parse(completed).filter(|attachment| attachment.id == id),
     )
@@ -758,6 +777,7 @@ fn upload_picture_mode(
         Arc::new(|_| {}),
         Arc::new(AtomicBool::new(false)),
         delays,
+        &PART_RETRY_DELAYS,
         draft,
         |id, completed| {
             (completed["id"].as_str() == Some(id)).then(|| (id.to_owned(), completed.clone()))
@@ -765,9 +785,204 @@ fn upload_picture_mode(
     )
 }
 
+/// Exactly `length` bytes of `body` from `offset`, which the URL signs: a
+/// file that grew since is cut, one that shrank fails verification.
+fn open_range(
+    body: &Body,
+    name: &str,
+    offset: u64,
+    length: u64,
+) -> Result<Box<dyn Read + Send>, UploadError> {
+    let open = |path: &Path| {
+        let mut file = std::fs::File::open(path)
+            .map_err(|_| UploadError::new(format!("Could not read {name}.")))?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|_| UploadError::new(format!("Could not read {name}.")))?;
+        Ok::<_, UploadError>(file.take(length))
+    };
+    Ok(match body {
+        Body::Memory(bytes) => {
+            let mut cursor = std::io::Cursor::new(bytes.clone());
+            cursor.set_position(offset);
+            Box::new(cursor.take(length))
+        }
+        Body::File { path, patches } => Box::new(crate::metadata::Patched::at(
+            open(path)?,
+            offset,
+            patches.clone(),
+        )),
+        Body::Scratch(scratch) => Box::new(ScratchReader {
+            file: open(scratch.path())?,
+            _scratch: scratch.clone(),
+        }),
+    })
+}
+
+/// The reservation's part plan (`partBytes`, `partCount`), checked against
+/// the reserved size. `Ok(None)` when the file goes up in one `PUT`.
+fn part_plan(reserved: &Value, size: u64) -> Result<Option<(u64, u64)>, ()> {
+    let plan = &reserved["multipart"];
+    if plan.is_null() {
+        return Ok(None);
+    }
+    match (plan["partBytes"].as_u64(), plan["partCount"].as_u64()) {
+        (Some(bytes), Some(count)) if bytes > 0 && count == size.div_ceil(bytes) => {
+            Ok(Some((bytes, count)))
+        }
+        _ => Err(()),
+    }
+}
+
+/// Waits `delay`, ending early (with an error) when the upload is cancelled.
+fn pause(delay: Duration, stop: &AtomicBool) -> Result<(), ()> {
+    let until = std::time::Instant::now() + delay;
+    while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+        if stop.load(Ordering::Relaxed) {
+            return Err(());
+        }
+        std::thread::sleep(left.min(Duration::from_millis(50)));
+    }
+    Ok(())
+}
+
+/// Send a large file in parts, each straight to storage (web `uploadParts`):
+/// [`PART_CONCURRENCY`] at a time, URLs asked for as they are needed, and a
+/// failed part sent again with a fresh URL after each of `delays`. The first
+/// part that can't be sent stops the rest.
+#[allow(clippy::too_many_arguments)]
+fn upload_parts(
+    api: &Api,
+    token: &str,
+    id: &str,
+    body: &Body,
+    name: &str,
+    size: u64,
+    (part_bytes, count): (u64, u64),
+    report: Arc<dyn Fn(u64) + Send + Sync>,
+    cancel: &Arc<AtomicBool>,
+    delays: &[Duration],
+) -> Result<(), UploadError> {
+    let invalid = || UploadError::new("The upload service returned an invalid response.");
+    // Set when the upload is cancelled or a part fails; aborts parts in flight.
+    let stop = Arc::new(AtomicBool::new(false));
+    let sent: Arc<Vec<AtomicU64>> = Arc::new((0..count).map(|_| AtomicU64::new(0)).collect());
+    let total = {
+        let sent = sent.clone();
+        move || {
+            sent.iter()
+                .map(|part| part.load(Ordering::Relaxed))
+                .sum::<u64>()
+        }
+    };
+    // Fetched URLs not yet used, and parts whose URL a worker has taken: a
+    // batch only asks ahead for parts no worker has started, so a retry
+    // re-signs just the failed part.
+    let urls = Mutex::new((HashMap::<u64, PresignedPut>::new(), HashSet::<u64>::new()));
+    let url_for = |number: u64| -> Result<PresignedPut, UploadError> {
+        let mut guard = urls.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (ready, taken) = &mut *guard;
+        let put = match ready.remove(&number) {
+            Some(put) => put,
+            None => {
+                let batch: Vec<u64> = std::iter::once(number)
+                    .chain(
+                        (number + 1..=count)
+                            .filter(|n| !ready.contains_key(n) && !taken.contains(n)),
+                    )
+                    .take(PART_BATCH)
+                    .collect();
+                let response = api.asset_parts(token, id, &batch)?;
+                for part in response["parts"].as_array().into_iter().flatten() {
+                    if let (Some(number), Some(put)) = (part["number"].as_u64(), presigned(part))
+                        && batch.contains(&number)
+                    {
+                        ready.insert(number, put);
+                    }
+                }
+                ready.remove(&number).ok_or_else(invalid)?
+            }
+        };
+        taken.insert(number);
+        Ok(put)
+    };
+    let next = AtomicU64::new(1);
+    let work = || -> Result<(), UploadError> {
+        loop {
+            cancelled(cancel)?;
+            if stop.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let number = next.fetch_add(1, Ordering::Relaxed);
+            if number > count {
+                return Ok(());
+            }
+            let index = (number - 1) as usize;
+            let offset = (number - 1) * part_bytes;
+            let length = part_bytes.min(size - offset);
+            for attempt in 0.. {
+                let put = url_for(number)?;
+                let part = Progress {
+                    inner: open_range(body, name, offset, length)?,
+                    sent: 0,
+                    report: {
+                        let (sent, total, report) = (sent.clone(), total.clone(), report.clone());
+                        let (cancel, stop) = (cancel.clone(), stop.clone());
+                        Arc::new(move |bytes| {
+                            if cancel.load(Ordering::Relaxed) {
+                                stop.store(true, Ordering::Relaxed);
+                            }
+                            sent[index].store(bytes, Ordering::Relaxed);
+                            report(total());
+                        })
+                    },
+                    cancel: stop.clone(),
+                };
+                let sent_part = api.put_presigned(
+                    &put.url,
+                    &put.headers,
+                    reqwest::blocking::Body::sized(part, length),
+                );
+                let Err(error) = sent_part else { break };
+                cancelled(cancel)?;
+                // Another part failed first; it reports the error.
+                if stop.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                let Some(delay) = delays.get(attempt) else {
+                    return Err(error);
+                };
+                sent[index].store(0, Ordering::Relaxed);
+                report(total());
+                if pause(*delay, &stop).is_err() {
+                    return Ok(());
+                }
+            }
+        }
+    };
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..PART_CONCURRENCY.min(count))
+            .map(|_| {
+                scope.spawn(|| {
+                    let result = work();
+                    if result.is_err() {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                    result
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap_or_else(|_| Err(invalid())))
+            .collect::<Result<Vec<()>, UploadError>>()
+    })?;
+    cancelled(cancel)
+}
+
 /// Reserve with `request`, PUT the preview and then the file to storage with
-/// exactly the returned headers, and confirm (retrying while storage has not
-/// seen it). Any failure after the reservation cancels it.
+/// exactly the returned headers (in parts when the server asks), and confirm
+/// (retrying while storage has not seen it). Any failure after the
+/// reservation cancels it.
 #[allow(clippy::too_many_arguments)]
 fn transfer<T>(
     api: &Api,
@@ -777,6 +992,7 @@ fn transfer<T>(
     progress: Arc<dyn Fn(f32) + Send + Sync>,
     cancel: Arc<AtomicBool>,
     delays: &[Duration],
+    part_delays: &[Duration],
     draft: bool,
     finish: impl FnOnce(&str, &Value) -> Option<T>,
 ) -> Result<T, UploadError> {
@@ -790,23 +1006,7 @@ fn transfer<T>(
         ..
     } = prepared;
     // Open first so an unreadable file never holds a reservation.
-    let source: Box<dyn Read + Send> = match body {
-        Body::Memory(bytes) => Box::new(std::io::Cursor::new(bytes)),
-        // Exactly the reserved size, which the URL signs: a file that grew
-        // since is cut, one that shrank fails verification.
-        Body::File { path, patches } => Box::new(crate::metadata::Patched::new(
-            std::fs::File::open(path)
-                .map_err(|_| UploadError::new(format!("Could not read {name}.")))?
-                .take(size),
-            patches,
-        )),
-        Body::Scratch(scratch) => Box::new(ScratchReader {
-            file: std::fs::File::open(scratch.path())
-                .map_err(|_| UploadError::new(format!("Could not read {name}.")))?
-                .take(size),
-            _scratch: scratch,
-        }),
-    };
+    let source = open_range(&body, &name, 0, size)?;
     let reserved = api.create_asset(token, request)?;
     let id = reserved["id"]
         .as_str()
@@ -819,7 +1019,11 @@ fn transfer<T>(
         .ok_or_else(invalid)?
         .to_owned();
     let result = (|| {
-        let upload = presigned(&reserved["upload"]).ok_or_else(invalid)?;
+        let plan = part_plan(&reserved, size).map_err(|()| invalid())?;
+        let upload = match plan {
+            Some(_) => None,
+            None => Some(presigned(&reserved["upload"]).ok_or_else(invalid)?),
+        };
         let preview_size = preview.as_ref().map_or(0, Vec::len) as u64;
         let total = (size + preview_size).max(1) as f32;
         if let Some(preview) = preview {
@@ -847,17 +1051,37 @@ fn transfer<T>(
             let progress = progress.clone();
             Arc::new(move |sent| progress((preview_size + sent) as f32 / total))
         };
-        let body = reqwest::blocking::Body::sized(
-            Progress {
-                inner: source,
-                sent: 0,
-                report,
-                cancel: cancel.clone(),
-            },
-            size,
-        );
-        api.put_presigned(&upload.url, &upload.headers, body)
-            .map_err(|error| cancelled(&cancel).err().unwrap_or(error))?;
+        match (plan, upload) {
+            (Some(plan), _) => {
+                drop(source);
+                upload_parts(
+                    api,
+                    token,
+                    &id,
+                    &body,
+                    &name,
+                    size,
+                    plan,
+                    report,
+                    &cancel,
+                    part_delays,
+                )?;
+            }
+            (None, upload) => {
+                let upload = upload.ok_or_else(invalid)?;
+                let body = reqwest::blocking::Body::sized(
+                    Progress {
+                        inner: source,
+                        sent: 0,
+                        report,
+                        cancel: cancel.clone(),
+                    },
+                    size,
+                );
+                api.put_presigned(&upload.url, &upload.headers, body)
+                    .map_err(|error| cancelled(&cancel).err().unwrap_or(error))?;
+            }
+        }
         let mut delays = delays.iter();
         let completed = loop {
             cancelled(&cancel)?;
@@ -867,10 +1091,17 @@ fn transfer<T>(
                 api.complete_asset(token, &id)
             };
             match completed {
-                Err(error) if error.status == Some(409) => match delays.next() {
-                    Some(delay) => std::thread::sleep(*delay),
-                    None => return Err(error),
-                },
+                // 409: storage has not seen it yet or cleaning is queued.
+                // Missing parts won't arrive by waiting.
+                Err(error)
+                    if error.status == Some(409)
+                        && error.code.as_deref() != Some("upload_incomplete") =>
+                {
+                    match delays.next() {
+                        Some(delay) => std::thread::sleep(*delay),
+                        None => return Err(error),
+                    }
+                }
                 result => break result?,
             }
         };
@@ -1345,6 +1576,7 @@ mod tests {
             progress,
             Arc::new(AtomicBool::new(false)),
             &[Duration::from_millis(1); 2],
+            &[],
         )
         .unwrap();
         assert_eq!(attachment.id, "asset0001");
@@ -1372,7 +1604,8 @@ mod tests {
                 "channelId": "chan00000001", "filename": "Screenshot.webp", "contentType": "image/webp",
                 "byteSize": stored.len(), "sourceByteSize": source.len(),
                 "width": 1280, "height": 720,
-                "preview": {"contentType": "image/jpeg", "byteSize": preview.len()}
+                "preview": {"contentType": "image/jpeg", "byteSize": preview.len()},
+                "multipart": true
             })
         );
         for api_request in [&requests[0], &requests[3], &requests[4]] {
@@ -1462,7 +1695,8 @@ mod tests {
             reservation,
             json!({
                 "channelId": "chan", "filename": "clip.mp4", "contentType": "video/mp4",
-                "byteSize": file.len(), "sourceByteSize": file.len(), "durationMs": 2500
+                "byteSize": file.len(), "sourceByteSize": file.len(), "durationMs": 2500,
+                "multipart": true
             })
         );
         // Same length and samples; the location box is now zero-filled `free`.
@@ -1518,6 +1752,7 @@ mod tests {
                 Arc::new(|_| {}),
                 Arc::new(AtomicBool::new(false)),
                 &[Duration::from_millis(1)],
+                &[],
             )
             .unwrap_err()
         };
@@ -1541,6 +1776,225 @@ mod tests {
                 Some("Bearer token")
             );
         }
+    }
+
+    /// Like `serve`, but answering each request by its line, as concurrent
+    /// part uploads arrive in no fixed order. Records every request.
+    fn serve_by(
+        respond: impl Fn(&str, &str, &Request) -> (u16, String) + Send + 'static,
+    ) -> (String, Arc<Mutex<Vec<Request>>>) {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (recorded, origin) = (seen.clone(), base.clone());
+        std::thread::spawn(move || {
+            for stream in server.incoming() {
+                let mut reader = BufReader::new(stream.unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut headers = BTreeMap::new();
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header == "\r\n" {
+                        break;
+                    }
+                    let (name, value) = header.trim_end().split_once(':').unwrap();
+                    headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
+                }
+                let length = headers
+                    .get("content-length")
+                    .map_or(0, |length| length.parse().unwrap());
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let request = Request {
+                    line: line.trim_end().to_owned(),
+                    headers,
+                    body,
+                };
+                let (status, reply) = respond(&origin, &request.line, &request);
+                let _ = write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+                recorded.lock().unwrap().push(request);
+            }
+        });
+        (base, seen)
+    }
+
+    #[test]
+    fn large_files_go_up_in_parts_and_a_failed_part_alone_is_signed_again() {
+        let scratch = Scratch::new("parts");
+        let original: Vec<u8> = (0..10u8).map(|byte| byte * 7 + 3).collect();
+        let path = scratch.file("big.mp4", &original);
+        // Metadata blanking spans parts 1–3: "free" over 3..7, zeros over 7..9.
+        let mut expected = original.clone();
+        expected[3..7].copy_from_slice(b"free");
+        expected[7..9].fill(0);
+        let failed_once = Arc::new(AtomicBool::new(false));
+        let (base, seen) = serve_by({
+            let failed_once = failed_once.clone();
+            move |base, line, request| match line.split(' ').nth(1).unwrap() {
+                "/api/assets" => (
+                    201,
+                    json!({"id": "asset0001", "kind": "video",
+                        "multipart": {"partBytes": 4, "partCount": 3}})
+                    .to_string(),
+                ),
+                "/api/assets/asset0001/parts" => {
+                    let asked: Value = serde_json::from_slice(&request.body).unwrap();
+                    let parts: Vec<Value> = asked["parts"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|number| {
+                            json!({"number": number, "method": "PUT",
+                            "url": format!("{base}/r2/part/{number}?sig=s"), "headers": {}})
+                        })
+                        .collect();
+                    (200, json!({ "parts": parts }).to_string())
+                }
+                "/r2/part/2?sig=s" if !failed_once.swap(true, Ordering::SeqCst) => {
+                    (500, String::new())
+                }
+                path if path.starts_with("/r2/part/") => (200, String::new()),
+                "/api/assets/asset0001/complete" => {
+                    (200, completed("video", "video/mp4", "big.mp4", 10))
+                }
+                _ => (404, String::new()),
+            }
+        });
+        let prepared = Prepared {
+            name: "big.mp4".into(),
+            content_type: "video/mp4".into(),
+            kind: AttachmentKind::Video,
+            source_size: 10,
+            size: 10,
+            body: Body::File {
+                path,
+                patches: vec![crate::metadata::Patch {
+                    kind: 3,
+                    body: 7..9,
+                }],
+            },
+            width: None,
+            height: None,
+            duration_ms: None,
+            preview: None,
+            thumbnail: None,
+            voice: None,
+        };
+        let (progress, reporter) = recorder();
+        let attachment = upload_with_delays(
+            &Api::new(&base).unwrap(),
+            "token",
+            "chan",
+            prepared,
+            reporter,
+            Arc::new(AtomicBool::new(false)),
+            &[],
+            &[Duration::from_millis(1)],
+        )
+        .unwrap();
+        assert_eq!(attachment.id, "asset0001");
+        assert_eq!(progress.lock().unwrap().last(), Some(&1.0));
+        let requests = std::mem::take(&mut *seen.lock().unwrap());
+        let reserve: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(reserve["multipart"], true);
+        let mut parts: Vec<(&str, &Request)> = requests
+            .iter()
+            .filter_map(|request| {
+                let path = request.line.strip_prefix("PUT /r2/part/")?;
+                Some((path.split('?').next()?, request))
+            })
+            .collect();
+        assert_eq!(parts.len(), 4, "three parts plus one retry");
+        parts.retain(|(_, request)| !request.body.is_empty());
+        parts.sort_by_key(|(number, _)| *number);
+        parts.dedup_by_key(|(number, _)| *number);
+        assert_eq!(
+            parts
+                .iter()
+                .flat_map(|(_, request)| request.body.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            parts
+                .iter()
+                .map(|(_, request)| request.body.len())
+                .collect::<Vec<_>>(),
+            [4, 4, 2]
+        );
+        for (_, put) in &parts {
+            assert_no_credentials(put);
+        }
+        let mut asked: Vec<u64> = requests
+            .iter()
+            .filter(|request| request.line.starts_with("POST /api/assets/asset0001/parts"))
+            .flat_map(|request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                body["parts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|number| number.as_u64().unwrap())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        asked.sort_unstable();
+        assert_eq!(asked, [1, 2, 2, 3], "only the failed part is signed again");
+        assert!(requests.iter().any(|request| {
+            request
+                .line
+                .starts_with("POST /api/assets/asset0001/complete")
+        }));
+    }
+
+    #[test]
+    fn missing_parts_are_not_retried_and_too_large_media_reads_like_web() {
+        let (base, server) = serve(|base| {
+            vec![
+                (201, reserved(base)),
+                (200, String::new()),
+                (
+                    409,
+                    r#"{"error":"upload incomplete","code":"upload_incomplete"}"#.into(),
+                ),
+                (204, String::new()),
+                (
+                    413,
+                    r#"{"error":"photos, videos and audio can be up to 5 GiB","code":"media_too_large"}"#
+                        .into(),
+                ),
+            ]
+        });
+        let api = Api::new(&base).unwrap();
+        let attempt = || {
+            upload_with_delays(
+                &api,
+                "token",
+                "chan",
+                prepare_bytes("a.txt", b"x".to_vec(), &Compression::default()),
+                Arc::new(|_| {}),
+                Arc::new(AtomicBool::new(false)),
+                &[Duration::from_millis(1); 3],
+                &[],
+            )
+            .unwrap_err()
+            .message
+        };
+        assert_eq!(attempt(), "The upload did not arrive intact. Try again.");
+        assert_eq!(attempt(), "Photos, videos and audio can be up to 5 GB.");
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests[3].line,
+            "POST /api/assets/asset0001/cancel HTTP/1.1"
+        );
     }
 
     #[test]
