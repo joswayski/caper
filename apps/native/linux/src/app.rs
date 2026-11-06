@@ -374,6 +374,9 @@ pub struct App {
     rendered_card: RefCell<String>,
     voice_timer: RefCell<Option<gtk::Label>>,
     audio: RefCell<Option<audio::AudioDialog>>,
+    /// The sidebar's live room timers and their session starts.
+    room_timers: RefCell<Vec<(gtk::Label, u64)>>,
+    room_ticking: Cell<bool>,
     report: RefCell<Option<audio::ReportDialog>>,
 }
 
@@ -446,6 +449,8 @@ pub fn start(application: &gtk::Application, base: &str) {
         rendered_card: RefCell::default(),
         voice_timer: RefCell::default(),
         audio: RefCell::default(),
+        room_timers: RefCell::default(),
+        room_ticking: Cell::new(false),
         report: RefCell::default(),
         images,
         worker: Worker::new(api.clone(), Wakes(sender.clone())),
@@ -3713,6 +3718,7 @@ impl App {
         ui.space_name
             .set_label(detail.map_or("", |detail| detail.space.name.as_str()));
         clear_list(&ui.channels);
+        self.room_timers.borrow_mut().clear();
         let mut ids = Vec::new();
         let unread = detail.and_then(|detail| state.unread.get(&detail.space.id));
         for channel in detail.map_or(&[][..], |detail| &detail.channels) {

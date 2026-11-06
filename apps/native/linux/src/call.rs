@@ -474,8 +474,9 @@ impl App {
         state.calls.rosters.get(id).cloned().unwrap_or_default()
     }
 
-    /// The people in voice under a channel's sidebar row.
-    pub(super) fn channel_voice(&self, state: &State, id: &str) -> Option<gtk::Box> {
+    /// A channel's live room under its sidebar row, as the desktop's room
+    /// card: the session timer, Join or Switch, and who is there.
+    pub(super) fn channel_voice(self: &Rc<Self>, state: &State, id: &str) -> Option<gtk::Box> {
         let people = self.voice_people(state, id);
         if people.is_empty() {
             return None;
@@ -483,10 +484,108 @@ impl App {
         let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
         list.add_css_class("voice-roster");
         let own = self.voice.borrow().state.active_channel() == Some(id);
+        let started = if own {
+            self.voice.borrow().session_started_at
+        } else {
+            state.calls.starts.get(id).copied()
+        };
+        let name = state
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.channels.iter().find(|channel| channel.id == id))
+            .map_or_else(String::new, |channel| channel.name.clone());
+        let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let timer = label(
+            &started.map_or_else(String::new, |started| {
+                voice::session_duration(started, now_ms())
+            }),
+            &["small", "voice-timer"],
+        );
+        timer.set_hexpand(true);
+        timer.set_xalign(0.0);
+        if let Some(started) = started {
+            self.room_timers.borrow_mut().push((timer.clone(), started));
+            self.room_tick();
+        }
+        top.append(&timer);
+        let action = match self.action(state, id) {
+            Action::Join { switching, enabled } => {
+                let button: gtk::Button = crate::app::named(
+                    "GtkButton",
+                    &format!("{} #{name}", if switching { "Switch to" } else { "Join" }),
+                );
+                button.set_label(if switching { "Switch" } else { "Join" });
+                button.set_sensitive(enabled);
+                button.set_tooltip_text(Some(
+                    &state.join_unavailable(id).filter(|_| !enabled).map_or_else(
+                        || {
+                            format!(
+                                "{} #{name}",
+                                if switching {
+                                    "Switch voice to"
+                                } else {
+                                    "Join voice in"
+                                }
+                            )
+                        },
+                        str::to_owned,
+                    ),
+                ));
+                if !switching {
+                    button.add_css_class("primary");
+                }
+                let (weak, channel) = (Rc::downgrade(self), id.to_owned());
+                button.connect_clicked(move |_| {
+                    if let Some(app) = weak.upgrade() {
+                        app.join_voice(&channel);
+                    }
+                });
+                Some(button)
+            }
+            Action::Joining => {
+                let button = gtk::Button::with_label("Joining…");
+                button.set_sensitive(false);
+                button.set_tooltip_text(Some(&format!("Connecting to #{name}…")));
+                Some(button)
+            }
+            Action::Leave => None,
+        };
+        if let Some(button) = action {
+            button.add_css_class("room-action");
+            button.set_valign(gtk::Align::Center);
+            top.append(&button);
+        }
+        if started.is_some() || top.last_child() != top.first_child() {
+            list.append(&top);
+        }
         for person in &people {
             list.append(&self.occupant(person, own, 18));
         }
         Some(list)
+    }
+
+    /// Keeps the sidebar's room timers running while any show.
+    fn room_tick(self: &Rc<Self>) {
+        if self.room_ticking.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_secs(1), move || {
+            let Some(app) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let mut timers = app.room_timers.borrow_mut();
+            timers.retain(|(label, _)| label.parent().is_some());
+            if timers.is_empty() {
+                app.room_ticking.set(false);
+                return glib::ControlFlow::Break;
+            }
+            let now = now_ms();
+            for (label, started) in timers.iter() {
+                label.set_label(&voice::session_duration(*started, now));
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
     fn occupant(&self, person: &VoiceOccupant, own: bool, size: i32) -> gtk::Box {

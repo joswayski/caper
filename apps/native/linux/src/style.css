@@ -1196,3 +1196,16 @@ popover.menu check:checked {
 .dock button.device-options {
   padding: 4px 1px;
 }
+
+.voice-roster .voice-timer {
+  color: #4aa86b;
+  font-feature-settings: "tnum";
+  font-weight: 500;
+}
+
+.voice-roster button.room-action {
+  min-height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
