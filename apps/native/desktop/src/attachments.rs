@@ -1,57 +1,44 @@
-//! Showing message attachments: signed-URL freshness, refresh scheduling and
-//! an image cache keyed by attachment id, so refreshed URLs reuse textures.
-//! Mirrors `apps/web/src/chat/Attachments.tsx`. Desktop stays open for days,
-//! far longer than a message file's signed URL lives (1–2 hours: until the
-//! next-but-one full hour), so URLs are refreshed through
-//! `POST /api/assets/urls` shortly before they expire and after a 403/404
-//! load. Rendered attachments are rechecked on every frame, and a signed-in
-//! window repaints at least every `MEMBERSHIP_REFRESH` (15 s) even while
-//! idle, well inside the refresh margin.
+//! Showing message attachments in egui: decoding, gallery layout, and the
+//! egui textures for the shared attachment image cache
+//! ([`caper_client::media`]: signed-URL freshness, refresh scheduling and
+//! an image cache keyed by attachment id, so refreshed URLs reuse textures).
+//! Mirrors `apps/web/src/chat/Attachments.tsx`. A signed-in window repaints
+//! at least every `MEMBERSHIP_REFRESH` (15 s) even while idle, well inside
+//! the refresh margin.
 //!
 //! Inline images come from the `previewUrl` clients upload for large stills
 //! (JPEG), else from the PNG/JPEG/WebP/GIF/AVIF original. AVIF thumbnails
 //! use the same bundled FFmpeg decoder as the full-size viewer.
 
-use crate::model::{Attachment, AttachmentKind, AttachmentStatus};
+use crate::model::Attachment;
 pub use caper_client::attachments::{
-    EMBED_KEY, EXTERNAL_KEY, FreshUrl, THUMBNAIL_EDGE, decodable, inline_source,
+    EMBED_KEY, FreshUrl, THUMBNAIL_EDGE, decodable, inline_source,
 };
-use caper_client::attachments::{
-    FailureAction, Refresher, needs_refresh, on_fetch_failure, resolve,
-};
+use caper_client::media::{self, spoiler_key};
 use eframe::egui;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
+use std::time::Instant;
 
-const MAX_FETCHES: usize = 4;
-const MAX_TEXTURES: usize = 200;
-/// GIF frames not drawn for this long are released (a tile scrolled out of
-/// view and back soon after keeps playing without a new download).
-const GIF_IDLE: Duration = Duration::from_secs(10);
-/// Retained GIF frame pixels across every tile (each GIF decodes to at most
-/// 32 MiB); the least recently drawn give way first.
-const GIF_BUDGET: usize = 128 * 1024 * 1024;
-
-type ImageFrames = Vec<(egui::ColorImage, Duration)>;
-
-fn color_image(image: caper_client::Rgba) -> egui::ColorImage {
+fn color_image(image: &caper_client::Rgba) -> egui::ColorImage {
     egui::ColorImage::from_rgba_unmultiplied(image.size, &image.pixels)
 }
 
-/// GIF and WebP keep every composited frame and its delay, never the uploaded poster.
-fn decode_gif(bytes: &[u8]) -> Option<ImageFrames> {
-    caper_client::attachments::decode_animation(bytes).map(|frames| {
-        frames
-            .into_iter()
-            .map(|(image, delay)| (color_image(image), delay))
-            .collect()
-    })
+fn rgba(image: &egui::ColorImage) -> caper_client::Rgba {
+    caper_client::Rgba {
+        size: image.size,
+        pixels: image
+            .pixels
+            .iter()
+            .flat_map(|pixel| pixel.to_srgba_unmultiplied())
+            .collect(),
+    }
 }
 
 /// Decode a still for display only, within memory limits.
 pub fn decode_thumbnail(bytes: &[u8]) -> Option<egui::ColorImage> {
-    caper_client::attachments::decode_thumbnail(bytes).map(color_image)
+    caper_client::attachments::decode_thumbnail(bytes).map(|image| color_image(&image))
 }
 
 /// Message-order gallery slots, relative to the gallery's top-left corner.
@@ -64,130 +51,60 @@ pub fn gallery_rects(count: usize, width: f32) -> Vec<egui::Rect> {
 
 /// Blur a bounded still on the CPU; never retain animation frames in the cover.
 pub fn blur_thumbnail(image: &egui::ColorImage) -> egui::ColorImage {
-    let bytes: Vec<u8> = image
-        .pixels
-        .iter()
-        .flat_map(|pixel| pixel.to_srgba_unmultiplied())
-        .collect();
-    let rgba = image::RgbaImage::from_raw(image.size[0] as u32, image.size[1] as u32, bytes)
-        .expect("thumbnail dimensions");
-    let small = image::imageops::thumbnail(&rgba, 32, 32);
-    let blurred = image::imageops::blur(&small, 8.0);
-    egui::ColorImage::from_rgba_unmultiplied(
-        [blurred.width() as usize, blurred.height() as usize],
-        blurred.as_raw(),
-    )
+    color_image(&media::blur(&rgba(image)))
 }
-
-const BLUR_KEY: &str = "spoiler-cover:";
 
 /// Display size that reserves layout space before an image loads.
 pub fn frame_size(attachment: &Attachment) -> egui::Vec2 {
     caper_client::attachments::frame_size(attachment).into()
 }
-pub enum ImageState {
-    Ready(egui::TextureId),
-    Loading,
-    Failed,
-}
 
-enum Entry {
-    Loading {
-        url: String,
-        gif: bool,
-    },
-    Ready {
-        texture: egui::TextureHandle,
-        used: u64,
-        animation: Option<Animation>,
-    },
-    Failed {
-        url: Option<String>,
-        awaiting_refresh: bool,
-    },
-}
+pub type ImageState = media::ImageState<egui::TextureId>;
 
-pub struct Fetched {
-    generation: u64,
-    id: String,
-    result: Result<ImageFrames, Option<u16>>,
-}
+/// Attachment textures in egui.
+pub struct EguiTextures(pub egui::Context);
 
-struct Animation {
-    frames: ImageFrames,
-    started: Instant,
-    shown: usize,
-    /// When its tile last drew it.
-    seen: Instant,
-    bytes: usize,
-}
+impl media::Textures for EguiTextures {
+    type Texture = egui::TextureHandle;
+    type Id = egui::TextureId;
 
-impl Animation {
-    /// The frame `elapsed` into the loop, and how long until the next one.
-    fn frame_at(&self, elapsed: Duration) -> (usize, Duration) {
-        let duration: Duration = self.frames.iter().map(|(_, delay)| *delay).sum();
-        let mut time = elapsed.as_nanos() % duration.as_nanos().max(1);
-        for (index, (_, delay)) in self.frames.iter().enumerate() {
-            let length = delay.as_nanos();
-            if time < length {
-                return (index, Duration::from_nanos((length - time) as u64));
-            }
-            time -= length;
-        }
-        (0, Duration::from_millis(100))
+    fn create(&mut self, key: &str, image: &caper_client::Rgba) -> egui::TextureHandle {
+        self.0.load_texture(
+            format!("attachment-{key}"),
+            color_image(image),
+            egui::TextureOptions::LINEAR,
+        )
+    }
+
+    fn update(&mut self, texture: &mut egui::TextureHandle, image: &caper_client::Rgba) {
+        texture.set(color_image(image), egui::TextureOptions::LINEAR);
+    }
+
+    fn id(texture: &egui::TextureHandle) -> egui::TextureId {
+        texture.id()
     }
 }
 
 /// Per-account attachment display state. Cleared on logout.
 pub struct Media {
-    fresh: BTreeMap<String, FreshUrl>,
-    refresher: Refresher,
-    images: HashMap<String, Entry>,
-    /// Ids that already used their one refresh-and-retry after a 403/404.
-    retried: BTreeSet<String>,
-    waiting: VecDeque<(String, String, bool)>,
-    in_flight: usize,
-    open_after_refresh: Option<(String, String)>,
-    sender: Sender<Fetched>,
-    receiver: Receiver<Fetched>,
-    api: Option<crate::api::Api>,
-    generation: u64,
-    frame: u64,
+    cache: media::Media<EguiTextures>,
     copying: Option<Receiver<Option<egui::ColorImage>>>,
     pub copy_status: Option<&'static str>,
 }
 
 impl Media {
     /// `api` is `None` in tests and fixtures, which never fetch.
-    pub fn new(api: Option<crate::api::Api>) -> Self {
-        let (sender, receiver) = mpsc::channel();
+    pub fn new(context: &egui::Context, api: Option<crate::api::Api>) -> Self {
+        let context = context.clone();
         Self {
-            fresh: BTreeMap::new(),
-            refresher: Refresher::default(),
-            images: HashMap::new(),
-            retried: BTreeSet::new(),
-            waiting: VecDeque::new(),
-            in_flight: 0,
-            open_after_refresh: None,
-            sender,
-            receiver,
-            api,
-            generation: 0,
-            frame: 0,
+            cache: media::Media::new(api, Arc::new(move || context.request_repaint())),
             copying: None,
             copy_status: None,
         }
     }
 
     pub fn clear(&mut self) {
-        self.generation += 1;
-        self.fresh.clear();
-        self.refresher = Refresher::default();
-        self.images.clear();
-        self.retried.clear();
-        self.waiting.clear();
-        self.in_flight = 0;
-        self.open_after_refresh = None;
+        self.cache.clear();
         self.copying = None;
         self.copy_status = None;
     }
@@ -199,7 +116,7 @@ impl Media {
     /// Decode the original, not the cropped tile or JPEG preview. Clipboard
     /// delivery stays on the UI thread; logout drops any in-flight result.
     pub fn copy_image(&mut self, context: &egui::Context, attachment: &Attachment) {
-        let (Some(api), Some(url)) = (self.api.clone(), attachment.url.clone()) else {
+        let (Some(api), Some(url)) = (self.cache.api().cloned(), attachment.url.clone()) else {
             self.copy_status = Some("Image copying is unavailable in this preview.");
             return;
         };
@@ -223,36 +140,26 @@ impl Media {
     }
 
     pub fn resolve(&self, attachment: &Attachment) -> Attachment {
-        resolve(attachment, self.fresh.get(&attachment.id))
+        self.cache.resolve(attachment)
     }
 
     /// Note a rendered attachment; expiring URLs are queued for refresh.
     pub fn visible(&mut self, attachment: &Attachment, unix_now: i64, now: Instant) {
-        if !attachment.unavailable
-            && [&attachment.url, &attachment.preview_url]
-                .into_iter()
-                .flatten()
-                .any(|url| needs_refresh(url, unix_now))
-        {
-            self.refresher.want(&attachment.id, now);
-        }
+        self.cache.visible(attachment, unix_now, now);
     }
 
     /// Refresh one attachment's URLs as soon as possible (a viewer load failed).
     pub fn refresh_now(&mut self, id: &str) {
-        if !id.starts_with(EXTERNAL_KEY) && !self.retried.contains(id) {
-            self.retried.insert(id.to_owned());
-            self.refresher.force(id);
-        }
+        self.cache.refresh_now(id);
     }
 
     /// The client media loads use, for loads outside this cache.
     pub fn api(&self) -> Option<&crate::api::Api> {
-        self.api.as_ref()
+        self.cache.api()
     }
 
     pub fn take_refresh(&mut self, now: Instant) -> Vec<String> {
-        self.refresher.take(now)
+        self.cache.take_refresh(now)
     }
 
     /// Apply a refresh response. Returns a URL to open if an open waited on it.
@@ -261,32 +168,13 @@ impl Media {
         requested: &[String],
         urls: BTreeMap<String, FreshUrl>,
     ) -> Option<String> {
-        for (id, fresh) in urls {
-            if requested.contains(&id) {
-                self.fresh.insert(id, fresh);
-            }
-        }
-        let (id, fallback) = self
-            .open_after_refresh
-            .take_if(|(id, _)| requested.contains(id))?;
-        Some(
-            self.fresh
-                .get(&id)
-                .and_then(|fresh| fresh.url.clone())
-                .unwrap_or(fallback),
-        )
+        self.cache.refreshed(requested, urls)
     }
 
     /// Open the full file in the system browser or player, refreshing first
     /// when the signed URL is about to expire.
     pub fn open(&mut self, context: &egui::Context, attachment: &Attachment, unix_now: i64) {
-        let Some(url) = attachment.url.clone() else {
-            return;
-        };
-        if needs_refresh(&url, unix_now) && self.api.is_some() {
-            self.refresher.force(&attachment.id);
-            self.open_after_refresh = Some((attachment.id.clone(), url));
-        } else {
+        if let Some(url) = self.cache.open(attachment, unix_now) {
             context.open_url(egui::OpenUrl::new_tab(url));
         }
     }
@@ -294,9 +182,8 @@ impl Media {
     /// Show a locally decoded image for an attachment (own uploads), so the
     /// pending row and the confirmed message need no download.
     pub fn insert_local(&mut self, context: &egui::Context, id: &str, image: egui::ColorImage) {
-        self.local_spoiler(context, id, &image);
-        // A late local thumbnail must not replace an already loading/playing GIF.
-        self.insert_original(context, id, image);
+        self.cache
+            .insert_local(&mut EguiTextures(context.clone()), id, rgba(&image));
     }
 
     pub fn local_spoiler(
@@ -305,82 +192,26 @@ impl Media {
         id: &str,
         image: &egui::ColorImage,
     ) -> ImageState {
-        let cover_id = format!("{BLUR_KEY}{id}");
-        if !self.images.contains_key(&cover_id) {
-            let texture = context.load_texture(
-                &cover_id,
-                blur_thumbnail(image),
-                egui::TextureOptions::LINEAR,
-            );
-            self.images.insert(
-                cover_id.clone(),
-                Entry::Ready {
-                    texture,
-                    used: self.frame,
-                    animation: None,
-                },
-            );
+        // Drawn every frame: convert the pixels only for a cover not made yet.
+        let key = spoiler_key(id);
+        if self.cache.texture(&key).is_some() {
+            return self.cache.image(&key, None);
         }
-        self.image_request(&cover_id, None, false)
-    }
-
-    fn insert_original(&mut self, context: &egui::Context, id: &str, image: egui::ColorImage) {
-        // A late local thumbnail must not replace an already loading/playing GIF.
-        if matches!(
-            self.images.get(id),
-            Some(
-                Entry::Loading { gif: true, .. }
-                    | Entry::Ready {
-                        animation: Some(_),
-                        ..
-                    }
-            )
-        ) {
-            return;
-        }
-        let texture = context.load_texture(
-            format!("attachment-{id}"),
-            image,
-            egui::TextureOptions::LINEAR,
-        );
-        self.images.insert(
-            id.to_owned(),
-            Entry::Ready {
-                texture,
-                used: self.frame,
-                animation: None,
-            },
-        );
+        self.cache
+            .local_spoiler(&mut EguiTextures(context.clone()), id, &rgba(image))
     }
 
     /// The image for an attachment id, starting a load from `url` if needed.
     pub fn image(&mut self, id: &str, url: Option<&str>) -> ImageState {
-        self.image_request(id, url, false)
+        self.cache.image(id, url)
     }
 
     /// A separate static texture, so revealing always uses the untouched original.
     pub fn spoiler(&mut self, attachment: &Attachment) -> ImageState {
-        if attachment.unavailable
-            || attachment.status == AttachmentStatus::Failed
-            || !matches!(
-                attachment.kind,
-                AttachmentKind::Image | AttachmentKind::Video
-            )
-        {
-            return ImageState::Failed;
-        }
-        self.image_request(
-            &format!("{BLUR_KEY}{}", attachment.id),
-            attachment
-                .preview_url
-                .as_deref()
-                .or_else(|| inline_source(attachment)),
-            false,
-        )
+        self.cache.spoiler(attachment)
     }
 
-    /// Called only for a visible, ready GIF tile. A local first-frame preview
-    /// is replaced once by its original, never on signature refresh alone.
+    /// Called only for a visible, ready GIF tile.
     pub fn gif(
         &mut self,
         context: &egui::Context,
@@ -389,83 +220,22 @@ impl Media {
         playing: bool,
         now: Instant,
     ) -> ImageState {
-        if matches!(
-            self.images.get(id),
-            Some(Entry::Ready {
-                animation: None,
-                ..
-            })
-        ) {
-            self.images.remove(id);
+        let (state, next) =
+            self.cache
+                .gif(&mut EguiTextures(context.clone()), id, url, playing, now);
+        // Repaint when the next frame is due, not continuously.
+        if let Some(next) = next {
+            context.request_repaint_after(next);
         }
-        if let Some(Entry::Ready {
-            texture,
-            used,
-            animation: Some(animation),
-        }) = self.images.get_mut(id)
-        {
-            *used = self.frame;
-            animation.seen = now;
-            let (index, next) = if playing {
-                animation.frame_at(now.saturating_duration_since(animation.started))
-            } else {
-                (0, Duration::MAX)
-            };
-            if animation.shown != index {
-                texture.set(
-                    animation.frames[index].0.clone(),
-                    egui::TextureOptions::LINEAR,
-                );
-                animation.shown = index;
-            }
-            // Repaint when the next frame is due, not continuously.
-            if playing && animation.frames.len() > 1 {
-                context.request_repaint_after(next);
-            }
-            return ImageState::Ready(texture.id());
-        }
-        self.image_request(id, url, true)
-    }
-
-    fn image_request(&mut self, id: &str, url: Option<&str>, gif: bool) -> ImageState {
-        match self.images.get_mut(id) {
-            Some(Entry::Ready { texture, used, .. }) => {
-                *used = self.frame;
-                return ImageState::Ready(texture.id());
-            }
-            Some(Entry::Loading { .. }) => return ImageState::Loading,
-            // Retry once when the refresh produced a different URL.
-            Some(Entry::Failed {
-                url: failed,
-                awaiting_refresh,
-                ..
-            }) if !(*awaiting_refresh && url.is_some() && url != failed.as_deref()) => {
-                return ImageState::Failed;
-            }
-            Some(Entry::Failed { .. }) | None => {}
-        }
-        // Without a URL (pending uploads, unsigned CDN) only a cached or local
-        // image can show; nothing is recorded so a later URL still loads.
-        let Some(url) = url else {
-            return ImageState::Failed;
-        };
-        self.images.insert(
-            id.to_owned(),
-            Entry::Loading {
-                url: url.into(),
-                gif,
-            },
-        );
-        self.waiting.push_back((id.to_owned(), url.to_owned(), gif));
-        ImageState::Loading
+        state
     }
 
     /// Work waiting for the next [`Media::poll`] or refresh request.
     pub fn busy(&self) -> bool {
-        !self.waiting.is_empty() || !self.refresher.is_empty()
+        self.cache.busy()
     }
 
-    /// Apply finished loads, start queued ones, and bound texture memory.
+    /// Apply finished loads and copies, start queued loads, and bound texture memory.
     pub fn poll(&mut self, context: &egui::Context) {
         if let Some(result) = self
             .copying
@@ -480,152 +250,8 @@ impl Media {
                 "Couldn’t copy image. Try again."
             });
         }
-        self.poll_at(context, Instant::now());
-    }
-
-    fn poll_at(&mut self, context: &egui::Context, now: Instant) {
-        self.frame += 1;
-        let results: Vec<_> = self.receiver.try_iter().collect();
-        for fetched in results {
-            if fetched.generation != self.generation {
-                continue;
-            }
-            self.in_flight = self.in_flight.saturating_sub(1);
-            let Some(Entry::Loading { url, gif }) = self.images.get(&fetched.id) else {
-                continue;
-            };
-            let url = url.clone();
-            let gif = *gif;
-            match fetched.result {
-                Ok(frames) if !frames.is_empty() => {
-                    let texture = context.load_texture(
-                        format!("attachment-{}", fetched.id),
-                        frames[0].0.clone(),
-                        egui::TextureOptions::LINEAR,
-                    );
-                    self.images.insert(
-                        fetched.id,
-                        Entry::Ready {
-                            texture,
-                            used: self.frame,
-                            animation: gif.then(|| Animation {
-                                bytes: frames.iter().map(|(image, _)| image.pixels.len() * 4).sum(),
-                                frames,
-                                started: now,
-                                shown: 0,
-                                seen: now,
-                            }),
-                        },
-                    );
-                }
-                Ok(_) => {
-                    self.images.remove(&fetched.id);
-                }
-                Err(status) => {
-                    let action = on_fetch_failure(status, self.retried.contains(&fetched.id));
-                    let retry = action == FailureAction::RefreshThenRetry
-                        && !fetched.id.starts_with(EXTERNAL_KEY);
-                    if retry {
-                        self.retried.insert(fetched.id.clone());
-                        self.refresher
-                            .force(fetched.id.strip_prefix(BLUR_KEY).unwrap_or(&fetched.id));
-                    }
-                    self.images.insert(
-                        fetched.id,
-                        Entry::Failed {
-                            url: Some(url),
-                            awaiting_refresh: retry,
-                        },
-                    );
-                }
-            }
-        }
-        while self.in_flight < MAX_FETCHES
-            && let Some((id, url, gif)) = self.waiting.pop_front()
-        {
-            let Some(api) = self.api.clone() else {
-                // Tests and fixtures: leave the entry loading.
-                self.in_flight += 1;
-                continue;
-            };
-            self.in_flight += 1;
-            let sender = self.sender.clone();
-            let context = context.clone();
-            let generation = self.generation;
-            std::thread::spawn(move || {
-                let result = api.fetch_media(&url).and_then(|bytes| {
-                    if gif {
-                        decode_gif(&bytes)
-                    } else {
-                        decode_thumbnail(&bytes).map(|image| {
-                            let image = if id.starts_with(BLUR_KEY) {
-                                blur_thumbnail(&image)
-                            } else {
-                                image
-                            };
-                            vec![(image, Duration::ZERO)]
-                        })
-                    }
-                    .ok_or(None)
-                });
-                let _ = sender.send(Fetched {
-                    generation,
-                    id,
-                    result,
-                });
-                context.request_repaint();
-            });
-        }
-        // GIF frames are much larger than one texture. Release animations
-        // whose tiles have been out of view for a while, not just at 200
-        // images, then the least recently drawn past the budget.
-        self.images.retain(|_, entry| {
-            !matches!(entry,
-                Entry::Ready { animation: Some(animation), .. }
-                    if now.saturating_duration_since(animation.seen) >= GIF_IDLE
-            )
-        });
-        let mut animated: Vec<(Instant, u64, usize, String)> = self
-            .images
-            .iter()
-            .filter_map(|(id, entry)| match entry {
-                Entry::Ready {
-                    animation: Some(animation),
-                    used,
-                    ..
-                } => Some((animation.seen, *used, animation.bytes, id.clone())),
-                _ => None,
-            })
-            .collect();
-        let mut bytes: usize = animated.iter().map(|(_, _, bytes, _)| bytes).sum();
-        animated.sort();
-        for (_, used, size, id) in animated {
-            // Tiles drawn last frame stay, so on-screen GIFs never reload.
-            if bytes <= GIF_BUDGET || used + 1 >= self.frame {
-                break;
-            }
-            self.images.remove(&id);
-            bytes -= size;
-        }
-        let ready = self
-            .images
-            .values()
-            .filter(|entry| matches!(entry, Entry::Ready { .. }))
-            .count();
-        if ready > MAX_TEXTURES {
-            let mut used: Vec<(u64, String)> = self
-                .images
-                .iter()
-                .filter_map(|(id, entry)| match entry {
-                    Entry::Ready { used, .. } => Some((*used, id.clone())),
-                    _ => None,
-                })
-                .collect();
-            used.sort();
-            for (_, id) in used.into_iter().take(ready - MAX_TEXTURES) {
-                self.images.remove(&id);
-            }
-        }
+        self.cache
+            .poll(&mut EguiTextures(context.clone()), Instant::now());
     }
 }
 
@@ -633,6 +259,8 @@ impl Media {
 mod tests {
     use super::*;
     use crate::TestPass as _;
+    use crate::model::{AttachmentKind, AttachmentStatus};
+    use std::time::Duration;
 
     fn attachment(url: Option<&str>) -> Attachment {
         Attachment {
@@ -655,12 +283,6 @@ mod tests {
             waveform: None,
             transcript: None,
         }
-    }
-
-    const NOW: i64 = 1_790_000_000;
-
-    fn signed(expiry: i64) -> String {
-        format!("https://cdn.caper.chat/original/asset1?exp={expiry}&sig=abc")
     }
 
     #[test]
@@ -693,7 +315,7 @@ mod tests {
             stream.write_all(&bytes).unwrap();
         });
         let context = egui::Context::default();
-        let mut media = Media::new(Some(crate::api::Api::new(&base).unwrap()));
+        let mut media = Media::new(&context, Some(crate::api::Api::new(&base).unwrap()));
         media.copy_image(&context, &attachment(Some(&format!("{base}/original"))));
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -714,48 +336,6 @@ mod tests {
         }
         server.join().unwrap();
     }
-
-    #[test]
-    fn spoiler_covers_are_blurred_static_cached_and_separate_from_originals() {
-        let context = egui::Context::default();
-        let mut media = Media::new(None);
-        let mut image = egui::ColorImage::filled([64, 64], egui::Color32::RED);
-        for y in 0..64 {
-            for x in 32..64 {
-                image[(x, y)] = egui::Color32::BLUE;
-            }
-        }
-        let blurred = blur_thumbnail(&image);
-        assert_eq!(blurred.size, [32, 32]);
-        assert!(blurred[(15, 16)].r() > 0 && blurred[(15, 16)].b() > 0);
-        media.insert_local(&context, "asset1", image);
-        let mut photo = attachment(Some(&signed(NOW)));
-        photo.spoiler = true;
-        let ImageState::Ready(cover) = media.spoiler(&photo) else {
-            panic!("local cover")
-        };
-        let ImageState::Ready(original) = media.image("asset1", None) else {
-            panic!("original")
-        };
-        assert_ne!(cover, original);
-        assert!(matches!(media.spoiler(&photo), ImageState::Ready(id) if id == cover));
-        photo.unavailable = true;
-        assert!(matches!(media.spoiler(&photo), ImageState::Failed));
-
-        let mut remote = Media::new(None);
-        photo.unavailable = false;
-        photo.content_type = "image/gif".into();
-        assert!(matches!(remote.spoiler(&photo), ImageState::Loading));
-        assert_eq!(
-            remote.waiting.front().unwrap().1,
-            photo.preview_url.unwrap()
-        );
-        assert!(
-            !remote.waiting.front().unwrap().2,
-            "hidden GIFs decode only a still"
-        );
-    }
-
     #[test]
     #[ignore = "needs CAPER_FFMPEG with AVIF decoding (the bundled release binary)"]
     fn avif_originals_decode_for_inline_and_spoiler_display() {
@@ -794,362 +374,5 @@ mod tests {
         let image = decode_thumbnail(&bytes).unwrap();
         assert_eq!(image.size, [720, 180]);
         assert!(decode_thumbnail(b"not an image").is_none());
-    }
-
-    #[test]
-    fn gif_and_webp_tiles_replace_local_stills_play_loop_and_honor_reduced_motion() {
-        let mut bytes = Vec::new();
-        {
-            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
-            for (color, delay) in [([255, 0, 0, 255], 80), ([0, 0, 255, 255], 800)] {
-                encoder
-                    .encode_frame(image::Frame::from_parts(
-                        image::RgbaImage::from_pixel(4, 2, image::Rgba(color)),
-                        0,
-                        0,
-                        image::Delay::from_numer_denom_ms(delay, 1),
-                    ))
-                    .unwrap();
-            }
-        }
-        // Same red (80ms), blue (800ms) frames, independently encoded as lossless WebP.
-        // magick -size 4x2 -delay 8 xc:red -delay 80 xc:blue -loop 0 -define webp:lossless=true animation.webp
-        for bytes in [
-            bytes.as_slice(),
-            include_bytes!("../../../../shared/klipy/animation.webp").as_slice(),
-        ] {
-            let context = egui::Context::default();
-            let mut media = Media::new(None);
-            let url = signed(NOW);
-            media.insert_local(&context, "asset1", decode_thumbnail(bytes).unwrap());
-            assert!(matches!(
-                media.gif(&context, "asset1", Some(&url), true, Instant::now()),
-                ImageState::Loading
-            ));
-            media.poll(&context);
-            media
-                .sender
-                .send(Fetched {
-                    generation: media.generation,
-                    id: "asset1".into(),
-                    result: Ok(decode_gif(bytes).unwrap()),
-                })
-                .unwrap();
-            media.poll(&context);
-            let now = Instant::now();
-            let ImageState::Ready(texture) = media.gif(&context, "asset1", Some(&url), true, now)
-            else {
-                panic!("GIF must load")
-            };
-            let assert_color = |expected: egui::Color32| {
-                let mut delta = context.tex_manager().write().take_delta();
-                let egui::ImageData::Color(image) =
-                    delta.set[&texture].last().unwrap().image.clone();
-                delta.clear();
-                assert_eq!(image.size, [4, 2]);
-                // WebP's compositing rounds by one channel value in the image decoder.
-                for (actual, expected) in image.pixels[0]
-                    .to_array()
-                    .into_iter()
-                    .zip(expected.to_array())
-                {
-                    assert!(
-                        actual.abs_diff(expected) <= 1,
-                        "expected {expected}, got {actual}"
-                    );
-                }
-            };
-            assert_color(egui::Color32::RED);
-            // Re-signing and a late local thumbnail cannot restart or freeze the GIF.
-            media.insert_local(&context, "asset1", decode_thumbnail(bytes).unwrap());
-            media.gif(
-                &context,
-                "asset1",
-                Some(&signed(NOW + 100)),
-                true,
-                now + Duration::from_millis(200),
-            );
-            assert_color(egui::Color32::BLUE);
-            media.gif(
-                &context,
-                "asset1",
-                Some(&url),
-                true,
-                now + Duration::from_millis(920),
-            );
-            assert_color(egui::Color32::RED);
-            media.gif(
-                &context,
-                "asset1",
-                Some(&url),
-                true,
-                now + Duration::from_millis(1100),
-            );
-            assert_color(egui::Color32::BLUE);
-            media.gif(
-                &context,
-                "asset1",
-                Some(&url),
-                false,
-                now + Duration::from_millis(1100),
-            );
-            assert_color(egui::Color32::RED);
-        }
-    }
-
-    #[test]
-    fn gif_tiles_keep_the_whole_animation_when_full_size_frames_exceed_the_budget() {
-        let mut bytes = Vec::new();
-        {
-            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
-            for index in 0..60 {
-                let color = match index {
-                    0 => [255, 0, 0, 255],
-                    59 => [0, 0, 255, 255],
-                    _ => [0, 255, 0, 255],
-                };
-                encoder
-                    .encode_frame(image::Frame::from_parts(
-                        image::RgbaImage::from_pixel(720, 400, image::Rgba(color)),
-                        0,
-                        0,
-                        image::Delay::from_numer_denom_ms(if index == 59 { 800 } else { 100 }, 1),
-                    ))
-                    .unwrap();
-            }
-        }
-        let frames = decode_gif(&bytes).unwrap();
-        assert_eq!(frames.len(), 60, "a normal GIF must not become a still");
-        assert!(
-            frames
-                .iter()
-                .map(|(frame, _)| frame.pixels.len() * 4)
-                .sum::<usize>()
-                <= 32 * 1024 * 1024
-        );
-        let context = egui::Context::default();
-        let mut media = Media::new(None);
-        let url = signed(NOW);
-        media.gif(&context, "asset1", Some(&url), true, Instant::now());
-        media.poll(&context);
-        media
-            .sender
-            .send(Fetched {
-                generation: media.generation,
-                id: "asset1".into(),
-                result: Ok(frames),
-            })
-            .unwrap();
-        media.poll(&context);
-        let now = Instant::now();
-        for (elapsed, playing, expected) in [
-            (0, true, egui::Color32::RED),
-            (5910, true, egui::Color32::BLUE),
-            (6710, true, egui::Color32::RED),
-            (6810, true, egui::Color32::GREEN),
-            (6810, false, egui::Color32::RED),
-        ] {
-            let ImageState::Ready(texture) = media.gif(
-                &context,
-                "asset1",
-                Some(&url),
-                playing,
-                now + Duration::from_millis(elapsed),
-            ) else {
-                panic!("GIF must load");
-            };
-            let mut delta = context.tex_manager().write().take_delta();
-            let egui::ImageData::Color(image) = &delta.set[&texture].last().unwrap().image;
-            let pixel = image.pixels[0];
-            delta.clear();
-            assert_eq!(pixel, expected, "frame at {elapsed}ms");
-        }
-    }
-
-    #[test]
-    fn gif_frames_outlive_a_short_scroll_away() {
-        let context = egui::Context::default();
-        let mut media = Media::new(None);
-        let url = signed(NOW);
-        let start = Instant::now();
-        media.gif(&context, "asset1", Some(&url), true, start);
-        media.poll_at(&context, start);
-        let frames = vec![
-            (
-                egui::ColorImage::filled([4, 4], egui::Color32::RED),
-                Duration::from_millis(100),
-            ),
-            (
-                egui::ColorImage::filled([4, 4], egui::Color32::BLUE),
-                Duration::from_millis(100),
-            ),
-        ];
-        media
-            .sender
-            .send(Fetched {
-                generation: media.generation,
-                id: "asset1".into(),
-                result: Ok(frames),
-            })
-            .unwrap();
-        media.poll_at(&context, start);
-        assert!(matches!(
-            media.gif(&context, "asset1", Some(&url), true, start),
-            ImageState::Ready(_)
-        ));
-        // Out of view for a few frames and seconds: the frames stay.
-        for frame in 1..=5 {
-            media.poll_at(&context, start + Duration::from_secs(frame));
-        }
-        assert!(matches!(
-            media.gif(
-                &context,
-                "asset1",
-                Some(&url),
-                true,
-                start + Duration::from_secs(5)
-            ),
-            ImageState::Ready(_)
-        ));
-        assert!(media.waiting.is_empty(), "scrolling back needs no download");
-        // Unseen for longer: released.
-        media.poll_at(&context, start + Duration::from_secs(5) + GIF_IDLE);
-        assert!(!media.images.contains_key("asset1"));
-    }
-
-    fn deliver(media: &Media, result: Result<egui::ColorImage, Option<u16>>) {
-        media
-            .sender
-            .send(Fetched {
-                generation: media.generation,
-                id: "asset1".into(),
-                result: result.map(|image| vec![(image, Duration::ZERO)]),
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn forbidden_load_refreshes_retries_once_then_gives_up() {
-        let context = egui::Context::default();
-        let mut media = Media::new(None);
-        let first = signed(NOW);
-        assert!(matches!(
-            media.image("asset1", Some(&first)),
-            ImageState::Loading
-        ));
-        media.poll(&context);
-        deliver(&media, Err(Some(403)));
-        media.poll(&context);
-        assert!(matches!(
-            media.image("asset1", Some(&first)),
-            ImageState::Failed
-        ));
-        let requested = media.take_refresh(Instant::now());
-        assert_eq!(requested, ["asset1"]);
-        let fresh = FreshUrl {
-            url: Some(signed(NOW + 90_000)),
-            preview_url: None,
-        };
-        media.refreshed(
-            &requested,
-            BTreeMap::from([("asset1".into(), fresh.clone())]),
-        );
-        let resolved = media.resolve(&attachment(Some(&first)));
-        assert_eq!(resolved.url, fresh.url);
-        let fresh_url = fresh.url.unwrap();
-        assert!(matches!(
-            media.image("asset1", Some(&fresh_url)),
-            ImageState::Loading
-        ));
-        media.poll(&context);
-        deliver(&media, Err(Some(404)));
-        media.poll(&context);
-        assert!(matches!(
-            media.image("asset1", Some(&fresh_url)),
-            ImageState::Failed
-        ));
-        assert!(
-            media.take_refresh(Instant::now()).is_empty(),
-            "only one retry"
-        );
-    }
-
-    #[test]
-    fn external_media_failures_never_ask_caper_to_re_sign() {
-        let context = egui::Context::default();
-        let mut media = Media::new(None);
-        let id = format!("{EXTERNAL_KEY}https://static.klipy.com/a.gif");
-        assert!(matches!(
-            media.image(&id, Some("https://static.klipy.com/a.gif")),
-            ImageState::Loading
-        ));
-        media.poll(&context);
-        media
-            .sender
-            .send(Fetched {
-                generation: media.generation,
-                id: id.clone(),
-                result: Err(Some(404)),
-            })
-            .unwrap();
-        media.poll(&context);
-        assert!(matches!(
-            media.image(&id, Some("https://static.klipy.com/a.gif")),
-            ImageState::Failed
-        ));
-        media.refresh_now(&id); // Opening the failed original in the viewer must not sign it either.
-        assert!(media.take_refresh(Instant::now()).is_empty());
-    }
-
-    #[test]
-    fn loaded_images_are_cached_by_id_across_url_changes() {
-        let context = egui::Context::default();
-        let mut media = Media::new(None);
-        media.image("asset1", Some(&signed(NOW)));
-        media.poll(&context);
-        deliver(
-            &media,
-            Ok(egui::ColorImage::filled([2, 2], egui::Color32::WHITE)),
-        );
-        media.poll(&context);
-        assert!(matches!(
-            media.image("asset1", Some(&signed(NOW + 1))),
-            ImageState::Ready(_)
-        ));
-        // Results from before a logout are ignored.
-        media.clear();
-        assert!(matches!(
-            media.image("asset1", Some(&signed(NOW))),
-            ImageState::Loading
-        ));
-    }
-
-    #[test]
-    fn expiring_visible_urls_are_queued_and_opens_wait_for_refresh() {
-        let mut media = Media::new(None);
-        let now = Instant::now();
-        media.visible(&attachment(Some(&signed(NOW + 86_400))), NOW, now);
-        assert!(media.take_refresh(now).is_empty());
-        media.visible(&attachment(Some(&signed(NOW + 60))), NOW, now);
-        assert_eq!(media.take_refresh(now), ["asset1"]);
-        // A pending open receives the refreshed URL, or the old one when the
-        // server omitted the file.
-        media.open_after_refresh = Some(("asset1".into(), signed(NOW + 60)));
-        assert_eq!(
-            media.refreshed(&["asset1".into()], BTreeMap::new()),
-            Some(signed(NOW + 60))
-        );
-        media.open_after_refresh = Some(("asset1".into(), signed(NOW + 60)));
-        let fresh = FreshUrl {
-            url: Some(signed(NOW + 90_000)),
-            preview_url: None,
-        };
-        assert_eq!(
-            media.refreshed(
-                &["asset1".into()],
-                BTreeMap::from([("asset1".into(), fresh)])
-            ),
-            Some(signed(NOW + 90_000))
-        );
     }
 }

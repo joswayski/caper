@@ -45,8 +45,8 @@ use caper_client::reactions::{
 use caper_client::sign_in::{MAX_RESENDS, clean_sign_in_code, resend_countdown, resend_wait};
 use caper_client::{
     api, attachment_edit, avatar_images, blocking, compress, effects, feedback, gateway, grouping,
-    invites, media, media_gateway, media_proxy, model, names, navigation, notifications,
-    os_notifications, startup, state, uploads,
+    invites, media_gateway, media_proxy, model, names, navigation, notifications, os_notifications,
+    startup, state, uploads, voice_media as media,
 };
 use chrono::{DateTime, Local, TimeZone};
 use default_slider::default_slider;
@@ -1537,7 +1537,7 @@ impl CaperApp {
         let api_base = api.base().clone();
         // Static fixtures never fetch media; the playback fixture enables
         // loopback attachment media explicitly below.
-        let media = attachments::Media::new(fixture.is_none().then(|| api.clone()));
+        let media = attachments::Media::new(context, fixture.is_none().then(|| api.clone()));
         let pictures = pictures::Shared::of(context);
         pictures.install(fixture.is_none().then(|| api.clone()));
         let whats_new = whats_new::WhatsNew::new(
@@ -1997,8 +1997,10 @@ impl CaperApp {
                     app.install_attachment_editor_fixture(context, name);
                 } else if name == "parity-klipy-media" {
                     let base = app.api_base.clone();
-                    app.media =
-                        attachments::Media::new(Some(api::Api::new(base.as_str()).unwrap()));
+                    app.media = attachments::Media::new(
+                        context,
+                        Some(api::Api::new(base.as_str()).unwrap()),
+                    );
                     let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
                     for (index, format) in ["gif", "webp"].into_iter().enumerate() {
                         messages[index + 2].content.text.clear();
@@ -2022,8 +2024,10 @@ impl CaperApp {
                 } else if name == "parity-inline-videos" {
                     app.install_attachments_fixture();
                     let base = app.api_base.clone();
-                    app.media =
-                        attachments::Media::new(Some(api::Api::new(base.as_str()).unwrap()));
+                    app.media = attachments::Media::new(
+                        context,
+                        Some(api::Api::new(base.as_str()).unwrap()),
+                    );
                     let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
                     let mut video = messages[2].content.attachments[2].clone();
                     video.name = "TEST FIXTURE inline video.mp4".into();
