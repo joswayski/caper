@@ -7,6 +7,9 @@ import CaperCore
     private let document = NativeView(NativeStyle.conversation)
     private var geometry = NativeTimelineLayout()
     private var messages: [ChatMessage] = []
+    private var entries: [TimelineEntry] = []
+    private var blocked: Set<String> = []
+    private var revealed: Set<String> = []
     private var rows: [String: MessageCell] = [:]
     private var rendering = false
     private var conversationID: String?
@@ -36,21 +39,29 @@ import CaperCore
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil) {
+    func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil, blocked: Set<String> = []) {
         let changedConversation = self.conversationID != conversationID
         let anchor = geometry.anchor(at: contentView.bounds.minY)
         let anchorTextTop = anchor.flatMap { rows[$0.id]?.textTop }
-        let previous = Dictionary(uniqueKeysWithValues: self.messages.enumerated().map { ($0.element.id, $0.offset) })
+        if changedConversation { revealed = [] }
+        let next = BlockedMessages.entries(messages, blocked: blocked, viewerID: viewerID, revealed: revealed).flatMap { entry -> [TimelineEntry] in
+            if case let .blocked(run) = entry, run.revealed { return [entry] + run.messages.map(TimelineEntry.message) }
+            return [entry]
+        }
+        let previous = Dictionary(uniqueKeysWithValues: entries.enumerated().map { (key($0.element), $0.offset) })
         var invalid = Set<String>()
-        for (index, message) in messages.enumerated() {
-            guard let oldIndex = previous[message.id] else { invalid.insert(message.id); continue }
-            let oldPredecessor = oldIndex > 0 ? self.messages[oldIndex - 1] : nil
-            let predecessor = index > 0 ? messages[index - 1] : nil
+        for (index, entry) in next.enumerated() {
+            let id = key(entry)
+            guard let oldIndex = previous[id] else { invalid.insert(id); continue }
+            let oldPredecessor = oldIndex > 0 ? entries[oldIndex - 1] : nil
+            let predecessor = index > 0 ? next[index - 1] : nil
             // Deleting or inserting a predecessor can change grouping even
             // when this message itself has not changed.
-            if self.messages[oldIndex] != message || oldPredecessor != predecessor { invalid.insert(message.id) }
+            if entries[oldIndex] != entry || oldPredecessor != predecessor { invalid.insert(id) }
         }
         self.messages = messages
+        entries = next
+        self.blocked = blocked
         self.conversationID = conversationID
         self.viewerID = viewerID
         if changedConversation {
@@ -60,10 +71,19 @@ import CaperCore
             rows.values.forEach { $0.removeFromSuperview() }
             rows.removeAll()
         }
-        geometry.replace(ids: messages.map(\.id), width: contentSize.width, invalidating: invalid)
+        geometry.replace(ids: entries.map(key), width: contentSize.width, invalidating: invalid)
         realize(anchor: changedConversation ? nil : anchor, anchorTextTop: anchorTextTop)
-        let currentIDs = Set(messages.map(\.id))
+        let currentIDs = Set(entries.map(key))
         selection = selection.filter { currentIDs.contains($0.key) }
+    }
+
+    /// A revealed run keeps its header alongside its messages; their native
+    /// identities must be distinct even though SwiftUI nests them in one row.
+    private func key(_ entry: TimelineEntry) -> String {
+        switch entry {
+        case .message(let message): message.id
+        case .blocked(let run): run.id
+        }
     }
 
     override func layout() {
@@ -71,7 +91,7 @@ import CaperCore
         guard !rendering else { return }
         let anchor = geometry.anchor(at: contentView.bounds.minY)
         if geometry.width != contentSize.width {
-            geometry.replace(ids: messages.map(\.id), width: contentSize.width)
+            geometry.replace(ids: entries.map(key), width: contentSize.width)
         }
         realize(anchor: anchor)
     }
@@ -122,7 +142,7 @@ import CaperCore
             }
             needed = geometry.visibleRange(offset: offset(), height: viewport, overscan: 100)
         }
-        let retained = Set(needed.map { messages[$0].id })
+        let retained = Set(needed.map { key(entries[$0]) })
         for id in Array(rows.keys) where !retained.contains(id) {
             guard let row = rows.removeValue(forKey: id) else { continue }
             if row.body.selectedRange().length > 0 { selection[id] = (row.body.string, row.body.selectedRange()) }
@@ -139,28 +159,40 @@ import CaperCore
         contentView.scroll(to: NSPoint(x: 0, y: offset()))
         reflectScrolledClipView(contentView)
         // These are real, selectable NSTextViews/buttons, not label-only mirrors.
-        document.setAccessibilityChildren(needed.compactMap { rows[messages[$0].id] })
+        document.setAccessibilityChildren(needed.compactMap { rows[key(entries[$0])] })
     }
 
     private func cell(at index: Int) -> MessageCell {
-        let message = messages[index]
+        let entry = entries[index], id = key(entry)
         let row: MessageCell
-        if let existing = rows[message.id] { row = existing }
+        if let existing = rows[id] { row = existing }
         else {
             row = MessageCell()
             row.openAuthor = { [weak self] author, view in self?.openAuthor?(author, view) }
             row.body.openMention = { [weak self] mention, view, rect in self?.openMention?(mention, view, rect) }
-            rows[message.id] = row
+            rows[id] = row
             document.addSubview(row)
         }
-        let previous = index > 0 ? messages[index - 1] : nil
+        let previous = index > 0 ? entries[index - 1] : nil
         // The divider belongs to this realized row, so prepending can remove
         // it using the same text anchor as an author-header grouping change.
-        let day = previous.map { NativePresentation.sameDay($0.createdAt, message.createdAt) } == true
-            ? nil : NativePresentation.dayLabel(message.createdAt)
-        row.configure(message, grouped: NativePresentation.grouped(message, after: previous), day: day,
-            viewerID: viewerID, react: react)
-        if let saved = selection.removeValue(forKey: message.id), saved.text == row.body.string,
+        let day = previous.map { NativePresentation.sameDay($0.lastCreatedAt, entry.firstCreatedAt) } == true
+            ? nil : NativePresentation.dayLabel(entry.firstCreatedAt)
+        switch entry {
+        case .message(let message):
+            let predecessor: ChatMessage? = if case .message(let prior) = previous { prior } else { nil }
+            let revealedBlocked = BlockedMessages.isHidden(message, blocked: blocked, viewerID: viewerID)
+            row.configure(message, grouped: NativePresentation.grouped(message, after: predecessor), day: revealedBlocked ? nil : day,
+                viewerID: viewerID, revealedBlocked: revealedBlocked, react: react)
+        case .blocked(let run):
+            row.configure(run, day: day) { [weak self] in
+                guard let self else { return }
+                self.revealed = BlockedMessages.toggling(run, in: self.revealed)
+                self.followEnd = false
+                self.update(self.messages, conversationID: self.conversationID, viewerID: self.viewerID, blocked: self.blocked)
+            }
+        }
+        if let saved = selection.removeValue(forKey: id), saved.text == row.body.string,
            NSMaxRange(saved.range) <= row.body.string.utf16.count {
             row.body.setSelectedRange(saved.range)
         }
@@ -188,6 +220,11 @@ import CaperCore
     private let dayTrailing = CALayer()
     private let mentionTint = CALayer()
     private let mentionBar = CALayer()
+    private let blockedBar = CALayer()
+    private var blockedRun: BlockedRun?
+    private var revealedBlocked = false
+    private var toggleBlocked: (() -> Void)?
+    private lazy var blockedToggle = NativeButton("") { [weak self] in self?.toggleBlocked?() }
     private var reactions: [NativeButton] = []
     private var message: ChatMessage?
     private var grouped = false
@@ -206,7 +243,14 @@ import CaperCore
         dayTrailing.backgroundColor = NativeStyle.border.cgColor
         mentionTint.backgroundColor = NativeStyle.accent.withAlphaComponent(0.08).cgColor
         mentionBar.backgroundColor = NativeStyle.accent.cgColor
-        [mentionTint, mentionBar, dayLeading, dayTrailing].forEach { layer?.addSublayer($0) }
+        blockedBar.backgroundColor = NativeStyle.border.cgColor
+        blockedBar.isHidden = true
+        blockedToggle.alignment = .left; blockedToggle.font = NativeStyle.font(12, bold: true)
+        blockedToggle.contentTintColor = NativeStyle.accent
+        blockedToggle.layer?.backgroundColor = NSColor.clear.cgColor
+        blockedToggle.setAccessibilityIdentifier("blocked-run-toggle")
+        blockedToggle.isHidden = true
+        [blockedBar, mentionTint, mentionBar, dayLeading, dayTrailing].forEach { layer?.addSublayer($0) }
         body.isEditable = false; body.isSelectable = true
         body.isRichText = true; body.drawsBackground = false
         body.textContainerInset = .zero
@@ -221,20 +265,24 @@ import CaperCore
         avatar.setAccessibilityElement(false)
         authorAction.layer?.backgroundColor = NSColor.clear.cgColor
         avatarAction.layer?.backgroundColor = NSColor.clear.cgColor
-        [body, author, timestamp, avatar, detail, day, authorAction, avatarAction].forEach { addSubview($0) }
+        [body, author, timestamp, avatar, detail, day, authorAction, avatarAction, blockedToggle].forEach { addSubview($0) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, react: ((String, String) -> Void)?) {
-        guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID else { return }
+    func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, revealedBlocked: Bool, react: ((String, String) -> Void)?) {
+        guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked else { return }
         let range = body.selectedRange()
         self.message = message; self.grouped = grouped; self.viewerID = viewerID
+        blockedRun = nil; self.revealedBlocked = revealedBlocked
+        blockedToggle.isHidden = true; body.isHidden = false
         self.day.stringValue = day ?? ""
         self.day.isHidden = day == nil
         self.day.setAccessibilityIdentifier("date-\(message.id)")
         let mentionsViewer = !message.isDeleted && NativePresentation.mentionsViewer(message, viewerID: viewerID)
         setAccessibilityHelp(mentionsViewer ? "Mentions you" : nil)
         CATransaction.begin(); CATransaction.setDisableActions(true)
+        layer?.backgroundColor = revealedBlocked ? NSColor(CaperTheme.surface).cgColor : NSColor.clear.cgColor
+        blockedBar.isHidden = !revealedBlocked
         mentionTint.isHidden = !mentionsViewer
         mentionBar.isHidden = !mentionsViewer || message.pin != nil
         CATransaction.commit()
@@ -275,7 +323,31 @@ import CaperCore
         needsLayout = true
     }
 
+    func configure(_ run: BlockedRun, day: String?, toggle: @escaping () -> Void) {
+        toggleBlocked = toggle
+        guard blockedRun != run || self.day.stringValue != (day ?? "") else { return }
+        blockedRun = run; message = nil; grouped = true
+        self.day.stringValue = day ?? ""; self.day.isHidden = day == nil
+        self.day.setAccessibilityIdentifier("date-\(run.id)")
+        setAccessibilityIdentifier(run.id)
+        setAccessibilityHelp(nil)
+        body.isHidden = true; body.string = ""
+        authorAction.isHidden = true; avatarAction.isHidden = true
+        reactions.forEach { $0.removeFromSuperview() }; reactions = []
+        detail.stringValue = ""
+        blockedToggle.isHidden = false
+        blockedToggle.title = "\(run.label) — \(run.revealed ? "Hide" : "Show")"
+        blockedToggle.setAccessibilityLabel("\(run.revealed ? "Hide" : "Show") \(run.label)")
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        layer?.backgroundColor = run.revealed ? NSColor(CaperTheme.surface).cgColor : NSColor.clear.cgColor
+        blockedBar.isHidden = !run.revealed
+        mentionTint.isHidden = true; mentionBar.isHidden = true
+        CATransaction.commit()
+        needsLayout = true
+    }
+
     func measuredHeight(width: CGFloat) -> CGFloat {
+        if blockedRun != nil { return dayHeight + 48 }
         let textWidth = max(40, width - 88)
         body.textContainer?.containerSize = NSSize(width: textWidth, height: .greatestFiniteMagnitude)
         let text = body.attributedString()
@@ -298,8 +370,13 @@ import CaperCore
         // Date dividers remain neutral even when the following message mentions you.
         mentionTint.frame = NSRect(x: 0, y: inset, width: bounds.width, height: max(0, bounds.height - inset))
         mentionBar.frame = NSRect(x: 0, y: inset, width: 3, height: max(0, bounds.height - inset))
+        blockedBar.frame = NSRect(x: 0, y: inset, width: 2, height: max(0, bounds.height - inset))
         CATransaction.commit()
         avatar.isHidden = grouped; author.isHidden = grouped; timestamp.isHidden = grouped
+        if blockedRun != nil {
+            blockedToggle.frame = NSRect(x: 18, y: inset + 4, width: bounds.width - 36, height: 36)
+            return
+        }
         avatar.frame = NSRect(x: 20, y: inset + 12, width: 36, height: 36)
         // Intrinsic size describes the alignment rect, excluding NSTextField's
         // cell insets. Manual frames need cellSize or even short names truncate.

@@ -214,7 +214,8 @@ private struct AppKitWorkspaceDialog: View {
         popover = nil; draft = nil; dismissAction = nil
     }
 
-    private func confirmBlock(_ target: BlockTarget, window: NSWindow) {
+    public func confirmBlock(_ target: BlockTarget, window: NSWindow) {
+        guard target.canBlock, target.id != model.account?.id else { return }
         let alert = NSAlert()
         alert.messageText = target.confirmationTitle
         alert.informativeText = BlockTarget.confirmationMessage

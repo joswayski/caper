@@ -22,6 +22,7 @@ import CaperCore
     private let status = NativeStyle.label("", size: 12)
     private let composer = ComposerTextView()
     private let composerScroll = NSScrollView()
+    private lazy var directBar = DirectConversationBar(model: model)
     private let suggestions = ComposerSuggestions()
     private var suggestionsDismissed = false
     private lazy var send = NativeButton("Send", primary: true) { [weak self] in self?.submit() }
@@ -56,7 +57,7 @@ import CaperCore
     override func viewDidLoad() {
         super.viewDidLoad()
         [navigation, stage, members].forEach { view.addSubview($0) }
-        [timeline, header, membersToggle, status, retry, editRejected, composerScroll, send, join, suggestions].forEach { stage.addSubview($0) }
+        [timeline, header, membersToggle, status, retry, editRejected, composerScroll, send, join, directBar, suggestions].forEach { stage.addSubview($0) }
         join.setAccessibilityIdentifier("join-channel")
         navigation.show = { [weak self] item in
             guard let self else { return }; self.dialogs.show(item, in: self)
@@ -64,6 +65,9 @@ import CaperCore
         navigation.leaveChannel = { [weak self] channel in
             guard let self else { return }; self.dialogs.leaveChannel(channel, in: self)
         }
+        navigation.block = { [weak self] target in self?.confirmBlock(target) }
+        directBar.block = { [weak self] target in self?.confirmBlock(target) }
+        directBar.changed = { [weak self] in self?.view.needsLayout = true }
         members.close = { [weak self] in
             self?.membersPreference = false
             self?.view.needsLayout = true
@@ -125,11 +129,9 @@ import CaperCore
             guard let self else { return }
             let chat = self.model.chat
             self.timeline.canLoadOlder = chat.hasMore && !chat.loading && !chat.loadingOlder && chat.olderError == nil
-            let visible = chat.displayedMessages.filter {
-                $0.isChannelMessage && !chat.blockedAuthorIDs.contains($0.author.id)
-            }
+            let visible = chat.displayedMessages.filter(\.isChannelMessage)
             self.timeline.update(visible, conversationID: self.model.selectedDirectMessageID ?? self.model.selectedChannelID,
-                viewerID: chat.viewerID)
+                viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
         }
         composerObservation.start { [weak self] in self?.updateComposer() }
     }
@@ -153,8 +155,10 @@ import CaperCore
         membersToggle.setAccessibilityLabel(visible ? "Hide members" : "Show members")
         membersToggle.toolTip = visible ? "Hide members" : "Show members"
         membersToggle.contentTintColor = visible ? NativeStyle.accent : NativeStyle.muted
-        timeline.frame = NSRect(x: 0, y: 48, width: center, height: height - 48 - 138)
-        status.frame = NSRect(x: 20, y: height - 132, width: center - 40, height: 24)
+        let bottom = directBar.isHidden ? 138 : max(138, directBar.preferredHeight(width: center - 40) + 32)
+        timeline.frame = NSRect(x: 0, y: 48, width: center, height: max(0, height - 48 - bottom))
+        status.frame = NSRect(x: 20, y: height - bottom + 6, width: center - 40, height: 24)
+        directBar.frame = NSRect(x: 20, y: status.frame.maxY, width: center - 40, height: bottom - 32)
         composerScroll.frame = NSRect(x: 20, y: height - 102, width: center - 116, height: 70)
         composer.frame.size.width = composerScroll.contentSize.width
         composer.minSize = NSSize(width: 0, height: 70)
@@ -167,17 +171,18 @@ import CaperCore
 
     private func updateComposer() {
         let chat = model.chat
+        directBar.update()
         if composer.string != chat.draft, !composer.hasMarkedText() {
             composer.string = chat.draft
             composer.setSelectedRange(NSRange(location: composer.string.utf16.count, length: 0))
             composer.needsDisplay = true
         }
         composer.placeholder = "Message \(model.selectedDirectMessage?.peer.displayName ?? "#\(chat.channelName)")"
-        composer.isEditable = chat.canInteract && !chat.sending && !chat.sendRejected && chat.pendingMessage == nil
-        send.isEnabled = chat.canInteract && chat.canPressSend(inThread: false)
+        composer.isEditable = directBar.isHidden && chat.canInteract && !chat.sending && !chat.sendRejected && chat.pendingMessage == nil
+        send.isEnabled = directBar.isHidden && chat.canInteract && chat.canPressSend(inThread: false)
         send.title = chat.sending ? "Sending…" : "Send"
-        composerScroll.isHidden = model.previewingChannel
-        send.isHidden = model.previewingChannel
+        composerScroll.isHidden = model.previewingChannel || !directBar.isHidden
+        send.isHidden = composerScroll.isHidden
         join.isHidden = !model.previewingChannel
         join.isEnabled = joiningChannelID == nil
         join.title = joiningChannelID == model.selectedChannelID ? "Joining…" : "Join channel"
@@ -186,8 +191,13 @@ import CaperCore
         retry.isEnabled = !chat.loadingOlder
         editRejected.isHidden = !chat.sendRejected
         status.stringValue = chat.error ?? chat.olderError ?? chat.sessionError ?? model.navigationError
-            ?? (model.previewingChannel ? "Preview · Join #\(chat.channelName) to interact with people here" : chat.loading ? "Loading messages…" : chat.loadingOlder ? "Loading older messages…" : chat.typingNames.isEmpty ? "" : "\(chat.typingNames.joined(separator: ", ")) typing…")
+            ?? (model.previewingChannel ? "Preview · Join #\(chat.channelName) to interact with people here" : chat.loading ? "Loading messages…" : chat.loadingOlder ? "Loading older messages…" : chat.typingNames.isEmpty ? (model.selectedDirectMessage?.status == .outgoing ? model.selectedDirectMessage.flatMap(NativePresentation.directMessageNotice) ?? "" : "") : "\(chat.typingNames.joined(separator: ", ")) typing…")
         refreshSuggestions()
+    }
+
+    private func confirmBlock(_ target: BlockTarget) {
+        guard let window = view.window else { return }
+        profiles.confirmBlock(target, window: window)
     }
 
     func textDidChange(_ notification: Notification) {

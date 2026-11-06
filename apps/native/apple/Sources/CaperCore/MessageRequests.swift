@@ -148,32 +148,32 @@ enum MessageRequests {
 }
 
 /// Consecutive messages by blocked authors, collapsed into one row.
-struct BlockedRun: Equatable, Identifiable {
-    let messages: [ChatMessage]
+public struct BlockedRun: Equatable, Identifiable {
+    public let messages: [ChatMessage]
     /// Shown in place (in memory only); the row then offers Hide.
-    let revealed: Bool
+    public let revealed: Bool
 
-    var id: String { "blocked-\(messages.first?.id ?? "")" }
+    public var id: String { "blocked-\(messages.first?.id ?? "")" }
     var count: Int { messages.count }
-    var label: String { "\(count) blocked \(count == 1 ? "message" : "messages")" }
+    public var label: String { "\(count) blocked \(count == 1 ? "message" : "messages")" }
     var messageIDs: Set<String> { Set(messages.map(\.id)) }
 }
 
 /// One timeline row: a message, or a run of blocked authors' messages.
-enum TimelineEntry: Equatable, Identifiable {
+public enum TimelineEntry: Equatable, Identifiable {
     case message(ChatMessage)
     case blocked(BlockedRun)
 
     /// The newest message the entry contains: both the row's list identity
     /// and its scroll `.id`. When blocks load and messages fold into a run,
     /// the run takes over that message's row instead of clashing with it.
-    var id: String {
+    public var id: String {
         switch self {
         case let .message(message): return message.id
         case let .blocked(run): return run.messages.last?.id ?? run.id
         }
     }
-    var messages: [ChatMessage] {
+    public var messages: [ChatMessage] {
         switch self {
         case let .message(message): return [message]
         case let .blocked(run): return run.messages
@@ -181,13 +181,13 @@ enum TimelineEntry: Equatable, Identifiable {
     }
     /// The scroll target: the last message the entry contains.
     var scrollID: String { id }
-    var firstCreatedAt: String { messages.first?.createdAt ?? "" }
-    var lastCreatedAt: String { messages.last?.createdAt ?? "" }
+    public var firstCreatedAt: String { messages.first?.createdAt ?? "" }
+    public var lastCreatedAt: String { messages.last?.createdAt ?? "" }
 }
 
-enum BlockedMessages {
+public enum BlockedMessages {
     /// Guests and your own messages never collapse.
-    static func isHidden(_ message: ChatMessage, blocked: Set<String>, viewerID: String?) -> Bool {
+    public static func isHidden(_ message: ChatMessage, blocked: Set<String>, viewerID: String?) -> Bool {
         !message.author.isGuest && message.author.id != viewerID && blocked.contains(message.author.id)
     }
 
@@ -206,7 +206,7 @@ enum BlockedMessages {
 
     /// Groups each run of consecutive hidden messages. A run is revealed when
     /// any of its messages is in `revealed`, so a run that grows stays open.
-    static func entries(_ messages: [ChatMessage], blocked: Set<String>, viewerID: String?,
+    public static func entries(_ messages: [ChatMessage], blocked: Set<String>, viewerID: String?,
                         revealed: Set<String> = []) -> [TimelineEntry] {
         guard !blocked.isEmpty else { return messages.map(TimelineEntry.message) }
         var entries: [TimelineEntry] = []
@@ -225,7 +225,7 @@ enum BlockedMessages {
     }
 
     /// Show or Hide a run: returns the new revealed set.
-    static func toggling(_ run: BlockedRun, in revealed: Set<String>) -> Set<String> {
+    public static func toggling(_ run: BlockedRun, in revealed: Set<String>) -> Set<String> {
         run.revealed ? revealed.subtracting(run.messageIDs) : revealed.union(run.messageIDs)
     }
 }

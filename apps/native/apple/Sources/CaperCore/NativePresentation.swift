@@ -14,6 +14,16 @@ public enum NativePresentation {
 
     public static func errorMessage(_ error: Error) -> String { FriendlyError.message(for: error) }
 
+    public static func directMessageNotice(_ conversation: DirectMessageConversation) -> String? {
+        if conversation.status == .incoming {
+            let prompt = MessageRequests.prompt(for: conversation.peer)
+            return prompt.name + prompt.detail
+        }
+        if conversation.blocked { return MessageRequests.blockedNotice(for: conversation.peer) }
+        if conversation.status == .outgoing { return MessageRequests.waitingNotice(for: conversation.peer) }
+        return nil
+    }
+
     public static func signInCode(_ input: String) -> String {
         let allowed = Set("ABCDEFGHJKMNPQRSTWXYZ23456789")
         return String(input.uppercased().filter { allowed.contains($0) }.prefix(6))

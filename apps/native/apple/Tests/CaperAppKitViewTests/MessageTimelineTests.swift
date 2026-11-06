@@ -14,6 +14,43 @@ import XCTest
         timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? NSTextView } } ?? []
     }
 
+    func testBlockedRunsRevealIndependentlyWithoutRealizingTheirWholeHistory() throws {
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        let history = [message(0, author: "blocked"), message(1, author: "blocked"),
+            message(2, author: "self"), message(3, author: "blocked")]
+        func visible() -> [String] { bodies(in: timeline).filter { !$0.isHidden }.map(\.string) }
+        func toggle(_ label: String) throws -> NSButton {
+            try XCTUnwrap(timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? NSButton } }
+                .first { $0.accessibilityLabel() == label })
+        }
+        timeline.update(history, conversationID: "channel", viewerID: "self", blocked: ["blocked", "self"])
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(visible(), [history[2].content.text], "Blocked content is absent; your own message never collapses")
+        try toggle("Show 2 blocked messages").performClick(nil)
+        XCTAssertTrue(visible().contains(history[0].content.text))
+        XCTAssertTrue(visible().contains(history[1].content.text))
+        XCTAssertFalse(visible().contains(history[3].content.text), "Showing one run must not reveal another")
+        try toggle("Hide 2 blocked messages").performClick(nil)
+        XCTAssertEqual(visible(), [history[2].content.text])
+        timeline.update(history, conversationID: "channel", viewerID: "self")
+        XCTAssertEqual(Set(visible()), Set(history.map(\.content.text)), "Unblocking restores all visible messages")
+
+        let longRun = (0..<3000).map { message($0, author: "blocked") }
+        timeline.update(longRun, conversationID: "long", viewerID: "self", blocked: ["blocked"])
+        XCTAssertTrue(visible().isEmpty)
+        try toggle("Show 3000 blocked messages").performClick(nil)
+        XCTAssertFalse(visible().isEmpty)
+        XCTAssertLessThan(visible().count, 40, "Revealing a long run still measures and exposes only its viewport")
+        XCTAssertLessThan(timeline.documentView?.accessibilityChildren()?.count ?? 3000, 40)
+        timeline.update(longRun + [message(3000, author: "blocked")], conversationID: "long", viewerID: "self", blocked: ["blocked"])
+        XCTAssertFalse(visible().isEmpty, "An arriving message must not collapse a revealed run")
+        try toggle("Hide 3001 blocked messages").performClick(nil)
+        XCTAssertTrue(visible().isEmpty)
+        try toggle("Show 3001 blocked messages").performClick(nil)
+        timeline.update(history, conversationID: "other", viewerID: "self", blocked: ["blocked"])
+        XCTAssertEqual(visible(), [history[2].content.text], "Reveal choices must not leak across conversations")
+    }
+
     func testDateDividersFollowLocalMidnightWithoutSplittingSameDayGroups() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current

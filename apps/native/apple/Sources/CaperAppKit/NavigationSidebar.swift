@@ -6,6 +6,7 @@ import CaperCore
     private let model: AppModel
     var show: ((WorkspaceSheet) -> Void)?
     var leaveChannel: ((Channel) -> Void)?
+    var block: ((BlockTarget) -> Void)?
     private let observation = NativeObservation()
     private let rail = NativeView(NativeStyle.blackout)
     private let railScroll = NSScrollView()
@@ -21,6 +22,11 @@ import CaperCore
     private var browsing = false
     private var spaceID: String?
     private var rowHeights: [CGFloat] = []
+    private var rowOrder: [NSView] = []
+    private var requestButtons: [String: NativeButton] = [:]
+    private lazy var requests = NativeButton("") { [weak self] in
+        guard let self else { return }; self.model.showingMessageRequests.toggle()
+    }
     private lazy var space = NativeButton("") { [weak self] in self?.openSpaceMenu() }
     private lazy var heading = NativeButton("") { [weak self] in
         guard let self else { return }; self.expanded.toggle(); self.render()
@@ -96,7 +102,7 @@ import CaperCore
         scroll.frame = NSRect(x: 0, y: top, width: width, height: max(0, footer - top - (error.stringValue.isEmpty ? 0 : 30)))
         error.frame = NSRect(x: 16, y: footer - 30, width: width - 32, height: 28)
         var y: CGFloat = 0
-        for (child, height) in zip(rows.subviews, rowHeights) {
+        for (child, height) in zip(rowOrder, rowHeights) {
             child.frame = NSRect(x: 16, y: y, width: scroll.contentSize.width - 32, height: height)
             y += height + 3
         }
@@ -152,7 +158,7 @@ import CaperCore
         create.isHidden = !model.isOwner; options.isHidden = !model.isOwner
         create.isEnabled = model.canCreateChannel
         create.toolTip = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
-        rows.subviews.forEach { $0.removeFromSuperview() }; rowHeights = []
+        rowOrder = []; rowHeights = []
         if expanded { joined.forEach { addChannel($0) } }
         if browsing {
             let query = String(search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).drop(while: { $0 == "#" }))
@@ -168,6 +174,31 @@ import CaperCore
             })
         }
         addRow(NativeStyle.label("Direct messages", size: 12, bold: true), height: 28)
+        var nextRequests: [String: NativeButton] = [:]
+        if !model.messageRequests.isEmpty {
+            requests.title = "\(model.showingMessageRequests ? "⌄" : "›")  Message requests  \(model.messageRequests.count)"
+            requests.alignment = .left
+            requests.setAccessibilityIdentifier("message-requests")
+            requests.setAccessibilityLabel("Message requests")
+            requests.setAccessibilityValue("\(model.messageRequests.count) \(model.messageRequests.count == 1 ? "request" : "requests"), \(model.showingMessageRequests ? "Expanded" : "Collapsed")")
+            addRow(requests)
+            if model.showingMessageRequests {
+                for request in model.messageRequests {
+                    let button = requestButtons[request.id] ?? NativeButton("") { [weak self, id = request.id] in
+                        guard let self, let request = self.model.messageRequests.first(where: { $0.id == id }) else { return }
+                        Task { await self.model.select(directMessage: request) }
+                    }
+                    button.title = "\(request.peer.displayName) · @\(request.peer.username)"
+                    button.setAccessibilityLabel(button.title)
+                    button.alignment = .left
+                    button.setAccessibilityIdentifier("message-request-\(request.id)")
+                    button.setAccessibilityValue(model.selectedDirectMessageID == request.id ? "Selected" : "")
+                    button.layer?.backgroundColor = model.selectedDirectMessageID == request.id ? NativeStyle.accent.withAlphaComponent(0.16).cgColor : NSColor.clear.cgColor
+                    nextRequests[request.id] = button
+                    addRow(button)
+                }
+            }
+        }
         if let account = model.account {
             let button = NativeButton("\(account.displayName ?? account.username ?? "You")  · you") { [weak self] in
                 guard let self else { return }; Task { await self.model.openSelfDirectMessage() }
@@ -181,17 +212,35 @@ import CaperCore
                     guard let self else { return }; Task { await self.model.select(directMessage: conversation) }
                 })
             row.open.setAccessibilityIdentifier("dm-\(conversation.id)")
+            row.options.setAccessibilityIdentifier("dm-options-\(conversation.id)")
             row.options.setAccessibilityLabel("Options for \(conversation.peer.displayName)")
             row.openMenu = { [weak self, weak row] in
                 guard let self, let row else { return }
                 self.model.refreshNotificationSettingsIfStale()
-                self.popup(NavigationMenus.direct(self.model, id: conversation.id), at: row.options)
+                var items = NavigationMenus.direct(self.model, id: conversation.id)
+                if conversation.blocked {
+                    items += [.separator(), NavigationMenuItem("Unblock @\(conversation.peer.username)") { [weak self] in
+                        guard let self else { return }
+                        Task {
+                            do { try await self.model.unblock(accountID: conversation.peer.id) }
+                            catch { self.model.chat.error = NativePresentation.errorMessage(error) }
+                        }
+                    }]
+                } else if conversation.peer.canBlock {
+                    items += [.separator(), NavigationMenuItem("Block @\(conversation.peer.username)…") { [weak self] in
+                        self?.block?(BlockTarget(peer: conversation.peer))
+                    }]
+                }
+                self.popup(items, at: row.options)
             }
             addRow(row)
         }
         let newMessage = NativeButton("+  New message") { [weak self] in self?.show?(.newDirectMessage) }
         newMessage.setAccessibilityIdentifier("new-message"); newMessage.alignment = .left
         addRow(newMessage)
+        requestButtons = nextRequests
+        for child in rows.subviews where !rowOrder.contains(where: { $0 === child }) { child.removeFromSuperview() }
+        rows.setAccessibilityChildren(rowOrder)
         accountName.stringValue = model.account?.displayName ?? ""
         account.setAccessibilityLabel("Edit profile for \(model.account?.displayName ?? "your account")")
         if let current = model.account { accountAvatar.update(current) }
@@ -205,7 +254,10 @@ import CaperCore
         needsLayout = true
     }
 
-    private func addRow(_ view: NSView, height: CGFloat = 32) { rows.addSubview(view); rowHeights.append(height) }
+    private func addRow(_ view: NSView, height: CGFloat = 32) {
+        if view.superview == nil { rows.addSubview(view) }
+        rowOrder.append(view); rowHeights.append(height)
+    }
 
     private func addChannel(_ channel: Channel, browsing: Bool = false) {
         let row = NavigationRow(channel.name, symbol: channel.private ? "lock" : "number", selected: model.selectedChannelID == channel.id,

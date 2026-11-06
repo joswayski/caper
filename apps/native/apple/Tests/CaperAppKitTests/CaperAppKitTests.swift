@@ -33,6 +33,91 @@ import XCTest
 
     private nonisolated static func resetFixture() async throws { try await control(["reset": true]) }
 
+    func testIncomingRequestRetryAcceptAndBlockedConversation() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        try await Self.control(["messageRequest": ["text": "TEST FIXTURE — A request, not an accepted DM."]])
+        let app = launch()
+        defer { app.terminate() }
+        let requests = app.buttons["message-requests"]
+        XCTAssertTrue(requests.waitForExistence(timeout: 15))
+        XCTAssertEqual(requests.value as? String, "1 request, Collapsed")
+        requests.click()
+        let request = app.buttons["message-request-dm0000000003"]
+        XCTAssertTrue(request.waitForExistence(timeout: 5)); request.click()
+        let accept = app.buttons["message-request-accept"]
+        XCTAssertTrue(accept.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textViews["message-dm0000000003m01"].exists)
+        let composer = app.textViews["message-composer"]
+        XCTAssertFalse(composer.exists, "Reading a request must not accept it or offer a composer")
+        XCTAssertFalse(app.buttons["dm-dm0000000003"].exists)
+        capture("incoming request", app: app)
+        app.buttons["message-request-block"].hover(); app.buttons["message-request-decline"].hover(); accept.hover()
+        try await Self.control(["failure": ["path": "/api/dms/dm0000000003/accept", "method": "POST", "status": 503,
+            "error": "TEST FIXTURE: accepting unavailable."]])
+        accept.click()
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE: accepting unavailable."].waitForExistence(timeout: 5))
+        XCTAssertFalse(composer.exists)
+        capture("request retry", app: app)
+        accept.click()
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["dm-dm0000000003"].exists)
+        XCTAssertFalse(requests.exists)
+        app.buttons["dm-options-dm0000000003"].click(); app.menuItems["Block @jordan…"].click()
+        let confirmation = app.sheets.containing(.staticText, identifier: "Block Jordan?").firstMatch
+        XCTAssertTrue(confirmation.buttons["Cancel"].waitForExistence(timeout: 5)); confirmation.buttons["Cancel"].click()
+        XCTAssertTrue(composer.exists)
+        app.buttons["dm-options-dm0000000003"].click(); app.menuItems["Block @jordan…"].click()
+        confirmation.buttons["Block"].click()
+        let unblock = app.buttons["dm-blocked-unblock"]
+        XCTAssertTrue(unblock.waitForExistence(timeout: 10))
+        XCTAssertFalse(composer.exists)
+        let show = app.buttons["blocked-run-toggle"]
+        XCTAssertEqual(show.label, "Show 1 blocked message")
+        XCTAssertFalse(app.textViews["message-dm0000000003m01"].exists, "Collapsed blocked text is absent from accessibility")
+        capture("blocked DM", app: app)
+        show.click()
+        XCTAssertTrue(app.textViews["message-dm0000000003m01"].waitForExistence(timeout: 5))
+        XCTAssertEqual(show.label, "Hide 1 blocked message")
+        capture("revealed blocked DM", app: app)
+        show.click()
+        XCTAssertFalse(app.textViews["message-dm0000000003m01"].exists)
+        try await Self.control(["failure": ["path": "/api/blocks/stranger0001", "method": "DELETE", "status": 503,
+            "error": "TEST FIXTURE: unblocking unavailable."]])
+        unblock.click()
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE: unblocking unavailable."].waitForExistence(timeout: 5))
+        XCTAssertFalse(composer.exists)
+        unblock.click()
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textViews["message-dm0000000003m01"].waitForExistence(timeout: 5))
+        composer.click(); composer.typeText("TEST FIXTURE — Accepted reply"); app.buttons["send-message"].click()
+        XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value == %@", "TEST FIXTURE — Accepted reply")).firstMatch.waitForExistence(timeout: 10))
+    }
+
+    func testDecliningOrBlockingRequestReturnsToNavigation() async throws {
+        continueAfterFailure = false
+        for block in [false, true] {
+            try await Self.resetFixture()
+            try await Self.control(["messageRequest": ["text": "TEST FIXTURE — Pending request"]])
+            let app = launch()
+            defer { app.terminate() }
+            let requests = app.buttons["message-requests"]
+            XCTAssertTrue(requests.waitForExistence(timeout: 15)); requests.click()
+            app.buttons["message-request-dm0000000003"].click()
+            let decline = app.buttons["message-request-decline"]
+            XCTAssertTrue(decline.waitForExistence(timeout: 10))
+            if block {
+                app.buttons["message-request-block"].click()
+                let confirmation = app.sheets.containing(.staticText, identifier: "Block Jordan?").firstMatch
+                XCTAssertTrue(confirmation.buttons["Block"].waitForExistence(timeout: 5)); confirmation.buttons["Block"].click()
+            } else { decline.click() }
+            XCTAssertTrue(requests.waitForNonExistence(timeout: 10))
+            XCTAssertFalse(app.buttons["dm-dm0000000003"].exists)
+            XCTAssertTrue(app.staticTexts["# general"].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.textViews["message-composer"].exists)
+        }
+    }
+
     func testOwnerNavigationDialogsRetryAndCreateChannel() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
