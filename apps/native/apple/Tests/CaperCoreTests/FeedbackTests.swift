@@ -562,8 +562,13 @@ final class FeedbackTests: XCTestCase {
            "clientMessageId":"q","threadRootId":"\(rootID)"}],
          "cursor":"6","hasMore":false,"hasNewer":false,"visitor":true}
         """
+        // URLProtocol handles background people refreshes while the main actor
+        // inspects requests. Protect both the log and mutable history payload.
+        let lock = NSLock()
         var paths: [String] = []
         FeedbackMockURLProtocol.handler = { request in
+            lock.lock()
+            defer { lock.unlock() }
             let path = request.url?.path ?? ""
             paths.append(path + (request.url?.query.map { "?\($0)" } ?? ""))
             switch path {
@@ -581,7 +586,7 @@ final class FeedbackTests: XCTestCase {
         await model.openFeedback(FeedbackTarget(channelID: channelID, spaceID: "Space0000001", messageID: replyID,
                                                 threadRootID: rootID, reporter: reporter))
 
-        XCTAssertTrue(paths.contains("/api/chat/channels/\(channelID)/messages?around=\(rootID)"), "a reply loads around its thread root")
+        XCTAssertTrue(lock.withLock { paths.contains("/api/chat/channels/\(channelID)/messages?around=\(rootID)") }, "a reply loads around its thread root")
         XCTAssertEqual(model.visit?.channelID, channelID)
         XCTAssertEqual(model.visit?.title, "#plans · Studio")
         XCTAssertEqual(model.visit?.reporter, reporter)
@@ -598,36 +603,38 @@ final class FeedbackTests: XCTestCase {
         XCTAssertEqual(model.chat.focusedMessageID, replyID)
         XCTAssertTrue(model.chat.threadMessages.contains { $0.id == replyID })
         XCTAssertTrue(model.isShowing(.feedback(FeedbackTarget(channelID: channelID, spaceID: nil, messageID: replyID, threadRootID: nil))))
-        XCTAssertFalse(paths.contains { $0.contains("/read") }, "no read markers for visitors")
+        XCTAssertFalse(lock.withLock { paths.contains { $0.contains("/read") } }, "no read markers for visitors")
         model.receiveProfileFeed(["type": "space.updated", "space": ["id": "Space0000001", "name": "Friends", "ownerId": "Owner0000001"]])
         XCTAssertEqual(model.visit?.title, "#plans · Friends", "a visited space's rename reaches the title")
 
         // Inbox roots can name themselves as threadRootID; notification roots
         // may omit it. Neither should turn a timeline jump into a thread action.
         for reportedRoot in [nil, rootID] as [String?] {
-            paths = []
+            lock.withLock { paths = [] }
             await model.openFeedback(FeedbackTarget(channelID: channelID, spaceID: "Space0000001",
                                                     messageID: rootID, threadRootID: reportedRoot))
             // A previous visit's background people refresh may arrive first.
-            XCTAssertTrue(paths.contains("/api/chat/channels/\(channelID)/messages?around=\(rootID)"))
+            XCTAssertTrue(lock.withLock { paths.contains("/api/chat/channels/\(channelID)/messages?around=\(rootID)") })
             XCTAssertNil(model.chat.threadRootID)
             XCTAssertEqual(model.chat.focusedMessageID, rootID)
             XCTAssertTrue(model.chat.messages.contains { $0.id == rootID })
-            XCTAssertFalse(paths.contains { $0.contains("/thread") })
+            XCTAssertFalse(lock.withLock { paths.contains { $0.contains("/thread") } })
         }
         await model.chat.openThread(rootID)
         XCTAssertEqual(model.chat.threadRootID, rootID, "manual thread actions are unchanged")
 
-        history = history.replacingOccurrences(of: #""id":"Space0000001","name":"Studio""#,
-                                               with: #""id":"","name":"Direct messages""#)
-            .replacingOccurrences(of: #""name":"plans""#, with: #""name":"Alice","direct":true"#)
-        paths = []
+        lock.withLock {
+            history = history.replacingOccurrences(of: #""id":"Space0000001","name":"Studio""#,
+                                                   with: #""id":"","name":"Direct messages""#)
+                .replacingOccurrences(of: #""name":"plans""#, with: #""name":"Alice","direct":true"#)
+            paths = []
+        }
         await model.openFeedback(FeedbackTarget(channelID: channelID, spaceID: nil,
                                                 messageID: rootID, threadRootID: rootID))
         XCTAssertEqual(model.visit?.direct, true)
         XCTAssertNil(model.chat.threadRootID, "DM roots also stay in the conversation")
         XCTAssertEqual(model.chat.focusedMessageID, rootID)
-        XCTAssertFalse(paths.contains { $0.contains("/thread") })
+        XCTAssertFalse(lock.withLock { paths.contains { $0.contains("/thread") } })
 
         await model.closeVisit()
         XCTAssertNil(model.visit, "with nothing before it, closing leaves an empty stage")
