@@ -403,6 +403,43 @@ pub struct DirectConversation {
     pub blocked: bool,
 }
 
+/// Under "No messages yet." in the Caper DM.
+pub const TEAM_DM_NOTE: &str = "Messages here go to the Caper team.";
+
+impl DirectConversation {
+    /// Messages past your read cursor. A known zero count overrides cursor
+    /// activity (edits and reactions also advance it).
+    pub fn has_unread(&self) -> bool {
+        self.unread_count != Some(0)
+            && sequence(&self.last_seq).unwrap_or(0) > sequence(&self.read_seq).unwrap_or(0)
+    }
+
+    /// The note after a DM row's name, as on web: you blocked them
+    /// (`blocked` also counts a block this list does not show yet), or
+    /// they haven't accepted yet.
+    pub fn row_suffix(&self, blocked: bool) -> Option<&'static str> {
+        if self.blocked || blocked {
+            Some("Blocked")
+        } else if self.status == DirectStatus::Outgoing {
+            Some("Request sent")
+        } else {
+            None
+        }
+    }
+
+    /// Under "No messages yet." in this DM (your own DM has its own line).
+    pub fn empty_note(&self) -> String {
+        if self.peer.team {
+            TEAM_DM_NOTE.to_owned()
+        } else {
+            format!(
+                "Only you and {} can read this conversation.",
+                self.peer.display_name
+            )
+        }
+    }
+}
+
 /// `GET /api/blocks` entry: an account you blocked.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -2853,6 +2890,37 @@ pub fn sequence(value: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_rows_read_unread_and_suffix_like_web() {
+        let mut direct: DirectConversation = serde_json::from_value(serde_json::json!({
+            "id": "dm1",
+            "peer": {"id": "p", "username": "maya", "displayName": "Maya"},
+            "lastSeq": "12",
+            "readSeq": "9",
+            "status": "outgoing"
+        }))
+        .unwrap();
+        // Old servers omit the count: the cursors decide.
+        assert!(direct.has_unread());
+        // A known zero wins over cursor activity (an edit or reaction).
+        direct.unread_count = Some(0);
+        assert!(!direct.has_unread());
+        direct.unread_count = Some(2);
+        direct.read_seq = "12".into();
+        assert!(!direct.has_unread());
+        assert_eq!(direct.row_suffix(false), Some("Request sent"));
+        // A block (theirs listed, or one made here) outranks the request.
+        assert_eq!(direct.row_suffix(true), Some("Blocked"));
+        direct.status = DirectStatus::Accepted;
+        assert_eq!(direct.row_suffix(false), None);
+        assert_eq!(
+            direct.empty_note(),
+            "Only you and Maya can read this conversation."
+        );
+        direct.peer.team = true;
+        assert_eq!(direct.empty_note(), TEAM_DM_NOTE);
+    }
 
     #[test]
     fn spaces_default_missing_invitations_to_empty() {

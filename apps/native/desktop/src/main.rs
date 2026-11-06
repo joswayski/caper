@@ -5594,11 +5594,7 @@ impl CaperApp {
         }
         match self.selected_direct_conversation() {
             // The Caper DM: every top-level message there is a report.
-            Some(direct) if direct.peer.team => TEAM_DM_NOTE.to_owned(),
-            Some(direct) => format!(
-                "Only you and {} can read this conversation.",
-                direct.peer.display_name
-            ),
+            Some(direct) => direct.empty_note(),
             None if self.selected_direct.is_some() => {
                 "Only you and this person can read this conversation.".to_owned()
             }
@@ -12809,11 +12805,9 @@ impl CaperApp {
                 && self_direct
                     .as_ref()
                     .is_some_and(|direct| self.selected_direct.as_deref() == Some(&direct.id));
-            let self_unread = self_direct.as_ref().is_some_and(|direct| {
-                direct.unread_count != Some(0)
-                    && model::sequence(&direct.last_seq).unwrap_or(0)
-                        > model::sequence(&direct.read_seq).unwrap_or(0)
-            });
+            let self_unread = self_direct
+                .as_ref()
+                .is_some_and(model::DirectConversation::has_unread);
             ui.horizontal(|ui| {
                 let display_name = account
                     .display_name
@@ -12912,17 +12906,8 @@ impl CaperApp {
                 let unread = muted.is_none()
                     && !direct.blocked
                     && !self.is_blocked(&direct.peer.id)
-                    && direct.unread_count != Some(0)
-                    && model::sequence(&direct.last_seq).unwrap_or(0)
-                        > model::sequence(&direct.read_seq).unwrap_or(0);
-                // As on web: you blocked them, or they haven't accepted yet.
-                let suffix = if direct.blocked || self.is_blocked(&direct.peer.id) {
-                    Some("Blocked")
-                } else if direct.status == model::DirectStatus::Outgoing {
-                    Some("Request sent")
-                } else {
-                    None
-                };
+                    && direct.has_unread();
+                let suffix = direct.row_suffix(self.is_blocked(&direct.peer.id));
                 ui.horizontal(|ui| {
                     let (response, opened, _) = channel_button(
                         ui,
@@ -31249,9 +31234,6 @@ fn rich_text_rows(
     }
     body
 }
-
-/// Under "No messages yet." in the Caper DM.
-const TEAM_DM_NOTE: &str = "Messages here go to the Caper team.";
 
 /// Quick reactions at the start of the message hover toolbar.
 const QUICK_REACTIONS: [&str; 3] = ["👍", "❤️", "😂"];
