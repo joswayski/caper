@@ -18,12 +18,19 @@ use caper_client::model::{
 };
 use caper_client::reactions::Reacted;
 use caper_client::sign_in::{MAX_RESENDS, resend_countdown, resend_wait};
-use caper_client::worker::{AdminOperation, AdminResult, Command, Event, Worker, current};
+use caper_client::worker::{
+    AccountOperation, AccountResult, AdminOperation, AdminResult, Command, Event, Worker, current,
+};
 use gtk::{gdk, gio, glib, prelude::*};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
+
+#[path = "members.rs"]
+mod members;
+#[path = "profile.rs"]
+mod profile;
 
 const STYLE: &str = include_str!("style.css");
 /// Others' typing shows this long after their last update (desktop's).
@@ -181,6 +188,15 @@ struct State {
     open_created: Option<String>,
     /// "Go to message" from Pins: earlier pages load until it is in view.
     jump_to: Option<String>,
+    /// The open profile card's state.
+    card: Option<profile::CardState>,
+    /// People you blocked (`GET /api/blocks`), once loaded.
+    blocks: Option<Vec<caper_client::model::BlockedAccount>>,
+    block_busy: bool,
+    /// Blocked runs you chose to show, by their first message.
+    shown_blocked: HashSet<String>,
+    /// Fences space invitations and membership changes.
+    membership_request: u64,
 }
 
 impl State {
@@ -295,8 +311,8 @@ pub struct App {
     chooser: RefCell<Option<gtk::FileChooserNative>>,
     channel_ids: RefCell<Vec<String>>,
     direct_ids: RefCell<Vec<String>>,
-    /// Member avatars by account id, for presence changes in place.
-    member_views: RefCell<HashMap<String, AvatarView>>,
+    /// What the member list shows.
+    members_shown: RefCell<members::Shown>,
     activity: Cell<Instant>,
     /// The typing timer runs only while someone types.
     ticking: Cell<bool>,
@@ -307,6 +323,8 @@ pub struct App {
     direct_dialog: RefCell<Option<DirectDialog>>,
     /// The open Pins view: its list and the rows it shows.
     pins: RefCell<Option<PinsView>>,
+    /// The open profile card's widgets.
+    profile: RefCell<Option<profile::Card>>,
 }
 
 struct PinsView {
@@ -372,13 +390,14 @@ pub fn start(application: &gtk::Application, base: &str) {
         chooser: RefCell::default(),
         channel_ids: RefCell::default(),
         direct_ids: RefCell::default(),
-        member_views: RefCell::default(),
+        members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
         ticking: Cell::new(false),
         countdown: Cell::new(false),
         suggestions: RefCell::default(),
         direct_dialog: RefCell::default(),
         pins: RefCell::default(),
+        profile: RefCell::default(),
     });
     *slot.borrow_mut() = Rc::downgrade(&app);
     for composer in [&app.ui.composer, &app.ui.thread_composer] {
@@ -487,6 +506,23 @@ impl App {
         });
         let app = self.clone();
         ui.join.connect_clicked(move |_| app.join());
+        let app = self.clone();
+        ui.member_search
+            .connect_search_changed(move |_| app.render_members());
+        let app = self.clone();
+        ui.member_search.connect_stop_search(move |entry| {
+            entry.set_text("");
+            entry.set_visible(false);
+            app.render_members();
+        });
+        let entry = ui.member_search.clone();
+        ui.member_search_button.connect_clicked(move |_| {
+            entry.set_visible(true);
+            entry.grab_focus();
+        });
+        let toggle = ui.members_toggle.clone();
+        ui.members_close
+            .connect_clicked(move |_| toggle.set_active(false));
         let app = self.clone();
         ui.pins_button
             .connect_clicked(move |button| app.open_pins(button.upcast_ref()));
@@ -691,6 +727,7 @@ impl App {
         if let Some(token) = state.token.clone() {
             self.worker.send(Command::AssetUsage { token });
         }
+        self.account_op(state, AccountOperation::LoadBlocks);
         if let Some(space) = state.spaces.first().map(|space| space.id.clone()) {
             self.navigate(state, Some(space), None);
         }
@@ -1176,8 +1213,11 @@ impl App {
                 .map(|session| session.author.id.clone());
             let joined = state.session.is_some() && state.joined();
             let revealed = self.images.media.revealed.borrow();
+            let blocked = state.blocked_ids();
             let viewer = rows::Viewer {
                 revealed: &revealed,
+                blocked: &blocked,
+                shown_blocked: &state.shown_blocked,
                 me: me.as_deref(),
                 author: author.as_deref(),
                 joined,
@@ -1290,6 +1330,82 @@ impl App {
                     self.state.borrow_mut().jump_to = None;
                 }
             }
+        }
+    }
+
+    /// An account-scoped request (blocks, invitations, settings), fenced by
+    /// the sign-in epoch.
+    fn account_op(&self, state: &State, operation: AccountOperation) {
+        if let Some(token) = state.token.clone() {
+            self.worker.send(Command::Account {
+                epoch: state.epoch,
+                token,
+                operation,
+            });
+        }
+    }
+
+    fn account_result(&self, state: &mut State, result: AccountResult) {
+        match result {
+            AccountResult::Blocks(Ok(blocks)) => state.blocks = Some(blocks),
+            AccountResult::Block {
+                account,
+                blocked,
+                result,
+                ..
+            } => {
+                state.block_busy = false;
+                let card = state.card.as_mut().filter(|card| card.person == account.id);
+                if let Err(error) = result {
+                    match card {
+                        Some(card) => card.error = Some(error),
+                        None => state.error = Some(error),
+                    }
+                    return;
+                }
+                if !blocked && let Some(card) = card {
+                    card.status = Some("Unblocked.".into());
+                }
+                let blocks = state.blocks.get_or_insert_with(Vec::new);
+                blocks.retain(|entry| entry.id != account.id);
+                if blocked {
+                    blocks.insert(0, account.clone());
+                }
+                for direct in &mut state.directs {
+                    if direct.peer.id == account.id {
+                        direct.blocked = blocked;
+                    }
+                }
+                state.layout += 1;
+            }
+            AccountResult::Invitation {
+                space,
+                user,
+                request,
+                result,
+            } => {
+                if let Some(card) = state.card.as_mut().filter(|card| {
+                    card.person == user
+                        && card.inviting.as_ref() == Some(&(request, space.id.clone()))
+                }) {
+                    card.inviting = None;
+                    match result {
+                        Ok(_) => {
+                            card.invited.insert(space.id, "Invited");
+                            card.status = Some(format!("Invitation sent to {}.", space.name));
+                        }
+                        Err(error) => {
+                            if let Some(already) =
+                                caper_client::invites::redundant_invitation(&error)
+                            {
+                                card.invited.insert(space.id, already);
+                            }
+                            card.error = Some(error);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2174,6 +2290,16 @@ impl App {
             }
             Action::Open(attachment) => self.images.media.open(&attachment),
             Action::OpenUrl(url) => crate::media::open_uri(&url),
+            Action::ToggleBlocked(key) => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    if !state.shown_blocked.remove(&key) {
+                        state.shown_blocked.insert(key);
+                    }
+                }
+                self.render();
+            }
+            Action::Profile { id, author, anchor } => self.open_profile(id, author, &anchor),
         }
     }
 
@@ -2271,8 +2397,10 @@ impl App {
         let created = self.state.borrow_mut().open_created.take();
         if let Some(id) = created {
             self.close_start_direct();
+            self.close_profile();
             self.open_direct(id);
         }
+        self.render_profile();
         self.render_start_direct();
         self.render();
     }
@@ -2397,6 +2525,46 @@ impl App {
                         state.direct_error = Some(error);
                     }
                     Err(_) => {}
+                }
+            }
+            Event::Account { epoch, result } if epoch == state.epoch => {
+                self.account_result(state, result);
+            }
+            Event::ProfileStatus {
+                epoch,
+                person,
+                status,
+            } if epoch == state.epoch => {
+                if let Some(card) = state.card.as_mut().filter(|card| card.person == person) {
+                    card.status = Some(status);
+                }
+            }
+            Event::ProfileSent {
+                epoch,
+                person,
+                send,
+                result,
+            } if epoch == state.epoch => {
+                if let Some(direct) = result.as_ref().ok().or(send.direct.as_ref()) {
+                    state.directs.retain(|item| item.id != direct.id);
+                    state.directs.push(direct.clone());
+                    state.layout += 1;
+                }
+                if let Some(card) = state.card.as_mut().filter(|card| card.person == person) {
+                    card.sending = false;
+                    card.status = None;
+                    match result {
+                        Ok(direct) => {
+                            state.card = None;
+                            state.open_created = Some(direct.id);
+                        }
+                        Err(error) => {
+                            if !send.open_only {
+                                card.retry_id = error.uncertain.then_some(send.client_id);
+                            }
+                            card.error = Some(error.message);
+                        }
+                    }
                 }
             }
             // A failed refresh keeps the previous list (or the peer fallback).
@@ -2912,7 +3080,7 @@ impl App {
         self.render_rows();
         self.render_layout();
         self.render_files();
-        self.render_presence();
+        self.render_members();
         self.render_typing();
         let ui = &self.ui;
         let mut state = self.state.borrow_mut();
@@ -3019,8 +3187,9 @@ impl App {
         }
         let thread_open = state.thread.is_some();
         ui.thread_panel.set_visible(thread_open);
-        ui.members_panel
-            .set_visible(!thread_open && ui.members_toggle.is_active());
+        ui.members_panel.set_visible(
+            !thread_open && ui.members_toggle.is_active() && ui.members_toggle.is_visible(),
+        );
         ui.thread_composer.view.set_sensitive(can_send && joined);
         ui.thread_composer.send.set_sensitive(can_send && joined);
         ui.thread_composer.placeholder.set_label("Reply in thread");
@@ -3133,8 +3302,11 @@ impl App {
                 .map(|session| session.author.id.clone());
             let joined = state.session.is_some() && state.joined();
             let revealed = self.images.media.revealed.borrow();
+            let blocked = state.blocked_ids();
             let viewer = |in_thread| rows::Viewer {
                 revealed: &revealed,
+                blocked: &blocked,
+                shown_blocked: &state.shown_blocked,
                 me: me.as_deref(),
                 author: author.as_deref(),
                 joined,
@@ -3209,13 +3381,6 @@ impl App {
                 .thread_list
                 .view
                 .activate_action("list.scroll-to-item", Some(&(count - 1).to_variant()));
-        }
-    }
-
-    fn render_presence(&self) {
-        let state = self.state.borrow();
-        for (id, view) in self.member_views.borrow().iter() {
-            view.set_presence(state.presence.get(id).map_or("offline", String::as_str));
         }
     }
 
@@ -3361,52 +3526,6 @@ impl App {
                 ),
             );
         }
-
-        clear_list(&ui.members);
-        let mut views = HashMap::new();
-        let members: Vec<(String, Avatar, bool)> = match &state.direct {
-            Some(direct) => state
-                .directs
-                .iter()
-                .filter(|entry| &entry.id == direct)
-                .map(|entry| (entry.peer.id.clone(), peer_avatar(entry), false))
-                .collect(),
-            None => detail.map_or_else(Vec::new, |detail| {
-                detail
-                    .member_order(state.channel.as_deref())
-                    .into_iter()
-                    .map(|member| {
-                        (
-                            member.id.clone(),
-                            Avatar::new(
-                                &member.display_name,
-                                member.avatar_id,
-                                &member.avatar_asset,
-                                &member.avatar_url,
-                            ),
-                            member.owner,
-                        )
-                    })
-                    .collect()
-            }),
-        };
-        ui.members_title
-            .set_label(&format!("Members — {}", members.len()));
-        for (id, avatar, owner) in members {
-            let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            let view = AvatarView::new(28, true);
-            view.set(&self.images, &avatar);
-            line.append(&view.root);
-            let name = label(&avatar.name, &[]);
-            name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            line.append(&name);
-            if owner {
-                line.append(&label("Owner", &["muted", "badge"]));
-            }
-            ui.members.append(&line);
-            views.insert(id, view);
-        }
-        *self.member_views.borrow_mut() = views;
     }
 }
 
@@ -3452,19 +3571,35 @@ fn badge(count: u64, mention: bool) -> gtk::Label {
 /// Shows `popover` from `anchor`, and detaches it once it closes.
 pub fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {
     let popover = popover.as_ref();
-    popover.set_parent(anchor);
     popover.set_has_arrow(false);
-    // X11 clips rather than flips a popover at the screen edge, so open
-    // toward whichever half of the window has room.
-    if let Some(root) = anchor.root() {
-        let low = anchor
-            .compute_point(&root, &gtk::graphene::Point::new(0.0, 0.0))
-            .is_some_and(|point| point.y() > root.height() as f32 / 2.0);
-        popover.set_position(if low {
-            gtk::PositionType::Top
-        } else {
-            gtk::PositionType::Bottom
-        });
+    // Parented to the chat page, pointing at the anchor: list rows
+    // are recycled and rebuilt, and a popover whose parent goes away keeps
+    // its pointer grab on GTK 4.8, freezing every click.
+    let stage = std::iter::successors(anchor.parent(), gtk::Widget::parent)
+        .find(|widget| widget.has_css_class("popover-host"));
+    match stage.as_ref().and_then(|stage| {
+        anchor
+            .compute_bounds(stage)
+            .map(|bounds| (stage.clone(), bounds))
+    }) {
+        Some((stage, bounds)) => {
+            popover.set_parent(&stage);
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(
+                bounds.x() as i32,
+                bounds.y() as i32,
+                (bounds.width() as i32).max(1),
+                (bounds.height() as i32).max(1),
+            )));
+            // X11 clips rather than flips a popover at the screen edge, so
+            // open toward whichever half of the window has room.
+            let low = bounds.y() + bounds.height() / 2.0 > stage.height() as f32 / 2.0;
+            popover.set_position(if low {
+                gtk::PositionType::Top
+            } else {
+                gtk::PositionType::Bottom
+            });
+        }
+        None => popover.set_parent(anchor),
     }
     popover.connect_closed(|popover| {
         let popover = popover.clone();

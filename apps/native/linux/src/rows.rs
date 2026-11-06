@@ -45,6 +45,8 @@ pub struct Row {
     /// Drawn under the previous row by the same author (no avatar or name).
     pub grouped: bool,
     pub author: String,
+    /// Who wrote it, for their profile card.
+    pub person: Author,
     pub avatar: crate::images::Avatar,
     /// The uploaded picture loaded, so a row redraws once it arrives.
     pub picture_ready: bool,
@@ -69,6 +71,41 @@ pub struct Row {
     pub offers: Offers,
     /// Files, link previews and a GIF below the text.
     pub content: crate::content::Content,
+    /// A run of blocked authors' messages: its key, "N blocked messages"
+    /// and whether it is shown. Such a row draws only that notice.
+    pub blocked_run: Option<(String, String, bool)>,
+    /// Written by someone you blocked (inside a run you chose to show).
+    pub blocked: bool,
+}
+
+impl Row {
+    /// "⊘ N blocked messages — Show" for a run by blocked accounts.
+    fn notice(key: String, label: String, shown: bool, author: &Author) -> Self {
+        Self {
+            id: format!("blocked:{key}"),
+            day: None,
+            grouped: false,
+            author: String::new(),
+            person: author.clone(),
+            avatar: author_avatar(author),
+            picture_ready: false,
+            time: String::new(),
+            markup: String::new(),
+            pending: false,
+            edited: false,
+            pinned_by: None,
+            reply: None,
+            reactions: Vec::new(),
+            reaction_error: None,
+            replies: None,
+            mentioned: false,
+            team_notice: false,
+            offers: Offers::default(),
+            content: crate::content::Content::default(),
+            blocked_run: Some((key, label, shown)),
+            blocked: false,
+        }
+    }
 }
 
 /// One change to the shown list, applied in order. Positions are already
@@ -203,6 +240,9 @@ pub struct Viewer<'a> {
     pub reactions: &'a caper_client::reactions::Reactions,
     /// Spoiler attachments you revealed.
     pub revealed: &'a std::collections::HashSet<String>,
+    /// People you blocked, and the blocked runs you chose to show.
+    pub blocked: &'a std::collections::BTreeSet<String>,
+    pub shown_blocked: &'a std::collections::HashSet<String>,
 }
 
 impl Viewer<'_> {
@@ -231,7 +271,15 @@ pub fn build<'a>(
     let mut rows = Vec::new();
     let mut previous: Option<grouping::Row> = None;
     let mut day: Option<String> = None;
-    let mut push = |rows: &mut Vec<Row>, id: &str, author: &Author, created_at: &str, row: Row| {
+    let mut push = |rows: &mut Vec<Row>,
+                    id: &str,
+                    author: &Author,
+                    created_at: &str,
+                    row: Row,
+                    separate: bool| {
+        if separate {
+            previous = None;
+        }
         let local = DateTime::parse_from_rfc3339(created_at)
             .ok()
             .map(|date| date.with_timezone(&Local));
@@ -256,7 +304,43 @@ pub fn build<'a>(
             ..row
         });
     };
-    for message in messages {
+    let messages: Vec<&Message> = messages.collect();
+    // Each message, whether a shown blocked run holds it, and whether a
+    // notice comes right before it (so it starts a new group).
+    enum Step {
+        Notice(Box<Row>),
+        Message(usize, bool),
+    }
+    let mut plan = Vec::new();
+    for item in caper_client::blocking::rows(&messages, viewer.blocked, viewer.me) {
+        match item {
+            caper_client::blocking::Row::Message(index) => plan.push(Step::Message(index, false)),
+            caper_client::blocking::Row::Blocked { range, key } => {
+                let shown = viewer.shown_blocked.contains(&key);
+                plan.push(Step::Notice(Box::new(Row::notice(
+                    key,
+                    caper_client::blocking::label(range.len()),
+                    shown,
+                    &messages[range.start].author,
+                ))));
+                if shown {
+                    plan.extend(range.map(|index| Step::Message(index, true)));
+                }
+            }
+        }
+    }
+    let mut separate_next = false;
+    for step in plan {
+        let (index, blocked) = match step {
+            Step::Notice(row) => {
+                rows.push(*row);
+                separate_next = true;
+                continue;
+            }
+            Step::Message(index, blocked) => (index, blocked),
+        };
+        let message = messages[index];
+        let separate = std::mem::take(&mut separate_next);
         let avatar = author_avatar(&message.author);
         let deleted = message.is_deleted();
         let act = viewer.joined && !deleted;
@@ -272,6 +356,7 @@ pub fn build<'a>(
             day: None,
             grouped: false,
             author: message.author.name.clone(),
+            person: message.author.clone(),
             picture_ready: viewer.images.picture_ready(&avatar),
             avatar,
             time: String::new(),
@@ -283,6 +368,9 @@ pub fn build<'a>(
                 .as_ref()
                 .map(|pin| format!("Pinned by {}", pin.author.name)),
             reply: message.reply_to.as_ref().map(|reply| {
+                if viewer.blocked.contains(&reply.author.id) {
+                    return ("Blocked message".to_owned(), String::new());
+                }
                 let text = if reply.deleted {
                     "Original message was deleted".to_owned()
                 } else if reply.text.trim().is_empty() && reply.has_attachments {
@@ -358,6 +446,8 @@ pub fn build<'a>(
                 pinned: message.pin.is_some(),
                 thread: act && !viewer.in_thread && message.thread_root_id.is_none(),
             },
+            blocked_run: None,
+            blocked,
         };
         push(
             &mut rows,
@@ -365,6 +455,7 @@ pub fn build<'a>(
             &message.author,
             &message.created_at,
             row,
+            separate,
         );
     }
     if let Some(draft) = draft {
@@ -374,6 +465,7 @@ pub fn build<'a>(
             day: None,
             grouped: false,
             author: draft.author.name.clone(),
+            person: draft.author.clone(),
             picture_ready: viewer.images.picture_ready(&avatar),
             avatar,
             time: String::new(),
@@ -389,8 +481,18 @@ pub fn build<'a>(
             team_notice: false,
             offers: Offers::default(),
             content: draft.content,
+            blocked_run: None,
+            blocked: false,
         };
-        push(&mut rows, draft.id, draft.author, draft.created_at, row);
+        let separate = std::mem::take(&mut separate_next);
+        push(
+            &mut rows,
+            draft.id,
+            draft.author,
+            draft.created_at,
+            row,
+            separate,
+        );
     }
     rows
 }
@@ -437,6 +539,15 @@ pub enum Action {
     Open(caper_client::model::Attachment),
     /// Open an http(s) link.
     OpenUrl(String),
+    /// Show or hide a run of blocked messages.
+    ToggleBlocked(String),
+    /// A person's profile card, from an author or a mention pill.
+    Profile {
+        id: String,
+        /// The message's author, when the click was on it.
+        author: Option<Author>,
+        anchor: gtk::Widget,
+    },
 }
 
 pub type Handler = Rc<dyn Fn(Action)>;
@@ -469,6 +580,10 @@ struct Widgets {
     reply_button: gtk::Button,
     thread_button: gtk::Button,
     more: gtk::Button,
+    /// The blocked run notice and its Show/Hide.
+    blocked: gtk::Box,
+    blocked_label: gtk::Label,
+    blocked_toggle: gtk::Button,
     row: RefCell<Option<Row>>,
 }
 
@@ -624,10 +739,25 @@ fn build_widgets(images: &Images) -> Widgets {
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&line));
     overlay.add_overlay(&tools);
+    let blocked = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    blocked.add_css_class("blocked-run");
+    let blocked_label = gtk::Label::builder()
+        .xalign(0.0)
+        .css_classes(["muted", "small"])
+        .build();
+    let blocked_toggle = gtk::Button::with_label("Show");
+    blocked_toggle.add_css_class("flat");
+    blocked_toggle.add_css_class("inline");
+    blocked.append(&blocked_label);
+    blocked.append(&blocked_toggle);
+    root.append(&blocked);
     root.append(&day);
     root.append(&reply);
     root.append(&overlay);
     Widgets {
+        blocked,
+        blocked_label,
+        blocked_toggle,
         notice,
         card: overlay.clone(),
         root,
@@ -692,6 +822,52 @@ fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
         (&widgets.replies, |id, _| Action::Thread(id)),
         (&widgets.more, |id, anchor| Action::Menu { id, anchor }),
     ];
+    for target in [
+        widgets.author.clone().upcast::<gtk::Widget>(),
+        widgets.avatar.root.clone().upcast(),
+    ] {
+        let click = gtk::GestureClick::new();
+        let (weak, handler, anchor) = (Rc::downgrade(widgets), handler.clone(), target.clone());
+        click.connect_released(move |_, _, _, _| {
+            let person = weak
+                .upgrade()
+                .and_then(|widgets| widgets.row.borrow().as_ref().map(|row| row.person.clone()));
+            if let Some(person) = person.filter(|person| !person.is_guest) {
+                handler(Action::Profile {
+                    id: person.id.clone(),
+                    author: Some(person),
+                    anchor: anchor.clone(),
+                });
+            }
+        });
+        target.add_controller(click);
+        target.set_cursor_from_name(Some("pointer"));
+    }
+    let (handler_link, anchor) = (handler.clone(), widgets.body.clone());
+    widgets.body.connect_activate_link(move |_, uri| {
+        if let Some(id) = uri.strip_prefix(crate::markup::PERSON) {
+            handler_link(Action::Profile {
+                id: id.to_owned(),
+                author: None,
+                anchor: anchor.clone().upcast(),
+            });
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    let (weak, toggle) = (Rc::downgrade(widgets), handler.clone());
+    widgets.blocked_toggle.connect_clicked(move |_| {
+        let key = weak.upgrade().and_then(|widgets| {
+            widgets
+                .row
+                .borrow()
+                .as_ref()
+                .and_then(|row| row.blocked_run.as_ref().map(|(key, _, _)| key.clone()))
+        });
+        if let Some(key) = key {
+            toggle(Action::ToggleBlocked(key));
+        }
+    });
     for (button, action) in actions {
         let (weak, handler) = (Rc::downgrade(widgets), handler.clone());
         button.connect_clicked(move |button| {
@@ -710,7 +886,21 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
     if row.pending {
         classes.push("pending");
     }
+    if row.blocked {
+        classes.push("blocked");
+    }
     widgets.root.set_css_classes(&classes);
+    widgets.blocked.set_visible(row.blocked_run.is_some());
+    widgets.card.set_visible(row.blocked_run.is_none());
+    if let Some((_, label, shown)) = &row.blocked_run {
+        widgets.blocked_label.set_label(&format!("⊘ {label} —"));
+        widgets
+            .blocked_toggle
+            .set_label(if *shown { "Hide" } else { "Show" });
+        widgets.day.set_visible(false);
+        widgets.reply.set_visible(false);
+        return;
+    }
     if row.mentioned {
         widgets.card.add_css_class("mentioned");
     } else {
@@ -812,6 +1002,15 @@ mod tests {
             day: None,
             grouped: false,
             author: "Maya".into(),
+            person: Author {
+                id: "maya".into(),
+                avatar_id: Some(31),
+                avatar_asset: None,
+                avatar_url: None,
+                name: "Maya".into(),
+                is_guest: false,
+                admin: false,
+            },
             avatar: crate::images::Avatar::new("Maya", Some(31), &None, &None),
             picture_ready: false,
             time: String::new(),
@@ -827,6 +1026,8 @@ mod tests {
             team_notice: false,
             offers: Offers::default(),
             content: Default::default(),
+            blocked_run: None,
+            blocked: false,
         }
     }
 

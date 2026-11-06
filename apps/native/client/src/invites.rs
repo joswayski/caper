@@ -6,6 +6,16 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use url::Url;
 
+/// The invite-list label for `friendly_error`'s sentences for "user already
+/// in space" and "user already invited", so the row can't be retried.
+pub fn redundant_invitation(error: &str) -> Option<&'static str> {
+    match error {
+        "This person is already in the space." => Some("Member"),
+        "This person already has a pending invitation." => Some("Invited"),
+        _ => None,
+    }
+}
+
 /// Codes are exactly ten ASCII letters or digits.
 const CODE_LENGTH: usize = 10;
 

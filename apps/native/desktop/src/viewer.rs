@@ -212,26 +212,7 @@ pub struct Viewer {
 impl Viewer {
     /// Profile pictures use stable asset keys, not message attachment IDs.
     pub fn profile_picture(source: crate::pictures::Source<'_>, name: &str) -> Option<Attachment> {
-        Some(Attachment {
-            id: format!("profile-picture:{}", source.asset),
-            name: format!("{name} profile picture"),
-            kind: AttachmentKind::Image,
-            content_type: "image/webp".into(),
-            url: Some(source.url?.to_owned()),
-            preview_url: None,
-            size: 0,
-            width: None,
-            height: None,
-            duration_ms: None,
-            preview: false,
-            unavailable: false,
-            status: AttachmentStatus::Ready,
-            animated: false,
-            voice: false,
-            waveform: None,
-            transcript: None,
-            spoiler: false,
-        })
+        caper_client::attachments::profile_picture(source, name)
     }
 
     pub fn picture_menu(&mut self, ui: &mut egui::Ui, current: &Attachment, media: &mut Media) {

@@ -8,12 +8,23 @@ use gtk::glib;
 use std::ops::Range;
 
 /// Mention pills: a terracotta wash with bright text.
-const MENTION: &str = "background=\"#3a2620\" foreground=\"#f3a58f\" weight=\"bold\"";
+const MENTION: &str =
+    "background=\"#3a2620\" foreground=\"#f3a58f\" weight=\"bold\" underline=\"none\"";
+
+/// The link scheme of a person's mention pill: `caper-person:<account id>`.
+pub const PERSON: &str = "caper-person:";
 
 pub fn message(text: &str, mentions: &[Mention]) -> String {
-    let pills: Vec<Range<usize>> = caper_client::mentions::highlights(text, mentions)
-        .into_iter()
-        .map(|(range, _)| range)
+    let highlighted = caper_client::mentions::highlights(text, mentions);
+    let pills: Vec<Range<usize>> = highlighted.iter().map(|(range, _)| range.clone()).collect();
+    // A person's pill links to their profile card.
+    let people: Vec<Option<&str>> = highlighted
+        .iter()
+        .map(|(_, mention)| {
+            (mention.kind == "user")
+                .then_some(mention.id.as_deref())
+                .flatten()
+        })
         .collect();
     let mut links: Vec<(Range<usize>, String)> = Vec::new();
     // Links only in the plain text between mentions.
@@ -49,7 +60,7 @@ pub fn message(text: &str, mentions: &[Mention]) -> String {
         cuts.dedup();
         for piece in cuts.windows(2) {
             let (start, end) = (piece[0], piece[1]);
-            let pill = pills.iter().any(|pill| pill.contains(&start));
+            let pill = pills.iter().position(|pill| pill.contains(&start));
             let link = links
                 .iter()
                 .find(|(link, _)| link.contains(&start))
@@ -59,7 +70,14 @@ pub fn message(text: &str, mentions: &[Mention]) -> String {
                 out.push_str(&format!("<a href=\"{}\">", glib::markup_escape_text(href)));
                 close.push("</a>");
             }
-            if pill {
+            if let Some(index) = pill {
+                if let Some(id) = people[index] {
+                    out.push_str(&format!(
+                        "<a href=\"{PERSON}{}\">",
+                        glib::markup_escape_text(id)
+                    ));
+                    close.push("</a>");
+                }
                 out.push_str(&format!("<span {MENTION}>"));
                 close.push("</span>");
             }
@@ -115,7 +133,7 @@ mod tests {
         assert_eq!(
             message(text, &[user("maya")]),
             format!(
-                "hi <span {MENTION}>@Maya</span> and @nobody, <b>see </b><span {MENTION}><b>@maya</b></span> <b>@maya</b>"
+                "hi <a href=\"{PERSON}id\"><span {MENTION}>@Maya</span></a> and @nobody, <b>see </b><a href=\"{PERSON}id\"><span {MENTION}><b>@maya</b></span></a> <b>@maya</b>"
             )
         );
         assert_eq!(
@@ -127,7 +145,9 @@ mod tests {
     #[test]
     fn links_are_found_between_mentions() {
         let markup = message("@maya www.caper.chat", &[user("maya")]);
-        assert!(markup.starts_with(&format!("<span {MENTION}>@maya</span> <a href=\"")));
+        assert!(markup.starts_with(&format!(
+            "<a href=\"{PERSON}id\"><span {MENTION}>@maya</span></a> <a href=\""
+        )));
         assert!(markup.ends_with(">www.caper.chat</a>"));
     }
 }

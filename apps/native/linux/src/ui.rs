@@ -154,6 +154,10 @@ pub struct Ui {
     pub members_toggle: gtk::ToggleButton,
     pub members_panel: gtk::Box,
     pub members_title: gtk::Label,
+    pub members_count: gtk::Label,
+    pub member_search_button: gtk::Button,
+    pub members_close: gtk::Button,
+    pub member_search: gtk::SearchEntry,
     pub members: gtk::ListBox,
     pub list: List,
     pub error: gtk::Label,
@@ -269,6 +273,8 @@ impl Ui {
 
         // Chat: rail, sidebar, conversation, then members or a thread.
         let chat = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        // Hosts popovers (`app::popup`): it outlives the rows they point at.
+        chat.add_css_class("popover-host");
         let rail: gtk::Box = crate::app::named("GtkBox", "Spaces");
         rail.set_orientation(gtk::Orientation::Vertical);
         rail.set_spacing(8);
@@ -414,8 +420,30 @@ impl Ui {
         members_panel.add_css_class("members");
         members_panel.set_size_request(240, -1);
         members_panel.set_hexpand(false);
-        let members_title = label("", &["section"]);
-        members_panel.append(&members_title);
+        let members_header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        members_header.add_css_class("members-header");
+        let members_title = label("Members", &["members-title"]);
+        members_header.append(&members_title);
+        let members_count = label("", &["muted", "small"]);
+        members_count.set_hexpand(true);
+        members_count.set_xalign(0.0);
+        members_header.append(&members_count);
+        let member_search_button: gtk::Button = crate::app::named("GtkButton", "Search members");
+        member_search_button.set_child(Some(&images.icon_image(Icon::Search, "#b9bcbe", 16)));
+        member_search_button.set_tooltip_text(Some("Search members"));
+        member_search_button.add_css_class("flat");
+        members_header.append(&member_search_button);
+        let members_close: gtk::Button = crate::app::named("GtkButton", "Close member list");
+        members_close.set_child(Some(&images.icon_image(Icon::Close, "#b9bcbe", 16)));
+        members_close.set_tooltip_text(Some("Close member list"));
+        members_close.add_css_class("flat");
+        members_header.append(&members_close);
+        members_panel.append(&members_header);
+        let member_search = gtk::SearchEntry::new();
+        member_search.set_placeholder_text(Some("Search members"));
+        member_search.add_css_class("member-search");
+        member_search.set_visible(false);
+        members_panel.append(&member_search);
         let members: gtk::ListBox = crate::app::named("GtkListBox", "Members");
         members.set_selection_mode(gtk::SelectionMode::None);
         members.add_css_class("member-list");
@@ -482,6 +510,10 @@ impl Ui {
             members_toggle,
             members_panel,
             members_title,
+            members_count,
+            member_search_button,
+            members_close,
+            member_search,
             members,
             list,
             error,

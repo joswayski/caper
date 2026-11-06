@@ -564,12 +564,93 @@ button.send:not(:disabled) {
 }
 
 list.member-list > row {
-  padding: 4px 12px;
+  padding: 0 8px;
+  color: @caper_text;
+  background: transparent;
+}
+
+.members-header {
+  min-height: 44px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid @caper_border;
+}
+
+.members-title {
+  color: @caper_text_muted;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.member-search {
+  margin: 8px;
+}
+
+.member-group {
+  padding: 12px 8px 2px;
+}
+
+.member-section {
+  padding: 8px 8px 4px;
+}
+
+.member-heading {
+  font-size: 11px;
+  font-weight: 700;
   color: @caper_text;
 }
 
-list.member-list > row:hover {
+.member-heading-quiet {
+  font-size: 11px;
+  font-weight: 700;
+  color: @caper_text_muted;
+}
+
+.members-empty {
+  padding: 8px;
+}
+
+.member {
+  min-height: 44px;
+  padding: 0 8px;
+  border-radius: 8px;
+}
+
+.member:hover {
   background: @caper_surface_hover;
+}
+
+.member.offline {
+  opacity: 0.6;
+}
+
+.member-name {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.member-name-quiet {
+  font-size: 12px;
+  color: @caper_text_muted;
+}
+
+.member.offline .member-name-quiet {
+  color: @caper_text;
+}
+
+popover.profile-card > contents {
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.profile-name {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.composer.profile-composer {
+  margin: 0;
 }
 
 .badge {
@@ -802,4 +883,20 @@ popover.pins > contents {
 
 .pins-empty {
   padding: 24px;
+}
+
+/* "⊘ 2 blocked messages — Show" and the messages it reveals. */
+.blocked-run {
+  padding: 6px 22px;
+}
+
+.message.blocked {
+  background: @caper_surface;
+  box-shadow: inset 2px 0 @caper_border;
+}
+
+.profile-actions {
+  border-top: 1px solid @caper_border;
+  border-bottom: 1px solid @caper_border;
+  padding: 4px 0;
 }

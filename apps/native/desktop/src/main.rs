@@ -37,6 +37,7 @@ mod window_state;
 mod worker;
 
 use caper_client::caper_avatar_index;
+use caper_client::invites::redundant_invitation;
 use caper_client::names::normalize_username;
 use caper_client::reactions::{Reacted, Reactions};
 use caper_client::sign_in::{MAX_RESENDS, clean_sign_in_code, resend_countdown, resend_wait};
@@ -31638,16 +31639,6 @@ fn admin_error(error: String) -> String {
     }
 }
 
-/// The invite-list label for `friendly_error`'s sentences for "user already
-/// in space" and "user already invited", so the row can't be retried.
-fn redundant_invitation(error: &str) -> Option<&'static str> {
-    match error {
-        "This person is already in the space." => Some("Member"),
-        "This person already has a pending invitation." => Some("Invited"),
-        _ => None,
-    }
-}
-
 /// Quick reactions at the start of the message hover toolbar.
 const QUICK_REACTIONS: [&str; 3] = ["👍", "❤️", "😂"];
 
@@ -33693,8 +33684,8 @@ mod tests {
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, DELETE_ACCOUNT_URL, Dialog,
         GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingSend, Phase,
         RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT, display_time, endpoint,
-        media, message_runs, normalize_channel, permanent_send_rejection, pill_rects,
-        redundant_invitation, short_time, take_date_divider, timestamp_parts, voice,
+        media, message_runs, normalize_channel, permanent_send_rejection, pill_rects, short_time,
+        take_date_divider, timestamp_parts, voice,
     };
     use crate::TestPass as _;
     use crate::{mentions, navigation, uploads, voice_note, whats_new, worker};
@@ -47144,7 +47135,7 @@ mod tests {
             Some(&"Invited")
         );
         assert_eq!(
-            redundant_invitation("This person is already in the space."),
+            caper_client::invites::redundant_invitation("This person is already in the space."),
             Some("Member")
         );
     }

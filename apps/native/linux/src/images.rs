@@ -58,6 +58,7 @@ icons! {
     Play => "play",
     Pause => "pause",
     Plus => "plus",
+    MessageCircle => "message-circle",
     Paperclip => "paperclip",
     Download => "download",
     ExternalLink => "external-link",
