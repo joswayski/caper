@@ -18,6 +18,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private var dataSource: UICollectionViewDiffableDataSource<Int, Item>!
     private var rows: [String: MessageRowState] = [:]
     private var days: [String: String] = [:]
+    private var runs: [String: BlockedRunState] = [:]
+    private var revealed: Set<String> = []
     private var shownRoot: String?
     private var followingTail = true
     private let observer = ModelObserver()
@@ -86,6 +88,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         collection.accessibilityIdentifier = "thread-timeline"
         collection.register(MessageCell.self, forCellWithReuseIdentifier: MessageCell.reuse)
         collection.register(DayDividerCell.self, forCellWithReuseIdentifier: DayDividerCell.reuse)
+        collection.register(BlockedRunCell.self, forCellWithReuseIdentifier: BlockedRunCell.reuse)
         collection.register(TimelineEdgeCell.self, forCellWithReuseIdentifier: TimelineEdgeCell.reuse)
         dataSource = UICollectionViewDiffableDataSource(collectionView: collection) { [weak self] collection, path, item in
             guard let self else { return nil }
@@ -98,6 +101,16 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             case let .day(key):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: path) as! DayDividerCell
                 cell.configure(self.days[key] ?? "")
+                return cell
+            case let .blocked(key):
+                let cell = collection.dequeueReusableCell(withReuseIdentifier: BlockedRunCell.reuse, for: path) as! BlockedRunCell
+                if let run = self.runs[key] {
+                    cell.configure(run) { [weak self] in
+                        guard let self else { return }
+                        self.revealed = run.toggling(self.revealed)
+                        self.render()
+                    }
+                }
                 return cell
             case let .row(id):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: MessageCell.reuse, for: path) as! MessageCell
@@ -244,7 +257,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         if (chat.threadLoading && replies.isEmpty) || chat.threadError != nil || chat.threadHasMore { items.append(.edge) }
         let built = TimelineRows.build(replies, pending: pending, author: chat.currentAuthor, viewerID: viewer,
                                        focusedID: chat.focusedMessageID, chat: chat, error: chat.error,
-                                       rejected: chat.sendRejected, inThread: true)
+                                       rejected: chat.sendRejected, inThread: true,
+                                       blocked: chat.blockedAuthorIDs, revealed: revealed)
         items += built.items.filter { if case .day = $0 { false } else { true } }
         nextRows.merge(built.rows) { _, new in new }
         nextDays.merge(built.days) { _, new in new }
@@ -264,11 +278,13 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             switch item {
             case let .row(id): return rows[id] != nextRows[id]
             case let .day(key): return days[key] != nextDays[key]
+            case let .blocked(key): return runs[key] != built.runs[key]
             case .edge: return true
             }
         })
         rows = nextRows
         days = nextDays
+        runs = built.runs
         shownRoot = rootID
         if switched { followingTail = true }
         let follow = followingTail

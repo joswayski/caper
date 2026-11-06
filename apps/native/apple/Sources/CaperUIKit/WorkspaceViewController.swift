@@ -9,6 +9,7 @@ final class WorkspaceViewController: UIViewController {
     let browse: BrowseViewController
     let conversation: ConversationViewController
     private var browsing = false
+    private var shownDirect: String?
     private let observer = ModelObserver()
 
     var cached: StartupSnapshot? {
@@ -47,8 +48,12 @@ final class WorkspaceViewController: UIViewController {
         // No channel to show yet: start in Browse.
         observer.start { [weak self] in
             guard let self else { return }
-            let hasChannel = self.model.selectedChannelID != nil || self.cached?.channelID != nil
+            let direct = self.model.selectedDirectMessageID
+            let hasChannel = self.model.selectedChannelID != nil || direct != nil || self.cached?.channelID != nil
             if !hasChannel && !self.browsing { self.slide(browsing: true, animated: false) }
+            // A DM opened from Browse, a request, New message or a notification: show it.
+            if let direct, direct != self.shownDirect, self.browsing { self.slide(browsing: false) }
+            self.shownDirect = direct
         }
         update(progress: browsing ? 1 : 0)
     }

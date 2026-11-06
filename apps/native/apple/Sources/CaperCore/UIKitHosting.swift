@@ -60,6 +60,15 @@ import UIKit
         return host
     }
 
+    /// New direct message: an exact username, with suggestions. Opening the
+    /// conversation selects it on the model and closes the sheet.
+    public static func newDirectMessage(model: AppModel) -> UIViewController {
+        let host = controller { close in NewDirectMessageSheet(model: model, close: close) }
+        sheet(host, background: CaperTheme.surface)
+        host.sheetPresentationController?.detents = [.large()]
+        return host
+    }
+
     static func sheet(_ host: UIViewController, background: Color) {
         host.view.backgroundColor = UIColor(background)
         host.modalPresentationStyle = .pageSheet
@@ -245,6 +254,81 @@ public struct UIKitComposerAccessories: View {
 
     /// Whether any of these is showing, so the conversation leaves its gestures alone.
     public var presenting: Bool { actions != nil || reactors != nil || block != nil }
+}
+
+/// Message requests on iPhone: the page Browse pushes in place of its lists.
+/// Opening a request reads it and never accepts it.
+public struct UIKitMessageRequests: View {
+    @Bindable var model: AppModel
+    public init(model: AppModel) { self.model = model }
+    public var body: some View {
+        ScrollView { MessageRequestsList(model: model, pushed: true) }
+            .background(CaperTheme.sidebar).preferredColorScheme(.dark)
+    }
+}
+
+/// What replaces a DM's composer: Accept, Decline or Block in an incoming
+/// request, Unblock in a conversation with someone you blocked.
+public struct UIKitDirectBar: View {
+    @Bindable var model: AppModel
+    let block: (BlockTarget) -> Void
+
+    public init(model: AppModel, block: @escaping (BlockTarget) -> Void) { self.model = model; self.block = block }
+
+    /// The open DM's peer, other than yourself.
+    static func peer(_ model: AppModel) -> DirectMessageConversation? {
+        model.selectedDirectMessage.flatMap { $0.peer.id == model.account?.id ? nil : $0 }
+    }
+
+    /// Unblock, reporting a failure in the conversation.
+    public static func unblock(model: AppModel, accountID: String) {
+        Task {
+            do { try await model.unblock(accountID: accountID) }
+            catch { model.chat.error = FriendlyError.message(for: error) }
+        }
+    }
+
+    public static func shows(model: AppModel) -> Bool {
+        model.selectedDirectMessage?.status == .incoming || peer(model)?.blocked == true
+    }
+
+    public var body: some View {
+        Group {
+            if let request = model.selectedDirectMessage, request.status == .incoming {
+                MessageRequestBar(model: model, conversation: request) { block(BlockTarget(peer: request.peer)) }
+            } else if let conversation = Self.peer(model), conversation.blocked {
+                BlockedConversationBar(conversation: conversation) { Self.unblock(model: model, accountID: conversation.peer.id) }
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .preferredColorScheme(.dark)
+    }
+}
+
+/// One timeline entry: a message, or a run of blocked authors' messages that
+/// collapses into "N blocked messages — Show".
+public struct UIKitTimelineEntry {
+    public let messages: [ChatMessage]
+    public let blocked: Bool
+    public let revealed: Bool
+    public let label: String
+
+    /// Groups each run of consecutive messages by blocked authors.
+    public static func entries(_ messages: [ChatMessage], blocked: Set<String>, viewerID: String?,
+                               revealed: Set<String>) -> [UIKitTimelineEntry] {
+        BlockedMessages.entries(messages, blocked: blocked, viewerID: viewerID, revealed: revealed).map {
+            switch $0 {
+            case let .message(message): UIKitTimelineEntry(messages: [message], blocked: false, revealed: false, label: "")
+            case let .blocked(run): UIKitTimelineEntry(messages: run.messages, blocked: true, revealed: run.revealed, label: run.label)
+            }
+        }
+    }
+
+    /// Show or Hide a run: the new revealed set.
+    public func toggling(_ revealed: Set<String>) -> Set<String> {
+        let ids = Set(messages.map(\.id))
+        return self.revealed ? revealed.subtracting(ids) : revealed.union(ids)
+    }
 }
 
 /// The quick reactions on every client: 👍 ❤️ 😂.

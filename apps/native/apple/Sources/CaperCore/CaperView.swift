@@ -8689,7 +8689,7 @@ struct AdminBadge: View {
 
 /// Incoming requests: nested under the row in a sidebar, or a pushed page on
 /// narrow layouts. Opening one reads it by id and never accepts it.
-private struct MessageRequestsList: View {
+struct MessageRequestsList: View {
     @Bindable var model: AppModel
     let pushed: Bool
     var body: some View {
@@ -8747,7 +8747,7 @@ private struct MessageRequestsList: View {
 }
 
 /// Replaces the composer in an incoming request.
-private struct MessageRequestBar: View {
+struct MessageRequestBar: View {
     @Bindable var model: AppModel
     let conversation: DirectMessageConversation
     let block: () -> Void
@@ -8792,7 +8792,7 @@ private struct MessageRequestBar: View {
 }
 
 /// Replaces the composer in a DM whose peer you blocked.
-private struct BlockedConversationBar: View {
+struct BlockedConversationBar: View {
     let conversation: DirectMessageConversation
     let unblock: () -> Void
     var body: some View {
@@ -9045,7 +9045,7 @@ private struct NotificationsSheet: View {
     }
 }
 
-private struct NewDirectMessageSheet: View {
+struct NewDirectMessageSheet: View {
     @Bindable var model: AppModel
     let close: () -> Void
     @State private var username = ""

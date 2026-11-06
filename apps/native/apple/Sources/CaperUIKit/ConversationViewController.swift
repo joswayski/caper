@@ -10,6 +10,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         case edge
         case day(String)
         case row(String)
+        /// "N blocked messages — Show", keyed by the run's first message.
+        case blocked(String)
 
         var rowID: String? { if case let .row(id) = self { return id } else { return nil } }
         var isRow: Bool { rowID != nil }
@@ -35,6 +37,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     private var rows: [String: MessageRowState] = [:]
     private var days: [String: String] = [:]
+    private var blockedRuns: [String: BlockedRunState] = [:]
+    /// Blocked messages the reader chose to show, in memory only.
+    private var revealedBlocked: Set<String> = []
     private var edge: TimelineEdge?
     /// The conversation whose rows are shown, and whether it is the live one.
     private var shownKey: String?
@@ -174,6 +179,24 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
                 self?.toggleMembers()
             })
         }
+        // A 1:1 DM: block or unblock the other person.
+        if let conversation = peerConversation {
+            let peer = conversation.peer
+            if conversation.blocked || model.blockedIDs.contains(peer.id) {
+                let unblock = UIAction(title: "Unblock @\(peer.username)") { [weak self] _ in
+                    guard let model = self?.model else { return }
+                    UIKitDirectBar.unblock(model: model, accountID: peer.id)
+                }
+                unblock.accessibilityIdentifier = "dm-unblock"
+                items.append(UIMenu(options: .displayInline, children: [unblock]))
+            } else if peer.canBlock {
+                let block = UIAction(title: "Block @\(peer.username)…", attributes: .destructive) { [weak self] _ in
+                    self?.presentations.block = BlockTarget(peer: peer)
+                }
+                block.accessibilityIdentifier = "dm-block"
+                items.append(UIMenu(options: .displayInline, children: [block]))
+            }
+        }
         return items
     }
 
@@ -191,7 +214,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     }
 
     /// The member list applies to a channel, not a preview.
-    private var membersAvailable: Bool { isLive && !model.previewingChannel && model.detail != nil }
+    private var membersAvailable: Bool { isLive && !direct && !model.previewingChannel && model.detail != nil }
 
     private func buildTimeline() {
         let size = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .estimated(64))
@@ -207,6 +230,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         collection.accessibilityIdentifier = "message-timeline"
         collection.register(MessageCell.self, forCellWithReuseIdentifier: MessageCell.reuse)
         collection.register(DayDividerCell.self, forCellWithReuseIdentifier: DayDividerCell.reuse)
+        collection.register(BlockedRunCell.self, forCellWithReuseIdentifier: BlockedRunCell.reuse)
         collection.register(TimelineEdgeCell.self, forCellWithReuseIdentifier: TimelineEdgeCell.reuse)
         dataSource = UICollectionViewDiffableDataSource(collectionView: collection) { [weak self] collection, indexPath, item in
             guard let self else { return nil }
@@ -219,6 +243,16 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             case let .day(key):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: indexPath) as! DayDividerCell
                 cell.configure(self.days[key] ?? "")
+                return cell
+            case let .blocked(key):
+                let cell = collection.dequeueReusableCell(withReuseIdentifier: BlockedRunCell.reuse, for: indexPath) as! BlockedRunCell
+                if let run = self.blockedRuns[key] {
+                    cell.configure(run) { [weak self] in
+                        guard let self else { return }
+                        self.revealedBlocked = run.toggling(self.revealedBlocked)
+                        self.render()
+                    }
+                }
                 return cell
             case let .row(id):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: MessageCell.reuse, for: indexPath) as! MessageCell
@@ -280,13 +314,33 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             composer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
         ])
+        // An incoming request or a blocked peer replaces the composer.
+        view.addSubview(directBar)
+        directBar.isHidden = true
+        NSLayoutConstraint.activate([
+            directBar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            directBar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            directBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+        ])
     }
 
     // MARK: Rendering
 
-    /// Live once the model has opened this channel; until then, the cache.
+    private let directBar = HostedView()
+    private var directBarKey: String?
+    private var directBarHeight: NSLayoutConstraint?
+
+    /// The open conversation: a channel, or a DM.
+    private var conversationID: String? { model.selectedChannelID ?? model.selectedDirectMessageID }
+    private var direct: Bool { model.selectedDirectMessageID != nil }
+    /// The open DM's peer, other than yourself.
+    private var peerConversation: DirectMessageConversation? {
+        model.selectedDirectMessage.flatMap { $0.peer.id == model.account?.id ? nil : $0 }
+    }
+
+    /// Live once the model has opened this conversation; until then, the cache.
     private var isLive: Bool {
-        model.phase == .ready && !model.restoringWorkspace && model.selectedChannelID != nil
+        model.phase == .ready && !model.restoringWorkspace && conversationID != nil
             && !(model.chat.loading && model.chat.messages.isEmpty && cached?.messages.isEmpty == false)
     }
 
@@ -311,14 +365,16 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let chat = model.chat
         presentThreadIfNeeded()
         let live = isLive
-        let channelID = live ? model.selectedChannelID : cached?.channelID
+        let channelID = live ? conversationID : cached?.channelID
+        let direct = live && self.direct
         let channelName = live ? (model.selectedChannel?.name ?? chat.channelName) : (cached?.channelName ?? "")
-        let title = channelName.isEmpty ? "" : "# \(channelName.lowercased())"
+        // A DM reads as the person's name; a channel as "# name".
+        let title = channelName.isEmpty ? "" : direct ? channelName : "# \(channelName.lowercased())"
         channelTitle.text = title
         subtitle.text = memberSummary(live: live, channelID: channelID)
         subtitle.isHidden = subtitle.text == nil
-        heading.accessibilityLabel = title
-        titleMenu.accessibilityLabel = "#\(channelName.lowercased()) options"
+        heading.accessibilityLabel = direct ? "Direct message with \(channelName)" : title
+        titleMenu.accessibilityLabel = direct ? "\(channelName) options" : "#\(channelName.lowercased()) options"
         titleMenu.accessibilityValue = subtitle.text
         titleMenu.isEnabled = live
         renderConnection(live ? chat.liveState : .connected)
@@ -357,16 +413,18 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         status.isHidden = status.text == nil
 
         apply(messages: messages, pending: pending, author: chat.currentAuthor, viewerID: viewer,
-              key: channelID, live: live, error: chat.error, rejected: chat.sendRejected)
+              key: channelID, live: live, error: chat.error, rejected: chat.sendRejected,
+              blocked: live ? chat.blockedAuthorIDs : [])
     }
 
     private func apply(messages: [ChatMessage], pending: PendingMessage?, author: ChatAuthor?, viewerID: String?,
-                       key: String?, live: Bool, error: String?, rejected: Bool) {
+                       key: String?, live: Bool, error: String?, rejected: Bool, blocked: Set<String>) {
+        if key != shownKey { revealedBlocked = [] }
         var built = TimelineRows.build(messages, pending: pending, author: author, viewerID: viewerID,
                                        focusedID: live ? model.chat.focusedMessageID : nil, chat: live ? model.chat : nil,
-                                       error: error, rejected: rejected)
+                                       error: error, rejected: rejected, blocked: blocked, revealed: revealedBlocked)
         if edge != nil { built.items.insert(.edge, at: 0) }
-        let items = built.items, nextRows = built.rows, nextDays = built.days
+        let items = built.items, nextRows = built.rows, nextDays = built.days, nextRuns = built.runs
 
         let switched = key != shownKey
         // Uploads and GIFs are optional server configuration; recheck per conversation.
@@ -393,12 +451,14 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             switch item {
             case let .row(id): return rows[id] != nextRows[id]
             case let .day(day): return days[day] != nextDays[day]
+            case let .blocked(run): return blockedRuns[run] != nextRuns[run]
             case .edge: return true
             }
         }
         snapshot.reconfigureItems(changed)
         rows = nextRows
         days = nextDays
+        blockedRuns = nextRuns
         shownKey = key
         self.live = live
         arriving.formUnion(appended)
@@ -534,7 +594,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let chat = model.chat
         let name = model.selectedChannel?.name ?? cached?.channelName ?? chat.channelName
         let ready = isLive && chat.canInteract && !model.previewingChannel
-        composer.configure(prompt: "Message #\(name.lowercased())", enabled: ready,
+        renderDirectBar()
+        composer.configure(prompt: isLive && direct ? "Message \(chat.channelName)" : "Message #\(name.lowercased())", enabled: ready,
                            canSend: chat.canPressSend(inThread: false),
                            canAttach: chat.canAttach,
                            attachReason: chat.canAttach ? nil : chat.attachUnavailableReason,
@@ -543,6 +604,19 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         composer.showAccessories(ready && UIKitComposerAccessories.shows(chat: chat)
                                  ? UIKitComposerAccessories(chat: chat, present: presentHosted) : nil)
         composer.showVoice(button: ready ? voice.button : nil, bar: voice.bar, recording: ready && voice.isRecording)
+    }
+
+    /// Accept, Decline or Block in a request; Unblock with a blocked peer.
+    private func renderDirectBar() {
+        let shows = isLive && UIKitDirectBar.shows(model: model)
+        let key = shows ? "\(model.selectedDirectMessageID ?? "")|\(model.selectedDirectMessage?.status == .incoming)" : nil
+        guard key != directBarKey else { return }
+        directBarKey = key
+        directBar.show(shows ? UIKitDirectBar(model: model) { [weak self] target in self?.presentations.block = target } : nil)
+        directBar.isHidden = !shows
+        composer.isHidden = shows
+        composer.accessibilityElementsHidden = shows
+        if shows { view.endEditing(true) }
     }
 
     private func send() {
@@ -601,25 +675,50 @@ enum TimelineRows {
         var items: [ConversationViewController.Item] = []
         var rows: [String: MessageRowState] = [:]
         var days: [String: String] = [:]
+        var runs: [String: BlockedRunState] = [:]
     }
 
     @MainActor static func build(_ messages: [ChatMessage], pending: PendingMessage?, author: ChatAuthor?, viewerID: String?,
-                                 focusedID: String?, chat: ChatModel?, error: String?, rejected: Bool, inThread: Bool = false) -> Built {
+                                 focusedID: String?, chat: ChatModel?, error: String?, rejected: Bool, inThread: Bool = false,
+                                 blocked: Set<String> = [], revealed: Set<String> = []) -> Built {
         var built = Built()
         var previous: ChatMessage?
+        // Runs of blocked authors' messages collapse to one row; a revealed run
+        // shows its messages after that row, marked as shown.
+        var runStarts: [String: BlockedRunState] = [:]
+        var hidden: Set<String> = []
+        var shown: Set<String> = []
+        for entry in UIKitTimelineEntry.entries(messages, blocked: blocked, viewerID: viewerID, revealed: revealed) where entry.blocked {
+            guard let first = entry.messages.first else { continue }
+            runStarts[first.id] = BlockedRunState(entry: entry)
+            let ids = entry.messages.map(\.id)
+            if entry.revealed { shown.formUnion(ids) } else { hidden.formUnion(ids) }
+        }
+        var dayReference: ChatMessage?
         for (index, message) in messages.enumerated() {
-            if previous.map({ !NativePresentation.sameDay($0.createdAt, message.createdAt) }) ?? true,
+            if dayReference.map({ !NativePresentation.sameDay($0.createdAt, message.createdAt) }) ?? true,
                let label = NativePresentation.dayLabel(message.createdAt) {
                 let key = "day-\(message.clientMessageId)"
                 built.days[key] = label
                 built.items.append(.day(key))
                 previous = nil
             }
+            dayReference = message
+            if let run = runStarts[message.id] {
+                built.runs[run.key] = run
+                built.items.append(.blocked(run.key))
+                previous = nil
+            }
+            if hidden.contains(message.id) { continue }
             let next = index + 1 < messages.count ? messages[index + 1] : nil
             let grouped = NativePresentation.grouped(message, after: previous)
-            let continued = next.map { NativePresentation.sameDay(message.createdAt, $0.createdAt) && NativePresentation.grouped($0, after: message) } ?? false
+            let continued = next.map {
+                runStarts[$0.id] == nil && !hidden.contains($0.id)
+                    && NativePresentation.sameDay(message.createdAt, $0.createdAt) && NativePresentation.grouped($0, after: message)
+            } ?? false
             built.rows[message.clientMessageId] = MessageRowState(message: message, grouped: grouped, continued: continued, viewerID: viewerID,
                                                                   focused: focusedID == message.id, chat: chat, inThread: inThread)
+            if shown.contains(message.id) { built.rows[message.clientMessageId]?.revealedBlocked = true }
             built.items.append(.row(message.clientMessageId))
             previous = message
         }

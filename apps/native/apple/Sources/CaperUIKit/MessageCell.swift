@@ -41,6 +41,8 @@ struct MessageRowState: Equatable {
     var pinMine = false
     /// The jump target (a link or Go to message): terracotta, like web.
     var focused = false
+    /// A blocked author's message the reader chose to show.
+    var revealedBlocked = false
     /// Pins list rows: the full date, and the card paints the background.
     var inPins = false
 
@@ -356,7 +358,9 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             .filter { !$0.isEmpty }.joined(separator: ", ")
 
         tint.backgroundColor = Self.background(row)
-        accent.isHidden = !(row.focused || (row.pinnedBy == nil && row.mentionsViewer))
+        let highlighted = row.focused || (row.pinnedBy == nil && row.mentionsViewer)
+        accent.isHidden = !(highlighted || row.revealedBlocked)
+        accent.backgroundColor = highlighted ? UIKitStyle.terracotta : UIKitStyle.border
 
         if let host, let message = row.extras {
             extras.show(UIKitMessageExtras(message: message, chat: host.chat, present: host.present, openForward: { host.openForward(message) }))
@@ -450,7 +454,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         if row.focused { return UIKitStyle.terracotta.withAlphaComponent(0.12) }
         if row.pinnedBy != nil { return row.pinMine ? UIKitStyle.terracotta.withAlphaComponent(0.12) : UIKitStyle.pinGold.withAlphaComponent(0.06) }
         if row.mentionsViewer { return UIKitStyle.terracotta.withAlphaComponent(0.08) }
-        return .clear
+        return row.revealedBlocked ? UIKitStyle.surface : .clear
     }
 
     private static func pinBadge(_ text: String) -> NSAttributedString {
@@ -610,6 +614,66 @@ final class TimelineEdgeCell: UICollectionViewCell {
 enum TimelineEdge: Hashable { case beginning, loading, failed }
 
 /// A full-date divider between days, as on every client.
+/// What a blocked-run row shows; Equatable so unchanged runs aren't reconfigured.
+struct BlockedRunState: Equatable {
+    let key: String
+    let label: String
+    let revealed: Bool
+    let ids: [String]
+
+    init(entry: UIKitTimelineEntry) {
+        key = "blocked-\(entry.messages.first?.id ?? "")"
+        label = entry.label; revealed = entry.revealed; ids = entry.messages.map(\.id)
+    }
+
+    func toggling(_ revealed: Set<String>) -> Set<String> {
+        self.revealed ? revealed.subtracting(ids) : revealed.union(ids)
+    }
+}
+
+/// (Ban icon) "2 blocked messages — Show": a run of blocked authors' messages.
+final class BlockedRunCell: UICollectionViewCell {
+    static let reuse = "blocked-run"
+    private let label = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
+    private let toggle = UIButton(type: .system)
+    private var action: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let icon = UIImageView(image: UIKitStyle.icon("ban")?.resized(to: 16))
+        icon.tintColor = UIKitStyle.muted
+        icon.isAccessibilityElement = false
+        label.isAccessibilityElement = false
+        toggle.titleLabel?.font = UIKitStyle.font(12, .bold)
+        toggle.setTitleColor(UIKitStyle.terracottaBright, for: .normal)
+        toggle.accessibilityIdentifier = "blocked-run-toggle"
+        toggle.addAction(UIAction { [weak self] _ in self?.action?() }, for: .primaryActionTriggered)
+        let stack = UIStackView(arrangedSubviews: [icon, label, toggle, UIView()])
+        stack.spacing = 6
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
+            toggle.heightAnchor.constraint(greaterThanOrEqualToConstant: 32),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(_ run: BlockedRunState, toggle action: @escaping () -> Void) {
+        self.action = action
+        label.text = "\(run.label) —"
+        let title = run.revealed ? "Hide" : "Show"
+        toggle.setTitle(title, for: .normal)
+        toggle.accessibilityLabel = "\(title) \(run.label)"
+        contentView.backgroundColor = run.revealed ? UIKitStyle.surface : .clear
+        accessibilityIdentifier = run.key
+    }
+}
+
 final class DayDividerCell: UICollectionViewCell {
     static let reuse = "day"
     private let label = UIKitStyle.label(size: 10, weight: .bold, color: UIKitStyle.muted)

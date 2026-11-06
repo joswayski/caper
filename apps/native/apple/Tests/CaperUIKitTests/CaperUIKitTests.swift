@@ -315,6 +315,91 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(reply.waitForExistence(timeout: 10))
     }
 
+    /// Browse lists DMs under the channels; New message opens a DM by exact
+    /// username, and the conversation sends like a channel.
+    func testNewDirectMessageOpensAndSends() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        app.buttons["back-to-browse"].tap()
+        let newMessage = app.cells["new-message"]
+        XCTAssertTrue(newMessage.waitForExistence(timeout: 10), "Browse lists DMs with New message")
+        XCTAssertTrue(app.cells["dm-self"].exists, "Your own notes are listed")
+        newMessage.tap()
+        let username = app.textFields["dm-username"]
+        XCTAssertTrue(username.waitForExistence(timeout: 10))
+        username.typeText("maya")
+        let submit = app.buttons["dm-create-submit"]
+        // A known person opens at once; anyone else is found first.
+        if submit.label == "Find person" {
+            submit.tap()
+            expectation(for: NSPredicate(format: "label == %@", "Open conversation"), evaluatedWith: submit)
+            waitForExpectations(timeout: 10)
+        }
+        XCTAssertTrue(app.staticTexts["Maya (@maya)"].exists, "The sheet names who you'll message")
+        submit.tap()
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        let opened = NSPredicate(format: "label == %@", "Message Maya")
+        expectation(for: opened, evaluatedWith: composer)
+        waitForExpectations(timeout: 10)
+        XCTAssertEqual(app.buttons["channel-title-menu"].label, "Maya options")
+        composer.tap()
+        composer.typeText("TEST FIXTURE — hi from a DM")
+        app.buttons["send-message"].tap()
+        XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "hi from a DM")).firstMatch.waitForExistence(timeout: 10))
+        screenshot("uikit-dm")
+        app.buttons["back-to-browse"].tap()
+        let dm = app.cells["dm-dm0000000004"]
+        XCTAssertTrue(dm.waitForExistence(timeout: 10), "The new DM joins the list")
+        XCTAssertEqual(dm.value as? String, "Selected")
+        screenshot("uikit-browse-dms")
+    }
+
+    /// An incoming request opens read-only with Accept, Decline and Block in
+    /// place of the composer; blocking collapses the peer's messages.
+    func testMessageRequestAcceptBlockAndUnblock() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        control(["messageRequest": [String: String]()])
+        app.buttons["back-to-browse"].tap()
+        let requests = app.cells["message-requests"]
+        XCTAssertTrue(requests.waitForExistence(timeout: 30), "An incoming request adds the Message requests row")
+        XCTAssertEqual(requests.value as? String, "1 request")
+        requests.tap()
+        let request = app.buttons["message-request-dm0000000003"]
+        XCTAssertTrue(request.waitForExistence(timeout: 10), "The requests page lists Jordan")
+        screenshot("uikit-requests")
+        request.tap()
+        let accept = app.buttons["message-request-accept"]
+        XCTAssertTrue(accept.waitForExistence(timeout: 10), "A request replaces the composer")
+        XCTAssertFalse(app.textViews["message-composer"].isHittable)
+        screenshot("uikit-request-bar")
+        accept.tap()
+        let composer = app.textViews["message-composer"]
+        let accepted = NSPredicate(format: "hittable == true AND label == %@", "Message Jordan")
+        expectation(for: accepted, evaluatedWith: composer)
+        waitForExpectations(timeout: 10)
+
+        app.buttons["channel-title-menu"].tap()
+        app.buttons["Block @jordan…"].tap()
+        let confirm = app.alerts.buttons["Block"].firstMatch.exists ? app.alerts.buttons["Block"] : app.buttons["Block"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+        let unblock = app.buttons["dm-blocked-unblock"]
+        XCTAssertTrue(unblock.waitForExistence(timeout: 10), "Blocking replaces the composer with Unblock")
+        let run = app.cells.matching(NSPredicate(format: "identifier BEGINSWITH %@", "blocked-")).firstMatch
+        XCTAssertTrue(run.waitForExistence(timeout: 5), "The blocked peer's messages collapse")
+        let show = run.buttons["blocked-run-toggle"]
+        XCTAssertEqual(show.label, "Show 1 blocked message")
+        show.tap()
+        XCTAssertEqual(run.buttons["blocked-run-toggle"].label, "Hide 1 blocked message")
+        screenshot("uikit-dm-blocked")
+        unblock.tap()
+        expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: composer)
+        waitForExpectations(timeout: 10)
+        XCTAssertFalse(run.exists, "Unblocking restores the messages")
+    }
+
     /// VoiceOver reads who and when from each row's header and can move into
     /// the text itself; controls carry labels.
     func testAccessibilityLabels() {
