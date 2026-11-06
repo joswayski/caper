@@ -2052,6 +2052,34 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           return reject(response, 409, "Channel pin limit reached (100).");
         return json(response, 200, pin(channel.id, message, who, body.active));
       }
+      // Thread read state, per account: roots with replies from others after
+      // what you read, each with its first unread reply's seq.
+      const unreadThreads = /^\/api\/chat\/channels\/([^/]+)\/threads\/unread$/.exec(path);
+      if (unreadThreads && method === "GET") {
+        const channel = channelFor(unreadThreads[1]);
+        if (!canRead(channel, user)) return reject(response, user ? 404 : 401, "resource not found");
+        const first = new Map();
+        for (const reply of state.messages.get(channel.id) ?? []) {
+          if (!reply.threadRootId || reply.deletedAt || reply.author?.id === user.id) continue;
+          const read = BigInt(state.threadReads?.get(`${user.id}:${reply.threadRootId}`) ?? "0");
+          const seen = first.get(reply.threadRootId);
+          if (BigInt(reply.seq) > read && (!seen || BigInt(reply.seq) < BigInt(seen)))
+            first.set(reply.threadRootId, reply.seq);
+        }
+        return json(response, 200, {
+          threads: [...first].map(([rootId, seq]) => ({ rootId, seq })),
+        });
+      }
+      const threadRead = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/thread\/read$/.exec(path);
+      if (threadRead && method === "PUT") {
+        const channel = channelFor(threadRead[1]);
+        if (!canRead(channel, user)) return reject(response, user ? 404 : 401, "resource not found");
+        if (!/^(0|[1-9]\d*)$/.test(body.seq)) return reject(response, 400, "Invalid cursor.");
+        state.threadReads ??= new Map();
+        const key = `${user.id}:${threadRead[2]}`;
+        if (BigInt(body.seq) > BigInt(state.threadReads.get(key) ?? "0")) state.threadReads.set(key, body.seq);
+        return json(response, 204);
+      }
       const thread = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/thread$/.exec(path);
       if (thread && method === "GET") {
         const channel = channelFor(thread[1]);
