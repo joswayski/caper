@@ -444,12 +444,39 @@ public struct UIKitDirectBar: View {
     }
 
     public static func shows(model: AppModel) -> Bool {
-        model.selectedDirectMessage?.status == .incoming || peer(model)?.blocked == true
+        model.previewingChannel || model.selectedDirectMessage?.status == .incoming || peer(model)?.blocked == true
     }
+
+    @State private var joiningChannelID: String?
+    @State private var joinError: String?
+    private var joining: Bool { joiningChannelID != nil && joiningChannelID == model.selectedChannelID }
 
     public var body: some View {
         Group {
-            if let request = model.selectedDirectMessage, request.status == .incoming {
+            if model.previewingChannel {
+                // A channel you haven't joined reads as a preview, with Join in place of the composer.
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Preview").font(CaperTheme.font(12, weight: .bold))
+                            (Text("Join ") + Text("#\(model.chat.channelName)").font(CaperTheme.font(12, weight: .bold)) + Text(" to interact with people here"))
+                                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                        }
+                        Spacer()
+                        Button(joining ? "Joining…" : "Join channel") {
+                            guard !joining, let channel = model.selectedChannel else { return }
+                            joiningChannelID = channel.id; joinError = nil
+                            Task {
+                                do { try await model.joinChannel(channel) }
+                                catch { if model.selectedChannelID == channel.id { joinError = FriendlyError.message(for: error) } }
+                                if joiningChannelID == channel.id { joiningChannelID = nil }
+                            }
+                        }.buttonStyle(CaperPrimaryButton()).fixedSize().disabled(joining)
+                            .accessibilityIdentifier("join-channel")
+                    }
+                    if let joinError { Text(joinError).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error) }
+                }
+            } else if let request = model.selectedDirectMessage, request.status == .incoming {
                 MessageRequestBar(model: model, conversation: request) { block(BlockTarget(peer: request.peer)) }
             } else if let conversation = Self.peer(model), conversation.blocked {
                 BlockedConversationBar(conversation: conversation) { Self.unblock(model: model, accountID: conversation.peer.id) }
@@ -457,6 +484,93 @@ public struct UIKitDirectBar: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .preferredColorScheme(.dark)
+    }
+}
+
+/// Phones: your call, or the open channel's voice with Join, under the header.
+public struct UIKitVoiceStrip: View {
+    @Bindable var model: AppModel
+    let browse: () -> Void
+    public init(model: AppModel, browse: @escaping () -> Void) { self.model = model; self.browse = browse }
+
+    /// The open channel once joined, which has voice; DMs and previews have none.
+    static func channel(_ model: AppModel) -> Channel? {
+        if model.visit != nil { return model.visitChannel.flatMap { model.isVisitVoice($0) ? $0 : nil } }
+        guard model.selectedDirectMessageID == nil, let channel = model.selectedChannel, channel.joined else { return nil }
+        return channel
+    }
+
+    public var body: some View {
+        let channel = Self.channel(model)
+        PhoneVoiceStrip(model: model, channel: channel, browse: browse)
+            // Checked as a channel opens: the strip's Join needs it.
+            .task(id: channel?.id) { if let channel { await model.refreshVoiceAvailability(channel: channel) } }
+            .preferredColorScheme(.dark)
+    }
+}
+
+/// Above the composer: a failed send or action, and voice permission or call errors.
+public struct UIKitComposerNotices: View {
+    @Bindable var model: AppModel
+    @Bindable var chat: ChatModel
+    @Bindable var voice: VoiceClient
+    public init(model: AppModel) { self.model = model; chat = model.chat; voice = model.voice }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let error = chat.error, chat.pendingMessage == nil, !chat.loadFailed, !chat.displayedMessages.isEmpty {
+                Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
+                    .accessibilityIdentifier("chat-error")
+            }
+            if let error = voice.error {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    Button { voice.error = nil } label: { CaperIcon(name: "x", size: 14) }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Dismiss voice error")
+                }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                    .padding(.horizontal, 18).padding(.top, 8)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("voice-error-inline")
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+/// A joined channel's Browse row, exactly as SwiftUI draws it on iPhone: name,
+/// unread and mute, quick join and options; a live one grows into its voice
+/// card in place. `show` presents the dialogs its menu opens.
+public struct UIKitChannelRow: View {
+    @Bindable var model: AppModel
+    let channel: Channel
+    let show: (WorkspaceSheet) -> Void
+    public init(model: AppModel, channel: Channel, show: @escaping (WorkspaceSheet) -> Void) {
+        self.model = model; self.channel = channel; self.show = show
+    }
+    public var body: some View {
+        ChannelSidebarItem(model: model, sheet: Binding(get: { nil }, set: { if let item = $0 { show(item) } }), channel: channel, narrow: true)
+            .preferredColorScheme(.dark)
+    }
+    /// Live rows stay listed while Channels is collapsed, so voice never hides.
+    public static func live(_ model: AppModel, _ channel: Channel) -> Bool { channelIsLive(model, channel) }
+}
+
+/// Voice with no row in the list: your call in another space, a visited room.
+public struct UIKitLiveNow: View {
+    @Bindable var model: AppModel
+    public init(model: AppModel) { self.model = model }
+    public var body: some View { LiveNowSection(model: model, narrow: true).preferredColorScheme(.dark) }
+
+    /// Whether LiveNowSection draws anything: your call outside this list, or a visited live room.
+    public static func shows(_ model: AppModel) -> Bool {
+        if inVoiceCall(model.voice), let context = model.voice.context,
+           !LiveNow.hasRow(context.channelID, rows: model.detail?.channels.filter(\.joined).map(\.id) ?? []) { return true }
+        guard let channel = model.visitChannel, model.isVisitVoice(channel), !model.voice.isActive(channelID: channel.id) else { return false }
+        return !model.voiceRoster(for: channel.id).isEmpty
     }
 }
 

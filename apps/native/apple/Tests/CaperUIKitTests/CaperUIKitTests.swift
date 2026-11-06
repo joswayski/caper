@@ -137,10 +137,10 @@ final class CaperUIKitTests: XCTestCase {
         let back = app.buttons["back-to-browse"]
         XCTAssertEqual(back.label, "Back to Browse")
         back.tap()
-        let design = app.cells["channel-design"]
+        let design = app.buttons["channel-chan00000002"]
         XCTAssertTrue(design.waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["selected-space-name"].exists)
-        XCTAssertEqual(app.cells["channel-general"].value as? String, "Selected")
+        XCTAssertEqual(app.buttons["channel-chan00000001"].value as? String, "Selected")
         screenshot("uikit-browse")
         design.tap()
         let title = app.buttons["channel-title-menu"]
@@ -389,16 +389,45 @@ final class CaperUIKitTests: XCTestCase {
         screenshot("uikit-create-channel")
         app.buttons["Close"].firstMatch.tap()
 
-        app.cells["channel-design"].press(forDuration: 1)
+        app.buttons["channel-options-chan00000002"].tap()
         app.buttons["Channel settings"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Channel settings"].firstMatch.waitForExistence(timeout: 10))
         screenshot("uikit-channel-settings")
         app.buttons["Close"].firstMatch.tap()
 
+        // Browse channels: search the space's channels, joined or not.
+        space.tap()
+        app.buttons["browse-channels"].firstMatch.tap()
+        let search = app.descendants(matching: .any)["browse-channels-search"].firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("des")
+        XCTAssertTrue(app.cells["browse-channel-design"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.cells["browse-channel-general"].exists, "The search filters channels")
+        screenshot("uikit-browse-channels")
+        search.typeText("\n")
+
         app.buttons["account-settings"].tap()
         app.buttons["open-privacy"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Privacy"].firstMatch.waitForExistence(timeout: 10))
         screenshot("uikit-privacy")
+    }
+
+    /// People in a channel's voice: Browse grows its row into a live card, and
+    /// the open channel's strip offers Join under the header.
+    func testVoiceStripAndLiveRoom() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        XCTAssertFalse(app.descendants(matching: .any)["voice-strip"].exists, "Nobody is in #general's voice")
+        app.buttons["back-to-browse"].tap()
+        let count = app.descendants(matching: .any)["voice-count-chan00000002"]
+        XCTAssertTrue(count.waitForExistence(timeout: 10), "#design's row shows who is in voice")
+        screenshot("uikit-browse-live")
+        app.buttons["channel-chan00000002"].tap()
+        let strip = app.descendants(matching: .any)["voice-strip"]
+        XCTAssertTrue(strip.waitForExistence(timeout: 10), "The open channel's strip offers its voice")
+        XCTAssertTrue(strip.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Join")).firstMatch.exists)
+        screenshot("uikit-voice-strip")
     }
 
     /// Browse lists DMs under the channels; New message opens a DM by exact

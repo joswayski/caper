@@ -5,7 +5,7 @@ import UIKit
 /// Browse on iPhone: the space rail beside the selected space's channels and
 /// direct messages, with the account bar beneath. The conversation slides over it.
 final class BrowseViewController: UIViewController, UICollectionViewDelegate {
-    private enum Item: Hashable { case channel(String), channelInvitation(String), directHeading, requests, selfDirect, direct(String), newMessage }
+    private enum Item: Hashable { case liveNow, channel(String), search, browseResult(String), channelInvitation(String), directHeading, requests, selfDirect, direct(String), newMessage }
 
     private let model: AppModel
     var cached: StartupSnapshot? { didSet { if isViewLoaded { render() } } }
@@ -29,6 +29,11 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private var unread: Set<String> = []
     private var directRows: [String: DirectMessageConversation] = [:]
     private var channelInvitations: [String: ChannelInvitation] = [:]
+    /// Browse channels: every channel in the space, searchable, joined or not.
+    private var browsingChannels = false
+    private var channelSearch = ""
+    private var browseRows: [String: Channel] = [:]
+    private var browsedSpaceID: String?
     /// Message requests, pushed over the lists as SwiftUI does on iPhone.
     private lazy var requests: UIHostingController<UIKitMessageRequests> = {
         let host = UIHostingController(rootView: UIKitMessageRequests(model: model))
@@ -142,9 +147,31 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         channels.delegate = self
         channels.translatesAutoresizingMaskIntoConstraints = false
         channels.accessibilityIdentifier = "channel-list"
+        // Joined channels are SwiftUI's own rows: name, unread and mute, quick
+        // join and ⋯ options, growing into a voice card in place when live.
         let registration = UICollectionView.CellRegistration<UICollectionViewListCell, Item> { [weak self] cell, _, item in
-            guard let self, case let .channel(id) = item, let channel = self.channelRows[id] else { return }
-            self.configure(cell, channel: channel)
+            guard let self else { return }
+            cell.backgroundConfiguration = .clear()
+            switch item {
+            case let .channel(id):
+                guard let channel = self.channelRows[id] else { return }
+                cell.contentConfiguration = UIHostingConfiguration {
+                    UIKitChannelRow(model: self.model, channel: channel) { [weak self] in self?.dialog($0) }
+                }.margins(.horizontal, 16).margins(.vertical, 0)
+            case .liveNow:
+                cell.contentConfiguration = UIHostingConfiguration { UIKitLiveNow(model: self.model) }.margins(.horizontal, 16).margins(.vertical, 0)
+            default:
+                break
+            }
+        }
+        let searchRegistration = UICollectionView.CellRegistration<SearchFieldCell, Item> { [weak self] cell, _, _ in
+            cell.changed = { [weak self] text in self?.channelSearch = text; self?.render() }
+        }
+        let resultRegistration = UICollectionView.CellRegistration<BrowseResultCell, Item> { [weak self] cell, _, item in
+            guard let self, case let .browseResult(id) = item, let channel = self.browseRows[id] else { return }
+            cell.show(channel, unread: self.model.channelUnread(channel.id), owner: self.model.isOwner) { [weak self] in
+                self?.dialog(.manageChannel(channel))
+            }
         }
         let invitationRegistration = UICollectionView.CellRegistration<DirectRowCell, Item> { [weak self] cell, _, item in
             guard let self, case let .channelInvitation(id) = item, let invitation = self.channelInvitations[id] else { return }
@@ -158,7 +185,12 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             self?.configure(cell, item: item)
         }
         dataSource = UICollectionViewDiffableDataSource(collectionView: channels) { collection, path, item in
-            if case .channel = item { return collection.dequeueConfiguredReusableCell(using: registration, for: path, item: item) }
+            switch item {
+            case .channel, .liveNow: return collection.dequeueConfiguredReusableCell(using: registration, for: path, item: item)
+            case .search: return collection.dequeueConfiguredReusableCell(using: searchRegistration, for: path, item: item)
+            case .browseResult: return collection.dequeueConfiguredReusableCell(using: resultRegistration, for: path, item: item)
+            default: break
+            }
             if case .channelInvitation = item { return collection.dequeueConfiguredReusableCell(using: invitationRegistration, for: path, item: item) }
             return collection.dequeueConfiguredReusableCell(using: directRegistration, for: path, item: item)
         }
@@ -243,16 +275,28 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         channelsHeading.text = "CHANNELS  \(joined.count)"
         channelsHeading.accessibilityLabel = "Channels, \(joined.count)"
         let previous = channelRows
+        let previousBrowse = browseRows
         channelRows = Dictionary(uniqueKeysWithValues: joined.map { ($0.id, $0) })
         var snapshot = NSDiffableDataSourceSnapshot<Int, Item>()
         snapshot.appendSections([0])
+        if live && UIKitLiveNow.shows(model) { snapshot.appendItems([.liveNow]) }
         snapshot.appendItems(joined.map { .channel($0.id) })
+        // Browse channels: a search field, then every matching channel.
+        if live, selectedSpace != browsedSpaceID { browsedSpaceID = selectedSpace; browsingChannels = false; channelSearch = "" }
+        if live && browsingChannels {
+            let search = channelSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+            let results = (detail?.channels ?? []).filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
+            browseRows = Dictionary(results.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            snapshot.appendItems([.search] + results.map { .browseResult($0.id) })
+            snapshot.reconfigureItems(results.filter { previousBrowse[$0.id] != nil }.map { .browseResult($0.id) })
+        } else { browseRows = [:] }
         // Private channel invitations, under the channels.
         let invitations = live ? detail?.channelInvitations ?? [] : []
         channelInvitations = Dictionary(invitations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         snapshot.appendItems(invitations.map { .channelInvitation($0.id) })
         // Selection and unread state live in the cell; reconfigure all visible rows cheaply.
-        snapshot.reconfigureItems(joined.filter { previous[$0.id] != nil }.map { .channel($0.id) })
+        // Hosted rows observe the model themselves; reconfigure only a changed channel.
+        snapshot.reconfigureItems(joined.filter { previous[$0.id] != nil && previous[$0.id] != $0 }.map { .channel($0.id) })
         appendDirect(to: &snapshot, live: live)
         dataSource.apply(snapshot, animatingDifferences: false)
         renderRequests(live && model.account != nil && model.showingMessageRequests)
@@ -422,7 +466,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             cell.show(icon: "plus", text: "New message")
             cell.accessibilityLabel = "New message"
             cell.accessibilityIdentifier = "new-message"
-        case .channel, .channelInvitation:
+        case .channel, .channelInvitation, .liveNow, .search, .browseResult:
             break
         }
         if case .directHeading = item { return }
@@ -445,45 +489,25 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         case let .direct(id):
             model.refreshNotificationSettingsIfStale()
             return UIContextMenuConfiguration(actionProvider: { _ in UIMenu(children: NotificationMenus.direct(model, conversationID: id)) })
-        case let .channel(id):
-            guard let channel = channelRows[id] else { return nil }
-            model.refreshNotificationSettingsIfStale()
-            return UIContextMenuConfiguration(actionProvider: { [weak self] _ in self.map { UIMenu(children: $0.channelOptions(channel)) } })
         default:
             return nil
         }
     }
 
-    /// Owners: Invite people and Channel settings; everyone: notifications and Leave.
-    private func channelOptions(_ channel: Channel) -> [UIMenuElement] {
-        var items: [UIMenuElement] = []
-        if model.isOwner {
-            var owner: [UIMenuElement] = []
-            if !channel.private, model.detail?.space.demo != true {
-                owner.append(UIAction(title: "Invite people…") { [weak self] _ in
-                    self?.dialog(.invitePeople(spaceID: channel.spaceId, channelID: channel.id))
-                })
-            }
-            owner.append(UIAction(title: "Channel settings") { [weak self] _ in
-                self?.dialog(.manageChannel(channel))
-            })
-            items.append(UIMenu(options: .displayInline, children: owner))
-        }
-        if model.account != nil { items.append(UIMenu(options: .displayInline, children: NotificationMenus.channel(model, channel: channel))) }
-        if channel.joined {
-            items.append(UIMenu(options: .displayInline, children: [UIAction(title: "Leave channel", attributes: .destructive) { [weak self] _ in
-                guard let self else { return }
-                self.present(UIKitHosting.leaveChannel(model: self.model, channel: channel), animated: true)
-            }]))
-        }
-        return items
-    }
-
     /// The space name's menu: notifications, then Invite and Space settings, or Leave.
     private func spaceMenuItems() -> [UIMenuElement] {
-        guard live, let space = model.detail?.space, space.demo != true, model.account != nil else { return [] }
+        guard live else { return [] }
+        let browse = UIAction(title: browsingChannels ? "Exit Browse channels" : "Browse channels") { [weak self] _ in
+            guard let self else { return }
+            self.browsingChannels.toggle()
+            self.channelSearch = ""
+            self.render()
+        }
+        browse.accessibilityIdentifier = "browse-channels"
+        var items: [UIMenuElement] = [browse]
+        guard let space = model.detail?.space, space.demo != true, model.account != nil else { return items }
         model.refreshNotificationSettingsIfStale()
-        var items: [UIMenuElement] = [UIMenu(options: .displayInline, children: NotificationMenus.space(model, spaceID: space.id))]
+        items.append(UIMenu(options: .displayInline, children: NotificationMenus.space(model, spaceID: space.id)))
         if model.isOwner {
             items.append(UIMenu(options: .displayInline, children: [
                 UIAction(title: "Invite people…") { [weak self] _ in
@@ -503,37 +527,13 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         present(UIKitHosting.workspaceDialog(model: model, item), animated: false)
     }
 
-    private func configure(_ cell: UICollectionViewListCell, channel: Channel) {
-        let selected = channel.id == selectedChannelID
-        let unread = self.unread.contains(channel.id)
-        var content = cell.defaultContentConfiguration()
-        content.text = channel.name
-        content.textProperties.font = UIKitStyle.font(15, unread || selected ? .bold : .medium)
-        content.textProperties.color = selected || unread ? UIKitStyle.text : UIKitStyle.muted
-        content.image = UIKitStyle.icon(channel.private ? "lock" : "hash")?.resized(to: 16)
-        content.imageProperties.tintColor = selected ? UIKitStyle.text : UIKitStyle.muted
-        content.imageToTextPadding = 8
-        content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 8)
-        cell.contentConfiguration = content
-        var background = UIBackgroundConfiguration.listPlainCell()
-        background.backgroundColor = selected ? UIKitStyle.text.withAlphaComponent(0.08) : .clear
-        background.cornerRadius = 8
-        background.backgroundInsets = NSDirectionalEdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8)
-        cell.backgroundConfiguration = background
-        cell.accessibilityLabel = "\(channel.name)\(channel.private ? ", private" : "") channel"
-        cell.accessibilityValue = [selected ? "Selected" : "", unread ? "Unread activity" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
-        cell.accessibilityTraits = selected ? [.button, .selected] : .button
-        cell.accessibilityIdentifier = "channel-\(channel.name)"
-    }
-
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: false)
         switch dataSource.itemIdentifier(for: indexPath) {
-        case let .channel(id):
-            if live, let channel = model.detail?.channels.first(where: { $0.id == id }) {
-                Task { await model.select(channel: channel) }
-            }
-            opened?()
+        case let .browseResult(id):
+            if live, let channel = browseRows[id] { Task { await model.select(channel: channel) } }
+        case .channel, .liveNow, .search:
+            break
         case let .channelInvitation(id):
             if let invitation = channelInvitations[id] { dialog(.channelInvitation(invitation)) }
         case .requests:
@@ -688,5 +688,94 @@ final class PaddedLabel: UILabel {
     override var intrinsicContentSize: CGSize {
         let size = super.intrinsicContentSize
         return CGSize(width: size.width + 12, height: size.height)
+    }
+}
+
+/// Browse channels' search field.
+final class SearchFieldCell: UICollectionViewListCell, UITextFieldDelegate {
+    private let field = UISearchTextField()
+    var changed: ((String) -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        field.placeholder = "Search channels"
+        field.font = UIKitStyle.font(14)
+        field.textColor = UIKitStyle.text
+        field.backgroundColor = UIKitStyle.raised
+        field.autocapitalizationType = .none
+        field.autocorrectionType = .no
+        field.returnKeyType = .done
+        field.delegate = self
+        field.accessibilityIdentifier = "browse-channels-search"
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.addAction(UIAction { [weak self] _ in self?.changed?(self?.field.text ?? "") }, for: .editingChanged)
+        contentView.addSubview(field)
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            field.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            field.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
+            field.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+            field.heightAnchor.constraint(equalToConstant: 40),
+        ])
+        backgroundConfiguration = .clear()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool { textField.resignFirstResponder(); return true }
+}
+
+/// A Browse channels result: icon and name, unread dot, Joined or
+/// Read-only preview, and Manage for owners.
+final class BrowseResultCell: UICollectionViewListCell {
+    private let icon = UIImageView()
+    private let name = UIKitStyle.label(size: 15, weight: .medium, color: UIKitStyle.muted)
+    private let dot = UIView()
+    private let state = UIKitStyle.label(size: 10, color: UIKitStyle.muted)
+    private lazy var manage = IconButton(icon: "settings", label: "Manage", size: 16, side: 44) { [weak self] in self?.manageAction?() }
+    private var manageAction: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        icon.tintColor = UIKitStyle.muted
+        icon.contentMode = .center
+        name.lineBreakMode = .byTruncatingTail
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        dot.backgroundColor = UIKitStyle.text
+        dot.layer.cornerRadius = 3
+        manage.tintColor = UIKitStyle.muted
+        let spacer = UIView()
+        let row = UIStackView(arrangedSubviews: [icon, name, spacer, dot, state, manage])
+        row.spacing = 8
+        row.alignment = .center
+        row.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(row)
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 20),
+            dot.widthAnchor.constraint(equalToConstant: 6), dot.heightAnchor.constraint(equalToConstant: 6),
+            row.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 25),
+            row.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            row.topAnchor.constraint(equalTo: contentView.topAnchor),
+            row.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+        ])
+        backgroundConfiguration = .clear()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func show(_ channel: Channel, unread: Bool, owner: Bool, manage action: @escaping () -> Void) {
+        icon.image = UIKitStyle.icon(channel.private ? "lock" : "hash")?.resized(to: 16)
+        name.text = channel.name
+        dot.isHidden = !unread
+        state.text = channel.joined ? "Joined" : "Read-only preview"
+        manageAction = action
+        manage.isHidden = !owner
+        manage.accessibilityLabel = "Manage \(channel.name)"
+        // VoiceOver: the row opens the channel; Manage is its own button.
+        isAccessibilityElement = false
+        contentView.accessibilityElements = owner ? [name, manage] : [name]
+        name.accessibilityLabel = "\(channel.name), \(state.text ?? "")"
+        name.accessibilityValue = unread ? "Unread activity" : ""
+        name.accessibilityTraits = .button
+        accessibilityIdentifier = "browse-channel-\(channel.name)"
     }
 }

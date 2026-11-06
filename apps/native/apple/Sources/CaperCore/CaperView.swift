@@ -1805,7 +1805,7 @@ private struct DirectMessageSidebarRow: View {
 /// A channel's row. A live one grows into a card in place: your call's (its
 /// faces and controls beneath the row) or another room with people in voice
 /// (who is in it and Join beneath).
-private struct ChannelSidebarItem: View {
+struct ChannelSidebarItem: View {
     @Bindable var model: AppModel
     @Binding var sheet: WorkspaceSheet?
     let channel: Channel
@@ -2070,7 +2070,7 @@ private struct NavigationPrefetchModifier: ViewModifier {
     }
 }
 
-private struct SidebarIconButton: ButtonStyle {
+struct SidebarIconButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 14, weight: .semibold)).foregroundStyle(CaperTheme.muted)
             #if os(iOS)
@@ -2101,7 +2101,7 @@ private struct SidebarIconButton: ButtonStyle {
 
 /// A live channel row: your call's, or one with people in voice. It grows into
 /// a card, and stays listed while Channels is collapsed.
-@MainActor private func channelIsLive(_ model: AppModel, _ channel: Channel) -> Bool {
+@MainActor func channelIsLive(_ model: AppModel, _ channel: Channel) -> Bool {
     model.voice.isActive(channelID: channel.id) || !voiceOccupants(model, channelID: channel.id).isEmpty
 }
 
@@ -2147,7 +2147,7 @@ private struct SidebarIconButton: ButtonStyle {
 }
 
 /// Whether you are in a call, from joining until it has left.
-@MainActor private func inVoiceCall(_ voice: VoiceClient) -> Bool {
+@MainActor func inVoiceCall(_ voice: VoiceClient) -> Bool {
     voice.phase != .idle && voice.phase != .failed
 }
 
@@ -2227,7 +2227,7 @@ private struct LiveRoom: Identifiable {
 /// space's, or a feedback visit's), and a visited channel's live room. They
 /// stay while you browse DMs or a space without channels. Live rows of the
 /// listed space grow into their cards in place instead.
-private struct LiveNowSection: View {
+struct LiveNowSection: View {
     @Bindable var model: AppModel
     let narrow: Bool
 
@@ -3029,7 +3029,7 @@ private struct LiveJoinLabel: View {
 /// is. No name comes and goes with who speaks: their face's ring shows it.
 /// Otherwise a channel with people in voice offers Join, which never changes
 /// the chat being read.
-private struct PhoneVoiceStrip: View {
+struct PhoneVoiceStrip: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
     /// The open channel, if it has voice: DMs and previews have none.

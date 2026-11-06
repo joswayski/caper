@@ -9,7 +9,6 @@ final class WorkspaceViewController: UIViewController {
     let browse: BrowseViewController
     let conversation: ConversationViewController
     private var browsing = false
-    private var shownDirect: String?
     private let observer = ModelObserver()
 
     var cached: StartupSnapshot? {
@@ -46,14 +45,15 @@ final class WorkspaceViewController: UIViewController {
         pan.edges = .left
         conversation.view.addGestureRecognizer(pan)
         // No channel to show yet: start in Browse.
+        // As SwiftUI's phone layout: Browse covers the conversation while the
+        // model's navigationOpen says so. Opening a channel or DM (a row, a voice
+        // card, a request, New message, a notification) clears it.
+        model.narrowLayout = true
         observer.start { [weak self] in
             guard let self else { return }
-            let direct = self.model.selectedDirectMessageID
-            let hasChannel = self.model.selectedChannelID != nil || direct != nil || self.cached?.channelID != nil
+            let hasChannel = self.model.selectedChannelID != nil || self.model.selectedDirectMessageID != nil || self.cached?.channelID != nil
             if !hasChannel && !self.browsing { self.slide(browsing: true, animated: false) }
-            // A DM opened from Browse, a request, New message or a notification: show it.
-            if let direct, direct != self.shownDirect, self.browsing { self.slide(browsing: false) }
-            self.shownDirect = direct
+            else if hasChannel && self.model.navigationOpen != self.browsing { self.slide(browsing: self.model.navigationOpen) }
         }
         update(progress: browsing ? 1 : 0)
     }
@@ -76,6 +76,7 @@ final class WorkspaceViewController: UIViewController {
     func slide(browsing: Bool, animated: Bool = true) {
         loadBrowse()
         self.browsing = browsing
+        if model.navigationOpen != browsing { model.navigationOpen = browsing }
         if browsing { conversation.view.endEditing(true) }
         let apply = { self.update(progress: browsing ? 1 : 0) }
         // Arrivals ease out; the system's reduce-motion setting makes it instant.

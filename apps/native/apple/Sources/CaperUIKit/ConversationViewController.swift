@@ -280,12 +280,20 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             }
         }
         view.addSubview(collection)
+        embed(voiceStrip)
+        embed(notices)
         status.textAlignment = .center
         status.numberOfLines = 0
         view.addSubview(status)
         view.addSubview(typing)
         NSLayoutConstraint.activate([
-            collection.topAnchor.constraint(equalTo: header.bottomAnchor),
+            voiceStrip.view.topAnchor.constraint(equalTo: header.bottomAnchor),
+            voiceStrip.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            voiceStrip.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            collection.topAnchor.constraint(equalTo: voiceStrip.view.bottomAnchor),
+            notices.view.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            notices.view.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            notices.view.topAnchor.constraint(equalTo: collection.bottomAnchor),
             collection.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             collection.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             status.centerXAnchor.constraint(equalTo: view.centerXAnchor),
@@ -293,7 +301,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             status.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48),
             typing.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
             typing.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -18),
-            typing.topAnchor.constraint(equalTo: collection.bottomAnchor),
+            typing.topAnchor.constraint(equalTo: notices.view.bottomAnchor),
         ])
     }
 
@@ -331,6 +339,28 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     }
 
     // MARK: Rendering
+
+    /// Your call, or Join for the open channel's voice: SwiftUI's PhoneVoiceStrip.
+    private lazy var voiceStrip = Self.sized(UIKitVoiceStrip(model: model) { [weak self] in self?.browse?() })
+    /// A failed action or a voice error, above the composer.
+    private lazy var notices = Self.sized(UIKitComposerNotices(model: model))
+
+    /// A SwiftUI child that sizes to its content, collapsing when it draws nothing.
+    private static func sized<Content: View>(_ root: Content) -> UIHostingController<Content> {
+        let host = UIHostingController(rootView: root)
+        host.sizingOptions = .intrinsicContentSize
+        host.view.backgroundColor = .clear
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        host.view.setContentHuggingPriority(.required, for: .vertical)
+        host.view.setContentCompressionResistancePriority(.required, for: .vertical)
+        return host
+    }
+
+    private func embed(_ child: UIViewController) {
+        addChild(child)
+        view.addSubview(child.view)
+        child.didMove(toParent: self)
+    }
 
     private let directBar = HostedView()
     private var directBarKey: String?
@@ -616,7 +646,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     /// Accept, Decline or Block in a request; Unblock with a blocked peer.
     private func renderDirectBar() {
         let shows = isLive && UIKitDirectBar.shows(model: model)
-        let key = shows ? "\(model.selectedDirectMessageID ?? "")|\(model.selectedDirectMessage?.status == .incoming)" : nil
+        let key = shows ? "\(conversationID ?? "")|\(model.previewingChannel)|\(model.selectedDirectMessage?.status == .incoming)" : nil
         guard key != directBarKey else { return }
         directBarKey = key
         directBar.show(shows ? UIKitDirectBar(model: model) { [weak self] target in self?.presentations.block = target } : nil)
