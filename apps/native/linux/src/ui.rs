@@ -23,6 +23,8 @@ pub struct Composer {
     pub view: gtk::TextView,
     pub placeholder: gtk::Label,
     pub send: gtk::Button,
+    /// "Send a GIF", shown while GIFs are on.
+    pub gif: gtk::Button,
     /// A thread reply's "Also send to #channel" (hidden in the channel's
     /// composer).
     pub broadcast: gtk::CheckButton,
@@ -83,6 +85,16 @@ impl Composer {
         overlay.add_overlay(&placeholder);
         overlay.set_hexpand(true);
         line.append(&overlay);
+        let gif: gtk::Button = crate::app::named("GtkButton", "Send a GIF");
+        let badge = gtk::Label::new(Some("GIF"));
+        badge.add_css_class("gif-badge");
+        gif.set_child(Some(&badge));
+        gif.set_tooltip_text(Some("Send a GIF"));
+        gif.set_valign(gtk::Align::End);
+        gif.add_css_class("flat");
+        gif.add_css_class("send");
+        gif.set_visible(false);
+        line.append(&gif);
         let send: gtk::Button = crate::app::named("GtkButton", "Send message");
         send.set_child(Some(&images.icon_image(Icon::Send, "#b9bcbe", 18)));
         send.set_tooltip_text(Some("Send"));
@@ -105,6 +117,7 @@ impl Composer {
             view,
             placeholder,
             send,
+            gif,
             broadcast,
             preview,
         }

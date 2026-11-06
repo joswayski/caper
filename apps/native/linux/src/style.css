@@ -1550,3 +1550,30 @@ button.quote-more {
   color: @caper_link;
   font-size: 11px;
 }
+
+/* "Send a GIF" and its picker. */
+.gif-badge {
+  padding: 0 3px;
+  border: 1.4px solid @caper_text_muted;
+  border-radius: 3px;
+  font-size: 8.5px;
+  font-weight: 700;
+}
+
+button.gif-tab {
+  min-height: 36px;
+  border-radius: 0;
+  background: none;
+  border-bottom: 2px solid transparent;
+}
+
+button.gif-tab:checked {
+  border-bottom-color: @caper_terracotta;
+  color: @caper_text;
+}
+
+button.gif-tile {
+  padding: 0;
+  border-radius: 6px;
+  background: @caper_surface_raised;
+}

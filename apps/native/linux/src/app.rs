@@ -45,6 +45,8 @@ mod context;
 mod editor;
 #[path = "forward.rs"]
 mod forward;
+#[path = "gifs.rs"]
+mod gifs;
 #[path = "history.rs"]
 mod history;
 #[path = "members.rs"]
@@ -122,6 +124,9 @@ struct Pending {
     thread: Option<String>,
     /// Its uploaded files, returned to the composer if the send fails.
     files: Vec<DraftFile>,
+    /// A KLIPY GIF sent on its own, and what to tell KLIPY once it is.
+    gif: Option<caper_client::klipy::Gif>,
+    share: Option<caper_client::klipy::Share>,
 }
 
 /// What the main composer is doing besides a new message.
@@ -286,6 +291,9 @@ struct State {
     /// The open Message history and its latest request.
     history: Option<history::History>,
     history_request: u64,
+    /// KLIPY's key once `GET /api/klipy` answered, and when it was asked.
+    klipy: Option<caper_client::klipy::Config>,
+    klipy_checked: Option<Instant>,
     /// A jump's history window, newer messages past it, and a context
     /// read in flight.
     context_window: Option<context::Window>,
@@ -470,6 +478,7 @@ pub struct App {
     room_ticking: Cell<bool>,
     report: RefCell<Option<audio::ReportDialog>>,
     history_window: RefCell<Option<history::HistoryWindow>>,
+    gif_picker: RefCell<Option<gifs::Picker>>,
     /// The open View reactions window.
     reactors_window: RefCell<Option<reactors::ReactorsWindow>>,
     /// The open attachment editor.
@@ -573,6 +582,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         request_ids: RefCell::default(),
         reactors_window: RefCell::default(),
         history_window: RefCell::default(),
+        gif_picker: RefCell::default(),
         members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
         ticking: Cell::new(false),
@@ -609,6 +619,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.connect_voice();
     app.connect_drop();
     app.connect_requests();
+    app.connect_gifs();
     app.install_actions();
     app.install_shortcuts();
     app.install_notification_actions();
@@ -1112,6 +1123,7 @@ impl App {
         if let Some(token) = state.token.clone() {
             self.worker.send(Command::AssetUsage { token });
         }
+        self.check_klipy(state);
         self.account_op(state, AccountOperation::LoadBlocks);
         state.settings = settings::AccountSettings::default();
         self.load_notifications(state);
@@ -1301,6 +1313,7 @@ impl App {
         state.layout += 1;
         // DMs started or answered elsewhere appear as you move around.
         self.load_directs(state);
+        self.check_klipy(state);
     }
 
     fn prepare(&self, state: &mut State, space: Option<String>, channel: Option<String>) {
@@ -2562,6 +2575,8 @@ impl App {
                 created_at: chrono::Local::now().to_rfc3339(),
                 thread: thread_root.clone(),
                 files: sent,
+                gif: None,
+                share: None,
             });
             if !thread {
                 state.compose = None;
@@ -3469,6 +3484,9 @@ impl App {
                         if state.timeline.merge_sent(message).is_err() {
                             state.send_error =
                                 Some("Caper returned an invalid send confirmation.".into());
+                        } else if let Some(share) = pending.and_then(|pending| pending.share) {
+                            // Best effort, once KLIPY's GIF is really sent.
+                            share.send();
                         }
                         self.mark_read(state);
                     }
@@ -3656,6 +3674,9 @@ impl App {
                 result,
             } if epoch == state.epoch => {
                 self.membership_refreshed(state, request, revision, navigation, result);
+            }
+            Event::Klipy { token, config } if state.token.as_ref() == Some(&token) => {
+                state.klipy = config;
             }
             Event::AssetUsage { token, settings } if state.token.as_ref() == Some(&token) => {
                 state.uploads = settings;
@@ -4124,7 +4145,10 @@ impl App {
                     pending.client_id == message.client_message_id
                         && Some(&message.author.id) == mine
                 }) {
-                    state.pending = None;
+                    // Best effort, once KLIPY's GIF is really sent.
+                    if let Some(share) = state.pending.take().and_then(|pending| pending.share) {
+                        share.send();
+                    }
                 }
                 // Their message ends their typing.
                 state.typers.remove(&message.author.id);
@@ -4349,6 +4373,7 @@ impl App {
             .set_label(Some(&format!("Also send to {destination}")));
         self.render_empty(&state);
         self.render_context_bar(&state);
+        self.render_gifs(&state);
         let joined = state.joined();
         let can_send = state.session.is_some();
         let replaced = self.render_request_bar(&state);
@@ -4556,6 +4581,7 @@ impl App {
                                 .filter_map(|file| file.send_attachment())
                                 .map(|attachment| (attachment, false))
                                 .collect(),
+                            gif: pending.gif.clone(),
                             ..Default::default()
                         },
                     })
