@@ -272,6 +272,10 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private let column = UIStackView()
     private let accent = UIView()
     private let tint = UIView()
+    /// SwiftUI's press highlight: a faint wash while a finger is down on the row.
+    private let press = UIView()
+    private let pressRecognizer = UILongPressGestureRecognizer()
+    private var pressStart = CGPoint.zero
     private let pinBadge = UIKitStyle.label(size: 10, weight: .medium, color: UIKitStyle.muted)
     private let replyContext = HostedView()
     private let above = UIStackView()
@@ -291,6 +295,11 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         accent.translatesAutoresizingMaskIntoConstraints = false
         accent.backgroundColor = UIKitStyle.terracotta
         self.addSubview(tint)
+        press.translatesAutoresizingMaskIntoConstraints = false
+        press.backgroundColor = UIKitStyle.text.withAlphaComponent(0.08)
+        press.isUserInteractionEnabled = false
+        press.isHidden = true
+        self.addSubview(press)
         self.addSubview(accent)
 
         header.axis = .horizontal
@@ -326,6 +335,13 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         hold.minimumPressDuration = 0.5
         hold.delegate = self
         addGestureRecognizer(hold)
+        pressRecognizer.addTarget(self, action: #selector(pressed(_:)))
+        pressRecognizer.minimumPressDuration = 0.08
+        pressRecognizer.allowableMovement = .greatestFiniteMagnitude
+        pressRecognizer.cancelsTouchesInView = false
+        pressRecognizer.delaysTouchesEnded = false
+        pressRecognizer.delegate = self
+        addGestureRecognizer(pressRecognizer)
         // "(edited)" opens the history; "Pinned by" the pinner's card.
         for (view, action) in [(edited, #selector(openHistory)), (pinBadge, #selector(openPinner))] as [(UIView, Selector)] {
             view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: action))
@@ -389,6 +405,10 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             tint.trailingAnchor.constraint(equalTo: self.trailingAnchor),
             tint.topAnchor.constraint(equalTo: self.topAnchor),
             tint.bottomAnchor.constraint(equalTo: self.bottomAnchor),
+            press.leadingAnchor.constraint(equalTo: self.leadingAnchor),
+            press.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+            press.topAnchor.constraint(equalTo: self.topAnchor),
+            press.bottomAnchor.constraint(equalTo: self.bottomAnchor),
             accent.leadingAnchor.constraint(equalTo: self.leadingAnchor),
             accent.widthAnchor.constraint(equalToConstant: 3),
             accent.topAnchor.constraint(equalTo: self.topAnchor),
@@ -528,7 +548,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     /// still selects words, and the sheet offers Copy text.
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
-        other is UILongPressGestureRecognizer && other.view?.isDescendant(of: body) == true
+        gestureRecognizer !== pressRecognizer && other is UILongPressGestureRecognizer && other.view?.isDescendant(of: body) == true
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -536,6 +556,24 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         // Chips have their own hold (who reacted).
         let point = gestureRecognizer.location(in: chips)
         return chips.isHidden || !chips.bounds.contains(point)
+    }
+
+    /// Shows the wash while a finger rests on the row; a move (a scroll or a
+    /// swipe) or lifting clears it.
+    @objc private func pressed(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            if let state, !state.pending, !state.messageID.isEmpty { press.isHidden = false; pressStart = gesture.location(in: self) }
+        case .changed:
+            let point = gesture.location(in: self)
+            if hypot(point.x - pressStart.x, point.y - pressStart.y) > 10 { press.isHidden = true }
+        default: press.isHidden = true
+        }
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        gestureRecognizer === pressRecognizer
     }
 
     @objc private func openHistory() {
@@ -726,6 +764,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     }
 
     func prepareForReuse() {
+        press.isHidden = true
         self.layer.removeAllAnimations()
         self.transform = .identity
         retry = nil
@@ -790,6 +829,8 @@ final class TimelineEdgeCell: UICollectionViewCell {
             stack.topAnchor.constraint(greaterThanOrEqualTo: contentView.topAnchor, constant: 6),
             stack.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, constant: -36),
             contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            // 44pt, as SwiftUI's row, unless a long error wraps.
+            contentView.heightAnchor.constraint(equalToConstant: 44).withPriority(.defaultLow),
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

@@ -357,8 +357,12 @@ final class CaperUIKitTests: XCTestCase {
         tiles.firstMatch.tap()
         XCTAssertTrue(app.buttons["attach-drawer-send"].waitForExistence(timeout: 10))
         screenshot("uikit-attach-drawer")
-        app.buttons["attach-drawer-resize"].swipeDown()
-        XCTAssertTrue(app.otherElements["attach-drawer"].waitForNonExistence(timeout: 10))
+        // A real drag: XCUITest's swipeDown travels too little for the close threshold.
+        let drawer = app.otherElements["attach-drawer"]
+        let handle = app.buttons["attach-drawer-resize"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        handle.press(forDuration: 0.05, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 300)), withVelocity: .fast, thenHoldForDuration: 0)
+        _ = drawer.waitForNonExistence(timeout: 3)
+        XCTAssertFalse(drawer.exists, "Swiping the handle down closes the drawer")
         XCTAssertTrue(app.descendants(matching: .any)["Files to send"].waitForExistence(timeout: 10), "The photo waits above the composer")
         XCTAssertTrue(app.buttons["send-message"].isEnabled)
         screenshot("uikit-attachment-staged")
@@ -1041,7 +1045,7 @@ final class CaperUIKitParityTests: XCTestCase {
     private static let swiftUI = "chat.caper.ios"
     private static let uiKit = "chat.caper.uikit-development"
 
-    private func configured(_ bundle: String, signedIn: Bool = true, cache: Bool = false) -> XCUIApplication {
+    private func configured(_ bundle: String, signedIn: Bool = true, cache: Bool = false, fixture: String? = nil) -> XCUIApplication {
         let app = XCUIApplication(bundleIdentifier: bundle)
         app.launchArguments += ["-caper.space-landing.owner0000001", "", "-caper.channelSidebarChannelsShare", "0.5"]
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
@@ -1051,6 +1055,7 @@ final class CaperUIKitParityTests: XCTestCase {
             app.launchEnvironment["CAPER_TEST_SPACE_ID"] = "space0000001"
         }
         if cache { app.launchEnvironment["CAPER_UIKIT_STARTUP_CACHE"] = "1" }
+        if let fixture { app.launchEnvironment["CAPER_UI_FIXTURE"] = fixture }
         return app
     }
 
@@ -1108,6 +1113,9 @@ final class CaperUIKitParityTests: XCTestCase {
             let composer = app.textViews["message-composer"]
             XCTAssertTrue(composer.waitForExistence(timeout: 30))
             sleep(2)
+            // SwiftUI may restore Browse open over the conversation.
+            let close = app.buttons["Close navigation"]
+            if close.exists && close.isHittable { close.tap(); sleep(1) }
             for (status, text, action) in [(503, "TEST FIXTURE unsure", "Retry send"), (422, "TEST FIXTURE refused", "Edit")] {
                 control(["failure": ["path": path, "method": "POST", "status": status, "error": "TEST FIXTURE: refused."]])
                 composer.tap()
@@ -1185,6 +1193,113 @@ final class CaperUIKitParityTests: XCTestCase {
             XCTAssertTrue(app.staticTexts["Thread"].waitForExistence(timeout: 10), prefix)
             sleep(2)
             capture("\(prefix)-thread-view")
+            app.terminate()
+        }
+    }
+
+    /// Browse's sheets and other conversations in each app: profile, account
+    /// settings (notifications, privacy), space settings, the notifications
+    /// inbox, your notes DM and a channel with people in voice.
+    func testSheetsDirectMessagesAndVoicePairs() throws {
+        try requireSwiftUI()
+        let label = { (app: XCUIApplication, text: String) in
+            app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", text)).firstMatch
+        }
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            let app = configured(bundle)
+            app.launch()
+            let back = app.buttons["Back to Browse"]
+            XCTAssertTrue(back.waitForExistence(timeout: 30), prefix)
+            back.tap()
+            sleep(1)
+
+            app.buttons["account-profile"].firstMatch.tap()
+            XCTAssertTrue(app.staticTexts["Edit profile"].firstMatch.waitForExistence(timeout: 10), prefix)
+            sleep(1)
+            capture("\(prefix)-profile")
+            app.buttons["Close profile"].firstMatch.tap()
+            sleep(1)
+
+            for (item, name, title) in [("open-notifications", "notification-settings", "Notifications"),
+                                        ("open-privacy", "privacy", "Privacy")] {
+                app.buttons.matching(NSPredicate(format: "label == %@", "Account settings")).firstMatch.tap()
+                app.buttons[item].firstMatch.tap()
+                XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 10), "\(prefix) \(item)")
+                sleep(1)
+                capture("\(prefix)-\(name)")
+                // The dialog's X ("Close", "Close notifications"…), not Browse's.
+                let close = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Close' AND label != 'Close navigation'")).firstMatch
+                if close.exists { close.tap() } else { app.swipeDown(velocity: .fast) }
+                sleep(1)
+            }
+
+            app.buttons["selected-space-name"].firstMatch.tap()
+            app.buttons["Space settings"].firstMatch.tap()
+            XCTAssertTrue(app.staticTexts["Manage space"].firstMatch.waitForExistence(timeout: 10), prefix)
+            sleep(1)
+            capture("\(prefix)-space-settings")
+            app.buttons["Close"].firstMatch.tap()
+            sleep(1)
+
+            label(app, "Notifications").tap()
+            let mention = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "check the narrow layout")).firstMatch
+            XCTAssertTrue(mention.waitForExistence(timeout: 10), prefix)
+            sleep(1)
+            capture("\(prefix)-activity-inbox")
+            app.buttons["Done"].firstMatch.tap()
+            sleep(1)
+
+            app.descendants(matching: .any)["dm-self"].firstMatch.tap()
+            XCTAssertTrue(app.staticTexts["You can message yourself here to keep notes, reminders, and ideas."].waitForExistence(timeout: 15), prefix)
+            sleep(2)
+            capture("\(prefix)-dm-self")
+
+            back.tap()
+            sleep(1)
+            app.descendants(matching: .any)["channel-chan00000002"].firstMatch.tap()
+            XCTAssertTrue(app.descendants(matching: .any)["voice-strip"].waitForExistence(timeout: 10), prefix)
+            sleep(2)
+            capture("\(prefix)-voice-strip")
+            // Leave each app in #general: the shipping app restores where it was.
+            if !app.buttons["Close navigation"].isHittable { app.buttons["Back to Browse"].tap(); sleep(1) }
+            app.descendants(matching: .any)["channel-chan00000001"].firstMatch.tap()
+            XCTAssertTrue(app.textViews["message-composer"].waitForExistence(timeout: 10), prefix)
+            sleep(1)
+            app.terminate()
+        }
+    }
+
+    /// Your call (the local seven-person roster) in each app: the strip, the
+    /// call card in Browse, and the participant sheet a held face opens from
+    /// inside the hosted channel row.
+    func testCallCardAndParticipantSheetPairs() throws {
+        try requireSwiftUI()
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            let app = configured(bundle, fixture: "voice-crowd")
+            app.launch()
+            let open = app.buttons["voice-strip-open"]
+            XCTAssertTrue(open.waitForExistence(timeout: 30), "\(prefix): the call's strip")
+            sleep(2)
+            capture("\(prefix)-call-strip")
+            open.tap()
+            let card = app.descendants(matching: .any)["voice-call-card"]
+            XCTAssertTrue(card.waitForExistence(timeout: 10), prefix)
+            sleep(2)
+            capture("\(prefix)-call-card")
+            app.descendants(matching: .any)["voice-face-fixture-remote"].firstMatch.press(forDuration: 0.8)
+            let title = app.descendants(matching: .any)["voice-list-title"]
+            XCTAssertTrue(title.waitForExistence(timeout: 10), "\(prefix): holding a face opens everyone in the call")
+            sleep(1)
+            capture("\(prefix)-call-participants")
+            app.descendants(matching: .any)["voice-list-close"].firstMatch.tap()
+            XCTAssertTrue(title.waitForNonExistence(timeout: 10), prefix)
+            // Leave each app in #general: the shipping app restores where it was.
+            if !app.buttons["Close navigation"].isHittable { app.buttons["Back to Browse"].tap(); sleep(1) }
+            app.descendants(matching: .any)["channel-chan00000001"].firstMatch.tap()
+            XCTAssertTrue(app.textViews["message-composer"].waitForExistence(timeout: 10), prefix)
+            sleep(1)
             app.terminate()
         }
     }

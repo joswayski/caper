@@ -14,8 +14,9 @@ import UniformTypeIdentifiers
     /// A SwiftUI root in Caper's dark appearance; `close` dismisses it.
     static func controller<Content: View>(clear: Bool = false, _ content: (_ close: @escaping () -> Void) -> Content) -> UIViewController {
         let box = WeakController()
+        // CaperView's root tint: switches and selection in terracotta, not system green.
         let host = UIHostingController(rootView: AnyView(content({ box.value?.dismiss(animated: false) })
-            .preferredColorScheme(.dark)))
+            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)))
         box.value = host
         host.overrideUserInterfaceStyle = .dark
         if clear { host.view.backgroundColor = .clear }
@@ -251,6 +252,7 @@ struct UIKitWorkspaceDialog: View {
         }
         .accessibilityAction(.escape, tappedOutside)
         .preferredColorScheme(.dark)
+        .tint(CaperTheme.terracottaBright)
     }
 
     private func tappedOutside() {
@@ -481,7 +483,9 @@ public struct UIKitFeedbackInbox: View {
             ActivityInboxView(model: model).onDisappear { model.activityShown = false }
         }
         UIKitHosting.sheet(host, background: CaperTheme.surface)
+        // SwiftUI's default sheet: full height, no grabber.
         host.sheetPresentationController?.detents = [.large()]
+        host.sheetPresentationController?.prefersGrabberVisible = false
         return host
     }
 }

@@ -223,7 +223,12 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
                 self?.toggleMembers()
             })
         }
-        // A 1:1 DM: block or unblock the other person.
+        return items + peerMenuItems()
+    }
+
+    /// A 1:1 DM: block or unblock the other person.
+    private func peerMenuItems() -> [UIMenuElement] {
+        var items: [UIMenuElement] = []
         if let conversation = peerConversation {
             let peer = conversation.peer
             if conversation.blocked || model.blockedIDs.contains(peer.id) {
@@ -340,8 +345,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             collection.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             collection.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             statusStack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            statusStack.topAnchor.constraint(equalTo: collection.topAnchor, constant: 80),
-            statusStack.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48),
+            // As SwiftUI: 80pt under the 44pt "Beginning of conversation" row.
+            statusStack.topAnchor.constraint(equalTo: collection.topAnchor, constant: 124),
+            statusStack.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -36),
             typing.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
             typing.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -18),
             typing.topAnchor.constraint(equalTo: notices.view.bottomAnchor),
@@ -452,6 +458,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private func render() {
         let chat = model.chat
         presentThreadIfNeeded()
+        layoutStatusColumn()
         let live = isLive
         let channelID = live ? conversationID : cached?.channelID
         let direct = live && self.direct
@@ -650,6 +657,58 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         pinTailIfFollowing()
+        layoutStatusColumn()
+    }
+
+    // MARK: Status column
+
+    /// A folded iPhone Duo's trailing status column, as SwiftUI's
+    /// statusColumnControls: Pins, Members and a DM's options in a capsule
+    /// level with the composer.
+    private lazy var statusColumn: UIStackView = {
+        let pins = IconButton(icon: "pin", label: "Pins") { [weak self] in self?.showPins() }
+        pins.accessibilityIdentifier = "channel-pins"
+        let options = UIButton(type: .system)
+        options.setImage(UIKitStyle.icon("ellipsis")?.resized(to: 20), for: .normal)
+        options.accessibilityLabel = "Conversation options"
+        options.accessibilityIdentifier = "dm-options"
+        options.showsMenuAsPrimaryAction = true
+        options.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            completion(self?.peerMenuItems() ?? [])
+        }])
+        options.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([options.widthAnchor.constraint(equalToConstant: 44), options.heightAnchor.constraint(equalToConstant: 44)])
+        let stack = UIStackView(arrangedSubviews: [pins, statusMembers, options])
+        stack.axis = .vertical
+        stack.spacing = 4
+        stack.alignment = .center
+        stack.isLayoutMarginsRelativeArrangement = true
+        stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
+        stack.backgroundColor = UIKitStyle.composer
+        stack.layer.borderWidth = 1
+        stack.layer.borderColor = UIKitStyle.border.cgColor
+        for case let button as UIButton in stack.arrangedSubviews { button.tintColor = UIKitStyle.muted }
+        stack.isHidden = true
+        view.addSubview(stack)
+        return stack
+    }()
+    private lazy var statusMembers = IconButton(icon: "users", label: "Show member list") { [weak self] in self?.toggleMembers() }
+
+    private func layoutStatusColumn() {
+        let insets = view.safeAreaInsets
+        let width = insets.right > insets.left ? insets.right : 0
+        let shows = width > 0 && isLive && model.chat.threadRootID == nil
+        guard shows || !statusColumn.isHidden else { return }
+        statusColumn.isHidden = !shows
+        guard shows else { return }
+        statusMembers.isHidden = !membersAvailable
+        statusMembers.accessibilityLabel = members.isOpen ? "Hide member list" : "Show member list"
+        statusColumn.arrangedSubviews.last?.isHidden = peerConversation == nil
+        let size = statusColumn.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
+        let side = min(width, max(size.width, 52))
+        let bottom = composer.convert(composer.bounds, to: view).maxY - 8
+        statusColumn.frame = CGRect(x: view.bounds.width - width + (width - side) / 2, y: bottom - size.height, width: side, height: size.height)
+        statusColumn.layer.cornerRadius = side / 2
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {

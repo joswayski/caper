@@ -35,7 +35,7 @@ import Foundation
     /// and Maya in another space's channel, which has no row here).
     static let voiceRosterFixtures: Set<String> = ["voice-roster", "voice-crowd", "voice-elsewhere"]
 
-    static func showVoiceRosterPreview(_ model: AppModel, environment: [String: String] = ProcessInfo.processInfo.environment) {
+    public static func showVoiceRosterPreview(_ model: AppModel, environment: [String: String] = ProcessInfo.processInfo.environment) {
         guard environment["CAPER_TEST_MODE"] == "parity", let fixture = environment["CAPER_UI_FIXTURE"],
               voiceRosterFixtures.contains(fixture),
               let rawURL = environment["CAPER_API_BASE_URL"], let baseURL = URL(string: rawURL),

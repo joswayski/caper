@@ -9,6 +9,7 @@ final class WorkspaceViewController: UIViewController {
     let browse: BrowseViewController
     let conversation: ConversationViewController
     private var browsing = false
+    private var rosterShown = false
     private let observer = ModelObserver()
     /// SwiftUI's banner for a channel or DM that failed to open, above both
     /// panes; they inset their content below it.
@@ -70,6 +71,12 @@ final class WorkspaceViewController: UIViewController {
         model.narrowLayout = true
         observer.start { [weak self] in
             guard let self else { return }
+            // Parity fixtures' local call rosters, as SwiftUI shows them; nothing otherwise.
+            if !self.rosterShown, self.model.detail != nil, self.model.selectedChannelID != nil {
+                self.rosterShown = true
+                let model = self.model
+                DispatchQueue.main.async { CaperRuntime.showVoiceRosterPreview(model) }
+            }
             let hasChannel = self.hasConversation
             if !hasChannel && !self.browsing { self.slide(browsing: true, animated: false, record: false) }
             else if hasChannel && self.model.navigationOpen != self.browsing { self.slide(browsing: self.model.navigationOpen) }
