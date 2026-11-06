@@ -1641,6 +1641,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (bounded > BigInt(conversation.readSeq)) conversation.readSeq = String(bounded);
         return json(response, 204);
       }
+      // Spaces where someone is in voice, for the clients' rail badges.
+      if (path === "/api/spaces/voice-activity" && method === "GET" && user)
+        return json(response, 200, {
+          spaceIds: [
+            ...new Set(
+              [...state.media]
+                .filter(([, room]) => room.participants?.length)
+                .map(([channelId]) => channelFor(channelId)?.spaceId)
+                .filter(Boolean),
+            ),
+          ],
+        });
       // Opt-in channel read state (control `channelReads`), so other runs keep
       // their unread behavior: the unread snapshot and channel reads.
       if (path === "/api/spaces/unread" && method === "GET" && user && state.channelReads)
