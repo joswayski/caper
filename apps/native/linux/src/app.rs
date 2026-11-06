@@ -39,6 +39,8 @@ mod admin;
 mod audio;
 #[path = "call.rs"]
 mod call;
+#[path = "context.rs"]
+mod context;
 #[path = "editor.rs"]
 mod editor;
 #[path = "forward.rs"]
@@ -284,6 +286,13 @@ struct State {
     /// The open Message history and its latest request.
     history: Option<history::History>,
     history_request: u64,
+    /// A jump's history window, newer messages past it, and a context
+    /// read in flight.
+    context_window: Option<context::Window>,
+    has_newer: bool,
+    context_loading: bool,
+    /// Reply quotes shown in full, by the replying message.
+    expanded_quotes: HashSet<String>,
     /// Privacy and notification settings.
     settings: settings::AccountSettings,
     /// Space and channel management, invites and membership.
@@ -764,6 +773,10 @@ impl App {
         });
         let app = self.clone();
         ui.join.connect_clicked(move |_| app.join());
+        let app = self.clone();
+        ui.load_newer.connect_clicked(move |_| app.load_newer());
+        let app = self.clone();
+        ui.latest.connect_clicked(move |_| app.back_to_latest());
         let app = self.clone();
         ui.member_search
             .connect_search_changed(move |_| app.render_members());
@@ -1271,6 +1284,10 @@ impl App {
         state.reactors.clear();
         state.reactors_view = None;
         state.history = None;
+        state.context_window = None;
+        state.has_newer = false;
+        state.context_loading = false;
+        state.expanded_quotes.clear();
         state.files_revision += 1;
         state.direct = None;
         state.jump_to = None;
@@ -1650,6 +1667,7 @@ impl App {
             let viewer = rows::Viewer {
                 thread_unread: &state.thread_unread,
                 reactors: &state.reactors,
+                expanded_quotes: &state.expanded_quotes,
                 revealed: &revealed,
                 blocked: &blocked,
                 shown_blocked: &state.shown_blocked,
@@ -1720,9 +1738,6 @@ impl App {
     /// Closes Pins and scrolls to `id`, loading earlier pages until it is
     /// in the list; a thread reply opens its thread.
     fn go_to_message(self: &Rc<Self>, id: String) {
-        if let Some(pins) = self.pins.borrow_mut().take() {
-            pins.popover.popdown();
-        }
         let root = self
             .state
             .borrow()
@@ -1730,12 +1745,7 @@ impl App {
             .pinned_messages()
             .find(|message| message.id == id)
             .and_then(|message| message.thread_root_id.clone());
-        if let Some(root) = root {
-            self.open_thread(root);
-            return;
-        }
-        self.state.borrow_mut().jump_to = Some(id);
-        self.continue_jump();
+        self.jump_to_message(id, root);
     }
 
     fn continue_jump(self: &Rc<Self>) {
@@ -1938,7 +1948,8 @@ impl App {
     /// Marks the open conversation read through its newest message.
     fn mark_read(&self, state: &mut State) {
         // Reading a request must not look like engaging with it.
-        if state.unread_visit_pending || state.open_request().is_some() {
+        // Nor does a jump's window away from the newest messages.
+        if state.unread_visit_pending || state.open_request().is_some() || state.has_newer {
             return;
         }
         let (Some(token), Some(channel)) = (state.token.clone(), state.channel.clone()) else {
@@ -2742,6 +2753,16 @@ impl App {
             }
             Action::LoadReactors(id) => self.load_reactors(&id),
             Action::History(id) => self.open_history(&id),
+            Action::Quote { id, root } => self.jump_to_message(id, root),
+            Action::ExpandQuote(id) => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    if !state.expanded_quotes.remove(&id) {
+                        state.expanded_quotes.insert(id);
+                    }
+                }
+                self.render();
+            }
             Action::DismissReaction(id) => {
                 self.state.borrow_mut().reactions.dismiss(&id);
                 self.render();
@@ -3319,6 +3340,11 @@ impl App {
                 match result {
                     Ok(history) => {
                         state.has_more = history.has_more;
+                        if let (Some(window), Some(first)) =
+                            (&mut state.context_window, history.messages.first())
+                        {
+                            window.start = first.seq.parse().unwrap_or(window.start);
+                        }
                         if let Err(error) = state.timeline.prepend(history.messages) {
                             state.error = Some(error);
                         }
@@ -3488,6 +3514,20 @@ impl App {
                     }
                     Reacted::Failed => self.send_next_reaction(state, &message),
                 }
+            }
+            Event::ContextLoaded {
+                generation,
+                request,
+                channel,
+                root: None,
+                anchor,
+                newer,
+                result,
+            } if generation == state.generation
+                && request == state.request
+                && state.channel.as_deref() == Some(&channel) =>
+            {
+                self.accept_context(state, &anchor, newer, result)
             }
             Event::MessageVersions {
                 generation,
@@ -4308,6 +4348,7 @@ impl App {
             .broadcast
             .set_label(Some(&format!("Also send to {destination}")));
         self.render_empty(&state);
+        self.render_context_bar(&state);
         let joined = state.joined();
         let can_send = state.session.is_some();
         let replaced = self.render_request_bar(&state);
@@ -4486,6 +4527,7 @@ impl App {
             let viewer = |in_thread| rows::Viewer {
                 thread_unread: &state.thread_unread,
                 reactors: &state.reactors,
+                expanded_quotes: &state.expanded_quotes,
                 revealed: &revealed,
                 blocked: &blocked,
                 shown_blocked: &state.shown_blocked,
@@ -4518,12 +4560,14 @@ impl App {
                         },
                     })
             };
+            let (window, has_newer) = (state.context_window, state.has_newer);
             let main = rows::build(
-                state
-                    .timeline
-                    .messages()
-                    .filter(|message| message.is_channel_message()),
-                draft(None),
+                state.timeline.messages().filter(|message| {
+                    message.is_channel_message()
+                        && window.is_none_or(|window| window.contains(message))
+                }),
+                // A pending send shows at the live end only.
+                draft(None).filter(|_| !has_newer),
                 &mut state.markup,
                 &viewer(false),
             );
@@ -4555,6 +4599,12 @@ impl App {
                 && let Some(first) = main.first_mut()
             {
                 first.beginning = true;
+            }
+            // A jump's target stays highlighted until you move on.
+            if let Some(focused) = &state.focused {
+                for row in &mut main {
+                    row.focused = row.id == *focused;
+                }
             }
             let changed = rows::apply(&self.ui.list.store, &state.rows, &main);
             state.rows = main;

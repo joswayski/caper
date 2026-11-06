@@ -1537,3 +1537,16 @@ button.edited:hover {
   font-family: monospace;
   font-size: 12px;
 }
+
+/* A jump's context: back toward the live end. */
+.newer-bar {
+  margin: 4px 20px;
+}
+
+button.quote-more {
+  min-height: 0;
+  margin-left: 47px;
+  padding: 0;
+  color: @caper_link;
+  font-size: 11px;
+}

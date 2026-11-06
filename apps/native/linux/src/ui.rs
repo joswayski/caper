@@ -219,6 +219,11 @@ pub struct Ui {
     pub composer: Composer,
     pub composer_error: gtk::Label,
     pub typing: gtk::Label,
+    /// Away from the live end: "Load newer messages" and "Back to latest
+    /// messages".
+    pub newer_bar: gtk::Box,
+    pub load_newer: gtk::Button,
+    pub latest: gtk::Button,
     pub join_bar: gtk::Box,
     pub join_label: gtk::Label,
     pub join: gtk::Button,
@@ -608,6 +613,15 @@ impl Ui {
         list_overlay.set_child(Some(&list.scroller));
         list_overlay.add_overlay(&empty);
         conversation.append(&list_overlay);
+        let newer_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        newer_bar.add_css_class("newer-bar");
+        newer_bar.set_halign(gtk::Align::Center);
+        newer_bar.set_visible(false);
+        let load_newer = gtk::Button::with_label("Load newer messages");
+        let latest = gtk::Button::with_label("Back to latest messages");
+        newer_bar.append(&load_newer);
+        newer_bar.append(&latest);
+        conversation.append(&newer_bar);
         let typing = label("", &["typing"]);
         typing.set_ellipsize(pango::EllipsizeMode::End);
         conversation.append(&typing);
@@ -805,6 +819,9 @@ impl Ui {
             composer,
             composer_error,
             typing,
+            newer_bar,
+            load_newer,
+            latest,
             join_bar,
             join_label,
             join,

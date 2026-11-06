@@ -62,6 +62,12 @@ pub struct Row {
     pub pinned_by: Option<String>,
     /// The quoted message: its author and a short plain preview.
     pub reply: Option<(String, String)>,
+    /// The quoted message and its thread, which a click jumps to.
+    pub reply_target: Option<(String, Option<String>)>,
+    /// The whole quote when the preview is shorter, for Show more, and
+    /// whether it is shown.
+    pub reply_full: Option<String>,
+    pub reply_expanded: bool,
     pub reactions: Vec<Chip>,
     /// Your reaction failed: shown under the row with Retry and Dismiss.
     pub reaction_error: Option<String>,
@@ -262,6 +268,9 @@ impl Row {
             edited: false,
             pinned_by: None,
             reply: None,
+            reply_target: None,
+            reply_full: None,
+            reply_expanded: false,
             reactions: Vec::new(),
             reaction_error: None,
             replies: None,
@@ -419,6 +428,8 @@ pub struct Viewer<'a> {
     pub thread_unread: &'a std::collections::BTreeMap<String, String>,
     /// Who reacted, by message, as far as loaded.
     pub reactors: &'a std::collections::BTreeMap<String, caper_client::reactions::ReactorCache>,
+    /// Messages whose reply quote shows in full.
+    pub expanded_quotes: &'a std::collections::HashSet<String>,
 }
 
 impl Viewer<'_> {
@@ -543,6 +554,23 @@ pub fn build<'a>(
                 .pin
                 .as_ref()
                 .map(|pin| format!("Pinned by {}", pin.author.name)),
+            reply_target: message
+                .reply_to
+                .as_ref()
+                .filter(|reply| !viewer.blocked.contains(&reply.author.id))
+                .map(|reply| (reply.id.clone(), reply.thread_root_id.clone())),
+            reply_full: message
+                .reply_to
+                .as_ref()
+                .filter(|reply| !reply.deleted && !viewer.blocked.contains(&reply.author.id))
+                .map(|reply| {
+                    reply
+                        .full_text
+                        .clone()
+                        .unwrap_or_else(|| reply.text.clone())
+                })
+                .filter(|full| preview(full) != *full),
+            reply_expanded: viewer.expanded_quotes.contains(&message.id),
             reply: message.reply_to.as_ref().map(|reply| {
                 if viewer.blocked.contains(&reply.author.id) {
                     return ("Blocked message".to_owned(), String::new());
@@ -682,6 +710,9 @@ pub fn build<'a>(
             edited: false,
             pinned_by: None,
             reply: None,
+            reply_target: None,
+            reply_full: None,
+            reply_expanded: false,
             reactions: Vec::new(),
             reaction_error: None,
             replies: None,
@@ -737,6 +768,13 @@ pub enum Action {
     RetryReaction(String),
     /// Drop your failed reaction and its error.
     DismissReaction(String),
+    /// The reply quote: jump to the quoted message (in its thread).
+    Quote {
+        id: String,
+        root: Option<String>,
+    },
+    /// Show more or less of a reply quote.
+    ExpandQuote(String),
     /// "(edited)": the message's retained versions.
     History(String),
     /// A chip is hovered: load who reacted to this message.
@@ -778,6 +816,7 @@ struct Widgets {
     unread: gtk::Box,
     beginning: gtk::Label,
     reply: gtk::Label,
+    quote_more: gtk::Button,
     avatar: AvatarView,
     gap: gtk::Box,
     header: gtk::Box,
@@ -1016,6 +1055,12 @@ fn build_widgets(images: &Images) -> Widgets {
     root.append(&day);
     root.append(&unread);
     root.append(&reply);
+    let quote_more = gtk::Button::with_label("Show more");
+    quote_more.add_css_class("flat");
+    quote_more.add_css_class("quote-more");
+    quote_more.set_halign(gtk::Align::Start);
+    quote_more.set_visible(false);
+    root.append(&quote_more);
     root.append(&thread_context);
     root.append(&overlay);
     Widgets {
@@ -1029,6 +1074,7 @@ fn build_widgets(images: &Images) -> Widgets {
         unread,
         beginning,
         reply,
+        quote_more,
         avatar,
         gap,
         header,
@@ -1127,6 +1173,27 @@ fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
         }
         glib::Propagation::Proceed
     });
+    let click = gtk::GestureClick::new();
+    let (weak, jump) = (Rc::downgrade(widgets), handler.clone());
+    click.connect_released(move |_, _, _, _| {
+        let target = weak
+            .upgrade()
+            .and_then(|widgets| widgets.row.borrow().as_ref()?.reply_target.clone());
+        if let Some((id, root)) = target {
+            jump(Action::Quote { id, root });
+        }
+    });
+    widgets.reply.add_controller(click);
+    widgets.reply.set_cursor_from_name(Some("pointer"));
+    widgets
+        .reply
+        .set_tooltip_text(Some("View original message"));
+    let (weak, toggle) = (Rc::downgrade(widgets), handler.clone());
+    widgets.quote_more.connect_clicked(move |_| {
+        if let Some(id) = weak.upgrade().and_then(|widgets| id(&widgets)) {
+            toggle(Action::ExpandQuote(id));
+        }
+    });
     let (weak, toggle) = (Rc::downgrade(widgets), handler.clone());
     widgets.blocked_toggle.connect_clicked(move |_| {
         let key = weak.upgrade().and_then(|widgets| {
@@ -1172,6 +1239,7 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
             .set_label(if *shown { "Hide" } else { "Show" });
         widgets.day.set_visible(false);
         widgets.reply.set_visible(false);
+        widgets.quote_more.set_visible(false);
         return;
     }
     if row.mentioned {
@@ -1192,15 +1260,31 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
         .set_label(row.day.as_deref().unwrap_or_default());
     match &row.reply {
         Some((author, text)) => {
+            let full = row.reply_full.as_ref().filter(|_| row.reply_expanded);
             widgets.reply.set_markup(&format!(
                 "↱ <b>{}</b>  {}",
                 glib::markup_escape_text(author),
-                glib::markup_escape_text(text)
+                glib::markup_escape_text(full.unwrap_or(text))
             ));
+            // Expanded, the quote wraps instead of ending in "…".
+            widgets.reply.set_wrap(full.is_some());
+            widgets.reply.set_ellipsize(if full.is_some() {
+                pango::EllipsizeMode::None
+            } else {
+                pango::EllipsizeMode::End
+            });
             widgets.reply.set_visible(true);
         }
         None => widgets.reply.set_visible(false),
     }
+    widgets
+        .quote_more
+        .set_visible(row.reply.is_some() && row.reply_full.is_some());
+    widgets.quote_more.set_label(if row.reply_expanded {
+        "Show less"
+    } else {
+        "Show more"
+    });
     widgets.header.set_visible(!row.grouped);
     widgets.avatar.root.set_visible(!row.grouped);
     widgets.gap.set_visible(row.grouped);
@@ -1366,6 +1450,9 @@ mod tests {
             edited: false,
             pinned_by: None,
             reply: None,
+            reply_target: None,
+            reply_full: None,
+            reply_expanded: false,
             reactions: Vec::new(),
             reaction_error: None,
             replies: None,
