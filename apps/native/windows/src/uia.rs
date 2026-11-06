@@ -9,6 +9,7 @@
 //! plain text: screen readers can read it by character, word and line, find
 //! its bounds and select in it (the selection is the history's selection).
 use crate::actions::{PPart, Tool};
+use crate::gifs::GPart;
 use crate::list::Action;
 use crate::overlay::{Kind, Part as DPart};
 use crate::signin::Part;
@@ -51,6 +52,9 @@ pub enum Id {
     /// The reaction picker and its parts.
     Picker,
     Pick(PPart),
+    /// The composer's GIF picker and its parts.
+    Gifs,
+    Gif(GPart),
     /// "Replying to …" above the composer, and its Cancel reply.
     Reply,
     ReplyCancel,
@@ -87,6 +91,9 @@ fn field(a: &App, id: Id) -> &Composer {
     if let (Id::Pick(_), Some(p)) = (id, &a.picker) {
         return &p.search;
     }
+    if let (Id::Gif(_), Some(p)) = (id, &a.gifs) {
+        return &p.search;
+    }
     if let (Id::ThreadPart(TPart::Field), Some(t)) = (id, &a.thread) {
         return &t.composer;
     }
@@ -104,6 +111,9 @@ fn field_mut(a: &mut App, id: Id) -> &mut Composer {
     if let (Id::Pick(_), Some(p)) = (id, &mut a.picker) {
         return &mut p.search;
     }
+    if let (Id::Gif(_), Some(p)) = (id, &mut a.gifs) {
+        return &mut p.search;
+    }
     if let (Id::ThreadPart(TPart::Field), Some(t)) = (id, &mut a.thread) {
         return &mut t.composer;
     }
@@ -118,6 +128,8 @@ fn field_changed(a: &mut App, id: Id, text: bool) {
         a.dialog_changed();
     } else if matches!(id, Id::Pick(_)) {
         a.picker_changed(text);
+    } else if matches!(id, Id::Gif(_)) {
+        a.gifs_changed(text);
     } else if matches!(id, Id::Sign(_)) {
         a.signin_changed(text);
     } else if matches!(id, Id::ThreadPart(_)) {
@@ -134,6 +146,9 @@ fn focused(a: &App) -> Option<Id> {
     }
     if let Some(p) = &a.picker {
         return p.search.focused.then_some(Id::Pick(PPart::Search));
+    }
+    if a.gifs.as_ref().is_some_and(|p| p.search.focused) {
+        return Some(Id::Gif(GPart::Search));
     }
     if a.thread.as_ref().is_some_and(|t| t.composer.focused) {
         return Some(Id::ThreadPart(TPart::Field));
@@ -167,8 +182,13 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             out.extend([Id::Composer, Id::Members]);
             out.extend(a.menu.as_ref().map(|_| Id::Menu));
             out.extend(a.picker.as_ref().map(|_| Id::Picker));
+            out.extend(a.gifs.as_ref().map(|_| Id::Gifs));
             out
         }
+        Id::Gifs => a
+            .gifs
+            .as_ref()
+            .map_or_else(Vec::new, |p| p.parts().into_iter().map(Id::Gif).collect()),
         Id::Menu => a.menu.as_ref().map_or_else(Vec::new, |m| {
             std::iter::once(Id::MenuClose)
                 .chain((0..m.items.len()).map(Id::MenuItem))
@@ -226,6 +246,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Original(i) | Id::Edited(i) | Id::File(i, _) | Id::Embed(i, _) => Id::Row(i),
         Id::MenuItem(_) | Id::MenuClose => Id::Menu,
         Id::Pick(_) => Id::Picker,
+        Id::Gif(_) => Id::Gifs,
         Id::Member(_) => Id::Members,
         Id::ThreadPart(TPart::Chip(i, _) | TPart::Add(i)) => Id::ThreadPart(TPart::Row(i)),
         Id::ThreadPart(_) => Id::Thread,
@@ -253,6 +274,10 @@ fn exists(a: &App, id: Id) -> bool {
                 && a.tools(i).iter().any(|s| s.tool == t)
         }
         Id::Picker => a.picker.is_some() && a.dialog.is_none(),
+        Id::Gifs => a.gifs.is_some() && a.dialog.is_none(),
+        Id::Gif(part) => {
+            a.dialog.is_none() && a.gifs.as_ref().is_some_and(|p| p.parts().contains(&part))
+        }
         Id::Pick(part) => {
             a.dialog.is_none() && a.picker.as_ref().is_some_and(|p| p.parts().contains(&part))
         }
@@ -335,6 +360,8 @@ fn name(a: &App, id: Id) -> String {
         Id::MenuClose => "Close message actions".into(),
         Id::Tool(_, t) => t.label(),
         Id::Picker => "Add a reaction".into(),
+        Id::Gifs => "GIFs and stickers".into(),
+        Id::Gif(part) => a.gifs.as_ref().map_or_else(String::new, |p| p.name(part)),
         Id::Pick(part) => a.picker.as_ref().map_or_else(String::new, |p| p.name(part)),
         Id::Reply => a.reply.as_ref().map_or_else(String::new, |r| {
             format!("Replying to {}: {}", r.target.author.name, r.target.text)
@@ -454,6 +481,10 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Picker => UIA_PaneControlTypeId,
         Id::Pick(PPart::Category(_)) => UIA_TabItemControlTypeId,
         Id::Pick(PPart::Search) => UIA_EditControlTypeId,
+        Id::Gifs => UIA_PaneControlTypeId,
+        Id::Gif(GPart::Tab(_)) => UIA_TabItemControlTypeId,
+        Id::Gif(GPart::Search) => UIA_EditControlTypeId,
+        Id::Gif(_) => UIA_ButtonControlTypeId,
         Id::Reply => UIA_TextControlTypeId,
         Id::Older | Id::Newer(_) => UIA_ButtonControlTypeId,
         Id::Original(_) | Id::Embed(..) => UIA_HyperlinkControlTypeId,
@@ -517,6 +548,17 @@ fn runtime_id(id: Id) -> [i32; 3] {
                 PPart::Emoji(i) => 16 + i,
             },
         ),
+        Id::Gifs => (32, 0),
+        Id::Gif(part) => (
+            33,
+            match part {
+                GPart::Close => 0,
+                GPart::Search => 1,
+                GPart::Tab(k) => 2 + k,
+                GPart::Retry => 4,
+                GPart::Tile(i) => 16 + i,
+            },
+        ),
         Id::Reply => (19, 0),
         Id::Older => (20, 0),
         Id::Newer(k) => (26, k),
@@ -528,6 +570,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
             30,
             match p {
                 crate::uploads::Part::Attach => 0,
+                // Past every file's controls (at most ten files).
+                crate::uploads::Part::Gif => 999,
                 crate::uploads::Part::Open(k) => 1 + 4 * k,
                 crate::uploads::Part::Spoiler(k) => 2 + 4 * k,
                 crate::uploads::Part::Remove(k) => 3 + 4 * k,
@@ -619,6 +663,14 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .map_or((0.0, 0.0, 0.0, 0.0), crate::actions::Picker::rect),
         Id::Pick(part) => a
             .picker
+            .as_ref()
+            .map_or((0.0, 0.0, 0.0, 0.0), |p| p.part_rect(part)),
+        Id::Gifs => a
+            .gifs
+            .as_ref()
+            .map_or((0.0, 0.0, 0.0, 0.0), crate::gifs::Picker::rect),
+        Id::Gif(part) => a
+            .gifs
             .as_ref()
             .map_or((0.0, 0.0, 0.0, 0.0), |p| p.part_rect(part)),
         Id::Reply => a.reply_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
@@ -744,6 +796,15 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     || pattern == UIA_TextPattern2Id
             }
             Id::Pick(_) => pattern == UIA_InvokePatternId,
+            Id::Gif(GPart::Tab(_)) => {
+                pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
+            }
+            Id::Gif(GPart::Search) => {
+                pattern == UIA_ValuePatternId
+                    || pattern == UIA_TextPatternId
+                    || pattern == UIA_TextPattern2Id
+            }
+            Id::Gif(_) => pattern == UIA_InvokePatternId,
             Id::Dialog(DPart::Field) => {
                 pattern == UIA_ValuePatternId
                     || pattern == UIA_TextPatternId
@@ -823,6 +884,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::Channel(_)
                         | Id::MenuItem(_)
                         | Id::Pick(PPart::Search)
+                        | Id::Gif(GPart::Search)
                         | Id::Dialog(DPart::Field | DPart::Reload | DPart::Cancel | DPart::Primary)
                         | Id::Sign(Part::Field | Part::Primary | Part::OtherEmail | Part::Resend)
                 )),
@@ -926,6 +988,7 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
                 Id::Pick(PPart::Search) => a.picker_activate(PPart::Search),
+                Id::Gif(GPart::Search) => a.gifs_activate(GPart::Search),
                 Id::ThreadPart(TPart::Field) => a.set_thread_focus(true),
                 Id::Control(i, action) => a.set_kb(Some((i, action))),
                 _ => {}
@@ -985,6 +1048,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Tool(i, t) => a.tool_activate(i, t),
                 Id::MenuClose => a.close_menu(),
                 Id::Pick(part) => a.picker_activate(part),
+                Id::Gif(part) => a.gifs_activate(part),
                 Id::ReplyCancel => a.cancel_reply(),
                 Id::Older => a.load_older(),
                 Id::Newer(k) => a.foot_activate(k),
@@ -1023,6 +1087,7 @@ impl ISelectionItemProvider_Impl for Node_Impl {
                 Id::Pick(PPart::Category(k)) => {
                     a.picker.as_ref().and_then(|p| p.selected_category()) == Some(k)
                 }
+                Id::Gif(GPart::Tab(k)) => a.gifs.as_ref().is_some_and(|p| p.selected_tab() == k),
                 _ => false,
             }
             .into())
@@ -1147,6 +1212,7 @@ impl Doc {
             (Self::Field(Id::Pick(_)), _) => {
                 a.picker.as_ref().map_or((0.0, 0.0), |p| p.text_origin())
             }
+            (Self::Field(Id::Gif(_)), _) => a.gifs.as_ref().map_or((0.0, 0.0), |p| p.text_origin()),
             (Self::Field(Id::ThreadPart(_)), _) => a.thread_text_origin(),
             (Self::Field(_), _) => a.composer_text_origin(),
             (Self::Row(i), _) => a.row_text_origin(i),
@@ -1625,13 +1691,15 @@ fn editable() -> Id {
             a.dialog.as_ref().map(|d| d.kind),
             a.signin.is_some(),
             a.picker.is_some(),
+            a.gifs.as_ref().is_some_and(|p| p.search.focused),
             a.thread.as_ref().is_some_and(|t| t.composer.focused),
         )
     }) {
-        Some((Some(Kind::Edit), _, _, _)) => Id::Dialog(DPart::Field),
-        Some((_, true, _, _)) => Id::Sign(Part::Field),
-        Some((_, _, true, _)) => Id::Pick(PPart::Search),
-        Some((_, _, _, true)) => Id::ThreadPart(TPart::Field),
+        Some((Some(Kind::Edit), _, _, _, _)) => Id::Dialog(DPart::Field),
+        Some((_, true, _, _, _)) => Id::Sign(Part::Field),
+        Some((_, _, true, _, _)) => Id::Pick(PPart::Search),
+        Some((_, _, _, true, _)) => Id::Gif(GPart::Search),
+        Some((_, _, _, _, true)) => Id::ThreadPart(TPart::Field),
         _ => Id::Composer,
     }
 }

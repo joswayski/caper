@@ -35,6 +35,8 @@ pub const TILE: f32 = 104.0;
 const GAP: f32 = 8.0;
 /// The text's room after the Attach files button.
 pub const ATTACH_W: f32 = 30.0;
+/// The text's room before the GIF button, while GIFs are available.
+pub const GIF_W: f32 = 36.0;
 const NOTICE_H: f32 = 18.0;
 /// A corner button's circle, its inset from the tile's edges and its target.
 const CORNER_R: f32 = 11.0;
@@ -86,6 +88,8 @@ impl Draft {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Part {
     Attach,
+    /// Send a GIF: opens the picker.
+    Gif,
     /// The open channel's file `k`: its tile (preview), spoiler toggle,
     /// Remove and Retry.
     Open(usize),
@@ -121,6 +125,46 @@ pub fn strip(n: usize, w: f32, notice: bool) -> (Vec<D2D_RECT_F>, f32) {
 pub fn attach_rect(top: f32) -> D2D_RECT_F {
     let cy = top + PAD + composer::LINE / 2.0;
     rect(8.0, cy - 14.0, 36.0, cy + 14.0)
+}
+
+/// Send a GIF, at the end of the first line in a box `bw` wide.
+pub fn gif_rect(top: f32, bw: f32) -> D2D_RECT_F {
+    let cy = top + PAD + composer::LINE / 2.0;
+    rect(bw - 36.0, cy - 14.0, bw - 8.0, cy + 14.0)
+}
+
+/// egui's GIF button: "GIF" in a small rounded badge.
+fn gif_button(g: &Gfx, dc: &ID2D1DeviceContext, r: D2D_RECT_F, color: u32) -> Result<()> {
+    let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+    let badge = rect(cx - 10.0, cy - 7.0, cx + 10.0, cy + 7.0);
+    let brush = dc_brush(dc, color)?;
+    unsafe {
+        dc.DrawRoundedRectangle(
+            &D2D1_ROUNDED_RECT {
+                rect: rect(
+                    badge.left + 0.7,
+                    badge.top + 0.7,
+                    badge.right - 0.7,
+                    badge.bottom - 0.7,
+                ),
+                radiusX: 3.0,
+                radiusY: 3.0,
+            },
+            &brush,
+            1.4,
+            None,
+        );
+    }
+    let l = line(g, "GIF", &g.formats.gif_badge, 1e6)?;
+    let m = gfx::metrics(&l);
+    crate::text::draw(
+        dc,
+        &l,
+        cx - m.widthIncludingTrailingWhitespace / 2.0,
+        cy - m.height / 2.0,
+        &brush,
+    );
+    Ok(())
 }
 
 fn remove_rect(t: D2D_RECT_F) -> D2D_RECT_F {
@@ -173,6 +217,8 @@ pub fn part_at(tiles: &[D2D_RECT_F], drafts: &[&Draft], top: f32, x: f32, y: f32
 pub fn part_rect(tiles: &[D2D_RECT_F], top: f32, part: Part) -> Option<D2D_RECT_F> {
     Some(match part {
         Part::Attach => attach_rect(top),
+        // Placed by the box's width (`App::box_part_rect`).
+        Part::Gif => return None,
         Part::Open(k) => *tiles.get(k)?,
         Part::Spoiler(k) => spoiler_rect(*tiles.get(k)?),
         Part::Remove(k) => remove_rect(*tiles.get(k)?),
@@ -311,7 +357,9 @@ fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Result<()
     Ok(())
 }
 
-/// Draws the box's files, notice and Attach files (box-local DIPs).
+/// Draws the box's files, notice, Attach files and, in a box `gif` wide
+/// while GIFs are available, Send a GIF (bright while its picker is open).
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     g: &Gfx,
     dc: &ID2D1DeviceContext,
@@ -320,7 +368,16 @@ pub fn draw(
     top: f32,
     notice: Option<&str>,
     can_attach: bool,
+    gif: Option<(f32, bool)>,
 ) -> Result<()> {
+    if let Some((bw, open)) = gif {
+        gif_button(
+            g,
+            dc,
+            gif_rect(top, bw),
+            if open { TEXT } else { TEXT_MUTED },
+        )?;
+    }
     for (d, t) in drafts.iter().zip(tiles) {
         tile(g, dc, d, *t)?;
     }
@@ -511,8 +568,17 @@ impl App {
             0.0
         };
         let left = if self.live.is_some() { ATTACH_W } else { 0.0 };
+        let right = if self.gif_shown() { GIF_W } else { 0.0 };
         self.composer.inset = (left, top);
-        Ok(top + self.composer.relayout(&self.g, bw - 2.0 * PAD - left)?)
+        Ok(top
+            + self
+                .composer
+                .relayout(&self.g, bw - 2.0 * PAD - left - right)?)
+    }
+
+    /// Whether the composer offers GIFs (KLIPY answered for this account).
+    pub fn gif_shown(&self) -> bool {
+        self.live.as_ref().is_some_and(|l| l.can_gif())
     }
 
     /// The composer box's control under client point (x, y).
@@ -522,6 +588,9 @@ impl App {
         }
         let (bx, by, bw, _) = self.box_rect();
         let (drafts, tiles, top, _) = self.box_files(bw);
+        if self.gif_shown() && inside(gif_rect(top, bw), x - bx, y - by) {
+            return Some(Part::Gif);
+        }
         part_at(&tiles, &drafts, top, x - bx, y - by)
     }
 
@@ -543,13 +612,19 @@ impl App {
             out.extend([Part::Spoiler(k), Part::Remove(k)]);
         }
         out.push(Part::Attach);
+        if self.gif_shown() {
+            out.push(Part::Gif);
+        }
         out
     }
 
     pub fn box_part_rect(&self, part: Part) -> Option<overlay::Rect> {
         let (bx, by, bw, _) = self.box_rect();
         let (_, tiles, top, _) = self.box_files(bw);
-        let r = part_rect(&tiles, top, part)?;
+        let r = match part {
+            Part::Gif => gif_rect(top, bw),
+            _ => part_rect(&tiles, top, part)?,
+        };
         Some((bx + r.left, by + r.top, r.right - r.left, r.bottom - r.top))
     }
 
@@ -563,6 +638,7 @@ impl App {
                 Some(live) => live.attach_unavailable().into(),
                 None => String::new(),
             },
+            Part::Gif => "Send a GIF".into(),
             Part::Open(k) => file(k).map_or_else(String::new, |(s, _)| format!("Preview {s}")),
             Part::Spoiler(k) => file(k).map_or_else(String::new, |(_, d)| {
                 if d.upload.spoiler {
@@ -580,14 +656,16 @@ impl App {
 
     /// A click (or UIA Invoke) on a composer box control.
     pub fn box_activate(&mut self, part: Part) {
-        if let Part::Attach = part {
-            return self.pick_files();
+        match part {
+            Part::Attach => return self.pick_files(),
+            Part::Gif => return self.toggle_gifs(),
+            _ => {}
         }
         let (_, _, bw, _) = self.box_rect();
         let (drafts, ..) = self.box_files(bw);
         let k = match part {
             Part::Open(k) | Part::Spoiler(k) | Part::Remove(k) | Part::Retry(k) => k,
-            Part::Attach => return,
+            Part::Attach | Part::Gif => return,
         };
         let Some(d) = drafts.get(k) else { return };
         let key = d.upload.key;
@@ -612,7 +690,7 @@ impl App {
                 self.attach_error = None;
             }
             Part::Retry(_) => live.retry_draft(key),
-            Part::Attach => {}
+            Part::Attach | Part::Gif => {}
         }
         self.drafts_changed();
     }

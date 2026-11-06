@@ -743,6 +743,10 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 impl App {
     /// Images arrived or URLs changed: rows showing attachments redraw.
     pub fn media_changed(&mut self) {
+        if self.gifs.is_some() {
+            self.dirty.gifs = true;
+            self.need = true;
+        }
         if self
             .c
             .messages

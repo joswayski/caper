@@ -665,6 +665,7 @@ impl App {
             return self.close_picker();
         }
         self.close_menu();
+        self.close_gifs(false);
         self.set_composer_focus(false);
         self.picker = Some(Picker::new(i, id, anchor, (self.w, self.h)));
         self.picker_changed(true);

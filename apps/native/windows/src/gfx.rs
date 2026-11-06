@@ -132,6 +132,9 @@ pub struct Formats {
     pub embed_author: IDWriteTextFormat,
     pub embed_title: IDWriteTextFormat,
     pub embed_text: IDWriteTextFormat,
+    /// The composer's GIF badge (egui's 8.5) and the GIF picker's tabs (13).
+    pub gif_badge: IDWriteTextFormat,
+    pub gif_tab: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -305,6 +308,8 @@ impl Gfx {
                 embed_author: fmt(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 embed_title: fmt(14.4, DWRITE_FONT_WEIGHT_BOLD)?,
                 embed_text: fmt(13.6, DWRITE_FONT_WEIGHT_NORMAL)?,
+                gif_badge: fmt(8.5, DWRITE_FONT_WEIGHT_NORMAL)?,
+                gif_tab: fmt(13.0, DWRITE_FONT_WEIGHT_NORMAL)?,
             };
             let f = &formats;
             for f in [

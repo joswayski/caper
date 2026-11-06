@@ -283,6 +283,12 @@ pub struct Live {
     pub uploads: Option<caper_client::compress::Compression>,
     pub uploads_checked: bool,
     local: Vec<(String, caper_client::Rgba)>,
+    /// KLIPY's key once `GET /api/klipy` answers (GIFs stay hidden until
+    /// then, as in egui), when it was last asked, and the shares to send
+    /// once their GIF messages are confirmed (by client id).
+    pub klipy: Option<caper_client::klipy::Config>,
+    klipy_checked: Option<std::time::Instant>,
+    shares: HashMap<String, caper_client::klipy::Share>,
 }
 
 /// What a send with composer files did.
@@ -390,6 +396,9 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         uploads: None,
         uploads_checked: false,
         local: Vec::new(),
+        klipy: None,
+        klipy_checked: None,
+        shares: HashMap::new(),
     })
 }
 
@@ -457,6 +466,7 @@ impl Live {
             token: token.clone(),
         });
         self.token = Some(token);
+        self.check_klipy();
         self.spaces = Some(spaces);
         self.navigate(Some(space), None);
     }
@@ -467,6 +477,60 @@ impl Live {
             && self.uploads.is_some()
             && self.channel.is_some()
             && self.chat_token.is_some()
+    }
+
+    /// Asks for KLIPY's key while GIFs are unavailable, at most once a
+    /// minute (egui's rule).
+    fn check_klipy(&mut self) {
+        let Some(token) = &self.token else { return };
+        if self.klipy.is_none()
+            && self
+                .klipy_checked
+                .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(60))
+        {
+            self.klipy_checked = Some(std::time::Instant::now());
+            self.worker.send(Command::Klipy {
+                token: token.clone(),
+            });
+        }
+    }
+
+    /// Whether a GIF can be sent to the open channel now.
+    pub fn can_gif(&self) -> bool {
+        self.klipy.is_some()
+            && self.token.is_some()
+            && self.channel.is_some()
+            && self.chat_token.is_some()
+    }
+
+    /// Sends a GIF chosen in the picker as its own message, replying to
+    /// `reply_to`; KLIPY hears of it once the server confirms the send.
+    pub fn send_gif(
+        &mut self,
+        gif: caper_client::klipy::Gif,
+        share: caper_client::klipy::Share,
+        reply_to: Option<String>,
+    ) {
+        let (Some(channel), Some(chat_token)) = (&self.channel, &self.chat_token) else {
+            return;
+        };
+        let client_id = uuid::Uuid::new_v4().to_string();
+        self.shares.insert(client_id.clone(), share);
+        self.worker.send(Command::Send {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token: chat_token.clone(),
+            channel: channel.clone(),
+            client_id,
+            text: String::new(),
+            broadcast: false,
+            thread_root_id: None,
+            reply_to_id: reply_to,
+            attachment_ids: Vec::new(),
+            spoiler_attachment_ids: Vec::new(),
+            gif: Some(gif),
+            suppress_embeds: false,
+        });
     }
 
     /// Why Attach files is unavailable, as the egui client words it.
@@ -1243,6 +1307,7 @@ impl Live {
     /// Reads the account's unread state again (the badges); while a visit
     /// waits for its snapshot, this is that snapshot too.
     pub fn refresh_unread(&mut self) {
+        self.check_klipy();
         let Some(token) = self.token.clone() else {
             return;
         };
@@ -1590,9 +1655,16 @@ impl Live {
                 out.push(Update::Thread);
             }
             Event::Sent {
-                generation, result, ..
+                generation,
+                client_id,
+                result,
+                ..
             } if generation == current => match result {
                 Ok(m) => {
+                    // Best effort, once KLIPY's GIF is really sent.
+                    if let Some(share) = self.shares.remove(&client_id) {
+                        share.send();
+                    }
                     if self.timeline.merge_sent(m.clone()).is_err() {
                         self.reload();
                     }
@@ -1610,7 +1682,10 @@ impl Live {
                         out.push(Update::Thread);
                     }
                 }
-                Err(f) => out.push(Update::Failed(f.message)),
+                Err(f) => {
+                    self.shares.remove(&client_id);
+                    out.push(Update::Failed(f.message));
+                }
             },
             Event::Gateway(gateway::GatewayEvent::Message {
                 generation,
@@ -1877,6 +1952,10 @@ impl Live {
             }) if generation == current => out.push(Update::Connection(
                 (!online && !detail.is_empty()).then_some(detail),
             )),
+            Event::Klipy { token, config } if self.token.as_ref() == Some(&token) => {
+                self.klipy = config;
+                out.push(Update::Drafts);
+            }
             Event::AssetUsage { token, settings } if self.token.as_ref() == Some(&token) => {
                 self.uploads = settings;
                 self.uploads_checked = true;

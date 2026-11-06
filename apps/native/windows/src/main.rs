@@ -20,6 +20,7 @@ mod composer;
 mod embeds;
 mod emoji;
 mod files;
+mod gifs;
 mod overlay;
 // The message grammar every client shares.
 #[allow(dead_code)]
@@ -89,6 +90,9 @@ pub(crate) const TIMER_CARD: usize = 5;
 const TIMER_MEDIA: usize = 7;
 /// Re-reads the unread badges, as egui does every 15 s.
 const TIMER_UNREAD: usize = 6;
+/// The GIF picker's search, once typing pauses, and its next GIF frame.
+pub(crate) const TIMER_GIFS: usize = 8;
+pub(crate) const TIMER_GIF_FRAMES: usize = 9;
 pub(crate) const WHEEL_STEP: f64 = 48.0;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -115,6 +119,8 @@ struct Dirty {
     /// The message menu or a dialog.
     overlay: bool,
     picker: bool,
+    /// The GIF picker.
+    gifs: bool,
     reply: bool,
     /// The thread pane, and its reply box.
     thread: bool,
@@ -136,6 +142,7 @@ impl Dirty {
             signin: true,
             overlay: true,
             picker: true,
+            gifs: true,
             reply: true,
             thread: true,
             thread_box: true,
@@ -256,6 +263,9 @@ pub struct App {
     /// control under the pointer and what the toolbar last drew.
     pub picker: Option<actions::Picker>,
     picker_p: Panel,
+    /// The composer's GIF picker.
+    pub gifs: Option<gifs::Picker>,
+    gifs_p: Panel,
     pub reply: Option<actions::ReplyBar>,
     reply_p: Panel,
     tool_hover: Option<usize>,
@@ -319,6 +329,7 @@ impl App {
             let menu_p = Panel::new(&g)?;
             let dialog_p = Panel::new(&g)?;
             let picker_p = Panel::new(&g)?;
+            let gifs_p = Panel::new(&g)?;
             let reply_p = Panel::new(&g)?;
             let thread_p = Panel::new(&g)?;
             let thread_box_p = Panel::new(&g)?;
@@ -353,7 +364,8 @@ impl App {
             root.AddVisual(&card_p.visual, true, &prev)?;
             root.AddVisual(&menu_p.visual, true, &card_p.visual)?;
             root.AddVisual(&picker_p.visual, true, &menu_p.visual)?;
-            root.AddVisual(&dialog_p.visual, true, &picker_p.visual)?;
+            root.AddVisual(&gifs_p.visual, true, &picker_p.visual)?;
+            root.AddVisual(&dialog_p.visual, true, &gifs_p.visual)?;
             root.AddVisual(&signin_p.visual, true, &dialog_p.visual)?;
             let (channel_layouts, member_layouts) = side_layouts(&g, &c)?;
             let n = c.messages.len();
@@ -418,6 +430,8 @@ impl App {
                 dialog_p,
                 picker: None,
                 picker_p,
+                gifs: None,
+                gifs_p,
                 reply: None,
                 reply_p,
                 tool_hover: None,
@@ -454,6 +468,7 @@ impl App {
         self.hover_row = None;
         self.menu = None;
         self.picker = None;
+        self.gifs = None;
         self.older_armed = false;
         self.focused = None;
         self.foot_hover = None;
@@ -471,6 +486,7 @@ impl App {
 
     fn drain_live(&mut self) -> Result<()> {
         self.poll_file_dialog();
+        self.gifs_poll();
         let Some(live) = self.live.as_mut() else {
             return Ok(());
         };
@@ -857,6 +873,13 @@ impl App {
             t.composer.focused = false;
             self.dirty.thread_box = true;
         }
+        if focused
+            && let Some(p) = &mut self.gifs
+            && p.search.focused
+        {
+            p.search.focused = false;
+            self.dirty.gifs = true;
+        }
         if focused {
             self.set_kb(None);
         }
@@ -999,6 +1022,11 @@ impl App {
         if let Some(p) = &self.picker {
             return p.search.focused.then(|| (&p.search, p.text_origin()));
         }
+        if let Some(p) = &self.gifs
+            && p.search.focused
+        {
+            return Some((&p.search, p.text_origin()));
+        }
         if let Some(t) = &self.thread
             && t.composer.focused
         {
@@ -1019,6 +1047,11 @@ impl App {
         if let Some(p) = &mut self.picker {
             return Some(&mut p.search).filter(|f| f.focused);
         }
+        if let Some(p) = &mut self.gifs
+            && p.search.focused
+        {
+            return Some(&mut p.search);
+        }
         if let Some(t) = &mut self.thread
             && t.composer.focused
         {
@@ -1035,6 +1068,8 @@ impl App {
             self.signin_changed(text);
         } else if self.picker.is_some() {
             self.picker_changed(text);
+        } else if self.gifs.as_ref().is_some_and(|p| p.search.focused) {
+            self.gifs_changed(text);
         } else if self.thread.as_ref().is_some_and(|t| t.composer.focused) {
             self.thread_composer_changed();
         } else {
@@ -1266,6 +1301,11 @@ impl App {
         {
             return r;
         }
+        if self.gifs.is_some()
+            && let Some(r) = self.gifs_input(msg, wp, x, y, ctrl, shift)
+        {
+            return r;
+        }
         if self.thread.is_some()
             && let Some(r) = self.thread_input(msg, wp, x, y, ctrl, shift)
         {
@@ -1298,6 +1338,8 @@ impl App {
                         self.dirty.overlay = true;
                     } else if self.signin.is_some() {
                         self.dirty.signin = true;
+                    } else if self.gifs.as_ref().is_some_and(|p| p.search.focused) {
+                        self.dirty.gifs = true;
                     } else if self.thread.as_ref().is_some_and(|t| t.composer.focused) {
                         self.dirty.thread_box = true;
                     } else {
@@ -1307,6 +1349,8 @@ impl App {
                 }
                 TIMER_CARD => self.show_card(),
                 TIMER_MEDIA => self.next_gif_frame(),
+                TIMER_GIFS => self.gifs_tick(),
+                TIMER_GIF_FRAMES => self.next_picker_frame(),
                 TIMER_UNREAD => {
                     if let Some(l) = &mut self.live {
                         l.refresh_unread();
@@ -2632,6 +2676,7 @@ impl App {
             let placeholder = format!("Message #{}", c.channels[c.channel].name);
             let comp = &self.composer;
             let (drafts, tiles, top, notice) = self.box_files(bw);
+            let gif = self.gif_shown().then_some((bw, self.gifs.is_some()));
             let live = self.live.as_ref();
             self.composer_p.draw(s, |dc| {
                 comp.draw(g, dc, bw, bh, &placeholder)?;
@@ -2644,6 +2689,7 @@ impl App {
                         top,
                         notice.as_deref(),
                         live.can_attach(),
+                        gif,
                     ),
                     None => Ok(()),
                 }
@@ -2684,6 +2730,7 @@ impl App {
         self.update_history()?;
         // Before the panels, which take the rest of the damage flags.
         self.draw_actions()?;
+        self.draw_gifs()?;
         self.draw_overlays()?;
         self.draw_thread()?;
         self.track_card();
