@@ -35,6 +35,8 @@ mod forward;
 mod members;
 #[path = "profile.rs"]
 mod profile;
+#[path = "settings.rs"]
+mod settings;
 
 const STYLE: &str = include_str!("style.css");
 /// Others' typing shows this long after their last update (desktop's).
@@ -208,6 +210,8 @@ struct State {
     shown_blocked: HashSet<String>,
     /// Fences space invitations and membership changes.
     membership_request: u64,
+    /// Privacy and notification settings.
+    settings: settings::AccountSettings,
 }
 
 impl State {
@@ -340,6 +344,9 @@ pub struct App {
     profile_dialog: RefCell<Option<account::ProfileDialog>>,
     /// Wakes the main loop from other threads.
     wakes: Wakes,
+    settings: RefCell<Option<settings::SettingsDialog>>,
+    prefs: Rc<crate::prefs::Prefs>,
+    effects: RefCell<caper_client::effects::Effects>,
 }
 
 struct PinsView {
@@ -393,6 +400,8 @@ pub fn start(application: &gtk::Application, base: &str) {
         })
     };
     let ui = Ui::build(application, &images, handler(false), handler(true));
+    let prefs = Rc::new(crate::prefs::Prefs::load());
+    prefs.follow_window(&ui.window);
     let app = Rc::new(App {
         ui,
         images,
@@ -416,6 +425,11 @@ pub fn start(application: &gtk::Application, base: &str) {
         forwarding: RefCell::default(),
         profile_dialog: RefCell::default(),
         wakes: Wakes(sender.clone()),
+        settings: RefCell::default(),
+        effects: RefCell::new(caper_client::effects::Effects::new(
+            prefs.get::<bool>("sound-effects-v1").unwrap_or(true),
+        )),
+        prefs,
     });
     *slot.borrow_mut() = Rc::downgrade(&app);
     for composer in [&app.ui.composer, &app.ui.thread_composer] {
@@ -508,6 +522,8 @@ impl App {
         });
         let app = self.clone();
         ui.sign_out.connect_clicked(move |_| app.sign_out());
+        let app = self.clone();
+        ui.settings.connect_clicked(move |_| app.open_settings());
 
         let app = self.clone();
         ui.members_toggle.connect_toggled(move |toggle| {
@@ -771,6 +787,8 @@ impl App {
             self.worker.send(Command::AssetUsage { token });
         }
         self.account_op(state, AccountOperation::LoadBlocks);
+        state.settings = settings::AccountSettings::default();
+        self.load_notifications(state);
         if state.needs_profile() {
             state.profile_setup = true;
         } else if let Some(space) = state.spaces.first().map(|space| space.id.clone()) {
@@ -783,6 +801,7 @@ impl App {
     fn sign_out(self: &Rc<Self>) {
         self.close_forward();
         self.close_profile_editor();
+        self.close_settings();
         {
             let mut state = self.state.borrow_mut();
             let token = state.token.take();
@@ -1394,7 +1413,36 @@ impl App {
 
     fn account_result(&self, state: &mut State, result: AccountResult) {
         match result {
-            AccountResult::Blocks(Ok(blocks)) => state.blocks = Some(blocks),
+            AccountResult::Blocks(Ok(blocks)) => {
+                state.blocks = Some(blocks);
+                state.settings.blocks_error = None;
+            }
+            AccountResult::Blocks(Err(error)) => state.settings.blocks_error = Some(error),
+            AccountResult::Privacy(result) => match result {
+                // A save in flight owns the shown value.
+                Ok(value) if !state.settings.privacy_saving => state.settings.privacy = Some(value),
+                Ok(_) => {}
+                Err(error) => state.settings.privacy_error = Some(error),
+            },
+            AccountResult::PrivacySaved { previous, result } => {
+                state.settings.privacy_saving = false;
+                match result {
+                    Ok(value) => {
+                        state.settings.privacy = Some(value);
+                        state.settings.privacy_error = None;
+                    }
+                    Err(error) => {
+                        state.settings.privacy = previous;
+                        state.settings.privacy_error = Some(format!("Could not save: {error}"));
+                    }
+                }
+            }
+            AccountResult::Notifications { revision, result } => {
+                state.settings.notifications.finish_load(revision, result);
+            }
+            AccountResult::NotificationsSaved { scope, result } => {
+                state.settings.notifications.finish_save(&scope, result);
+            }
             AccountResult::Block {
                 account,
                 blocked,
@@ -2489,6 +2537,7 @@ impl App {
             self.open_direct(id);
         }
         self.render_profile();
+        self.render_settings();
         self.render_start_direct();
         self.render();
     }
@@ -3063,9 +3112,20 @@ impl App {
                 }
                 // Their message ends their typing.
                 state.typers.remove(&message.author.id);
+                // Others' messages play the message sound; blocked authors don't.
+                let remote = state
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.author.id != message.author.id)
+                    && !state.blocked(&message.author.id);
                 let applied = state.timeline.apply(*message);
-                if matches!(applied, Ok(Apply::Applied)) && self.follow.get() {
-                    self.mark_read(state);
+                if matches!(applied, Ok(Apply::Applied)) {
+                    if remote {
+                        self.play(caper_client::effects::Effect::Message);
+                    }
+                    if self.follow.get() {
+                        self.mark_read(state);
+                    }
                 }
                 applied
             }

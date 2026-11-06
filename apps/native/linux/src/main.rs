@@ -16,6 +16,7 @@ mod markup;
 mod media;
 mod people;
 mod picker;
+mod prefs;
 mod rows;
 mod suggest;
 mod ui;

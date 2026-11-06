@@ -147,6 +147,7 @@ pub struct Ui {
     pub account_avatar: AvatarView,
     pub account_name: gtk::Label,
     pub sign_out: gtk::Button,
+    pub settings: gtk::Button,
     pub new_direct: gtk::Button,
     pub channel_title: gtk::Label,
     pub status: gtk::Label,
@@ -323,12 +324,17 @@ impl Ui {
         let account_name = label("", &["author"]);
         account_name.set_hexpand(true);
         account_name.set_ellipsize(pango::EllipsizeMode::End);
+        let settings: gtk::Button = crate::app::named("GtkButton", "User Settings");
+        settings.set_child(Some(&images.icon_image(Icon::Settings, "#b9bcbe", 18)));
+        settings.set_tooltip_text(Some("User Settings"));
+        settings.add_css_class("flat");
         let sign_out: gtk::Button = crate::app::named("GtkButton", "Sign out");
         sign_out.set_child(Some(&images.icon_image(Icon::LogOut, "#b9bcbe", 18)));
         sign_out.set_tooltip_text(Some("Sign out"));
         sign_out.add_css_class("flat");
         dock.append(&account_avatar.root);
         dock.append(&account_name);
+        dock.append(&settings);
         dock.append(&sign_out);
         sidebar.append(&dock);
         chat.append(&sidebar);
@@ -503,6 +509,7 @@ impl Ui {
             account_avatar,
             account_name,
             sign_out,
+            settings,
             new_direct,
             channel_title,
             status,

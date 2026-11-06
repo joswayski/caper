@@ -22,9 +22,7 @@ resvg = { version = "=0.45.1", default-features = false }
 # Only API up to GTK 4.8 (Debian 12); releases would build against 4.14.
 gtk = { package = "gtk4", version = "0.11.5", features = ["v4_8"] }
 uuid = { version = "1.18", features = ["v4"] }
-
-[dev-dependencies]
-# The shared formatting and link case files.
+# Saved preferences (src/prefs.rs).
 serde_json = "1.0"
 
 [lints.rust]

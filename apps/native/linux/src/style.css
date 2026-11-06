@@ -972,3 +972,36 @@ button.picture-badge:hover {
   padding: 2px;
   border-radius: 24px;
 }
+
+.settings-section {
+  color: @caper_text_muted;
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 8px;
+}
+
+.radio-detail {
+  margin-left: 28px;
+}
+
+.blocked-account {
+  padding: 4px 0;
+}
+
+.danger-link,
+.danger-link label {
+  color: #e5735a;
+  padding: 0;
+}
+
+/* Selection is terracotta, as everywhere in Caper. */
+window.caper switch:checked {
+  background: @caper_terracotta;
+}
+
+window.caper check:checked,
+window.caper radio:checked {
+  background: @caper_terracotta;
+  border-color: @caper_terracotta;
+  color: @caper_text;
+}
