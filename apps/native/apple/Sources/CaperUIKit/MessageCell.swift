@@ -908,15 +908,19 @@ final class DayDividerCell: UICollectionViewCell {
 
     /// A day, or SwiftUI's terracotta "New messages" line above the first
     /// unread message.
-    func configure(_ text: String, unread: Bool = false) {
+    /// `plain`: a thread's reply count, as SwiftUI's: 11pt muted text, no rules.
+    func configure(_ text: String, unread: Bool = false, plain: Bool = false) {
         label.text = text
-        label.font = UIKitStyle.font(unread ? 11 : 10, unread ? .medium : .bold)
+        label.font = UIKitStyle.font(unread || plain ? 11 : 10, unread ? .medium : plain ? .regular : .bold)
+        lines.forEach { $0.isHidden = plain }
+        label.textAlignment = .center
         label.textColor = unread ? UIKitStyle.terracotta : UIKitStyle.muted
         lines.forEach { $0.backgroundColor = unread ? UIKitStyle.terracotta : UIKitStyle.border }
         stackInsets[0].constant = unread ? 16 : 18
         stackInsets[1].constant = unread ? -16 : -18
         accessibilityLabel = text
         accessibilityIdentifier = unread ? "channel-new-messages" : nil
+        accessibilityTraits = plain ? .staticText : .header
     }
 }
 

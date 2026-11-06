@@ -251,10 +251,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private func showPins() {
         let pins = PinsViewController(model: model)
         pins.requestBlock = { [weak self] target in self?.presentations.block = target }
-        if let sheet = pins.sheetPresentationController {
-            sheet.detents = [.medium(), .large()]
-            sheet.prefersGrabberVisible = true
-        }
+        // SwiftUI's default sheet: full height, no grabber.
         present(pins, animated: true)
     }
 

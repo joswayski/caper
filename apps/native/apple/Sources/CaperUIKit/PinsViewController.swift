@@ -188,7 +188,7 @@ final class PinsViewController: UIViewController, UICollectionViewDelegate {
 private final class PinCardCell: UICollectionViewCell {
     static let reuse = "pin"
     private let row = MessageRowView()
-    private lazy var go = CaperButton("Go to message", kind: .secondary, icon: "arrow-right", size: 13) { [weak self] in self?.action?() }
+    private lazy var go = CaperButton("Go to message", kind: .compact, icon: "arrow-right", size: 12) { [weak self] in self?.action?() }
     private var action: (() -> Void)?
     var host: RowHost? {
         get { row.host }

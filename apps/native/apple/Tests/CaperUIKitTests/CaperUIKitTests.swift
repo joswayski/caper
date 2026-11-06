@@ -1138,6 +1138,57 @@ final class CaperUIKitParityTests: XCTestCase {
         }
     }
 
+    /// The latest message with a reply and a pin, then its actions, Members,
+    /// Pins and the thread, in each app.
+    func testThreadPinsActionsAndMembersPairs() throws {
+        try requireSwiftUI()
+        let rows = NSPredicate(format: "identifier IN %@", ["message-row-00000000-0000-4000-9000-000000003000", "message-row-b00000000003000"])
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            control(["incomingReply": ["rootId": "b00000000003000", "text": "a reply in the thread"]])
+            control(["incomingPin": ["channelId": "chan00000001", "messageId": "b00000000003000"]])
+            let app = configured(bundle)
+            app.launch()
+            let latest = app.descendants(matching: .any).matching(rows).firstMatch
+            XCTAssertTrue(latest.waitForExistence(timeout: 30), prefix)
+            sleep(3)
+            capture("\(prefix)-thread-and-pin")
+
+            // On the text, clear of the pin badge above and the thread link below.
+            let words = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "first headphones", "first headphones")
+            let text = app.descendants(matching: .any).matching(words).element(boundBy: 0)
+            text.press(forDuration: 0.8)
+            let sheet = app.descendants(matching: .any)["message-actions-sheet"]
+            XCTAssertTrue(sheet.waitForExistence(timeout: 10), prefix)
+            sleep(1)
+            capture("\(prefix)-message-actions")
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()
+            XCTAssertTrue(sheet.waitForNonExistence(timeout: 10), prefix)
+
+            app.buttons["channel-title-menu"].tap()
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Members")).firstMatch.tap()
+            sleep(2)
+            capture("\(prefix)-members")
+            app.buttons["Close member list"].firstMatch.tap()
+            sleep(1)
+
+            app.buttons["channel-title-menu"].tap()
+            app.buttons["Pins"].tap()
+            XCTAssertTrue(app.descendants(matching: .any)["pinned-message-b00000000003000"].waitForExistence(timeout: 10), prefix)
+            sleep(1)
+            capture("\(prefix)-pins")
+            let close = app.buttons["Close pins"].firstMatch
+            if close.exists { close.tap() } else { app.swipeDown(velocity: .fast) }
+            sleep(1)
+
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "View thread")).firstMatch.tap()
+            XCTAssertTrue(app.staticTexts["Thread"].waitForExistence(timeout: 10), prefix)
+            sleep(2)
+            capture("\(prefix)-thread-view")
+            app.terminate()
+        }
+    }
+
     /// XCTest's own launch metric (process start to first frame) for each app.
     func testLaunchUIKitWithCache() {
         // Prime the startup cache once.

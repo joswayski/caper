@@ -115,7 +115,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
                 return cell
             case let .day(key):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: path) as! DayDividerCell
-                cell.configure(self.days[key] ?? "")
+                cell.configure(self.days[key] ?? "", plain: key == "replies")
                 return cell
             case .newMessages:
                 // Channels only; threads have no unread line.
@@ -218,6 +218,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             bottom.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             bottom.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             bottom.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
+            // As short as its contents allow: the timeline takes the slack.
+            bottom.heightAnchor.constraint(equalToConstant: 0).withPriority(.defaultLow),
             broadcast.topAnchor.constraint(equalTo: broadcastRow.topAnchor),
             broadcast.bottomAnchor.constraint(equalTo: broadcastRow.bottomAnchor),
             broadcast.leadingAnchor.constraint(equalTo: broadcastRow.leadingAnchor, constant: 18),

@@ -42,7 +42,8 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     /// The draft's link card inside the box, and the length counter under it.
     /// A sizing host, so the box grows when the card loads after typing pauses.
     private let linkPreview: UIHostingController<AnyView> = {
-        let host = UIHostingController(rootView: AnyView(EmptyView()))
+        // Zero height until a card shows: an EmptyView host still reports a size.
+        let host = UIHostingController(rootView: AnyView(Color.clear.frame(height: 0)))
         host.sizingOptions = .intrinsicContentSize
         host.view.backgroundColor = .clear
         host.view.translatesAutoresizingMaskIntoConstraints = false
@@ -147,6 +148,9 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         send.layer.cornerCurve = .continuous
         send.layer.borderWidth = 1
         send.accessibilityIdentifier = "send-message"
+        // Its own disabled image, so UIKit doesn't darken the glyph: disabled
+        // reads as SwiftUI's muted icon on raised chrome.
+        send.setImage(send.image(for: .normal), for: .disabled)
         addSubview(send)
         addSubview(accessories)
         addSubview(suggestions)
@@ -206,6 +210,8 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         textView.isEditable = enabled
         if !enabled { suggestions.show(nil); textView.hideEmojiName() }
         send.isEnabled = enabled && canSend
+        // Disabled steps back to raised neutral chrome (below), not IconButton's fade.
+        send.alpha = 1
         // Eggshell when there is something to send; otherwise the raised
         // neutral chrome of SwiftUI's PrimaryActionFill.
         send.backgroundColor = send.isEnabled ? UIKitStyle.action : UIKitStyle.raised
@@ -221,7 +227,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     func showLinkPreview<Content: View>(_ content: Content?) {
         guard (content != nil) != linkPreviewShown else { return }
         linkPreviewShown = content != nil
-        linkPreview.rootView = content.map { AnyView($0) } ?? AnyView(EmptyView())
+        linkPreview.rootView = content.map { AnyView($0) } ?? AnyView(Color.clear.frame(height: 0))
     }
 
     /// SwiftUI's "3,214 / 4,000" from 3,000 characters, warming near the limit.
