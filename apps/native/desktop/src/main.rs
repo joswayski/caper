@@ -44563,10 +44563,11 @@ mod tests {
         click_at(&mut app, &context, text_position(&output, "Reply"));
         assert!(app.activity.expanded.contains_key(&row.id));
         app.profile_drafts.entry(key.clone()).or_default().text = "Independent reply".into();
+        let request = app.activity.request;
         app.activity.finish(
-            app.activity.request,
+            request,
             false,
-            Ok(crate::activity::Page {
+            Ok(caper_client::activity::Page {
                 items: vec![],
                 next_cursor: None,
                 unread_count: 0,
