@@ -3,9 +3,10 @@
 //! one `React` request per message is in flight; a toggle made while one is
 //! in flight waits and sends the latest intent when the reply arrives.
 
-use crate::model::{Reaction, ReactionUpdate};
+use crate::model::{Reaction, ReactionUpdate, ReactorGroup, Reactors};
 use crate::worker::{SendFailure, dm_refusal};
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingReaction {
@@ -194,6 +195,56 @@ impl Reactions {
         }
         projected.retain(|reaction| !reaction.author_ids.is_empty());
         projected
+    }
+}
+
+/// Who reacted to one message, read at the snapshot's `reactionSeq` for the
+/// hover card and the reactions window.
+pub struct ReactorCache {
+    pub revision: String,
+    pub state: ReactorState,
+    /// Names are kept while refreshing; the shown reaction IDs decide who
+    /// is listed.
+    pub groups: Vec<ReactorGroup>,
+}
+
+pub enum ReactorState {
+    Loading(Instant),
+    Loaded,
+    /// Hovering again retries after `REACTOR_RETRY`.
+    Failed(Instant),
+}
+
+/// How long a failed read waits before hovering asks again.
+pub const REACTOR_RETRY: Duration = Duration::from_secs(5);
+/// Messages whose readers are kept; past it the cache starts over.
+pub const REACTOR_CACHE_LIMIT: usize = 256;
+
+impl ReactorCache {
+    /// Whether hovering should (re)start the request for `revision`.
+    pub fn wants_request(&self, revision: &str) -> bool {
+        self.revision != revision
+            || match self.state {
+                ReactorState::Loaded => false,
+                // The API client times out after 15 s, so this request is lost.
+                ReactorState::Loading(at) => at.elapsed() >= Duration::from_secs(20),
+                ReactorState::Failed(at) => at.elapsed() >= REACTOR_RETRY,
+            }
+    }
+
+    /// The reply to the request for `message` at `revision`; a newer
+    /// revision may have started its own request since, which this leaves.
+    pub fn loaded(&mut self, message: &str, revision: &str, result: Result<Reactors, String>) {
+        if self.revision != revision || !matches!(self.state, ReactorState::Loading(_)) {
+            return;
+        }
+        self.state = match result {
+            Ok(list) if list.message_id == message => {
+                self.groups = list.reactions;
+                ReactorState::Loaded
+            }
+            _ => ReactorState::Failed(Instant::now()),
+        };
     }
 }
 

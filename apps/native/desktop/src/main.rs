@@ -39,7 +39,9 @@ mod worker;
 use caper_client::caper_avatar_index;
 use caper_client::invites::redundant_invitation;
 use caper_client::names::normalize_username;
-use caper_client::reactions::{Reacted, Reactions};
+use caper_client::reactions::{
+    REACTOR_CACHE_LIMIT, Reacted, Reactions, ReactorCache, ReactorState,
+};
 use caper_client::sign_in::{MAX_RESENDS, clean_sign_in_code, resend_countdown, resend_wait};
 use caper_client::{
     api, attachment_edit, avatar_images, blocking, compress, effects, feedback, gateway, grouping,
@@ -1113,38 +1115,8 @@ enum SelfDirectTarget {
     Create(String),
 }
 
-/// Who reacted to one message, read at the snapshot's `reactionSeq`.
-struct ReactorCache {
-    revision: String,
-    state: ReactorState,
-    // Retain names while refreshing; displayed reaction IDs own membership.
-    groups: Vec<model::ReactorGroup>,
-}
-
-enum ReactorState {
-    Loading(Instant),
-    Loaded,
-    /// Hovering again retries after `REACTOR_RETRY`.
-    Failed(Instant),
-}
-
-impl ReactorCache {
-    /// Whether hovering should (re)start the request for `revision`.
-    fn wants_request(&self, revision: &str) -> bool {
-        self.revision != revision
-            || match self.state {
-                ReactorState::Loaded => false,
-                // The API client times out after 15 s, so this request is lost.
-                ReactorState::Loading(at) => at.elapsed() >= Duration::from_secs(20),
-                ReactorState::Failed(at) => at.elapsed() >= REACTOR_RETRY,
-            }
-    }
-}
-
-const REACTOR_RETRY: Duration = Duration::from_secs(5);
 /// Web re-reads spaces, invitations and the open space this often.
 const MEMBERSHIP_REFRESH: Duration = Duration::from_secs(15);
-const REACTOR_CACHE_LIMIT: usize = 256;
 /// Discord-style hover card: large emoji, then the summary.
 const REACTOR_TOOLTIP_WIDTH: f32 = 280.0;
 const REACTOR_TOOLTIP_EMOJI: f32 = 36.0;
@@ -5040,18 +5012,8 @@ impl CaperApp {
                     self.selected_channel.as_deref(),
                 ) =>
                 {
-                    // A newer revision may have started its own request since.
-                    if let Some(cached) = self.reactors.get_mut(&message).filter(|cached| {
-                        cached.revision == revision
-                            && matches!(cached.state, ReactorState::Loading(_))
-                    }) {
-                        cached.state = match result {
-                            Ok(list) if list.message_id == message => {
-                                cached.groups = list.reactions;
-                                ReactorState::Loaded
-                            }
-                            _ => ReactorState::Failed(Instant::now()),
-                        };
+                    if let Some(cached) = self.reactors.get_mut(&message) {
+                        cached.loaded(&message, &revision, result);
                     }
                 }
                 Event::Pinned {
