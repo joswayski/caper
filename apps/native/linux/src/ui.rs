@@ -175,6 +175,8 @@ pub struct Ui {
     pub channels_count: gtk::Label,
     pub channel_invites: gtk::Box,
     pub channels: gtk::ListBox,
+    /// "Message requests" (its first row toggles) and the incoming requests.
+    pub requests: gtk::ListBox,
     pub directs: gtk::ListBox,
     pub account_avatar: AvatarView,
     pub account_name: gtk::Label,
@@ -220,6 +222,9 @@ pub struct Ui {
     pub join_bar: gtk::Box,
     pub join_label: gtk::Label,
     pub join: gtk::Button,
+    /// In place of the composer: an incoming request's Accept, Decline and
+    /// Block, or Unblock for someone you blocked.
+    pub request: RequestBar,
     pub thread_panel: gtk::Box,
     pub conversation: gtk::Box,
     pub drop: gtk::Box,
@@ -458,6 +463,10 @@ impl Ui {
         new_direct.set_valign(gtk::Align::End);
         direct_header.append(&new_direct);
         lists.append(&direct_header);
+        let requests: gtk::ListBox = crate::app::named("GtkListBox", "Message requests");
+        requests.add_css_class("channels");
+        requests.set_visible(false);
+        lists.append(&requests);
         let directs: gtk::ListBox = crate::app::named("GtkListBox", "Direct messages");
         directs.add_css_class("channels");
         lists.append(&directs);
@@ -616,6 +625,8 @@ impl Ui {
         compose_bar.append(&compose_label);
         compose_bar.append(&compose_cancel);
         conversation.append(&compose_bar);
+        let request = RequestBar::new();
+        conversation.append(&request.waiting);
         let composer = Composer::new(images);
         conversation.append(&composer.root);
         let join_bar = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -628,6 +639,7 @@ impl Ui {
         join_bar.append(&join_label);
         join_bar.append(&join);
         conversation.append(&join_bar);
+        conversation.append(&request.root);
         // Files dragged over the conversation: the shared drop text.
         let stage = gtk::Overlay::new();
         stage.set_hexpand(true);
@@ -755,6 +767,7 @@ impl Ui {
             channels_count,
             channel_invites,
             channels,
+            requests,
             directs,
             account_avatar,
             account_name,
@@ -795,6 +808,7 @@ impl Ui {
             join_bar,
             join_label,
             join,
+            request,
             thread_panel,
             conversation,
             drop,
@@ -804,6 +818,60 @@ impl Ui {
             thread_list,
             thread_composer,
             thread_error,
+        }
+    }
+}
+
+/// What replaces the composer in a DM you can't write to yet: an incoming
+/// request ("Name (@user) wants to message you…" with Accept, Decline and
+/// Block), someone you blocked ("You blocked @user." with Unblock), or a
+/// note over the composer while your own request waits.
+pub struct RequestBar {
+    pub root: gtk::Box,
+    pub text: gtk::Label,
+    pub accept: gtk::Button,
+    pub decline: gtk::Button,
+    pub block: gtk::Button,
+    pub unblock: gtk::Button,
+    pub error: gtk::Label,
+    pub waiting: gtk::Label,
+}
+
+impl RequestBar {
+    fn new() -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        root.add_css_class("join-bar");
+        root.add_css_class("request-bar");
+        root.set_visible(false);
+        let text = label("", &["muted"]);
+        text.set_wrap(true);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let accept = gtk::Button::with_label("Accept");
+        accept.add_css_class("primary");
+        let decline = gtk::Button::with_label("Decline");
+        let block = gtk::Button::with_label("Block");
+        let unblock = gtk::Button::with_label("Unblock");
+        for button in [&accept, &decline, &block, &unblock] {
+            actions.append(button);
+        }
+        let error = label("", &["error"]);
+        error.set_wrap(true);
+        error.set_visible(false);
+        root.append(&text);
+        root.append(&actions);
+        root.append(&error);
+        let waiting = label("", &["muted", "request-waiting"]);
+        waiting.set_wrap(true);
+        waiting.set_visible(false);
+        Self {
+            root,
+            text,
+            accept,
+            decline,
+            block,
+            unblock,
+            error,
+            waiting,
         }
     }
 }

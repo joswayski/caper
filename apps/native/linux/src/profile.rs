@@ -438,10 +438,10 @@ impl App {
             )
         };
         match account {
-            (true, account) => self.set_block(account, false),
+            (true, account) => self.set_block(account, false, None),
             (false, account) => {
                 self.close_profile();
-                self.confirm_block(account);
+                self.confirm_block(account, None);
             }
         }
     }
@@ -554,7 +554,8 @@ impl App {
     }
 
     /// Block asks first; it hides their messages and stops their DMs.
-    pub(super) fn confirm_block(self: &Rc<Self>, account: BlockedAccount) {
+    /// `request` is their message request, declined with the block.
+    pub(super) fn confirm_block(self: &Rc<Self>, account: BlockedAccount, request: Option<String>) {
         if self.state.borrow().protected(&account.id) {
             return;
         }
@@ -580,14 +581,19 @@ impl App {
         let app = self.clone();
         dialog.connect_response(move |dialog, response| {
             if response == gtk::ResponseType::Accept {
-                app.set_block(account.clone(), true);
+                app.set_block(account.clone(), true, request.clone());
             }
             dialog.close();
         });
         dialog.present();
     }
 
-    pub(super) fn set_block(self: &Rc<Self>, account: BlockedAccount, blocked: bool) {
+    pub(super) fn set_block(
+        self: &Rc<Self>,
+        account: BlockedAccount,
+        blocked: bool,
+        request: Option<String>,
+    ) {
         {
             let mut state = self.state.borrow_mut();
             state.block_busy = true;
@@ -599,11 +605,12 @@ impl App {
                 AccountOperation::SetBlock {
                     account,
                     blocked,
-                    request: None,
+                    request,
                 },
             );
         }
         self.render_profile();
+        self.render();
     }
 }
 

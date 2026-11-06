@@ -1473,3 +1473,22 @@ checkbutton.broadcast {
 .composer-preview {
   padding: 4px 4px 0 4px;
 }
+
+/* "Message requests": its chevron turns like the Channels one. */
+.request-header.collapsed image {
+  -gtk-icon-transform: rotate(-90deg);
+}
+
+.request-count,
+.direct-suffix {
+  font-size: 11px;
+}
+
+.request-waiting {
+  margin: 0 20px 6px;
+  font-size: 12px;
+}
+
+.request-row {
+  margin-left: 12px;
+}

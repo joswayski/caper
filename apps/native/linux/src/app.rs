@@ -16,7 +16,8 @@ use caper_client::effects::Effect;
 use caper_client::gateway::GatewayEvent;
 use caper_client::mentions;
 use caper_client::model::{
-    Account, Apply, ChatSession, DirectConversation, Message, Space, SpaceDetail, Spaces, Timeline,
+    Account, Apply, ChatSession, DirectConversation, DirectStatus, Message, Space, SpaceDetail,
+    Spaces, Timeline,
 };
 use caper_client::notifications::Scope;
 use caper_client::reactions::Reacted;
@@ -50,6 +51,8 @@ mod notify;
 mod picture;
 #[path = "profile.rs"]
 mod profile;
+#[path = "requests.rs"]
+mod requests;
 #[path = "settings.rs"]
 mod settings;
 
@@ -268,6 +271,8 @@ struct State {
     shown_blocked: HashSet<String>,
     /// Fences space invitations and membership changes.
     membership_request: u64,
+    /// Message requests: the section, and an answer in flight.
+    requests: requests::Requests,
     /// Privacy and notification settings.
     settings: settings::AccountSettings,
     /// Space and channel management, invites and membership.
@@ -281,18 +286,21 @@ impl State {
         self.page.unwrap_or(Page::Loading)
     }
 
+    /// You can write here. An incoming request stays read-only until it is
+    /// accepted, and a block stops reactions, pins and edits too.
     fn joined(&self) -> bool {
-        self.direct.is_some()
-            || self
-                .detail
-                .as_ref()
-                .and_then(|detail| {
-                    detail
-                        .channels
-                        .iter()
-                        .find(|channel| Some(&channel.id) == self.channel.as_ref())
-                })
-                .is_none_or(|channel| channel.joined)
+        if self.direct.is_some() {
+            return self.open_request().is_none() && !self.open_blocked();
+        }
+        self.detail
+            .as_ref()
+            .and_then(|detail| {
+                detail
+                    .channels
+                    .iter()
+                    .find(|channel| Some(&channel.id) == self.channel.as_ref())
+            })
+            .is_none_or(|channel| channel.joined)
     }
 
     fn message(&self, id: &str) -> Option<&Message> {
@@ -404,6 +412,8 @@ pub struct App {
     chooser: RefCell<Option<gtk::FileChooserNative>>,
     channel_ids: RefCell<Vec<String>>,
     direct_ids: RefCell<Vec<String>>,
+    /// The message request rows, after "Message requests".
+    request_ids: RefCell<Vec<String>>,
     /// What the member list shows.
     members_shown: RefCell<members::Shown>,
     activity: Cell<Instant>,
@@ -537,6 +547,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         link_preview: RefCell::default(),
         shown_preview: RefCell::default(),
         direct_ids: RefCell::default(),
+        request_ids: RefCell::default(),
         members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
         ticking: Cell::new(false),
@@ -572,6 +583,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.connect();
     app.connect_voice();
     app.connect_drop();
+    app.connect_requests();
     app.install_actions();
     app.install_shortcuts();
     app.install_notification_actions();
@@ -941,13 +953,13 @@ impl App {
             ("block", |app, id| {
                 let account = app.message_author_account(&id);
                 if let Some(account) = account {
-                    app.confirm_block(account);
+                    app.confirm_block(account, None);
                 }
             }),
             ("unblock", |app, id| {
                 let account = app.message_author_account(&id);
                 if let Some(account) = account {
-                    app.set_block(account, false);
+                    app.set_block(account, false, None);
                 }
             }),
             ("forward", |app, id| app.open_forward(&id)),
@@ -1191,20 +1203,24 @@ impl App {
             if state.channel.as_deref() == Some(&id) {
                 return;
             }
-            self.leave_conversation(&mut state);
-            state.channel_name = state
-                .directs
-                .iter()
-                .find(|direct| direct.id == id)
-                .map(|direct| direct.peer.display_name.clone())
-                .unwrap_or_default();
-            state.channel = Some(id.clone());
-            state.direct = Some(id.clone());
-            state.restore_draft = Some(state.drafts.remove(&id).unwrap_or_default());
-            self.load_people(&state);
-            self.prepare(&mut state, None, Some(id));
+            self.enter_direct(&mut state, id);
         }
         self.render();
+    }
+
+    fn enter_direct(&self, state: &mut State, id: String) {
+        self.leave_conversation(state);
+        state.channel_name = state
+            .directs
+            .iter()
+            .find(|direct| direct.id == id)
+            .map(|direct| direct.peer.display_name.clone())
+            .unwrap_or_default();
+        state.channel = Some(id.clone());
+        state.direct = Some(id.clone());
+        state.restore_draft = Some(state.drafts.remove(&id).unwrap_or_default());
+        self.load_people(state);
+        self.prepare(state, None, Some(id));
     }
 
     fn leave_conversation(&self, state: &mut State) {
@@ -1776,20 +1792,32 @@ impl App {
                 state.settings.notifications.finish_save(&scope, result);
                 state.layout += 1;
             }
+            result @ (AccountResult::Accepted { .. } | AccountResult::Declined { .. }) => {
+                self.request_result(state, result)
+            }
             AccountResult::Block {
                 account,
                 blocked,
+                request,
                 result,
-                ..
             } => {
                 state.block_busy = false;
+                state.layout += 1;
+                let open = state
+                    .open_peer_direct()
+                    .is_some_and(|direct| direct.peer.id == account.id);
                 let card = state.card.as_mut().filter(|card| card.person == account.id);
                 if let Err(error) = result {
                     match card {
                         Some(card) => card.error = Some(error),
+                        // The request or blocked bar shows its own.
+                        None if open => state.requests.error = Some(error),
                         None => state.error = Some(error),
                     }
                     return;
+                }
+                if open {
+                    state.requests.error = None;
                 }
                 if !blocked && let Some(card) = card {
                     card.status = Some("Unblocked.".into());
@@ -1804,7 +1832,18 @@ impl App {
                         direct.blocked = blocked;
                     }
                 }
-                state.layout += 1;
+                if blocked {
+                    // Blocking also declines their pending request.
+                    let requests: Vec<String> = state
+                        .incoming_requests()
+                        .filter(|direct| direct.peer.id == account.id)
+                        .map(|direct| direct.id.clone())
+                        .chain(request)
+                        .collect();
+                    for id in requests {
+                        self.leave_request(state, &id);
+                    }
+                }
             }
             result @ (AccountResult::DefaultInviteLink { .. }
             | AccountResult::InviteLinks { .. }
@@ -1839,7 +1878,6 @@ impl App {
                     }
                 }
             }
-            _ => {}
         }
     }
 
@@ -1877,7 +1915,8 @@ impl App {
 
     /// Marks the open conversation read through its newest message.
     fn mark_read(&self, state: &mut State) {
-        if state.unread_visit_pending {
+        // Reading a request must not look like engaging with it.
+        if state.unread_visit_pending || state.open_request().is_some() {
             return;
         }
         let (Some(token), Some(channel)) = (state.token.clone(), state.channel.clone()) else {
@@ -3990,7 +4029,8 @@ impl App {
                     .session
                     .as_ref()
                     .is_some_and(|session| session.author.id != message.author.id)
-                    && !state.blocked(&message.author.id);
+                    && !state.blocked(&message.author.id)
+                    && state.open_request().is_none();
                 if message.thread_root_id.is_some() {
                     state.thread_unread_dirty = true;
                 }
@@ -4204,6 +4244,7 @@ impl App {
         self.render_empty(&state);
         let joined = state.joined();
         let can_send = state.session.is_some();
+        let replaced = self.render_request_bar(&state);
         ui.composer
             .root
             .set_visible(joined && state.channel.is_some());
@@ -4224,8 +4265,9 @@ impl App {
         };
         ui.composer.attach.set_tooltip_text(Some(why));
         ui.thread_composer.attach.set_tooltip_text(Some(why));
-        ui.join_bar
-            .set_visible(!joined && state.channel.is_some() && state.page() == Page::Chat);
+        ui.join_bar.set_visible(
+            !joined && !replaced && state.channel.is_some() && state.page() == Page::Chat,
+        );
         ui.join_label.set_label(&format!(
             "You’re previewing #{}. Join to send messages and react.",
             state.channel_name
@@ -4758,10 +4800,16 @@ impl App {
         }
         *self.channel_ids.borrow_mut() = ids;
 
+        self.render_request_navigation(&state);
         clear_list(&ui.directs);
         let mut ids = Vec::new();
         let me = state.account.as_ref().map(|account| account.id.as_str());
-        for direct in &state.directs {
+        // Requests live under "Message requests".
+        for direct in state
+            .directs
+            .iter()
+            .filter(|direct| direct.status != DirectStatus::Incoming)
+        {
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             let avatar = AvatarView::new(22, false);
             avatar.set(&self.images, &peer_avatar(direct));
@@ -4777,11 +4825,23 @@ impl App {
             );
             name.set_ellipsize(gtk::pango::EllipsizeMode::End);
             name.set_hexpand(true);
-            let count = direct.unread_count.unwrap_or(0);
+            let blocked = direct.blocked || state.blocked(&direct.peer.id);
+            let count = direct.unread_count.unwrap_or(0) * u64::from(!blocked);
             if count > 0 {
                 name.add_css_class("unread");
             }
             line.append(&name);
+            // As on web: you blocked them, or they haven't accepted yet.
+            let suffix = if blocked {
+                Some("Blocked")
+            } else if direct.status == DirectStatus::Outgoing {
+                Some("Request sent")
+            } else {
+                None
+            };
+            if let Some(suffix) = suffix {
+                line.append(&label(suffix, &["muted", "direct-suffix"]));
+            }
             let scope = Scope::Direct(direct.id.clone());
             if let Some(muted) = state.muted_label(&scope) {
                 name.add_css_class("muted");

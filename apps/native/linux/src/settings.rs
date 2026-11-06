@@ -494,7 +494,7 @@ impl App {
                         let (weak, account) = (Rc::downgrade(self), account.clone());
                         unblock.connect_clicked(move |_| {
                             if let Some(app) = weak.upgrade() {
-                                app.set_block(account.clone(), false);
+                                app.set_block(account.clone(), false, None);
                             }
                         });
                         row.append(&unblock);
