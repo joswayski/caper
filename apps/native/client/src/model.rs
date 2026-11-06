@@ -406,6 +406,26 @@ pub struct DirectConversation {
 /// Under "No messages yet." in the Caper DM.
 pub const TEAM_DM_NOTE: &str = "Messages here go to the Caper team.";
 
+/// "Who can start a DM with you" in Privacy settings: each choice's saved
+/// value, label and the note under it.
+pub const DM_PRIVACY: [(&str, &str, Option<&str>); 3] = [
+    (
+        "anyone",
+        "Anyone",
+        Some("People outside your spaces send a message request first."),
+    ),
+    ("spaces", "People in my spaces", None),
+    (
+        "nobody",
+        "No one new",
+        Some("Conversations you already have stay open."),
+    ),
+];
+
+/// How to request account deletion, linked from Privacy settings (Google Play
+/// requires an in-app path; requests go by email).
+pub const DELETE_ACCOUNT_URL: &str = "https://caper.chat/privacy#delete-account";
+
 impl DirectConversation {
     /// Messages past your read cursor. A known zero count overrides cursor
     /// activity (edits and reactions also advance it).

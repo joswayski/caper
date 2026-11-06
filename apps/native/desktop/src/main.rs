@@ -72,9 +72,7 @@ use worker::{
 const ARRIVE_OFFSET: egui::Vec2 = egui::vec2(0.0, 6.0);
 /// Longest the loading page waits for the first conversation at launch.
 const RESTORE_LIMIT: Duration = Duration::from_secs(5);
-/// How to request account deletion, linked from Privacy settings (Google Play
-/// requires an in-app path; requests go by email).
-const DELETE_ACCOUNT_URL: &str = "https://caper.chat/privacy#delete-account";
+use model::DELETE_ACCOUNT_URL;
 const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
 const SURFACE: Color32 = Color32::from_rgb(21, 23, 25);
 const RAISED: Color32 = Color32::from_rgb(28, 31, 33);
@@ -23711,24 +23709,11 @@ impl CaperApp {
                 .size(13.0)
                 .color(TEXT),
         );
-        let options = [
-            (
-                "anyone",
-                "Anyone",
-                Some("People outside your spaces send a message request first."),
-            ),
-            ("spaces", "People in my spaces", None),
-            (
-                "nobody",
-                "No one new",
-                Some("Conversations you already have stay open."),
-            ),
-        ];
         let loaded = self.privacy.is_some();
         let mut chosen = None;
         // Only while loading; a save in flight ignores clicks (`save_privacy`).
         ui.add_enabled_ui(loaded, |ui| {
-            for (value, label, detail) in options {
+            for (value, label, detail) in model::DM_PRIVACY {
                 if ui
                     .radio(self.privacy.as_deref() == Some(value), label)
                     .clicked()
