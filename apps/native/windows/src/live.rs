@@ -89,6 +89,9 @@ pub enum Update {
     Newer(Box<(Conversation, Ids)>),
     /// A message already shown: scroll to it and highlight it.
     Focus(String),
+    /// The read state arrived: the "New messages" divider goes above this
+    /// shown message.
+    Unread(String),
     /// The open thread's messages or state changed (or it closed): the
     /// pane rebuilds from `Live::thread_view`.
     Thread,
@@ -230,6 +233,16 @@ pub struct Live {
     window: Option<(u64, Option<u64>)>,
     /// Context (or newer messages) is loading.
     pub context_loading: bool,
+    /// Read state, as in the egui client: this visit's unread range (read,
+    /// last) for the "New messages" divider, whether its snapshot is still
+    /// loading (reads wait for it), the visit and its channel, the last
+    /// read acknowledged per channel, and whether the window has focus.
+    unread: Option<(u64, u64)>,
+    unread_pending: bool,
+    visit: u64,
+    visit_channel: Option<String>,
+    reads: HashMap<String, String>,
+    foreground: bool,
 }
 
 /// The thread beside the channel, as in the egui client's thread panel.
@@ -304,6 +317,12 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         thread_only: HashSet::new(),
         window: None,
         context_loading: false,
+        unread: None,
+        unread_pending: false,
+        visit: 0,
+        visit_channel: None,
+        reads: HashMap::new(),
+        foreground: false,
     })
 }
 
@@ -754,6 +773,7 @@ impl Live {
             &messages,
             self.me.as_deref(),
             false,
+            self.unread_row().as_deref(),
         ))
     }
 
@@ -839,6 +859,7 @@ impl Live {
             &messages,
             self.me.as_deref(),
             true,
+            None,
         );
         Some((c, ids, count))
     }
@@ -851,9 +872,83 @@ impl Live {
     }
 
     /// The visible conversation, so the worker suppresses its notifications.
-    pub fn showing(&self, visible: bool) {
+    pub fn showing(&mut self, visible: bool) {
         self.worker
             .showing(self.channel.as_deref().filter(|_| visible));
+        // Coming back to the window reads what arrived meanwhile.
+        let gained = visible && !self.foreground;
+        self.foreground = visible;
+        if gained {
+            self.mark_read();
+        }
+    }
+
+    /// A new visit to the open channel: its unread range loads before
+    /// anything is marked read, as in the egui client.
+    fn begin_visit(&mut self) {
+        self.visit += 1;
+        self.visit_channel = self.channel.clone();
+        self.unread = None;
+        self.unread_pending = false;
+        if let Some(token) = self.token.clone() {
+            self.unread_pending = true;
+            self.worker.send(Command::LoadUnread {
+                epoch: 0,
+                revision: 0,
+                visit: Some(self.visit),
+                token,
+            });
+        }
+    }
+
+    /// The shown message the "New messages" divider goes above: the first
+    /// unread one from someone else, once the history reaches back to the
+    /// boundary, and not in a View original window.
+    fn unread_row(&self) -> Option<String> {
+        let (read, last) = self.unread?;
+        if self.window.is_some() {
+            return None;
+        }
+        let first = self.timeline.messages().next()?;
+        if self.has_more && !core::sequence(&first.seq).is_ok_and(|s| s <= read.saturating_add(1)) {
+            return None;
+        }
+        self.timeline
+            .messages()
+            .find(|m| {
+                self.in_channel(m)
+                    && core::sequence(&m.seq).is_ok_and(|s| s > read && s <= last)
+                    && self.me.as_deref() != Some(m.author.id.as_str())
+            })
+            .map(|m| m.id.clone())
+    }
+
+    /// Marks the open channel read up to its newest message while you see
+    /// it: not before the visit's unread range loaded, nor in the past.
+    fn mark_read(&mut self) {
+        if !self.foreground || self.unread_pending || self.window.is_some() {
+            return;
+        }
+        let (Some(space), Some(channel), Some(token)) =
+            (self.space.clone(), self.channel.clone(), self.token.clone())
+        else {
+            return;
+        };
+        let seq = self.timeline.cursor();
+        let read = self
+            .reads
+            .get(&channel)
+            .and_then(|r| core::sequence(r).ok());
+        if core::sequence(&seq).unwrap_or(0) <= read.unwrap_or(0) {
+            return;
+        }
+        self.worker.send(Command::ReadChannel {
+            epoch: 0,
+            token,
+            space,
+            channel,
+            seq,
+        });
     }
 
     /// Handles the worker's pending events; returns what the UI must show.
@@ -945,6 +1040,10 @@ impl Live {
                     let messages: Vec<core::Message> = timeline.messages().cloned().collect();
                     let cursor = timeline.cursor();
                     self.timeline = timeline;
+                    if self.visit_channel.as_ref() != self.channel.as_ref() {
+                        self.begin_visit();
+                    }
+                    let unread = self.unread_row();
                     let spaces = self.spaces.as_ref().map_or_else(
                         || core::Spaces {
                             spaces: Vec::new(),
@@ -960,8 +1059,10 @@ impl Live {
                         &messages,
                         self.me.as_deref(),
                         false,
+                        unread.as_deref(),
                     );
                     out.push(Update::Loaded(Box::new((conversation, ids))));
+                    self.mark_read();
                     self.worker.send(Command::Connect {
                         generation: current,
                         token: self.token.clone(),
@@ -1165,6 +1266,43 @@ impl Live {
                 let old = self.seq();
                 let applied = self.timeline.apply(*message);
                 self.publish(old, applied, &id, out);
+                self.mark_read();
+            }
+            Event::UnreadLoaded {
+                visit: Some(visit),
+                result,
+                ..
+            } if visit == self.visit && self.unread_pending => {
+                // The snapshot taken as the channel opened, so the divider
+                // marks what was new then even as reads move on.
+                self.unread_pending = false;
+                if let Ok(unread) = result {
+                    self.unread = unread
+                        .spaces
+                        .iter()
+                        .flat_map(|space| &space.channels)
+                        .find(|c| self.visit_channel.as_ref() == Some(&c.id))
+                        .and_then(|c| {
+                            let read = core::sequence(c.read_seq.as_deref()?).ok()?;
+                            let last = core::sequence(&c.last_seq).ok()?;
+                            (read < last).then_some((read, last))
+                        });
+                }
+                if let Some(id) = self.unread_row() {
+                    out.push(Update::Unread(id));
+                }
+                self.mark_read();
+            }
+            Event::ChannelRead {
+                channel,
+                seq,
+                result: Ok(()),
+                ..
+            } => {
+                let read = self.reads.entry(channel).or_insert_with(|| "0".into());
+                if core::sequence(&seq).unwrap_or(0) > core::sequence(read).unwrap_or(0) {
+                    *read = seq;
+                }
             }
             Event::Reacted {
                 generation,
@@ -1360,6 +1498,7 @@ pub fn conversation(
     messages: &[core::Message],
     me: Option<&str>,
     thread: bool,
+    unread: Option<&str>,
 ) -> (Conversation, Ids) {
     let order = detail.member_order(Some(channel));
     let mut ids = Ids {
@@ -1382,8 +1521,11 @@ pub fn conversation(
         if author == members.len() {
             members.push(person(&m.author.id, &m.author.name));
         }
-        let mut row = message(m, author, grouped, me);
+        // The "New messages" divider ends the group above, as in egui.
+        let new = unread == Some(m.id.as_str());
+        let mut row = message(m, author, grouped && !new, me);
         row.date = date;
+        row.unread = new;
         if thread {
             row.thread_replies = None;
             row.thread_context = false;
@@ -1528,6 +1670,7 @@ pub fn message(
                 .collect()
         },
         edited_inline: edited && grouped,
+        unread: false,
         deleted,
         reply: m.reply_to.as_ref().map(|r| model::Reply {
             id: r.id.clone(),

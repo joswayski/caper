@@ -351,6 +351,10 @@ fn row_name(c: &crate::model::Conversation, i: usize, text: Option<String>) -> S
     let m = &c.messages[i];
     let text = text.unwrap_or_default();
     let mut name = String::new();
+    // egui's divider is its own label; here it leads the first unread row.
+    if m.unread {
+        name.push_str("New messages. ");
+    }
     if let Some(r) = &m.reply {
         if r.deleted {
             name.push_str("Replying to a deleted message. ");

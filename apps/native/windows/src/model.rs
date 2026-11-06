@@ -85,6 +85,9 @@ pub struct Message {
     pub reaction_error: Option<String>,
     /// The date divider above the message, when it starts a new local day.
     pub date: Option<String>,
+    /// The first message you had not read when the channel opened: the
+    /// "New messages" divider above it, which also ends the group above.
+    pub unread: bool,
     /// Who pinned it ("you" for yourself), shown above it.
     pub pinned_by: Option<String>,
 }
@@ -532,6 +535,7 @@ impl Conversation {
             picture,
             reactions,
             edited_inline: false,
+            unread: false,
             deleted: false,
             reply: None,
             thread_replies: None,
@@ -563,6 +567,7 @@ impl Conversation {
             picture: None,
             reactions: Vec::new(),
             edited_inline: false,
+            unread: false,
             deleted: false,
             reply: None,
             thread_replies: None,

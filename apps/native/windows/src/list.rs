@@ -59,6 +59,9 @@ pub struct Row {
     /// The date divider above the row (its label and width) and the space
     /// it takes; everything else in the row sits below it.
     pub date: Option<(IDWriteTextLayout, f32)>,
+    /// The "New messages" divider below the date divider (its label and
+    /// width), as in egui.
+    pub unread: Option<(IDWriteTextLayout, f32)>,
     pub lead: f32,
     /// "Pinned by …" above the message's header.
     pub pin: Option<IDWriteTextLayout>,
@@ -96,6 +99,7 @@ const QUOTE_LINES: usize = 3;
 const THREAD_H: f32 = 22.0;
 const ERROR_H: f32 = 24.0;
 const DATE_H: f32 = 30.0;
+const NEW_H: f32 = 20.0;
 const PIN_H: f32 = 20.0;
 
 pub struct Header {
@@ -507,6 +511,13 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
             }
             None => None,
         },
+        unread: if m.unread {
+            let l = g.layout(&gfx::wide(NEW), &g.formats.quote_meta, 10_000.0)?;
+            let w = gfx::metrics(&l).widthIncludingTrailingWhitespace;
+            Some((l, w))
+        } else {
+            None
+        },
         lead: 0.0,
         pin: match &m.pinned_by {
             Some(who) => Some(g.layout(
@@ -550,7 +561,8 @@ fn place(row: &mut Row, m: &crate::model::Message) {
     // message's own header, as in the egui client; positions below are from
     // the content top (`content_top`), so the panel starts above it.
     let top = content_top(m.grouped);
-    row.lead = if row.date.is_some() { DATE_H } else { 0.0 };
+    row.lead = if row.date.is_some() { DATE_H } else { 0.0 }
+        + if row.unread.is_some() { NEW_H } else { 0.0 };
     let mut y = row.lead;
     if let Some(q) = &mut row.quote {
         let w = (row.width - 2.0 * QUOTE_PAD_X).max(20.0);
@@ -738,6 +750,8 @@ pub fn head_button_rect(g: &Gfx, head: &Head, full: f32) -> Result<Common::D2D_R
     Ok(rect(x, (HEAD_H - h) / 2.0, x + bw, (HEAD_H + h) / 2.0))
 }
 
+const NEW: &str = "New messages";
+
 const HEAD_ERROR: &str = "Couldn\u{2019}t load older messages.";
 
 /// Draws the head with its top-left at (0, y).
@@ -845,6 +859,18 @@ pub fn draw_row(
             rule(PAD_X, lx - 10.0);
             rule(lx + w + 10.0, full - PAD_X);
             crate::text::draw(dc, l, lx, cy - 7.0, &g.brushes.muted);
+        }
+        // egui's "New messages": a terracotta rule, then its label.
+        if let Some((l, w)) = &row.unread {
+            let full = BODY_X + row.width + PAD_X;
+            let ny = y + if row.date.is_some() { DATE_H } else { 0.0 };
+            let lx = full - PAD_X - w;
+            let cy = ny + NEW_H / 2.0;
+            if lx - 8.0 > PAD_X {
+                dc.FillRectangle(&rect(PAD_X, cy, lx - 8.0, cy + 1.0), &g.brushes.terracotta);
+            }
+            let h = gfx::metrics(l).height;
+            crate::text::draw(dc, l, lx, cy - h / 2.0, &g.brushes.terracotta);
         }
         if let Some(q) = &row.quote {
             let qy = y + row.lead + 4.0;

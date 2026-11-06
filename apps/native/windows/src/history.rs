@@ -319,4 +319,34 @@ impl App {
     }
 }
 
+impl App {
+    /// The read state arrived: the "New messages" divider goes above row
+    /// `id`, which then starts its own group, as in the egui client.
+    pub fn mark_unread(&mut self, id: &str) -> Result<()> {
+        let Some(&i) = self.ids.rows.get(id) else {
+            return Ok(());
+        };
+        let m = &mut self.c.messages[i];
+        if m.unread {
+            return Ok(());
+        }
+        m.unread = true;
+        if m.grouped {
+            m.grouped = false;
+            // An ungrouped row carries "(edited)" in its time instead.
+            if std::mem::take(&mut m.edited_inline) {
+                m.time.push_str(" (edited)");
+            }
+        }
+        if self.rows.replace(&self.g, &self.c, i)? {
+            self.drawn = None;
+        } else {
+            self.redraw.push(i);
+        }
+        self.events |= EV_ROWS;
+        self.need = true;
+        Ok(())
+    }
+}
+
 const FOOT: [&str; 2] = ["Load newer messages", "Back to latest messages"];

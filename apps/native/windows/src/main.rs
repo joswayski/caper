@@ -536,6 +536,7 @@ impl App {
                     self.append_history(c, ids)?;
                 }
                 live::Update::Focus(id) => self.focus_message(&id)?,
+                live::Update::Unread(id) => self.mark_unread(&id)?,
                 live::Update::Thread => self.thread_refresh()?,
                 live::Update::OlderState => {
                     self.redraw_head = true;
@@ -556,6 +557,7 @@ impl App {
                         let mut new = live::message(&m, old.author, old.grouped, me.as_deref());
                         new.reaction_error = error;
                         new.date = old.date.clone();
+                        new.unread = old.unread;
                         if new == *old {
                             continue;
                         }
@@ -2333,7 +2335,7 @@ impl App {
         self.draw_thread()?;
         self.draw_panels()?;
         unsafe { self.g.dcomp.Commit()? };
-        if let Some(live) = &self.live {
+        if let Some(live) = &mut self.live {
             // Renews the worker's lease on the open conversation while focused.
             live.showing(unsafe { GetForegroundWindow() } == self.hwnd);
         }
