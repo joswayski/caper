@@ -893,21 +893,24 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           unfurl(message);
         }
         if (body.notification) {
-          const channel = channelFor(body.notification.channelId ?? ids.design);
-          if (!channel) return reject(response, 404, "Fixture channel not found.");
+          // `kind: "space.invitation"` announces the pending space invitation
+          // (control `spaceInvitation`) instead of a channel message.
+          const invitation = body.notification.kind === "space.invitation";
+          const channel = invitation ? null : channelFor(body.notification.channelId ?? ids.design);
+          if (!invitation && !channel) return reject(response, 404, "Fixture channel not found.");
           const event = {
             type: "notification.created",
             seq: String(state.notificationEvents.length + 1),
             messageId: randomUUID().replaceAll("-", "").slice(0, 15),
-            kind: "channel.message",
-            title: `TEST FIXTURE — Alex · #${channel.name}`,
-            body: `TEST FIXTURE — ${body.notification.text ?? "A message in another conversation."}`,
-            sender: "Alex",
-            senderId: ids.other,
-            senderAvatarId: 799,
+            kind: invitation ? "space.invitation" : "channel.message",
+            title: invitation ? "TEST FIXTURE — Maya invited you" : `TEST FIXTURE — Alex · #${channel.name}`,
+            body: `TEST FIXTURE — ${body.notification.text ?? (invitation ? "Join Maya's Book Club." : "A message in another conversation.")}`,
+            sender: invitation ? "Maya" : "Alex",
+            senderId: invitation ? ids.member : ids.other,
+            senderAvatarId: invitation ? 31 : 799,
             createdAt: new Date().toISOString(),
-            spaceId: channel.spaceId,
-            channelId: channel.id,
+            spaceId: invitation ? ids.invitedSpace : channel.spaceId,
+            ...(invitation ? {} : { channelId: channel.id }),
           };
           state.notificationEvents.push(event);
           for (const client of sockets)
