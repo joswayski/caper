@@ -156,9 +156,10 @@ def main() -> None:
         if attributes.get("isInternalGroup") and attributes.get("hasAccessToAllBuilds"):
             print(f"{name}: internal group already receives every build")
             continue
-        # A newly VALID build can still return NOT_FOUND from the group endpoint.
-        # Retry this relationship only, with a bound; never mask authorization or
-        # validation errors or upload another binary to work around propagation.
+        # A newly VALID build can still return NOT_FOUND from the group endpoint,
+        # and Apple's side sometimes answers 5xx. Retry this relationship only,
+        # with a bound; never mask authorization or validation errors or upload
+        # another binary to work around propagation.
         deadline = time.monotonic() + GROUP_VISIBILITY_TIMEOUT_S
         while True:
             status, body = call(
@@ -168,9 +169,11 @@ def main() -> None:
                     "data": [{"type": "builds", "id": build_id}],
                 },
             )
-            if status != 404 or time.monotonic() >= deadline:
+            if (status != 404 and status < 500) or time.monotonic() >= deadline:
                 break
-            print(f"{name}: Apple returned HTTP 404 adding build {build_number}; retrying in 30 seconds", flush=True)
+            print(
+                f"{name}: Apple returned HTTP {status} adding build {build_number}; retrying in 30 seconds", flush=True
+            )
             time.sleep(30)
         if status >= 300 and status != 409:
             sys.exit(f"Adding the build to {name} failed with HTTP {status}: {json.dumps(body)[:2000]}")
