@@ -73,6 +73,18 @@ import XCTest
         let composer = app.textViews["message-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
         XCTAssertEqual(app.staticTexts["member-count"].value as? String, "3")
+        let firstDay = app.staticTexts["date-chan00000001m01"]
+        XCTAssertTrue(firstDay.waitForExistence(timeout: 5))
+        XCTAssertFalse((firstDay.value as? String ?? "").isEmpty, "The local date is readable through accessibility")
+        XCTAssertFalse(app.staticTexts["date-chan00000001m02"].exists, "Same-day followups do not repeat the divider")
+        let mentioned = app.textViews["message-chan00000001m04"]
+        XCTAssertTrue(mentioned.waitForExistence(timeout: 5))
+        capture("dates and mentions", app: app)
+        mentioned.click()
+        mentioned.typeKey("a", modifierFlags: .command)
+        mentioned.typeKey("c", modifierFlags: .command)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), mentioned.value as? String,
+            "Mention styling must not add decoration or markup to copied text")
         app.buttons["channel-chan00000002"].hover()
         app.buttons["channel-chan00000003"].hover()
         composer.click()
@@ -87,6 +99,8 @@ import XCTest
         app.buttons["send-message"].click()
         let sent = app.textViews.matching(NSPredicate(format: "value == %@", edited)).firstMatch
         XCTAssertTrue(sent.waitForExistence(timeout: 10), "The API/gateway confirms the native composer send")
+        let sentDay = app.staticTexts["date-\(sent.identifier.dropFirst("message-".count))"]
+        XCTAssertTrue(sentDay.waitForExistence(timeout: 5), "A new local day gets a divider")
         XCTAssertEqual(composer.value as? String, "")
         NSPasteboard.general.clearContents()
         sent.click()

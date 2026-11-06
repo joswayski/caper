@@ -3,15 +3,88 @@ import XCTest
 @testable import CaperCore
 
 @MainActor final class MessageTimelineTests: XCTestCase {
-    private func message(_ index: Int, author: String = "peer") -> ChatMessage {
+    private func message(_ index: Int, author: String = "peer", at date: String = "2026-11-05T09:00:00Z") -> ChatMessage {
         ChatMessage(id: "message-\(index)", channelId: "channel", seq: "\(index)",
             author: ChatAuthor(id: author, name: author, isGuest: false),
             content: ChatContent(version: 1, type: "text", text: "Row \(index) — Hello 👩🏽‍💻 مرحبا 中文"),
-            createdAt: "2026-11-05T09:00:00Z", clientMessageId: "message-\(index)")
+            createdAt: date, clientMessageId: "message-\(index)")
     }
 
     private func bodies(in timeline: MessageTimeline) -> [NSTextView] {
         timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? NSTextView } } ?? []
+    }
+
+    func testDateDividersFollowLocalMidnightWithoutSplittingSameDayGroups() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let midnight = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 9, day: 24)))
+        let iso = ISO8601DateFormatter()
+        let history = [-60.0, 60, 180].enumerated().map { index, offset in
+            message(index, at: iso.string(from: midnight.addingTimeInterval(offset)))
+        } + [message(3, at: "invalid date")]
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 500))
+        timeline.update(history, conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        let rows = try XCTUnwrap(timeline.documentView).subviews
+        let dates = rows.flatMap { $0.subviews.compactMap { $0 as? NSTextField } }
+            .filter { !$0.isHidden && $0.accessibilityIdentifier().hasPrefix("date-") }
+            .sorted { $0.convert(.zero, to: timeline.documentView).y < $1.convert(.zero, to: timeline.documentView).y }
+        XCTAssertEqual(dates.map { $0.accessibilityIdentifier() }, ["date-message-0", "date-message-1"],
+            "First loaded day and local midnight get dividers; same-day followups and malformed dates do not")
+        let formatter = DateFormatter()
+        formatter.dateStyle = .full
+        XCTAssertEqual(dates.map(\.stringValue), [formatter.string(from: midnight.addingTimeInterval(-60)), formatter.string(from: midnight)])
+        for label in dates {
+            XCTAssertGreaterThanOrEqual(label.frame.width, try XCTUnwrap(label.cell).cellSize.width)
+            let body = try XCTUnwrap(label.superview?.subviews.compactMap { $0 as? NSTextView }.first)
+            XCTAssertGreaterThan(body.frame.minY, label.frame.maxY, "The divider must not overlap the message")
+        }
+        for (index, hidden) in [(1, false), (2, true)] {
+            let body = try XCTUnwrap(bodies(in: timeline).first { $0.string == history[index].content.text })
+            let author = try XCTUnwrap(body.superview?.subviews.compactMap { $0 as? NSTextField }.first { $0.stringValue == "peer" })
+            XCTAssertEqual(author.isHidden, hidden, "Grouping stops at local midnight, not at every message")
+        }
+    }
+
+    func testResolvedMentionsStaySelectableAndViewerChangesRefreshTheRow() throws {
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        var mentioned = message(0)
+        mentioned.content = ChatContent(version: 1, type: "text", text: "👩🏽‍💻 **@ali**ce @nobody https://example.com", mentions: [.user(id: "alice", username: "alice")])
+        timeline.update([mentioned], conversationID: "channel", viewerID: "alice")
+        timeline.layoutSubtreeIfNeeded()
+        let body = try XCTUnwrap(bodies(in: timeline).first)
+        let row = try XCTUnwrap(body.superview)
+        XCTAssertEqual(row.accessibilityHelp(), "Mentions you")
+        XCTAssertEqual(body.string, "👩🏽‍💻 @alice @nobody https://example.com")
+        let alice = (body.string as NSString).range(of: "@alice")
+        let nobody = (body.string as NSString).range(of: "@nobody")
+        let link = (body.string as NSString).range(of: "https://example.com")
+        let text = body.attributedString()
+        XCTAssertEqual(text.attribute(NativePresentation.mentionAttribute, at: alice.location, effectiveRange: nil) as? String, "alice")
+        XCTAssertEqual((text.attribute(.backgroundColor, at: alice.location, effectiveRange: nil) as? NSColor)?.alphaComponent ?? 0, 0.24, accuracy: 0.001)
+        XCTAssertNil(text.attribute(.backgroundColor, at: nobody.location, effectiveRange: nil), "Unresolved tokens remain ordinary text")
+        XCTAssertEqual(text.attribute(.link, at: link.location, effectiveRange: nil) as? URL, URL(string: "https://example.com"))
+        body.setSelectedRange(alice)
+        XCTAssertEqual(body.accessibilitySelectedText(), "@alice")
+        timeline.update([mentioned], conversationID: "channel", viewerID: "bob")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertNil(row.accessibilityHelp(), "Changing viewer must update unchanged rows too")
+        XCTAssertEqual(body.accessibilitySelectedText(), "@alice")
+        timeline.update([mentioned], conversationID: "channel", viewerID: nil)
+        XCTAssertNil(row.accessibilityHelp())
+
+        var everyone = message(1, author: "alice")
+        everyone.content = ChatContent(version: 1, type: "text", text: "@everyone", mentions: [.everyone])
+        timeline.update([everyone], conversationID: "channel", viewerID: "alice")
+        let special = try XCTUnwrap(bodies(in: timeline).first)
+        XCTAssertNil(special.superview?.accessibilityHelp(), "Your own everyone mention does not notify you")
+        timeline.update([everyone], conversationID: "channel", viewerID: "bob")
+        XCTAssertEqual(special.superview?.accessibilityHelp(), "Mentions you")
+        everyone.deletedAt = "2026-11-05T10:00:00Z"
+        timeline.update([everyone], conversationID: "channel", viewerID: "bob")
+        XCTAssertEqual(special.string, "This message was deleted.")
+        XCTAssertNil(special.superview?.accessibilityHelp())
+        XCTAssertNil(special.attributedString().attribute(NativePresentation.mentionAttribute, at: 0, effectiveRange: nil))
     }
 
     func testScrollingIntoHistoryLoadsAPageWithoutMovingTheReader() throws {
@@ -28,9 +101,13 @@ import XCTest
         XCTAssertTrue(requested, "Scrolling to the start requests older messages without a button")
         XCTAssertFalse(timeline.canLoadOlder, "Do not issue another request before the model updates")
         let first = try XCTUnwrap(bodies(in: timeline).first { $0.string == history.first?.content.text })
+        let firstDate = try XCTUnwrap(first.superview?.subviews.compactMap { $0 as? NSTextField }
+            .first { $0.accessibilityIdentifier() == "date-message-50" })
+        XCTAssertFalse(firstDate.isHidden)
         let before = first.convert(.zero, to: timeline.contentView).y - timeline.contentView.bounds.minY
         timeline.update((0..<50).map { message($0) } + history, conversationID: "channel")
         timeline.layoutSubtreeIfNeeded()
+        XCTAssertTrue(firstDate.isHidden, "Prepending the same local day moves its divider to the new first row")
         let retained = try XCTUnwrap(bodies(in: timeline).first { $0.string == first.string })
         XCTAssertEqual(retained.convert(.zero, to: timeline.contentView).y - timeline.contentView.bounds.minY, before, accuracy: 0.5,
             "Text stays put when grouping hides its header: body \(retained.frame), row \(String(describing: retained.superview?.frame)), clip \(timeline.contentView.bounds)")

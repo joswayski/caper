@@ -104,7 +104,8 @@ import CaperCore
             let visible = chat.displayedMessages.filter {
                 $0.isChannelMessage && !chat.blockedAuthorIDs.contains($0.author.id)
             }
-            self.timeline.update(visible, conversationID: self.model.selectedDirectMessageID ?? self.model.selectedChannelID)
+            self.timeline.update(visible, conversationID: self.model.selectedDirectMessageID ?? self.model.selectedChannelID,
+                viewerID: chat.viewerID)
         }
         composerObservation.start { [weak self] in self?.updateComposer() }
     }

@@ -10,6 +10,7 @@ import CaperCore
     private var rows: [String: MessageCell] = [:]
     private var rendering = false
     private var conversationID: String?
+    private var viewerID: String?
     private var followEnd = true
     private var selection: [String: (text: String, range: NSRange)] = [:]
     var canLoadOlder = false
@@ -33,7 +34,7 @@ import CaperCore
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    func update(_ messages: [ChatMessage], conversationID: String?) {
+    func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil) {
         let changedConversation = self.conversationID != conversationID
         let anchor = geometry.anchor(at: contentView.bounds.minY)
         let anchorTextTop = anchor.flatMap { rows[$0.id]?.textTop }
@@ -49,6 +50,7 @@ import CaperCore
         }
         self.messages = messages
         self.conversationID = conversationID
+        self.viewerID = viewerID
         if changedConversation {
             geometry = NativeTimelineLayout()
             followEnd = true
@@ -147,7 +149,13 @@ import CaperCore
             rows[message.id] = row
             document.addSubview(row)
         }
-        row.configure(message, grouped: NativePresentation.grouped(message, after: index > 0 ? messages[index - 1] : nil), react: react)
+        let previous = index > 0 ? messages[index - 1] : nil
+        // The divider belongs to this realized row, so prepending can remove
+        // it using the same text anchor as an author-header grouping change.
+        let day = previous.map { NativePresentation.sameDay($0.createdAt, message.createdAt) } == true
+            ? nil : NativePresentation.dayLabel(message.createdAt)
+        row.configure(message, grouped: NativePresentation.grouped(message, after: previous), day: day,
+            viewerID: viewerID, react: react)
         if let saved = selection.removeValue(forKey: message.id), saved.text == row.body.string,
            NSMaxRange(saved.range) <= row.body.string.utf16.count {
             row.body.setSelectedRange(saved.range)
@@ -162,15 +170,30 @@ import CaperCore
     private let timestamp = NativeStyle.label("", size: 10)
     private let avatar = NSImageView()
     private let detail = NativeStyle.label("", size: 12)
+    private let day = NativeStyle.label("", size: 10, bold: true)
+    private let dayLeading = CALayer()
+    private let dayTrailing = CALayer()
+    private let mentionTint = CALayer()
+    private let mentionBar = CALayer()
     private var reactions: [NativeButton] = []
     private var message: ChatMessage?
     private var grouped = false
-    var textTop: CGFloat { grouped ? 4 : 32 }
+    private var viewerID: String?
+    private var dayHeight: CGFloat { day.isHidden ? 0 : ceil(day.cell?.cellSize.height ?? 14) + 16 }
+    var textTop: CGFloat { dayHeight + (grouped ? 4 : 32) }
 
     init() {
         super.init()
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
+        day.textColor = NativeStyle.muted
+        day.isHidden = true
+        day.alignment = .center
+        dayLeading.backgroundColor = NativeStyle.border.cgColor
+        dayTrailing.backgroundColor = NativeStyle.border.cgColor
+        mentionTint.backgroundColor = NativeStyle.accent.withAlphaComponent(0.08).cgColor
+        mentionBar.backgroundColor = NativeStyle.accent.cgColor
+        [mentionTint, mentionBar, dayLeading, dayTrailing].forEach { layer?.addSublayer($0) }
         body.isEditable = false; body.isSelectable = true
         body.isRichText = true; body.drawsBackground = false
         body.textContainerInset = .zero
@@ -183,18 +206,31 @@ import CaperCore
         detail.textColor = NativeStyle.muted
         avatar.wantsLayer = true; avatar.layer?.cornerRadius = 10; avatar.layer?.masksToBounds = true
         avatar.setAccessibilityElement(false)
-        [body, author, timestamp, avatar, detail].forEach { addSubview($0) }
+        [body, author, timestamp, avatar, detail, day].forEach { addSubview($0) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(_ message: ChatMessage, grouped: Bool, react: ((String, String) -> Void)?) {
-        guard self.message != message || self.grouped != grouped else { return }
+    func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, react: ((String, String) -> Void)?) {
+        guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID else { return }
         let range = body.selectedRange()
-        self.message = message; self.grouped = grouped
+        self.message = message; self.grouped = grouped; self.viewerID = viewerID
+        self.day.stringValue = day ?? ""
+        self.day.isHidden = day == nil
+        self.day.setAccessibilityIdentifier("date-\(message.id)")
+        let mentionsViewer = !message.isDeleted && NativePresentation.mentionsViewer(message, viewerID: viewerID)
+        setAccessibilityHelp(mentionsViewer ? "Mentions you" : nil)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        mentionTint.isHidden = !mentionsViewer
+        mentionBar.isHidden = !mentionsViewer || message.pin != nil
+        CATransaction.commit()
         author.stringValue = message.author.name
         timestamp.stringValue = NativePresentation.time(message.createdAt)
         let text = NSMutableAttributedString(attributedString: NativePresentation.messageText(
-            message.isDeleted ? "Message deleted" : message.content.text))
+            message.isDeleted ? MessageDeletion.placeholder : message.content.text,
+            mentions: message.isDeleted ? [] : message.content.mentions))
+        if message.isDeleted {
+            text.addAttribute(.foregroundColor, value: NativeStyle.muted, range: NSRange(location: 0, length: text.length))
+        }
         // Emoji fallback fonts have larger metrics than Satoshi. Use the same
         // 20-point pitch for measurement and TextKit drawing, not per-glyph height.
         let paragraph = NSMutableParagraphStyle()
@@ -229,14 +265,25 @@ import CaperCore
 
     override func layout() {
         super.layout()
+        let inset = dayHeight
+        let dayWidth = min(ceil(day.cell?.cellSize.width ?? 0), max(0, bounds.width - 36))
+        day.frame = NSRect(x: (bounds.width - dayWidth) / 2, y: 8, width: dayWidth, height: max(0, inset - 16))
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        dayLeading.isHidden = day.isHidden; dayTrailing.isHidden = day.isHidden
+        dayLeading.frame = NSRect(x: 18, y: floor(inset / 2), width: max(0, day.frame.minX - 28), height: 1)
+        dayTrailing.frame = NSRect(x: day.frame.maxX + 10, y: floor(inset / 2), width: max(0, bounds.width - day.frame.maxX - 28), height: 1)
+        // Date dividers remain neutral even when the following message mentions you.
+        mentionTint.frame = NSRect(x: 0, y: inset, width: bounds.width, height: max(0, bounds.height - inset))
+        mentionBar.frame = NSRect(x: 0, y: inset, width: 3, height: max(0, bounds.height - inset))
+        CATransaction.commit()
         avatar.isHidden = grouped; author.isHidden = grouped; timestamp.isHidden = grouped
-        avatar.frame = NSRect(x: 20, y: 12, width: 36, height: 36)
+        avatar.frame = NSRect(x: 20, y: inset + 12, width: 36, height: 36)
         // Intrinsic size describes the alignment rect, excluding NSTextField's
         // cell insets. Manual frames need cellSize or even short names truncate.
         let timeWidth = ceil(timestamp.cell?.cellSize.width ?? timestamp.intrinsicContentSize.width)
         let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - timeWidth - 7))
-        author.frame = NSRect(x: 68, y: 10, width: authorWidth, height: 20)
-        timestamp.frame = NSRect(x: author.frame.maxX + 7, y: 13, width: timeWidth, height: 17)
+        author.frame = NSRect(x: 68, y: inset + 10, width: authorWidth, height: 20)
+        timestamp.frame = NSRect(x: author.frame.maxX + 7, y: inset + 13, width: timeWidth, height: 17)
         let footer = (detail.stringValue.isEmpty ? 0.0 : 24) + (reactions.isEmpty ? 0.0 : 32)
         let top = textTop
         body.frame = NSRect(x: 68, y: top, width: max(40, bounds.width - 88), height: max(20, bounds.height - top - footer - 12))
