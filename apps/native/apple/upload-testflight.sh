@@ -25,6 +25,17 @@ trap 'rm -rf "$work"' EXIT
 
 "$ROOT/prepare.sh"
 source_revision="$(sed -n 's/^CAPER_SOURCE_REVISION = //p' "$ROOT/.build/SourceRevision.xcconfig")"
+# Resolve Swift packages first, with retries: a package's git clone (such as
+# libwebp's submodule) sometimes fails on the network, and archive gives up
+# after one retry of its own.
+for attempt in 1 2 3; do
+  xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS \
+    -derivedDataPath "$ROOT/DerivedData-TestFlight" -resolvePackageDependencies && break
+  (( attempt < 3 )) || exit 1
+  echo "::warning::Swift package resolution failed (attempt $attempt/3); retrying."
+  rm -rf "$ROOT/DerivedData-TestFlight/SourcePackages"
+  sleep $(( attempt * 15 ))
+done
 xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$work/Caper.xcarchive" \
   -derivedDataPath "$ROOT/DerivedData-TestFlight" \
