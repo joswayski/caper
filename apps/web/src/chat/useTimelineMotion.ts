@@ -30,6 +30,9 @@ export function useTimelineMotion(
     let pinUntil = 0;
     let frame = 0;
     let near = true;
+    // More than a screen above the live end nothing can glide, so skip the
+    // per-row layout reads that would otherwise run on every scrolled frame.
+    let far = false;
     const rows = () => [...scroller.querySelectorAll<HTMLElement>("[data-motion-key]")];
     const shift = (row: HTMLElement) => {
       const transform = getComputedStyle(row).transform;
@@ -44,6 +47,7 @@ export function useTimelineMotion(
       animations.clear();
     };
     const measure = () => {
+      if (far) return;
       const now = performance.now();
       // Hold the live end before reading rows, so a carried resize glides from
       // where the rows were painted rather than first jumping to the end.
@@ -106,6 +110,7 @@ export function useTimelineMotion(
     // Observe only DOM/layout changes: idle timelines do no per-frame work.
     const resize = new ResizeObserver(measure);
     const changed = () => {
+      if (far) return;
       resize.disconnect();
       resize.observe(scroller);
       for (const row of rows()) resize.observe(row);
@@ -129,7 +134,22 @@ export function useTimelineMotion(
     // move that target away before pointerup. Scrollbars are hidden here.
     const inputs = ["wheel", "touchmove", "keydown"] as const;
     for (const input of inputs) scroller.addEventListener(input, interrupt, { passive: true });
-    scroller.addEventListener("scroll", measure, { passive: true });
+    const scrolled = () => {
+      const wasFar = far;
+      far = scroller.scrollHeight - scroller.scrollTop > 2 * scroller.clientHeight;
+      if (far && !wasFar) {
+        // Coming back measures afresh, so the scroll itself never glides.
+        stop();
+        resize.disconnect();
+        resize.observe(scroller);
+        positions = new Map();
+        near = false;
+      } else if (!far) {
+        if (wasFar) changed();
+        else measure();
+      }
+    };
+    scroller.addEventListener("scroll", scrolled, { passive: true });
     reduced.addEventListener("change", interrupt);
     return () => {
       carryRef.current = undefined;
@@ -137,7 +157,7 @@ export function useTimelineMotion(
       resize.disconnect();
       mutations.disconnect();
       for (const input of inputs) scroller.removeEventListener(input, interrupt);
-      scroller.removeEventListener("scroll", measure);
+      scroller.removeEventListener("scroll", scrolled);
       reduced.removeEventListener("change", interrupt);
     };
   }, [ref, identity, live, mounted]);
