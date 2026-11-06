@@ -1660,6 +1660,9 @@ export default function Call({
         role="group"
         className="live-card live-call"
         data-phase={state.phase}
+        // Marks a card wrapping its channel's row. A `:has()` test here restyled the
+        // whole page whenever the timeline added or removed a message row.
+        data-row={line ? "" : undefined}
         aria-label={`Your call in #${name}`}
         onClick={(event) => {
           if (cardControl(event.target)) return;
@@ -1801,6 +1804,7 @@ export default function Call({
     <div
       role="group"
       className="live-card live-room"
+      data-row={line ? "" : undefined}
       aria-label={`Voice in #${item.name}, ${people.length} in voice`}
       onClick={(event) => {
         // Its chat may already be open (a visit has no place in this space to open it from).

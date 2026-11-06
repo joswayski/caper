@@ -2150,10 +2150,10 @@
   animation: live-arrive var(--motion-base) var(--ease-out);
 }
 /* In the list the row is already there: only what the card adds arrives. */
-.live-card:has(> :is(.channel-line, .channel-row)) {
+.live-card[data-row] {
   animation: none;
 }
-.live-card:has(> :is(.channel-line, .channel-row)) > :not(.channel-line, .channel-row) {
+.live-card[data-row] > :not(.channel-line, .channel-row) {
   animation: live-arrive var(--motion-base) var(--ease-out);
 }
 .channel-navigation li[data-live] {
@@ -2170,7 +2170,7 @@
   border: 1px solid transparent;
   border-radius: 10px;
 }
-.live-card:has(> :is(.channel-line, .channel-row)) {
+.live-card[data-row] {
   padding-inline: 9px;
 }
 .live-card > :is(.channel-line, .channel-row) {
@@ -2768,7 +2768,7 @@ button.voice-strip-open {
 }
 @media (prefers-reduced-motion: reduce) {
   .live-card,
-  .live-card:has(> :is(.channel-line, .channel-row)) > :not(.channel-line, .channel-row),
+  .live-card[data-row] > :not(.channel-line, .channel-row),
   .voice-strip,
   .live-everyone:popover-open {
     animation: none;

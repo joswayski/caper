@@ -42,6 +42,7 @@ export default function SidebarSections({
       if (drag.current) {
         document.documentElement.style.cursor = drag.current.cursor;
         document.documentElement.style.userSelect = drag.current.userSelect;
+        delete document.documentElement.dataset.resizingSections;
         drag.current = undefined;
       }
     };
@@ -64,6 +65,7 @@ export default function SidebarSections({
     resize(drag.current.last);
     document.documentElement.style.cursor = drag.current.cursor;
     document.documentElement.style.userSelect = drag.current.userSelect;
+    delete document.documentElement.dataset.resizingSections;
     drag.current = undefined;
   };
 
@@ -116,6 +118,7 @@ export default function SidebarSections({
           };
           document.documentElement.style.cursor = "ns-resize";
           document.documentElement.style.userSelect = "none";
+          document.documentElement.dataset.resizingSections = "";
           event.currentTarget.setPointerCapture(event.pointerId);
         }}
         onPointerMove={(event) => {

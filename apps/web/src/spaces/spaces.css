@@ -357,7 +357,8 @@
   outline: 1px solid var(--text-muted);
   outline-offset: -2px;
 }
-html:has(.sidebar-sections-resize:active) * {
+/* A flag, not `html:has(...:active)`: that restyled the whole page on every DOM change. */
+html[data-resizing-sections] * {
   cursor: ns-resize !important;
 }
 .sidebar-sections .direct-section {

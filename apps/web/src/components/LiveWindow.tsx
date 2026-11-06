@@ -417,6 +417,7 @@ export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" |
                       <div
                         className={`live-card ${inCall ? "live-call" : "live-room"}`}
                         data-phase={inCall ? "connected" : undefined}
+                        data-row=""
                         role="img"
                         aria-label={
                           inCall
