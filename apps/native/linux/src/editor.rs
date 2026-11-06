@@ -45,8 +45,9 @@ const VIDEO_MARKS_UNAVAILABLE: &str =
 /// What is being edited.
 #[derive(Clone)]
 pub(super) enum Target {
-    /// The profile draft's new picture.
+    /// A new profile picture or space icon.
     Picture {
+        destination: caper_client::pictures::Target,
         path: PathBuf,
         scratch: Option<Arc<Scratch>>,
     },
@@ -994,9 +995,14 @@ impl App {
         }
         match (target, outcome) {
             (_, Outcome::Cancel) => {}
-            (Target::Picture { path, scratch }, Outcome::Save(edit)) => {
-                self.prepare_profile_picture(path, edit, scratch);
-            }
+            (
+                Target::Picture {
+                    destination,
+                    path,
+                    scratch,
+                },
+                Outcome::Save(edit),
+            ) => self.apply_picture(destination, path, edit, scratch),
             (Target::Draft(key), Outcome::Save(edit)) => self.save_draft_edit(key, edit, preview),
             (Target::Draft(key), Outcome::Spoiler) => {
                 let spoiler = self

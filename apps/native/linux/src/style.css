@@ -1269,3 +1269,28 @@ popover.editor-text > contents {
   background: alpha(@caper_terracotta, 0.14);
   box-shadow: inset 2px 0 @caper_terracotta;
 }
+
+/* A space's custom icon: a rounded square, in the rail and Manage space. */
+.space-icon .avatar {
+  border-radius: 16px;
+}
+
+.space-icon .initial {
+  background: @caper_surface_raised;
+  border: 1px solid @caper_border;
+  border-radius: inherit;
+  font-size: 36px;
+}
+
+.rail .space-icon .avatar {
+  border-radius: 12px;
+}
+
+.rail button.icon {
+  background: none;
+  padding: 0;
+}
+
+.rail button.icon.selected {
+  box-shadow: 0 0 0 2px @caper_terracotta;
+}

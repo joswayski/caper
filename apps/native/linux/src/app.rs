@@ -45,6 +45,8 @@ mod forward;
 mod members;
 #[path = "notify.rs"]
 mod notify;
+#[path = "picture.rs"]
+mod picture;
 #[path = "profile.rs"]
 mod profile;
 #[path = "settings.rs"]
@@ -2594,6 +2596,7 @@ impl App {
                     }
                     event @ (Event::Profiled { .. }
                     | Event::AvatarHistory { .. }
+                    | Event::Picture { .. }
                     | Event::OpenNotification { .. }) => deferred.push(event),
                     event => self.handle(&mut state, event),
                 }
@@ -2610,6 +2613,11 @@ impl App {
                     request,
                     result,
                 } if epoch == self.state.borrow().epoch => self.previous_pictures(request, result),
+                Event::Picture {
+                    epoch,
+                    target,
+                    result,
+                } if epoch == self.state.borrow().epoch => self.picture_changed(target, result),
                 Event::OpenNotification { epoch, alert } if epoch == self.state.borrow().epoch => {
                     self.open_alert(alert)
                 }
@@ -3788,7 +3796,26 @@ impl App {
                     space.name.clone()
                 },
             );
-            button.set_label(&space_initials(&space.name));
+            // A ready icon fills the tile; the initials show while it loads
+            // or when it fails.
+            let icon = space.icon().map(|icon| crate::images::Avatar {
+                name: space.name.clone(),
+                mascot: None,
+                picture: Some((
+                    icon.asset.to_owned(),
+                    icon.url.unwrap_or_default().to_owned(),
+                )),
+            });
+            match icon.filter(|icon| self.images.avatar(icon).is_some()) {
+                Some(icon) => {
+                    let view = crate::images::AvatarView::new(40, false);
+                    view.root.add_css_class("space-icon");
+                    view.set(&self.images, &icon);
+                    button.set_child(Some(&view.root));
+                    button.add_css_class("icon");
+                }
+                None => button.set_label(&space_initials(&space.name)),
+            }
             button.set_tooltip_text(Some(&space.name));
             if state.space.as_deref() == Some(&space.id) && state.direct.is_none() {
                 button.add_css_class("selected");

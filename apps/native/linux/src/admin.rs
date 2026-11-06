@@ -135,6 +135,8 @@ pub(super) struct Admin {
     /// Advanced by each change made here: an older refresh is dropped.
     changes: u64,
     ticking: bool,
+    /// The open space's icon change.
+    pub(super) icon: super::picture::IconStatus,
 }
 
 impl State {
@@ -310,6 +312,8 @@ pub(super) struct AdminWindow {
     save_bar: Option<gtk::Box>,
     save: Option<gtk::Button>,
     reset: Option<gtk::Button>,
+    /// Manage space's icon, for its owner.
+    icon: Option<super::picture::IconRow>,
 }
 
 /// "Custom links": the next link's choices.
@@ -534,6 +538,7 @@ impl App {
         admin.error = None;
         admin.member_error = None;
         admin.member_status = None;
+        admin.icon.error = None;
         admin.revision += 1;
     }
 
@@ -1433,6 +1438,7 @@ impl App {
             save_bar: None,
             save: None,
             reset: None,
+            icon: None,
         };
         let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
         match &dialog {
@@ -1442,6 +1448,11 @@ impl App {
                     body.append(&hint(
                         "Only the owner can change this space and its membership.",
                     ));
+                    if state.owner()
+                        && let Some(space) = state.space.clone()
+                    {
+                        widgets.icon = Some(self.build_icon_row(&body, &space));
+                    }
                 }
                 body.append(&label("Space name", &["field"]));
                 let name = gtk::Entry::new();
@@ -2160,6 +2171,9 @@ impl App {
             .as_ref()
             .is_some_and(|check| check.is_active());
         set_error(&widgets.error, admin.error.as_deref());
+        if let Some(icon) = &widgets.icon {
+            self.update_icon_row(icon, &state);
+        }
         if let Some(entry) = &widgets.name {
             entry.set_sensitive(!busy);
         }
