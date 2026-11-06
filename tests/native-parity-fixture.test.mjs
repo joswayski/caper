@@ -1384,3 +1384,25 @@ test("notification settings and overrides validate, persist in memory and reset"
   await request("/__fixture/control", { method: "POST", body: { reset: true } });
   assert.deepEqual((await request("/api/notifications/settings", { auth: true })).value, defaults);
 });
+
+test("attachment uploads go to absolute URLs on the origin the client called", async (t) => {
+  const { base, request } = await setup(t);
+  await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true } });
+  const reserve = (headers) =>
+    request("/api/assets", {
+      auth: true,
+      method: "POST",
+      headers,
+      body: { channelId: ids.general, filename: "notes.txt", contentType: "text/plain", byteSize: 5, preview: true },
+    });
+  // Native clients refuse relative storage URLs, so each must be absolute.
+  const direct = (await reserve()).value;
+  assert.equal(direct.upload.url, `${base}/api/assets/${direct.id}/fixture-upload`);
+  assert.equal(direct.previewUpload.url, `${base}/api/assets/${direct.id}/fixture-preview`);
+  assert.equal((await fetch(direct.upload.url, { method: "PUT", body: "hello" })).status, 204);
+  const completed = await request(`/api/assets/${direct.id}/complete`, { auth: true, method: "POST" });
+  assert.equal(completed.value.size, 5);
+  // Behind the web's dev proxy, the browser uploads through the web origin.
+  const proxied = (await reserve({ "x-forwarded-host": "localhost:5174", "x-forwarded-proto": "http" })).value;
+  assert.equal(proxied.upload.url, `http://localhost:5174/api/assets/${proxied.id}/fixture-upload`);
+});

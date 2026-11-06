@@ -961,6 +961,16 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             : {}),
           ...(voice ? { voice, durationMs: body.durationMs, waveform: body.waveform } : {}),
         });
+        // Absolute, like a presigned storage URL (native clients refuse relative
+        // ones), on the origin the client called: through the web's dev proxy
+        // that is the web server, which forwards the PUT back here.
+        const first = (value) =>
+          String(value ?? "")
+            .split(",")[0]
+            .trim();
+        const origin = `${first(request.headers["x-forwarded-proto"]) || "http"}://${
+          first(request.headers["x-forwarded-host"]) || request.headers.host || `127.0.0.1:${request.socket.localPort}`
+        }`;
         return json(response, 200, {
           id,
           ...(avatar ? { kind: "image" } : {}),
@@ -968,10 +978,12 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             method: "PUT",
             url: avatar
               ? `http://127.0.0.1:${request.socket.localPort}/api/assets/${id}/fixture-upload`
-              : `/api/assets/${id}/fixture-upload`,
+              : `${origin}/api/assets/${id}/fixture-upload`,
             headers: {},
           },
-          ...(body.preview ? { previewUpload: { url: `/api/assets/${id}/fixture-preview`, headers: {} } } : {}),
+          ...(body.preview
+            ? { previewUpload: { url: `${origin}/api/assets/${id}/fixture-preview`, headers: {} } }
+            : {}),
         });
       }
       if (assetPut && method === "PUT") {
