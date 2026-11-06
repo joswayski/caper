@@ -15776,7 +15776,7 @@ impl CaperApp {
             });
             return;
         };
-        let report = ConnectionReport::new(self.voice.join_times.as_ref(), stats);
+        let report = voice::ConnectionReport::new(self.voice.join_times.as_ref(), stats);
         egui::Grid::new("connection-statistics")
             .num_columns(2)
             .spacing([28.0, 12.0])
@@ -25906,112 +25906,6 @@ impl CaperApp {
     }
 }
 
-/// Web's connection diagnostics, limited to what desktop measures. Field names
-/// match web's copied JSON.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ConnectionReport {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    join: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    session_ms: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    transport_ms: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ice_ms: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    roster_ms: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    checks: Option<String>,
-    received_bytes: u64,
-    sent_bytes: u64,
-    receive_bitrate: f64,
-    send_bitrate: f64,
-    packets_lost: i64,
-    max_jitter_ms: f64,
-    round_trip_ms: f64,
-    route: &'static str,
-}
-
-impl ConnectionReport {
-    fn new(times: Option<&voice::JoinTimes>, stats: &media::Diagnostics) -> Self {
-        Self {
-            join: times.map(|times| format!("Joined in {:.0} ms", times.joined_ms)),
-            session_ms: times.map(|times| times.session_ms),
-            transport_ms: times.map(|times| times.transport_ms),
-            ice_ms: times.and_then(|times| times.ice_ms),
-            roster_ms: times.map(|times| times.roster_ms),
-            checks: stats.checks.clone(),
-            received_bytes: stats.received_bytes,
-            sent_bytes: stats.sent_bytes,
-            receive_bitrate: stats.receive_bitrate,
-            send_bitrate: stats.send_bitrate,
-            packets_lost: stats.packets_lost,
-            max_jitter_ms: stats.max_jitter_ms,
-            round_trip_ms: stats.round_trip_ms,
-            route: match stats.route {
-                "relay" | "direct" => stats.route,
-                _ => "unknown",
-            },
-        }
-    }
-
-    fn rows(&self) -> Vec<(&'static str, String)> {
-        let mut rows = Vec::new();
-        if let (Some(join), Some(session), Some(transport), Some(roster)) = (
-            &self.join,
-            self.session_ms,
-            self.transport_ms,
-            self.roster_ms,
-        ) {
-            rows.push(("Joined", join.clone()));
-            rows.push(("Session + publish", format!("{session:.0} ms")));
-            rows.push((
-                "Transport + state",
-                match self.ice_ms {
-                    Some(ice) => format!("{transport:.0} ms (ICE {ice:.0} ms)"),
-                    None => format!("{transport:.0} ms"),
-                },
-            ));
-            rows.push((
-                "Connectivity checks",
-                self.checks
-                    .clone()
-                    .unwrap_or_else(|| "Not observed yet".into()),
-            ));
-            rows.push(("Roster", format!("{roster:.0} ms")));
-        }
-        rows.extend([
-            (
-                "Received",
-                format!("{:.2} MB", self.received_bytes as f64 / 1e6),
-            ),
-            (
-                "Live receive",
-                format!("{:.0} kbps", self.receive_bitrate / 1_000.0),
-            ),
-            ("Sent", format!("{:.2} MB", self.sent_bytes as f64 / 1e6)),
-            (
-                "Live send",
-                format!("{:.0} kbps", self.send_bitrate / 1_000.0),
-            ),
-            ("Packets lost", self.packets_lost.to_string()),
-            ("Max jitter", format!("{:.0} ms", self.max_jitter_ms)),
-            ("RTT", format!("{:.0} ms", self.round_trip_ms)),
-            (
-                "Route",
-                match self.route {
-                    "relay" => "TURN relay",
-                    "direct" => "Direct",
-                    _ => "Not observed yet",
-                }
-                .into(),
-            ),
-        ]);
-        rows
-    }
-}
-
 fn login_error_frame(ui: &mut egui::Ui, error: &str) {
     egui::Frame::new()
         .stroke(Stroke::new(1.0_f32, TERRACOTTA))
@@ -33383,10 +33277,10 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountOperation, CaperApp, ComposerToken, ConnectionReport, DELETE_ACCOUNT_URL, Dialog,
-        GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingSend, Phase,
-        RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT, display_time, endpoint,
-        media, message_runs, permanent_send_rejection, pill_rects, short_time, take_date_divider,
+        AccountOperation, CaperApp, ComposerToken, DELETE_ACCOUNT_URL, Dialog, GatewayEvent,
+        MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingSend, Phase, RESTORE_LIMIT, Run,
+        SelfDirectTarget, Suggestion, TERRACOTTA, TEXT, display_time, endpoint, media,
+        message_runs, permanent_send_rejection, pill_rects, short_time, take_date_divider,
         timestamp_parts, voice,
     };
     use crate::TestPass as _;
@@ -41579,7 +41473,7 @@ mod tests {
             route: "direct",
             checks: None,
         };
-        let without_join = ConnectionReport::new(None, &stats);
+        let without_join = voice::ConnectionReport::new(None, &stats);
         let rows = without_join.rows();
         assert_eq!(rows[0], ("Received", "1.23 MB".into()));
         assert!(rows.contains(&("Live receive", "32 kbps".into())));
@@ -41593,7 +41487,7 @@ mod tests {
             ice_ms: None,
             roster_ms: 50.0,
         };
-        let report = ConnectionReport::new(Some(&times), &stats);
+        let report = voice::ConnectionReport::new(Some(&times), &stats);
         let rows = report.rows();
         assert_eq!(rows[0], ("Joined", "Joined in 900 ms".into()));
         assert!(rows.contains(&("Transport + state", "200 ms".into())));

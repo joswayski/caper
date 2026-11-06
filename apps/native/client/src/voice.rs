@@ -1248,6 +1248,112 @@ fn report(sender: &Sender<Report>, repaint: &Repaint, event: Report) {
     repaint.request_repaint();
 }
 
+/// Web's connection diagnostics, limited to what native clients measure. Field names
+/// match web's copied JSON.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    join: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ice_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    roster_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checks: Option<String>,
+    received_bytes: u64,
+    sent_bytes: u64,
+    receive_bitrate: f64,
+    send_bitrate: f64,
+    packets_lost: i64,
+    max_jitter_ms: f64,
+    round_trip_ms: f64,
+    route: &'static str,
+}
+
+impl ConnectionReport {
+    pub fn new(times: Option<&JoinTimes>, stats: &media::Diagnostics) -> Self {
+        Self {
+            join: times.map(|times| format!("Joined in {:.0} ms", times.joined_ms)),
+            session_ms: times.map(|times| times.session_ms),
+            transport_ms: times.map(|times| times.transport_ms),
+            ice_ms: times.and_then(|times| times.ice_ms),
+            roster_ms: times.map(|times| times.roster_ms),
+            checks: stats.checks.clone(),
+            received_bytes: stats.received_bytes,
+            sent_bytes: stats.sent_bytes,
+            receive_bitrate: stats.receive_bitrate,
+            send_bitrate: stats.send_bitrate,
+            packets_lost: stats.packets_lost,
+            max_jitter_ms: stats.max_jitter_ms,
+            round_trip_ms: stats.round_trip_ms,
+            route: match stats.route {
+                "relay" | "direct" => stats.route,
+                _ => "unknown",
+            },
+        }
+    }
+
+    pub fn rows(&self) -> Vec<(&'static str, String)> {
+        let mut rows = Vec::new();
+        if let (Some(join), Some(session), Some(transport), Some(roster)) = (
+            &self.join,
+            self.session_ms,
+            self.transport_ms,
+            self.roster_ms,
+        ) {
+            rows.push(("Joined", join.clone()));
+            rows.push(("Session + publish", format!("{session:.0} ms")));
+            rows.push((
+                "Transport + state",
+                match self.ice_ms {
+                    Some(ice) => format!("{transport:.0} ms (ICE {ice:.0} ms)"),
+                    None => format!("{transport:.0} ms"),
+                },
+            ));
+            rows.push((
+                "Connectivity checks",
+                self.checks
+                    .clone()
+                    .unwrap_or_else(|| "Not observed yet".into()),
+            ));
+            rows.push(("Roster", format!("{roster:.0} ms")));
+        }
+        rows.extend([
+            (
+                "Received",
+                format!("{:.2} MB", self.received_bytes as f64 / 1e6),
+            ),
+            (
+                "Live receive",
+                format!("{:.0} kbps", self.receive_bitrate / 1_000.0),
+            ),
+            ("Sent", format!("{:.2} MB", self.sent_bytes as f64 / 1e6)),
+            (
+                "Live send",
+                format!("{:.0} kbps", self.send_bitrate / 1_000.0),
+            ),
+            ("Packets lost", self.packets_lost.to_string()),
+            ("Max jitter", format!("{:.0} ms", self.max_jitter_ms)),
+            ("RTT", format!("{:.0} ms", self.round_trip_ms)),
+            (
+                "Route",
+                match self.route {
+                    "relay" => "TURN relay",
+                    "direct" => "Direct",
+                    _ => "Not observed yet",
+                }
+                .into(),
+            ),
+        ]);
+        rows
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

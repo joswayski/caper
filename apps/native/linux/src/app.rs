@@ -374,6 +374,7 @@ pub struct App {
     rendered_card: RefCell<String>,
     voice_timer: RefCell<Option<gtk::Label>>,
     audio: RefCell<Option<audio::AudioDialog>>,
+    report: RefCell<Option<audio::ReportDialog>>,
 }
 
 struct PinsView {
@@ -445,6 +446,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         rendered_card: RefCell::default(),
         voice_timer: RefCell::default(),
         audio: RefCell::default(),
+        report: RefCell::default(),
         images,
         worker: Worker::new(api.clone(), Wakes(sender.clone())),
         state: RefCell::new(State::default()),
@@ -851,6 +853,9 @@ impl App {
     /// it on the server, and return to sign-in.
     fn sign_out(self: &Rc<Self>) {
         self.close_audio();
+        if let Some(report) = self.report.borrow_mut().take() {
+            report.window.destroy();
+        }
         self.voice.borrow_mut().leave();
         self.voice.borrow_mut().error = None;
         self.close_forward();

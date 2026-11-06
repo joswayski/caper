@@ -952,6 +952,17 @@ impl App {
                 app.toggle_mute();
             }
         });
+        for (button, input) in [
+            (&self.ui.input_options, true),
+            (&self.ui.output_options, false),
+        ] {
+            let weak = Rc::downgrade(self);
+            button.connect_clicked(move |button| {
+                if let Some(app) = weak.upgrade() {
+                    app.device_menu(input, button);
+                }
+            });
+        }
         let weak = Rc::downgrade(self);
         self.ui.deafen.connect_clicked(move |_| {
             if let Some(app) = weak.upgrade() {

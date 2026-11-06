@@ -1187,3 +1187,12 @@ popover.menu check:checked {
   border-color: @caper_terracotta;
   color: @caper_text;
 }
+
+.dock button.flat {
+  min-width: 0;
+  padding: 4px 6px;
+}
+
+.dock button.device-options {
+  padding: 4px 1px;
+}

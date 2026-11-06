@@ -594,34 +594,450 @@ impl App {
     }
 }
 
+/// Connection details or Audio diagnostics: a report that refreshes each
+/// second while it shows.
+pub(super) struct ReportDialog {
+    pub(super) window: gtk::Window,
+    connection: bool,
+    body: gtk::Box,
+    status: gtk::Label,
+    shown: RefCell<String>,
+}
+
 impl App {
-    /// The account bar's settings button: Settings… and Audio test.
+    /// The account bar's settings button: Settings…, Audio test, and
+    /// Connection details during a call, as on the desktop.
     pub(super) fn settings_menu(self: &Rc<Self>, anchor: &gtk::Button) {
         let popover = gtk::Popover::new();
         popover.add_css_class("menu");
         let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        for (text, audio) in [("Settings…", false), ("Audio test", true)] {
-            let item = gtk::Button::with_label(text);
-            item.add_css_class("flat");
-            item.add_css_class("menu-item");
+        let connection = self.voice.borrow().diagnostics.is_some();
+        let debug = self
+            .state
+            .borrow()
+            .account
+            .as_ref()
+            .is_some_and(|account| account.debug_enabled);
+        for (text, item, shown) in [
+            ("Settings…", 0, true),
+            ("Audio test", 1, true),
+            ("Connection details", 2, connection),
+            ("Audio diagnostics", 3, debug),
+        ] {
+            if !shown {
+                continue;
+            }
+            let button = gtk::Button::with_label(text);
+            button.add_css_class("flat");
+            button.add_css_class("menu-item");
+            if let Some(label) = button.child().and_downcast::<gtk::Label>() {
+                label.set_xalign(0.0);
+            }
             let (weak, menu) = (Rc::downgrade(self), popover.clone());
-            item.connect_clicked(move |_| {
+            button.connect_clicked(move |_| {
                 menu.popdown();
                 let weak = weak.clone();
                 glib::idle_add_local_once(move || {
                     if let Some(app) = weak.upgrade() {
-                        if audio {
-                            app.open_audio();
-                        } else {
-                            app.open_settings();
+                        match item {
+                            0 => app.open_settings(),
+                            1 => app.open_audio(),
+                            other => app.open_report(other == 2),
                         }
                     }
                 });
             });
-            items.append(&item);
+            items.append(&button);
+            if item == 0 {
+                items.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            }
         }
         popover.set_child(Some(&items));
         super::popup(&popover, anchor.upcast_ref());
         self.effects.borrow().toggle(true);
+    }
+
+    /// The account bar's Input Options or Output Options: the device in
+    /// use, the others, Refresh devices and the volumes.
+    pub(super) fn device_menu(self: &Rc<Self>, input: bool, anchor: &gtk::Button) {
+        self.voice.borrow_mut().refresh_devices();
+        let popover = gtk::Popover::new();
+        popover.add_css_class("menu");
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        body.set_size_request(240, -1);
+        body.set_margin_start(6);
+        body.set_margin_end(6);
+        body.set_margin_top(6);
+        body.set_margin_bottom(6);
+        popover.set_child(Some(&body));
+        self.fill_device_menu(input, &body, &popover);
+        // Devices arrive from their lookup while the menu is open.
+        let (weak, menu, list) = (Rc::downgrade(self), popover.clone(), body.clone());
+        let shown = Rc::new(RefCell::new(self.device_key(input)));
+        glib::timeout_add_local(Duration::from_millis(250), move || {
+            let Some(app) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if !menu.is_visible() {
+                return glib::ControlFlow::Break;
+            }
+            app.voice.borrow_mut().receive();
+            let key = app.device_key(input);
+            if *shown.borrow() != key {
+                *shown.borrow_mut() = key;
+                clear(&list);
+                app.fill_device_menu(input, &list, &menu);
+            }
+            glib::ControlFlow::Continue
+        });
+        super::popup(&popover, anchor.upcast_ref());
+        self.effects.borrow().toggle(true);
+    }
+
+    fn device_key(&self, input: bool) -> String {
+        let voice = self.voice.borrow();
+        format!(
+            "{:?}|{:?}|{:?}|{}|{:?}|{:?}|{}",
+            if input { &voice.inputs } else { &voice.outputs },
+            if input {
+                &voice.preferences.input
+            } else {
+                &voice.preferences.output
+            },
+            if input {
+                &voice.default_input
+            } else {
+                &voice.default_output
+            },
+            voice.refreshing_devices,
+            voice.device_error,
+            voice.microphone,
+            voice.speaker_testing,
+        )
+    }
+
+    fn fill_device_menu(self: &Rc<Self>, input: bool, body: &gtk::Box, popover: &gtk::Popover) {
+        let voice = self.voice.borrow();
+        if !matches!(voice.microphone, MicrophoneState::Idle) {
+            body.append(&label(
+                "End the microphone test to change devices.",
+                &["small"],
+            ));
+            return;
+        }
+        body.append(&label(
+            if input { "Microphone" } else { "Audio output" },
+            &["muted", "small", "strong"],
+        ));
+        let (devices, selected) = if input {
+            (voice.inputs.clone(), voice.preferences.input.clone())
+        } else {
+            (voice.outputs.clone(), voice.preferences.output.clone())
+        };
+        let refreshing = voice.refreshing_devices;
+        let error = voice.device_error.clone();
+        let preferences = voice.preferences.clone();
+        drop(voice);
+        let mut group: Option<gtk::CheckButton> = None;
+        let choices = std::iter::once((None, self.default_device_label(input))).chain(
+            devices
+                .iter()
+                .map(|(id, name)| (Some(id.clone()), name.clone())),
+        );
+        for (id, name) in choices {
+            let choice = crate::app::named::<gtk::CheckButton>("GtkCheckButton", &name);
+            choice.set_label(Some(&name));
+            if let Some(child) = choice.last_child().and_downcast::<gtk::Label>() {
+                child.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                child.set_max_width_chars(30);
+            }
+            choice.set_tooltip_text(Some(&name));
+            match &group {
+                Some(first) => choice.set_group(Some(first)),
+                None => group = Some(choice.clone()),
+            }
+            choice.set_active(selected == id);
+            let (weak, menu) = (Rc::downgrade(self), popover.clone());
+            choice.connect_toggled(move |choice| {
+                if !choice.is_active() {
+                    return;
+                }
+                let Some(app) = weak.upgrade() else {
+                    return;
+                };
+                app.voice.borrow_mut().command(match (input, id.clone()) {
+                    (true, None) => VoiceOperation::DefaultInput,
+                    (false, None) => VoiceOperation::DefaultOutput,
+                    (true, Some(id)) => VoiceOperation::Input(id),
+                    (false, Some(id)) => VoiceOperation::Output(id),
+                });
+                app.save_voice();
+                menu.popdown();
+            });
+            body.append(&choice);
+        }
+        if refreshing {
+            body.append(&label("Finding devices…", &["muted", "small"]));
+        } else if devices.is_empty() {
+            let none = label(
+                "No devices found. Check system audio settings.",
+                &["muted", "small"],
+            );
+            none.set_wrap(true);
+            body.append(&none);
+        }
+        if let Some(error) = error {
+            let text = label(&error, &["error", "small"]);
+            text.set_wrap(true);
+            body.append(&text);
+        }
+        let refresh = gtk::Button::with_label("Refresh devices");
+        refresh.set_sensitive(!refreshing);
+        refresh.set_halign(gtk::Align::Start);
+        let weak = Rc::downgrade(self);
+        refresh.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.voice.borrow_mut().refresh_devices();
+            }
+        });
+        body.append(&refresh);
+        body.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let sliders: &[(&str, u16, f64)] = if input {
+            &[
+                ("Input volume", preferences.input_percent, 200.0),
+                (
+                    "Voice processing",
+                    u16::from(preferences.processing_strength),
+                    100.0,
+                ),
+            ]
+        } else {
+            &[("Output volume", preferences.master_percent, 200.0)]
+        };
+        for (index, (title, value, max)) in sliders.iter().copied().enumerate() {
+            body.append(&label(title, &["small", "strong"]));
+            let scale = slider(0.0, max);
+            scale.set_value(f64::from(value));
+            let weak = Rc::downgrade(self);
+            scale.connect_value_changed(move |scale| {
+                let Some(app) = weak.upgrade() else {
+                    return;
+                };
+                let value = scale.value().round() as u16;
+                {
+                    let mut voice = app.voice.borrow_mut();
+                    let preferences = voice.preferences.clone();
+                    match (input, index) {
+                        (false, _) => voice.set_master_gain(value),
+                        (true, 0) => {
+                            voice.set_input_processing(value, preferences.processing_strength)
+                        }
+                        (true, _) => {
+                            voice.set_input_processing(preferences.input_percent, value as u8)
+                        }
+                    }
+                }
+                app.effects.borrow_mut().slider(value as f32 / max as f32);
+                app.save_voice();
+            });
+            body.append(&scale);
+        }
+    }
+
+    /// Connection details (during a call) or Audio diagnostics (debug
+    /// accounts), as on the desktop.
+    pub(super) fn open_report(self: &Rc<Self>, connection: bool) {
+        if let Some(dialog) = self.report.borrow_mut().take() {
+            dialog.window.destroy();
+        }
+        let title = if connection {
+            "Connection details"
+        } else {
+            "Audio diagnostics"
+        };
+        let window = gtk::Window::builder()
+            .transient_for(&self.ui.window)
+            .modal(true)
+            .title(title)
+            .default_width(460)
+            .default_height(if connection { 520 } else { 600 })
+            .build();
+        window.add_css_class("caper");
+        window.add_css_class("dialog");
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        root.add_css_class("dialog-body");
+        root.append(&label(title, &["dialog-title"]));
+        if !connection {
+            let intro = label(
+                "Local diagnostics only. No audio, device identifiers, or credentials. Nothing is uploaded.",
+                &["muted", "small"],
+            );
+            intro.set_wrap(true);
+            root.append(&intro);
+        }
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        root.append(&body);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let copy = gtk::Button::with_label(if connection {
+            "Copy connection details"
+        } else {
+            "Copy diagnostics"
+        });
+        actions.append(&copy);
+        let status = label("", &["muted", "small"]);
+        actions.append(&status);
+        root.append(&actions);
+        let weak = Rc::downgrade(self);
+        copy.connect_clicked(move |_| {
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            let copied = app.report_json(connection);
+            let report = app.report.borrow();
+            let Some(dialog) = report.as_ref() else {
+                return;
+            };
+            match copied {
+                Some(json) => {
+                    dialog.window.clipboard().set_text(&json);
+                    dialog.status.set_label(if connection {
+                        "Copied connection details"
+                    } else {
+                        "Copied diagnostics"
+                    });
+                }
+                None => dialog.status.set_label("Copy failed; try again."),
+            }
+        });
+        let weak = Rc::downgrade(self);
+        window.connect_close_request(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.report.borrow_mut().take();
+            }
+            glib::Propagation::Proceed
+        });
+        let keys = gtk::EventControllerKey::new();
+        let handle = window.downgrade();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape
+                && let Some(window) = handle.upgrade()
+            {
+                window.close();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        window.add_controller(keys);
+        window.set_child(Some(
+            &gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .child(&root)
+                .build(),
+        ));
+        *self.report.borrow_mut() = Some(ReportDialog {
+            window: window.clone(),
+            connection,
+            body,
+            status,
+            shown: RefCell::default(),
+        });
+        self.render_report();
+        window.present();
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_secs(1), move || {
+            let Some(app) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if app.report.borrow().is_none() {
+                return glib::ControlFlow::Break;
+            }
+            app.voice.borrow_mut().receive();
+            app.render_report();
+            glib::ControlFlow::Continue
+        });
+    }
+
+    fn report_json(&self, connection: bool) -> Option<String> {
+        let voice = self.voice.borrow();
+        if connection {
+            let (stats, _) = voice.diagnostics.as_ref()?;
+            let report =
+                caper_client::voice::ConnectionReport::new(voice.join_times.as_ref(), stats);
+            serde_json::to_string_pretty(&report).ok()
+        } else {
+            serde_json::to_string_pretty(&serde_json::json!({
+                "platform": std::env::consts::OS,
+                "processing": voice.audio_processing_report(),
+            }))
+            .ok()
+        }
+    }
+
+    fn render_report(&self) {
+        let report = self.report.borrow();
+        let Some(dialog) = report.as_ref() else {
+            return;
+        };
+        let (rows, note) = if dialog.connection {
+            let voice = self.voice.borrow();
+            match &voice.diagnostics {
+                Some((stats, _)) => (
+                    caper_client::voice::ConnectionReport::new(voice.join_times.as_ref(), stats)
+                        .rows()
+                        .into_iter()
+                        .map(|(label, value)| (label.to_owned(), value))
+                        .collect(),
+                    None,
+                ),
+                None => (
+                    Vec::new(),
+                    Some(
+                        if matches!(voice.state.phase, caper_client::state::Phase::Idle) {
+                            "Join voice to see connection details."
+                        } else {
+                            "Waiting for connection statistics…"
+                        },
+                    ),
+                ),
+            }
+        } else {
+            let missing = self.voice.borrow().audio_processing_report().is_none();
+            (
+                Vec::new(),
+                missing
+                    .then_some("No microphone capture started. Open Mic Test or join voice first."),
+            )
+        };
+        let text = (!dialog.connection)
+            .then(|| self.report_json(false))
+            .flatten()
+            .unwrap_or_default();
+        let key = format!("{rows:?}|{note:?}|{text}");
+        if *dialog.shown.borrow() == key {
+            return;
+        }
+        *dialog.shown.borrow_mut() = key;
+        clear(&dialog.body);
+        if let Some(note) = note {
+            let note = label(note, &["muted"]);
+            note.set_wrap(true);
+            dialog.body.append(&note);
+        }
+        if !rows.is_empty() {
+            let grid = gtk::Grid::new();
+            grid.set_column_spacing(28);
+            grid.set_row_spacing(12);
+            for (row, (name, value)) in rows.iter().enumerate() {
+                grid.attach(&label(name, &["muted"]), 0, row as i32, 1, 1);
+                grid.attach(&label(value, &[]), 1, row as i32, 1, 1);
+            }
+            dialog.body.append(&grid);
+        }
+        if !text.is_empty() {
+            let json = label(&text, &["monospace", "small"]);
+            json.set_selectable(true);
+            json.set_wrap(true);
+            dialog.body.append(&json);
+        }
     }
 }

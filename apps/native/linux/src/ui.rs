@@ -156,6 +156,8 @@ pub struct Ui {
     pub call_card: gtk::Box,
     pub mic: gtk::Button,
     pub deafen: gtk::Button,
+    pub input_options: gtk::Button,
+    pub output_options: gtk::Button,
     /// The header's Join voice, Switch here, Joining… or Leave voice.
     pub voice_join: gtk::Button,
     pub channel_title: gtk::Label,
@@ -350,13 +352,15 @@ impl Ui {
                 .child(&lists)
                 .build(),
         );
-        let dock = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let dock = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         dock.add_css_class("dock");
         let account_avatar = AvatarView::new(32, true);
         account_avatar.set_presence("online");
         let account_name = label("", &["author"]);
         account_name.set_hexpand(true);
         account_name.set_ellipsize(pango::EllipsizeMode::End);
+        // The voice toggles must not widen the sidebar.
+        account_name.set_max_width_chars(10);
         let settings: gtk::Button = crate::app::named("GtkButton", "User Settings");
         settings.set_child(Some(&images.icon_image(Icon::Settings, "#b9bcbe", 18)));
         settings.set_tooltip_text(Some("User Settings"));
@@ -369,14 +373,31 @@ impl Ui {
         deafen.set_child(Some(&images.icon_image(Icon::Headphones, "#b9bcbe", 18)));
         deafen.set_tooltip_text(Some("Deafen"));
         deafen.add_css_class("flat");
+        let options = |name: &str| {
+            let button: gtk::Button = crate::app::named("GtkButton", name);
+            let image = images.icon_image(Icon::ChevronDown, "#b9bcbe", 12);
+            image.set_halign(gtk::Align::Center);
+            image.set_valign(gtk::Align::Center);
+            button.set_child(Some(&image));
+            button.set_tooltip_text(Some(name));
+            button.add_css_class("flat");
+            button.add_css_class("device-options");
+            button
+        };
+        let input_options = options("Input Options");
+        let output_options = options("Output Options");
         let sign_out: gtk::Button = crate::app::named("GtkButton", "Sign out");
         sign_out.set_child(Some(&images.icon_image(Icon::LogOut, "#b9bcbe", 18)));
         sign_out.set_tooltip_text(Some("Sign out"));
         sign_out.add_css_class("flat");
         dock.append(&account_avatar.root);
         dock.append(&account_name);
-        dock.append(&mic);
-        dock.append(&deafen);
+        let audio = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        audio.append(&mic);
+        audio.append(&input_options);
+        audio.append(&deafen);
+        audio.append(&output_options);
+        dock.append(&audio);
         dock.append(&settings);
         dock.append(&sign_out);
         let call_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -570,6 +591,8 @@ impl Ui {
             call_card,
             mic,
             deafen,
+            input_options,
+            output_options,
             voice_join,
             channel_title,
             status,
