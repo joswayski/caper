@@ -5,6 +5,7 @@
 //! buttons and errors.
 use crate::composer::{Composer, LINE};
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
+use crate::icons::{self, Icon};
 use crate::theme::*;
 use caper_client::model as core;
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
@@ -43,6 +44,7 @@ fn width(l: &IDWriteTextLayout) -> f32 {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Item {
+    Reply,
     Edit,
     Pin,
     Unpin,
@@ -56,6 +58,7 @@ pub enum Item {
 impl Item {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Reply => "Reply",
             Self::Edit => "Edit message",
             Self::Pin => "Pin message",
             Self::Unpin => "Unpin message",
@@ -69,11 +72,28 @@ impl Item {
     pub fn enabled(self) -> bool {
         self != Self::PinSaving
     }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::Reply => Icon::Reply,
+            Self::Edit => Icon::Pencil,
+            Self::Pin | Self::PinSaving => Icon::Pin,
+            Self::Unpin => Icon::PinOff,
+            Self::CopyText => Icon::Copy,
+            Self::CopyId => Icon::Hash,
+            Self::Delete => Icon::Trash,
+        }
+    }
 }
 
-const MENU_W: f32 = 220.0;
+/// egui's popup: 244 DIPs of content inside a 6-DIP margin, a 30-DIP
+/// "Message actions" heading with its close button, then 36-DIP items.
 const MENU_PAD: f32 = 6.0;
-const ITEM_H: f32 = 32.0;
+const MENU_W: f32 = 244.0 + 2.0 * MENU_PAD;
+const MENU_HEAD: f32 = 30.0 + 4.0;
+const ITEM_H: f32 = 36.0;
+/// Danger items (Delete message), as in the egui client.
+const DANGER: u32 = 0xFF8C9A;
 
 /// The actions menu of message `row`, at (x, y) in client DIPs.
 pub struct Menu {
@@ -83,11 +103,15 @@ pub struct Menu {
     pub x: f32,
     pub y: f32,
     pub hover: Option<usize>,
+    pub close_hover: bool,
 }
 
 impl Menu {
     pub fn size(&self) -> (f32, f32) {
-        (MENU_W, 2.0 * MENU_PAD + ITEM_H * self.items.len() as f32)
+        (
+            MENU_W,
+            2.0 * MENU_PAD + MENU_HEAD + ITEM_H * self.items.len() as f32,
+        )
     }
 
     /// Opens below (x, bottom) right-aligned to x, or above `top` when it
@@ -108,6 +132,7 @@ impl Menu {
             x: 0.0,
             y: 0.0,
             hover: None,
+            close_hover: false,
         };
         let (w, h) = m.size();
         m.x = (right - w).max(4.0);
@@ -124,10 +149,19 @@ impl Menu {
         (self.x, self.y, w, h)
     }
 
+    pub fn close_rect(&self) -> Rect {
+        (
+            self.x + MENU_W - MENU_PAD - 24.0,
+            self.y + MENU_PAD + 3.0,
+            24.0,
+            24.0,
+        )
+    }
+
     pub fn item_rect(&self, k: usize) -> Rect {
         (
             self.x + MENU_PAD,
-            self.y + MENU_PAD + ITEM_H * k as f32,
+            self.y + MENU_PAD + MENU_HEAD + ITEM_H * k as f32,
             MENU_W - 2.0 * MENU_PAD,
             ITEM_H,
         )
@@ -143,23 +177,52 @@ impl Menu {
         unsafe {
             dc.Clear(Some(&D2D1_COLOR_F::default()));
             let body = rect(0.0, 0.0, w, h);
-            fill_round(dc, body, RADIUS, &g.brushes.raised);
+            fill_round(dc, body, RADIUS, &g.brushes.surface);
             stroke_round(dc, body, RADIUS, &g.brushes.border);
+            let title = g.layout(&gfx::wide("Message actions"), &g.formats.menu_title, 1e6)?;
+            crate::text::draw(
+                dc,
+                &title,
+                MENU_PAD,
+                MENU_PAD + (30.0 - height(&title)) / 2.0,
+                &g.brushes.text,
+            );
+            let (cx, cy, cw, ch) = self.close_rect();
+            let (cx, cy) = (cx - self.x, cy - self.y);
+            if self.close_hover {
+                fill_round(dc, rect(cx, cy, cx + cw, cy + ch), 6.0, &g.brushes.hover);
+            }
+            icons::draw(
+                dc,
+                Icon::Close,
+                rect(cx + 3.0, cy + 3.0, cx + cw - 3.0, cy + ch - 3.0),
+                if self.close_hover { TEXT } else { TEXT_MUTED },
+                1.0,
+            );
             for (k, item) in self.items.iter().enumerate() {
                 let (ix, iy, iw, ih) = self.item_rect(k);
                 let (ix, iy) = (ix - self.x, iy - self.y);
                 if self.hover == Some(k) && item.enabled() {
-                    fill_round(dc, rect(ix, iy, ix + iw, iy + ih), 6.0, &g.brushes.hover);
+                    fill_round(dc, rect(ix, iy, ix + iw, iy + ih), 4.0, &g.brushes.border);
                 }
-                let brush = if !item.enabled() {
-                    &g.brushes.hint
-                } else if *item == Item::Delete {
-                    &g.brushes.error
-                } else {
-                    &g.brushes.text
+                let (color, alpha) = match item {
+                    _ if !item.enabled() => (TEXT, 0.5),
+                    Item::Delete => (DANGER, 1.0),
+                    _ => (TEXT, 1.0),
                 };
-                let l = layout(g, item.label(), &g.formats.note, iw - 20.0)?;
-                crate::text::draw(dc, &l, ix + 10.0, iy + (ih - height(&l)) / 2.0, brush);
+                let cy = iy + ih / 2.0;
+                icons::draw(
+                    dc,
+                    item.icon(),
+                    rect(ix + 8.0, cy - 8.0, ix + 24.0, cy + 8.0),
+                    color,
+                    alpha,
+                );
+                let l = layout(g, item.label(), &g.formats.menu_item, iw - 40.0)?;
+                let brush = g.solid(color);
+                brush.SetOpacity(alpha);
+                crate::text::draw(dc, &l, ix + 32.0, cy - height(&l) / 2.0, &brush);
+                brush.SetOpacity(1.0);
             }
         }
         Ok(())
@@ -556,31 +619,7 @@ use windows::Win32::Foundation::{LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-/// The toolbar's buttons are 30 DIPs apart from x = 3; "More" is the third.
-const MORE_SLOT: f32 = 3.0 + 30.0 * 2.0;
-
 impl App {
-    /// The hover toolbar's rectangle in client DIPs and its row.
-    pub fn toolbar_rect(&self) -> Option<(usize, Rect)> {
-        let i = self.hover_row?;
-        let y = ((self.rows.top[i] - self.scroll_top) as f32 + self.row_lead(i) - 12.0).max(0.0);
-        Some((
-            i,
-            (
-                self.list_x() + self.list_w() - crate::theme::TOOLBAR.0 - 16.0,
-                crate::theme::HEADER_H + y,
-                crate::theme::TOOLBAR.0,
-                crate::theme::TOOLBAR.1,
-            ),
-        ))
-    }
-
-    /// The row whose toolbar's "More" is under (x, y).
-    pub fn more_at(&self, x: f32, y: f32) -> Option<usize> {
-        let (i, (tx, ty, _, th)) = self.toolbar_rect()?;
-        (self.live.is_some() && contains((tx + MORE_SLOT, ty, 30.0, th), x, y)).then_some(i)
-    }
-
     /// Opens row `i`'s actions menu under its toolbar.
     pub fn open_menu(&mut self, i: usize) {
         let Some(live) = &self.live else { return };
@@ -588,6 +627,9 @@ impl App {
             return;
         };
         let mut items = Vec::new();
+        if live.can_react() && !m.is_deleted() {
+            items.push(Item::Reply);
+        }
         if live.can_edit(&m) {
             items.push(Item::Edit);
         }
@@ -607,7 +649,8 @@ impl App {
         if live.can_delete(&m) {
             items.push(Item::Delete);
         }
-        let (tx, ty, tw, th) = self.toolbar_rect().map_or((0.0, 0.0, 0.0, 0.0), |(_, r)| r);
+        let (tx, ty, tw, th) = self.bar_rect_for(i);
+        self.close_picker();
         self.menu = Some(Menu::new(i, m.id, items, tx + tw, ty, ty + th, self.h));
         self.overlay_changed();
     }
@@ -629,6 +672,7 @@ impl App {
             return;
         };
         match item {
+            Item::Reply => return self.select_reply(menu.row),
             Item::Edit if live.can_edit(&m) => self.open_dialog(Dialog::edit(m)),
             Item::Delete if live.can_delete(&m) => self.open_dialog(Dialog::delete(m)),
             Item::Pin => live.pin(&m, true),
@@ -799,8 +843,10 @@ impl App {
             WM_MOUSEMOVE => {
                 self.pointer = Some((x, y));
                 let hover = menu.hit(x, y);
-                if hover != menu.hover {
+                let close_hover = contains(menu.close_rect(), x, y);
+                if hover != menu.hover || close_hover != menu.close_hover {
                     menu.hover = hover;
+                    menu.close_hover = close_hover;
                     self.dirty.overlay = true;
                     self.need = true;
                 }
@@ -810,6 +856,7 @@ impl App {
                 match menu.hit(x, y) {
                     Some(k) if menu.items[k].enabled() => self.menu_activate(k),
                     Some(_) => {}
+                    None if contains(menu.close_rect(), x, y) => self.close_menu(),
                     None if contains(menu.rect(), x, y) => {}
                     // A click outside closes it, as egui's popups do.
                     None => self.close_menu(),

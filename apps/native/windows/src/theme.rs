@@ -37,4 +37,3 @@ pub const MEMBER_H: f32 = 41.0;
 pub const RAIL_ITEM: f32 = 40.0;
 pub const RAIL_PITCH: f32 = 47.0;
 pub const RAIL_TOP: f32 = 12.0;
-pub const TOOLBAR: (f32, f32) = (96.0, 28.0);

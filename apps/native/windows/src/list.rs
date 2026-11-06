@@ -18,6 +18,8 @@ pub const BODY_X: f32 = PAD_X + AVATAR + GAP;
 const NAME_H: f32 = 20.0;
 const REACTION_H: f32 = 24.0;
 const INLINE_EMOJI_SCALE: f32 = 1.2;
+/// The Add reaction button after the chips.
+const ADD: f32 = 28.0;
 
 pub struct Row {
     pub height: f32,
@@ -36,6 +38,8 @@ pub struct Row {
     /// Each reaction chip's label, its width and whether it is yours.
     pub reactions: Vec<(IDWriteTextLayout, f32, bool)>,
     pub reactions_y: f32,
+    /// "Add reaction" after the chips, on a live message.
+    pub add: bool,
     /// A grouped row's "(edited)" marker, its width and its position
     /// from the text's origin.
     pub edited: Option<(IDWriteTextLayout, f32, f32, f32)>,
@@ -66,6 +70,8 @@ pub struct Row {
 pub enum Action {
     /// Toggle your reaction on this chip.
     Chip(usize),
+    /// Open the reaction picker (after the chips).
+    Add,
     Retry,
     Dismiss,
 }
@@ -433,6 +439,7 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         header,
         text_y: 0.0,
         picture_y: 0.0,
+        add: c.is_live() && !m.deleted && !reactions.is_empty(),
         reactions,
         reactions_y: 0.0,
         edited,
@@ -561,6 +568,10 @@ fn controls(row: &Row, top: f32) -> Vec<(Action, Common::D2D_RECT_F)> {
         let y = top + row.reactions_y;
         out.push((Action::Chip(k), rect(x, y, x + w + 16.0, y + REACTION_H)));
         x += w + 16.0 + 6.0;
+    }
+    if row.add {
+        let y = top + row.reactions_y - 2.0;
+        out.push((Action::Add, rect(x, y, x + ADD, y + ADD)));
     }
     if let Some((_, w, buttons)) = &row.error {
         let y = top + row.error_y;
@@ -749,6 +760,17 @@ pub fn draw_row(
             crate::text::draw(dc, l, BODY_X, top + row.error_y + 3.0, &g.brushes.error);
         }
         for (action, r) in controls(row, top) {
+            if action == Action::Add {
+                let i = rect(r.left + 5.0, r.top + 5.0, r.right - 5.0, r.bottom - 5.0);
+                crate::icons::draw(
+                    dc,
+                    crate::icons::Icon::SmilePlus,
+                    i,
+                    crate::theme::TEXT_MUTED,
+                    1.0,
+                );
+                continue;
+            }
             let (l, fill, border, label) = match action {
                 Action::Chip(k) => {
                     let (l, _, mine) = &row.reactions[k];
@@ -759,6 +781,7 @@ pub fn draw_row(
                         (l, &g.brushes.raised, &g.brushes.border, &g.brushes.text)
                     }
                 }
+                Action::Add => continue,
                 Action::Retry | Action::Dismiss => {
                     let Some((_, _, buttons)) = &row.error else {
                         continue;

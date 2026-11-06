@@ -110,6 +110,11 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    /// A real conversation from the client core, not the development mock.
+    pub fn is_live(&self) -> bool {
+        self.demo.is_none()
+    }
+
     pub fn live(
         spaces: Vec<Space>,
         space: usize,

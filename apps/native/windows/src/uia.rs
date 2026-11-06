@@ -8,6 +8,7 @@
 //! bounding rectangles). Each message row implements Text too, over its
 //! plain text: screen readers can read it by character, word and line, find
 //! its bounds and select in it (the selection is the history's selection).
+use crate::actions::{PPart, Tool};
 use crate::list::Action;
 use crate::overlay::{Kind, Part as DPart};
 use crate::signin::Part;
@@ -43,6 +44,15 @@ pub enum Id {
     MenuItem(usize),
     /// A part of the open dialog, which replaces the tree while shown.
     Dialog(DPart),
+    /// A row's hover-toolbar control, reachable without hovering.
+    Tool(usize, Tool),
+    MenuClose,
+    /// The reaction picker and its parts.
+    Picker,
+    Pick(PPart),
+    /// "Replying to …" above the composer, and its Cancel reply.
+    Reply,
+    ReplyCancel,
 }
 
 fn na() -> Error {
@@ -55,6 +65,9 @@ fn with<R>(f: impl FnOnce(&mut App) -> Result<R>) -> Result<R> {
 
 /// The editable field behind a node: the sign-in field or the composer.
 fn field(a: &App, id: Id) -> &Composer {
+    if let (Id::Pick(_), Some(p)) = (id, &a.picker) {
+        return &p.search;
+    }
     match (id, &a.signin, &a.dialog) {
         (Id::Dialog(_), _, Some(d)) => &d.field,
         (Id::Sign(_), Some(s), _) => s.field(),
@@ -66,6 +79,9 @@ fn field_mut(a: &mut App, id: Id) -> &mut Composer {
     if let (Id::Dialog(_), Some(d)) = (id, &mut a.dialog) {
         return &mut d.field;
     }
+    if let (Id::Pick(_), Some(p)) = (id, &mut a.picker) {
+        return &mut p.search;
+    }
     match (id, &mut a.signin) {
         (Id::Sign(_), Some(s)) => s.field_mut(),
         _ => &mut a.composer,
@@ -75,6 +91,8 @@ fn field_mut(a: &mut App, id: Id) -> &mut Composer {
 fn field_changed(a: &mut App, id: Id, text: bool) {
     if matches!(id, Id::Dialog(_)) {
         a.dialog_changed();
+    } else if matches!(id, Id::Pick(_)) {
+        a.picker_changed(text);
     } else if matches!(id, Id::Sign(_)) {
         a.signin_changed(text);
     } else {
@@ -86,6 +104,9 @@ fn field_changed(a: &mut App, id: Id, text: bool) {
 fn focused(a: &App) -> Option<Id> {
     if let Some(d) = &a.dialog {
         return d.field.focused.then_some(Id::Dialog(DPart::Field));
+    }
+    if let Some(p) = &a.picker {
+        return p.search.focused.then_some(Id::Pick(PPart::Search));
     }
     match &a.signin {
         Some(s) => s.field().focused.then_some(Id::Sign(Part::Field)),
@@ -101,20 +122,25 @@ fn children(a: &App, id: Id) -> Vec<Id> {
         return d.parts().map(Id::Dialog).collect();
     }
     match id {
-        Id::Root => vec![
-            Id::Rail,
-            Id::Channels,
-            Id::History,
-            Id::Composer,
-            Id::Members,
-        ]
-        .into_iter()
-        .chain(a.menu.as_ref().map(|_| Id::Menu))
-        .collect(),
-        Id::Menu => a
-            .menu
+        Id::Root => {
+            let mut out = vec![Id::Rail, Id::Channels, Id::History];
+            if a.reply.is_some() {
+                out.extend([Id::Reply, Id::ReplyCancel]);
+            }
+            out.extend([Id::Composer, Id::Members]);
+            out.extend(a.menu.as_ref().map(|_| Id::Menu));
+            out.extend(a.picker.as_ref().map(|_| Id::Picker));
+            out
+        }
+        Id::Menu => a.menu.as_ref().map_or_else(Vec::new, |m| {
+            std::iter::once(Id::MenuClose)
+                .chain((0..m.items.len()).map(Id::MenuItem))
+                .collect()
+        }),
+        Id::Picker => a
+            .picker
             .as_ref()
-            .map_or_else(Vec::new, |m| (0..m.items.len()).map(Id::MenuItem).collect()),
+            .map_or_else(Vec::new, |p| p.parts().into_iter().map(Id::Pick).collect()),
         Id::Rail => (0..a.c.spaces.len()).map(Id::Space).collect(),
         Id::Channels => (0..a.c.channels.len()).map(Id::Channel).collect(),
         Id::History => a.visible_rows().map(Id::Row).collect(),
@@ -123,6 +149,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .row_controls(i)
             .into_iter()
             .map(|(action, _)| Id::Control(i, action))
+            .chain(a.tools(i).into_iter().map(|t| Id::Tool(i, t.tool)))
             .collect(),
         _ => Vec::new(),
     }
@@ -134,8 +161,9 @@ fn parent(id: Id) -> Option<Id> {
         Id::Space(_) => Id::Rail,
         Id::Channel(_) => Id::Channels,
         Id::Row(_) => Id::History,
-        Id::Control(i, _) => Id::Row(i),
-        Id::MenuItem(_) => Id::Menu,
+        Id::Control(i, _) | Id::Tool(i, _) => Id::Row(i),
+        Id::MenuItem(_) | Id::MenuClose => Id::Menu,
+        Id::Pick(_) => Id::Picker,
         Id::Member(_) => Id::Members,
         _ => Id::Root,
     })
@@ -154,6 +182,17 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Dialog(p) => a.dialog.as_ref().is_some_and(|d| d.part_rect(p).is_some()),
         Id::Menu => a.menu.is_some() && a.dialog.is_none(),
         Id::MenuItem(k) => a.dialog.is_none() && a.menu.as_ref().is_some_and(|m| k < m.items.len()),
+        Id::MenuClose => a.menu.is_some() && a.dialog.is_none(),
+        Id::Tool(i, t) => {
+            a.dialog.is_none()
+                && a.visible_rows().contains(&i)
+                && a.tools(i).iter().any(|s| s.tool == t)
+        }
+        Id::Picker => a.picker.is_some() && a.dialog.is_none(),
+        Id::Pick(part) => {
+            a.dialog.is_none() && a.picker.as_ref().is_some_and(|p| p.parts().contains(&part))
+        }
+        Id::Reply | Id::ReplyCancel => a.reply.is_some() && a.dialog.is_none(),
         _ => (a.signin.is_none() && a.dialog.is_none()) || id == Id::Root,
     }
 }
@@ -214,9 +253,11 @@ fn name(a: &App, id: Id) -> String {
                     let n = r.count;
                     let s = if n == 1 { "reaction" } else { "reactions" };
                     let you = if r.mine { ", including you" } else { "" };
-                    format!("{}, {n} {s}{you}", r.emoji)
+                    let name = crate::emoji::find(&r.emoji).map_or(r.emoji.as_str(), |e| &e.name);
+                    format!("{name}, {n} {s}{you}")
                 })
         }
+        Id::Control(_, Action::Add) => "Add reaction".into(),
         Id::Control(_, Action::Retry) => "Retry".into(),
         Id::Control(_, Action::Dismiss) => "Dismiss".into(),
         Id::Members => format!("Members, {}", c.members.len()),
@@ -231,6 +272,14 @@ fn name(a: &App, id: Id) -> String {
         ),
         Id::Composer => format!("Message #{}", c.channels[c.channel].name),
         Id::Menu => "Message actions".into(),
+        Id::MenuClose => "Close message actions".into(),
+        Id::Tool(_, t) => t.label(),
+        Id::Picker => "Add a reaction".into(),
+        Id::Pick(part) => a.picker.as_ref().map_or_else(String::new, |p| p.name(part)),
+        Id::Reply => a.reply.as_ref().map_or_else(String::new, |r| {
+            format!("Replying to {}: {}", r.target.author.name, r.target.text)
+        }),
+        Id::ReplyCancel => "Cancel reply".into(),
         Id::MenuItem(k) => a
             .menu
             .as_ref()
@@ -276,6 +325,11 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Composer | Id::Sign(Part::Field) => UIA_EditControlTypeId,
         Id::Sign(Part::Title | Part::Message) => UIA_TextControlTypeId,
         Id::Menu => UIA_MenuControlTypeId,
+        Id::Picker => UIA_PaneControlTypeId,
+        Id::Pick(PPart::Category(_)) => UIA_TabItemControlTypeId,
+        Id::Pick(PPart::Search) => UIA_EditControlTypeId,
+        Id::Reply => UIA_TextControlTypeId,
+        Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel => UIA_ButtonControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Dialog(DPart::Field) => UIA_EditControlTypeId,
         Id::Dialog(DPart::Title | DPart::Note | DPart::Error) => UIA_TextControlTypeId,
@@ -300,13 +354,37 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Menu => (12, 0),
         Id::MenuItem(k) => (13, k),
         Id::Dialog(p) => (14, p as usize),
+        Id::Tool(i, t) => (
+            15,
+            i * 8
+                + match t {
+                    Tool::Quick(k) => k,
+                    Tool::Reply => 3,
+                    Tool::Emoji => 4,
+                    Tool::More => 5,
+                },
+        ),
+        Id::MenuClose => (16, 0),
+        Id::Picker => (17, 0),
+        Id::Pick(part) => (
+            18,
+            match part {
+                PPart::Close => 0,
+                PPart::Search => 1,
+                PPart::Category(k) => 2 + k,
+                PPart::Emoji(i) => 16 + i,
+            },
+        ),
+        Id::Reply => (19, 0),
+        Id::ReplyCancel => (19, 1),
         Id::Control(i, action) => (
             11,
             i * 64
                 + match action {
                     Action::Retry => 0,
                     Action::Dismiss => 1,
-                    Action::Chip(k) => 2 + k.min(61),
+                    Action::Add => 2,
+                    Action::Chip(k) => 3 + k.min(60),
                 },
         ),
     };
@@ -357,6 +435,25 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .as_ref()
             .and_then(|d| d.part_rect(p))
             .unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Tool(i, t) => a
+            .tools(i)
+            .iter()
+            .position(|s| s.tool == t)
+            .map_or((0.0, 0.0, 0.0, 0.0), |k| a.tool_rect(i, k)),
+        Id::MenuClose => a
+            .menu
+            .as_ref()
+            .map_or((0.0, 0.0, 0.0, 0.0), crate::overlay::Menu::close_rect),
+        Id::Picker => a
+            .picker
+            .as_ref()
+            .map_or((0.0, 0.0, 0.0, 0.0), crate::actions::Picker::rect),
+        Id::Pick(part) => a
+            .picker
+            .as_ref()
+            .map_or((0.0, 0.0, 0.0, 0.0), |p| p.part_rect(part)),
+        Id::Reply => a.reply_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::ReplyCancel => a.reply_cancel_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Sign(p) => a
             .signin
             .as_ref()
@@ -448,7 +545,18 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
             Id::Sign(Part::Title | Part::Message) => false,
-            Id::MenuItem(_) => pattern == UIA_InvokePatternId,
+            Id::MenuItem(_) | Id::MenuClose | Id::Tool(..) | Id::ReplyCancel => {
+                pattern == UIA_InvokePatternId
+            }
+            Id::Pick(PPart::Category(_)) => {
+                pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
+            }
+            Id::Pick(PPart::Search) => {
+                pattern == UIA_ValuePatternId
+                    || pattern == UIA_TextPatternId
+                    || pattern == UIA_TextPattern2Id
+            }
+            Id::Pick(_) => pattern == UIA_InvokePatternId,
             Id::Dialog(DPart::Field) => {
                 pattern == UIA_ValuePatternId
                     || pattern == UIA_TextPatternId
@@ -496,6 +604,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::Space(_)
                         | Id::Channel(_)
                         | Id::MenuItem(_)
+                        | Id::Pick(PPart::Search)
                         | Id::Dialog(DPart::Field | DPart::Reload | DPart::Cancel | DPart::Primary)
                         | Id::Sign(Part::Field | Part::Primary | Part::OtherEmail | Part::Resend)
                 )),
@@ -510,6 +619,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         .and_then(|m| m.items.get(k))
                         .is_some_and(|item| item.enabled()),
                     (Id::Sign(p), Some(s)) => s.part_rect(p).is_some_and(|(_, on)| on),
+                    (Id::Tool(i, t), _) => a.tools(i).iter().any(|s| s.tool == t && s.enabled),
                     _ => true,
                 }),
                 // Errors and \"We sent a new code\" are announced when they appear.
@@ -586,6 +696,7 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::Composer => a.set_composer_focus(true),
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
+                Id::Pick(PPart::Search) => a.picker_activate(PPart::Search),
                 _ => {}
             }
             Ok(())
@@ -640,6 +751,10 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::MenuItem(k) => a.menu_activate(k),
                 Id::Dialog(p) => a.dialog_activate(p),
                 Id::Control(i, action) => a.row_action(i, action),
+                Id::Tool(i, t) => a.tool_activate(i, t),
+                Id::MenuClose => a.close_menu(),
+                Id::Pick(part) => a.picker_activate(part),
+                Id::ReplyCancel => a.cancel_reply(),
                 _ => {}
             }
             Ok(())
@@ -666,6 +781,9 @@ impl ISelectionItemProvider_Impl for Node_Impl {
             Ok(match id {
                 Id::Space(i) => i == a.c.space,
                 Id::Channel(i) => i == a.c.channel,
+                Id::Pick(PPart::Category(k)) => {
+                    a.picker.as_ref().and_then(|p| p.selected_category()) == Some(k)
+                }
                 _ => false,
             }
             .into())
@@ -754,6 +872,9 @@ impl Doc {
                 a.dialog.as_ref().map_or((0.0, 0.0), |d| d.text_origin())
             }
             (Self::Field(Id::Sign(_)), Some(s)) => s.field_origin,
+            (Self::Field(Id::Pick(_)), _) => {
+                a.picker.as_ref().map_or((0.0, 0.0), |p| p.text_origin())
+            }
             (Self::Field(_), _) => a.composer_text_origin(),
             (Self::Row(i), _) => a.row_text_origin(i),
         }
@@ -1219,9 +1340,16 @@ pub fn raise_rows_changed() {
 
 /// The text field on screen: the sign-in field while signed out.
 fn editable() -> Id {
-    match crate::with_app(|a| (a.dialog.as_ref().map(|d| d.kind), a.signin.is_some())) {
-        Some((Some(Kind::Edit), _)) => Id::Dialog(DPart::Field),
-        Some((_, true)) => Id::Sign(Part::Field),
+    match crate::with_app(|a| {
+        (
+            a.dialog.as_ref().map(|d| d.kind),
+            a.signin.is_some(),
+            a.picker.is_some(),
+        )
+    }) {
+        Some((Some(Kind::Edit), _, _)) => Id::Dialog(DPart::Field),
+        Some((_, true, _)) => Id::Sign(Part::Field),
+        Some((_, _, true)) => Id::Pick(PPart::Search),
         _ => Id::Composer,
     }
 }

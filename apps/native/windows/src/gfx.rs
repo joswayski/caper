@@ -107,6 +107,11 @@ pub struct Formats {
     pub dialog_title: IDWriteTextFormat,
     pub dialog_note: IDWriteTextFormat,
     pub button: IDWriteTextFormat,
+    /// The reaction picker's labels: egui's 12.5px body text.
+    pub picker: IDWriteTextFormat,
+    /// The message menu: its 12.48px bold heading and its items.
+    pub menu_title: IDWriteTextFormat,
+    pub menu_item: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -257,6 +262,9 @@ impl Gfx {
                 dialog_title: fmt(18.4, DWRITE_FONT_WEIGHT_BOLD)?,
                 dialog_note: fmt(12.8, DWRITE_FONT_WEIGHT_NORMAL)?,
                 button: fmt(12.0, DWRITE_FONT_WEIGHT_BOLD)?,
+                picker: fmt(12.5, DWRITE_FONT_WEIGHT_NORMAL)?,
+                menu_title: fmt(12.48, DWRITE_FONT_WEIGHT_BOLD)?,
+                menu_item: fmt(12.48, DWRITE_FONT_WEIGHT_NORMAL)?,
             };
             let f = &formats;
             for f in [

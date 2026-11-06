@@ -289,7 +289,8 @@ impl Live {
         });
     }
 
-    pub fn send(&self, text: String) {
+    /// Sends `text` to the open channel, replying to message `reply_to`.
+    pub fn send(&self, text: String, reply_to: Option<String>) {
         let (Some(channel), Some(chat_token)) = (&self.channel, &self.chat_token) else {
             return;
         };
@@ -303,7 +304,7 @@ impl Live {
             text,
             thread_root_id: None,
             broadcast: false,
-            reply_to_id: None,
+            reply_to_id: reply_to,
             attachment_ids: Vec::new(),
             spoiler_attachment_ids: Vec::new(),
             gif: None,
@@ -403,6 +404,11 @@ impl Live {
 
     pub fn can_edit(&self, m: &core::Message) -> bool {
         m.forward.is_none() && self.can_delete(m)
+    }
+
+    /// You can react and reply in the open channel.
+    pub fn can_react(&self) -> bool {
+        self.chat_token.is_some() && self.channel.is_some()
     }
 
     pub fn can_pin(&self, m: &core::Message) -> bool {

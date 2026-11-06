@@ -13,6 +13,7 @@
 //! in.
 #![windows_subsystem = "windows"]
 
+mod actions;
 mod bench;
 mod composer;
 mod emoji;
@@ -22,6 +23,7 @@ mod overlay;
 #[path = "../../../../shared/messages/formatting.rs"]
 mod formatting;
 mod gfx;
+mod icons;
 #[allow(dead_code)]
 #[path = "../../../../shared/messages/links.rs"]
 mod links;
@@ -43,7 +45,6 @@ use std::ops::Range;
 use std::time::Instant;
 use theme::*;
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectComposition::*;
 use windows::Win32::Graphics::DirectWrite::*;
@@ -100,6 +101,8 @@ struct Dirty {
     signin: bool,
     /// The message menu or a dialog.
     overlay: bool,
+    picker: bool,
+    reply: bool,
 }
 
 impl Dirty {
@@ -114,6 +117,8 @@ impl Dirty {
             toolbar: true,
             signin: true,
             overlay: true,
+            picker: true,
+            reply: true,
         }
     }
 }
@@ -224,6 +229,14 @@ pub struct App {
     pub dialog: Option<overlay::Dialog>,
     menu_p: Panel,
     dialog_p: Panel,
+    /// The reaction picker, the reply above the composer, and the toolbar
+    /// control under the pointer and what the toolbar last drew.
+    pub picker: Option<actions::Picker>,
+    picker_p: Panel,
+    pub reply: Option<actions::ReplyBar>,
+    reply_p: Panel,
+    tool_hover: Option<usize>,
+    bar_drawn: Option<actions::BarKey>,
     quit: bool,
 }
 
@@ -254,6 +267,8 @@ impl App {
             let signin_p = Panel::new(&g)?;
             let menu_p = Panel::new(&g)?;
             let dialog_p = Panel::new(&g)?;
+            let picker_p = Panel::new(&g)?;
+            let reply_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
             let content = g.visual()?;
             let vs = g.dcomp.CreateVirtualSurface(
@@ -273,13 +288,15 @@ impl App {
                 &header.visual,
                 &history_clip,
                 &composer_p.visual,
+                &reply_p.visual,
                 &members.visual,
             ] {
                 root.AddVisual(v, true, &prev)?;
                 prev = v.cast()?;
             }
             root.AddVisual(&menu_p.visual, true, &prev)?;
-            root.AddVisual(&dialog_p.visual, true, &menu_p.visual)?;
+            root.AddVisual(&picker_p.visual, true, &menu_p.visual)?;
+            root.AddVisual(&dialog_p.visual, true, &picker_p.visual)?;
             root.AddVisual(&signin_p.visual, true, &dialog_p.visual)?;
             let (channel_layouts, member_layouts) = side_layouts(&g, &c)?;
             let n = c.messages.len();
@@ -341,6 +358,12 @@ impl App {
                 dialog: None,
                 menu_p,
                 dialog_p,
+                picker: None,
+                picker_p,
+                reply: None,
+                reply_p,
+                tool_hover: None,
+                bar_drawn: None,
                 quit: false,
             })
         }
@@ -355,6 +378,8 @@ impl App {
         self.member_layouts = members;
         self.sel = None;
         self.hover_row = None;
+        self.menu = None;
+        self.picker = None;
         self.scroll_top = 0.0;
         self.at_end = true;
         self.drawn = None;
@@ -433,6 +458,10 @@ impl App {
                         } else {
                             self.drafts.insert(old, text);
                         }
+                    }
+                    // A reply belongs to the channel it was started in.
+                    if self.ids.channels.get(self.c.channel) != ids.channels.get(c.channel) {
+                        self.reply = None;
                     }
                     self.ids = ids;
                     self.status = None;
@@ -546,7 +575,7 @@ impl App {
 
     /// Height of the visible history.
     pub fn vh(&self) -> f32 {
-        (self.box_rect().1 - 10.0 - HEADER_H).max(0.0)
+        (self.box_rect().1 - 10.0 - HEADER_H - self.reply_h()).max(0.0)
     }
 
     pub fn visible_rows(&self) -> Range<usize> {
@@ -768,6 +797,9 @@ impl App {
         if let Some(s) = &self.signin {
             return s.field().focused.then(|| (s.field(), s.field_origin));
         }
+        if let Some(p) = &self.picker {
+            return p.search.focused.then(|| (&p.search, p.text_origin()));
+        }
         self.composer
             .focused
             .then(|| (&self.composer, self.composer_text_origin()))
@@ -780,6 +812,9 @@ impl App {
         if let Some(s) = &mut self.signin {
             return Some(s.field_mut()).filter(|f| f.focused);
         }
+        if let Some(p) = &mut self.picker {
+            return Some(&mut p.search).filter(|f| f.focused);
+        }
         Some(&mut self.composer).filter(|c| c.focused)
     }
 
@@ -789,6 +824,8 @@ impl App {
             self.dialog_changed();
         } else if self.signin.is_some() {
             self.signin_changed(text);
+        } else if self.picker.is_some() {
+            self.picker_changed(text);
         } else {
             self.composer_changed();
         }
@@ -969,7 +1006,13 @@ impl App {
             return Ok(());
         }
         if let Some(live) = &self.live {
-            live.send(text);
+            let reply = self.reply.take().map(|r| r.target.id);
+            if reply.is_some() {
+                self.dirty.layout = true;
+                self.dirty.reply = true;
+                self.events |= EV_SCREEN;
+            }
+            live.send(text, reply);
         } else {
             self.c.send_local(text);
             self.rows.append(&self.g, &self.c)?;
@@ -995,6 +1038,11 @@ impl App {
             return r;
         }
         if let Some(r) = self.overlay_input(msg, wp, x, y, ctrl, shift) {
+            return r;
+        }
+        if self.picker.is_some()
+            && let Some(r) = self.picker_input(msg, wp, x, y, ctrl, shift)
+        {
             return r;
         }
         match msg {
@@ -1046,6 +1094,8 @@ impl App {
                 if self.history_hover() != self.hover_row {
                     self.need = true;
                 }
+                self.track_tool_hover();
+                self.track_reply_hover();
                 if self.composer_drag {
                     let (tx, ty) = self.composer_text_origin();
                     let p = self.composer.hit(x - tx, y - ty - self.composer.scroll());
@@ -1063,6 +1113,8 @@ impl App {
                 self.tracking = false;
                 self.pointer = None;
                 self.update_hover();
+                self.track_tool_hover();
+                self.track_reply_hover();
                 self.need = true;
             }
             WM_LBUTTONDOWN => {
@@ -1078,8 +1130,11 @@ impl App {
                     self.composer_changed();
                 } else {
                     self.set_composer_focus(false);
-                    if let Some(i) = self.more_at(x, y) {
-                        self.open_menu(i);
+                    if let Some((i, k)) = self.tool_at(x, y) {
+                        if let Some(t) = self.tools(i).get(k) {
+                            self.tool_activate(i, t.tool);
+                        }
+                    } else if self.reply_click(x, y) {
                     } else if let Some((i, action)) = self.action_at(x, y) {
                         self.row_action(i, action);
                     } else if self.in_history(x, y) {
@@ -1149,7 +1204,10 @@ impl App {
                     || self.pointer.is_some_and(|(x, y)| {
                         self.link_at(x, y).is_some()
                             || self.action_at(x, y).is_some()
-                            || self.more_at(x, y).is_some()
+                            || self.tool_at(x, y).is_some()
+                            || self.reply_cancel_rect().is_some_and(|(l, t, w, h)| {
+                                x >= l && x < l + w && y >= t && y < t + h
+                            })
                     });
                 unsafe {
                     SetCursor(
@@ -1401,6 +1459,7 @@ impl App {
                 let r = &m.reactions[k];
                 live.react(&id, &r.emoji, !r.mine);
             }
+            list::Action::Add => return self.open_add_picker(i),
             list::Action::Retry => live.retry_reaction(&id),
             list::Action::Dismiss => live.dismiss_reaction(&id),
         }
@@ -1574,13 +1633,14 @@ impl App {
         self.header.offset((lx * s).round(), 0.0)?;
         self.dirty.members |= self.members.ensure(&self.g, px(MEMBERS_W), px(h))?;
         self.members.offset(((w - MEMBERS_W) * s).round(), 0.0)?;
-        self.dirty.toolbar |= self.toolbar.ensure(&self.g, px(TOOLBAR.0), px(TOOLBAR.1))?;
         let bw = lw - 36.0;
         self.box_h = self.composer.relayout(&self.g, bw - 2.0 * composer::PAD)?;
         let (bx, by, _, _) = self.box_rect();
         self.composer_p.ensure(&self.g, px(bw), px(self.box_h))?;
         self.composer_p.offset((bx * s).round(), (by * s).round())?;
         self.dirty.composer = true;
+        self.relayout_reply();
+        self.dirty.reply = true;
         let vh = self.vh();
         unsafe {
             self.history_clip.SetOffsetX2((lx * s).round())?;
@@ -1786,9 +1846,10 @@ impl App {
                 self.draw_strip(y0, y1)?;
             }
         }
-        match self.hover_row {
+        match self.bar_row() {
             Some(i) => self.toolbar.offset(
-                ((self.list_w() - TOOLBAR.0 - 16.0) * self.scale).round(),
+                ((self.list_w() - actions::bar_width(self.tools(i).len()) - 16.0) * self.scale)
+                    .round(),
                 (((self.rows.top[i] - self.scroll_top) as f32 + self.row_lead(i) - 12.0).max(0.0)
                     * self.scale)
                     .round(),
@@ -2019,20 +2080,6 @@ impl App {
                 Ok(())
             })?;
         }
-        if d.toolbar {
-            self.toolbar.draw(s, |dc| unsafe {
-                dc.Clear(Some(&D2D1_COLOR_F::default()));
-                let r = rect(0.0, 0.0, TOOLBAR.0, TOOLBAR.1);
-                fill_round(dc, r, RADIUS, &g.brushes.raised);
-                stroke_round(dc, r, RADIUS, &g.brushes.border);
-                for (i, label) in ["☺", "↩", "⋯"].iter().enumerate() {
-                    let l = g.layout(&gfx::wide(label), &g.formats.toolbar, 30.0)?;
-                    l.SetMaxHeight(22.0)?;
-                    text::draw(dc, &l, 3.0 + 30.0 * i as f32, 3.0, &g.brushes.text);
-                }
-                Ok(())
-            })?;
-        }
         if d.composer {
             let (_, _, bw, bh) = self.box_rect();
             let placeholder = format!("Message #{}", c.channels[c.channel].name);
@@ -2074,6 +2121,7 @@ impl App {
         }
         self.update_history()?;
         // Before the panels, which take the rest of the damage flags.
+        self.draw_actions()?;
         self.draw_overlays()?;
         self.draw_panels()?;
         unsafe { self.g.dcomp.Commit()? };

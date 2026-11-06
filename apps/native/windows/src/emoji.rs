@@ -3,12 +3,10 @@
 //! `emoji::inline`. Each match becomes a DirectWrite inline object that
 //! draws its sheet cell, so emoji look the same on every client and never go
 //! through the colour-font rasterizer.
-use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry as Slot;
 use std::ops::Range;
-use std::sync::OnceLock;
-use unicode_segmentation::UnicodeSegmentation;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
@@ -16,25 +14,9 @@ use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::*;
 use windows::core::*;
 
-#[derive(Debug, Deserialize)]
-pub struct Entry {
-    pub id: String,
-    pub emoji: String,
-    pub name: String,
-    pub sheet: usize,
-    pub x: u32,
-    pub y: u32,
-}
+pub use caper_client::emoji::{CATEGORIES, Entry, find, picker_choices};
 
 pub const CELL: u32 = 64;
-
-pub fn catalog() -> &'static [Entry] {
-    static CATALOG: OnceLock<Vec<Entry>> = OnceLock::new();
-    CATALOG.get_or_init(|| {
-        serde_json::from_slice(include_bytes!("../../../../shared/emoji/catalog.json"))
-            .expect("embedded emoji catalog is valid")
-    })
-}
 
 const SHEETS: [&[u8]; 15] = [
     include_bytes!("../../../../shared/emoji/sheet-0.png"),
@@ -54,74 +36,22 @@ const SHEETS: [&[u8]; 15] = [
     include_bytes!("../../../../shared/emoji/sheet-14.png"),
 ];
 
-pub fn unicode_id(value: &str) -> String {
-    let parts: Vec<String> = value.chars().map(|c| format!("{:x}", c as u32)).collect();
-    if parts.iter().any(|p| p == "200d") {
-        parts.join("-")
-    } else {
-        parts
-            .into_iter()
-            .filter(|p| p != "fe0f")
-            .collect::<Vec<_>>()
-            .join("-")
-    }
-}
-
-/// The catalog by Twemoji id, and by its emoji without U+FE0F.
-fn index() -> &'static HashMap<String, usize> {
-    static INDEX: OnceLock<HashMap<String, usize>> = OnceLock::new();
-    INDEX.get_or_init(|| {
-        let mut index = HashMap::new();
-        for (i, e) in catalog().iter().enumerate() {
-            index.entry(e.id.clone()).or_insert(i);
-            index.entry(e.emoji.replace('\u{fe0f}', "")).or_insert(i);
-        }
-        index
-    })
-}
-
-/// Catalog emoji that are one character (no U+FE0F), by that character.
-fn singles() -> &'static HashMap<char, usize> {
-    static SINGLES: OnceLock<HashMap<char, usize>> = OnceLock::new();
-    SINGLES.get_or_init(|| {
-        let mut singles = HashMap::new();
-        for (i, e) in catalog().iter().enumerate() {
-            let mut cs = e.emoji.chars();
-            if let (Some(c), None) = (cs.next(), cs.next()) {
-                singles.entry(c).or_insert(i);
-            }
-        }
-        singles
-    })
-}
-
-/// UTF-16 ranges of the emoji graphemes in `text`, with their artwork. Plain
-/// ASCII is never an emoji, and a text-default character (© ™ ♥ ➡) without
-/// its U+FE0F stays text, like web.
+/// UTF-16 ranges of the emoji graphemes in `text`, with their artwork,
+/// from the shared matcher (`caper_client::emoji::inline`). Plain ASCII is
+/// never an emoji, and a text-default character without its U+FE0F stays
+/// text, like web.
 pub fn inline(text: &str) -> Vec<(Range<usize>, &'static Entry)> {
-    if text.is_ascii() {
-        return Vec::new();
-    }
-    let mut found = Vec::new();
-    let mut pos16 = 0;
-    for grapheme in text.graphemes(true) {
-        let len16 = grapheme.encode_utf16().count();
-        if !grapheme.is_ascii() {
-            let mut cs = grapheme.chars();
-            let entry = if let (Some(c), None) = (cs.next(), cs.next()) {
-                singles().get(&c)
-            } else {
-                index()
-                    .get(&unicode_id(grapheme))
-                    .or_else(|| index().get(&grapheme.replace('\u{fe0f}', "")))
-            };
-            if let Some(&i) = entry {
-                found.push((pos16..pos16 + len16, &catalog()[i]));
-            }
-        }
-        pos16 += len16;
-    }
+    let found = caper_client::emoji::inline(text);
+    let (mut byte, mut pos16) = (0, 0);
+    let mut at16 = |to: usize| {
+        pos16 += text[byte..to].encode_utf16().count();
+        byte = to;
+        pos16
+    };
     found
+        .into_iter()
+        .map(|(r, entry)| (at16(r.start)..at16(r.end), entry))
+        .collect()
 }
 
 /// Emoji artwork in use, copied cell by cell out of the sheets into small
@@ -139,13 +69,25 @@ const PER_PAGE: u32 = (PAGE / CELL) * (PAGE / CELL);
 
 thread_local! {
     static ATLAS: RefCell<Option<Atlas>> = const { RefCell::new(None) };
+    /// Whole sheets decoded during [`batch`], dropped when it ends.
+    static SHEETS_OPEN: RefCell<Option<HashMap<usize, (usize, Vec<u8>)>>> = const { RefCell::new(None) };
 }
 
-/// Decodes only `entry`'s cell of its sheet (premultiplied BGRA).
-fn decode_cell(wic: &IWICImagingFactory, entry: &Entry) -> Option<Vec<u8>> {
+/// Runs `f`, which may draw many new emoji (a page of the reaction picker):
+/// each sheet it needs is decoded once, instead of once per cell, and freed
+/// afterwards.
+pub fn batch<R>(f: impl FnOnce() -> R) -> R {
+    SHEETS_OPEN.with(|s| *s.borrow_mut() = Some(HashMap::new()));
+    let r = f();
+    SHEETS_OPEN.with(|s| *s.borrow_mut() = None);
+    r
+}
+
+/// The converter for a whole sheet in premultiplied BGRA.
+fn sheet_source(wic: &IWICImagingFactory, sheet: usize) -> Option<IWICFormatConverter> {
     unsafe {
         let stream = wic.CreateStream().ok()?;
-        stream.InitializeFromMemory(SHEETS[entry.sheet]).ok()?;
+        stream.InitializeFromMemory(SHEETS[sheet]).ok()?;
         let decoder = wic
             .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
             .ok()?;
@@ -160,6 +102,43 @@ fn decode_cell(wic: &IWICImagingFactory, entry: &Entry) -> Option<Vec<u8>> {
                 WICBitmapPaletteTypeCustom,
             )
             .ok()?;
+        Some(converter)
+    }
+}
+
+/// `entry`'s cell out of its whole decoded sheet, inside a [`batch`].
+fn batched_cell(wic: &IWICImagingFactory, entry: &Entry) -> Option<Vec<u8>> {
+    SHEETS_OPEN.with(|s| {
+        let mut s = s.borrow_mut();
+        let sheets = s.as_mut()?;
+        let (stride, sheet) = match sheets.entry(entry.sheet) {
+            Slot::Occupied(open) => open.into_mut(),
+            Slot::Vacant(slot) => {
+                let source = sheet_source(wic, entry.sheet)?;
+                let (mut w, mut h) = (0, 0);
+                unsafe { source.GetSize(&mut w, &mut h).ok()? };
+                let mut px = vec![0u8; (w * h * 4) as usize];
+                unsafe { source.CopyPixels(std::ptr::null(), w * 4, &mut px).ok()? };
+                slot.insert((w as usize * 4, px))
+            }
+        };
+        let stride = *stride;
+        let mut px = Vec::with_capacity((CELL * CELL * 4) as usize);
+        for row in 0..CELL as usize {
+            let start = (entry.y as usize + row) * stride + entry.x as usize * 4;
+            px.extend_from_slice(sheet.get(start..start + CELL as usize * 4)?);
+        }
+        Some(px)
+    })
+}
+
+/// Decodes only `entry`'s cell of its sheet (premultiplied BGRA).
+fn decode_cell(wic: &IWICImagingFactory, entry: &Entry) -> Option<Vec<u8>> {
+    if let Some(px) = batched_cell(wic, entry) {
+        return Some(px);
+    }
+    unsafe {
+        let converter = sheet_source(wic, entry.sheet)?;
         let mut px = vec![0u8; (CELL * CELL * 4) as usize];
         let r = WICRect {
             X: entry.x as i32,
@@ -230,6 +209,11 @@ impl Atlas {
 
 /// Draws `entry`'s artwork into `dest` (DIPs).
 pub fn draw(dc: &ID2D1DeviceContext, entry: &Entry, dest: D2D_RECT_F) {
+    draw_with(dc, entry, dest, 1.0);
+}
+
+/// Draws `entry`'s artwork into `dest` (DIPs) at `opacity`.
+pub fn draw_with(dc: &ID2D1DeviceContext, entry: &Entry, dest: D2D_RECT_F, opacity: f32) {
     let found = ATLAS.with(|a| {
         let mut a = a.borrow_mut();
         if a.is_none() {
@@ -258,7 +242,7 @@ pub fn draw(dc: &ID2D1DeviceContext, entry: &Entry, dest: D2D_RECT_F) {
             dc.DrawBitmap(
                 &bmp,
                 Some(&dest),
-                1.0,
+                opacity,
                 D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
                 Some(&src),
                 None,
