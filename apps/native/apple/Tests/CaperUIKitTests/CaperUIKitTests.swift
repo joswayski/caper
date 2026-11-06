@@ -364,6 +364,41 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(card.waitForExistence(timeout: 10), "A member opens their card")
     }
 
+    /// `@` and `:` open the shared autocomplete above the composer; a picked
+    /// row replaces the typed token, and the sent mention resolves to a pill.
+    func testComposerAutocomplete() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let composer = app.textViews["message-composer"]
+        composer.tap()
+        composer.typeText("TEST FIXTURE autocomplete @ma")
+        let mentions = app.descendants(matching: .any)["mention-suggestions"]
+        XCTAssertTrue(mentions.waitForExistence(timeout: 10))
+        let maya = app.buttons["mention-suggestion-maya"]
+        XCTAssertTrue(maya.exists)
+        XCTAssertTrue(maya.label.hasPrefix("Maya"), maya.label)
+        screenshot("uikit-mention-autocomplete")
+        maya.tap()
+        XCTAssertTrue(mentions.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE autocomplete @maya ")
+
+        composer.typeText("party :tad")
+        let emoji = app.descendants(matching: .any)["emoji-suggestions"]
+        XCTAssertTrue(emoji.waitForExistence(timeout: 10))
+        let first = emoji.buttons.firstMatch
+        XCTAssertTrue(first.label.hasSuffix(", emoji"), first.label)
+        screenshot("uikit-emoji-autocomplete")
+        first.tap()
+        XCTAssertTrue(emoji.waitForNonExistence(timeout: 5))
+        let value = composer.value as? String ?? ""
+        XCTAssertTrue(value.hasPrefix("TEST FIXTURE autocomplete @maya party ") && !value.contains(":tad"), value)
+
+        app.buttons["send-message"].tap()
+        let sent = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "autocomplete @maya party")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 10))
+        XCTAssertTrue(sent.links.firstMatch.waitForExistence(timeout: 10), "The picked mention resolves to a pill")
+    }
+
     /// Owners reach Invite people and Space settings from the space name,
     /// Create channel from Channels, and channel settings from a held channel.
     func testOwnerWorkflows() {

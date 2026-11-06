@@ -307,6 +307,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     private func buildComposer() {
         view.addSubview(composer)
+        composer.model = model
         composer.changed = { [weak self] text in
             guard let chat = self?.model.chat else { return }
             chat.draft = text
@@ -638,6 +639,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
                            attachReason: chat.canAttach ? nil : chat.attachUnavailableReason,
                            canPickExpressions: ready)
         composer.show(draft: chat.draft)
+        // Members can finish loading while an `@` query is open.
+        composer.suggest()
         composer.showAccessories(ready && UIKitComposerAccessories.shows(chat: chat)
                                  ? UIKitComposerAccessories(chat: chat, present: presentHosted) : nil)
         composer.showVoice(button: ready ? voice.button : nil, bar: voice.bar, recording: ready && voice.isRecording)

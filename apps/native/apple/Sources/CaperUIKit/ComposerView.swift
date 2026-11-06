@@ -18,6 +18,10 @@ final class ComposerView: UIView, UITextViewDelegate {
     /// SwiftUI leaves: staged files and voice notices; the microphone; its recording bar.
     private let accessories = HostedView()
     private let microphone = HostedView()
+    /// `@` and `:` suggestions from the shared autocomplete, above the box.
+    private let suggestions = ComposerSuggestionsList()
+    /// Escape closes them until the draft or caret moves again.
+    private var dismissed = false
     private let recordingBar = HostedView()
     private var height: NSLayoutConstraint!
     private let font = UIKitStyle.font(14)
@@ -26,6 +30,8 @@ final class ComposerView: UIView, UITextViewDelegate {
     var submitted: (() -> Void)?
     var attachTapped: (() -> Void)?
     var emojiTapped: (() -> Void)?
+    /// Who `@` may suggest: the open conversation's context.
+    weak var model: AppModel?
 
     init() {
         super.init(frame: .zero)
@@ -51,6 +57,9 @@ final class ComposerView: UIView, UITextViewDelegate {
         textView.showsHorizontalScrollIndicator = false
         textView.delegate = self
         textView.returnPressed = { [weak self] in self?.submit() }
+        textView.autocompleteActive = { [weak self] in self?.suggestions.match != nil }
+        textView.autocompleteKey = { [weak self] in self?.handle($0) }
+        suggestions.accepted = { [weak self] in self?.accept($0) }
         textView.accessibilityIdentifier = "message-composer"
         // The text view's own label carries the prompt.
         placeholder.accessibilityElementsHidden = true
@@ -85,13 +94,17 @@ final class ComposerView: UIView, UITextViewDelegate {
         send.accessibilityIdentifier = "send-message"
         addSubview(send)
         addSubview(accessories)
+        addSubview(suggestions)
 
         height = textView.heightAnchor.constraint(equalToConstant: 42)
         NSLayoutConstraint.activate([
             accessories.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             accessories.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             accessories.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            field.topAnchor.constraint(equalTo: accessories.bottomAnchor),
+            suggestions.topAnchor.constraint(equalTo: accessories.bottomAnchor),
+            suggestions.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            suggestions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
+            field.topAnchor.constraint(equalTo: suggestions.bottomAnchor),
             field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             field.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
             send.leadingAnchor.constraint(equalTo: field.trailingAnchor, constant: 8),
@@ -127,6 +140,7 @@ final class ComposerView: UIView, UITextViewDelegate {
         placeholder.text = prompt
         textView.accessibilityLabel = prompt
         textView.isEditable = enabled
+        if !enabled { suggestions.show(nil) }
         send.isEnabled = enabled && canSend
         // Eggshell when there is something to send; neutral chrome otherwise.
         send.backgroundColor = send.isEnabled ? UIKitStyle.action : .clear
@@ -177,6 +191,46 @@ final class ComposerView: UIView, UITextViewDelegate {
     func textViewDidChange(_ textView: UITextView) {
         refresh()
         changed?(textView.text)
+        dismissed = false
+        suggest()
+    }
+
+    func textViewDidChangeSelection(_ textView: UITextView) {
+        dismissed = false
+        suggest()
+    }
+
+    func textViewDidBeginEditing(_ textView: UITextView) { suggest() }
+    func textViewDidEndEditing(_ textView: UITextView) { suggestions.show(nil) }
+
+    /// The shared match for the caret: none while an input method composes,
+    /// with a selection, or after Escape.
+    func suggest() {
+        guard let model, !dismissed, textView.isFirstResponder, textView.isEditable else { return suggestions.show(nil) }
+        suggestions.show(NativePresentation.autocomplete(text: textView.text, selection: textView.selectedRange,
+                                                         markedText: textView.markedTextRange != nil, model: model))
+    }
+
+    /// Up and Down move the selected row; Return and Tab accept it; Escape closes.
+    private func handle(_ key: String) {
+        guard suggestions.match != nil, textView.markedTextRange == nil else { return }
+        switch key {
+        case UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow: suggestions.move(down: key == UIKeyCommand.inputDownArrow)
+        case UIKeyCommand.inputEscape: dismissed = true; suggestions.show(nil)
+        default: accept(suggestions.selected)
+        }
+    }
+
+    /// One undoable replacement of the draft, with the caret after the
+    /// inserted name or emoji.
+    private func accept(_ index: Int) {
+        guard textView.isEditable, let match = suggestions.match,
+              let result = NativePresentation.inserting(choice: index, in: textView.text, match: match),
+              let all = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument) else { return }
+        textView.replace(all, withText: result.text)
+        textView.selectedRange = result.selection
+        textView.becomeFirstResponder()
+        suggest()
     }
 
     private func submit() {
@@ -215,8 +269,25 @@ final class ComposerView: UIView, UITextViewDelegate {
 final class ComposerTextView: UITextView {
     var returnPressed: (() -> Void)?
 
+    var autocompleteActive: (() -> Bool)?
+    var autocompleteKey: ((String) -> Void)?
+
+    /// While suggestions show, the hardware arrows, Return, Tab and Escape drive them.
+    override var keyCommands: [UIKeyCommand]? {
+        guard markedTextRange == nil, autocompleteActive?() == true else { return super.keyCommands }
+        return [UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow, "\r", "\t", UIKeyCommand.inputEscape].map {
+            let command = UIKeyCommand(input: $0, modifierFlags: [], action: #selector(autocompleteCommand(_:)))
+            command.wantsPriorityOverSystemBehavior = true
+            return command
+        } + (super.keyCommands ?? [])
+    }
+
+    @objc private func autocompleteCommand(_ command: UIKeyCommand) {
+        if let input = command.input { autocompleteKey?(input) }
+    }
+
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if let key = presses.first?.key, key.keyCode == .keyboardReturnOrEnter,
+        if let key = presses.first?.key, key.keyCode == .keyboardReturnOrEnter, autocompleteActive?() != true,
            key.modifierFlags.isDisjoint(with: [.shift, .alternate]), markedTextRange == nil, let returnPressed {
             returnPressed()
             return
@@ -348,4 +419,184 @@ final class TypingIndicatorView: UIView {
     }
 
     private func stop() { dots.forEach { $0.layer.removeAnimation(forKey: "bounce") } }
+}
+
+/// The composer's suggestions, as SwiftUI's ComposerSuggestionsView draws
+/// them: flat 44-point rows in a bordered surface, at most four tall before it
+/// scrolls; mentions span the composer and emoji stay 260 points wide. The
+/// selected row (for hardware keys) takes the terracotta tint.
+final class ComposerSuggestionsList: UIView {
+    private(set) var match: ComposerAutocompleteMatch?
+    private(set) var selected = 0
+    var accepted: ((Int) -> Void)?
+    private let box = UIView()
+    private let scroll = UIScrollView()
+    private let rows = UIStackView()
+    private var height: NSLayoutConstraint!
+    private var boxHeight: NSLayoutConstraint!
+    private var narrow: NSLayoutConstraint!
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.backgroundColor = UIKitStyle.surface
+        box.layer.cornerRadius = 6
+        box.layer.cornerCurve = .continuous
+        box.layer.borderWidth = 1
+        box.layer.borderColor = UIKitStyle.border.cgColor
+        box.clipsToBounds = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.showsHorizontalScrollIndicator = false
+        rows.axis = .vertical
+        rows.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(box)
+        box.addSubview(scroll)
+        scroll.addSubview(rows)
+        height = heightAnchor.constraint(equalToConstant: 0)
+        boxHeight = box.heightAnchor.constraint(equalToConstant: 0)
+        narrow = box.widthAnchor.constraint(equalToConstant: 260)
+        let wide = box.trailingAnchor.constraint(equalTo: trailingAnchor)
+        wide.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            height, boxHeight, wide,
+            box.topAnchor.constraint(equalTo: topAnchor),
+            box.leadingAnchor.constraint(equalTo: leadingAnchor),
+            box.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: box.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: box.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: box.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: box.trailingAnchor),
+            rows.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            rows.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            rows.leadingAnchor.constraint(equalTo: scroll.frameLayoutGuide.leadingAnchor),
+            rows.trailingAnchor.constraint(equalTo: scroll.frameLayoutGuide.trailingAnchor),
+        ])
+        isHidden = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Rebuilds only when the match changes, which also resets the selection.
+    func show(_ next: ComposerAutocompleteMatch?) {
+        guard next != match else { return }
+        match = next
+        selected = 0
+        rows.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        isHidden = next == nil
+        guard let next else {
+            height.constant = 0
+            boxHeight.constant = 0
+            return
+        }
+        switch next {
+        case let .emoji(emoji):
+            for (index, entry) in emoji.choices.enumerated() {
+                rows.addArrangedSubview(SuggestionRow(emoji: entry) { [weak self] in self?.accepted?(index) })
+            }
+        case let .mention(mention):
+            for (index, candidate) in mention.choices.enumerated() {
+                rows.addArrangedSubview(SuggestionRow(candidate: candidate) { [weak self] in self?.accepted?(index) })
+            }
+        }
+        narrow.isActive = !next.isMention
+        accessibilityIdentifier = next.isMention ? "mention-suggestions" : "emoji-suggestions"
+        let visible = min(CGFloat(next.count) * 44, 176)
+        boxHeight.constant = visible
+        // A 6-point gap above the composer box.
+        height.constant = visible + 6
+        scroll.contentOffset = .zero
+        highlight()
+    }
+
+    func move(down: Bool) {
+        guard let count = match?.count, count > 0 else { return }
+        selected = (selected + (down ? 1 : count - 1)) % count
+        highlight()
+        if let row = rows.arrangedSubviews[safe: selected] {
+            scroll.scrollRectToVisible(row.frame.insetBy(dx: 0, dy: -44), animated: false)
+        }
+    }
+
+    private func highlight() {
+        for (index, row) in rows.arrangedSubviews.enumerated() {
+            row.backgroundColor = index == selected ? UIKitStyle.terracotta.withAlphaComponent(0.32) : .clear
+        }
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
+/// One suggestion: a person's avatar over their display name and muted
+/// `@username`, a special's `@` mark over its description, or an emoji's
+/// artwork beside its `:shortcode:`. One VoiceOver button per row.
+private final class SuggestionRow: UIControl {
+    private let action: () -> Void
+
+    convenience init(candidate: MentionCandidate, action: @escaping () -> Void) {
+        let member = candidate.kind == .member
+        let leading: UIView
+        if member {
+            let avatar = AvatarView(side: 28)
+            avatar.show(name: candidate.displayName, avatarID: candidate.avatarId, picture: candidate.picture)
+            leading = avatar
+        } else {
+            let mark = UIImageView(image: UIImage(systemName: "at", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)))
+            mark.tintColor = UIKitStyle.muted
+            mark.contentMode = .center
+            leading = mark
+        }
+        let title = UIKitStyle.label(member ? candidate.displayName : "@\(candidate.username)", size: 13, weight: .medium)
+        let detail = UIKitStyle.label(member ? "@\(candidate.username)" : candidate.displayName, size: 11, color: UIKitStyle.muted)
+        let lines = UIStackView(arrangedSubviews: [title, detail])
+        lines.axis = .vertical
+        lines.spacing = 1
+        self.init(leading: leading, side: 28, trailing: lines, action: action)
+        accessibilityLabel = candidate.accessibilityLabel
+        accessibilityIdentifier = "mention-suggestion-\(candidate.username.lowercased())"
+    }
+
+    convenience init(emoji entry: EmojiCatalogEntry, action: @escaping () -> Void) {
+        let art = UIImageView()
+        art.contentMode = .scaleAspectFit
+        if let image = NativePresentation.emojiImage(for: entry) { art.image = UIImage(cgImage: image) }
+        let name = UIKitStyle.label(":\(entry.name.replacingOccurrences(of: " ", with: "_")):", size: 13, weight: .medium)
+        self.init(leading: art, side: 24, trailing: name, action: action)
+        accessibilityLabel = "\(entry.name), emoji"
+        accessibilityIdentifier = "emoji-suggestion-\(entry.id)"
+    }
+
+    private init(leading: UIView, side: CGFloat, trailing: UIView, action: @escaping () -> Void) {
+        self.action = action
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        let row = UIStackView(arrangedSubviews: [leading, trailing])
+        row.spacing = side == 28 ? 10 : 12
+        row.alignment = .center
+        row.isUserInteractionEnabled = false
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 44),
+            leading.widthAnchor.constraint(equalToConstant: side),
+            leading.heightAnchor.constraint(equalToConstant: side),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            row.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
+            row.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+        addAction(UIAction { [weak self] _ in self?.action() }, for: .touchUpInside)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var isHighlighted: Bool {
+        didSet { alpha = isHighlighted ? 0.7 : 1 }
+    }
+
+    override func accessibilityActivate() -> Bool {
+        action()
+        return true
+    }
 }

@@ -147,6 +147,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
 
         view.addSubview(composer)
         composer.textView.accessibilityIdentifier = "thread-composer"
+        composer.model = model
         composer.changed = { [weak self] text in self?.chat.threadDraft = text }
         composer.submitted = { [weak self] in self?.send() }
         composer.attachTapped = { [weak self] in
@@ -314,6 +315,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
                            canAttach: chat.canAttach, attachReason: chat.canAttach ? nil : chat.attachUnavailableReason,
                            canPickExpressions: ready)
         composer.show(draft: chat.threadDraft)
+        // Members can finish loading while an `@` query is open.
+        composer.suggest()
         composer.showAccessories(ready && UIKitComposerAccessories.shows(chat: chat, inThread: true)
                                  ? UIKitComposerAccessories(chat: chat, inThread: true, present: { [weak self] in
                                      if self?.presentedViewController == nil { self?.present($0, animated: false) }
