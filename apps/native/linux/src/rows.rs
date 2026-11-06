@@ -20,6 +20,9 @@ pub struct Chip {
     pub emoji: String,
     pub count: usize,
     pub mine: bool,
+    /// Who reacted, as every client words it: names once loaded, else a
+    /// count. The chip's hover card.
+    pub summary: String,
 }
 
 /// What a row offers from its toolbar and menu.
@@ -414,6 +417,8 @@ pub struct Viewer<'a> {
     pub shown_blocked: &'a std::collections::HashSet<String>,
     /// Thread roots with replies you haven't read.
     pub thread_unread: &'a std::collections::BTreeMap<String, String>,
+    /// Who reacted, by message, as far as loaded.
+    pub reactors: &'a std::collections::BTreeMap<String, caper_client::reactions::ReactorCache>,
 }
 
 impl Viewer<'_> {
@@ -564,6 +569,11 @@ pub fn build<'a>(
                             .reactor()
                             .is_some_and(|me| reaction.author_ids.iter().any(|id| id == me)),
                         count: reaction.author_ids.len(),
+                        summary: caper_client::reactions::reactor_summary(
+                            viewer.reactors.get(&message.id),
+                            &reaction,
+                            viewer.reactor(),
+                        ),
                         emoji: reaction.emoji,
                     })
                     .collect()
@@ -727,6 +737,8 @@ pub enum Action {
     RetryReaction(String),
     /// Drop your failed reaction and its error.
     DismissReaction(String),
+    /// A chip is hovered: load who reacted to this message.
+    LoadReactors(String),
     Reply(String),
     Thread(String),
     /// Edit, delete and pin, anchored to `anchor`.
@@ -1220,21 +1232,56 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
             ),
         }
     }
-    while let Some(child) = widgets.reactions.first_child() {
-        widgets.reactions.remove(&child);
+    // Only the hover cards changed (names loaded): update them in place so
+    // a card that is showing follows.
+    let same_chips = widgets.row.borrow().as_ref().is_some_and(|shown| {
+        shown.id == row.id
+            && shown.offers.act == row.offers.act
+            && shown.reactions.len() == row.reactions.len()
+            && shown
+                .reactions
+                .iter()
+                .zip(&row.reactions)
+                .all(|(a, b)| (&a.emoji, a.count, a.mine) == (&b.emoji, b.count, b.mine))
+    });
+    if same_chips {
+        let mut child = widgets.reactions.first_child();
+        for chip in &row.reactions {
+            let Some(button) = child else { break };
+            button.set_tooltip_text(Some(&chip.summary));
+            child = button.next_sibling();
+        }
+    } else {
+        while let Some(child) = widgets.reactions.first_child() {
+            widgets.reactions.remove(&child);
+        }
     }
-    for chip in &row.reactions {
+    for chip in row.reactions.iter().filter(|_| !same_chips) {
         let button = gtk::Button::with_label(&format!("{} {}", chip.emoji, chip.count));
         button.add_css_class("reaction");
         if chip.mine {
             button.add_css_class("mine");
         }
         button.set_sensitive(row.offers.act);
-        button.set_tooltip_text(Some(if chip.mine {
-            "Remove your reaction"
-        } else {
-            "Add this reaction"
-        }));
+        button.set_tooltip_text(Some(&chip.summary));
+        // Discord-style: the emoji large, then who reacted. Hovering is
+        // what loads the names.
+        let (load, id, emoji) = (handler.clone(), row.id.clone(), chip.emoji.clone());
+        button.connect_query_tooltip(move |button, _, _, _, tooltip| {
+            load(Action::LoadReactors(id.clone()));
+            let card = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            card.add_css_class("reactor-card");
+            let big = gtk::Label::new(Some(&emoji));
+            big.add_css_class("reactor-emoji");
+            let summary = gtk::Label::new(button.tooltip_text().as_deref());
+            summary.set_wrap(true);
+            summary.set_max_width_chars(32);
+            summary.set_xalign(0.0);
+            card.append(&big);
+            card.append(&summary);
+            tooltip.set_custom(Some(&card));
+            true
+        });
         let (handler, id, emoji, active) = (
             handler.clone(),
             row.id.clone(),
@@ -1372,6 +1419,7 @@ mod tests {
             emoji: "👍".into(),
             count: 1,
             mine: true,
+            summary: "You reacted with :thumbs-up:".into(),
         });
         new[4].markup = "edited".into();
         new[4].picture_ready = true;

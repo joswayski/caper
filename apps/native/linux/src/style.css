@@ -1492,3 +1492,26 @@ checkbutton.broadcast {
 .request-row {
   margin-left: 12px;
 }
+
+/* Who reacted: the chip's hover card and the View reactions window. */
+.reactor-emoji {
+  font-size: 28px;
+}
+
+button.reactor-tab {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  background: none;
+}
+
+button.reactor-tab:checked {
+  border-color: @caper_terracotta;
+  background: rgb(57, 35, 30);
+}
+
+.reactor-heading {
+  font-size: 12px;
+  font-weight: 700;
+}

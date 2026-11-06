@@ -51,6 +51,8 @@ mod notify;
 mod picture;
 #[path = "profile.rs"]
 mod profile;
+#[path = "reactors.rs"]
+mod reactors;
 #[path = "requests.rs"]
 mod requests;
 #[path = "settings.rs"]
@@ -273,6 +275,10 @@ struct State {
     membership_request: u64,
     /// Message requests: the section, and an answer in flight.
     requests: requests::Requests,
+    /// Who reacted, by message, for chip hover cards and View reactions.
+    reactors: std::collections::BTreeMap<String, caper_client::reactions::ReactorCache>,
+    /// The open View reactions window: message ID and selected emoji.
+    reactors_view: Option<(String, String)>,
     /// Privacy and notification settings.
     settings: settings::AccountSettings,
     /// Space and channel management, invites and membership.
@@ -449,6 +455,8 @@ pub struct App {
     room_timers: RefCell<Vec<(gtk::Label, u64)>>,
     room_ticking: Cell<bool>,
     report: RefCell<Option<audio::ReportDialog>>,
+    /// The open View reactions window.
+    reactors_window: RefCell<Option<reactors::ReactorsWindow>>,
     /// The open attachment editor.
     editor: RefCell<Option<editor::EditorWindow>>,
     /// Edited files opened in another app, kept until quit.
@@ -548,6 +556,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         shown_preview: RefCell::default(),
         direct_ids: RefCell::default(),
         request_ids: RefCell::default(),
+        reactors_window: RefCell::default(),
         members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
         ticking: Cell::new(false),
@@ -944,7 +953,8 @@ impl App {
     fn install_actions(self: &Rc<Self>) {
         let group = gio::SimpleActionGroup::new();
         type Run = fn(&Rc<App>, String);
-        let actions: [(&str, Run); 11] = [
+        let actions: [(&str, Run); 12] = [
+            ("reactions", |app, id| app.open_reactors(id)),
             ("reply", |app, id| app.row_action(Action::Reply(id), false)),
             ("thread", |app, id| {
                 app.row_action(Action::Thread(id), false)
@@ -1250,6 +1260,8 @@ impl App {
         state.focused = None;
         state.typers.clear();
         state.reactions.clear();
+        state.reactors.clear();
+        state.reactors_view = None;
         state.files_revision += 1;
         state.direct = None;
         state.jump_to = None;
@@ -1628,6 +1640,7 @@ impl App {
             let blocked = state.blocked_ids();
             let viewer = rows::Viewer {
                 thread_unread: &state.thread_unread,
+                reactors: &state.reactors,
                 revealed: &revealed,
                 blocked: &blocked,
                 shown_blocked: &state.shown_blocked,
@@ -2718,6 +2731,7 @@ impl App {
                     self.react(id, emoji, active);
                 }
             }
+            Action::LoadReactors(id) => self.load_reactors(&id),
             Action::DismissReaction(id) => {
                 self.state.borrow_mut().reactions.dismiss(&id);
                 self.render();
@@ -2784,7 +2798,7 @@ impl App {
     }
 
     fn row_menu(self: &Rc<Self>, id: &str, anchor: &gtk::Widget) {
-        let (mine, pinned, forwardable, joined, in_thread) = {
+        let (mine, pinned, forwardable, joined, in_thread, reacted) = {
             let state = self.state.borrow();
             let Some(message) = state.message(id) else {
                 return;
@@ -2797,6 +2811,7 @@ impl App {
                 forward::forwardable(message),
                 state.session.is_some() && !message.is_deleted(),
                 message.thread_root_id.is_some(),
+                !message.is_deleted() && !state.shown_reactions(message).is_empty(),
             )
         };
         let block = self.message_author_account(id).map(|account| {
@@ -2824,6 +2839,9 @@ impl App {
         }
         if forwardable {
             actions.append_item(&item("Forward message", "row.forward"));
+        }
+        if reacted {
+            actions.append_item(&item("View reactions", "row.reactions"));
         }
         if mine {
             actions.append_item(&item("Edit message", "row.edit"));
@@ -3455,6 +3473,23 @@ impl App {
                         state.error = Some(error);
                     }
                     Reacted::Failed => self.send_next_reaction(state, &message),
+                }
+            }
+            Event::Reactors {
+                generation,
+                channel,
+                message,
+                revision,
+                result,
+            } if current(
+                generation,
+                state.generation,
+                Some(&channel),
+                state.channel.as_deref(),
+            ) =>
+            {
+                if let Some(cached) = state.reactors.get_mut(&message) {
+                    cached.loaded(&message, &revision, result);
                 }
             }
             Event::Pinned {
@@ -4163,6 +4198,7 @@ impl App {
         self.render_files();
         self.render_members();
         self.render_typing();
+        self.render_reactors();
         let ui = &self.ui;
         let mut state = self.state.borrow_mut();
         let first_space = state.page() == Page::Chat && state.needs_first_space();
@@ -4419,6 +4455,7 @@ impl App {
             let blocked = state.blocked_ids();
             let viewer = |in_thread| rows::Viewer {
                 thread_unread: &state.thread_unread,
+                reactors: &state.reactors,
                 revealed: &revealed,
                 blocked: &blocked,
                 shown_blocked: &state.shown_blocked,
