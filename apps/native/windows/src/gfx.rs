@@ -92,6 +92,8 @@ pub struct Formats {
     pub action: IDWriteTextFormat,
     pub link_small: IDWriteTextFormat,
     pub error: IDWriteTextFormat,
+    /// The who-reacted card's summary.
+    pub card: IDWriteTextFormat,
     /// A grouped row's "(edited)" marker.
     pub edited: IDWriteTextFormat,
     /// A reply's quote panel: its text (at most three lines, then an
@@ -249,6 +251,7 @@ impl Gfx {
                 action: fmt(16.0, DWRITE_FONT_WEIGHT_MEDIUM)?,
                 link_small: fmt(13.6, DWRITE_FONT_WEIGHT_NORMAL)?,
                 error: fmt(13.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                card: fmt(13.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 edited: fmt(10.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 quote: fmt(12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
                 quote_deleted: dwrite.CreateTextFormat(

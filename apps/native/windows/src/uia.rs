@@ -727,6 +727,17 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     _ => format!("{id:?}"),
                 })),
                 UIA_FrameworkIdPropertyId => VARIANT::from(BSTR::from("Win32")),
+                // A chip's who-reacted summary, as its card shows it.
+                UIA_HelpTextPropertyId => match id {
+                    Id::Control(i, Action::Chip(k)) => {
+                        let m = &a.c.messages[i];
+                        a.live
+                            .as_ref()
+                            .and_then(|l| l.reactor_summary(&m.id, &m.reactions.get(k)?.emoji))
+                            .map_or_else(VARIANT::default, |s| VARIANT::from(BSTR::from(s)))
+                    }
+                    _ => VARIANT::default(),
+                },
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
                     id,
                     Id::Composer

@@ -15,6 +15,7 @@
 
 mod actions;
 mod bench;
+mod card;
 mod composer;
 mod emoji;
 mod overlay;
@@ -78,6 +79,8 @@ pub(crate) const TIMER_CARET: usize = 2;
 const TIMER_LIVE: usize = 3;
 /// The sign-in screen's spinner and resend countdown.
 const TIMER_SIGNIN: usize = 4;
+/// A chip's who-reacted card, once the pointer rests on it.
+pub(crate) const TIMER_CARD: usize = 5;
 pub(crate) const WHEEL_STEP: f64 = 48.0;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -108,6 +111,8 @@ struct Dirty {
     /// The thread pane, and its reply box.
     thread: bool,
     thread_box: bool,
+    /// The who-reacted card.
+    card: bool,
 }
 
 impl Dirty {
@@ -126,6 +131,7 @@ impl Dirty {
             reply: true,
             thread: true,
             thread_box: true,
+            card: true,
         }
     }
 }
@@ -254,6 +260,11 @@ pub struct App {
     redraw_foot: bool,
     foot_hover: Option<usize>,
     focused: Option<String>,
+    /// The who-reacted card, the chip it follows (message id and emoji),
+    /// and its surface.
+    card: Option<card::Card>,
+    card_target: Option<(String, String)>,
+    card_p: Panel,
     /// The history control with keyboard focus (a reaction chip, Add
     /// reaction, Retry or Dismiss), by message id so it survives paging.
     kb: Option<(String, list::Action)>,
@@ -296,6 +307,7 @@ impl App {
             let reply_p = Panel::new(&g)?;
             let thread_p = Panel::new(&g)?;
             let thread_box_p = Panel::new(&g)?;
+            let card_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
             let content = g.visual()?;
             let vs = g.dcomp.CreateVirtualSurface(
@@ -323,7 +335,8 @@ impl App {
                 root.AddVisual(v, true, &prev)?;
                 prev = v.cast()?;
             }
-            root.AddVisual(&menu_p.visual, true, &prev)?;
+            root.AddVisual(&card_p.visual, true, &prev)?;
+            root.AddVisual(&menu_p.visual, true, &card_p.visual)?;
             root.AddVisual(&picker_p.visual, true, &menu_p.visual)?;
             root.AddVisual(&dialog_p.visual, true, &picker_p.visual)?;
             root.AddVisual(&signin_p.visual, true, &dialog_p.visual)?;
@@ -399,6 +412,9 @@ impl App {
                 foot_hover: None,
                 focused: None,
                 kb: None,
+                card: None,
+                card_target: None,
+                card_p,
                 older_armed: false,
                 thread: None,
                 thread_p,
@@ -540,6 +556,8 @@ impl App {
                     self.append_history(c, ids)?;
                 }
                 live::Update::Focus(id) => self.focus_message(&id)?,
+                // Names for a chip's card arrived; the next frame shows them.
+                live::Update::Reactors => self.need = true,
                 live::Update::Unread(id) => self.mark_unread(&id)?,
                 live::Update::Thread => self.thread_refresh()?,
                 live::Update::OlderState => {
@@ -1197,6 +1215,7 @@ impl App {
                     }
                     self.need = true;
                 }
+                TIMER_CARD => self.show_card(),
                 TIMER_SIGNIN => {
                     if let Some(s) = &mut self.signin {
                         s.spin = (s.spin + 0.21) % std::f32::consts::TAU;
@@ -1218,6 +1237,7 @@ impl App {
                 self.track_reply_hover();
                 self.track_head_hover();
                 self.track_foot_hover();
+                self.track_card();
                 if self.composer_drag {
                     let (tx, ty) = self.composer_text_origin();
                     let p = self.composer.hit(x - tx, y - ty - self.composer.scroll());
@@ -1237,6 +1257,7 @@ impl App {
                 self.update_hover();
                 self.track_tool_hover();
                 self.track_reply_hover();
+                self.track_card();
                 self.need = true;
             }
             WM_LBUTTONDOWN => {
@@ -2478,6 +2499,8 @@ impl App {
         self.draw_actions()?;
         self.draw_overlays()?;
         self.draw_thread()?;
+        self.track_card();
+        self.draw_card()?;
         self.draw_panels()?;
         unsafe { self.g.dcomp.Commit()? };
         if let Some(live) = &mut self.live {

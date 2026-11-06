@@ -5,7 +5,7 @@
 //! no session is stored. Only used when `CAPER_API_URL` is set; the rest
 //! of the egui client's commands come later.
 use crate::model::{self, Conversation, Person, Reaction, Span};
-use caper_client::reactions::{Reacted, Reactions};
+use caper_client::reactions::{REACTOR_CACHE_LIMIT, Reacted, ReactorCache, ReactorState, Reactions};
 use caper_client::worker::{Command, Event, Worker};
 use caper_client::{Host, api::Api, gateway, grouping, model as core};
 use std::collections::{HashMap, HashSet};
@@ -92,6 +92,8 @@ pub enum Update {
     /// The read state arrived: the "New messages" divider goes above this
     /// shown message.
     Unread(String),
+    /// Who reacted to a message loaded (for a chip's card).
+    Reactors,
     /// The open thread's messages or state changed (or it closed): the
     /// pane rebuilds from `Live::thread_view`.
     Thread,
@@ -243,6 +245,8 @@ pub struct Live {
     visit_channel: Option<String>,
     reads: HashMap<String, String>,
     foreground: bool,
+    /// Who reacted, per message, for the chips' cards (the shared cache).
+    reactors: HashMap<String, ReactorCache>,
 }
 
 /// The thread beside the channel, as in the egui client's thread panel.
@@ -323,6 +327,7 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         visit_channel: None,
         reads: HashMap::new(),
         foreground: false,
+        reactors: HashMap::new(),
     })
 }
 
@@ -567,6 +572,65 @@ impl Live {
         self.reactions.set(id, emoji, active);
         self.send_next_reaction(id);
         self.republish(id);
+    }
+
+    /// Starts reading who reacted to message `id` unless its current
+    /// reaction revision is known or already loading, as egui's hover card.
+    pub fn load_reactors(&mut self, id: &str) {
+        let Some(m) = self.timeline.messages().find(|m| m.id == id) else {
+            return;
+        };
+        let revision = m.reaction_seq.clone().unwrap_or_else(|| "0".into());
+        if self
+            .reactors
+            .get(id)
+            .is_some_and(|cached| !cached.wants_request(&revision))
+        {
+            return;
+        }
+        let Some(channel) = self.channel.clone() else {
+            return;
+        };
+        if self.reactors.len() >= REACTOR_CACHE_LIMIT && !self.reactors.contains_key(id) {
+            self.reactors.clear();
+        }
+        let now = std::time::Instant::now();
+        self.reactors
+            .entry(id.to_owned())
+            .and_modify(|cached| {
+                cached.revision = revision.clone();
+                cached.state = ReactorState::Loading(now);
+            })
+            .or_insert_with(|| ReactorCache {
+                revision: revision.clone(),
+                state: ReactorState::Loading(now),
+                groups: Vec::new(),
+            });
+        self.worker.send(Command::LoadReactors {
+            generation: self.generation,
+            token: self.token.clone(),
+            channel,
+            message: id.to_owned(),
+            revision,
+        });
+    }
+
+    /// Who reacted to message `id` with `emoji`, as every client words it:
+    /// known names (yours as "You"), else a count until they load.
+    pub fn reactor_summary(&self, id: &str, emoji: &str) -> Option<String> {
+        let m = self.timeline.messages().find(|m| m.id == id)?;
+        let shown = self.shown(m);
+        let reaction = shown.reactions.iter().find(|r| r.emoji == emoji)?;
+        let me = self.me.as_deref();
+        let name = caper_client::emoji::name(emoji);
+        let groups = self
+            .reactors
+            .get(id)
+            .map_or(&[][..], |cached| cached.groups.as_slice());
+        Some(match core::reactor_list(groups, reaction, me) {
+            Some(authors) => core::reactor_summary(&authors, me, name, emoji),
+            None => core::reactor_fallback(&reaction.author_ids, me, name, emoji),
+        })
     }
 
     /// A shown message as the server last sent it, by id.
@@ -1020,6 +1084,7 @@ impl Live {
                     self.thread_only.clear();
                     self.window = None;
                     self.context_loading = false;
+                    self.reactors.clear();
                     self.detail = Some(detail.clone());
                     let mut timeline = core::Timeline::default();
                     if let Err(e) = timeline.reset(history.messages, &history.cursor) {
@@ -1292,6 +1357,18 @@ impl Live {
                     out.push(Update::Unread(id));
                 }
                 self.mark_read();
+            }
+            Event::Reactors {
+                generation,
+                channel,
+                message,
+                revision,
+                result,
+            } if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                if let Some(cached) = self.reactors.get_mut(&message) {
+                    cached.loaded(&message, &revision, result);
+                }
+                out.push(Update::Reactors);
             }
             Event::ChannelRead {
                 channel,
