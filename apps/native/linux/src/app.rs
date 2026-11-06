@@ -2900,6 +2900,11 @@ impl App {
                     Event::NotificationError { epoch, error } if epoch == state.epoch => {
                         state.error = Some(error);
                     }
+                    event @ Event::InvitationLoaded {
+                        epoch, navigation, ..
+                    } if epoch == state.epoch && navigation == state.navigation => {
+                        deferred.push(event)
+                    }
                     event @ (Event::Profiled { .. }
                     | Event::AvatarHistory { .. }
                     | Event::Picture { .. }
@@ -2915,6 +2920,12 @@ impl App {
         for event in deferred {
             match event {
                 Event::Profiled { generation, result } => self.profiled(generation, result),
+                Event::InvitationLoaded {
+                    space,
+                    channel,
+                    result,
+                    ..
+                } => self.invitation_loaded(space, channel, result),
                 Event::AvatarHistory {
                     epoch,
                     request,

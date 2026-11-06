@@ -755,6 +755,66 @@ impl App {
         self.render_admin();
     }
 
+    /// `OpenInvitation` answered: a space invitation asks to join; a private
+    /// channel invitation opens its space, whose sidebar lists it.
+    pub(super) fn invitation_loaded(
+        self: &Rc<Self>,
+        space: String,
+        channel: Option<String>,
+        result: Result<(Spaces, Option<caper_client::model::SpaceDetail>), String>,
+    ) {
+        let confirm = {
+            let mut state = self.state.borrow_mut();
+            let (spaces, detail) = match result {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    state.error = Some(error);
+                    drop(state);
+                    self.render();
+                    return;
+                }
+            };
+            state.set_spaces(spaces);
+            const GONE: &str = "This invitation is no longer available.";
+            match channel {
+                Some(channel) => {
+                    match detail.filter(|detail| {
+                        detail
+                            .channel_invitations
+                            .iter()
+                            .any(|invite| invite.channel.id == channel)
+                    }) {
+                        Some(detail)
+                            if state.space.as_deref() == Some(&space) && state.direct.is_none() =>
+                        {
+                            state.detail = Some(detail);
+                            state.layout += 1;
+                        }
+                        Some(_) => self.navigate(&mut state, Some(space), None),
+                        None => state.error = Some(GONE.into()),
+                    }
+                    None
+                }
+                None => {
+                    let invite = state
+                        .admin
+                        .invitations
+                        .iter()
+                        .find(|invite| invite.id == space)
+                        .cloned();
+                    if invite.is_none() {
+                        state.error = Some(GONE.into());
+                    }
+                    invite.map(Confirm::Invitation)
+                }
+            }
+        };
+        if confirm.is_some() {
+            self.open_confirm(confirm);
+        }
+        self.render();
+    }
+
     fn open_confirm(self: &Rc<Self>, confirm: Option<Confirm>) {
         let Some(confirm) = confirm else {
             return;

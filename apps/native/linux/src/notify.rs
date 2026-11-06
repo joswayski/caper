@@ -295,18 +295,21 @@ impl App {
                 }
                 self.render();
             }
-            // Invitations open their space once accepted elsewhere; the
+            // As desktop: reload the spaces, then show the invitation. The
             // Caper team's report visits aren't on Linux yet.
-            Some(Route::Invitation { space, .. }) => {
-                let known = self
-                    .state
-                    .borrow()
-                    .spaces
-                    .iter()
-                    .any(|item| item.id == space);
-                if known {
-                    self.select_space(space);
-                }
+            Some(Route::Invitation { space, channel }) => {
+                let mut state = self.state.borrow_mut();
+                let Some(token) = state.token.clone() else {
+                    return;
+                };
+                state.navigation += 1;
+                self.worker.send(Command::OpenInvitation {
+                    epoch: state.epoch,
+                    navigation: state.navigation,
+                    token,
+                    space,
+                    channel,
+                });
             }
             Some(Route::Visit(_)) | None => {}
         }
