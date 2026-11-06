@@ -126,9 +126,68 @@ pub fn normalize_username(value: &str) -> String {
         .collect()
 }
 
+/// Web's spaces/client.ts validation copy.
+pub fn space_name_error(name: &str) -> Option<&'static str> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        Some("Enter a space name.")
+    } else if trimmed.chars().count() > 80 {
+        Some("Space names can be at most 80 characters.")
+    } else if trimmed.chars().any(char::is_control) {
+        Some("Space names cannot contain control characters.")
+    } else if has_hidden(trimmed) {
+        Some("Space names cannot contain invisible or text-direction characters.")
+    } else {
+        None
+    }
+}
+
+/// Web's channel name rule; check the name without its trailing dash.
+pub fn channel_name_error(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        Some("Enter a channel name.")
+    } else if name.chars().count() > 80 {
+        Some("Channel names can be at most 80 characters.")
+    } else if !name
+        .split('-')
+        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase()))
+    {
+        Some("Use lowercase letters separated by single dashes.")
+    } else {
+        None
+    }
+}
+
+/// A channel name as typed: lowercase letters with single dashes, at most 80.
+pub fn normalize_channel(value: &str) -> String {
+    let mut output = String::new();
+    for character in value.to_lowercase().chars() {
+        if character.is_ascii_lowercase() {
+            output.push(character);
+        } else if (character.is_whitespace() || character == '-')
+            && !output.is_empty()
+            && !output.ends_with('-')
+        {
+            output.push('-');
+        }
+        if output.chars().count() >= 80 {
+            break;
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_names_match_web_normalization() {
+        assert_eq!(normalize_channel("  Product---Launch! "), "product-launch-");
+        assert_eq!(normalize_channel("RUST  DESKTOP"), "rust-desktop");
+        assert_eq!(channel_name_error("product-launch"), None);
+        assert!(channel_name_error("product--launch").is_some());
+    }
 
     // The same cases as apps/api/src/names.rs.
     #[test]

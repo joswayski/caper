@@ -1,7 +1,7 @@
 //! Shareable space invite links (`https://caper.chat/invite/<code>`): the API
 //! shapes, the pasted-link parser and the owner list's wording, shared with
 //! web's invite page and settings.
-use crate::model::{Inviter, Space};
+use crate::model::{Inviter, Member, Space};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use url::Url;
@@ -13,6 +13,41 @@ pub fn redundant_invitation(error: &str) -> Option<&'static str> {
         "This person is already in the space." => Some("Member"),
         "This person already has a pending invitation." => Some("Invited"),
         _ => None,
+    }
+}
+
+/// Web's confirmation after inviting someone to a space or a private channel.
+pub const INVITATION_SENT: &str = "Invitation sent. They must accept before joining.";
+
+/// Web's check before inviting: someone already a member or already invited.
+pub fn invite_error(
+    username: &str,
+    members: &[Member],
+    invitations: &[Member],
+    channel: bool,
+) -> Option<&'static str> {
+    if members.iter().any(|member| member.username == username) {
+        Some(if channel {
+            "This person already has access to this channel."
+        } else {
+            "This person is already in the space."
+        })
+    } else if invitations.iter().any(|member| member.username == username) {
+        Some("This person already has a pending invitation.")
+    } else {
+        None
+    }
+}
+
+/// Web's wording for the server's member and invitation errors.
+pub fn admin_error(error: String) -> String {
+    match error.as_str() {
+        "user not found" => "User not found. Check the username and try again.".into(),
+        "user already in space" => "This person is already in the space.".into(),
+        "user already in channel" => "This person already has access to this channel.".into(),
+        "user already invited" => "This person already has a pending invitation.".into(),
+        "invalid username" => "Use 3–32 lowercase letters, numbers, or underscores.".into(),
+        _ => error,
     }
 }
 

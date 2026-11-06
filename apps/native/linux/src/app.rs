@@ -14,13 +14,13 @@ use caper_client::api::Api;
 use caper_client::gateway::GatewayEvent;
 use caper_client::mentions;
 use caper_client::model::{
-    Account, Apply, ChatSession, DirectConversation, Message, Space, SpaceDetail, Timeline,
+    Account, Apply, ChatSession, DirectConversation, Message, Space, SpaceDetail, Spaces, Timeline,
 };
 use caper_client::notifications::Scope;
 use caper_client::reactions::Reacted;
 use caper_client::sign_in::{MAX_RESENDS, resend_countdown, resend_wait};
 use caper_client::worker::{
-    AccountOperation, AccountResult, AdminOperation, AdminResult, Command, Event, Worker, current,
+    AccountOperation, AccountResult, AdminOperation, Command, Event, Worker, current,
 };
 use gtk::{gdk, gio, glib, prelude::*};
 use std::cell::{Cell, RefCell};
@@ -30,6 +30,8 @@ use std::time::{Duration, Instant};
 
 #[path = "account.rs"]
 mod account;
+#[path = "admin.rs"]
+mod admin;
 #[path = "forward.rs"]
 mod forward;
 #[path = "members.rs"]
@@ -215,6 +217,8 @@ struct State {
     membership_request: u64,
     /// Privacy and notification settings.
     settings: settings::AccountSettings,
+    /// Space and channel management, invites and membership.
+    admin: admin::Admin,
 }
 
 impl State {
@@ -316,6 +320,9 @@ impl State {
 
 pub struct App {
     ui: Ui,
+    api: Api,
+    admin_window: RefCell<Option<admin::AdminWindow>>,
+    confirm_window: RefCell<Option<admin::ConfirmWindow>>,
     images: Rc<Images>,
     worker: Worker<Wakes>,
     state: RefCell<State>,
@@ -410,7 +417,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     let app = Rc::new(App {
         ui,
         images,
-        worker: Worker::new(api, Wakes(sender.clone())),
+        worker: Worker::new(api.clone(), Wakes(sender.clone())),
         state: RefCell::new(State::default()),
         follow: Cell::new(true),
         settling: Cell::new(false),
@@ -432,6 +439,9 @@ pub fn start(application: &gtk::Application, base: &str) {
         wakes: Wakes(sender.clone()),
         settings: RefCell::default(),
         mute_timer: Cell::new(false),
+        api: api.clone(),
+        admin_window: RefCell::default(),
+        confirm_window: RefCell::default(),
         effects: RefCell::new(caper_client::effects::Effects::new(
             prefs.get::<bool>("sound-effects-v1").unwrap_or(true),
         )),
@@ -451,6 +461,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.connect_drop();
     app.install_actions();
     app.install_notification_actions();
+    app.install_admin_actions();
     app.render();
     // The window shows before any network request finishes.
     app.ui.window.present();
@@ -781,11 +792,11 @@ impl App {
         self.render();
     }
 
-    fn establish(&self, state: &mut State, token: String, account: Account, spaces: Vec<Space>) {
+    fn establish(&self, state: &mut State, token: String, account: Account, spaces: Spaces) {
         state.epoch += 1;
         state.token = Some(token);
         state.account = Some(account);
-        state.spaces = spaces;
+        state.set_spaces(spaces);
         state.page = Some(Page::Chat);
         state.layout += 1;
         self.load_directs(state);
@@ -810,6 +821,15 @@ impl App {
         self.close_forward();
         self.close_profile_editor();
         self.close_settings();
+        for window in [
+            self.admin_window.borrow_mut().take().map(|w| w.window),
+            self.confirm_window.borrow_mut().take().map(|w| w.window),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            window.destroy();
+        }
         {
             let mut state = self.state.borrow_mut();
             let token = state.token.take();
@@ -1484,6 +1504,12 @@ impl App {
                 }
                 state.layout += 1;
             }
+            result @ (AccountResult::DefaultInviteLink { .. }
+            | AccountResult::InviteLinks { .. }
+            | AccountResult::InviteLinkCreated { .. }
+            | AccountResult::InviteLinkRevoked { .. }
+            | AccountResult::InvitePreview { .. }
+            | AccountResult::InviteJoined { .. }) => self.invite_result(state, result),
             AccountResult::Invitation {
                 space,
                 user,
@@ -2562,6 +2588,8 @@ impl App {
         self.render_profile();
         self.render_settings();
         self.render_start_direct();
+        self.start_membership_refresh();
+        self.render_admin();
         self.render();
     }
 
@@ -2570,7 +2598,7 @@ impl App {
             Event::Restored { generation, result } if generation == state.generation => {
                 match result {
                     Ok(Some((token, account, spaces))) => {
-                        self.establish(state, token, account, spaces.spaces)
+                        self.establish(state, token, account, spaces)
                     }
                     Ok(None) => state.page = Some(Page::SignIn),
                     Err(error) => {
@@ -2609,7 +2637,7 @@ impl App {
                             generation: state.generation,
                             token: token.clone(),
                         });
-                        self.establish(state, token, account, spaces.spaces);
+                        self.establish(state, token, account, spaces);
                     }
                     Err(error) => {
                         state.error = Some(match attempts_remaining {
@@ -2989,19 +3017,20 @@ impl App {
                     }
                 }
             }
-            Event::Admin { generation, result } if generation == state.generation => {
-                state.joining = false;
-                match result {
-                    Ok(AdminResult::ChannelMembership {
-                        detail, channel, ..
-                    }) => {
-                        let space = Some(detail.space.id.clone());
-                        state.detail = Some(detail);
-                        self.navigate(state, space, Some(channel));
-                    }
-                    Ok(_) => {}
-                    Err(error) => state.error = Some(error),
-                }
+            // A dialog's change answers even after a navigation.
+            Event::Admin { generation, result }
+                if generation == state.generation || state.admin.busy =>
+            {
+                self.admin_result(state, result);
+            }
+            Event::MembershipRefreshed {
+                epoch,
+                request,
+                revision,
+                navigation,
+                result,
+            } if epoch == state.epoch => {
+                self.membership_refreshed(state, request, revision, navigation, result);
             }
             Event::AssetUsage { token, settings } if state.token.as_ref() == Some(&token) => {
                 state.uploads = settings;
@@ -3620,6 +3649,7 @@ impl App {
             self.scope_menu_on(&button, Scope::Space(space.id.clone()));
             ui.rail.append(&overlay);
         }
+        self.render_admin_sidebar(&state);
 
         let detail = state.detail.as_ref();
         ui.space_name

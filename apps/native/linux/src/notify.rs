@@ -146,6 +146,10 @@ impl App {
             item
         };
         let menu = gio::Menu::new();
+        // Owners' and members' management items come first, as on desktop.
+        if let Some(admin) = Self::admin_menu(&state, scope) {
+            menu.append_section(None, &admin);
+        }
         if !settings.ready() || settings.saving(scope) {
             let note = gio::MenuItem::new(
                 Some(settings.load_error().unwrap_or(if settings.ready() {

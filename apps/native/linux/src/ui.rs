@@ -142,6 +142,9 @@ pub struct Ui {
     pub signin_error: gtk::Label,
     pub rail: gtk::Box,
     pub space_name: gtk::Label,
+    pub space_header: gtk::Button,
+    pub new_channel: gtk::Button,
+    pub channel_invites: gtk::Box,
     pub channels: gtk::ListBox,
     pub directs: gtk::ListBox,
     pub account_avatar: AvatarView,
@@ -287,14 +290,38 @@ impl Ui {
         sidebar.set_size_request(260, -1);
         // Expanding children (the account name) must not widen it.
         sidebar.set_hexpand(false);
+        // The space's name opens its menu: invite, settings, leave.
+        let space_header: gtk::Button = crate::app::named("GtkButton", "Space options");
+        space_header.add_css_class("flat");
+        space_header.add_css_class("space-header");
+        let header_line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let space_name = label("", &["space-name"]);
         space_name.set_ellipsize(pango::EllipsizeMode::End);
-        sidebar.append(&space_name);
+        space_name.set_hexpand(true);
+        header_line.append(&space_name);
+        header_line.append(&images.icon_image(Icon::ChevronDown, "#b9bcbe", 16));
+        space_header.set_child(Some(&header_line));
+        sidebar.append(&space_header);
         let lists = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        lists.append(&label("Channels", &["section"]));
+        let channel_header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let channels_title = label("Channels", &["section"]);
+        channels_title.set_hexpand(true);
+        channel_header.append(&channels_title);
+        let new_channel: gtk::Button = crate::app::named("GtkButton", "Create channel");
+        new_channel.set_child(Some(&images.icon_image(Icon::Plus, "#b9bcbe", 16)));
+        new_channel.set_tooltip_text(Some("Create channel"));
+        new_channel.add_css_class("flat");
+        new_channel.add_css_class("section-action");
+        new_channel.set_valign(gtk::Align::End);
+        channel_header.append(&new_channel);
+        lists.append(&channel_header);
         let channels: gtk::ListBox = crate::app::named("GtkListBox", "Channels");
         channels.add_css_class("channels");
         lists.append(&channels);
+        // Pending private channel invitations, with Accept and Decline.
+        let channel_invites = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        channel_invites.add_css_class("channel-invites");
+        lists.append(&channel_invites);
         let direct_header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let direct_title = label("Direct messages", &["section"]);
         direct_title.set_hexpand(true);
@@ -504,6 +531,9 @@ impl Ui {
             signin_error,
             rail,
             space_name,
+            space_header,
+            new_channel,
+            channel_invites,
             channels,
             directs,
             account_avatar,

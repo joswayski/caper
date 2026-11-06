@@ -37,8 +37,10 @@ mod window_state;
 mod worker;
 
 use caper_client::caper_avatar_index;
-use caper_client::invites::redundant_invitation;
-use caper_client::names::normalize_username;
+use caper_client::invites::{INVITATION_SENT, admin_error, invite_error, redundant_invitation};
+use caper_client::names::{
+    channel_name_error, normalize_channel, normalize_username, space_name_error,
+};
 use caper_client::reactions::{
     REACTOR_CACHE_LIMIT, Reacted, Reactions, ReactorCache, ReactorState,
 };
@@ -27230,37 +27232,6 @@ fn audio_icon_button(
     response
 }
 
-/// Web's spaces/client.ts validation copy.
-fn space_name_error(name: &str) -> Option<&'static str> {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        Some("Enter a space name.")
-    } else if trimmed.chars().count() > 80 {
-        Some("Space names can be at most 80 characters.")
-    } else if trimmed.chars().any(char::is_control) {
-        Some("Space names cannot contain control characters.")
-    } else if names::has_hidden(trimmed) {
-        Some("Space names cannot contain invisible or text-direction characters.")
-    } else {
-        None
-    }
-}
-
-fn channel_name_error(name: &str) -> Option<&'static str> {
-    if name.is_empty() {
-        Some("Enter a channel name.")
-    } else if name.chars().count() > 80 {
-        Some("Channel names can be at most 80 characters.")
-    } else if !name
-        .split('-')
-        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase()))
-    {
-        Some("Use lowercase letters separated by single dashes.")
-    } else {
-        None
-    }
-}
-
 /// Web's `voiceAction` for one channel.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum VoiceAction {
@@ -31577,41 +31548,6 @@ fn rich_text_rows(
 /// Under "No messages yet." in the Caper DM.
 const TEAM_DM_NOTE: &str = "Messages here go to the Caper team.";
 
-/// Web's confirmation after inviting someone to a space or a private channel.
-const INVITATION_SENT: &str = "Invitation sent. They must accept before joining.";
-
-/// Web's check before inviting: someone already a member or already invited.
-fn invite_error(
-    username: &str,
-    members: &[Member],
-    invitations: &[Member],
-    channel: bool,
-) -> Option<&'static str> {
-    if members.iter().any(|member| member.username == username) {
-        Some(if channel {
-            "This person already has access to this channel."
-        } else {
-            "This person is already in the space."
-        })
-    } else if invitations.iter().any(|member| member.username == username) {
-        Some("This person already has a pending invitation.")
-    } else {
-        None
-    }
-}
-
-/// Web's wording for the server's member and invitation errors.
-fn admin_error(error: String) -> String {
-    match error.as_str() {
-        "user not found" => "User not found. Check the username and try again.".into(),
-        "user already in space" => "This person is already in the space.".into(),
-        "user already in channel" => "This person already has access to this channel.".into(),
-        "user already invited" => "This person already has a pending invitation.".into(),
-        "invalid username" => "Use 3–32 lowercase letters, numbers, or underscores.".into(),
-        _ => error,
-    }
-}
-
 /// Quick reactions at the start of the message hover toolbar.
 const QUICK_REACTIONS: [&str; 3] = ["👍", "❤️", "😂"];
 
@@ -32405,24 +32341,6 @@ impl TestPass for egui::Context {
         output.textures_delta.clear();
         output
     }
-}
-
-fn normalize_channel(value: &str) -> String {
-    let mut output = String::new();
-    for character in value.to_lowercase().chars() {
-        if character.is_ascii_lowercase() {
-            output.push(character);
-        } else if (character.is_whitespace() || character == '-')
-            && !output.is_empty()
-            && !output.ends_with('-')
-        {
-            output.push('-');
-        }
-        if output.chars().count() >= 80 {
-            break;
-        }
-    }
-    output
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -33657,8 +33575,8 @@ mod tests {
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, DELETE_ACCOUNT_URL, Dialog,
         GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingSend, Phase,
         RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT, display_time, endpoint,
-        media, message_runs, normalize_channel, permanent_send_rejection, pill_rects, short_time,
-        take_date_divider, timestamp_parts, voice,
+        media, message_runs, permanent_send_rejection, pill_rects, short_time, take_date_divider,
+        timestamp_parts, voice,
     };
     use crate::TestPass as _;
     use crate::{mentions, navigation, uploads, voice_note, whats_new, worker};
@@ -55882,12 +55800,6 @@ mod tests {
             assert_eq!(app.sidebar_channels_fraction, 0.5);
             assert_eq!(app.members_width, 220.0);
         }
-    }
-
-    #[test]
-    fn channel_names_match_web_normalization() {
-        assert_eq!(normalize_channel("  Product---Launch! "), "product-launch-");
-        assert_eq!(normalize_channel("RUST  DESKTOP"), "rust-desktop");
     }
 
     #[test]

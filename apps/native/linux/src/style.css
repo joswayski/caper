@@ -1010,3 +1010,79 @@ window.caper radio:checked {
   border-color: @caper_terracotta;
   color: @caper_text;
 }
+
+/* Owner management: the space header, rail actions and invitations. */
+button.space-header {
+  padding: 0 8px 0 0;
+  margin: 4px 6px 0;
+  border-radius: 8px;
+}
+
+button.space-header .space-name {
+  padding: 10px 10px 8px;
+}
+
+.rail button.rail-action {
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+}
+
+.rail button.rail-action.dashed {
+  border-style: dashed;
+}
+
+.rail button.rail-action:hover {
+  background: @caper_surface_raised;
+}
+
+.rail button.invited {
+  background: @caper_surface;
+  border: 1px solid @caper_terracotta;
+  color: @caper_terracotta_bright;
+}
+
+.channel-invites {
+  padding: 0 12px;
+}
+
+.channel-invite {
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.admin-heading {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.strong {
+  font-weight: 700;
+}
+
+.monospace {
+  font-family: monospace;
+}
+
+.invite-link,
+.invite-preview {
+  background: @caper_surface_raised;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.space-tile {
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 12px;
+  background: @caper_surface;
+  font-weight: 700;
+}
+
+.save-bar {
+  background: @caper_blackout;
+  border-top: 1px solid @caper_border;
+  margin: 12px -22px -22px;
+  padding: 14px 22px;
+}
