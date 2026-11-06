@@ -37,6 +37,8 @@ pub enum Id {
     Direct(usize),
     /// The section heading's "New direct message".
     NewDirect,
+    /// The request bar in place of the composer, and its parts.
+    Bar(crate::directs::BarPart),
     History,
     Row(usize),
     /// A row's reaction chip or its error's Retry/Dismiss button.
@@ -188,7 +190,12 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                 out.extend([Id::Reply, Id::ReplyCancel]);
             }
             out.extend(a.box_parts().into_iter().map(Id::BoxPart));
-            out.extend([Id::Composer, Id::Members]);
+            if a.dm_bar().is_some() {
+                out.extend(a.bar_parts().into_iter().map(|(p, _)| Id::Bar(p)));
+            } else {
+                out.push(Id::Composer);
+            }
+            out.push(Id::Members);
             out.extend(a.menu.as_ref().map(|_| Id::Menu));
             out.extend(a.picker.as_ref().map(|_| Id::Picker));
             out.extend(a.gifs.as_ref().map(|_| Id::Gifs));
@@ -275,6 +282,7 @@ fn exists(a: &App, id: Id) -> bool {
         }
         Id::Channel(i) => i < a.c.channels.len(),
         Id::Directs | Id::NewDirect => !a.direct_rows().is_empty(),
+        Id::Bar(p) => a.bar_parts().iter().any(|(q, _)| *q == p),
         Id::Direct(k) => k < a.direct_rows().len(),
         Id::Member(i) => i < a.c.members.len(),
         Id::Space(i) => i < a.c.spaces.len(),
@@ -346,6 +354,7 @@ fn name(a: &App, id: Id) -> String {
         ),
         Id::Directs => "Direct messages".into(),
         Id::NewDirect => "New direct message".into(),
+        Id::Bar(p) => a.dm_bar().map_or_else(String::new, |b| b.label(p)),
         Id::Direct(k) => a
             .direct_rows()
             .get(k)
@@ -517,6 +526,10 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel | Id::NewDirect => {
             UIA_ButtonControlTypeId
         }
+        Id::Bar(crate::directs::BarPart::Text | crate::directs::BarPart::Error) => {
+            UIA_TextControlTypeId
+        }
+        Id::Bar(_) => UIA_ButtonControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Thread => UIA_PaneControlTypeId,
         Id::ThreadPart(TPart::Row(_)) => UIA_ListItemControlTypeId,
@@ -548,6 +561,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Directs => (34, 0),
         Id::Direct(k) => (35, k),
         Id::NewDirect => (36, 0),
+        Id::Bar(p) => (37, p.index()),
         Id::History => (5, 0),
         Id::Row(i) => (6, i),
         Id::Members => (7, 0),
@@ -644,6 +658,11 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Directs => a.directs_rect(a.direct_rows().len()),
         Id::Direct(k) => a.direct_rect(k),
         Id::NewDirect => a.new_direct_rect(),
+        Id::Bar(p) => a
+            .bar_parts()
+            .into_iter()
+            .find(|(q, _)| *q == p)
+            .map_or((0.0, 0.0, 0.0, 0.0), |(_, r)| r),
         Id::History => (a.list_x(), crate::theme::HEADER_H, a.list_w(), a.vh()),
         Id::Row(i) => a.row_rect(i),
         Id::Control(i, action) => {
@@ -806,6 +825,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             Id::Sign(Part::Title | Part::Message) => false,
             Id::MenuItem(_)
             | Id::NewDirect
+            | Id::Bar(crate::directs::BarPart::Accept | crate::directs::BarPart::Decline)
             | Id::MenuClose
             | Id::Tool(..)
             | Id::ReplyCancel
@@ -913,6 +933,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::Channel(_)
                         | Id::Direct(_)
                         | Id::NewDirect
+                        | Id::Bar(
+                            crate::directs::BarPart::Accept | crate::directs::BarPart::Decline
+                        )
                         | Id::MenuItem(_)
                         | Id::Pick(PPart::Search)
                         | Id::Gif(GPart::Search)
@@ -1074,6 +1097,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Channel(i) => a.select_channel(i),
                 Id::Direct(k) => a.open_direct_row(k),
                 Id::NewDirect => a.open_start_direct(),
+                Id::Bar(p) => a.bar_activate(p),
                 Id::Sign(p) => a.signin_activate(Some(p)),
                 Id::MenuItem(k) => a.menu_activate(k),
                 Id::Dialog(p) => a.dialog_activate(p),

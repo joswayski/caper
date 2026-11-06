@@ -8,7 +8,7 @@ use crate::model::{self, Conversation, Person, Reaction, Span};
 use caper_client::reactions::{
     REACTOR_CACHE_LIMIT, Reacted, Reactions, ReactorCache, ReactorState,
 };
-use caper_client::worker::{Command, Event, Worker};
+use caper_client::worker::{AccountOperation, AccountResult, Command, Event, Worker};
 use caper_client::{Host, api::Api, gateway, grouping, model as core};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -314,6 +314,12 @@ pub struct Live {
     /// match (egui's `people`), and the last username lookup.
     people: Vec<core::Person>,
     lookup: u64,
+    /// "Message requests" opened in the sidebar; the open request's
+    /// Accept or Decline in flight (true: declining) and why the last one
+    /// failed.
+    pub requests_open: bool,
+    answer: Option<bool>,
+    answer_error: Option<String>,
 }
 
 /// What a send with composer files did.
@@ -432,6 +438,9 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         direct_name: String::new(),
         people: Vec::new(),
         lookup: 0,
+        requests_open: false,
+        answer: None,
+        answer_error: None,
     })
 }
 
@@ -562,6 +571,63 @@ impl Live {
             token,
             username,
         });
+    }
+
+    /// The open DM's request bar while it is an incoming request.
+    pub fn request_bar(&self) -> Option<crate::directs::Bar> {
+        let d = self.directs.iter().find(|d| {
+            self.direct.as_ref() == Some(&d.id) && d.status == core::DirectStatus::Incoming
+        })?;
+        Some(crate::directs::Bar {
+            name: d.peer.display_name.clone(),
+            username: d.peer.username.clone(),
+            busy: self.answer,
+            error: self.answer_error.clone(),
+        })
+    }
+
+    /// Accepts or declines the open request.
+    pub fn answer_request(&mut self, accept: bool) {
+        let (Some(token), Some(id)) = (self.token.clone(), self.direct.clone()) else {
+            return;
+        };
+        if self.answer.is_some() {
+            return;
+        }
+        self.answer = Some(!accept);
+        self.answer_error = None;
+        let operation = if accept {
+            AccountOperation::Accept(id)
+        } else {
+            AccountOperation::Decline(id)
+        };
+        self.worker.send(Command::Account {
+            epoch: 0,
+            token,
+            operation,
+        });
+    }
+
+    /// A declined request leaves the list; when it was open, the next
+    /// request opens, else the space's first channel (egui's
+    /// `leave_request`).
+    fn leave_request(&mut self, id: &str) {
+        self.directs.retain(|d| d.id != id);
+        if self.direct.as_deref() != Some(id) {
+            return;
+        }
+        let next = self
+            .directs
+            .iter()
+            .find(|d| d.status == core::DirectStatus::Incoming)
+            .map(|d| d.id.clone());
+        match next {
+            Some(next) => {
+                self.requests_open = true;
+                self.open_direct(next);
+            }
+            None => self.navigate(self.space.clone(), None),
+        }
     }
 
     /// Refreshes the people the New DM dialog matches (egui's `load_people`).
@@ -2162,6 +2228,46 @@ impl Live {
                 generation,
                 result: Ok(people),
             } if generation == current => self.people = people,
+            Event::Account {
+                result: AccountResult::Accepted { id, result },
+                ..
+            } => {
+                self.answer = None;
+                match result {
+                    Ok(direct) => {
+                        self.answer_error = None;
+                        match self.directs.iter_mut().find(|d| d.id == id) {
+                            Some(d) => *d = direct,
+                            None => self.directs.push(direct),
+                        }
+                        if !self
+                            .directs
+                            .iter()
+                            .any(|d| d.status == core::DirectStatus::Incoming)
+                        {
+                            self.requests_open = false;
+                        }
+                        // Accepted, it is read like any DM you are looking at.
+                        self.mark_read();
+                    }
+                    Err(e) => self.answer_error = Some(e),
+                }
+                out.extend([Update::Badges, Update::DirectHead]);
+            }
+            Event::Account {
+                result: AccountResult::Declined { id, result },
+                ..
+            } => {
+                self.answer = None;
+                match result {
+                    Ok(()) => {
+                        self.answer_error = None;
+                        self.leave_request(&id);
+                    }
+                    Err(e) => self.answer_error = Some(e),
+                }
+                out.extend([Update::Badges, Update::DirectHead]);
+            }
             Event::DirectLookedUp {
                 generation,
                 request,

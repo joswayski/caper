@@ -231,6 +231,9 @@ pub struct App {
     hover_member: Option<usize>,
     /// The sidebar's DM row under the pointer.
     hover_direct: Option<directs::Spot>,
+    /// The request bar's hovered and pressed buttons.
+    bar_hover: Option<directs::BarPart>,
+    bar_pressed: Option<directs::BarPart>,
     pointer: Option<(f32, f32)>,
     tracking: bool,
     pub sel: Option<Sel>,
@@ -412,6 +415,8 @@ impl App {
                 hover_channel: None,
                 hover_member: None,
                 hover_direct: None,
+                bar_hover: None,
+                bar_pressed: None,
                 pointer: None,
                 tracking: false,
                 sel: None,
@@ -587,6 +592,7 @@ impl App {
                     self.composer.anchor = self.composer.caret;
                     self.composer.comp.clear();
                     self.composer_changed();
+                    self.bar_changed();
                 }
                 live::Update::Older(older) => {
                     let (c, ids) = *older;
@@ -609,7 +615,10 @@ impl App {
                 live::Update::Focus(id) => self.focus_message(&id)?,
                 // Names for a chip's card arrived; the next frame shows them.
                 live::Update::Reactors => self.need = true,
-                live::Update::DirectHead => self.direct_head_changed(),
+                live::Update::DirectHead => {
+                    self.direct_head_changed();
+                    self.bar_changed();
+                }
                 live::Update::DirectFound { request, result } => self.direct_found(request, result),
                 live::Update::DirectCreated(error) => self.direct_created(error),
                 live::Update::Badges => {
@@ -879,6 +888,8 @@ impl App {
     }
 
     pub fn set_composer_focus(&mut self, focused: bool) {
+        // A request's bar stands in for the composer.
+        let focused = focused && self.dm_bar().is_none();
         // One text field has focus: the reply box in the thread gives it up.
         if focused
             && let Some(t) = &mut self.thread
@@ -1230,6 +1241,7 @@ impl App {
             self.dirty.sidebar = true;
             self.need = true;
         }
+        self.track_bar_hover();
         if space != self.hover_space {
             self.hover_space = space;
             self.dirty.rail = true;
@@ -1426,7 +1438,13 @@ impl App {
                 unsafe {
                     SetCapture(self.hwnd);
                 }
-                if let Some(part) = self.box_part_at(x, y) {
+                if let Some(part) = self.bar_at(x, y) {
+                    self.bar_pressed = Some(part);
+                    self.dirty.composer = true;
+                    self.need = true;
+                } else if self.dm_bar().is_some() && self.in_box(x, y) {
+                    self.set_composer_focus(false);
+                } else if let Some(part) = self.box_part_at(x, y) {
                     self.box_activate(part);
                 } else if self.in_box(x, y) {
                     self.set_thread_focus(false);
@@ -1507,6 +1525,13 @@ impl App {
                 let clicked = self.selecting && self.sel.is_none_or(|(a, b)| a == b);
                 self.selecting = false;
                 self.composer_drag = false;
+                if let Some(part) = self.bar_pressed.take() {
+                    self.dirty.composer = true;
+                    self.need = true;
+                    if self.bar_at(x, y) == Some(part) {
+                        self.bar_activate(part);
+                    }
+                }
                 if clicked && let Some(href) = self.link_at(x, y) {
                     self.set_sel(None);
                     open_link(&href);
@@ -1525,13 +1550,14 @@ impl App {
                 if (lp.0 & 0xffff) as u32 != HTCLIENT {
                     return None;
                 }
-                let part = self
-                    .pointer
-                    .is_some_and(|(x, y)| self.box_part_at(x, y).is_some());
+                let part = self.pointer.is_some_and(|(x, y)| {
+                    self.box_part_at(x, y).is_some() || self.bar_at(x, y).is_some()
+                });
+                let bar = self.dm_bar().is_some();
                 let beam = !part
                     && self
                         .pointer
-                        .is_some_and(|(x, y)| self.in_box(x, y) || self.in_history(x, y));
+                        .is_some_and(|(x, y)| (self.in_box(x, y) && !bar) || self.in_history(x, y));
                 let hand = part
                     || self.hover_channel.is_some()
                     || self
@@ -2718,7 +2744,12 @@ impl App {
             let (drafts, tiles, top, notice) = self.box_files(bw);
             let gif = self.gif_shown().then_some((bw, self.gifs.is_some()));
             let live = self.live.as_ref();
+            let bar = self.dm_bar();
+            let (bar_hover, bar_pressed) = (self.bar_hover, self.bar_pressed);
             self.composer_p.draw(s, |dc| {
+                if let Some(bar) = &bar {
+                    return bar.draw(g, dc, bw, bar_hover, bar_pressed);
+                }
                 comp.draw(g, dc, bw, bh, &placeholder)?;
                 match live {
                     Some(live) => uploads::draw(

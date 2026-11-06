@@ -747,21 +747,33 @@ impl Dialog {
         } else {
             1
         };
-        let (fill, border, text) = tone.colors(state);
-        let (x, y, w, h) = r;
-        let body = rect(x, y, x + w, y + h);
-        fill_round(dc, body, 7.0, &g.solid(fill));
-        stroke_round(dc, body, 7.0, &g.solid(border));
-        let l = layout(g, label, &g.formats.button, w)?;
-        crate::text::draw(
-            dc,
-            &l,
-            x + (w - width(&l)) / 2.0,
-            y + (h - height(&l)) / 2.0,
-            &g.solid(text),
-        );
-        Ok(())
+        draw_button(g, dc, label, r, tone, state)
     }
+}
+
+/// A button in `tone` and `state` (0 disabled, 1 rest, 2 hover, 3 pressed).
+pub(crate) fn draw_button(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    label: &str,
+    r: Rect,
+    tone: Tone,
+    state: u8,
+) -> Result<()> {
+    let (fill, border, text) = tone.colors(state);
+    let (x, y, w, h) = r;
+    let body = rect(x, y, x + w, y + h);
+    fill_round(dc, body, 7.0, &g.solid(fill));
+    stroke_round(dc, body, 7.0, &g.solid(border));
+    let l = layout(g, label, &g.formats.button, w)?;
+    crate::text::draw(
+        dc,
+        &l,
+        x + (w - width(&l)) / 2.0,
+        y + (h - height(&l)) / 2.0,
+        &g.solid(text),
+    );
+    Ok(())
 }
 
 /// The egui client's button tones (web's `.primary`, `.secondary` and

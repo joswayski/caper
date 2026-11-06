@@ -562,6 +562,9 @@ impl App {
     /// The composer box's height for width `bw`, its text laid out after
     /// Attach files and below the files.
     pub fn box_height(&mut self, bw: f32) -> Result<f32> {
+        if let Some(bar) = self.dm_bar() {
+            return Ok(bar.layout(&self.g, bw)?.1);
+        }
         let top = if self.live.is_some() {
             self.box_files(bw).2
         } else {
@@ -583,7 +586,7 @@ impl App {
 
     /// The composer box's control under client point (x, y).
     pub fn box_part_at(&self, x: f32, y: f32) -> Option<Part> {
-        if self.live.is_none() || !self.in_box(x, y) {
+        if self.live.is_none() || !self.in_box(x, y) || self.dm_bar().is_some() {
             return None;
         }
         let (bx, by, bw, _) = self.box_rect();
@@ -596,7 +599,7 @@ impl App {
 
     /// The composer box's controls, in reading order (for UI Automation).
     pub fn box_parts(&self) -> Vec<Part> {
-        if self.live.is_none() {
+        if self.live.is_none() || self.dm_bar().is_some() {
             return Vec::new();
         }
         let (_, _, bw, _) = self.box_rect();
