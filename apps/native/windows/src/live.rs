@@ -76,6 +76,11 @@ pub enum Update {
     /// Signed in: the account's spaces are loading.
     SignedIn,
     Loaded(Box<(Conversation, Ids)>),
+    /// An older page arrived: the whole history again, the new messages
+    /// first and the shown ones after them, unchanged.
+    Older(Box<(Conversation, Ids)>),
+    /// Loading older messages started, finished or failed.
+    OlderState,
     /// A new message, or the latest state of a shown one (its reactions,
     /// text or deletion changed), whose row is then rebuilt.
     Message(Box<core::Message>),
@@ -193,6 +198,26 @@ pub struct Live {
     request: u64,
     /// The signed-in chat author (pins you make carry it).
     author: Option<core::Author>,
+    /// The open space, for rebuilding the conversation after an older page.
+    detail: Option<core::SpaceDetail>,
+    /// Older history: whether the server has more, a request in flight,
+    /// and why the last one failed.
+    pub has_more: bool,
+    pub loading_older: bool,
+    pub older_error: Option<String>,
+}
+
+/// What the top of the history offers, as in the egui client.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Older {
+    /// "Load older messages".
+    More,
+    /// "Loading…".
+    Loading,
+    /// "Couldn't load older messages." and Retry.
+    Failed,
+    /// "Beginning of conversation".
+    Start,
 }
 
 /// Starts the worker and restores the stored session; `None` without
@@ -232,6 +257,10 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         pending_pins: HashSet::new(),
         request: 0,
         author: None,
+        detail: None,
+        has_more: false,
+        loading_older: false,
+        older_error: None,
     })
 }
 
@@ -526,6 +555,68 @@ impl Live {
         }
     }
 
+    /// What the top of the history shows now.
+    pub fn older(&self) -> Older {
+        if self.loading_older {
+            Older::Loading
+        } else if self.older_error.is_some() {
+            Older::Failed
+        } else if self.has_more {
+            Older::More
+        } else {
+            Older::Start
+        }
+    }
+
+    /// Asks for the page before the oldest shown message; false when one is
+    /// in flight or there is none.
+    pub fn load_older(&mut self) -> bool {
+        if self.loading_older || !self.has_more {
+            return false;
+        }
+        let Some(channel) = self.channel.clone() else {
+            return false;
+        };
+        let Some(before) = self
+            .timeline
+            .messages()
+            .find(|m| m.is_channel_message())
+            .map(|m| m.seq.clone())
+        else {
+            return false;
+        };
+        self.loading_older = true;
+        self.older_error = None;
+        self.worker.send(Command::LoadOlder {
+            generation: self.generation,
+            request: self.navigation,
+            token: self.token.clone(),
+            channel,
+            before,
+        });
+        self.queued.push(Update::OlderState);
+        true
+    }
+
+    /// The shown history as the viewer sees it, rebuilt from the timeline.
+    fn rebuilt(&self) -> Option<(Conversation, Ids)> {
+        let (detail, channel) = (self.detail.as_ref()?, self.channel.as_ref()?);
+        let spaces = self.spaces.clone().unwrap_or(core::Spaces {
+            spaces: Vec::new(),
+            invitations: Vec::new(),
+            limits: None,
+        });
+        let messages: Vec<core::Message> =
+            self.timeline.messages().map(|m| self.shown(m)).collect();
+        Some(conversation(
+            &spaces,
+            detail,
+            channel,
+            &messages,
+            self.me.as_deref(),
+        ))
+    }
+
     /// Reloads the open channel from history.
     fn reload(&mut self) {
         if let Some(channel) = self.channel.clone() {
@@ -600,6 +691,10 @@ impl Live {
                     self.reactions.clear();
                     self.mutations = core::MessageMutations::default();
                     self.pending_pins.clear();
+                    self.has_more = history.has_more;
+                    self.loading_older = false;
+                    self.older_error = None;
+                    self.detail = Some(detail.clone());
                     let mut timeline = core::Timeline::default();
                     if let Err(e) = timeline.reset(history.messages, &history.cursor) {
                         out.push(Update::Failed(e));
@@ -641,6 +736,34 @@ impl Live {
                 }
                 Err(e) => out.push(Update::Failed(e.message)),
             },
+            Event::OlderLoaded {
+                generation,
+                request,
+                channel,
+                result,
+            } if generation == current
+                && request == self.navigation
+                && self.channel.as_deref() == Some(channel.as_str()) =>
+            {
+                self.loading_older = false;
+                match result {
+                    Ok(page) => {
+                        self.has_more = page.has_more;
+                        if self.timeline.prepend(page.messages).is_err() {
+                            return self.reload();
+                        }
+                        match self.rebuilt() {
+                            Some(rebuilt) => out.push(Update::Older(Box::new(rebuilt))),
+                            None => out.push(Update::OlderState),
+                        }
+                    }
+                    Err(e) if e.access_denied => self.reload(),
+                    Err(e) => {
+                        self.older_error = Some(e.message);
+                        out.push(Update::OlderState);
+                    }
+                }
+            }
             Event::Sent {
                 generation, result, ..
             } if generation == current => match result {

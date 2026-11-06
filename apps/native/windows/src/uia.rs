@@ -53,6 +53,8 @@ pub enum Id {
     /// "Replying to …" above the composer, and its Cancel reply.
     Reply,
     ReplyCancel,
+    /// The history's head: "Load older messages" and its other states.
+    Older,
 }
 
 fn na() -> Error {
@@ -143,7 +145,13 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .map_or_else(Vec::new, |p| p.parts().into_iter().map(Id::Pick).collect()),
         Id::Rail => (0..a.c.spaces.len()).map(Id::Space).collect(),
         Id::Channels => (0..a.c.channels.len()).map(Id::Channel).collect(),
-        Id::History => a.visible_rows().map(Id::Row).collect(),
+        Id::History => a
+            .head_rect()
+            .filter(|(_, y, _, h)| *y + *h > crate::theme::HEADER_H)
+            .map(|_| Id::Older)
+            .into_iter()
+            .chain(a.visible_rows().map(Id::Row))
+            .collect(),
         Id::Members => (0..a.c.members.len()).map(Id::Member).collect(),
         Id::Row(i) => a
             .row_controls(i)
@@ -162,6 +170,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Channel(_) => Id::Channels,
         Id::Row(_) => Id::History,
         Id::Control(i, _) | Id::Tool(i, _) => Id::Row(i),
+        Id::Older => Id::History,
         Id::MenuItem(_) | Id::MenuClose => Id::Menu,
         Id::Pick(_) => Id::Picker,
         Id::Member(_) => Id::Members,
@@ -193,6 +202,7 @@ fn exists(a: &App, id: Id) -> bool {
             a.dialog.is_none() && a.picker.as_ref().is_some_and(|p| p.parts().contains(&part))
         }
         Id::Reply | Id::ReplyCancel => a.reply.is_some() && a.dialog.is_none(),
+        Id::Older => a.dialog.is_none() && a.head_rect().is_some(),
         _ => (a.signin.is_none() && a.dialog.is_none()) || id == Id::Root,
     }
 }
@@ -280,6 +290,11 @@ fn name(a: &App, id: Id) -> String {
             format!("Replying to {}: {}", r.target.author.name, r.target.text)
         }),
         Id::ReplyCancel => "Cancel reply".into(),
+        Id::Older => match a.live.as_ref().map(crate::live::Live::older) {
+            Some(crate::live::Older::Failed) => "Couldn\u{2019}t load older messages. Retry".into(),
+            Some(state) => crate::list::head_label(state).0.into(),
+            None => String::new(),
+        },
         Id::MenuItem(k) => a
             .menu
             .as_ref()
@@ -329,6 +344,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Pick(PPart::Category(_)) => UIA_TabItemControlTypeId,
         Id::Pick(PPart::Search) => UIA_EditControlTypeId,
         Id::Reply => UIA_TextControlTypeId,
+        Id::Older => UIA_ButtonControlTypeId,
         Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel => UIA_ButtonControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Dialog(DPart::Field) => UIA_EditControlTypeId,
@@ -376,6 +392,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
             },
         ),
         Id::Reply => (19, 0),
+        Id::Older => (20, 0),
         Id::ReplyCancel => (19, 1),
         Id::Control(i, action) => (
             11,
@@ -454,6 +471,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .map_or((0.0, 0.0, 0.0, 0.0), |p| p.part_rect(part)),
         Id::Reply => a.reply_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::ReplyCancel => a.reply_cancel_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Older => a.head_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Sign(p) => a
             .signin
             .as_ref()
@@ -545,7 +563,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
             Id::Sign(Part::Title | Part::Message) => false,
-            Id::MenuItem(_) | Id::MenuClose | Id::Tool(..) | Id::ReplyCancel => {
+            Id::MenuItem(_) | Id::MenuClose | Id::Tool(..) | Id::ReplyCancel | Id::Older => {
                 pattern == UIA_InvokePatternId
             }
             Id::Pick(PPart::Category(_)) => {
@@ -620,6 +638,12 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         .is_some_and(|item| item.enabled()),
                     (Id::Sign(p), Some(s)) => s.part_rect(p).is_some_and(|(_, on)| on),
                     (Id::Tool(i, t), _) => a.tools(i).iter().any(|s| s.tool == t && s.enabled),
+                    (Id::Older, _) => a.live.as_ref().is_some_and(|l| {
+                        matches!(
+                            l.older(),
+                            crate::live::Older::More | crate::live::Older::Failed
+                        )
+                    }),
                     _ => true,
                 }),
                 // Errors and \"We sent a new code\" are announced when they appear.
@@ -755,6 +779,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::MenuClose => a.close_menu(),
                 Id::Pick(part) => a.picker_activate(part),
                 Id::ReplyCancel => a.cancel_reply(),
+                Id::Older => a.load_older(),
                 _ => {}
             }
             Ok(())

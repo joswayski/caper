@@ -112,6 +112,9 @@ pub struct Formats {
     /// The message menu: its 12.48px bold heading and its items.
     pub menu_title: IDWriteTextFormat,
     pub menu_item: IDWriteTextFormat,
+    /// The history's head: its 11.52px label and bold button.
+    pub head: IDWriteTextFormat,
+    pub head_button: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -265,6 +268,8 @@ impl Gfx {
                 picker: fmt(12.5, DWRITE_FONT_WEIGHT_NORMAL)?,
                 menu_title: fmt(12.48, DWRITE_FONT_WEIGHT_BOLD)?,
                 menu_item: fmt(12.48, DWRITE_FONT_WEIGHT_NORMAL)?,
+                head: fmt(11.52, DWRITE_FONT_WEIGHT_NORMAL)?,
+                head_button: fmt(11.52, DWRITE_FONT_WEIGHT_BOLD)?,
             };
             let f = &formats;
             for f in [

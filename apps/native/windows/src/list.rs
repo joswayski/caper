@@ -112,6 +112,9 @@ pub struct Rows {
     pub width: f32,
     pub rows: Vec<Option<Row>>,
     pub top: Vec<f64>,
+    /// Heights of measured rows, kept when a row far from the viewport
+    /// drops its layouts (`trim`) so positions stay known.
+    heights: Vec<f32>,
     /// Lowest index with a known position; [lo, len) is contiguous.
     pub lo: usize,
     pub anchor_bottom: f64,
@@ -124,6 +127,7 @@ impl Rows {
             width: 0.0,
             rows: (0..n).map(|_| None).collect(),
             top: vec![0.0; n],
+            heights: vec![0.0; n],
             lo: n,
             anchor_bottom: 0.0,
             pictures: HashMap::new(),
@@ -139,7 +143,7 @@ impl Rows {
     }
 
     pub fn height(&self, i: usize) -> f32 {
-        self.row(i).map_or(0.0, |r| r.height)
+        self.heights.get(i).copied().unwrap_or(0.0)
     }
 
     pub fn body_width(list_width: f32) -> f32 {
@@ -178,7 +182,18 @@ impl Rows {
             }
             _ => {}
         }
+        self.heights[i] = self.rows[i].as_ref().map_or(0.0, |r| r.height);
         Ok(())
+    }
+
+    /// Drops the layouts of rows outside `keep`; their heights and positions
+    /// stay, and `ensure` builds them again when they are next drawn.
+    pub fn trim(&mut self, keep: Range<usize>) {
+        for (i, row) in self.rows.iter_mut().enumerate() {
+            if !keep.contains(&i) {
+                *row = None;
+            }
+        }
     }
 
     /// Measures rows upward until the content above `y` is known or the
@@ -204,11 +219,15 @@ impl Rows {
     /// whether the change has to be redrawn beyond the row itself.
     pub fn replace(&mut self, g: &Gfx, c: &Conversation, i: usize) -> Result<bool> {
         self.pictures.remove(&i);
-        let Some(old) = self.rows[i].as_ref().map(|r| r.height) else {
+        // Unmeasured rows wait; a trimmed one still has a position, so it is
+        // rebuilt and the rows below move with it.
+        if self.rows[i].is_none() && i < self.lo {
             return Ok(false);
-        };
+        }
+        let old = self.heights[i];
         let row = build(g, c, i, self.width)?;
         let delta = (row.height - old) as f64;
+        self.heights[i] = row.height;
         self.rows[i] = Some(row);
         if delta == 0.0 {
             return Ok(false);
@@ -221,12 +240,41 @@ impl Rows {
         Ok(true)
     }
 
+    /// `k` older messages were put before the shown ones: they start
+    /// unmeasured above them, and the old first row (whose grouping and date
+    /// divider can change) is measured again. Positions below it stay.
+    pub fn prepend(&mut self, k: usize) {
+        let mut rows: Vec<Option<Row>> = (0..k).map(|_| None).collect();
+        rows.append(&mut self.rows);
+        self.rows = rows;
+        let mut top = vec![0.0; k];
+        top.append(&mut self.top);
+        self.top = top;
+        let mut heights = vec![0.0; k];
+        heights.append(&mut self.heights);
+        self.heights = heights;
+        self.pictures = std::mem::take(&mut self.pictures)
+            .into_iter()
+            .map(|(i, b)| (i + k, b))
+            .collect();
+        let n = self.rows.len();
+        self.lo += k;
+        if self.lo == k && k + 1 < n {
+            self.rows[k] = None;
+            self.lo = k + 1;
+        } else if self.lo == k {
+            self.rows[k] = None;
+            self.lo = n;
+        }
+    }
+
     /// A message was appended to the conversation.
     pub fn append(&mut self, g: &Gfx, c: &Conversation) -> Result<()> {
         let bottom = self.bottom();
         let i = self.rows.len();
         self.rows.push(None);
         self.top.push(bottom);
+        self.heights.push(0.0);
         if self.lo == i {
             self.anchor_bottom = bottom;
             self.lo = i + 1;
@@ -592,6 +640,101 @@ impl Rows {
             .map(|row| controls(row, content_top(grouped)))
             .unwrap_or_default()
     }
+}
+
+/// The row above the first message: "Load older messages", "Loading…",
+/// the error and Retry, or "Beginning of conversation", as in egui.
+pub const HEAD_H: f32 = 44.0;
+
+/// The head's label and whether it is a button.
+pub fn head_label(state: crate::live::Older) -> (&'static str, bool) {
+    use crate::live::Older;
+    match state {
+        Older::More => ("Load older messages", true),
+        Older::Loading => ("Loading\u{2026}", true),
+        Older::Failed => ("Retry", true),
+        Older::Start => ("Beginning of conversation", false),
+    }
+}
+
+/// The head's button (or label) rectangle relative to the head's top-left,
+/// for a list `full` DIPs wide.
+pub fn head_rect(g: &Gfx, state: crate::live::Older, full: f32) -> Result<Common::D2D_RECT_F> {
+    let (label, button) = head_label(state);
+    let format = if button {
+        &g.formats.head_button
+    } else {
+        &g.formats.head
+    };
+    let w =
+        gfx::metrics(&g.layout(&gfx::wide(label), format, 1e6)?).widthIncludingTrailingWhitespace;
+    let bw = if button { w + 20.0 } else { w };
+    let mut x = (full - bw) / 2.0;
+    if state == crate::live::Older::Failed {
+        // "Couldn't load older messages." then Retry, centred together.
+        let note = g.layout(&gfx::wide(HEAD_ERROR), &g.formats.head, 1e6)?;
+        let nw = gfx::metrics(&note).widthIncludingTrailingWhitespace;
+        x = (full - (nw + 8.0 + bw)) / 2.0 + nw + 8.0;
+    }
+    let h = if button { 27.0 } else { 16.0 };
+    Ok(rect(x, (HEAD_H - h) / 2.0, x + bw, (HEAD_H + h) / 2.0))
+}
+
+const HEAD_ERROR: &str = "Couldn\u{2019}t load older messages.";
+
+/// Draws the head with its top-left at (0, y).
+pub fn draw_head(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    state: crate::live::Older,
+    full: f32,
+    y: f32,
+    hover: bool,
+) -> Result<()> {
+    let (label, button) = head_label(state);
+    let r = head_rect(g, state, full)?;
+    let r = rect(r.left, r.top + y, r.right, r.bottom + y);
+    if state == crate::live::Older::Failed {
+        let note = g.layout(&gfx::wide(HEAD_ERROR), &g.formats.head, 1e6)?;
+        let nw = gfx::metrics(&note).widthIncludingTrailingWhitespace;
+        let nh = gfx::metrics(&note).height;
+        crate::text::draw(
+            dc,
+            &note,
+            r.left - 8.0 - nw,
+            y + (HEAD_H - nh) / 2.0,
+            &g.brushes.muted,
+        );
+    }
+    if !button {
+        let l = g.layout(&gfx::wide(label), &g.formats.head, 1e6)?;
+        crate::text::draw(dc, &l, r.left, r.top, &g.brushes.muted);
+        return Ok(());
+    }
+    // Web's quiet bordered history button.
+    let enabled = state != crate::live::Older::Loading;
+    if enabled && hover {
+        fill_round(dc, r, 7.0, &g.brushes.border);
+    }
+    stroke_round(
+        dc,
+        r,
+        7.0,
+        if enabled && hover {
+            &g.brushes.muted
+        } else {
+            &g.brushes.border
+        },
+    );
+    let l = g.layout(&gfx::wide(label), &g.formats.head_button, 1e6)?;
+    let lh = gfx::metrics(&l).height;
+    let brush = if enabled && hover {
+        &g.brushes.text
+    } else {
+        &g.brushes.muted
+    };
+    crate::text::draw(dc, &l, r.left + 10.0, r.top + (27.0 - lh) / 2.0, brush);
+    Ok(())
 }
 
 /// Top padding of a row's content.

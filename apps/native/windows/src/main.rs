@@ -23,6 +23,7 @@ mod overlay;
 #[path = "../../../../shared/messages/formatting.rs"]
 mod formatting;
 mod gfx;
+mod history;
 mod icons;
 #[allow(dead_code)]
 #[path = "../../../../shared/messages/links.rs"]
@@ -237,6 +238,12 @@ pub struct App {
     reply_p: Panel,
     tool_hover: Option<usize>,
     bar_drawn: Option<actions::BarKey>,
+    /// The history's head needs drawing; the pointer is on its button;
+    /// the list has reached its newest message since it opened, so reaching
+    /// its start loads the previous page (as in the egui client).
+    redraw_head: bool,
+    head_hover: bool,
+    older_armed: bool,
     quit: bool,
 }
 
@@ -364,6 +371,9 @@ impl App {
                 reply_p,
                 tool_hover: None,
                 bar_drawn: None,
+                redraw_head: false,
+                head_hover: false,
+                older_armed: false,
                 quit: false,
             })
         }
@@ -380,6 +390,7 @@ impl App {
         self.hover_row = None;
         self.menu = None;
         self.picker = None;
+        self.older_armed = false;
         self.scroll_top = 0.0;
         self.at_end = true;
         self.drawn = None;
@@ -476,6 +487,15 @@ impl App {
                     self.composer.comp.clear();
                     self.composer_changed();
                 }
+                live::Update::Older(older) => {
+                    let (c, ids) = *older;
+                    self.prepend_history(c, ids)?;
+                }
+                live::Update::OlderState => {
+                    self.redraw_head = true;
+                    self.events |= EV_ROWS;
+                    self.need = true;
+                }
                 live::Update::Message(m) => {
                     let me = self.live.as_ref().and_then(|l| l.me.clone());
                     let error = self
@@ -555,6 +575,22 @@ impl App {
     }
 
     // ---- geometry (client DIPs) ----
+
+    /// Keeps row layouts only for the drawn rows and the selection, so a
+    /// long history read to its start costs its heights, not its layouts.
+    fn trim_rows(&mut self) {
+        let Some((d0, d1)) = self.drawn else {
+            return;
+        };
+        let s = self.scale as f64;
+        let mut keep = self
+            .rows
+            .range((d0 as f64 - ORIGIN) / s, (d1 as f64 - ORIGIN) / s);
+        if let Some(((a, _), (b, _))) = self.sel {
+            keep = keep.start.min(a.min(b))..keep.end.max(a.max(b) + 1);
+        }
+        self.rows.trim(keep);
+    }
 
     pub fn list_x(&self) -> f32 {
         RAIL_W + SIDEBAR_W
@@ -1096,6 +1132,7 @@ impl App {
                 }
                 self.track_tool_hover();
                 self.track_reply_hover();
+                self.track_head_hover();
                 if self.composer_drag {
                     let (tx, ty) = self.composer_text_origin();
                     let p = self.composer.hit(x - tx, y - ty - self.composer.scroll());
@@ -1135,6 +1172,8 @@ impl App {
                             self.tool_activate(i, t.tool);
                         }
                     } else if self.reply_click(x, y) {
+                    } else if self.on_head_button(x, y) {
+                        self.load_older();
                     } else if let Some((i, action)) = self.action_at(x, y) {
                         self.row_action(i, action);
                     } else if self.in_history(x, y) {
@@ -1205,6 +1244,7 @@ impl App {
                         self.link_at(x, y).is_some()
                             || self.action_at(x, y).is_some()
                             || self.tool_at(x, y).is_some()
+                            || self.on_head_button(x, y)
                             || self.reply_cancel_rect().is_some_and(|(l, t, w, h)| {
                                 x >= l && x < l + w && y >= t && y < t + h
                             })
@@ -1707,6 +1747,10 @@ impl App {
             (y0 as f64 - ORIGIN) / s as f64,
             (y1 as f64 - ORIGIN) / s as f64,
         );
+        // Rows trimmed since they were last drawn get their layouts back.
+        for i in range.clone() {
+            self.rows.ensure(&self.g, &self.c, i)?;
+        }
         let lw = self.list_w();
         let (hover, sel) = (self.hover_row, self.sel);
         let tops: Vec<(usize, f32, f32, Option<(u32, u32)>)> = range
@@ -1719,9 +1763,18 @@ impl App {
                 )
             })
             .collect();
+        let head = self
+            .head_top()
+            .zip(self.live.as_ref().map(live::Live::older))
+            .map(|(top, state)| (((self.row_px(top) - y0 as f64) / s as f64) as f32, state))
+            .filter(|(y, _)| *y < (y1 - y0) as f32 / s && *y + list::HEAD_H > 0.0);
+        let head_hover = self.head_hover;
         let (g, c, rows) = (&self.g, &self.c, &mut self.rows);
         gfx::draw_local(&self.vs, r, s, |dc| unsafe {
             dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
+            if let Some((y, state)) = head {
+                list::draw_head(g, dc, state, lw, y, head_hover)?;
+            }
             for (i, y, h, rs) in tops {
                 if hover == Some(i) {
                     // The date divider above a row is not part of its hover.
@@ -1747,13 +1800,26 @@ impl App {
         self.rows
             .measure_up_to(&self.g, &self.c, self.scroll_top - margin)?;
         let min = if self.rows.lo == 0 {
-            self.rows.top[0]
+            self.rows.top[0] - self.head_h() as f64
         } else {
             f64::NEG_INFINITY
         };
         let max = (self.rows.bottom() - vh).max(min);
         self.scroll_top = self.scroll_top.clamp(min, max);
         self.at_end = self.scroll_top >= max - 0.5;
+        self.older_armed |= self.at_end;
+        // Reaching the start loads the previous page, as on web; a failed
+        // page waits for Retry instead of looping.
+        if self.older_armed
+            && self.rows.lo == 0
+            && self.scroll_top <= min + 1.0
+            && self
+                .live
+                .as_mut()
+                .is_some_and(|l| l.older() == live::Older::More && l.load_older())
+        {
+            self.redraw_head = true;
+        }
         // Snap to device pixels so the composition offset and the drawn rows agree.
         let off = self.row_px(self.scroll_top).round();
         self.scroll_top = (off - ORIGIN) / s;
@@ -1775,6 +1841,11 @@ impl App {
         // the composition offset.
         let known_top = if self.rows.lo < self.rows.len() {
             self.rows.top[self.rows.lo]
+                - if self.rows.lo == 0 {
+                    self.head_h() as f64
+                } else {
+                    0.0
+                }
         } else {
             self.scroll_top
         };
@@ -1811,6 +1882,7 @@ impl App {
                         }]))?
                     };
                     self.drawn = Some((k0, k1));
+                    self.trim_rows();
                 } else {
                     self.drawn = Some((m0, m1));
                 }
@@ -1826,9 +1898,17 @@ impl App {
                     }]))?
                 };
                 self.drawn = Some((n0, n1));
+                self.trim_rows();
             }
         }
 
+        if std::mem::take(&mut self.redraw_head)
+            && let (Some((d0, d1)), Some(top)) = (self.drawn, self.head_top())
+        {
+            let y0 = (self.row_px(top).floor() as i64).max(d0);
+            let y1 = (self.row_px(top + list::HEAD_H as f64).ceil() as i64).min(d1);
+            self.draw_strip(y0, y1)?;
+        }
         // Rows whose hover or selection changed.
         let mut redraw = std::mem::take(&mut self.redraw);
         redraw.sort_unstable();
