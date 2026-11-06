@@ -15,6 +15,13 @@ class ReactionsTest {
         assertSame(newest, mergeReaction(newest, update("8", listOf("b"))))
     }
 
+    @Test fun `a new message leaves loaded messages as the same instances`() {
+        val next = message.copy(id = "message00000002", seq = "4", clientMessageId = "client2")
+        val merged = mergeMessages(listOf(message), listOf(next), mutableMapOf())
+        assertEquals(listOf(message, next), merged)
+        assertSame(message, merged.first())
+    }
+
     @Test fun `pin payloads preserve independent newer reaction revisions`() {
         val original = message.copy(pin = MessagePin(message.author, "now"), pinSeq = "4")
         val reacted = mergeReaction(original, update("12", listOf("alice", "bob")))

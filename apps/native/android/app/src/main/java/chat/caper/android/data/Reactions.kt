@@ -84,7 +84,9 @@ internal fun mergeMessages(
         val reacted = unseen.remove(message.id)?.let { mergeReaction(message, it) } ?: message
         val attached = unseenAttachments.remove(message.id)?.let { mergeAttachments(reacted, it) } ?: reacted
         val updated = unseenEmbeds.remove(message.id)?.let { withEmbeds(attached, it) } ?: attached
-        updated.copy(thread = summaries[message.threadRootId ?: message.id] ?: updated.thread)
+        val thread = summaries[message.threadRootId ?: message.id] ?: updated.thread
+        // An unchanged message keeps its instance, so its timeline row skips recomposition.
+        if (thread == updated.thread) updated else updated.copy(thread = thread)
     }.sortedWith(compareBy { BigInteger(it.seq) })
 }
 

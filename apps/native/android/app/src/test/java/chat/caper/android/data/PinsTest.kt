@@ -23,6 +23,9 @@ class PinsTest {
         val stale = message("4", true)
         assertNull(overlayPin(stale, null, "60").pin)
         assertEquals("60", overlayPin(stale, null, "60").pinSeq)
+        // Already overlaid: the same instance comes back.
+        val overlaid = overlayPin(stale, null, "60")
+        assertSame(overlaid, overlayPin(overlaid, null, "60"))
         assertNull(overlayPin(message("60", true), null, "60").pin)
         val newer = message("61", true)
         assertEquals(newer.pin, overlayPin(stale, newer, "60").pin)

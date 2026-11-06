@@ -26,8 +26,10 @@ internal fun mergePin(current: ChatMessage, incoming: ChatMessage): ChatMessage 
 internal fun overlayPin(message: ChatMessage, snapshot: ChatMessage?, historyCursor: String?): ChatMessage {
     val cursor = historyCursor?.toBigIntegerOrNull()
     val revision = message.pinSeq?.toBigIntegerOrNull() ?: BigInteger.valueOf(-1)
-    val authoritative = if (cursor != null && revision <= cursor) {
-        message.copy(pin = snapshot?.pin, pinSeq = snapshot?.pinSeq ?: historyCursor)
+    val pinSeq = snapshot?.pinSeq ?: historyCursor
+    // An unchanged message keeps its instance, so its timeline row skips recomposition.
+    val authoritative = if (cursor != null && revision <= cursor && (message.pin != snapshot?.pin || message.pinSeq != pinSeq)) {
+        message.copy(pin = snapshot?.pin, pinSeq = pinSeq)
     } else message
     return snapshot?.let { mergePin(authoritative, it) } ?: authoritative
 }

@@ -583,7 +583,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         val requested = pendingVoiceJoin ?: return@LaunchedEffect
         if (!requested.isCurrent(state, viewModel.accountEpoch) || !VoiceCallService.joinAuthorizationCurrent(requested.controlEpoch)) pendingVoiceJoin = null
     }
-    val joinVoice: (Channel) -> Unit = { channel ->
+    val joinVoiceNow: (Channel) -> Unit = { channel ->
         // The open space's joined channel, or a visited space channel (feedback team).
         val visited = state.visit?.takeIf { !it.direct && it.channelId == channel.id }
         val space = state.selectedSpace?.space
@@ -605,10 +605,15 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         }
     }
     // Your call card's Leave, or Cancel while joining.
-    val leaveVoice: () -> Unit = {
+    val leaveVoiceNow: () -> Unit = {
         if (voice.phase == VoiceState.Phase.CONNECTED) CaperEffects.play(CaperEffects.Effect.Disconnect)
         VoiceCallService.stop(context)
     }
+    // Stable callbacks that run the latest logic, so channel rows skip while other state changes.
+    val latestJoinVoice by rememberUpdatedState(joinVoiceNow)
+    val latestLeaveVoice by rememberUpdatedState(leaveVoiceNow)
+    val joinVoice: (Channel) -> Unit = remember { { channel -> latestJoinVoice(channel) } }
+    val leaveVoice: () -> Unit = remember { { latestLeaveVoice() } }
     Column(Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val narrow = maxWidth <= 760.dp
@@ -798,6 +803,112 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     }
 }
 
+/**
+ * One channel in the sidebar. Its inputs are the values it shows, so a row skips
+ * when other app state (typing, presence, messages) changes.
+ */
+@Composable private fun ChannelListRow(
+    channel: Channel,
+    spaceId: String,
+    demo: Boolean,
+    selected: Boolean,
+    unread: Boolean,
+    kind: RowVoice,
+    people: List<Participant>,
+    available: Boolean?,
+    joinAction: VoiceJoinAction,
+    /** Only your call's row gets the voice state; the rest skip while a call updates. */
+    voice: VoiceState?,
+    callStartedAt: Long?,
+    roomStartedAt: Long?,
+    account: Account?,
+    accountId: String?,
+    owner: Boolean,
+    // Notifications and Mute are for account spaces, never the demo.
+    notifiable: Boolean,
+    settings: NotificationSettings?,
+    now: Instant,
+    notificationSaving: Set<String>,
+    notificationError: String?,
+    viewModel: CaperViewModel,
+    show: (Overlay) -> Unit,
+    joinVoice: (Channel) -> Unit,
+    leaveVoice: () -> Unit,
+    closeNavigation: (() -> Unit)?,
+) {
+    val channelVoice = channel.joined && BuildConfig.ENABLE_NATIVE_VOICE
+    var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
+    var channelMenuPage by remember(channel.id) { mutableStateOf(NotificationMenuPage.Main) }
+    val closeChannelMenu = { channelMenuOpen = false; channelMenuPage = NotificationMenuPage.Main }
+    // A muted space dims its channels; the bell marks a channel's own mute.
+    val channelMuted = settings?.channelMuted(spaceId, channel.id, now) == true
+    val ownMute = settings?.override(channelKey(channel.id))?.mutedUntil?.let { muteActive(it, now) } == true
+    LaunchedEffect(channel.id, channel.joined, demo, accountId, available) {
+        if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE && available == null) viewModel.checkVoiceAvailability(channel)
+    }
+    val openChannel: () -> Unit = { viewModel.selectChannel(channel); closeNavigation?.invoke() }
+    // The channel's row. In a voice card the whole card opens the chat, so the row itself doesn't.
+    val row: @Composable () -> Unit = {
+        Row(
+            Modifier.fillMaxWidth().height(48.dp).clip(MaterialTheme.shapes.small)
+                .background(if (selected) TerracottaWash else Color.Transparent),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // The press starts at the row's edge; only the content is inset.
+            Row(Modifier.weight(1f).fillMaxHeight().alpha(if (channelMuted) MUTED_ALPHA else 1f)
+                .then(if (kind == RowVoice.QUIET) Modifier.clickable(onClick = openChannel) else Modifier).padding(start = 9.dp)
+                .semantics { if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
+                Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (unread) Box(Modifier.padding(horizontal = 6.dp).size(6.dp).background(Text, CircleShape).semantics { contentDescription = "Unread activity" })
+                if (ownMute) MutedBell(Modifier.padding(horizontal = 6.dp))
+                // A live room's row ends with a waveform and its count, your call's with its status and timer.
+                when (kind) {
+                    RowVoice.ROOM -> LiveVoiceCount(people.size)
+                    // The ⋯ button's own inset spaces it from the menu; the name gives way first.
+                    RowVoice.CALL -> CallStatus(voice!!, callStartedAt, Modifier.padding(start = 6.dp))
+                    RowVoice.QUIET -> Unit
+                }
+            }
+            // Touch keeps a quiet row's one-tap join in view; a live room's card has its Join.
+            if (channelVoice && kind == RowVoice.QUIET) RowVoiceJoin(channel.name, joinAction,
+                { joinVoice(channel) }) { viewModel.prepareVoiceJoin(channel) }
+            if (owner || notifiable || (channel.joined && !demo)) Box {
+                IconButton({ channelMenuOpen = true; if (notifiable) viewModel.refreshNotificationSettings() }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${channel.name} channel menu", Modifier.size(18.dp), tint = TextMuted) }
+                DropdownMenu(channelMenuOpen, closeChannelMenu, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                    val settingsItem: @Composable () -> Unit = {
+                        if (owner && !channel.private && !channel.direct) DropdownMenuItem(text = { Text("Invite people…", fontSize = 13.sp) }, onClick = { closeChannelMenu(); show(Overlay.InvitePeople(channel.id)) })
+                        if (owner) DropdownMenuItem(text = { Text("Channel settings", fontSize = 13.sp) }, onClick = { closeChannelMenu(); show(Overlay.ManageChannel(channel)) })
+                    }
+                    val leaveItem: @Composable () -> Unit = {
+                        if (channel.joined && !demo) DropdownMenuItem(text = { Text("Leave channel", fontSize = 13.sp) }, onClick = { closeChannelMenu(); show(Overlay.LeaveChannel(channel)) }, modifier = Modifier.semantics { contentDescription = "Leave ${channel.name}" })
+                    }
+                    if (notifiable) ScopeMenuContent(
+                        channelMenuPage, { channelMenuPage = it }, "channel", settings?.override(channelKey(channel.id)), settings?.inheritedLevel(spaceId),
+                        { viewModel.setChannelNotifications(spaceId, channel.id, it) }, closeChannelMenu,
+                        saving = channelKey(channel.id) in notificationSaving,
+                        spaceMuted = settings?.spaceMuted(spaceId, now) == true, fontSize = 13.sp, before = settingsItem, after = leaveItem,
+                    ) else { settingsItem(); leaveItem() }
+                }
+            }
+        }
+    }
+    Column(Modifier.fillMaxWidth()) {
+        // In its place in the list: your call's row grows into your call card, a live room's gains who is there and Join.
+        when (kind) {
+            RowVoice.CALL -> RowCallCard(voice!!, account, narrow = closeNavigation != null, open = openChannel, leave = leaveVoice,
+                Modifier.padding(vertical = 4.dp), row = row)
+            RowVoice.ROOM -> RowRoomCard(
+                LiveRoom(channel, people), joinAction,
+                roomStartedAt, open = openChannel, join = { joinVoice(channel) },
+                prepare = { viewModel.prepareVoiceJoin(channel) }, Modifier.padding(vertical = 4.dp), row = row,
+            )
+            RowVoice.QUIET -> row()
+        }
+        NotificationSaveError(notificationError, Modifier.padding(start = 35.dp)) { viewModel.dismissNotificationError(channelKey(channel.id)) }
+    }
+}
+
 @Composable private fun ChannelSidebar(
     state: AppUiState,
     voice: VoiceState,
@@ -967,85 +1078,28 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 Modifier.padding(horizontal = 8.dp, vertical = 6.dp).semantics { liveRegion = LiveRegionMode.Polite },
                 color = TextMuted, fontSize = 12.sp,
             )
+            // One pass over the unread spaces, instead of one per row.
+            val unreadChannelIds = remember(state.unreadSpaces) { state.unreadSpaces.flatMapTo(HashSet()) { space -> space.channels.map { it.id } } }
             listed?.forEach { channel ->
                 key(channel.id) {
-                    val selected = channel.id == state.selectedChannel?.id
                     val kind = voiceOf(channel)
-                    val people = if (kind == RowVoice.CALL) voice.participants else state.voiceRosters[voiceRootKey(detail.space.demo, channel.id)].orEmpty()
-                    val channelVoice = channel.joined && BuildConfig.ENABLE_NATIVE_VOICE
-                    var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
-                    var channelMenuPage by remember(channel.id) { mutableStateOf(NotificationMenuPage.Main) }
-                    val closeChannelMenu = { channelMenuOpen = false; channelMenuPage = NotificationMenuPage.Main }
-                    // Notifications and Mute are for account spaces, never the demo.
-                    val notifiable = state.account != null && !detail.space.demo
-                    // A muted space dims its channels; the bell marks a channel's own mute.
-                    val channelMuted = settings?.channelMuted(detail.space.id, channel.id, now) == true
-                    val ownMute = settings?.override(channelKey(channel.id))?.mutedUntil?.let { muteActive(it, now) } == true
-                    val available = state.voiceAvailable(channel)
-                    LaunchedEffect(channel.id, channel.joined, detail.space.demo, state.account?.id, available) {
-                        if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE && available == null) viewModel.checkVoiceAvailability(channel)
-                    }
-                    val openChannel: () -> Unit = { viewModel.selectChannel(channel); closeNavigation?.invoke() }
-                    // The channel's row. In a voice card the whole card opens the chat, so the row itself doesn't.
-                    val row: @Composable () -> Unit = {
-                        Row(
-                            Modifier.fillMaxWidth().height(48.dp).clip(MaterialTheme.shapes.small)
-                                .background(if (selected) TerracottaWash else Color.Transparent),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            // The press starts at the row's edge; only the content is inset.
-                            Row(Modifier.weight(1f).fillMaxHeight().alpha(if (channelMuted) MUTED_ALPHA else 1f)
-                                .then(if (kind == RowVoice.QUIET) Modifier.clickable(onClick = openChannel) else Modifier).padding(start = 9.dp)
-                                .semantics { if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
-                                Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
-                                Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                if (state.unreadSpaces.any { it.channels.any { it.id == channel.id } }) Box(Modifier.padding(horizontal = 6.dp).size(6.dp).background(Text, CircleShape).semantics { contentDescription = "Unread activity" })
-                                if (ownMute) MutedBell(Modifier.padding(horizontal = 6.dp))
-                                // A live room's row ends with a waveform and its count, your call's with its status and timer.
-                                when (kind) {
-                                    RowVoice.ROOM -> LiveVoiceCount(people.size)
-                                    // The ⋯ button's own inset spaces it from the menu; the name gives way first.
-                                    RowVoice.CALL -> CallStatus(voice, callSessionStartedAt(state, voice), Modifier.padding(start = 6.dp))
-                                    RowVoice.QUIET -> Unit
-                                }
-                            }
-                            // Touch keeps a quiet row's one-tap join in view; a live room's card has its Join.
-                            if (channelVoice && kind == RowVoice.QUIET) RowVoiceJoin(channel.name, voiceJoinAction(state, voice, pendingVoiceJoin, channel),
-                                { joinVoice(channel) }) { viewModel.prepareVoiceJoin(channel) }
-                            if (owner || notifiable || (channel.joined && !detail.space.demo)) Box {
-                                IconButton({ channelMenuOpen = true; if (notifiable) viewModel.refreshNotificationSettings() }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${channel.name} channel menu", Modifier.size(18.dp), tint = TextMuted) }
-                                DropdownMenu(channelMenuOpen, closeChannelMenu, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                                    val settingsItem: @Composable () -> Unit = {
-                                        if (owner && !channel.private && !channel.direct) DropdownMenuItem(text = { Text("Invite people…", fontSize = 13.sp) }, onClick = { closeChannelMenu(); show(Overlay.InvitePeople(channel.id)) })
-                                        if (owner) DropdownMenuItem(text = { Text("Channel settings", fontSize = 13.sp) }, onClick = { closeChannelMenu(); show(Overlay.ManageChannel(channel)) })
-                                    }
-                                    val leaveItem: @Composable () -> Unit = {
-                                        if (channel.joined && !detail.space.demo) DropdownMenuItem(text = { Text("Leave channel", fontSize = 13.sp) }, onClick = { closeChannelMenu(); show(Overlay.LeaveChannel(channel)) }, modifier = Modifier.semantics { contentDescription = "Leave ${channel.name}" })
-                                    }
-                                    if (notifiable) ScopeMenuContent(
-                                        channelMenuPage, { channelMenuPage = it }, "channel", settings?.override(channelKey(channel.id)), settings?.inheritedLevel(detail.space.id),
-                                        { viewModel.setChannelNotifications(detail.space.id, channel.id, it) }, closeChannelMenu,
-                                        saving = channelKey(channel.id) in state.notificationSaving,
-                                        spaceMuted = settings?.spaceMuted(detail.space.id, now) == true, fontSize = 13.sp, before = settingsItem, after = leaveItem,
-                                    ) else { settingsItem(); leaveItem() }
-                                }
-                            }
-                        }
-                    }
-                    Column(Modifier.fillMaxWidth()) {
-                        // In its place in the list: your call's row grows into your call card, a live room's gains who is there and Join.
-                        when (kind) {
-                            RowVoice.CALL -> RowCallCard(voice, state.account, narrow = closeNavigation != null, open = openChannel, leave = leaveVoice,
-                                Modifier.padding(vertical = 4.dp), row = row)
-                            RowVoice.ROOM -> RowRoomCard(
-                                LiveRoom(channel, people), voiceJoinAction(state, voice, pendingVoiceJoin, channel),
-                                state.voiceSessionStartedAt[voiceRootKey(detail.space.demo, channel.id)], open = openChannel, join = { joinVoice(channel) },
-                                prepare = { viewModel.prepareVoiceJoin(channel) }, Modifier.padding(vertical = 4.dp), row = row,
-                            )
-                            RowVoice.QUIET -> row()
-                        }
-                        NotificationSaveError(state.notificationErrors[channelKey(channel.id)], Modifier.padding(start = 35.dp)) { viewModel.dismissNotificationError(channelKey(channel.id)) }
-                    }
+                    ChannelListRow(
+                        channel, detail.space.id, detail.space.demo,
+                        selected = channel.id == state.selectedChannel?.id,
+                        unread = channel.id in unreadChannelIds,
+                        kind = kind,
+                        people = if (kind == RowVoice.CALL) voice.participants else state.voiceRosters[voiceRootKey(detail.space.demo, channel.id)].orEmpty(),
+                        available = state.voiceAvailable(channel),
+                        joinAction = voiceJoinAction(state, voice, pendingVoiceJoin, channel),
+                        voice = voice.takeIf { kind == RowVoice.CALL },
+                        callStartedAt = if (kind == RowVoice.CALL) callSessionStartedAt(state, voice) else null,
+                        roomStartedAt = state.voiceSessionStartedAt[voiceRootKey(detail.space.demo, channel.id)],
+                        account = state.account, accountId = state.account?.id, owner = owner,
+                        notifiable = state.account != null && !detail.space.demo,
+                        settings = settings, now = now, notificationSaving = state.notificationSaving,
+                        notificationError = state.notificationErrors[channelKey(channel.id)],
+                        viewModel = viewModel, show = show, joinVoice = joinVoice, leaveVoice = leaveVoice, closeNavigation = closeNavigation,
+                    )
                 }
             }
             detail?.channelInvitations?.forEach { invitation ->
@@ -1273,6 +1327,23 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
     }
 }
 
+/** One person in the member list; it takes only what it shows. */
+@Composable private fun MemberRow(member: Member, presence: String?, presenceLive: Boolean, quiet: Boolean, ring: Color, open: (Member) -> Unit) {
+    val offline = presence == "offline"
+    val opacity = if (offline) 0.6f else 1f
+    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+        .clickable(role = Role.Button, onClickLabel = "Open profile for ${member.displayName}") { open(member) }
+        .padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.alpha(opacity)) {
+            Avatar(member.displayName, 30.dp, avatarId = member.avatarId, avatarAsset = member.avatarAsset, avatarUrl = member.avatarUrl)
+            PresenceDot(presence, presenceLive, ring, Modifier.align(Alignment.BottomEnd))
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(member.displayName, modifier = Modifier.alpha(opacity), color = if (quiet && !offline) TextMuted else Text, fontSize = 12.sp,
+            fontWeight = if (quiet) FontWeight.Medium else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
 @Composable private fun MemberPresencePanel(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, compact: Boolean = false, close: (() -> Unit)? = null) {
     val members = state.selectedSpace?.members ?: return
     val detail = state.selectedSpace ?: return
@@ -1283,8 +1354,11 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
     LaunchedEffect(searching) { if (searching) searchFocus.requestFocus() }
     // A private channel's readers lead the list in their own group.
     val channel = state.selectedChannel
-    val groups = detail.memberGroups(channel?.id)
-    val shown = detail.memberOrder(channel?.id, query)
+    val groups = remember(detail, channel?.id) { detail.memberGroups(channel?.id) }
+    val shown = remember(detail, channel?.id, query) { detail.memberOrder(channel?.id, query) }
+    // Rows keep one click handler, so state changes elsewhere don't recompose them.
+    val currentState by rememberUpdatedState(state)
+    val openProfile = remember(detail.space.id) { { member: Member -> profile = mentionCard(member.id, member.username, currentState) } }
     Column(modifier.background(SurfaceSidebar).then(if (compact) Modifier else Modifier)) {
         // The heading starts where the rows' avatars do (list and row insets, 8dp each).
         Row(Modifier.fillMaxWidth().height(54.dp).padding(start = 16.dp, end = if (close != null) 4.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1312,21 +1386,6 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
         else if (members.isEmpty()) Text("No members to show.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
         else if (state.presenceLoading) Text("Loading members…", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
         else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-            @Composable fun MemberRow(member: Member, quiet: Boolean, ring: Color) {
-                val offline = state.presence[member.id] == "offline"
-                val opacity = if (offline) 0.6f else 1f
-                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
-                    .clickable(role = Role.Button, onClickLabel = "Open profile for ${member.displayName}") { profile = mentionCard(member.id, member.username, state) }
-                    .padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.alpha(opacity)) {
-                        Avatar(member.displayName, 30.dp, avatarId = member.avatarId, avatarAsset = member.avatarAsset, avatarUrl = member.avatarUrl)
-                        PresenceDot(state.presence[member.id], state.presenceLive, ring, Modifier.align(Alignment.BottomEnd))
-                    }
-                    Spacer(Modifier.width(10.dp))
-                    Text(member.displayName, modifier = Modifier.alpha(opacity), color = if (quiet && !offline) TextMuted else Text, fontSize = 12.sp,
-                        fontWeight = if (quiet) FontWeight.Medium else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
             @Composable fun GroupLabel(title: String, count: Int, primary: Boolean) {
                 Row(Modifier.padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 2.dp).semantics { heading() },
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1344,7 +1403,7 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
                     if (rows.isNotEmpty()) {
                         item(key = "${quiet}-$title", contentType = "label") { GroupLabel(title, rows.size, primary = false) }
                         items(rows, key = { it.id }, contentType = { "member" }) { member ->
-                            MemberRow(member, quiet = quiet || state.presence[member.id] == "offline", ring = ring)
+                            MemberRow(member, state.presence[member.id], state.presenceLive, quiet = quiet || state.presence[member.id] == "offline", ring = ring, open = openProfile)
                         }
                     }
                 }
@@ -1749,6 +1808,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
+/**
+ * Runs [content] in its own recompose scope, so state it reads (such as the composer's draft)
+ * recomposes only it and not the caller's inline layout around it.
+ */
+@Composable private fun OwnRecomposeScope(content: @Composable () -> Unit) = content()
+
 @Composable private fun ChannelConversation(
     state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit,
     narrow: Boolean, membersVisible: Boolean, toggleMembers: () -> Unit, voicePermissionError: String?,
@@ -1951,7 +2016,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
             else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
             // Keep the composer inset from the timeline and the panel edge.
-            else if (joined) Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 16.dp)) {
+            else if (joined) Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 16.dp)) { OwnRecomposeScope {
                 TypingLine(state.typingAuthors)
                 if (direct?.outgoing == true) OutgoingRequestNotice(direct)
                 state.replyTargets["channel"]?.let { ReplyDraft(it, state) { viewModel.cancelReply() } }
@@ -2060,7 +2125,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
                 DraftCounter(draft.text)
-            }
+            } }
         }
         if (dropping.value && canAttach) {
             val (title, detail) = FileDrop.text(channel.name, channel.direct, state.drafts.size)
