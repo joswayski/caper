@@ -16,7 +16,7 @@ import XCTest
     }
 
     private func capture(_ name: String, app: XCUIApplication) {
-        let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+        let screenshot = XCTAttachment(screenshot: app.windows["Caper — AppKit development (not feature complete)"].screenshot())
         screenshot.name = "AppKit \(name) — local fixture"
         screenshot.lifetime = .keepAlways
         add(screenshot)
@@ -32,6 +32,132 @@ import XCTest
     }
 
     private nonisolated static func resetFixture() async throws { try await control(["reset": true]) }
+
+    func testOwnerNavigationDialogsRetryAndCreateChannel() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let space = app.buttons["selected-space-name"]
+        XCTAssertTrue(space.waitForExistence(timeout: 15))
+        capture("navigation", app: app)
+        app.buttons["create-channel"].hover(); app.buttons["channel-options"].hover(); space.hover(); space.click()
+        app.menuItems["Space settings"].click()
+        let name = app.textFields["Space name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["channel-chan00000001"].exists, "The modal hides background controls from accessibility")
+        name.click(); name.typeKey("a", modifierFlags: .command); name.typeText("Native studio")
+        try await Self.control(["failure": ["path": "/api/spaces/space0000001", "method": "PATCH", "status": 503,
+            "error": "TEST FIXTURE: rename unavailable."]])
+        let save = app.windows.firstMatch.buttons["Save name"]
+        save.click()
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE: rename unavailable."].waitForExistence(timeout: 5))
+        XCTAssertEqual(name.value as? String, "Native studio", "A rejected save preserves the edit")
+        capture("space settings retry", app: app)
+        save.click()
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE: rename unavailable."].waitForNonExistence(timeout: 5))
+        app.windows.firstMatch.buttons["Close"].click()
+        XCTAssertTrue(space.waitForExistence(timeout: 5))
+        XCTAssertEqual(space.label, "Native studio")
+        space.click(); app.menuItems["Invite people…"].click()
+        XCTAssertTrue(app.staticTexts["Invite people"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.textFields["Space name"].exists, "Invite opens the invite-only surface")
+        capture("invite people", app: app)
+        app.windows.firstMatch.buttons["Close"].click()
+        app.buttons["create-channel"].click()
+        let channelName = app.textFields["project-updates"]
+        XCTAssertTrue(channelName.waitForExistence(timeout: 5))
+        channelName.click(); channelName.typeText("native-navigation")
+        capture("create channel", app: app)
+        app.windows.firstMatch.buttons["Create channel"].click()
+        XCTAssertTrue(app.staticTexts["# native-navigation"].waitForExistence(timeout: 10))
+        app.buttons["create-space"].click()
+        XCTAssertTrue(app.buttons["join-invite-link"].waitForExistence(timeout: 5))
+        app.buttons["join-invite-link"].click()
+        XCTAssertTrue(app.textFields["Invite link"].waitForExistence(timeout: 5))
+        capture("join invite link", app: app)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(app.buttons["create-space"].waitForExistence(timeout: 5))
+    }
+
+    func testChannelMenuMuteBrowseLeaveAndRejoin() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let design = app.buttons["channel-chan00000002"]
+        XCTAssertTrue(design.waitForExistence(timeout: 15))
+        app.buttons["channel-options-chan00000002"].click()
+        app.menuItems["Mute channel"].hover()
+        let preset = app.menuItems["Until I turn it back on"]
+        XCTAssertTrue(preset.waitForExistence(timeout: 5)); preset.click()
+        let muted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Muted"), object: design)
+        XCTAssertEqual(XCTWaiter.wait(for: [muted], timeout: 5), .completed)
+        app.buttons["channel-options-chan00000002"].click()
+        XCTAssertTrue(app.menuItems["Unmute channel"].waitForExistence(timeout: 5))
+        app.menuItems["Leave channel"].click()
+        XCTAssertTrue(app.staticTexts["Leave #design?"].waitForExistence(timeout: 5))
+        app.windows.firstMatch.buttons["Cancel"].click()
+        XCTAssertTrue(design.waitForExistence(timeout: 5))
+        app.buttons["channel-options-chan00000002"].click(); app.menuItems["Leave channel"].click()
+        app.windows.firstMatch.buttons["Leave channel"].click()
+        XCTAssertTrue(design.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["# general"].exists, "Leaving a different channel must not navigate")
+        app.buttons["selected-space-name"].click(); app.menuItems["Browse channels"].click()
+        let search = app.searchFields["browse-channels-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.click(); search.typeText(" #des ")
+        let result = app.buttons["browse-channel-chan00000002"]
+        XCTAssertTrue(result.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["browse-channel-chan00000001"].exists)
+        capture("browse unjoined channel", app: app)
+        result.click()
+        XCTAssertTrue(app.buttons["join-channel"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.textViews["message-composer"].exists, "A preview cannot send")
+        capture("channel preview", app: app)
+        app.buttons["join-channel"].click()
+        XCTAssertTrue(app.textViews["message-composer"].waitForExistence(timeout: 10))
+        XCTAssertTrue(design.exists)
+        XCTAssertTrue(app.staticTexts["# design"].exists)
+        app.buttons["channels-toggle"].click()
+        XCTAssertFalse(design.exists)
+        XCTAssertTrue(result.exists, "Browse remains available while the joined section is collapsed")
+        app.buttons["channels-toggle"].click()
+        XCTAssertTrue(design.exists)
+    }
+
+    func testAccountDialogsProtectProfileAndRestoreComposerFocus() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        composer.click(); composer.typeText("Keep this draft")
+        app.buttons["account-profile"].click()
+        let name = app.textFields["Display name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click(); name.typeKey("a", modifierFlags: .command); name.typeText("Unsaved native profile")
+        app.typeKey(.escape, modifierFlags: [])
+        let confirmation = app.sheets.containing(.staticText, identifier: "Discard profile changes?").firstMatch
+        XCTAssertTrue(confirmation.buttons["Keep editing"].waitForExistence(timeout: 5))
+        confirmation.buttons["Keep editing"].click()
+        XCTAssertEqual(name.value as? String, "Unsaved native profile")
+        app.buttons["Close profile"].click(); confirmation.buttons["Discard"].click()
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        app.typeText(" after closing")
+        XCTAssertEqual(composer.value as? String, "Keep this draft after closing", "Closing restores the previous editor focus")
+        app.buttons["account-settings-menu"].click(); app.menuItems["Privacy and blocked accounts"].click()
+        XCTAssertTrue(app.staticTexts["Privacy"].waitForExistence(timeout: 5))
+        capture("privacy", app: app)
+        app.buttons["Close privacy settings"].click()
+        app.buttons["account-settings-menu"].click(); app.menuItems["Notifications"].click()
+        XCTAssertTrue(app.staticTexts["Notifications"].waitForExistence(timeout: 5))
+        capture("notifications", app: app)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "Keep this draft after closing")
+    }
 
     func testScrollUpHistoryRetriesFailureAndPreservesTheVisibleMessage() async throws {
         continueAfterFailure = false
@@ -357,7 +483,8 @@ import XCTest
         XCTAssertEqual(code.value as? String, "ABC234")
         app.buttons["Sign in"].click()
         XCTAssertTrue(app.textViews["message-composer"].waitForExistence(timeout: 15))
-        app.buttons["Sign out"].click()
+        app.buttons["account-settings-menu"].click()
+        app.menuItems["Log out"].click()
         XCTAssertTrue(email.waitForExistence(timeout: 10))
     }
 }

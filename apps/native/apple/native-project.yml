@@ -44,6 +44,8 @@ targets:
       - Sources/CaperAppKit/MessageTimeline.swift
       - Sources/CaperAppKit/MemberPanel.swift
       - Sources/CaperAppKit/NativeAvatar.swift
+      - Sources/CaperAppKit/NavigationSidebar.swift
+      - Sources/CaperAppKit/NavigationMenus.swift
     dependencies:
       - target: CaperCoreMacOS
       - target: CaperRTCBridge

@@ -12,6 +12,8 @@ public enum NativePresentation {
     /// Resolved user ID, or an empty string for a non-person mention pill.
     public static let mentionAttribute = NSAttributedString.Key("CaperMention")
 
+    public static func errorMessage(_ error: Error) -> String { FriendlyError.message(for: error) }
+
     public static func signInCode(_ input: String) -> String {
         let allowed = Set("ABCDEFGHJKMNPQRSTWXYZ23456789")
         return String(input.uppercased().filter { allowed.contains($0) }.prefix(6))

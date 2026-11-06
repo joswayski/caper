@@ -6,8 +6,8 @@ import CaperCore
     private let navigationObservation = NativeObservation()
     private let timelineObservation = NativeObservation()
     private let composerObservation = NativeObservation()
-    private let rail = NativeView(NativeStyle.blackout)
-    private let sidebar = NativeView(NativeStyle.sidebar)
+    private lazy var navigation = NavigationSidebar(model: model)
+    private lazy var dialogs = AppKitWorkspacePresenter(model: model)
     private lazy var members = MemberPanel(model: model)
     private lazy var profiles = AppKitProfilePresenter(model: model)
     private var membersPreference: Bool?
@@ -20,14 +20,23 @@ import CaperCore
     private let timeline = MessageTimeline(frame: .zero)
     private let header = NativeStyle.label("", size: 16, bold: true)
     private let status = NativeStyle.label("", size: 12)
-    private let account = NativeStyle.label("")
     private let composer = ComposerTextView()
     private let composerScroll = NSScrollView()
     private let suggestions = ComposerSuggestions()
     private var suggestionsDismissed = false
-    private let channels = NativeView()
-    private let channelScroll = NSScrollView()
     private lazy var send = NativeButton("Send", primary: true) { [weak self] in self?.submit() }
+    private var joiningChannelID: String?
+    private lazy var join = NativeButton("Join channel", primary: true) { [weak self] in
+        guard let self, self.joiningChannelID == nil, let channel = self.model.selectedChannel else { return }
+        self.joiningChannelID = channel.id; self.updateComposer()
+        Task {
+            do { try await self.model.joinChannel(channel) }
+            catch {
+                if self.model.selectedChannelID == channel.id { self.model.navigationError = NativePresentation.errorMessage(error) }
+            }
+            self.joiningChannelID = nil; self.updateComposer()
+        }
+    }
     private lazy var retry = NativeButton("Retry") { [weak self] in
         guard let self else { return }
         Task {
@@ -40,26 +49,21 @@ import CaperCore
     private lazy var editRejected = NativeButton("Edit rejected message") { [weak self] in
         _ = self?.model.chat.discardRejected(edit: true)
     }
-    private lazy var logout = NativeButton("Sign out") { [weak self] in
-        guard let self else { return }; Task { await self.model.logout() }
-    }
-    private lazy var mute = NativeButton("Mute") { [weak self] in
-        guard let self else { return }; Task { await self.model.voice.setMuted(!self.model.voice.muted) }
-    }
-    private lazy var deafen = NativeButton("Deafen") { [weak self] in
-        guard let self else { return }; Task { await self.model.voice.setDeafened(!self.model.voice.deafened) }
-    }
-    private var spaceButtons: [NativeButton] = []
 
     init(model: AppModel) { self.model = model; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func loadView() { view = NativeView(NativeStyle.blackout) }
+    override func loadView() { view = AppKitWorkspaceContainer() }
     override func viewDidLoad() {
         super.viewDidLoad()
-        [rail, sidebar, stage, members].forEach { view.addSubview($0) }
-        [timeline, header, membersToggle, status, retry, editRejected, composerScroll, send, suggestions].forEach { stage.addSubview($0) }
-        [account, mute, deafen, logout, channelScroll].forEach { sidebar.addSubview($0) }
-        setupList(channels, in: channelScroll)
+        [navigation, stage, members].forEach { view.addSubview($0) }
+        [timeline, header, membersToggle, status, retry, editRejected, composerScroll, send, join, suggestions].forEach { stage.addSubview($0) }
+        join.setAccessibilityIdentifier("join-channel")
+        navigation.show = { [weak self] item in
+            guard let self else { return }; self.dialogs.show(item, in: self)
+        }
+        navigation.leaveChannel = { [weak self] channel in
+            guard let self else { return }; self.dialogs.leaveChannel(channel, in: self)
+        }
         members.close = { [weak self] in
             self?.membersPreference = false
             self?.view.needsLayout = true
@@ -112,7 +116,11 @@ import CaperCore
             let active = !(message.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(self.model.chat.viewerID ?? "") ?? false)
             Task { await self.model.chat.setReaction(messageID: id, emoji: emoji, active: active) }
         }
-        navigationObservation.start { [weak self] in self?.updateNavigation() }
+        navigationObservation.start { [weak self] in
+            guard let self else { return }
+            self.header.stringValue = self.model.selectedDirectMessage?.peer.displayName ?? "# \(self.model.chat.channelName)"
+            self.view.needsLayout = true
+        }
         timelineObservation.start { [weak self] in
             guard let self else { return }
             let chat = self.model.chat
@@ -126,20 +134,13 @@ import CaperCore
         composerObservation.start { [weak self] in self?.updateComposer() }
     }
 
-    private func setupList(_ list: NSView, in scroll: NSScrollView) {
-        scroll.documentView = list
-        scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
-        scroll.drawsBackground = false
-    }
-
     override func viewDidLayout() {
         super.viewDidLayout()
         let width = view.bounds.width, height = view.bounds.height
         let visible = (membersPreference ?? (width >= 1100)) && model.selectedDirectMessageID == nil
         let docked = width >= 1100
         let memberWidth: CGFloat = visible && docked ? 220 : 0
-        rail.frame = NSRect(x: 0, y: 0, width: 64, height: height)
-        sidebar.frame = NSRect(x: 64, y: 0, width: 280, height: height)
+        navigation.frame = NSRect(x: 0, y: 0, width: 344, height: height)
         // Narrow windows keep the composer width and open members over the
         // conversation instead of making the member control disappear.
         members.frame = NSRect(x: width - 220, y: docked ? 0 : 48, width: 220, height: height - (docked ? 0 : 48))
@@ -158,56 +159,10 @@ import CaperCore
         composer.frame.size.width = composerScroll.contentSize.width
         composer.minSize = NSSize(width: 0, height: 70)
         send.frame = NSRect(x: center - 84, y: height - 70, width: 64, height: 38)
+        join.frame = NSRect(x: 20, y: height - 80, width: 140, height: 38)
         layoutSuggestions()
         retry.frame = NSRect(x: center - 84, y: height - 108, width: 64, height: 30)
         editRejected.frame = NSRect(x: 20, y: height - 168, width: 200, height: 30)
-        channelScroll.frame = NSRect(x: 0, y: 0, width: 280, height: height - 116)
-        account.frame = NSRect(x: 16, y: height - 110, width: 248, height: 24)
-        mute.frame = NSRect(x: 16, y: height - 76, width: 110, height: 30)
-        deafen.frame = NSRect(x: 138, y: height - 76, width: 126, height: 30)
-        logout.frame = NSRect(x: 16, y: height - 38, width: 248, height: 26)
-        layoutList(channels, width: channelScroll.contentSize.width)
-        for (index, button) in spaceButtons.enumerated() {
-            button.frame = NSRect(x: 10, y: 18 + CGFloat(index) * 54, width: 44, height: 44)
-        }
-    }
-
-    private func updateNavigation() {
-        spaceButtons.forEach { $0.removeFromSuperview() }
-        spaceButtons = model.spaces.map { space in
-            let button = NativeButton(String(space.name.prefix(2)).uppercased()) { [weak self] in
-                guard let self else { return }; Task { await self.model.select(space: space) }
-            }
-            button.setAccessibilityLabel(space.name)
-            button.toolTip = space.name
-            button.layer?.borderWidth = space.id == model.selectedSpaceID ? 2 : 0
-            button.layer?.borderColor = NativeStyle.accent.cgColor
-            rail.addSubview(button)
-            return button
-        }
-        clear(channels)
-        add(NativeStyle.label(model.detail?.space.name ?? "Browse", size: 17, bold: true), to: channels)
-        for channel in model.detail?.channels ?? [] {
-            let button = NativeButton("\(channel.private ? "♧" : "#")  \(channel.name)") { [weak self] in
-                guard let self else { return }; Task { await self.model.select(channel: channel) }
-            }
-            button.setAccessibilityIdentifier("channel-\(channel.id)")
-            button.alignment = .left
-            button.layer?.backgroundColor = channel.id == model.selectedChannelID ? NativeStyle.composer.cgColor : NSColor.clear.cgColor
-            add(button, to: channels)
-        }
-        add(NativeStyle.label("Direct messages", size: 12, bold: true), to: channels)
-        for conversation in model.visibleDirectMessages {
-            add(NativeButton(conversation.peer.displayName) { [weak self] in
-                guard let self else { return }; Task { await self.model.select(directMessage: conversation) }
-            }, to: channels)
-        }
-        if model.spacesLoaded, model.spaces.isEmpty {
-            add(NativeButton("Create a space") { [weak self] in self?.createSpace() }, to: channels)
-        }
-        account.stringValue = model.account?.displayName ?? ""
-        header.stringValue = model.selectedDirectMessage?.peer.displayName ?? "# \(model.chat.channelName)"
-        view.needsLayout = true
     }
 
     private func updateComposer() {
@@ -221,15 +176,17 @@ import CaperCore
         composer.isEditable = chat.canInteract && !chat.sending && !chat.sendRejected && chat.pendingMessage == nil
         send.isEnabled = chat.canInteract && chat.canPressSend(inThread: false)
         send.title = chat.sending ? "Sending…" : "Send"
+        composerScroll.isHidden = model.previewingChannel
+        send.isHidden = model.previewingChannel
+        join.isHidden = !model.previewingChannel
+        join.isEnabled = joiningChannelID == nil
+        join.title = joiningChannelID == model.selectedChannelID ? "Joining…" : "Join channel"
         // Keystrokes change only the composer, not timeline geometry.
         retry.isHidden = !(chat.loadFailed || chat.olderError != nil || chat.sessionError != nil || (chat.pendingMessage != nil && !chat.sending && !chat.sendRejected))
         retry.isEnabled = !chat.loadingOlder
         editRejected.isHidden = !chat.sendRejected
         status.stringValue = chat.error ?? chat.olderError ?? chat.sessionError ?? model.navigationError
-            ?? (chat.loading ? "Loading messages…" : chat.loadingOlder ? "Loading older messages…" : chat.typingNames.isEmpty ? "" : "\(chat.typingNames.joined(separator: ", ")) typing…")
-        mute.title = model.voice.muted ? "Unmute" : "Mute"
-        deafen.title = model.voice.deafened ? "Undeafen" : "Deafen"
-        mute.setAccessibilityLabel(mute.title); deafen.setAccessibilityLabel(deafen.title)
+            ?? (model.previewingChannel ? "Preview · Join #\(chat.channelName) to interact with people here" : chat.loading ? "Loading messages…" : chat.loadingOlder ? "Loading older messages…" : chat.typingNames.isEmpty ? "" : "\(chat.typingNames.joined(separator: ", ")) typing…")
         refreshSuggestions()
     }
 
@@ -285,37 +242,6 @@ import CaperCore
     private func submit() {
         guard send.isEnabled, !composer.hasMarkedText() else { return }
         Task { await model.chat.send() }
-    }
-    private func createSpace() {
-        let alert = NSAlert()
-        alert.messageText = "Name your space"
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 28))
-        field.setAccessibilityLabel("Space name")
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Create"); alert.addButton(withTitle: "Cancel")
-        guard let window = view.window else { return }
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            Task {
-                do { try await self.model.createSpace(name: field.stringValue) }
-                catch { self.model.error = error.localizedDescription }
-            }
-        }
-    }
-    private func clear(_ list: NSView) {
-        list.subviews.forEach { $0.removeFromSuperview() }
-    }
-    private func add(_ child: NSView, to list: NSView) {
-        list.addSubview(child)
-    }
-    private func layoutList(_ list: NSView, width: CGFloat) {
-        var y: CGFloat = 12
-        for child in list.subviews {
-            let height: CGFloat = child is NSButton ? 34 : 28
-            child.frame = NSRect(x: 12, y: y, width: max(0, width - 24), height: height)
-            y += height + 6
-        }
-        list.setFrameSize(NSSize(width: width, height: y + 6))
     }
 }
 
