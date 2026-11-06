@@ -14,6 +14,32 @@ import XCTest
         timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? NSTextView } } ?? []
     }
 
+    func testAttachmentLeavesHaveHeightAndStayInsideRealizedHistory() throws {
+        _ = NSApplication.shared
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let parent = NSViewController()
+        let media = AppKitMediaPresenter(model: model, parent: parent)
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        timeline.makeAttachments = { media.messageAttachments($0) }
+        let history = (0..<3000).map { index -> ChatMessage in
+            var value = message(index)
+            value.content.attachments = [ChatAttachment(id: "image-\(index)", kind: .image, contentType: "image/png",
+                name: "photo.png", size: 640, width: 240, height: 160, url: "file:///nonexistent/caper-test.png")]
+            return value
+        }
+        timeline.update(history, conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        let surfaces = try XCTUnwrap(timeline.documentView).subviews.flatMap { $0.subviews.compactMap { $0 as? AppKitAttachmentSurface } }
+        XCTAssertFalse(surfaces.isEmpty)
+        XCTAssertLessThan(surfaces.count, 10, "Media hosts exist only in the realized viewport, not all 3,000 messages")
+        for surface in surfaces {
+            XCTAssertGreaterThan(surface.frame.height, 100, "A media leaf must not exist only in accessibility while visually clipped to zero")
+            XCTAssertTrue(try XCTUnwrap(surface.superview).bounds.contains(surface.frame))
+        }
+        timeline.update([message(1)], conversationID: "other")
+        XCTAssertTrue(timeline.documentView?.subviews.flatMap(\.subviews).allSatisfy { !($0 is AppKitAttachmentSurface) } == true)
+    }
+
     func testBlockedRunsRevealIndependentlyWithoutRealizingTheirWholeHistory() throws {
         let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         let history = [message(0, author: "blocked"), message(1, author: "blocked"),

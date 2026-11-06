@@ -8,6 +8,8 @@ import CaperCore
     private var geometry = NativeTimelineLayout()
     private var messages: [ChatMessage] = []
     private var entries: [TimelineEntry] = []
+    private var pending: PendingMessage?
+    private var rowIDs: [String] { entries.map(key) + (pending.map { ["pending-\($0.id)"] } ?? []) }
     private var blocked: Set<String> = []
     private var revealed: Set<String> = []
     private var rows: [String: MessageCell] = [:]
@@ -21,6 +23,8 @@ import CaperCore
     var react: ((String, String) -> Void)?
     var openAuthor: ((ChatAuthor, NSView) -> Void)?
     var openMention: ((MessageMention, NSView, NSRect) -> Void)?
+    var makeAttachments: ((ChatMessage) -> AppKitAttachmentSurface?)?
+    var makePending: ((PendingMessage) -> AppKitAttachmentSurface?)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -39,7 +43,7 @@ import CaperCore
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil, blocked: Set<String> = []) {
+    func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil, blocked: Set<String> = [], pending: PendingMessage? = nil) {
         let changedConversation = self.conversationID != conversationID
         let anchor = geometry.anchor(at: contentView.bounds.minY)
         let anchorTextTop = anchor.flatMap { rows[$0.id]?.textTop }
@@ -59,6 +63,8 @@ import CaperCore
             // when this message itself has not changed.
             if entries[oldIndex] != entry || oldPredecessor != predecessor { invalid.insert(id) }
         }
+        if self.pending != pending, let pending { invalid.insert("pending-\(pending.id)") }
+        self.pending = pending
         self.messages = messages
         entries = next
         self.blocked = blocked
@@ -71,9 +77,9 @@ import CaperCore
             rows.values.forEach { $0.removeFromSuperview() }
             rows.removeAll()
         }
-        geometry.replace(ids: entries.map(key), width: contentSize.width, invalidating: invalid)
+        geometry.replace(ids: rowIDs, width: contentSize.width, invalidating: invalid)
         realize(anchor: changedConversation ? nil : anchor, anchorTextTop: anchorTextTop)
-        let currentIDs = Set(entries.map(key))
+        let currentIDs = Set(rowIDs)
         selection = selection.filter { currentIDs.contains($0.key) }
     }
 
@@ -91,7 +97,7 @@ import CaperCore
         guard !rendering else { return }
         let anchor = geometry.anchor(at: contentView.bounds.minY)
         if geometry.width != contentSize.width {
-            geometry.replace(ids: entries.map(key), width: contentSize.width)
+            geometry.replace(ids: rowIDs, width: contentSize.width)
         }
         realize(anchor: anchor)
     }
@@ -125,6 +131,7 @@ import CaperCore
         rendering = true
         defer { rendering = false }
         let viewport = contentSize.height
+        let ids = rowIDs
         func offset() -> CGFloat {
             // Prepending can group the anchor under its new predecessor and
             // hide its header. Anchor the text, not just the row's outer box.
@@ -142,7 +149,7 @@ import CaperCore
             }
             needed = geometry.visibleRange(offset: offset(), height: viewport, overscan: 100)
         }
-        let retained = Set(needed.map { key(entries[$0]) })
+        let retained = Set(needed.map { ids[$0] })
         for id in Array(rows.keys) where !retained.contains(id) {
             guard let row = rows.removeValue(forKey: id) else { continue }
             if row.body.selectedRange().length > 0 { selection[id] = (row.body.string, row.body.selectedRange()) }
@@ -159,20 +166,32 @@ import CaperCore
         contentView.scroll(to: NSPoint(x: 0, y: offset()))
         reflectScrolledClipView(contentView)
         // These are real, selectable NSTextViews/buttons, not label-only mirrors.
-        document.setAccessibilityChildren(needed.compactMap { rows[key(entries[$0])] })
+        document.setAccessibilityChildren(needed.compactMap { rows[ids[$0]] })
     }
 
     private func cell(at index: Int) -> MessageCell {
-        let entry = entries[index], id = key(entry)
+        let id = index < entries.count ? key(entries[index]) : "pending-\(pending!.id)"
         let row: MessageCell
         if let existing = rows[id] { row = existing }
         else {
             row = MessageCell()
             row.openAuthor = { [weak self] author, view in self?.openAuthor?(author, view) }
             row.body.openMention = { [weak self] mention, view, rect in self?.openMention?(mention, view, rect) }
+            row.makeAttachments = { [weak self] in self?.makeAttachments?($0) }
+            row.heightChanged = { [weak self, weak row] in
+                guard let self, let row, self.rows[id] === row else { return }
+                let anchor = self.geometry.anchor(at: self.contentView.bounds.minY)
+                self.geometry.replace(ids: self.rowIDs, width: self.contentSize.width, invalidating: [id])
+                self.realize(anchor: anchor)
+            }
             rows[id] = row
             document.addSubview(row)
         }
+        if index == entries.count, let pending {
+            row.configure(pending, make: makePending)
+            return row
+        }
+        let entry = entries[index]
         let previous = index > 0 ? entries[index - 1] : nil
         // The divider belongs to this realized row, so prepending can remove
         // it using the same text anchor as an author-header grouping change.
@@ -189,7 +208,7 @@ import CaperCore
                 guard let self else { return }
                 self.revealed = BlockedMessages.toggling(run, in: self.revealed)
                 self.followEnd = false
-                self.update(self.messages, conversationID: self.conversationID, viewerID: self.viewerID, blocked: self.blocked)
+                self.update(self.messages, conversationID: self.conversationID, viewerID: self.viewerID, blocked: self.blocked, pending: self.pending)
             }
         }
         if let saved = selection.removeValue(forKey: id), saved.text == row.body.string,
@@ -214,7 +233,10 @@ import CaperCore
         guard let self, let message = self.message, !message.author.isGuest else { return }
         self.openAuthor?(message.author, self.avatarAction)
     }
-    private let detail = NativeStyle.label("", size: 12)
+    private var attachments: AppKitAttachmentSurface?
+    var makeAttachments: ((ChatMessage) -> AppKitAttachmentSurface?)?
+    var heightChanged: (() -> Void)?
+    private var attachmentHeight: CGFloat = 0
     private let day = NativeStyle.label("", size: 10, bold: true)
     private let dayLeading = CALayer()
     private let dayTrailing = CALayer()
@@ -227,10 +249,11 @@ import CaperCore
     private lazy var blockedToggle = NativeButton("") { [weak self] in self?.toggleBlocked?() }
     private var reactions: [NativeButton] = []
     private var message: ChatMessage?
+    private var pending: PendingMessage?
     private var grouped = false
     private var viewerID: String?
     private var dayHeight: CGFloat { day.isHidden ? 0 : ceil(day.cell?.cellSize.height ?? 14) + 16 }
-    var textTop: CGFloat { dayHeight + (grouped ? 4 : 32) }
+    var textTop: CGFloat { pending == nil ? dayHeight + (grouped ? 4 : 32) : 0 }
 
     init() {
         super.init()
@@ -260,18 +283,41 @@ import CaperCore
         body.layoutManager?.usesFontLeading = false
         body.linkTextAttributes = [.foregroundColor: NSColor(CaperTheme.link)]
         timestamp.textColor = NativeStyle.muted
-        detail.textColor = NativeStyle.muted
         avatar.wantsLayer = true; avatar.layer?.cornerRadius = 10; avatar.layer?.masksToBounds = true
         avatar.setAccessibilityElement(false)
         authorAction.layer?.backgroundColor = NSColor.clear.cgColor
         avatarAction.layer?.backgroundColor = NSColor.clear.cgColor
-        [body, author, timestamp, avatar, detail, day, authorAction, avatarAction, blockedToggle].forEach { addSubview($0) }
+        [body, author, timestamp, avatar, day, authorAction, avatarAction, blockedToggle].forEach { addSubview($0) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(_ pending: PendingMessage, make: ((PendingMessage) -> AppKitAttachmentSurface?)?) {
+        guard self.pending != pending else { return }
+        self.pending = pending
+        // Pending commands have a separate identity from server messages;
+        // this cell is never reused as a confirmed or blocked row.
+        subviews.forEach { $0.isHidden = true }
+        [mentionTint, mentionBar, blockedBar, dayLeading, dayTrailing].forEach { $0.isHidden = true }
+        attachments?.removeFromSuperview()
+        attachments = make?(pending)
+        if let attachments {
+            attachments.heightChanged = { [weak self] in self?.heightChanged?() }
+            addSubview(attachments)
+        }
+        setAccessibilityIdentifier("pending-row-\(pending.id)")
+    }
 
     func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, revealedBlocked: Bool, react: ((String, String) -> Void)?) {
         guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked else { return }
         let range = body.selectedRange()
+        if self.message?.content.attachments != message.content.attachments || self.message?.isDeleted != message.isDeleted {
+            attachments?.removeFromSuperview()
+            attachments = makeAttachments?(message)
+            if let attachments {
+                attachments.heightChanged = { [weak self] in self?.heightChanged?() }
+                addSubview(attachments)
+            }
+        }
         self.message = message; self.grouped = grouped; self.viewerID = viewerID
         blockedRun = nil; self.revealedBlocked = revealedBlocked
         blockedToggle.isHidden = true; body.isHidden = false
@@ -313,8 +359,6 @@ import CaperCore
         if let id = CaperAvatar.index(for: message.author.avatarId) {
             avatar.image = Bundle(for: AppModel.self).image(forResource: "caper-avatar-\(id)")
         } else { avatar.image = nil }
-        let attachments = message.content.attachments ?? []
-        detail.stringValue = attachments.isEmpty ? "" : "\(attachments.count) attachment(s) — media UI not yet ported"
         reactions.forEach { $0.removeFromSuperview() }
         reactions = (message.reactions ?? []).map { reaction in
             NativeButton("\(reaction.emoji) \(reaction.authorIds.count)") { react?(message.id, reaction.emoji) }
@@ -334,7 +378,7 @@ import CaperCore
         body.isHidden = true; body.string = ""
         authorAction.isHidden = true; avatarAction.isHidden = true
         reactions.forEach { $0.removeFromSuperview() }; reactions = []
-        detail.stringValue = ""
+        attachments?.removeFromSuperview(); attachments = nil; attachmentHeight = 0
         blockedToggle.isHidden = false
         blockedToggle.title = "\(run.label) — \(run.revealed ? "Hide" : "Show")"
         blockedToggle.setAccessibilityLabel("\(run.revealed ? "Hide" : "Show") \(run.label)")
@@ -347,6 +391,7 @@ import CaperCore
     }
 
     func measuredHeight(width: CGFloat) -> CGFloat {
+        if pending != nil { return attachments?.height(for: width) ?? 0 }
         if blockedRun != nil { return dayHeight + 48 }
         let textWidth = max(40, width - 88)
         body.textContainer?.containerSize = NSSize(width: textWidth, height: .greatestFiniteMagnitude)
@@ -354,12 +399,14 @@ import CaperCore
         let coreTextHeight = NativePresentation.textHeight(text, width: textWidth)
         body.layoutManager?.ensureLayout(for: body.textContainer!)
         let nativeHeight = body.layoutManager?.usedRect(for: body.textContainer!).height ?? 0
-        return textTop + max(20, max(coreTextHeight, ceil(nativeHeight)))
-            + (detail.stringValue.isEmpty ? 0 : 24) + (reactions.isEmpty ? 0 : 32) + 12
+        attachmentHeight = attachments?.height(for: textWidth) ?? 0
+        let textHeight = body.string.isEmpty && attachments != nil ? 0 : max(20, max(coreTextHeight, ceil(nativeHeight)))
+        return textTop + textHeight + attachmentHeight + (reactions.isEmpty ? 0 : 32) + 12
     }
 
     override func layout() {
         super.layout()
+        if pending != nil { attachments?.frame = bounds; return }
         let inset = dayHeight
         let dayWidth = min(ceil(day.cell?.cellSize.width ?? 0), max(0, bounds.width - 36))
         day.frame = NSRect(x: (bounds.width - dayWidth) / 2, y: 8, width: dayWidth, height: max(0, inset - 16))
@@ -386,10 +433,10 @@ import CaperCore
         timestamp.frame = NSRect(x: author.frame.maxX + 7, y: inset + 13, width: timeWidth, height: 17)
         authorAction.frame = author.frame
         avatarAction.frame = avatar.frame
-        let footer = (detail.stringValue.isEmpty ? 0.0 : 24) + (reactions.isEmpty ? 0.0 : 32)
+        let footer = attachmentHeight + (reactions.isEmpty ? 0.0 : 32)
         let top = textTop
-        body.frame = NSRect(x: 68, y: top, width: max(40, bounds.width - 88), height: max(20, bounds.height - top - footer - 12))
-        detail.frame = NSRect(x: 68, y: body.frame.maxY, width: max(40, bounds.width - 88), height: 24)
+        body.frame = NSRect(x: 68, y: top, width: max(40, bounds.width - 88), height: max(0, bounds.height - top - footer - 12))
+        attachments?.frame = NSRect(x: 68, y: body.frame.maxY, width: max(40, bounds.width - 88), height: attachmentHeight)
         var x: CGFloat = 68
         for reaction in reactions {
             let width = max(54, reaction.intrinsicContentSize.width + 12)

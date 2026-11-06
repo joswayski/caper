@@ -6,8 +6,10 @@ import CaperCore
     private let navigationObservation = NativeObservation()
     private let timelineObservation = NativeObservation()
     private let composerObservation = NativeObservation()
+    private let attachmentObservation = NativeObservation()
     private lazy var navigation = NavigationSidebar(model: model)
     private lazy var dialogs = AppKitWorkspacePresenter(model: model)
+    private lazy var media = AppKitMediaPresenter(model: model, parent: self)
     private lazy var members = MemberPanel(model: model)
     private lazy var profiles = AppKitProfilePresenter(model: model)
     private var membersPreference: Bool?
@@ -22,6 +24,10 @@ import CaperCore
     private let status = NativeStyle.label("", size: 12)
     private let composer = ComposerTextView()
     private let composerScroll = NSScrollView()
+    private let attachmentScroll = NSScrollView()
+    private var attachmentTray: AppKitAttachmentSurface?
+    private var uploadConversationID: String?
+    private lazy var attach = NativeButton.icon("Attach files", symbol: "plus") { [weak self] in self?.showAttachMenu() }
     private lazy var directBar = DirectConversationBar(model: model)
     private let suggestions = ComposerSuggestions()
     private var suggestionsDismissed = false
@@ -58,7 +64,12 @@ import CaperCore
     override func viewDidLoad() {
         super.viewDidLoad()
         [navigation, stage, members].forEach { view.addSubview($0) }
-        [timeline, header, membersToggle, status, retry, editRejected, composerScroll, send, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, header, membersToggle, status, retry, editRejected, attachmentScroll, attach, composerScroll, send, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        attachmentScroll.drawsBackground = false
+        attachmentScroll.hasVerticalScroller = true
+        attachmentScroll.autohidesScrollers = true
+        attachmentScroll.isHidden = true
+        attach.setAccessibilityIdentifier("attach-files-button")
         join.setAccessibilityIdentifier("join-channel")
         navigation.show = { [weak self] item in
             guard let self else { return }; self.dialogs.show(item, in: self)
@@ -103,6 +114,10 @@ import CaperCore
         composer.delegate = self
         composer.handleKey = { [weak self] in self?.handleComposerKey($0) == true }
         composer.formatSelection = { [weak self] in self?.formatDraft($0) }
+        composer.pasteAttachments = { [weak self] in
+            guard let self, self.composer.isEditable else { return false }
+            return self.model.chat.pasteAttachments()
+        }
         composer.focusChanged = { [weak self] focused in
             if focused { self?.refreshSuggestions() } else { self?.suggestions.update(nil) }
         }
@@ -120,6 +135,8 @@ import CaperCore
             guard let self else { return }
             Task { await self.model.chat.loadOlder() }
         }
+        timeline.makeAttachments = { [weak self] message in self?.media.messageAttachments(message) }
+        timeline.makePending = { [weak self] pending in self?.media.pendingMessage(pending) }
         timeline.react = { [weak self] id, emoji in
             guard let self, self.model.chat.canInteract,
                   let message = self.model.chat.displayedMessages.first(where: { $0.id == id }) else { return }
@@ -129,6 +146,11 @@ import CaperCore
         navigationObservation.start { [weak self] in
             guard let self else { return }
             self.header.stringValue = self.model.selectedDirectMessage?.peer.displayName ?? "# \(self.model.chat.channelName)"
+            let conversationID = self.model.selectedDirectMessageID ?? self.model.selectedChannelID
+            if self.uploadConversationID != conversationID {
+                self.uploadConversationID = conversationID
+                Task { await self.model.chat.checkUploadAvailability() }
+            }
             self.view.needsLayout = true
         }
         timelineObservation.start { [weak self] in
@@ -137,9 +159,29 @@ import CaperCore
             self.timeline.canLoadOlder = chat.hasMore && !chat.loading && !chat.loadingOlder && chat.olderError == nil
             let visible = chat.displayedMessages.filter(\.isChannelMessage)
             self.timeline.update(visible, conversationID: self.model.selectedDirectMessageID ?? self.model.selectedChannelID,
-                viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
+                viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs,
+                pending: chat.pendingMessage.flatMap { $0.threadRootId == nil ? $0 : nil })
         }
         composerObservation.start { [weak self] in self?.updateComposer() }
+        attachmentObservation.start(reading: { [weak self] in
+            guard let self else { return false }
+            let chat = self.model.chat
+            return !self.model.previewingChannel && (self.model.selectedDirectMessage.map { $0.status != .incoming && !$0.blocked } ?? true)
+                && (!chat.attachmentDrafts.isEmpty || chat.attachmentNotice != nil)
+        }, update: { [weak self] visible in
+            guard let self else { return }
+            if visible, self.attachmentTray == nil {
+                let tray = self.media.composerAttachments()
+                tray.heightChanged = { [weak self] in self?.view.needsLayout = true }
+                self.attachmentTray = tray
+                self.attachmentScroll.documentView = tray
+            } else if !visible {
+                self.attachmentScroll.documentView = nil
+                self.attachmentTray = nil
+            }
+            self.attachmentScroll.isHidden = !visible
+            self.view.needsLayout = true
+        })
     }
 
     override func viewDidLayout() {
@@ -161,11 +203,16 @@ import CaperCore
         membersToggle.setAccessibilityLabel(visible ? "Hide members" : "Show members")
         membersToggle.toolTip = visible ? "Hide members" : "Show members"
         membersToggle.contentTintColor = visible ? NativeStyle.accent : NativeStyle.muted
-        let bottom = directBar.isHidden ? 138 : max(138, directBar.preferredHeight(width: center - 40) + 32)
+        let attachmentHeight = attachmentTray?.height(for: max(1, center - 40)) ?? 0
+        let trayHeight = min(attachmentHeight, max(80, height * 0.3))
+        let bottom = directBar.isHidden ? 138 + (trayHeight > 0 ? trayHeight + 8 : 0) : max(138, directBar.preferredHeight(width: center - 40) + 32)
         timeline.frame = NSRect(x: 0, y: 48, width: center, height: max(0, height - 48 - bottom))
         status.frame = NSRect(x: 20, y: height - bottom + 6, width: center - 40, height: 24)
         directBar.frame = NSRect(x: 20, y: status.frame.maxY, width: center - 40, height: bottom - 32)
-        composerScroll.frame = NSRect(x: 20, y: height - 102, width: center - 116, height: 70)
+        attachmentScroll.frame = NSRect(x: 20, y: height - 110 - trayHeight, width: center - 40, height: trayHeight)
+        attachmentTray?.frame = NSRect(x: 0, y: 0, width: center - 40, height: attachmentHeight)
+        attach.frame = NSRect(x: 16, y: height - 72, width: 38, height: 42)
+        composerScroll.frame = NSRect(x: 58, y: height - 102, width: center - 154, height: 70)
         composer.frame.size.width = composerScroll.contentSize.width
         composer.minSize = NSSize(width: 0, height: 70)
         send.frame = NSRect(x: center - 84, y: height - 70, width: 64, height: 38)
@@ -189,6 +236,10 @@ import CaperCore
         send.title = chat.sending ? "Sending…" : "Send"
         composerScroll.isHidden = model.previewingChannel || !directBar.isHidden
         send.isHidden = composerScroll.isHidden
+        attach.isHidden = composerScroll.isHidden
+        attach.isEnabled = chat.canAttach && composer.isEditable
+        attach.toolTip = chat.canAttach ? "Attach files" : chat.attachUnavailableReason
+        attach.setAccessibilityValue(chat.canAttach ? "" : chat.attachUnavailableReason)
         join.isHidden = !model.previewingChannel
         join.isEnabled = joiningChannelID == nil
         join.title = joiningChannelID == model.selectedChannelID ? "Joining…" : "Join channel"
@@ -200,6 +251,20 @@ import CaperCore
             ?? (model.previewingChannel ? "Preview · Join #\(chat.channelName) to interact with people here" : chat.loading ? "Loading messages…" : chat.loadingOlder ? "Loading older messages…" : chat.typingNames.isEmpty ? (model.selectedDirectMessage?.status == .outgoing ? model.selectedDirectMessage.flatMap(NativePresentation.directMessageNotice) ?? "" : "") : "\(chat.typingNames.joined(separator: ", ")) typing…")
         refreshSuggestions()
     }
+
+    private func showAttachMenu() {
+        let menu = NSMenu()
+        let count = model.chat.attachmentDrafts.count
+        if count >= AttachmentPolicy.maxAttachments {
+            menu.addItem(withTitle: "You can attach up to \(AttachmentPolicy.maxAttachments) files.", action: nil, keyEquivalent: "")
+        }
+        let item = menu.addItem(withTitle: "Upload a file", action: #selector(pickFiles), keyEquivalent: "")
+        item.target = self; item.isEnabled = count < AttachmentPolicy.maxAttachments
+        menu.autoenablesItems = false
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: attach.bounds.maxY), in: attach)
+    }
+
+    @objc private func pickFiles() { media.pickFiles() }
 
     private func confirmBlock(_ target: BlockTarget) {
         guard let window = view.window else { return }

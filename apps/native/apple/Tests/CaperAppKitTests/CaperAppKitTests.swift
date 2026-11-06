@@ -45,6 +45,138 @@ import XCTest
 
     private nonisolated static func resetFixture() async throws { try await control(["reset": true]) }
 
+    private func imageFile() throws -> URL {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 240, pixelsHigh: 160,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0))
+        let colours = [NSColor(deviceRed: 0.9, green: 0.35, blue: 0.1, alpha: 1),
+            NSColor(deviceRed: 0.1, green: 0.7, blue: 0.75, alpha: 1), NSColor(deviceRed: 0.55, green: 0.2, blue: 0.8, alpha: 1)]
+        for y in 0..<160 {
+            for x in 0..<240 {
+                bitmap.setColor(colours[x < 80 ? 0 : y < 70 ? 1 : 2], atX: x, y: y)
+            }
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("fixture-colours.png")
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: url)
+        return url
+    }
+
+    func testImagePasteEditSpoilerSendAndDecodedViewer() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        try await Self.control(["uploadsEnabled": true])
+        let source = try imageFile()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        let attach = app.buttons["attach-files-button"]
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: attach)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 10), .completed)
+        composer.click(); composer.typeText("TEST FIXTURE — edited image")
+        NSPasteboard.general.clearContents(); NSPasteboard.general.writeObjects([source as NSURL])
+        composer.typeKey("v", modifierFlags: .command)
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE — edited image", "File paste must not insert its path")
+        let edit = app.buttons["staged-file-edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 10))
+        capture("staged image", app: app)
+        app.buttons["staged-file-remove"].hover(); edit.hover()
+        // XCTest's element click lands on the clip view's bottom edge on
+        // macOS 15. Exercise the real pencil target, not the thumbnail or an
+        // internal action. This pointer flow is not an AXPress/VoiceOver gate.
+        edit.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        let picture = app.images["attachment-editor-image"]
+        let loaded = picture.waitForExistence(timeout: 10)
+        XCTAssertTrue(loaded, "The existing editor must decode the staged original")
+        guard loaded else { return }
+        XCTAssertFalse(composer.exists, "The covered workspace must be absent from accessibility")
+        app.buttons["attachment-editor-crop"].click()
+        app.buttons["Rotate left"].click()
+        app.buttons["Undo"].click(); app.buttons["Redo"].click()
+        app.buttons["attachment-editor-spoiler"].click()
+        capture("image editor rotated spoiler", app: app)
+        app.buttons["attachment-editor-done"].click()
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        let spoiler = app.buttons["Preview spoiler attachment"]
+        XCTAssertTrue(spoiler.waitForExistence(timeout: 10))
+        resize(app, width: 900)
+        capture("staged spoiler narrow", app: app)
+        try await Self.control(["holdSends": true])
+        app.buttons["send-message"].click()
+        let pending = app.groups.matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-message-")).firstMatch
+        XCTAssertTrue(pending.waitForExistence(timeout: 10), "The local preview must remain visible while confirmation is held")
+        XCTAssertTrue(pending.buttons["Reveal spoiler attachment"].exists)
+        XCTAssertFalse(app.buttons["staged-file-remove"].exists)
+        capture("pending image confirmation", app: app)
+        try await Self.control(["holdSends": false])
+        let confirmed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !pending.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [confirmed], timeout: 15), .completed)
+        let reveal = app.buttons["Reveal spoiler attachment"]
+        XCTAssertTrue(reveal.waitForExistence(timeout: 20))
+        XCTAssertFalse(app.buttons["staged-file-remove"].exists)
+        XCTAssertEqual(composer.value as? String, "")
+        capture("sent image spoiler narrow", app: app)
+        reveal.click()
+        let image = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "attachment-")).firstMatch
+        XCTAssertTrue(image.waitForExistence(timeout: 5)); image.click()
+        XCTAssertTrue(app.images["media-viewer-image"].waitForExistence(timeout: 15), "Uploaded image bytes must decode, not just show a placeholder")
+        XCTAssertFalse(composer.exists)
+        capture("decoded sent image viewer", app: app)
+        app.buttons["media-viewer-close"].hover(); app.buttons["media-viewer-close"].click()
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.click(); composer.typeText("focus restored")
+        XCTAssertEqual(composer.value as? String, "focus restored")
+    }
+
+    func testFilePickerUploadFailureRetryAndComposerOwnership() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        try await Self.control(["uploadsEnabled": true,
+            "failure": ["path": "/api/assets", "method": "POST", "status": 503, "error": "TEST FIXTURE: upload unavailable."]])
+        let source = try imageFile()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let app = launch()
+        defer { app.terminate() }
+        let attach = app.buttons["attach-files-button"]
+        XCTAssertTrue(attach.waitForExistence(timeout: 15))
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: attach)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 10), .completed)
+        attach.click(); app.menuItems["Upload a file"].click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5))
+        app.typeKey("g", modifierFlags: [.command, .shift])
+        app.typeText(source.path)
+        app.typeKey(.return, modifierFlags: [])
+        let add = app.sheets.buttons["Add files"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5)); add.click()
+        let retry = app.buttons["staged-file-retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 15))
+        capture("upload failure", app: app)
+        retry.click()
+        let recovered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !retry.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [recovered], timeout: 15), .completed)
+        XCTAssertTrue(app.buttons["staged-file-remove"].exists)
+        app.buttons["channel-chan00000002"].click()
+        let otherComposer = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !app.buttons["staged-file-remove"].exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [otherComposer], timeout: 5), .completed, "Staged files belong to their original conversation")
+        app.buttons["channel-chan00000001"].click()
+        XCTAssertTrue(app.buttons["staged-file-remove"].waitForExistence(timeout: 10))
+        app.buttons["send-message"].click()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "attachment-")).firstMatch.waitForExistence(timeout: 15), "Attachment-only send must be accepted")
+        XCTAssertFalse(app.buttons["staged-file-remove"].exists)
+        let composer = app.textViews["message-composer"]
+        composer.click()
+        NSPasteboard.general.clearContents(); NSPasteboard.general.writeObjects([source as NSURL])
+        composer.typeKey("v", modifierFlags: .command)
+        let remove = app.buttons["staged-file-remove"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 10)); remove.click()
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !remove.exists }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 5), .completed)
+        XCTAssertFalse(app.buttons["send-message"].isEnabled, "Removing the last file leaves no sendable draft")
+    }
+
     func testIncomingRequestRetryAcceptAndBlockedConversation() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()

@@ -8131,7 +8131,7 @@ struct NativeReplyDraft: View {
     }
 }
 
-private struct PendingMessageRow: View {
+struct PendingMessageRow: View {
     let pending: PendingMessage; let author: ChatAuthor?; let error: String?
     let rejected: Bool; let canEdit: Bool
     var chat: ChatModel? = nil

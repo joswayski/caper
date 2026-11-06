@@ -419,6 +419,7 @@ struct MessageAttachmentsView: View {
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
             .accessibilityLabel("Reveal spoiler attachment")
             .accessibilityHint("Shows the hidden file")
         } else {
@@ -2164,6 +2165,7 @@ struct AttachmentDraftsView: View {
             StagedFileLayout() {
                 ForEach(files) { draft in chip(draft).modifier(Entrance.chip) }
             }
+            .accessibilityElement(children: .contain)
             .accessibilityLabel("Files to send")
             .quickLookPreview(Binding(
                 get: { files.first(where: { $0.id == previewID }).map { Self.shownURL($0) } },
@@ -2339,6 +2341,7 @@ struct StagedFileChip: View {
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
             .accessibilityLabel(spoiler ? "Preview spoiler attachment" : "Preview \(name)")
             .accessibilityValue(accessibilityState)
             .help(spoiler ? "Spoiler attachment" : name)
