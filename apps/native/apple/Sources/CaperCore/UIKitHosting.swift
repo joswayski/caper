@@ -124,6 +124,37 @@ import UIKit
         return host
     }
 
+    /// A workspace dialog (space and channel settings, invites, create and
+    /// join, profile, privacy, notifications, audio, leave), drawn as on
+    /// SwiftUI's iPhone: a scrim, then a card fitted to its content.
+    public static func workspaceDialog(model: AppModel, _ item: WorkspaceSheet) -> UIViewController {
+        let state = UIKitWorkspaceDialogState(item: item)
+        let box = WeakController()
+        let host = UIHostingController(rootView: UIKitWorkspaceDialog(model: model, state: state) {
+            box.value?.dismiss(animated: false)
+        })
+        box.value = host
+        host.overrideUserInterfaceStyle = .dark
+        host.view.backgroundColor = .clear
+        host.modalPresentationStyle = .overFullScreen
+        host.view.accessibilityViewIsModal = true
+        return host
+    }
+
+    /// "Leave #name?", as the channel options menu confirms on SwiftUI.
+    public static func leaveChannel(model: AppModel, channel: Channel) -> UIViewController {
+        let detail = channel.private && !model.isOwner
+            ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call."
+            : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call."
+        let host = controller { close in
+            ConfirmationSheet(title: "Leave #\(channel.name)?", detail: detail, action: "Leave channel", pendingLabel: "Leaving…",
+                              close: close) { try await model.leaveChannel(channel) }
+        }
+        sheet(host, background: CaperTheme.surface)
+        host.sheetPresentationController?.detents = [.medium()]
+        return host
+    }
+
     static func sheet(_ host: UIViewController, background: Color) {
         host.view.backgroundColor = UIColor(background)
         host.modalPresentationStyle = .pageSheet
@@ -148,6 +179,54 @@ import UIKit
             host.modalPresentationStyle = .overFullScreen
             present(host)
         }
+    }
+}
+
+@MainActor @Observable final class UIKitWorkspaceDialogState {
+    var item: WorkspaceSheet
+    var dismissDisabled = false
+    var profileDismissAction: ProfileDismissAction?
+    init(item: WorkspaceSheet) { self.item = item }
+}
+
+/// CaperView's iPhone dialog container around WorkspaceSheetView.
+struct UIKitWorkspaceDialog: View {
+    let model: AppModel
+    @Bindable var state: UIKitWorkspaceDialogState
+    let dismiss: () -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            let top = max(16, geometry.size.height * 0.1)
+            ZStack(alignment: .top) {
+                Color.black.opacity(0.55).ignoresSafeArea()
+                    .onTapGesture(perform: tappedOutside)
+                    .accessibilityHidden(true)
+                    .modifier(Entrance.scrim)
+                DialogHeight(maximum: min(680, max(1, geometry.size.height - top - 16))) {
+                    // Replacing the dialog (Create a space → Join with link) keeps the container.
+                    WorkspaceSheetView(item: state.item, model: model, show: { state.item = $0 }) { dismiss() }
+                        .id(state.item.id)
+                }
+                .frame(width: min(state.item.id.contains("manage") ? 600 : 560, geometry.size.width - 32))
+                .background(CaperTheme.surface.onTapGesture {})
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                .shadow(color: .black.opacity(0.3), radius: 24, y: 12)
+                .modifier(Entrance.dialog)
+                .padding(.top, top)
+                .accessibilityAddTraits(.isModal)
+                .onPreferenceChange(DialogDismissDisabled.self) { value in MainActor.assumeIsolated { state.dismissDisabled = value } }
+                .onPreferenceChange(ProfileDismissPreference.self) { value in MainActor.assumeIsolated { state.profileDismissAction = value } }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .accessibilityAction(.escape, tappedOutside)
+        .preferredColorScheme(.dark)
+    }
+
+    private func tappedOutside() {
+        if state.item.id == "profile" { state.profileDismissAction?.action() }
+        else if !state.dismissDisabled { dismiss() }
     }
 }
 

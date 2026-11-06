@@ -5,7 +5,7 @@ import UIKit
 /// Browse on iPhone: the space rail beside the selected space's channels and
 /// direct messages, with the account bar beneath. The conversation slides over it.
 final class BrowseViewController: UIViewController, UICollectionViewDelegate {
-    private enum Item: Hashable { case channel(String), directHeading, requests, selfDirect, direct(String), newMessage }
+    private enum Item: Hashable { case channel(String), channelInvitation(String), directHeading, requests, selfDirect, direct(String), newMessage }
 
     private let model: AppModel
     var cached: StartupSnapshot? { didSet { if isViewLoaded { render() } } }
@@ -17,12 +17,18 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private let card = UIView()
     private let spaceName = UIKitStyle.label(size: 17, weight: .bold)
     private let channelsHeading = UIKitStyle.label(size: 12, weight: .bold, color: UIKitStyle.muted)
+    private let spaceMenu = UIButton(type: .custom)
+    private let spaceChevron = UIImageView(image: UIKitStyle.icon("chevron-down")?.resized(to: 16))
+    private lazy var createChannel = IconButton(icon: "plus", label: "Create channel", size: 16, side: 36) { [weak self] in
+        self?.dialog(.createChannel)
+    }
     private var channels: UICollectionView!
     private var dataSource: UICollectionViewDiffableDataSource<Int, Item>!
     private var channelRows: [String: Channel] = [:]
     private var selectedChannelID: String?
     private var unread: Set<String> = []
     private var directRows: [String: DirectMessageConversation] = [:]
+    private var channelInvitations: [String: ChannelInvitation] = [:]
     /// Message requests, pushed over the lists as SwiftUI does on iPhone.
     private lazy var requests: UIHostingController<UIKitMessageRequests> = {
         let host = UIHostingController(rootView: UIKitMessageRequests(model: model))
@@ -40,14 +46,36 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         button.accessibilityLabel = "Account settings"
         button.accessibilityIdentifier = "account-settings"
         button.showsMenuAsPrimaryAction = true
-        button.menu = UIMenu(children: [UIAction(title: "Sign out", image: UIKitStyle.icon("log-out"), attributes: .destructive) { [weak self] _ in
-            guard let model = self?.model else { return }
-            Task { await model.logout() }
+        button.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            completion(self?.accountMenuItems() ?? [])
         }])
         button.translatesAutoresizingMaskIntoConstraints = false
         return button
     }()
     private let observer = ModelObserver()
+
+    /// SwiftUI's iPhone account menu: audio, notifications, privacy, log out.
+    private func accountMenuItems() -> [UIMenuElement] {
+        guard live else { return [] }
+        let model = self.model
+        var items: [UIMenuElement] = [UIAction(title: "Audio test") { [weak self] _ in self?.dialog(.audio) }]
+        if model.voice.phase == .connected {
+            items.append(UIAction(title: "Connection details") { [weak self] _ in self?.dialog(.connection) })
+        }
+        if model.account?.debugEnabled == true {
+            items.append(UIAction(title: "Audio diagnostics") { [weak self] _ in self?.dialog(.diagnostics) })
+        }
+        items.append(UIAction(title: "Profile") { [weak self] _ in self?.dialog(.profile) })
+        let notifications = UIAction(title: "Notifications") { [weak self] _ in self?.dialog(.notifications) }
+        notifications.accessibilityIdentifier = "open-notifications"
+        let privacy = UIAction(title: "Privacy and blocked accounts") { [weak self] _ in self?.dialog(.privacy) }
+        privacy.accessibilityIdentifier = "open-privacy"
+        items += [notifications, privacy]
+        items.append(UIMenu(options: .displayInline, children: [
+            UIAction(title: "Log out", image: UIKitStyle.icon("log-out"), attributes: .destructive) { _ in Task { await model.logout() } },
+        ]))
+        return items
+    }
 
     init(model: AppModel) {
         self.model = model
@@ -91,9 +119,20 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         card.clipsToBounds = true
         card.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(card)
-        spaceName.accessibilityTraits = .header
-        spaceName.accessibilityIdentifier = "selected-space-name"
+        // The space name is its menu, as on SwiftUI: notifications, invite, settings, leave.
+        spaceName.isAccessibilityElement = false
+        spaceChevron.tintColor = UIKitStyle.muted
+        spaceChevron.translatesAutoresizingMaskIntoConstraints = false
+        spaceMenu.translatesAutoresizingMaskIntoConstraints = false
+        spaceMenu.showsMenuAsPrimaryAction = true
+        spaceMenu.accessibilityIdentifier = "selected-space-name"
+        spaceMenu.accessibilityTraits = [.header, .button]
+        spaceMenu.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            completion(self?.spaceMenuItems() ?? [])
+        }])
         channelsHeading.accessibilityTraits = .header
+        createChannel.tintColor = UIKitStyle.muted
+        createChannel.accessibilityIdentifier = "create-channel"
 
         var list = UICollectionLayoutListConfiguration(appearance: .plain)
         list.backgroundColor = .clear
@@ -107,14 +146,23 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             guard let self, case let .channel(id) = item, let channel = self.channelRows[id] else { return }
             self.configure(cell, channel: channel)
         }
+        let invitationRegistration = UICollectionView.CellRegistration<DirectRowCell, Item> { [weak self] cell, _, item in
+            guard let self, case let .channelInvitation(id) = item, let invitation = self.channelInvitations[id] else { return }
+            cell.show(icon: "lock", text: invitation.channel.name, highlighted: true, count: "Invite", countStyle: .neutral)
+            cell.isAccessibilityElement = true
+            cell.accessibilityLabel = "Invitation to private channel \(invitation.channel.name) from \(invitation.inviter.displayName)"
+            cell.accessibilityTraits = .button
+            cell.accessibilityIdentifier = "channel-invitation-\(invitation.id)"
+        }
         let directRegistration = UICollectionView.CellRegistration<DirectRowCell, Item> { [weak self] cell, _, item in
             self?.configure(cell, item: item)
         }
         dataSource = UICollectionViewDiffableDataSource(collectionView: channels) { collection, path, item in
             if case .channel = item { return collection.dequeueConfiguredReusableCell(using: registration, for: path, item: item) }
+            if case .channelInvitation = item { return collection.dequeueConfiguredReusableCell(using: invitationRegistration, for: path, item: item) }
             return collection.dequeueConfiguredReusableCell(using: directRegistration, for: path, item: item)
         }
-        [spaceName, channelsHeading, channels].forEach(card.addSubview)
+        [spaceName, spaceChevron, spaceMenu, channelsHeading, createChannel, channels].forEach(card.addSubview)
         NSLayoutConstraint.activate([
             card.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             card.leadingAnchor.constraint(equalTo: railScroll.trailingAnchor),
@@ -122,7 +170,15 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             railScroll.bottomAnchor.constraint(equalTo: card.bottomAnchor),
             spaceName.topAnchor.constraint(equalTo: card.topAnchor, constant: 18),
             spaceName.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            spaceName.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -16),
+            spaceName.trailingAnchor.constraint(lessThanOrEqualTo: spaceChevron.leadingAnchor, constant: -6),
+            spaceChevron.centerYAnchor.constraint(equalTo: spaceName.centerYAnchor),
+            spaceChevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            spaceMenu.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 8),
+            spaceMenu.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
+            spaceMenu.centerYAnchor.constraint(equalTo: spaceName.centerYAnchor),
+            spaceMenu.heightAnchor.constraint(equalToConstant: 44),
+            createChannel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -6),
+            createChannel.centerYAnchor.constraint(equalTo: channelsHeading.centerYAnchor),
             channelsHeading.topAnchor.constraint(equalTo: spaceName.bottomAnchor, constant: 18),
             channelsHeading.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
             channels.topAnchor.constraint(equalTo: channelsHeading.bottomAnchor, constant: 6),
@@ -177,6 +233,12 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         renderRail(spaces, selected: selectedSpace, unreadSpaces: live ? Set(model.unreadSpaces.map(\.id)) : [])
 
         spaceName.text = detail.map { $0.space.demo == true ? "Caper" : $0.space.name } ?? ""
+        spaceMenu.accessibilityLabel = spaceName.text
+        let menuable = live && detail?.space.demo != true && model.account != nil
+        spaceMenu.isEnabled = menuable
+        spaceChevron.isHidden = !menuable
+        createChannel.isHidden = !(live && model.isOwner)
+        createChannel.isEnabled = model.canCreateChannel
         let joined = detail?.channels.filter(\.joined) ?? []
         channelsHeading.text = "CHANNELS  \(joined.count)"
         channelsHeading.accessibilityLabel = "Channels, \(joined.count)"
@@ -185,6 +247,10 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         var snapshot = NSDiffableDataSourceSnapshot<Int, Item>()
         snapshot.appendSections([0])
         snapshot.appendItems(joined.map { .channel($0.id) })
+        // Private channel invitations, under the channels.
+        let invitations = live ? detail?.channelInvitations ?? [] : []
+        channelInvitations = Dictionary(invitations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        snapshot.appendItems(invitations.map { .channelInvitation($0.id) })
         // Selection and unread state live in the cell; reconfigure all visible rows cheaply.
         snapshot.reconfigureItems(joined.filter { previous[$0.id] != nil }.map { .channel($0.id) })
         appendDirect(to: &snapshot, live: live)
@@ -202,6 +268,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
 
     private func renderRail(_ spaces: [Space], selected: String?, unreadSpaces: Set<String>) {
         let key = spaces.map { "\($0.id)|\($0.name)|\($0.id == selected)|\(unreadSpaces.contains($0.id))" }
+            + [live ? "live" : "", "\(model.canCreateSpace)"] + (live ? model.invitations.map { "invite|\($0.id)|\($0.name)" } : [])
         guard key != railKey else { return }
         railKey = key
         rail.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -230,6 +297,47 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             NSLayoutConstraint.activate([tile.widthAnchor.constraint(equalToConstant: 44), tile.heightAnchor.constraint(equalToConstant: 44)])
             rail.addArrangedSubview(tile)
         }
+        guard live else { return }
+        // Invitations to spaces, dashed; then create or join a space.
+        if !model.invitations.isEmpty {
+            let heading = UIKitStyle.label("INVITES", size: 8, weight: .bold, color: UIKitStyle.muted)
+            heading.accessibilityLabel = "Pending invitations"
+            rail.addArrangedSubview(heading)
+        }
+        for invitation in model.invitations {
+            let tile = railTile(String(invitation.name.prefix(1)).uppercased(), dashed: UIKitStyle.terracottaBright)
+            tile.accessibilityLabel = "Invitation to \(invitation.name)"
+            tile.accessibilityIdentifier = "space-invitation-\(invitation.id)"
+            tile.addAction(UIAction { [weak self] _ in self?.dialog(.invitation(invitation)) }, for: .primaryActionTriggered)
+            rail.addArrangedSubview(tile)
+        }
+        let create = railTile(nil, dashed: UIKitStyle.border)
+        create.setImage(UIKitStyle.icon("plus")?.resized(to: 20), for: .normal)
+        create.tintColor = UIKitStyle.terracottaBright
+        create.accessibilityLabel = model.canCreateSpace ? "Create space" : "Join a space"
+        create.accessibilityIdentifier = "create-space"
+        // Stays enabled at the space limit: the dialog also joins by invite link.
+        create.addAction(UIAction { [weak self] _ in self?.dialog(.createSpace) }, for: .primaryActionTriggered)
+        rail.addArrangedSubview(create)
+    }
+
+    private func railTile(_ title: String?, dashed color: UIColor) -> UIButton {
+        let tile = UIButton(type: .custom)
+        tile.translatesAutoresizingMaskIntoConstraints = false
+        tile.setTitle(title, for: .normal)
+        tile.titleLabel?.font = UIKitStyle.font(16, .bold, scaled: false)
+        tile.setTitleColor(UIKitStyle.text, for: .normal)
+        tile.backgroundColor = UIKitStyle.surface
+        tile.layer.cornerRadius = 12
+        tile.layer.cornerCurve = .continuous
+        let border = CAShapeLayer()
+        border.path = UIBezierPath(roundedRect: CGRect(x: 0.5, y: 0.5, width: 43, height: 43), cornerRadius: 12).cgPath
+        border.fillColor = nil
+        border.strokeColor = color.cgColor
+        border.lineDashPattern = [4, 4]
+        tile.layer.addSublayer(border)
+        NSLayoutConstraint.activate([tile.widthAnchor.constraint(equalToConstant: 44), tile.heightAnchor.constraint(equalToConstant: 44)])
+        return tile
     }
 
     // MARK: Direct messages
@@ -314,7 +422,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             cell.show(icon: "plus", text: "New message")
             cell.accessibilityLabel = "New message"
             cell.accessibilityIdentifier = "new-message"
-        case .channel:
+        case .channel, .channelInvitation:
             break
         }
         if case .directHeading = item { return }
@@ -328,39 +436,71 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     }
 
     /// Press and hold a DM: notifications on or off, and mute, as on SwiftUI.
+    /// Press and hold a channel or DM for its options, as SwiftUI's menus offer.
     func collectionView(_ collectionView: UICollectionView, contextMenuConfigurationForItemsAt indexPaths: [IndexPath],
                         point: CGPoint) -> UIContextMenuConfiguration? {
-        guard live, let path = indexPaths.first, case let .direct(id) = dataSource.itemIdentifier(for: path) else { return nil }
+        guard live, let path = indexPaths.first else { return nil }
+        let model = self.model
+        switch dataSource.itemIdentifier(for: path) {
+        case let .direct(id):
+            model.refreshNotificationSettingsIfStale()
+            return UIContextMenuConfiguration(actionProvider: { _ in UIMenu(children: NotificationMenus.direct(model, conversationID: id)) })
+        case let .channel(id):
+            guard let channel = channelRows[id] else { return nil }
+            model.refreshNotificationSettingsIfStale()
+            return UIContextMenuConfiguration(actionProvider: { [weak self] _ in self.map { UIMenu(children: $0.channelOptions(channel)) } })
+        default:
+            return nil
+        }
+    }
+
+    /// Owners: Invite people and Channel settings; everyone: notifications and Leave.
+    private func channelOptions(_ channel: Channel) -> [UIMenuElement] {
+        var items: [UIMenuElement] = []
+        if model.isOwner {
+            var owner: [UIMenuElement] = []
+            if !channel.private, model.detail?.space.demo != true {
+                owner.append(UIAction(title: "Invite people…") { [weak self] _ in
+                    self?.dialog(.invitePeople(spaceID: channel.spaceId, channelID: channel.id))
+                })
+            }
+            owner.append(UIAction(title: "Channel settings") { [weak self] _ in
+                self?.dialog(.manageChannel(channel))
+            })
+            items.append(UIMenu(options: .displayInline, children: owner))
+        }
+        if model.account != nil { items.append(UIMenu(options: .displayInline, children: NotificationMenus.channel(model, channel: channel))) }
+        if channel.joined {
+            items.append(UIMenu(options: .displayInline, children: [UIAction(title: "Leave channel", attributes: .destructive) { [weak self] _ in
+                guard let self else { return }
+                self.present(UIKitHosting.leaveChannel(model: self.model, channel: channel), animated: true)
+            }]))
+        }
+        return items
+    }
+
+    /// The space name's menu: notifications, then Invite and Space settings, or Leave.
+    private func spaceMenuItems() -> [UIMenuElement] {
+        guard live, let space = model.detail?.space, space.demo != true, model.account != nil else { return [] }
         model.refreshNotificationSettingsIfStale()
-        return UIContextMenuConfiguration(actionProvider: { [weak self] _ in
-            guard let self else { return nil }
-            let scope = NotificationScope.direct(id)
-            let model = self.model
-            let saving = model.notificationSettings == nil || model.notificationScopesSaving.contains(scope)
-            let off = model.notificationSettings?.notificationsOff(scope) ?? false
-            let level = UIAction(title: NotificationLabels.directNotificationsTitle(off: off),
-                                 attributes: saving ? .disabled : []) { _ in
-                Task { await model.setNotificationLevel(off ? nil : .nothing, for: scope) }
-            }
-            let mute: UIMenuElement
-            if let current = model.notificationMute(scope) {
-                mute = UIMenu(options: .displayInline, children: [
-                    UIAction(title: NotificationLabels.mutedStatus(current), attributes: .disabled) { _ in },
-                    UIAction(title: NotificationLabels.muteTitle(for: scope, muted: true),
-                             attributes: model.notificationScopesSaving.contains(scope) ? .disabled : []) { _ in
-                        Task { await model.setMute(nil, for: scope) }
-                    },
-                ])
-            } else {
-                mute = UIMenu(title: NotificationLabels.muteTitle(for: scope, muted: false), options: saving ? .init() : [],
-                              children: MutePreset.allCases.map { preset in
-                                  UIAction(title: preset.title, attributes: saving ? .disabled : []) { _ in
-                                      Task { await model.setMute(preset.until(from: Date()), for: scope) }
-                                  }
-                              })
-            }
-            return UIMenu(children: [level, mute])
-        })
+        var items: [UIMenuElement] = [UIMenu(options: .displayInline, children: NotificationMenus.space(model, spaceID: space.id))]
+        if model.isOwner {
+            items.append(UIMenu(options: .displayInline, children: [
+                UIAction(title: "Invite people…") { [weak self] _ in
+                    self?.dialog(.invitePeople(spaceID: space.id, channelID: nil))
+                },
+                UIAction(title: "Space settings") { [weak self] _ in self?.dialog(.manageSpace) },
+            ]))
+        } else {
+            items.append(UIAction(title: "Leave space…", attributes: .destructive) { [weak self] _ in self?.dialog(.leaveSpace) })
+        }
+        return items
+    }
+
+    /// A workspace dialog over Browse.
+    func dialog(_ item: WorkspaceSheet) {
+        guard presentedViewController == nil else { return }
+        present(UIKitHosting.workspaceDialog(model: model, item), animated: false)
     }
 
     private func configure(_ cell: UICollectionViewListCell, channel: Channel) {
@@ -394,6 +534,8 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
                 Task { await model.select(channel: channel) }
             }
             opened?()
+        case let .channelInvitation(id):
+            if let invitation = channelInvitations[id] { dialog(.channelInvitation(invitation)) }
         case .requests:
             model.showingMessageRequests = true
         case .selfDirect:

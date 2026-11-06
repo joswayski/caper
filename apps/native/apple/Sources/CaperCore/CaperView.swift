@@ -749,11 +749,11 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     }
 }
 
-private enum WorkspaceSheet: Identifiable {
+public enum WorkspaceSheet: Identifiable {
     case invitePeople(spaceID: String, channelID: String?)
     /// `joinInvite` carries a link opened from another app, or nil.
     case login, profile, createSpace, joinInvite(OpenedInviteLink?), createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy, notifications
-    var id: String {
+    public var id: String {
         switch self {
         case .invitePeople(let spaceID, let channelID): "invite-people-\(spaceID)-\(channelID ?? "default")"
         case .login: "login"
@@ -779,7 +779,7 @@ private enum WorkspaceSheet: Identifiable {
 /// A workspace dialog's height: its content's, up to `maximum`, where the
 /// dialog's own scroll view takes over. Short dialogs no longer sit in a
 /// mostly empty full-height panel.
-private struct DialogHeight: Layout {
+struct DialogHeight: Layout {
     let maximum: CGFloat
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? subviews.first?.sizeThatFits(.unspecified).width ?? 0
@@ -8372,7 +8372,7 @@ extension EnvironmentValues {
 }
 #endif
 
-private struct WorkspaceSheetView: View {
+struct WorkspaceSheetView: View {
     let item: WorkspaceSheet
     @Bindable var model: AppModel
     /// Replaces this dialog with another, e.g. Create a space → Join with invite link.
@@ -10522,12 +10522,12 @@ private struct ChannelEditor: View {
     private func run(_ action: @escaping () async throws -> Void) { pending = true; error = nil; Task { do { try await action() } catch { self.error = FriendlyError.message(for: error) }; pending = false } }
 }
 
-private struct DialogDismissDisabled: PreferenceKey {
+struct DialogDismissDisabled: PreferenceKey {
     static let defaultValue = false
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
 }
 
-private struct ConfirmationSheet: View {
+struct ConfirmationSheet: View {
     let title: String; let detail: String; let action: String
     /// The action's label while it runs, e.g. "Leaving…"; deletes default to "Deleting…".
     var pendingLabel: String? = nil

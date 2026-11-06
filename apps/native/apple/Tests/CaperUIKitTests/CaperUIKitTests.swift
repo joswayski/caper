@@ -139,7 +139,7 @@ final class CaperUIKitTests: XCTestCase {
         back.tap()
         let design = app.cells["channel-design"]
         XCTAssertTrue(design.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["selected-space-name"].exists)
+        XCTAssertTrue(app.buttons["selected-space-name"].exists)
         XCTAssertEqual(app.cells["channel-general"].value as? String, "Selected")
         screenshot("uikit-browse")
         design.tap()
@@ -361,6 +361,44 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(member.waitForExistence(timeout: 10))
         member.tap()
         XCTAssertTrue(card.waitForExistence(timeout: 10), "A member opens their card")
+    }
+
+    /// Owners reach Invite people and Space settings from the space name,
+    /// Create channel from Channels, and channel settings from a held channel.
+    func testOwnerWorkflows() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        app.buttons["back-to-browse"].tap()
+        let space = app.buttons["selected-space-name"]
+        XCTAssertTrue(space.waitForExistence(timeout: 10))
+        space.tap()
+        app.buttons["Invite people…"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["default-invite-link-copy"].waitForExistence(timeout: 10), "The primary invite link is ready to copy")
+        screenshot("uikit-invite")
+        app.buttons["Close"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["default-invite-link-copy"].waitForNonExistence(timeout: 5))
+
+        space.tap()
+        app.buttons["Space settings"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Manage space"].firstMatch.waitForExistence(timeout: 10))
+        screenshot("uikit-space-settings")
+        app.buttons["Close"].firstMatch.tap()
+
+        app.buttons["create-channel"].tap()
+        XCTAssertTrue(app.staticTexts["Create a channel"].firstMatch.waitForExistence(timeout: 10))
+        screenshot("uikit-create-channel")
+        app.buttons["Close"].firstMatch.tap()
+
+        app.cells["channel-design"].press(forDuration: 1)
+        app.buttons["Channel settings"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Channel settings"].firstMatch.waitForExistence(timeout: 10))
+        screenshot("uikit-channel-settings")
+        app.buttons["Close"].firstMatch.tap()
+
+        app.buttons["account-settings"].tap()
+        app.buttons["open-privacy"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Privacy"].firstMatch.waitForExistence(timeout: 10))
+        screenshot("uikit-privacy")
     }
 
     /// Browse lists DMs under the channels; New message opens a DM by exact
