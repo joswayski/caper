@@ -354,7 +354,10 @@ public enum ProfilePictureUploader {
         let reservation = try await api.createPicture(input)
         do {
             try Task.checkCancellation()
-            try await api.putToStorage(reservation.upload, body: .data(picture.data))
+            guard let upload = reservation.upload else {
+                throw APIError(status: 502, message: "The upload service returned an invalid response.")
+            }
+            try await api.putToStorage(upload, body: .data(picture.data))
             try Task.checkCancellation()
             var delays = completeRetryDelays[...]
             while true {

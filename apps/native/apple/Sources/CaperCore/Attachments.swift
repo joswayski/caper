@@ -268,6 +268,9 @@ public struct AssetCreateInput: Encodable, Equatable, Sendable {
     public var voice: Bool?
     /// Only with `voice`: base64 of the 64 normalised peaks.
     public var waveform: String?
+    /// The client can upload in parts: a file larger than one part is then
+    /// reserved with a `multipart` plan instead of one `upload`.
+    public var multipart: Bool?
 
     public init(channelId: String, filename: String, contentType: String, byteSize: Int, sourceByteSize: Int? = nil,
                 width: Int? = nil, height: Int? = nil, durationMs: Int? = nil, preview: Preview? = nil,
@@ -284,9 +287,17 @@ public struct PresignedUpload: Decodable, Equatable, Sendable {
     public let headers: [String: String]
 }
 
+/// A large file goes up in `partCount` parts of `partBytes` (the last may be shorter).
+public struct MultipartPlan: Decodable, Equatable, Sendable {
+    public let partBytes: Int
+    public let partCount: Int
+}
+
 public struct AssetReservation: Decodable, Equatable, Sendable {
     public let id: String
-    public let upload: PresignedUpload
+    /// One presigned PUT; absent when the file goes up in parts (`multipart`).
+    public let upload: PresignedUpload?
+    public let multipart: MultipartPlan?
     /// Present when the reservation declared a preview.
     public let previewUpload: PresignedUpload?
 }
@@ -614,6 +625,8 @@ public enum AttachmentPolicy {
         if let error = error as? APIError {
             if error.code == "storage_full" { return "You’ve used all of your file storage." }
             if error.code == "media_metadata" { return error.message }
+            if error.code == "media_too_large" { return "Photos, videos and audio can be up to 5 GB." }
+            if error.code == "upload_incomplete" { return "The upload did not arrive intact. Try again." }
             switch error.status {
             case 413: return "This file is too large to upload."
             case 429: return "Uploading too quickly. Try again shortly."

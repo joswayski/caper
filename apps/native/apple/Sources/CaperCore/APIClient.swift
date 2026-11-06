@@ -591,6 +591,21 @@ public actor APIClient {
         return reservation
     }
 
+    /// Presigned PUTs for some `parts` (numbered from 1) of a multipart upload,
+    /// by part number; parts the server didn't return are left out.
+    public func assetParts(id: String, parts: [Int]) async throws -> [Int: PresignedUpload] {
+        struct Input: Encodable { let parts: [Int] }
+        struct Part: Decodable { let number: Int; let method: String?; let url: String; let headers: [String: String]? }
+        struct Response: Decodable { let parts: [Part] }
+        guard Self.validAssetID(id) else { throw APIError(status: 400, message: "Invalid file ID.") }
+        let response: Response = try await request("api/assets/\(id)/parts", method: "POST", body: Input(parts: parts))
+        var urls: [Int: PresignedUpload] = [:]
+        for part in response.parts where parts.contains(part.number) {
+            urls[part.number] = PresignedUpload(method: part.method ?? "PUT", url: part.url, headers: part.headers ?? [:])
+        }
+        return urls
+    }
+
     public func completeAsset(id: String) async throws -> ChatAttachment {
         guard Self.validAssetID(id) else { throw APIError(status: 400, message: "Invalid file ID.") }
         return try await request("api/assets/\(id)/complete", method: "POST")

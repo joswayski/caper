@@ -1547,7 +1547,7 @@ final class AttachmentTests: XCTestCase {
             "POST caper.invalid/api/assets/Asset0000001/complete",
         ])
         let body = try XCTUnwrap(json(requests[0].body))
-        XCTAssertEqual(Set(body.keys), ["channelId", "filename", "contentType", "byteSize", "sourceByteSize", "width", "height", "preview"],
+        XCTAssertEqual(Set(body.keys), ["channelId", "filename", "contentType", "byteSize", "sourceByteSize", "width", "height", "preview", "multipart"],
                        "absent values are omitted, not null")
         XCTAssertEqual(body["channelId"] as? String, channelID)
         XCTAssertEqual(body["filename"] as? String, "shot.webp")
@@ -1606,6 +1606,85 @@ final class AttachmentTests: XCTestCase {
             XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(error), "The upload didn’t finish. Remove it and try again.")
         }
         XCTAssertEqual(AttachmentURLProtocol.requests.filter { $0.url.path.hasSuffix("/complete") }.count, 3, "one attempt plus two retries")
+    }
+
+    func testLargeFilesGoUpInPartsAndOnlyAFailedPartIsSignedAgain() async throws {
+        let bytes = Data((0..<10).map { UInt8($0 * 7 + 3) })
+        let original = try AttachmentStaging.stage(data: bytes, filename: "big.mp4")
+        defer { AttachmentStaging.remove(original.url) }
+        let lock = NSLock()
+        nonisolated(unsafe) var failedOnce = false
+        nonisolated(unsafe) var received: [Int: Data] = [:]
+        AttachmentURLProtocol.handler = { request, body in
+            let path = request.url?.path ?? ""
+            switch (request.httpMethod ?? "GET", path) {
+            case ("POST", "/api/assets"):
+                return (201, Data(#"{"id":"Asset0000005","kind":"video","multipart":{"partBytes":4,"partCount":3}}"#.utf8))
+            case ("POST", "/api/assets/Asset0000005/parts"):
+                let asked = (json(body)?["parts"] as? [Int]) ?? []
+                let parts = asked.map { #"{"number":\#($0),"method":"PUT","url":"https://r2.invalid/part/\#($0)?sig=s","headers":{}}"# }
+                return (200, Data(("{\"parts\":[" + parts.joined(separator: ",") + "]}").utf8))
+            case ("PUT", let put) where put.hasPrefix("/part/"):
+                let number = Int(put.dropFirst("/part/".count)) ?? 0
+                // Part 2 first fails only once part 3 has started, so its retry must not sign part 3 again.
+                if number == 2 && !lock.withLock({ failedOnce }) {
+                    let deadline = Date().addingTimeInterval(5)
+                    while lock.withLock({ received[3] == nil }) && Date() < deadline { usleep(5_000) }
+                }
+                return lock.withLock {
+                    if number == 2 && !failedOnce { failedOnce = true; return (500, Data()) }
+                    received[number] = body ?? Data()
+                    return (200, Data())
+                }
+            case ("POST", "/api/assets/Asset0000005/complete"):
+                return (200, Data(#"{"id":"Asset0000005","kind":"video","contentType":"video/mp4","name":"big.mp4","size":10}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let fractions = FractionLog()
+        let attachment = try await AttachmentUploader.upload(PreparedAttachment(original: original), channelID: channelID, api: client(),
+                                                             partRetryDelays: [.zero]) { fractions.append($0) }
+        XCTAssertEqual(attachment.id, "Asset0000005")
+        XCTAssertEqual(fractions.values.last, 1)
+        let requests = AttachmentURLProtocol.requests
+        XCTAssertEqual(json(requests[0].body)?["multipart"] as? Bool, true)
+        XCTAssertEqual(requests.filter { $0.method == "PUT" }.count, 4, "three parts plus one retry")
+        lock.withLock {
+            XCTAssertEqual(received.keys.sorted(), [1, 2, 3])
+            XCTAssertEqual((1...3).map { received[$0]!.count }, [4, 4, 2])
+            XCTAssertEqual((1...3).reduce(Data()) { $0 + received[$1]! }, bytes)
+        }
+        for put in requests where put.method == "PUT" {
+            XCTAssertNil(header(put, "authorization"), "storage PUTs never carry the account credential")
+        }
+        let asked = requests.filter { $0.url.path.hasSuffix("/parts") }.flatMap { (json($0.body)?["parts"] as? [Int]) ?? [] }
+        XCTAssertEqual(asked.sorted(), [1, 2, 2, 3], "only the failed part is signed again")
+    }
+
+    func testMissingPartsAreNotRetriedAtCompleteAndTooLargeMediaReadsLikeWeb() async throws {
+        let original = try AttachmentStaging.stage(data: Data(repeating: 1, count: 10), filename: "a.bin")
+        defer { AttachmentStaging.remove(original.url) }
+        AttachmentURLProtocol.handler = { request, _ in
+            switch (request.httpMethod ?? "GET", request.url?.path ?? "") {
+            case ("POST", "/api/assets"):
+                return (201, Data(#"{"id":"Asset0000006","upload":{"method":"PUT","url":"https://r2.invalid/o","headers":{}}}"#.utf8))
+            case ("PUT", _): return (200, Data())
+            case ("POST", "/api/assets/Asset0000006/complete"):
+                return (409, Data(#"{"error":"upload incomplete","code":"upload_incomplete"}"#.utf8))
+            default: return (204, Data())
+            }
+        }
+        do {
+            _ = try await AttachmentUploader.upload(PreparedAttachment(original: original), channelID: channelID, api: client(),
+                                                    completeRetryDelays: [.zero, .zero]) { _ in }
+            XCTFail("expected upload_incomplete")
+        } catch {
+            XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(error), "The upload did not arrive intact. Try again.")
+        }
+        XCTAssertEqual(AttachmentURLProtocol.requests.filter { $0.url.path.hasSuffix("/complete") }.count, 1, "not retried")
+        XCTAssertTrue(AttachmentURLProtocol.requests.contains { $0.url.path == "/api/assets/Asset0000006/cancel" })
+        XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(APIError(status: 413, message: "x", code: "media_too_large")),
+                       "Photos, videos and audio can be up to 5 GB.")
     }
 
     func testStorageFullAndStorageRefusalErrorsAreExplained() async throws {
