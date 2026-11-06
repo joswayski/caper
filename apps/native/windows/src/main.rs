@@ -254,6 +254,9 @@ pub struct App {
     redraw_foot: bool,
     foot_hover: Option<usize>,
     focused: Option<String>,
+    /// The history control with keyboard focus (a reaction chip, Add
+    /// reaction, Retry or Dismiss), by message id so it survives paging.
+    kb: Option<(String, list::Action)>,
     older_armed: bool,
     /// The open thread beside the conversation, its surface and its reply box's.
     pub thread: Option<thread::Pane>,
@@ -395,6 +398,7 @@ impl App {
                 redraw_foot: false,
                 foot_hover: None,
                 focused: None,
+                kb: None,
                 older_armed: false,
                 thread: None,
                 thread_p,
@@ -753,6 +757,9 @@ impl App {
         {
             t.composer.focused = false;
             self.dirty.thread_box = true;
+        }
+        if focused {
+            self.set_kb(None);
         }
         if self.composer.focused == focused {
             return;
@@ -1247,6 +1254,7 @@ impl App {
                 } else {
                     self.set_composer_focus(false);
                     self.set_thread_focus(false);
+                    self.set_kb(None);
                     if let Some((i, k)) = self.tool_at(x, y) {
                         if let Some(t) = self.tools(i).get(k) {
                             self.tool_activate(i, t.tool);
@@ -1597,6 +1605,124 @@ impl App {
         }
     }
 
+    /// The history control with keyboard focus, while its row still has it.
+    pub fn kb_control(&self) -> Option<(usize, list::Action)> {
+        let (id, action) = self.kb.as_ref()?;
+        let &i = self.ids.rows.get(id)?;
+        (i < self.c.messages.len() && self.row_controls(i).iter().any(|(a, _)| a == action))
+            .then_some((i, *action))
+    }
+
+    /// Moves keyboard focus to a history control (or off them), keeping it
+    /// in view; the composer gives up focus to it.
+    pub fn set_kb(&mut self, to: Option<(usize, list::Action)>) {
+        let old = self.kb_control();
+        if old == to && self.kb.is_some() == to.is_some() {
+            return;
+        }
+        self.redraw.extend(old.map(|(i, _)| i));
+        self.kb = to.map(|(i, a)| (self.c.messages[i].id.clone(), a));
+        if let Some((i, action)) = to {
+            self.set_composer_focus(false);
+            self.set_thread_focus(false);
+            self.redraw.push(i);
+            if let Some((_, r)) = self.row_controls(i).into_iter().find(|(a, _)| *a == action) {
+                let (top, bottom) = (
+                    self.rows.top[i] + r.top as f64,
+                    self.rows.top[i] + r.bottom as f64,
+                );
+                let vh = self.vh() as f64;
+                if top < self.scroll_top + 8.0 {
+                    self.scroll_top = top - 8.0;
+                    self.at_end = false;
+                } else if bottom > self.scroll_top + vh - 8.0 {
+                    self.scroll_top = bottom - vh + 8.0;
+                    self.at_end = false;
+                }
+            }
+        }
+        self.events |= EV_FOCUS;
+        self.need = true;
+    }
+
+    /// The control after (or with `back`, before) `from` among the measured
+    /// rows; without `from`, the first (or last) one on screen.
+    fn next_control(
+        &mut self,
+        from: Option<(usize, list::Action)>,
+        back: bool,
+    ) -> Option<(usize, list::Action)> {
+        let n = self.rows.len();
+        let (start, skip) = match from {
+            Some((i, action)) => (i, Some(action)),
+            None => {
+                let v = self.visible_rows();
+                if v.is_empty() {
+                    return None;
+                }
+                (if back { v.end - 1 } else { v.start }, None)
+            }
+        };
+        let mut i = start;
+        let mut skip = skip;
+        loop {
+            if i < self.rows.lo || i >= n {
+                return None;
+            }
+            if self.rows.ensure(&self.g, &self.c, i).is_err() {
+                return None;
+            }
+            let mut controls: Vec<list::Action> =
+                self.row_controls(i).into_iter().map(|(a, _)| a).collect();
+            if back {
+                controls.reverse();
+            }
+            let at = match skip.take() {
+                Some(a) => controls.iter().position(|c| *c == a).map_or(0, |p| p + 1),
+                None => 0,
+            };
+            if let Some(a) = controls.get(at) {
+                return Some((i, *a));
+            }
+            if back {
+                i = i.checked_sub(1)?;
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Tab, Shift+Tab, Enter, Space and Escape for the history's controls:
+    /// Shift+Tab from the composer reaches the last one on screen, Tab past
+    /// the newest returns to the composer.
+    fn history_key(&mut self, vk: VIRTUAL_KEY, shift: bool) -> bool {
+        if let Some((i, action)) = self.kb_control() {
+            match vk {
+                VK_TAB => match self.next_control(Some((i, action)), shift) {
+                    Some(next) => self.set_kb(Some(next)),
+                    None if !shift => self.set_composer_focus(true),
+                    None => {}
+                },
+                VK_RETURN | VK_SPACE => self.row_action(i, action),
+                VK_ESCAPE => self.set_composer_focus(true),
+                _ => return false,
+            }
+            return true;
+        }
+        let in_thread = self.thread.as_ref().is_some_and(|t| t.composer.focused);
+        if vk != VK_TAB || in_thread || (self.composer.focused && !shift) {
+            return false;
+        }
+        let back = self.composer.focused || shift;
+        match self.next_control(None, back) {
+            Some(next) => {
+                self.set_kb(Some(next));
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The address of the link under client point (x, y) in the history.
     fn link_at(&self, x: f32, y: f32) -> Option<String> {
         if !self.in_history(x, y) {
@@ -1626,6 +1752,9 @@ impl App {
             if !text.is_empty() {
                 set_clipboard(self.hwnd, &text);
             }
+            return true;
+        }
+        if self.history_key(vk, shift) {
             return true;
         }
         if !self.composer.focused {
@@ -1880,6 +2009,7 @@ impl App {
             .focused
             .as_ref()
             .and_then(|id| self.ids.rows.get(id).copied());
+        let kb = self.kb_control();
         let (g, c, rows) = (&self.g, &self.c, &mut self.rows);
         gfx::draw_local(&self.vs, r, s, |dc| unsafe {
             dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
@@ -1899,6 +2029,21 @@ impl App {
                     dc.FillRectangle(&rect(0.0, y + lead, lw, y + h), &g.brushes.hover);
                 }
                 list::draw_row(g, dc, c, rows, i, y, rs)?;
+                // The keyboard-focused control's terracotta ring.
+                if let Some((_, action)) = kb.filter(|(k, _)| *k == i)
+                    && let Some((_, r)) = rows
+                        .controls(i, c.messages[i].grouped)
+                        .into_iter()
+                        .find(|(a, _)| *a == action)
+                {
+                    let r = rect(
+                        r.left - 2.0,
+                        y + r.top - 2.0,
+                        r.right + 2.0,
+                        y + r.bottom + 2.0,
+                    );
+                    stroke_round(dc, r, 10.0, &g.brushes.terracotta);
+                }
             }
             Ok(())
         })

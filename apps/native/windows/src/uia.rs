@@ -130,6 +130,11 @@ fn focused(a: &App) -> Option<Id> {
     if a.thread.as_ref().is_some_and(|t| t.composer.focused) {
         return Some(Id::ThreadPart(TPart::Field));
     }
+    if a.signin.is_none()
+        && let Some((i, action)) = a.kb_control()
+    {
+        return Some(Id::Control(i, action));
+    }
     match &a.signin {
         Some(s) => s.field().focused.then_some(Id::Sign(Part::Field)),
         None => a.composer.focused.then_some(Id::Composer),
@@ -725,6 +730,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
                     id,
                     Id::Composer
+                        | Id::Control(..)
                         | Id::ThreadPart(TPart::Field)
                         | Id::Space(_)
                         | Id::Channel(_)
@@ -831,6 +837,7 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
                 Id::Pick(PPart::Search) => a.picker_activate(PPart::Search),
                 Id::ThreadPart(TPart::Field) => a.set_thread_focus(true),
+                Id::Control(i, action) => a.set_kb(Some((i, action))),
                 _ => {}
             }
             Ok(())
@@ -1494,7 +1501,10 @@ pub fn raise_composer_events() {
 pub fn raise_focus() {
     unsafe {
         if UiaClientsAreListening().as_bool() {
-            let _ = UiaRaiseAutomationEvent(&node(editable()), UIA_AutomationFocusChangedEventId);
+            let id = crate::with_app(|a| focused(a))
+                .flatten()
+                .unwrap_or_else(editable);
+            let _ = UiaRaiseAutomationEvent(&node(id), UIA_AutomationFocusChangedEventId);
         }
     }
 }

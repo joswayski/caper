@@ -724,6 +724,7 @@ impl App {
         }
         if focused {
             self.set_composer_focus(false);
+            self.set_kb(None);
         }
         let Some(t) = &mut self.thread else {
             return;
