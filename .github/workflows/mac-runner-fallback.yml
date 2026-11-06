@@ -4,7 +4,9 @@ name: Self-hosted Mac fallback
 # Windows PC) and no runner with its label is working through jobs (asleep,
 # closed, off, or online but stuck idle), cancel its run and re-run it. Re-runs
 # always go to GitHub-hosted runners (see mac-route.yml). Jobs only waiting their
-# turn behind a busy runner keep waiting: that hardware is the point. A run that a newer run of the same workflow on the
+# turn behind a busy runner keep waiting: that hardware is the point, but only
+# for MAX_BUSY_WAIT_MINUTES, so a machine kept busy by back-to-back releases
+# cannot hold a run (and its whole concurrency group) queued indefinitely. A run that a newer run of the same workflow on the
 # same branch already supersedes is only cancelled, so the re-run can never
 # displace newer work in a concurrency group.
 on:
@@ -30,9 +32,11 @@ jobs:
           RUNNER_TOKEN: ${{ secrets.MAC_RUNNER_STATUS_TOKEN }}
           REPO: ${{ github.repository }}
           MAX_WAIT_MINUTES: '60'
+          MAX_BUSY_WAIT_MINUTES: '180'
         run: |
           set -euo pipefail
           export CUTOFF=$(( $(date +%s) - MAX_WAIT_MINUTES * 60 ))
+          export BUSY_CUTOFF=$(( $(date +%s) - MAX_BUSY_WAIT_MINUTES * 60 ))
           # Labels of this repository's self-hosted runners that are online and
           # running a job. A job queued an hour behind one of them is just
           # waiting its turn; an idle online runner with an hour-old job queued
@@ -53,9 +57,10 @@ jobs:
               [.jobs[] | select(.status == "queued")
                        | select(any(.labels[]; startswith("josemac") or startswith("josewin") or startswith("joselinux")))
                        | select((.created_at | fromdateiso8601) < ($ENV.CUTOFF | tonumber))
-                       | select(any(.labels[]; . as $label | ($label | startswith("jose")) and ($ENV.WORKING | contains(" " + $label + " ") | not)))] | length')"
+                       | select(((.created_at | fromdateiso8601) < ($ENV.BUSY_CUTOFF | tonumber))
+                                or any(.labels[]; . as $label | ($label | startswith("jose")) and ($ENV.WORKING | contains(" " + $label + " ") | not)))] | length')"
             (( stuck > 0 )) || continue
-            echo "Run $run has $stuck job(s) waiting over ${MAX_WAIT_MINUTES}m with no busy self-hosted runner for them; cancelling."
+            echo "Run $run has $stuck job(s) waiting over ${MAX_WAIT_MINUTES}m with no busy self-hosted runner for them, or over ${MAX_BUSY_WAIT_MINUTES}m; cancelling."
             gh api -X POST "repos/$REPO/actions/runs/$run/cancel" >/dev/null || continue
             for _ in $(seq 36); do
               [[ "$(gh api "repos/$REPO/actions/runs/$run" --jq .status)" == completed ]] && break
