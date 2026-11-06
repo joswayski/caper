@@ -124,6 +124,26 @@ import UIKit
         return host
     }
 
+    /// SwiftUI's full-screen pages for an account in no spaces: the
+    /// first-space page, or, when spaces fail to load, the page with Try
+    /// again and Direct messages. Each fills the window like CaperRootView.
+    public static func firstSpace(model: AppModel) -> UIViewController {
+        page(FirstSpaceView(model: model))
+    }
+
+    public static func spacesUnavailable(model: AppModel) -> UIViewController {
+        page(UIKitSpacesUnavailable(model: model))
+    }
+
+    private static func page<Content: View>(_ content: Content) -> UIViewController {
+        let host = controller { _ in
+            content.foregroundStyle(CaperTheme.text).tint(CaperTheme.terracottaBright)
+                .buttonStyle(CaperSecondaryButton()).background(CaperTheme.blackout.ignoresSafeArea())
+        }
+        host.view.backgroundColor = UIColor(CaperTheme.blackout)
+        return host
+    }
+
     /// A workspace dialog (space and channel settings, invites, create and
     /// join, profile, privacy, notifications, audio, leave), drawn as on
     /// SwiftUI's iPhone: a scrim, then a card fitted to its content.
@@ -738,5 +758,11 @@ public struct UIKitPresentationHost: View {
                                 ? { chat.unblock(message.author) } : nil,
                             viewReactions: { emoji in state.reactors = .init(messageID: message.id, emoji: emoji) })
     }
+}
+
+/// Reads the current error, so a failed retry shows its new message.
+private struct UIKitSpacesUnavailable: View {
+    @Bindable var model: AppModel
+    var body: some View { SpacesUnavailableView(model: model, error: model.spacesError ?? "") }
 }
 #endif

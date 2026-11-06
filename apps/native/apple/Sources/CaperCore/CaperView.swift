@@ -148,7 +148,7 @@ private struct MessageSkeleton: View {
 }
 
 /// Web's first-space page: an account with no spaces names one here.
-private struct FirstSpaceView: View {
+struct FirstSpaceView: View {
     @Bindable var model: AppModel
     @State private var name = ""
     @State private var error: String?
@@ -212,7 +212,7 @@ private struct FirstSpaceView: View {
     }
 }
 
-private struct SpacesUnavailableView: View {
+struct SpacesUnavailableView: View {
     @Bindable var model: AppModel
     let error: String
     var body: some View {

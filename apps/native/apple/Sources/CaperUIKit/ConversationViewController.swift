@@ -26,7 +26,19 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private let channelTitle = UIKitStyle.label(size: 14, weight: .bold)
     private let subtitle = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
     private lazy var back = IconButton(icon: "arrow-left", label: "Back to Browse", size: 20) { [weak self] in self?.browse?() }
+    /// In place of an empty timeline: loading, a failed first load with Try
+    /// again, or SwiftUI's "No messages yet." with its note.
     private let status = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
+    private let statusTitle = UIKitStyle.label(size: 14, weight: .medium)
+    private lazy var tryAgain: CaperButton = {
+        let button = CaperButton("Try again", kind: .secondary, size: 13) { [weak self] in
+            guard let chat = self?.model.chat else { return }
+            Task { await chat.retryLoad() }
+        }
+        button.accessibilityIdentifier = "chat-try-again"
+        return button
+    }()
+    private lazy var statusStack = UIStackView(arrangedSubviews: [statusTitle, status, tryAgain])
     private let typing = TypingIndicatorView()
     private let composer = ComposerView()
     private lazy var members = MembersPanel(model: model)
@@ -283,9 +295,12 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         view.addSubview(collection)
         embed(voiceStrip)
         embed(notices)
-        status.textAlignment = .center
-        status.numberOfLines = 0
-        view.addSubview(status)
+        for label in [statusTitle, status] { label.textAlignment = .center; label.numberOfLines = 0 }
+        statusStack.axis = .vertical
+        statusStack.alignment = .center
+        statusStack.spacing = 8
+        statusStack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(statusStack)
         view.addSubview(typing)
         NSLayoutConstraint.activate([
             voiceStrip.view.topAnchor.constraint(equalTo: header.bottomAnchor),
@@ -297,9 +312,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             notices.view.topAnchor.constraint(equalTo: collection.bottomAnchor),
             collection.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             collection.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            status.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            status.centerYAnchor.constraint(equalTo: collection.centerYAnchor),
-            status.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48),
+            statusStack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            statusStack.topAnchor.constraint(equalTo: collection.topAnchor, constant: 80),
+            statusStack.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48),
             typing.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
             typing.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -18),
             typing.topAnchor.constraint(equalTo: notices.view.bottomAnchor),
@@ -449,10 +464,27 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let viewer = model.account?.id ?? cached?.accountID
         let typingText = live && !chat.typingNames.isEmpty ? Self.typingLabel(chat.typingNames) : ""
         typing.show(typingText)
-        if live, let error = chat.error, messages.isEmpty { status.text = error }
-        else if live, chat.loading && messages.isEmpty { status.text = "Loading messages…" }
-        else { status.text = nil }
-        status.isHidden = status.text == nil
+        var emptyTitle: String?, note: String?, titleColor = UIKitStyle.text
+        if live, chat.loadFailed, let error = chat.error { note = error }
+        else if live, let error = chat.error, messages.isEmpty { note = error }
+        else if live, chat.loading && messages.isEmpty { note = "Loading messages…" }
+        else if live, messages.isEmpty, pending == nil {
+            if let conversation = model.selectedDirectMessage, conversation.peer.id == model.account?.id {
+                emptyTitle = "You can message yourself here to keep notes, reminders, and ideas."
+                titleColor = UIKitStyle.muted
+            } else {
+                emptyTitle = "No messages yet."
+                note = model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())."
+                    : FeedbackInbox.emptyDirectNote(peer: model.selectedDirectMessage?.peer, name: chat.channelName)
+            }
+        }
+        statusTitle.text = emptyTitle
+        statusTitle.textColor = titleColor
+        statusTitle.isHidden = emptyTitle == nil
+        status.text = note
+        status.isHidden = note == nil
+        tryAgain.isHidden = !(live && chat.loadFailed)
+        statusStack.isHidden = emptyTitle == nil && note == nil
 
         apply(messages: messages, pending: pending, author: chat.currentAuthor, viewerID: viewer,
               key: channelID, live: live, error: chat.error, rejected: chat.sendRejected,

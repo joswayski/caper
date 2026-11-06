@@ -16,7 +16,7 @@ final class RootViewController: UIViewController {
     /// Mounted once the live workspace is ready, after first paint.
     private var whatsNew: UIViewController?
 
-    private enum Kind: Equatable { case loading, signIn, onboarding, empty, workspace }
+    private enum Kind: Equatable { case loading, signIn, onboarding, firstSpace, spacesUnavailable, workspace }
 
     init(model: AppModel, cached: StartupSnapshot?) {
         self.model = model
@@ -53,13 +53,21 @@ final class RootViewController: UIViewController {
 
     private func render() {
         let kind: Kind
+        // As CaperRootView: a DM, a visit or open navigation still shows the
+        // workspace to an account in no spaces.
+        let noSpaces = model.spaces.isEmpty && model.invitations.isEmpty && model.selectedDirectMessageID == nil
+            && model.visit == nil && !model.navigationOpen
         switch model.phase {
         case .loading: kind = cached == nil ? .loading : .workspace
         case .signedOut: kind = .signIn
         case .onboarding: kind = .onboarding
         case .ready:
             if model.restoringWorkspace { kind = cached == nil ? .loading : .workspace }
-            else if model.spaces.isEmpty && model.invitations.isEmpty && model.spacesLoaded { kind = .empty }
+            else if noSpaces && model.spacesLoaded { kind = .firstSpace }
+            // Try again clears the error while it retries; the page stays.
+            else if noSpaces && (model.spacesError != nil || (currentKind == .spacesUnavailable && !model.spacesLoaded)) {
+                kind = .spacesUnavailable
+            }
             else { kind = .workspace }
         }
         if model.phase == .signedOut || (model.phase == .ready && model.account?.id != cached?.accountID && cached != nil) {
@@ -83,7 +91,8 @@ final class RootViewController: UIViewController {
         case .loading: next = LoadingViewController()
         case .signIn: next = SignInViewController(model: model)
         case .onboarding: next = OnboardingViewController(model: model)
-        case .empty: next = EmptyWorkspaceViewController(model: model)
+        case .firstSpace: next = UIKitHosting.firstSpace(model: model)
+        case .spacesUnavailable: next = UIKitHosting.spacesUnavailable(model: model)
         case .workspace: next = WorkspaceViewController(model: model, cached: cached)
         }
         show(next)
@@ -145,42 +154,5 @@ final class LoadingViewController: UIViewController {
         ])
         wordmark.isAccessibilityElement = true
         wordmark.accessibilityLabel = "Caper"
-    }
-}
-
-/// An account in no spaces. Creating and joining spaces arrive with the
-/// owner workflows; until then this says so and offers sign-out.
-final class EmptyWorkspaceViewController: UIViewController {
-    private let model: AppModel
-    init(model: AppModel) {
-        self.model = model
-        super.init(nibName: nil, bundle: nil)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = UIKitStyle.blackout
-        let title = UIKitStyle.label("You’re not in any spaces yet", size: 22, weight: .bold)
-        title.numberOfLines = 0
-        title.accessibilityTraits = .header
-        let body = UIKitStyle.label("Spaces you create or join on caper.chat appear here.", size: 15, color: UIKitStyle.muted)
-        body.numberOfLines = 0
-        let signOut = CaperButton("Sign out", kind: .secondary, size: 14) { [weak self] in
-            guard let model = self?.model else { return }
-            Task { await model.logout() }
-        }
-        signOut.heightAnchor.constraint(equalToConstant: 44).isActive = true
-        let stack = UIStackView(arrangedSubviews: [title, body, signOut])
-        stack.axis = .vertical
-        stack.spacing = 14
-        stack.alignment = .leading
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
-            stack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-        ])
     }
 }

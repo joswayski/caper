@@ -10,6 +10,15 @@ final class WorkspaceViewController: UIViewController {
     let conversation: ConversationViewController
     private var browsing = false
     private let observer = ModelObserver()
+    /// SwiftUI's banner for a channel or DM that failed to open, above both
+    /// panes; they inset their content below it.
+    private let banner = UIStackView()
+    private let bannerText = UIKitStyle.label(size: 12, color: UIKitStyle.error)
+    private let bannerObserver = ModelObserver()
+    private lazy var retryOpening = CaperButton("Retry opening", kind: .secondary, size: 12) { [weak self] in
+        guard let model = self?.model else { return }
+        Task { await model.retryNavigation() }
+    }
 
     var cached: StartupSnapshot? {
         didSet {
@@ -53,8 +62,53 @@ final class WorkspaceViewController: UIViewController {
             guard let self else { return }
             let hasChannel = self.model.selectedChannelID != nil || self.model.selectedDirectMessageID != nil
                 || self.model.visit != nil || self.cached?.channelID != nil
-            if !hasChannel && !self.browsing { self.slide(browsing: true, animated: false) }
+            if !hasChannel && !self.browsing { self.slide(browsing: true, animated: false, record: false) }
             else if hasChannel && self.model.navigationOpen != self.browsing { self.slide(browsing: self.model.navigationOpen) }
+        }
+        update(progress: browsing ? 1 : 0)
+        buildBanner()
+    }
+
+    private func buildBanner() {
+        bannerText.numberOfLines = 0
+        bannerText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        retryOpening.setContentCompressionResistancePriority(.required, for: .horizontal)
+        retryOpening.setContentHuggingPriority(.required, for: .horizontal)
+        [bannerText, retryOpening].forEach(banner.addArrangedSubview)
+        banner.spacing = 12
+        banner.alignment = .center
+        banner.isLayoutMarginsRelativeArrangement = true
+        banner.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
+        banner.backgroundColor = UIKitStyle.surface
+        banner.accessibilityIdentifier = "navigation-error"
+        banner.isHidden = true
+        banner.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(banner)
+        NSLayoutConstraint.activate([
+            banner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            banner.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            banner.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+        bannerObserver.start { [weak self] in
+            guard let self else { return }
+            let error = self.model.navigationError
+            self.bannerText.text = error
+            self.retryOpening.isEnabled = self.model.openingSpaceID == nil
+            if self.banner.isHidden != (error == nil) {
+                self.banner.isHidden = error == nil
+                self.view.setNeedsLayout()
+                if let error { UIAccessibility.post(notification: .announcement, argument: error) }
+            }
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let inset = banner.isHidden ? 0 : banner.systemLayoutSizeFitting(
+            CGSize(width: view.bounds.width, height: 0), withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel).height
+        for child in [browse, conversation] where child.additionalSafeAreaInsets.top != inset {
+            child.additionalSafeAreaInsets.top = inset
         }
         update(progress: browsing ? 1 : 0)
     }
@@ -74,10 +128,12 @@ final class WorkspaceViewController: UIViewController {
         browse.view.accessibilityElementsHidden = !browsing
     }
 
-    func slide(browsing: Bool, animated: Bool = true) {
+    /// `record: false` shows Browse only because there is nothing else to
+    /// show yet, so the first channel to open (a new space's) slides away.
+    func slide(browsing: Bool, animated: Bool = true, record: Bool = true) {
         loadBrowse()
         self.browsing = browsing
-        if model.navigationOpen != browsing { model.navigationOpen = browsing }
+        if record && model.navigationOpen != browsing { model.navigationOpen = browsing }
         if browsing { conversation.view.endEditing(true) }
         let apply = { self.update(progress: browsing ? 1 : 0) }
         // Arrivals ease out; the system's reduce-motion setting makes it instant.
@@ -109,10 +165,6 @@ final class WorkspaceViewController: UIViewController {
         }
     }
 
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        update(progress: browsing ? 1 : 0)
-    }
 
     override func accessibilityPerformEscape() -> Bool {
         guard !browsing else { return false }

@@ -70,14 +70,18 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
+        CaperUIKitLaunch.mark("scene")
         let model = CaperRuntime.makeModel()
+        CaperUIKitLaunch.mark("model")
         let cached = CaperUIKitLaunch.cachedSnapshot()
+        CaperUIKitLaunch.mark("cache")
         let root = RootViewController(model: model, cached: cached)
         let window = UIWindow(windowScene: scene)
         window.rootViewController = root
         window.tintColor = UIKitStyle.terracottaBright
         window.overrideUserInterfaceStyle = .dark
         window.makeKeyAndVisible()
+        CaperUIKitLaunch.mark("window")
         self.window = window
         self.root = root
         measureFirstFrame(cached: cached != nil)

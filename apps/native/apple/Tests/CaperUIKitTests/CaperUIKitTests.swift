@@ -566,6 +566,65 @@ final class CaperUIKitTests: XCTestCase {
         screenshot("uikit-join-invite")
     }
 
+    /// An account in no spaces names its first one, which opens at #general.
+    func testFirstSpaceCreatesAndOpens() {
+        control(["noSpaces": true])
+        let app = launch()
+        XCTAssertTrue(app.staticTexts["Name your space"].waitForExistence(timeout: 30))
+        let create = app.buttons["first-space-create"]
+        XCTAssertFalse(create.isEnabled, "An empty name can't be created")
+        screenshot("uikit-first-space")
+        app.textFields.firstMatch.tap()
+        app.textFields.firstMatch.typeText("Gaming nights")
+        create.tap()
+        let title = app.buttons["channel-title-menu"]
+        XCTAssertTrue(title.waitForExistence(timeout: 15))
+        XCTAssertTrue(title.label.hasPrefix("#general"), title.label)
+    }
+
+    /// Spaces failing to load: Try again recovers; Direct messages opens Browse.
+    func testSpacesUnavailableRetriesAndOpensDirectMessages() {
+        control(["noSpaces": true])
+        control(["failure": ["path": "/api/spaces", "method": "GET", "status": 503, "persistent": true]])
+        let app = launch()
+        XCTAssertTrue(app.staticTexts["Spaces are unavailable."].waitForExistence(timeout: 30))
+        screenshot("uikit-spaces-unavailable")
+        app.buttons["Try again"].tap()
+        XCTAssertTrue(app.staticTexts["Spaces are unavailable."].waitForExistence(timeout: 5), "Still failing")
+        control(["clearFailures": true])
+        app.buttons["Try again"].tap()
+        XCTAssertTrue(app.staticTexts["Name your space"].waitForExistence(timeout: 15))
+        control(["failure": ["path": "/api/spaces", "method": "GET", "status": 503, "persistent": true]])
+        app.terminate()
+        _ = launch()
+        XCTAssertTrue(self.app.staticTexts["Spaces are unavailable."].waitForExistence(timeout: 30))
+        self.app.buttons["Direct messages"].tap()
+        XCTAssertTrue(self.app.buttons["new-direct-message"].waitForExistence(timeout: 10), "Browse lists direct messages")
+        screenshot("uikit-spaces-unavailable-browse")
+    }
+
+    /// A space that fails to open shows SwiftUI's banner; Retry opening opens it.
+    func testNavigationErrorRetriesOpening() {
+        control(["failure": ["path": "/api/spaces/space0000001", "method": "GET", "status": 503]])
+        let app = launch()
+        let banner = app.otherElements["navigation-error"]
+        XCTAssertTrue(banner.waitForExistence(timeout: 30))
+        screenshot("uikit-navigation-error")
+        app.buttons["Retry opening"].tap()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 15))
+        XCTAssertFalse(banner.exists)
+    }
+
+    /// An empty conversation says so; the note-to-self DM says what it is for.
+    func testEmptyConversation() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        app.buttons["back-to-browse"].tap()
+        app.cells["dm-self"].tap()
+        XCTAssertTrue(app.staticTexts["You can message yourself here to keep notes, reminders, and ideas."].waitForExistence(timeout: 15))
+        screenshot("uikit-conversation-empty")
+    }
+
     /// Browse lists DMs under the channels; New message opens a DM by exact
     /// username, and the conversation sends like a channel.
     func testNewDirectMessageOpensAndSends() {
