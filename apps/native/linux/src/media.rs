@@ -69,6 +69,11 @@ fn refresh_id(key: &str) -> &str {
 }
 
 impl Media {
+    /// The API the viewer downloads through (Save).
+    pub fn api(&self) -> &Api {
+        &self.api
+    }
+
     pub fn new(api: Api, signals: async_channel::Sender<Signal>) -> Self {
         Self {
             api,
