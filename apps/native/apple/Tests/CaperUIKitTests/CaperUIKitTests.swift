@@ -409,6 +409,8 @@ final class CaperUIKitTests: XCTestCase {
         search.typeText("\n")
 
         app.buttons["account-settings"].tap()
+        XCTAssertTrue(app.buttons["sound-effects"].firstMatch.waitForExistence(timeout: 5), "Audio settings are in the account menu")
+        XCTAssertTrue(app.buttons["voice-messages-send-on-stop"].firstMatch.exists)
         app.buttons["open-privacy"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Privacy"].firstMatch.waitForExistence(timeout: 10))
         screenshot("uikit-privacy")

@@ -222,11 +222,13 @@ final class AvatarView: UIView {
     private var pictureKey: String?
     private var loading: Task<Void, Never>?
 
-    init(side: CGFloat) {
+    /// Round by default; `corner` gives a rounded square (space icons).
+    init(side: CGFloat, corner: CGFloat? = nil) {
         self.side = side
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        layer.cornerRadius = side / 2
+        layer.cornerRadius = corner ?? side / 2
+        layer.cornerCurve = .continuous
         clipsToBounds = true
         backgroundColor = UIKitStyle.raised
         imageView.contentMode = .scaleAspectFit

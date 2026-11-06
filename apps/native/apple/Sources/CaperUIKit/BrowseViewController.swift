@@ -63,7 +63,17 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private func accountMenuItems() -> [UIMenuElement] {
         guard live else { return [] }
         let model = self.model
-        var items: [UIMenuElement] = [UIAction(title: "Audio test") { [weak self] _ in self?.dialog(.audio) }]
+        // SwiftUI's iPhone "Audio settings" section.
+        let effects = UIAction(title: "Caper sound effects", state: UIKitAudioSettings.soundEffects ? .on : .off) { _ in
+            UIKitAudioSettings.soundEffects.toggle()
+        }
+        effects.accessibilityIdentifier = "sound-effects"
+        let sendOnStop = UIAction(title: VoiceMessage.sendOnStopTitle, state: UIKitAudioSettings.sendVoiceOnStop ? .on : .off) { _ in
+            UIKitAudioSettings.sendVoiceOnStop.toggle()
+        }
+        sendOnStop.accessibilityIdentifier = "voice-messages-send-on-stop"
+        var items: [UIMenuElement] = [UIMenu(title: "Audio settings", options: .displayInline, children: [effects, sendOnStop]),
+                                      UIAction(title: "Audio test") { [weak self] _ in self?.dialog(.audio) }]
         if model.voice.phase == .connected {
             items.append(UIAction(title: "Connection details") { [weak self] _ in self?.dialog(.connection) })
         }
@@ -311,7 +321,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private var railKey: [String] = []
 
     private func renderRail(_ spaces: [Space], selected: String?, unreadSpaces: Set<String>) {
-        let key = spaces.map { "\($0.id)|\($0.name)|\($0.id == selected)|\(unreadSpaces.contains($0.id))" }
+        let key = spaces.map { "\($0.id)|\($0.name)|\($0.id == selected)|\(unreadSpaces.contains($0.id))|\($0.iconAsset ?? "")" }
             + [live ? "live" : "", "\(model.canCreateSpace)"] + (live ? model.invitations.map { "invite|\($0.id)|\($0.name)" } : [])
         guard key != railKey else { return }
         railKey = key
@@ -320,6 +330,14 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             let name = space.demo == true ? "Caper" : space.name
             let tile = UIButton(type: .custom)
             tile.translatesAutoresizingMaskIntoConstraints = false
+            // The owner's icon over the initial, once it loads.
+            if let picture = space.iconPicture {
+                let icon = AvatarView(side: 44, corner: 12)
+                icon.show(name: name, avatarID: nil, picture: picture)
+                icon.isUserInteractionEnabled = false
+                tile.addSubview(icon)
+                NSLayoutConstraint.activate([icon.centerXAnchor.constraint(equalTo: tile.centerXAnchor), icon.centerYAnchor.constraint(equalTo: tile.centerYAnchor)])
+            }
             tile.setTitle(String(name.prefix(1)).uppercased(), for: .normal)
             tile.titleLabel?.font = UIKitStyle.font(16, .bold, scaled: false)
             tile.setTitleColor(UIKitStyle.text, for: .normal)

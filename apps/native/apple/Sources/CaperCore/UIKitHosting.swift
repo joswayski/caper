@@ -600,6 +600,18 @@ public struct UIKitTimelineEntry {
     }
 }
 
+/// The account menu's audio settings, stored where SwiftUI keeps them.
+@MainActor public enum UIKitAudioSettings {
+    public static var soundEffects: Bool {
+        get { CaperEffects.shared.soundsEnabled }
+        set { CaperEffects.shared.soundsEnabled = newValue }
+    }
+    public static var sendVoiceOnStop: Bool {
+        get { VoiceMessageSettings.shared.sendOnStop }
+        set { VoiceMessageSettings.shared.sendOnStop = newValue }
+    }
+}
+
 /// The quick reactions on every client: 👍 ❤️ 😂.
 public enum UIKitReactions {
     public static let quick = MessageQuickReactions.emoji
