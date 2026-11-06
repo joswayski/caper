@@ -4,15 +4,16 @@ use crate::egui;
 use caper_client::formatting::parser;
 pub use caper_client::formatting::{projection, repair_edit, runs, source_runs, toggle};
 
-fn source_cursor(indices: &[usize], offset: usize) -> usize {
-    indices
-        .get(offset)
-        .copied()
-        .unwrap_or_else(|| indices.last().map_or(0, |last| last + 1))
+/// The source position for a visible caret: just before the next visible character,
+/// or the end of the source (after any closing delimiters) past the last one, so
+/// typing at the end of a styled run keeps its markers.
+fn source_cursor(indices: &[usize], len: usize, offset: usize) -> usize {
+    indices.get(offset).copied().unwrap_or(len)
 }
 
 fn source_selection(
     indices: &[usize],
+    len: usize,
     primary: usize,
     secondary: usize,
 ) -> egui::text::CCursorRange {
@@ -20,7 +21,7 @@ fn source_selection(
         if primary != secondary && offset == primary.max(secondary) {
             indices[offset - 1] + 1
         } else {
-            source_cursor(indices, offset)
+            source_cursor(indices, len, offset)
         }
     };
     egui::text::CCursorRange {
@@ -37,6 +38,7 @@ pub fn normalized_selection(
     let (_, indices) = projection(text);
     source_selection(
         &indices,
+        text.chars().count(),
         indices.partition_point(|index| *index < range.primary.index.0),
         indices.partition_point(|index| *index < range.secondary.index.0),
     )
@@ -138,6 +140,7 @@ pub fn prepare(ui: &mut egui::Ui, text: &str, id: egui::Id, enabled: bool) {
                         };
                         range = source_selection(
                             &indices,
+                            text.chars().count(),
                             next,
                             if modifiers.shift { secondary } else { next },
                         );
@@ -150,7 +153,7 @@ pub fn prepare(ui: &mut egui::Ui, text: &str, id: egui::Id, enabled: bool) {
                         if next == primary {
                             return false;
                         }
-                        range = source_selection(&indices, next, primary);
+                        range = source_selection(&indices, text.chars().count(), next, primary);
                     }
                 }
                 _ => {}
@@ -397,6 +400,21 @@ mod tests {
         let text = "**a👩‍💻b**";
         let caret = |index: usize| egui::text::CCursorRange::one(egui::text::CCursor::new(index));
         assert_eq!(normalized_selection(text, caret(1)).primary.index.0, 2);
+        // Past the last visible character the caret stays after the closing markers,
+        // so typing there keeps the style instead of breaking the pair.
+        assert_eq!(
+            normalized_selection("**bold**", caret(8)).primary.index.0,
+            8
+        );
+        assert_eq!(
+            normalized_selection("**bold**", caret(6)).primary.index.0,
+            8
+        );
+        assert_eq!(
+            repair_edit("**bold**", "**bold** ", 9, 9).0,
+            "**bold** ",
+            "typing after a closed run keeps its markers"
+        );
         assert_eq!(adjacent_grapheme("a👩‍💻b", 1, false), 4);
         assert_eq!(adjacent_grapheme("a👩‍💻b", 4, true), 1);
         assert_eq!(
