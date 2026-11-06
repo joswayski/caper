@@ -16,11 +16,15 @@ public enum MessageFormatting {
         let runs: [FormattedMessageRun]
         /// Visible UTF-16 code units mapped back to the unmodified wire draft.
         let sourceIndices: [Int]
+        /// The wire draft's UTF-16 length.
+        let sourceLength: Int
 
         var text: String { runs.map(\.text).joined() }
         func displayed(_ offset: Int) -> Int { sourceIndices.filter { $0 < offset }.count }
+        /// A caret before a visible unit sits just before its source unit; the
+        /// end sits after any closing delimiters, so typing on leaves the style.
         func original(_ offset: Int) -> Int {
-            offset < sourceIndices.count ? sourceIndices[max(0, offset)] : (sourceIndices.last.map { $0 + 1 } ?? 0)
+            offset < sourceIndices.count ? sourceIndices[max(0, offset)] : sourceLength
         }
         func sourceRange(_ range: NSRange) -> NSRange {
             guard range.length > 0 else { return NSRange(location: original(range.location), length: 0) }
@@ -128,7 +132,7 @@ public enum MessageFormatting {
             append(plain, end, bold, italic)
         }
         parse(0, units.count, false, false)
-        return Projection(runs: result, sourceIndices: sourceIndices)
+        return Projection(runs: result, sourceIndices: sourceIndices, sourceLength: units.count)
     }
 
     /// Edits may erase one side or all contents of a style. Drop only punctuation

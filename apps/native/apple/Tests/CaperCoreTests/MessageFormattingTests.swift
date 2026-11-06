@@ -50,6 +50,29 @@ final class MessageFormattingTests: XCTestCase {
         XCTAssertEqual(MessageFormatting.movedSelection("**a**b", selection: NSRange(location: 2, length: 0), backward: false, extending: false), NSRange(location: 5, length: 0))
     }
 
+    /// Types one character at a time the way both native composers do: each
+    /// edit goes through repairEdit, then the caret through normalizedSelection.
+    /// Closing a style at the end of the draft leaves the caret after it, so
+    /// typing on neither lands inside the style nor orphans its markers.
+    func testTypingPastAClosingDelimiterKeepsTheStyle() {
+        for (typed, expected) in [("**bold** and", "**bold** and"), ("_soft_ and **bold** too", "_soft_ and **bold** too")] {
+            var text = "", caret = 0
+            for character in typed {
+                let insertion = String(character)
+                let proposed = (text as NSString).replacingCharacters(in: NSRange(location: caret, length: 0), with: insertion)
+                let repaired = MessageFormatting.repairEdit(text, text: proposed,
+                                                            selection: NSRange(location: caret + insertion.utf16.count, length: 0))
+                text = repaired.text
+                caret = MessageFormatting.normalizedSelection(text, selection: repaired.selection).location
+            }
+            XCTAssertEqual(text, expected)
+            XCTAssertEqual(caret, (expected as NSString).length)
+        }
+        // A caret at the very end of a styled draft sits after its closing marker.
+        XCTAssertEqual(MessageFormatting.normalizedSelection("**bold**", selection: NSRange(location: 8, length: 0)), NSRange(location: 8, length: 0))
+        XCTAssertEqual(MessageFormatting.normalizedSelection("**bold**", selection: NSRange(location: 6, length: 0)), NSRange(location: 8, length: 0))
+    }
+
     func testReplacementAndStyledLinkEdgeEdits() {
         XCTAssertEqual(MessageFormatting.repairEdit("**hello**", text: "**new**", selection: NSRange(location: 5, length: 0)).text, "**new**")
         let url = "https://example.com/a_b"
