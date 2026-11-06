@@ -32,9 +32,6 @@ use crate::{
     paint_icon,
 };
 
-/// Media in a card, as web's `fit()`.
-pub const MAX_WIDTH: f32 = 400.0;
-pub const MAX_HEIGHT: f32 = 300.0;
 /// Cards keep to web's `min(432px, 100%)`.
 const CARD_WIDTH: f32 = 432.0;
 const THUMBNAIL: f32 = 80.0;
@@ -43,29 +40,14 @@ const TEXT_ROWS: usize = 8;
 /// The composer waits this long after the link last changed before asking.
 pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(400);
 
-/// Display size that reserves layout space before media loads; media of
-/// unknown size gets the full width at 16:9.
+/// Display size that reserves layout space before media loads.
 pub fn fit(width: Option<u32>, height: Option<u32>) -> egui::Vec2 {
-    match (width, height) {
-        (Some(width), Some(height)) if width > 0 && height > 0 => {
-            let (width, height) = (width as f32, height as f32);
-            let scale = (MAX_WIDTH / width).min(MAX_HEIGHT / height).min(1.0);
-            egui::vec2(
-                (width * scale).round().max(1.0),
-                (height * scale).round().max(1.0),
-            )
-        }
-        _ => egui::vec2(MAX_WIDTH, (MAX_WIDTH * 9.0 / 16.0).round()),
-    }
+    egui::Vec2::from(caper_client::embeds::fit(width, height))
 }
 
 /// [`fit`] narrowed to `available`, keeping its aspect ratio.
 fn fit_within(size: egui::Vec2, available: f32) -> egui::Vec2 {
-    if size.x <= available || available <= 0.0 {
-        size
-    } else {
-        egui::vec2(available, (size.y * available / size.x).round().max(1.0))
-    }
+    egui::Vec2::from(caper_client::embeds::fit_within(size.into(), available))
 }
 
 /// The first link in a draft that will get a card, for the composer preview
@@ -849,30 +831,10 @@ fn player_notice(
 /// one image at its fitted size; two side by side 220 high; three with the
 /// first spanning both rows; four in two rows of 148.
 pub fn gallery(items: &[EmbedImage], width: f32) -> Vec<egui::Rect> {
-    const GAP: f32 = 4.0;
-    let half = ((width - GAP) / 2.0).max(1.0);
-    let cell = |column: f32, row: f32, height: f32, rows: f32| {
-        egui::Rect::from_min_size(
-            egui::pos2(column * (half + GAP), row * (height + GAP)),
-            egui::vec2(half, height * rows + GAP * (rows - 1.0)),
-        )
-    };
-    match items {
-        [] => Vec::new(),
-        [image] => vec![egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            fit_within(fit(image.width, image.height), width),
-        )],
-        [_, _] => vec![cell(0.0, 0.0, 220.0, 1.0), cell(1.0, 0.0, 220.0, 1.0)],
-        [_, _, _] => vec![
-            cell(0.0, 0.0, 148.0, 2.0),
-            cell(1.0, 0.0, 148.0, 1.0),
-            cell(1.0, 1.0, 148.0, 1.0),
-        ],
-        _ => (0..items.len().min(4))
-            .map(|index| cell((index % 2) as f32, (index / 2) as f32, 148.0, 1.0))
-            .collect(),
-    }
+    caper_client::embeds::gallery(items, width)
+        .into_iter()
+        .map(|[x, y, w, h]| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h)))
+        .collect()
 }
 
 /// Paints `texture` cropped to fill `rect` (CSS `object-fit: cover`).
@@ -1332,41 +1294,6 @@ mod tests {
             play_target(&embed, Some("https://embed.caper.chat/play/youtube/a")),
             "https://embed.caper.chat/play/youtube/a"
         );
-    }
-
-    #[test]
-    fn media_fits_like_web_and_galleries_keep_to_the_card() {
-        assert_eq!(fit(None, Some(10)), egui::vec2(400.0, 225.0));
-        assert_eq!(fit(Some(1280), Some(720)), egui::vec2(400.0, 225.0));
-        assert_eq!(fit(Some(300), Some(900)), egui::vec2(100.0, 300.0));
-        assert_eq!(fit(Some(200), Some(100)), egui::vec2(200.0, 100.0));
-        assert_eq!(
-            fit_within(egui::vec2(400.0, 225.0), 200.0),
-            egui::vec2(200.0, 113.0)
-        );
-        let image = |n: usize| {
-            (0..n)
-                .map(|index| EmbedImage {
-                    url: format!("https://e/{index}"),
-                    width: None,
-                    height: None,
-                    alt: None,
-                })
-                .collect::<Vec<_>>()
-        };
-        let three = gallery(&image(3), 404.0);
-        assert_eq!(
-            three[0].height(),
-            300.0,
-            "the first of three spans both rows"
-        );
-        assert_eq!(three[2].top(), 152.0);
-        assert!(
-            gallery(&image(4), 404.0)
-                .iter()
-                .all(|rect| rect.right() <= 404.0)
-        );
-        assert_eq!(gallery(&image(2), 404.0)[1].height(), 220.0);
     }
 
     #[test]
