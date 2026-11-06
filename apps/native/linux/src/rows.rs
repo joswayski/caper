@@ -76,6 +76,159 @@ pub struct Row {
     pub blocked_run: Option<(String, String, bool)>,
     /// Written by someone you blocked (inside a run you chose to show).
     pub blocked: bool,
+    /// A forward: its card, with the original when it is still available.
+    pub forward: Option<Option<Original>>,
+}
+
+/// A forwarded original, as its card shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Original {
+    pub author: String,
+    pub person: Author,
+    pub avatar: crate::images::Avatar,
+    pub markup: String,
+    pub edited: bool,
+    /// "👍 2  🎉 1".
+    pub reactions: String,
+    pub content: crate::content::Content,
+    /// "2 replies · View conversation", on cards in the list.
+    pub view: Option<String>,
+}
+
+impl Original {
+    pub fn new(
+        message: &Message,
+        images: &Images,
+        revealed: &std::collections::HashSet<String>,
+        view: bool,
+    ) -> Self {
+        let deleted = message.is_deleted();
+        Self {
+            author: message.author.name.clone(),
+            person: message.author.clone(),
+            avatar: author_avatar(&message.author),
+            markup: if deleted {
+                "<span foreground=\"#b9bcbe\"><i>This message was deleted.</i></span>".into()
+            } else if message.content.text.is_empty()
+                && message.content.attachments.iter().any(|file| file.voice)
+            {
+                "<span foreground=\"#b9bcbe\">Voice message</span>".into()
+            } else {
+                crate::markup::message(&message.content.text, &message.content.mentions)
+            },
+            edited: message.edited_at.is_some() && !deleted,
+            reactions: if deleted {
+                String::new()
+            } else {
+                message
+                    .reactions
+                    .iter()
+                    .map(|reaction| format!("{} {}", reaction.emoji, reaction.author_ids.len()))
+                    .collect::<Vec<_>>()
+                    .join("  ")
+            },
+            content: if deleted {
+                crate::content::Content::default()
+            } else {
+                crate::content::Content {
+                    attachments: message
+                        .content
+                        .attachments
+                        .iter()
+                        .map(|attachment| {
+                            (
+                                images.media.resolve(attachment),
+                                attachment.spoiler && !revealed.contains(&attachment.id),
+                            )
+                        })
+                        .collect(),
+                    embeds: Vec::new(),
+                    gif: message.content.gif.clone(),
+                }
+            },
+            view: view.then(|| {
+                let count = message
+                    .thread
+                    .as_ref()
+                    .map_or(0, |summary| summary.reply_count);
+                match count {
+                    0 => "View conversation".to_owned(),
+                    1 => "1 reply · View conversation".to_owned(),
+                    count => format!("{count} replies · View conversation"),
+                }
+            }),
+        }
+    }
+
+    /// The original's author line, text, files and reactions.
+    pub fn view(&self, images: &Images, handler: &Handler, open: Option<&str>) -> gtk::Box {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        root.add_css_class("original");
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let avatar = AvatarView::new(24, false);
+        avatar.set(images, &self.avatar);
+        line.append(&avatar.root);
+        let name = gtk::Label::builder()
+            .label(&self.author)
+            .xalign(0.0)
+            .css_classes(["author"])
+            .build();
+        line.append(&name);
+        if self.edited {
+            line.append(
+                &gtk::Label::builder()
+                    .label("(edited)")
+                    .css_classes(["time"])
+                    .build(),
+            );
+        }
+        root.append(&line);
+        if !self.markup.is_empty() {
+            let body = gtk::Label::builder()
+                .xalign(0.0)
+                .wrap(true)
+                .wrap_mode(pango::WrapMode::WordChar)
+                .selectable(true)
+                .css_classes(["body"])
+                .build();
+            body.set_markup(&self.markup);
+            let (handler, anchor) = (handler.clone(), body.clone());
+            body.connect_activate_link(move |_, uri| {
+                if let Some(id) = uri.strip_prefix(crate::markup::PERSON) {
+                    handler(Action::Profile {
+                        id: id.to_owned(),
+                        author: None,
+                        anchor: anchor.clone().upcast(),
+                    });
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            root.append(&body);
+        }
+        if let Some(view) = crate::content::view(images, &self.content, handler) {
+            root.append(&view);
+        }
+        if !self.reactions.is_empty() {
+            root.append(
+                &gtk::Label::builder()
+                    .label(&self.reactions)
+                    .xalign(0.0)
+                    .css_classes(["muted", "small"])
+                    .build(),
+            );
+        }
+        if let (Some(label), Some(id)) = (&self.view, open) {
+            let button = gtk::Button::with_label(label);
+            button.add_css_class("flat");
+            button.add_css_class("inline");
+            button.set_halign(gtk::Align::Start);
+            let (handler, id) = (handler.clone(), id.to_owned());
+            button.connect_clicked(move |_| handler(Action::ViewForward(id.clone())));
+            root.append(&button);
+        }
+        root
+    }
 }
 
 impl Row {
@@ -104,6 +257,7 @@ impl Row {
             content: crate::content::Content::default(),
             blocked_run: Some((key, label, shown)),
             blocked: false,
+            forward: None,
         }
     }
 }
@@ -448,6 +602,15 @@ pub fn build<'a>(
             },
             blocked_run: None,
             blocked,
+            forward: message
+                .forward
+                .as_ref()
+                .filter(|_| !deleted)
+                .map(|forward| {
+                    forward.message.as_ref().map(|original| {
+                        Original::new(original, viewer.images, viewer.revealed, true)
+                    })
+                }),
         };
         push(
             &mut rows,
@@ -483,6 +646,7 @@ pub fn build<'a>(
             content: draft.content,
             blocked_run: None,
             blocked: false,
+            forward: None,
         };
         let separate = std::mem::take(&mut separate_next);
         push(
@@ -541,6 +705,8 @@ pub enum Action {
     OpenUrl(String),
     /// Show or hide a run of blocked messages.
     ToggleBlocked(String),
+    /// Open the forwarded conversation behind this forward.
+    ViewForward(String),
     /// A person's profile card, from an author or a mention pill.
     Profile {
         id: String,
@@ -566,6 +732,7 @@ struct Widgets {
     pinned: gtk::Label,
     body: gtk::Label,
     content: gtk::Box,
+    forward: gtk::Box,
     notice: gtk::Label,
     card: gtk::Overlay,
     reactions: gtk::Box,
@@ -702,6 +869,9 @@ fn build_widgets(images: &Images) -> Widgets {
     let extra = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&body);
     content.append(&extra);
+    let forward = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    forward.add_css_class("forward-card");
+    content.append(&forward);
     content.append(&notice);
     content.append(&reactions);
     content.append(&reaction_error);
@@ -772,6 +942,7 @@ fn build_widgets(images: &Images) -> Widgets {
         pinned,
         body,
         content: extra,
+        forward,
         reactions,
         reaction_error,
         reaction_error_label,
@@ -944,6 +1115,33 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
         widgets.content.append(&view);
     }
     widgets.content.set_visible(!row.content.is_empty());
+    while let Some(child) = widgets.forward.first_child() {
+        widgets.forward.remove(&child);
+    }
+    widgets.forward.set_visible(row.forward.is_some());
+    if let Some(original) = &row.forward {
+        widgets.forward.append(
+            &gtk::Label::builder()
+                .label("Forwarded")
+                .xalign(0.0)
+                .css_classes(["muted", "small"])
+                .build(),
+        );
+        match original {
+            Some(original) => {
+                widgets
+                    .forward
+                    .append(&original.view(images, handler, Some(&row.id)))
+            }
+            None => widgets.forward.append(
+                &gtk::Label::builder()
+                    .label("Original conversation unavailable.")
+                    .xalign(0.0)
+                    .css_classes(["muted"])
+                    .build(),
+            ),
+        }
+    }
     while let Some(child) = widgets.reactions.first_child() {
         widgets.reactions.remove(&child);
     }
@@ -1028,6 +1226,7 @@ mod tests {
             content: Default::default(),
             blocked_run: None,
             blocked: false,
+            forward: None,
         }
     }
 

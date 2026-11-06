@@ -27,6 +27,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
+#[path = "forward.rs"]
+mod forward;
 #[path = "members.rs"]
 mod members;
 #[path = "profile.rs"]
@@ -188,6 +190,11 @@ struct State {
     open_created: Option<String>,
     /// "Go to message" from Pins: earlier pages load until it is in view.
     jump_to: Option<String>,
+    /// A forward's original in another conversation: the navigation that
+    /// goes there, its channel and the thread to open once it loads.
+    forward_focus: Option<(u64, String, String)>,
+    /// That thread, ready to open.
+    forward_thread: Option<String>,
     /// The open profile card's state.
     card: Option<profile::CardState>,
     /// People you blocked (`GET /api/blocks`), once loaded.
@@ -325,6 +332,7 @@ pub struct App {
     pins: RefCell<Option<PinsView>>,
     /// The open profile card's widgets.
     profile: RefCell<Option<profile::Card>>,
+    forwarding: RefCell<forward::Forwarding>,
 }
 
 struct PinsView {
@@ -398,6 +406,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         direct_dialog: RefCell::default(),
         pins: RefCell::default(),
         profile: RefCell::default(),
+        forwarding: RefCell::default(),
     });
     *slot.borrow_mut() = Rc::downgrade(&app);
     for composer in [&app.ui.composer, &app.ui.thread_composer] {
@@ -608,7 +617,8 @@ impl App {
     fn install_actions(self: &Rc<Self>) {
         let group = gio::SimpleActionGroup::new();
         type Run = fn(&Rc<App>, String);
-        let actions: [(&str, Run); 5] = [
+        let actions: [(&str, Run); 6] = [
+            ("forward", |app, id| app.open_forward(&id)),
             ("edit", |app, id| app.start_edit(&id)),
             ("delete", |app, id| app.confirm_delete(id)),
             ("pin", |app, id| app.pin(id, true)),
@@ -736,6 +746,7 @@ impl App {
     /// Desktop's sign-out: stop the gateway, forget the saved session, revoke
     /// it on the server, and return to sign-in.
     fn sign_out(self: &Rc<Self>) {
+        self.close_forward();
         {
             let mut state = self.state.borrow_mut();
             let token = state.token.take();
@@ -2300,11 +2311,12 @@ impl App {
                 self.render();
             }
             Action::Profile { id, author, anchor } => self.open_profile(id, author, &anchor),
+            Action::ViewForward(id) => self.view_forward(&id),
         }
     }
 
     fn row_menu(self: &Rc<Self>, id: &str, anchor: &gtk::Widget) {
-        let (mine, pinned) = {
+        let (mine, pinned, forwardable) = {
             let state = self.state.borrow();
             let Some(message) = state.message(id) else {
                 return;
@@ -2314,6 +2326,7 @@ impl App {
                     !session.author.is_guest && session.author.id == message.author.id
                 }),
                 message.pin.is_some(),
+                forward::forwardable(message),
             )
         };
         let menu = gio::Menu::new();
@@ -2331,6 +2344,9 @@ impl App {
         } else {
             item("Pin message", "row.pin")
         });
+        if forwardable {
+            actions.append_item(&item("Forward message", "row.forward"));
+        }
         actions.append_item(&item("Copy text", "row.copy"));
         menu.append_section(None, &actions);
         if mine {
@@ -2378,12 +2394,29 @@ impl App {
     /// Drains the worker's events, then updates what they changed.
     fn receive(self: &Rc<Self>) {
         let mut typing = false;
+        let mut forwards = Vec::new();
         {
             let mut state = self.state.borrow_mut();
             while let Ok(event) = self.worker.events.try_recv() {
                 typing |= matches!(event, Event::Gateway(GatewayEvent::Typing { .. }));
-                self.handle(&mut state, event);
+                match event {
+                    Event::Forward {
+                        generation,
+                        request,
+                        result,
+                    } => forwards.push((generation, request, result)),
+                    event => self.handle(&mut state, event),
+                }
             }
+        }
+        for (generation, request, result) in forwards {
+            self.forward_result(generation, request, result);
+        }
+
+        self.follow_forward();
+        let thread = self.state.borrow_mut().forward_thread.take();
+        if let Some(root) = thread {
+            self.open_thread(root);
         }
         if typing {
             self.tick();
@@ -2900,6 +2933,12 @@ impl App {
                             self.mark_read(state);
                         }
                         self.clear_open_unread(state);
+                        if let Some((navigation, channel, root)) = state.forward_focus.take()
+                            && navigation == state.navigation
+                            && state.channel.as_deref() == Some(&channel)
+                        {
+                            state.forward_thread = Some(root);
+                        }
                     }
                     None => {
                         state.channel = None;

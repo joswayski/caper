@@ -1,18 +1,13 @@
-use crate::model::{ForwardConversation, ForwardDestination, Message};
+use crate::model::{ForwardConversation, Message};
 use crate::worker::{Command, SendFailure, Worker};
-pub use caper_client::forwarding::{Operation, Response};
+pub use caper_client::forwarding::{Operation, Picker, Response};
 use eframe::egui::{self, RichText};
 
 enum View {
     Picker {
-        source: Box<Message>,
-        destinations: Vec<ForwardDestination>,
-        selected: Vec<String>,
+        picker: Box<Picker>,
         search: String,
         text: String,
-        pending: Option<Vec<(String, String)>>,
-        confirmed: usize,
-        session: Option<String>,
     },
     Conversation {
         wrapper: Box<Message>,
@@ -71,14 +66,9 @@ impl Forwarding {
         self.resolving = false;
         self.shown_since = None;
         self.view = Some(View::Picker {
-            source: Box::new(source),
-            destinations: vec![],
-            selected: vec![],
+            picker: Box::new(Picker::new(source)),
             search: String::new(),
             text: String::new(),
-            pending: None,
-            confirmed: 0,
-            session: None,
         });
         self.dispatch(worker, generation, Operation::Destinations { token });
     }
@@ -129,32 +119,16 @@ impl Forwarding {
         self.resolving = false;
         match result {
             Ok(Response::Sent(message)) => {
-                if let Some(View::Picker {
-                    pending: Some(pending),
-                    selected,
-                    confirmed,
-                    ..
-                }) = &mut self.view
+                if let Some(View::Picker { picker, .. }) = &mut self.view
+                    && picker.sent(&message)
                 {
-                    pending.remove(0);
-                    selected.retain(|id| id != &message.channel_id);
-                    *confirmed += 1;
-                    if pending.is_empty() {
-                        self.close();
-                    }
+                    self.close();
                 }
                 return Some(*message);
             }
-            Ok(Response::Destinations(mut values, capability)) => {
-                values.sort_by_key(|item| format!("{} {}", item.space_name, item.name));
-                if let Some(View::Picker {
-                    destinations,
-                    session,
-                    ..
-                }) = &mut self.view
-                {
-                    *destinations = values;
-                    *session = Some(capability);
+            Ok(Response::Destinations(values, capability)) => {
+                if let Some(View::Picker { picker, .. }) = &mut self.view {
+                    picker.loaded(values, capability);
                 }
             }
             Ok(Response::Conversation(value)) => {
@@ -164,34 +138,14 @@ impl Forwarding {
                 }
             }
             Err(error) => {
-                let mut detail = error.message;
-                if let Some(View::Picker {
-                    pending, confirmed, ..
-                }) = &mut self.view
-                {
-                    let rejected = matches!(error.status, Some(400 | 401 | 403 | 404 | 409 | 422));
-                    if pending.is_some() {
-                        detail = format!(
-                            "Forwarded to {confirmed} {}. {} {detail}",
-                            if *confirmed == 1 {
-                                "destination"
-                            } else {
-                                "destinations"
-                            },
-                            if rejected {
-                                "Remaining forwards not sent."
-                            } else {
-                                "Remaining forwards not confirmed. Retry checks the same forwards."
-                            }
-                        );
+                let detail = match &mut self.view {
+                    Some(View::Picker { picker, .. }) => picker.failed(error),
+                    Some(View::Conversation { page, .. }) => {
+                        *page = None;
+                        error.message
                     }
-                    if rejected {
-                        *pending = None;
-                    }
-                }
-                if let Some(View::Conversation { page, .. }) = &mut self.view {
-                    *page = None;
-                }
+                    None => error.message,
+                };
                 self.error = Some(detail);
             }
         }
@@ -269,13 +223,14 @@ impl Forwarding {
         let shown = egui::Window::new(title).id(egui::Id::unique("live-forward")).open(&mut open).collapsible(false).resizable(true).default_width(460.0).max_height(context.content_rect().height() - 48.0).show(context, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 match view {
-                    View::Picker { source, destinations, selected, search, text, pending, session, .. } => {
+                    View::Picker { picker, search, text } => {
+                        let pending = &picker.pending;
                         ui.label(RichText::new("Shares this conversation, including future edits, reactions and replies. People in the destination can read and forward it.").size(12.0).color(crate::MUTED));
-                        original(ui, source.forward.as_ref().and_then(|forward| forward.message.as_ref()).unwrap_or(source), textures);
+                        original(ui, picker.source.forward.as_ref().and_then(|forward| forward.message.as_ref()).unwrap_or(&picker.source), textures);
                         ui.add_enabled(pending.is_none(), egui::TextEdit::singleline(search).hint_text("Find a space, channel or DM"));
-                        let query = search.to_lowercase();
-                        for destination in destinations.iter().filter(|item| query.split_whitespace().all(|term| format!("{} {}", item.space_name, item.name).to_lowercase().contains(term.trim_start_matches('#')))) {
-                            let mut checked = selected.contains(&destination.id);
+                        let mut changes = vec![];
+                        for destination in picker.visible(search) {
+                            let mut checked = picker.selected.contains(&destination.id);
                             ui.add_enabled_ui(pending.is_none(), |ui| {
                                 ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 44.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     let checkbox = ui.checkbox(&mut checked, "");
@@ -286,29 +241,29 @@ impl Forwarding {
                                     }).response.interact(egui::Sense::click());
                                     if row.clicked() { checked = !checked; }
                                     if checkbox.changed() || row.clicked() {
-                                        if checked { selected.push(destination.id.clone()); }
-                                        else { selected.retain(|id| id != &destination.id); }
+                                        changes.push((destination.id.clone(), checked));
                                     }
                                     checkbox.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), checked, format!("{} · {}", destination.name, destination.space_name)));
                                     row.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), checked, format!("{} · {}", destination.name, destination.space_name)));
                                 });
                             });
                         }
+                        for (id, checked) in changes { picker.set(&id, checked); }
+                        let pending = picker.pending.is_some();
                         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
                             crate::draft_layout(ui, text.as_str(), width, &[], crate::mentions::Specials::default(), egui::FontId::proportional(14.0))
                         };
                         let note_id = ui.make_persistent_id("forward-note");
-                        crate::formatting::prepare(ui, text, note_id, pending.is_none());
-                        let note = ui.add_enabled(pending.is_none(), egui::TextEdit::multiline(&mut *text).id(note_id).layouter(&mut layouter).hint_text("Add a note (optional)").desired_rows(2));
-                        crate::formatting::controls(ui, text, &note, pending.is_none());
-                        if !self.busy && destinations.is_empty() { ui.label("Join a channel or start a DM to forward here."); }
+                        crate::formatting::prepare(ui, text, note_id, !pending);
+                        let note = ui.add_enabled(!pending, egui::TextEdit::multiline(&mut *text).id(note_id).layouter(&mut layouter).hint_text("Add a note (optional)").desired_rows(2));
+                        crate::formatting::controls(ui, text, &note, !pending);
+                        if !self.busy && picker.destinations.is_empty() { ui.label("Join a channel or start a DM to forward here."); }
                         // Web's eggshell primary, neutral while disabled.
-                        let send = crate::toned(ui, crate::PRIMARY_TONE, !self.busy && !selected.is_empty() && session.is_some() && text.chars().count() <= 4000, egui::Button::new(format!("{} ({})", if pending.is_some() { "Retry forwards" } else { "Forward" }, selected.len()))).clicked();
-                        if send { pending.get_or_insert_with(|| selected.iter().map(|id| (id.clone(), uuid::Uuid::new_v4().to_string())).collect()); }
-                        if !self.busy && (send || self.error.is_none()) && let Some((destination, key)) = pending.as_ref().and_then(|items| items.first()) {
-                            operation = Some(Operation::Send { token: token.into(), session: session.clone().unwrap(), source: source.clone(), destination: destination.clone(), key: key.clone(), text: text.trim().into() });
+                        let send = crate::toned(ui, crate::PRIMARY_TONE, picker.ready(self.busy, text), egui::Button::new(picker.label())).clicked();
+                        if !self.busy && (send || self.error.is_none()) {
+                            operation = picker.next(token, text, send);
                         }
-                        if self.error.is_some() && destinations.is_empty() && ui.button("Retry loading").clicked() { operation = Some(Operation::Destinations { token: token.into() }); }
+                        if self.error.is_some() && picker.destinations.is_empty() && ui.button("Retry loading").clicked() { operation = Some(Operation::Destinations { token: token.into() }); }
                     }
                     View::Conversation { wrapper, page, pages, oldest, .. } => {
                         if let Some(page) = page {
@@ -407,164 +362,6 @@ mod tests {
     use crate::TestPass as _;
 
     #[test]
-    fn unknown_result_preserves_retry_capability_and_definitive_rejection_unlocks_intent() {
-        let source: Message = serde_json::from_value(serde_json::json!({
-            "id":"source", "channelId":"private", "seq":"89", "clientMessageId":"source-key",
-            "author":{"id":"author","name":"Author","isGuest":false},
-            "content":{"version":1,"type":"text","text":"original"}, "createdAt":"2026-10-06T12:00:00Z"
-        })).unwrap();
-        let mut state = Forwarding {
-            view: Some(View::Picker {
-                source: Box::new(source),
-                destinations: vec![],
-                selected: vec!["destination".into(), "other".into()],
-                search: String::new(),
-                text: "note".into(),
-                pending: Some(vec![
-                    ("destination".into(), "retry-key".into()),
-                    ("other".into(), "other-key".into()),
-                ]),
-                confirmed: 0,
-                session: Some("same-capability".into()),
-            }),
-            request: 7,
-            busy: true,
-            resolving: false,
-            error: None,
-            shown_since: None,
-        };
-        state.receive(
-            7,
-            Err(SendFailure {
-                status: None,
-                message: "Not confirmed".into(),
-                code: None,
-            }),
-        );
-        let Some(View::Picker {
-            pending,
-            session,
-            text,
-            selected,
-            ..
-        }) = &state.view
-        else {
-            panic!("picker closed")
-        };
-        assert_eq!(
-            pending.as_ref().unwrap(),
-            &vec![
-                ("destination".into(), "retry-key".into()),
-                ("other".into(), "other-key".into())
-            ]
-        );
-        assert_eq!(session.as_deref(), Some("same-capability"));
-        assert_eq!(text, "note");
-        assert_eq!(selected, &vec!["destination", "other"]);
-        state.receive(
-            6,
-            Err(SendFailure {
-                status: Some(400),
-                message: "stale failure".into(),
-                code: None,
-            }),
-        );
-        assert!(matches!(
-            &state.view,
-            Some(View::Picker {
-                pending: Some(_),
-                ..
-            })
-        ));
-        state.receive(
-            7,
-            Err(SendFailure {
-                status: Some(400),
-                message: "Not sent".into(),
-                code: None,
-            }),
-        );
-        assert!(matches!(
-            &state.view,
-            Some(View::Picker {
-                pending: None,
-                session: Some(_),
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn partial_success_removes_only_confirmed_destination_and_keeps_remaining_retry_key() {
-        let mut message: Message = serde_json::from_value(serde_json::json!({
-            "id":"wrapper", "channelId":"first", "seq":"1", "clientMessageId":"first-key",
-            "author":{"id":"author","name":"Author","isGuest":false},
-            "content":{"version":1,"type":"text","text":"note"}, "createdAt":"2026-10-06T12:00:00Z"
-        }))
-        .unwrap();
-        let mut state = Forwarding {
-            view: Some(View::Picker {
-                source: Box::new(message.clone()),
-                destinations: vec![],
-                selected: vec!["first".into(), "second".into()],
-                search: String::new(),
-                text: "note".into(),
-                pending: Some(vec![
-                    ("first".into(), "first-key".into()),
-                    ("second".into(), "second-key".into()),
-                ]),
-                confirmed: 0,
-                session: Some("capability".into()),
-            }),
-            request: 7,
-            busy: true,
-            resolving: false,
-            error: None,
-            shown_since: None,
-        };
-        assert!(
-            state
-                .receive(7, Ok(Response::Sent(Box::new(message.clone()))))
-                .is_some()
-        );
-        state.receive(
-            7,
-            Err(SendFailure {
-                status: None,
-                message: "lost response".into(),
-                code: None,
-            }),
-        );
-        let Some(View::Picker {
-            selected,
-            pending: Some(pending),
-            confirmed,
-            ..
-        }) = &state.view
-        else {
-            panic!("picker closed before remaining destination confirmed")
-        };
-        assert_eq!(selected, &vec!["second"]);
-        assert_eq!(pending, &vec![("second".into(), "second-key".into())]);
-        assert_eq!(*confirmed, 1);
-        assert!(
-            state
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("Forwarded to 1 destination.")
-        );
-        message.channel_id = "second".into();
-        message.client_message_id = "second-key".into();
-        assert!(
-            state
-                .receive(7, Ok(Response::Sent(Box::new(message))))
-                .is_some()
-        );
-        assert!(state.view.is_none());
-    }
-
-    #[test]
     fn picker_keeps_same_space_rows_compact_and_search_preserves_hidden_selections() {
         let context = egui::Context::default();
         context.enable_accesskit();
@@ -579,33 +376,35 @@ mod tests {
         })).unwrap();
         let mut state = Forwarding {
             view: Some(View::Picker {
-                source: Box::new(source),
-                destinations: vec![
-                    ForwardDestination {
-                        id: "first".into(),
-                        name: "general".into(),
-                        space_name: "Gamers".into(),
-                        direct: false,
-                    },
-                    ForwardDestination {
-                        id: "second".into(),
-                        name: "tomato-soup".into(),
-                        space_name: "Gamers".into(),
-                        direct: false,
-                    },
-                    ForwardDestination {
-                        id: "third".into(),
-                        name: "general".into(),
-                        space_name: "Workshop".into(),
-                        direct: false,
-                    },
-                ],
-                selected: vec!["first".into(), "third".into()],
+                picker: Box::new(Picker {
+                    source: Box::new(source),
+                    destinations: vec![
+                        crate::model::ForwardDestination {
+                            id: "first".into(),
+                            name: "general".into(),
+                            space_name: "Gamers".into(),
+                            direct: false,
+                        },
+                        crate::model::ForwardDestination {
+                            id: "second".into(),
+                            name: "tomato-soup".into(),
+                            space_name: "Gamers".into(),
+                            direct: false,
+                        },
+                        crate::model::ForwardDestination {
+                            id: "third".into(),
+                            name: "general".into(),
+                            space_name: "Workshop".into(),
+                            direct: false,
+                        },
+                    ],
+                    selected: vec!["first".into(), "third".into()],
+                    pending: None,
+                    confirmed: 0,
+                    session: Some("capability".into()),
+                }),
                 search: String::new(),
                 text: String::new(),
-                pending: None,
-                confirmed: 0,
-                session: Some("capability".into()),
             }),
             ..Default::default()
         };

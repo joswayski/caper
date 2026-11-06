@@ -900,3 +900,42 @@ popover.pins > contents {
   border-bottom: 1px solid @caper_border;
   padding: 4px 0;
 }
+
+/* A forward's card: its original inside a bordered box. */
+.forward-card {
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0 2px;
+}
+
+.forward-message {
+  padding: 4px 0;
+}
+
+.forward-list {
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+}
+
+.forward-destination {
+  padding: 6px 12px;
+  min-height: 32px;
+}
+
+.forward-destination:hover {
+  background: @caper_surface_hover;
+}
+
+.forward-note {
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-height: 48px;
+}
+
+.forward-destination check:checked {
+  background: @caper_terracotta;
+  border-color: @caper_terracotta;
+  color: @caper_text;
+}
