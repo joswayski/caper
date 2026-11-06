@@ -2928,7 +2928,11 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
             onClick = { openMessage?.invoke() },
             onLongClick = { openActions(message) },
             onLongClickLabel = "Message actions for ${message.author.name}",
-        )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state.directory).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
+        )) {
+            // Captures the directory, not the whole row state, so other row-state changes keep the same label lambda.
+            val directory = state.directory
+            MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), directory).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) }
+        }
         // A team mention (`@feedback`, `@admin`, …): the server told the Caper team, who can read and reply here.
         if (!deleted && notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 2.dp), color = TextMuted, fontSize = 11.sp)
         if (!deleted) Box(Modifier.combinedClickable(
@@ -3408,20 +3412,29 @@ internal const val DELETED_REPLY = "Original message was deleted."
     openMention: ((MessageMention) -> Unit)? = null, mentionLabel: (MessageMention) -> String = { "@${it.username}" },
     openAuthor: ((ChatAuthor) -> Unit)? = null,
     grouped: Boolean = false, openHistory: () -> Unit = {},
-) = MessageRow(
-    message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
-    message.content.attachments.map { it.withFreshUrls(state.freshAttachmentUrls[it.id]) }, onAttachmentFailed,
-    state.attachmentProgress, state.localAttachmentPreviews,
-    edited = message.forward == null && message.revision > 1 && message.deletedAt == null, openHistory = openHistory,
-    mentions = highlightedMentions(message.content.text, message.content.mentions), entries = message.content.mentions,
-    openMention = openMention, mentionLabel = mentionLabel, grouped = grouped,
-    openAuthor = if (message.author.isGuest || openAuthor == null) null else ({ openAuthor(message.author) }),
-    admin = message.author.admin,
-    avatarAsset = message.author.avatarAsset, avatarUrl = message.author.avatarUrl,
-    deleted = message.deletedAt != null,
-    embeds = message.content.embeds,
-    gif = message.content.gif,
-)
+) {
+    // Rows re-run whenever [MessageRowState] changes (any attachment's processing tick, a reaction or pin save).
+    // Keep what this message's body takes the same instances unless they changed for it, so its body skips.
+    val files = message.content.attachments
+    val attachments = remember(files, state.freshAttachmentUrls) {
+        if (files.isEmpty()) files else files.map { it.withFreshUrls(state.freshAttachmentUrls[it.id]) }
+    }
+    val mentions = remember(message.content.text, message.content.mentions) { highlightedMentions(message.content.text, message.content.mentions) }
+    MessageRow(
+        message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
+        attachments, onAttachmentFailed,
+        if (files.isEmpty()) emptyMap() else state.attachmentProgress, if (files.isEmpty()) emptyMap() else state.localAttachmentPreviews,
+        edited = message.forward == null && message.revision > 1 && message.deletedAt == null, openHistory = openHistory,
+        mentions = mentions, entries = message.content.mentions,
+        openMention = openMention, mentionLabel = mentionLabel, grouped = grouped,
+        openAuthor = if (message.author.isGuest || openAuthor == null) null else ({ openAuthor(message.author) }),
+        admin = message.author.admin,
+        avatarAsset = message.author.avatarAsset, avatarUrl = message.author.avatarUrl,
+        deleted = message.deletedAt != null,
+        embeds = message.content.embeds,
+        gif = message.content.gif,
+    )
+}
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
     attachments: List<ChatAttachment> = emptyList(), onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
