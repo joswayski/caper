@@ -57,6 +57,9 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate {
                                     ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
             editMenu.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
         }
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "B — Bold", action: #selector(ComposerTextView.formatBold(_:)), keyEquivalent: "b")
+        editMenu.addItem(withTitle: "I — Italic", action: #selector(ComposerTextView.formatItalic(_:)), keyEquivalent: "i")
         edit.submenu = editMenu; menu.addItem(edit)
         NSApp.mainMenu = menu
     }

@@ -22,6 +22,18 @@ import XCTest
         add(screenshot)
     }
 
+    private func resize(_ app: XCUIApplication, width: CGFloat) {
+        let window = app.windows["Caper — AppKit development (not feature complete)"]
+        let frame = window.frame
+        // Match the shipping parity harness: rounded corners are not reliable
+        // resize targets, and the straight edge stays clear of the Dock.
+        let edge = window.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: frame.width - 1, dy: frame.height / 2))
+        edge.press(forDuration: 0.1, thenDragTo: edge.withOffset(CGVector(dx: width - frame.width, dy: 0)))
+        let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(window.frame.width - width) < 4 }, object: window)
+        XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed)
+    }
+
     private nonisolated static func control(_ body: [String: Any]) async throws {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
         request.httpMethod = "POST"
@@ -76,6 +88,8 @@ import XCTest
         XCTAssertEqual(show.label, "Show 1 blocked message")
         XCTAssertFalse(app.textViews["message-dm0000000003m01"].exists, "Collapsed blocked text is absent from accessibility")
         capture("blocked DM", app: app)
+        resize(app, width: 900)
+        capture("blocked DM narrow", app: app)
         show.click()
         XCTAssertTrue(app.textViews["message-dm0000000003m01"].waitForExistence(timeout: 5))
         XCTAssertEqual(show.label, "Hide 1 blocked message")
@@ -323,6 +337,55 @@ import XCTest
         app.buttons["channel-chan00000001"].click()
         XCTAssertTrue(sent.waitForExistence(timeout: 10))
         capture("conversation, wide", app: app)
+    }
+
+    func testDraftFormattingCopyRepairUndoMenusAndSend() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        composer.click(); composer.typeText("format me")
+        composer.typeKey("a", modifierFlags: .command)
+        composer.typeKey("b", modifierFlags: .command)
+        XCTAssertEqual(composer.value as? String, "**format me**")
+        composer.typeKey("b", modifierFlags: .command)
+        XCTAssertEqual(composer.value as? String, "format me", "Cmd-B toggles the selected style off")
+        composer.typeKey("z", modifierFlags: .command)
+        XCTAssertEqual(composer.value as? String, "**format me**", "A formatting toggle is one native undoable edit")
+        composer.typeKey(.rightArrow, modifierFlags: [])
+        composer.typeText(" and _italic_")
+        let styled = "**format me** and _italic_"
+        XCTAssertEqual(composer.value as? String, styled, "Typing after hidden closing delimiters preserves both pairs")
+        composer.typeKey("a", modifierFlags: .command); composer.typeKey("c", modifierFlags: .command)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "format me and italic", "Copy excludes hidden delimiters")
+        composer.typeKey("x", modifierFlags: .command)
+        XCTAssertEqual(composer.value as? String, "", "Cut repairs orphaned delimiters, not just visible characters")
+        composer.typeKey("z", modifierFlags: .command)
+        XCTAssertEqual(composer.value as? String, styled)
+        composer.typeKey("a", modifierFlags: .command); composer.typeText("menu style")
+        composer.typeKey("a", modifierFlags: .command); composer.rightClick()
+        let italic = composer.menuItems["I — Italic"]
+        XCTAssertTrue(italic.waitForExistence(timeout: 5))
+        composer.menuItems["B — Bold"].hover(); italic.hover(); italic.click()
+        XCTAssertEqual(composer.value as? String, "_menu style_")
+        app.menuBars.menuBarItems["Edit"].click(); app.menuBars.menuItems["B — Bold"].click()
+        XCTAssertEqual(composer.value as? String, "_**menu style**_", "The Edit menu formats the same native selection")
+        composer.typeKey(.rightArrow, modifierFlags: [])
+        composer.typeText(" tail")
+        XCTAssertEqual(composer.value as? String, "_**menu style**_ tail")
+        capture("draft formatting menus", app: app)
+        app.buttons["send-message"].click()
+        XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value == %@", "menu style tail")).firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, "")
+        composer.click(); composer.typeText("**bold** _italic_ @maya @feedback https://example.com/a_b 🙂")
+        XCTAssertEqual(composer.value as? String, "**bold** _italic_ @maya @feedback https://example.com/a_b 🙂")
+        capture("draft style mentions and link", app: app)
+        let window = app.windows["Caper — AppKit development (not feature complete)"]
+        resize(app, width: 900)
+        XCTAssertTrue(window.frame.contains(composer.frame))
+        capture("draft formatting narrow", app: app)
     }
 
     func testAutocompleteKeyboardPointerUndoAndSelection() async throws {

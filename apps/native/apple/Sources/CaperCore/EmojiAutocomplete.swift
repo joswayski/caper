@@ -714,8 +714,19 @@ struct NativeMessageTextEditor: UIViewRepresentable {
     }
 }
 #elseif os(macOS)
-final class ComposerTextView: NSTextView {
-    fileprivate let composerGlyphs = ComposerGlyphs()
+public final class ComposerTextView: NSTextView {
+    public let composerGlyphs = ComposerGlyphs()
+    /// Native hosts draw their placeholder here; SwiftUI hosts leave it empty.
+    public var placeholder = "" {
+        didSet { if oldValue != placeholder { needsDisplay = true } }
+    }
+    public override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if string.isEmpty, !placeholder.isEmpty {
+            (placeholder as NSString).draw(at: NSPoint(x: textContainerInset.width + 5, y: textContainerInset.height),
+                withAttributes: [.font: font ?? NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor(CaperTheme.muted)])
+        }
+    }
     private func moveVisible(backward: Bool, extending: Bool) {
         guard !hasMarkedText() else { return }
         let previous = selectedRange()
@@ -724,35 +735,35 @@ final class ComposerTextView: NSTextView {
         let next = MessageFormatting.movedSelection(string, selection: previous, backward: backward, extending: extending, activeAtStart: activeAtStart)
         setSelectedRange(next, affinity: extending && next.location < anchor ? .upstream : .downstream, stillSelecting: false)
     }
-    override func moveLeft(_ sender: Any?) { if hasMarkedText() { super.moveLeft(sender) } else { moveVisible(backward: true, extending: false) } }
-    override func moveRight(_ sender: Any?) { if hasMarkedText() { super.moveRight(sender) } else { moveVisible(backward: false, extending: false) } }
-    override func moveLeftAndModifySelection(_ sender: Any?) { if hasMarkedText() { super.moveLeftAndModifySelection(sender) } else { moveVisible(backward: true, extending: true) } }
-    override func moveRightAndModifySelection(_ sender: Any?) { if hasMarkedText() { super.moveRightAndModifySelection(sender) } else { moveVisible(backward: false, extending: true) } }
-    override func deleteBackward(_ sender: Any?) {
+    public override func moveLeft(_ sender: Any?) { if hasMarkedText() { super.moveLeft(sender) } else { moveVisible(backward: true, extending: false) } }
+    public override func moveRight(_ sender: Any?) { if hasMarkedText() { super.moveRight(sender) } else { moveVisible(backward: false, extending: false) } }
+    public override func moveLeftAndModifySelection(_ sender: Any?) { if hasMarkedText() { super.moveLeftAndModifySelection(sender) } else { moveVisible(backward: true, extending: true) } }
+    public override func moveRightAndModifySelection(_ sender: Any?) { if hasMarkedText() { super.moveRightAndModifySelection(sender) } else { moveVisible(backward: false, extending: true) } }
+    public override func deleteBackward(_ sender: Any?) {
         guard !hasMarkedText() else { super.deleteBackward(sender); return }
         guard let range = MessageFormatting.deletionRange(string, selection: selectedRange(), backward: true) else { return }
         setSelectedRange(range); super.deleteBackward(sender)
     }
-    override func deleteForward(_ sender: Any?) {
+    public override func deleteForward(_ sender: Any?) {
         guard !hasMarkedText() else { super.deleteForward(sender); return }
         guard let range = MessageFormatting.deletionRange(string, selection: selectedRange(), backward: false) else { return }
         setSelectedRange(range); super.deleteForward(sender)
     }
-    override func copy(_ sender: Any?) {
+    public override func copy(_ sender: Any?) {
         guard selectedRange().length > 0 else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(MessageFormatting.copiedText(string, selection: selectedRange()), forType: .string)
     }
-    override func cut(_ sender: Any?) {
+    public override func cut(_ sender: Any?) {
         guard isEditable, selectedRange().length > 0, !hasMarkedText() else { return }
         copy(sender); deleteBackward(sender)
     }
-    var handleKey: ((NSEvent) -> Bool)?
-    var focusChanged: ((Bool) -> Void)?
-    var formatSelection: ((String) -> Void)?
-    @objc func formatBold(_ sender: Any?) { formatSelection?("**") }
-    @objc func formatItalic(_ sender: Any?) { formatSelection?("_") }
-    override func menu(for event: NSEvent) -> NSMenu? {
+    public var handleKey: ((NSEvent) -> Bool)?
+    public var focusChanged: ((Bool) -> Void)?
+    public var formatSelection: ((String) -> Void)?
+    @objc public func formatBold(_ sender: Any?) { formatSelection?("**") }
+    @objc public func formatItalic(_ sender: Any?) { formatSelection?("_") }
+    public override func menu(for event: NSEvent) -> NSMenu? {
         let menu = super.menu(for: event) ?? NSMenu()
         if isEditable {
             let bold = NSMenuItem(title: "B — Bold", action: #selector(formatBold(_:)), keyEquivalent: "b")
@@ -765,22 +776,22 @@ final class ComposerTextView: NSTextView {
     /// Only text drags edit the draft. File drags fall through to the
     /// conversation's drop target, which attaches them, instead of typing
     /// their paths (NSTextView's default for file URLs).
-    override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [.string] }
+    public override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [.string] }
     /// A drag carrying text and files together still reaches the text view;
     /// refuse it rather than insert a path.
     private func carriesFiles(_ drag: NSDraggingInfo) -> Bool {
         drag.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
     }
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingEntered(sender) }
-    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingUpdated(sender) }
-    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { carriesFiles(sender) ? false : super.performDragOperation(sender) }
-    var pasteAttachments: (() -> Bool)?
-    override func paste(_ sender: Any?) {
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingEntered(sender) }
+    public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingUpdated(sender) }
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { carriesFiles(sender) ? false : super.performDragOperation(sender) }
+    public var pasteAttachments: (() -> Bool)?
+    public override func paste(_ sender: Any?) {
         if pasteAttachments?() != true { super.paste(sender) }
     }
-    override func keyDown(with event: NSEvent) { if handleKey?(event) != true { super.keyDown(with: event) } }
-    override func becomeFirstResponder() -> Bool { let result = super.becomeFirstResponder(); if result { focusChanged?(true) }; return result }
-    override func resignFirstResponder() -> Bool { let result = super.resignFirstResponder(); if result { focusChanged?(false) }; return result }
+    public override func keyDown(with event: NSEvent) { if handleKey?(event) != true { super.keyDown(with: event) } }
+    public override func becomeFirstResponder() -> Bool { let result = super.becomeFirstResponder(); if result { focusChanged?(true) }; return result }
+    public override func resignFirstResponder() -> Bool { let result = super.resignFirstResponder(); if result { focusChanged?(false) }; return result }
 }
 
 struct NativeMessageTextEditor: NSViewRepresentable {

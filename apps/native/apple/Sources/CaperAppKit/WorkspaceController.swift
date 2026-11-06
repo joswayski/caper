@@ -25,6 +25,7 @@ import CaperCore
     private lazy var directBar = DirectConversationBar(model: model)
     private let suggestions = ComposerSuggestions()
     private var suggestionsDismissed = false
+    private var formattingDraft = false
     private lazy var send = NativeButton("Send", primary: true) { [weak self] in self?.submit() }
     private var joiningChannelID: String?
     private lazy var join = NativeButton("Join channel", primary: true) { [weak self] in
@@ -83,12 +84,15 @@ import CaperCore
         }
         membersToggle.setAccessibilityIdentifier("toggle-members")
         status.textColor = NativeStyle.muted
+        composer.textContainer?.replaceLayoutManager(DraftLinkLayoutManager())
+        composer.layoutManager?.delegate = composer.composerGlyphs
         composer.font = NativeStyle.font(14)
         composer.textColor = NativeStyle.text
         composer.insertionPointColor = NativeStyle.text
         composer.backgroundColor = NativeStyle.composer
         composer.isRichText = false
         composer.allowsUndo = true
+        composer.updateDragTypeRegistration()
         composer.textContainerInset = NSSize(width: 12, height: 12)
         composer.isHorizontallyResizable = false
         composer.isVerticallyResizable = true
@@ -97,9 +101,11 @@ import CaperCore
         composer.setAccessibilityLabel("Message")
         composer.setAccessibilityIdentifier("message-composer")
         composer.delegate = self
-        composer.submit = { [weak self] in self?.submit() }
-        composer.handleKey = { [weak self] in self?.handleSuggestionKey($0) == true }
-        composer.focusChanged = { [weak self] in self?.refreshSuggestions() }
+        composer.handleKey = { [weak self] in self?.handleComposerKey($0) == true }
+        composer.formatSelection = { [weak self] in self?.formatDraft($0) }
+        composer.focusChanged = { [weak self] focused in
+            if focused { self?.refreshSuggestions() } else { self?.suggestions.update(nil) }
+        }
         composer.setAccessibilityHelp("Return sends. Shift-Return adds a new line. Use arrows and Return or Tab to choose a suggestion; Escape dismisses.")
         suggestions.accept = { [weak self] in self?.acceptSuggestion($0) }
         composerScroll.documentView = composer
@@ -200,7 +206,26 @@ import CaperCore
         profiles.confirmBlock(target, window: window)
     }
 
+    func textView(_ view: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        guard !formattingDraft, !view.hasMarkedText(), let replacement = replacementString,
+              view.undoManager?.isUndoing != true, view.undoManager?.isRedoing != true else { return true }
+        let proposed = (view.string as NSString).replacingCharacters(in: affectedCharRange, with: replacement)
+        let result = MessageFormatting.repairEdit(view.string, text: proposed,
+            selection: NSRange(location: affectedCharRange.location + replacement.utf16.count, length: 0))
+        guard result.text != proposed else { return true }
+        formattingDraft = true
+        view.insertText(result.text, replacementRange: NSRange(location: 0, length: view.string.utf16.count))
+        view.setSelectedRange(result.selection)
+        formattingDraft = false
+        draftChanged()
+        return false
+    }
+
     func textDidChange(_ notification: Notification) {
+        guard !formattingDraft else { return }
+        draftChanged()
+    }
+    private func draftChanged() {
         composer.needsDisplay = true
         model.chat.draft = composer.string
         model.chat.draftChanged(composer.string)
@@ -208,10 +233,26 @@ import CaperCore
         refreshSuggestions()
     }
     func textViewDidChangeSelection(_ notification: Notification) {
+        guard !formattingDraft else { return }
         suggestionsDismissed = false
         refreshSuggestions()
     }
     private func refreshSuggestions() {
+        guard !formattingDraft else { return }
+        if !composer.hasMarkedText(), let storage = composer.textStorage {
+            formattingDraft = true
+            let selection = MessageFormatting.normalizedSelection(composer.string, selection: composer.selectedRange())
+            if selection != composer.selectedRange() {
+                composer.setSelectedRange(selection, affinity: composer.selectionAffinity, stillSelecting: false)
+            }
+            highlightDraft(storage, source: model.composerMentions)
+            for key: NSAttributedString.Key in [.composerDelimiter, .obliqueness, .backgroundColor, .toolTip, .draftLink, .kern] {
+                composer.typingAttributes.removeValue(forKey: key)
+            }
+            composer.typingAttributes[.font] = NativeStyle.font(14)
+            composer.typingAttributes[.foregroundColor] = NativeStyle.text
+            formattingDraft = false
+        }
         let active = composer.isEditable && composer.window?.firstResponder === composer && !suggestionsDismissed
         suggestions.update(active ? NativePresentation.autocomplete(text: composer.string, selection: composer.selectedRange(),
             markedText: composer.hasMarkedText(), model: model) : nil)
@@ -221,6 +262,28 @@ import CaperCore
         let width = suggestions.match?.isMention == true ? composerScroll.frame.width : min(260, composerScroll.frame.width)
         suggestions.frame = NSRect(x: composerScroll.frame.minX, y: composerScroll.frame.minY - suggestions.height - 8,
             width: width, height: suggestions.height)
+    }
+    private func formatDraft(_ marker: String) {
+        guard composer.isEditable, !composer.hasMarkedText(),
+              let result = MessageFormatting.toggle(composer.string, selection: composer.selectedRange(), marker: marker),
+              result.text.unicodeScalars.count <= 4000, result.text != composer.string else { return }
+        formattingDraft = true
+        composer.breakUndoCoalescing()
+        composer.insertText(result.text, replacementRange: NSRange(location: 0, length: composer.string.utf16.count))
+        composer.setSelectedRange(result.selection)
+        composer.breakUndoCoalescing()
+        formattingDraft = false
+        draftChanged()
+    }
+    private func handleComposerKey(_ event: NSEvent) -> Bool {
+        guard !composer.hasMarkedText() else { return false }
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           let key = event.charactersIgnoringModifiers?.lowercased(), ["b", "i"].contains(key) {
+            formatDraft(key == "b" ? "**" : "_"); return true
+        }
+        if handleSuggestionKey(event) { return true }
+        if event.keyCode == 36, !event.modifierFlags.contains(.shift) { submit(); return true }
+        return false
     }
     private func handleSuggestionKey(_ event: NSEvent) -> Bool {
         guard !composer.hasMarkedText(), suggestions.match != nil else { return false }
@@ -252,39 +315,5 @@ import CaperCore
     private func submit() {
         guard send.isEnabled, !composer.hasMarkedText() else { return }
         Task { await model.chat.send() }
-    }
-}
-
-/// TextKit owns marked text, undo, caret and AX selection. Return sends only
-/// outside composition; Shift-Return remains an ordinary newline.
-private final class ComposerTextView: NSTextView {
-    var submit: (() -> Void)?
-    var handleKey: ((NSEvent) -> Bool)?
-    var focusChanged: (() -> Void)?
-    var placeholder = "" {
-        didSet { if oldValue != placeholder { needsDisplay = true } }
-    }
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        if string.isEmpty {
-            (placeholder as NSString).draw(at: NSPoint(x: textContainerInset.width + 5, y: textContainerInset.height),
-                withAttributes: [.font: font ?? NativeStyle.font(14), .foregroundColor: NativeStyle.muted])
-        }
-    }
-    override func keyDown(with event: NSEvent) {
-        if handleKey?(event) == true { return }
-        if event.keyCode == 36, !event.modifierFlags.contains(.shift), !hasMarkedText() {
-            submit?()
-        } else { super.keyDown(with: event) }
-    }
-    override func becomeFirstResponder() -> Bool {
-        let result = super.becomeFirstResponder()
-        if result { focusChanged?() }
-        return result
-    }
-    override func resignFirstResponder() -> Bool {
-        let result = super.resignFirstResponder()
-        if result { DispatchQueue.main.async { [weak self] in self?.focusChanged?() } }
-        return result
     }
 }
