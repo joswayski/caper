@@ -93,6 +93,8 @@ pub struct Message {
     /// Its files, and which spoilers among them are revealed.
     pub attachments: Vec<caper_client::model::Attachment>,
     pub revealed: std::collections::HashSet<String>,
+    /// Link preview cards under its files.
+    pub embeds: Vec<caper_client::model::Embed>,
 }
 
 pub struct Channel {
@@ -548,6 +550,7 @@ impl Conversation {
             pinned_by: None,
             attachments: Vec::new(),
             revealed: Default::default(),
+            embeds: Vec::new(),
         });
     }
 }
@@ -582,6 +585,7 @@ impl Conversation {
             pinned_by: None,
             attachments: Vec::new(),
             revealed: Default::default(),
+            embeds: Vec::new(),
         });
     }
 }

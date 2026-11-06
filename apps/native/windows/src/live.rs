@@ -1813,6 +1813,29 @@ impl Live {
                 let applied = self.timeline.apply_reactions(update);
                 self.publish(old, applied, &id, out);
             }
+            // Link cards arrive after the send, unsequenced; a file's
+            // processing finishing is sequenced. Either rebuilds its row.
+            Event::Gateway(gateway::GatewayEvent::Embeds {
+                generation,
+                channel,
+                update,
+            }) if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                let id = update.message_id.clone();
+                if self.timeline.apply_embeds(*update) {
+                    let old = self.seq();
+                    self.publish(old, Ok(core::Apply::Applied), &id, out);
+                }
+            }
+            Event::Gateway(gateway::GatewayEvent::Attachments {
+                generation,
+                channel,
+                update,
+            }) if generation == current && self.channel.as_deref() == Some(channel.as_str()) => {
+                let id = update.message_id.clone();
+                let old = self.seq();
+                let applied = self.timeline.apply_attachments(update);
+                self.publish(old, applied, &id, out);
+            }
             Event::Gateway(gateway::GatewayEvent::Pin {
                 generation,
                 channel,
@@ -2150,12 +2173,23 @@ pub fn message(
                 p.author.name.clone()
             }
         }),
+        // A GIF from the picker shows as its KLIPY image, like a file.
         attachments: if deleted {
             Vec::new()
         } else {
-            m.content.attachments.clone()
+            m.content
+                .attachments
+                .iter()
+                .cloned()
+                .chain(m.content.gif.as_ref().map(caper_client::klipy::viewer_file))
+                .collect()
         },
         revealed: Default::default(),
+        embeds: if deleted {
+            Vec::new()
+        } else {
+            m.content.embeds.clone()
+        },
     }
 }
 
@@ -2177,6 +2211,47 @@ mod tests {
             m[k] = v.clone();
         }
         serde_json::from_value(m).unwrap()
+    }
+
+    #[test]
+    fn link_cards_and_picker_gifs_reach_the_row_until_it_is_deleted() {
+        let content = serde_json::json!({
+            "version": 1, "type": "text", "text": "look https://a.test/x",
+            "gif": {
+                "provider": "klipy", "kind": "gif", "slug": "wave", "title": "Wave",
+                "width": 200, "height": 100,
+                "gif": "https://static.klipy.com/wave.gif",
+                "still": "https://static.klipy.com/wave.jpg",
+            },
+            "embeds": [{
+                "version": 1, "url": "https://a.test/x",
+                "site": { "name": "A", "domain": "a.test" },
+                "blocks": [{ "type": "title", "text": "A page" }],
+            }],
+        });
+        let row = message(
+            &core_message(serde_json::json!({ "content": content })),
+            0,
+            false,
+            None,
+        );
+        assert_eq!(row.embeds.len(), 1);
+        assert_eq!(row.embeds[0].url, "https://a.test/x");
+        let [gif] = row.attachments.as_slice() else {
+            panic!("the GIF shows as one image: {:?}", row.attachments);
+        };
+        assert_eq!(
+            gif.url.as_deref(),
+            Some("https://static.klipy.com/wave.gif")
+        );
+        assert_eq!(gif.content_type, "image/gif");
+        assert_eq!(gif.name, "Wave");
+
+        let deleted = core_message(serde_json::json!({
+            "content": content, "deletedAt": "2026-10-01T09:10:00Z",
+        }));
+        let row = message(&deleted, 0, false, None);
+        assert!(row.embeds.is_empty() && row.attachments.is_empty());
     }
 
     #[test]

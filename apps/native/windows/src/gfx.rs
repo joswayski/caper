@@ -126,6 +126,12 @@ pub struct Formats {
     /// An attachment card's name and its detail line (one line each).
     pub file_name: IDWriteTextFormat,
     pub file_detail: IDWriteTextFormat,
+    /// A link preview's site line and footer, author, title and text, as
+    /// egui sizes them (11.5, bold 13, bold 14.4, 13.6).
+    pub embed_meta: IDWriteTextFormat,
+    pub embed_author: IDWriteTextFormat,
+    pub embed_title: IDWriteTextFormat,
+    pub embed_text: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -295,6 +301,10 @@ impl Gfx {
                 )?,
                 file_name: fmt(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
                 file_detail: fmt(11.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                embed_meta: fmt(11.5, DWRITE_FONT_WEIGHT_NORMAL)?,
+                embed_author: fmt(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
+                embed_title: fmt(14.4, DWRITE_FONT_WEIGHT_BOLD)?,
+                embed_text: fmt(13.6, DWRITE_FONT_WEIGHT_NORMAL)?,
             };
             let f = &formats;
             for f in [
@@ -316,6 +326,15 @@ impl Gfx {
             ] {
                 f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
             }
+            // A card's text stops after eight lines with an ellipsis.
+            let sign = dwrite.CreateEllipsisTrimmingSign(&f.embed_text)?;
+            f.embed_text.SetTrimming(
+                &DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_WORD,
+                    ..Default::default()
+                },
+                &sign,
+            )?;
             for f in [&f.file_name, &f.file_detail] {
                 f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
                 let sign = dwrite.CreateEllipsisTrimmingSign(f)?;

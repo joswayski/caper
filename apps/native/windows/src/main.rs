@@ -17,6 +17,7 @@ mod actions;
 mod bench;
 mod card;
 mod composer;
+mod embeds;
 mod emoji;
 mod files;
 mod overlay;
@@ -1390,6 +1391,8 @@ impl App {
                         self.open_history_of(i);
                     } else if let Some((i, k, hide)) = self.file_at(x, y) {
                         self.file_activate(i, k, hide);
+                    } else if let Some((i, k)) = self.embed_at(x, y) {
+                        self.embed_activate(i, k);
                     } else if let Some((i, action)) = self.action_at(x, y) {
                         self.row_action(i, action);
                     } else if self.in_history(x, y) {
@@ -1474,6 +1477,7 @@ impl App {
                             || self.quote_link_at(x, y).is_some()
                             || self.edited_at(x, y).is_some()
                             || self.file_at(x, y).is_some()
+                            || self.embed_at(x, y).is_some()
                             || self.reply_cancel_rect().is_some_and(|(l, t, w, h)| {
                                 x >= l && x < l + w && y >= t && y < t + h
                             })

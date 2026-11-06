@@ -743,7 +743,12 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 impl App {
     /// Images arrived or URLs changed: rows showing attachments redraw.
     pub fn media_changed(&mut self) {
-        if self.c.messages.iter().any(|m| !m.attachments.is_empty()) {
+        if self
+            .c
+            .messages
+            .iter()
+            .any(|m| !m.attachments.is_empty() || !m.embeds.is_empty())
+        {
             self.drawn = None;
             self.events |= crate::EV_ROWS;
             self.need = true;

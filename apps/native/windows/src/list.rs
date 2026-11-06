@@ -38,6 +38,9 @@ pub struct Row {
     /// The message's attachments, below its text.
     pub files: crate::files::Files,
     pub files_y: f32,
+    /// Its link preview cards, below the files.
+    pub embeds: crate::embeds::Embeds,
+    pub embeds_y: f32,
     /// Each reaction chip's label, its width and whether it is yours.
     pub reactions: Vec<(IDWriteTextLayout, f32, bool)>,
     pub reactions_y: f32,
@@ -496,6 +499,8 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         picture_y: 0.0,
         files: crate::files::build(g, &m.attachments)?,
         files_y: 0.0,
+        embeds: crate::embeds::build(g, &m.embeds)?,
+        embeds_y: 0.0,
         add: c.is_live() && !m.deleted && !reactions.is_empty(),
         reactions,
         reactions_y: 0.0,
@@ -613,6 +618,11 @@ fn place(row: &mut Row, m: &crate::model::Message) {
         let width = row.width;
         y += 6.0 + crate::files::place(&mut row.files, &m.attachments, &m.revealed, width);
     }
+    row.embeds_y = y + 6.0;
+    if !row.embeds.cards.is_empty() {
+        let width = row.width;
+        y += 6.0 + crate::embeds::place(&mut row.embeds, &m.embeds, width);
+    }
     row.reactions_y = y + 6.0;
     if !row.reactions.is_empty() {
         y += 6.0 + REACTION_H;
@@ -696,6 +706,29 @@ impl Rows {
             |r: &Common::D2D_RECT_F| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
         let f = row.files.list.iter().find(|f| inside(&f.rect))?;
         Some((f.index, inside(&crate::files::hide_rect(f.rect).0)))
+    }
+
+    /// Row `i`'s link preview parts (rectangle relative to the row's
+    /// top-left, what each opens, its name), in reading order.
+    pub fn embed_targets(
+        &self,
+        i: usize,
+        grouped: bool,
+    ) -> Vec<(Common::D2D_RECT_F, String, String)> {
+        let Some(row) = self.row(i) else {
+            return Vec::new();
+        };
+        let (dx, dy) = (BODY_X, content_top(grouped) + row.embeds_y);
+        crate::embeds::targets(&row.embeds)
+            .into_iter()
+            .map(|(r, t, n)| {
+                (
+                    rect(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy),
+                    t,
+                    n,
+                )
+            })
+            .collect()
     }
 
     /// Row `i`'s attachment `k` relative to the row's top-left.
@@ -889,7 +922,7 @@ pub fn draw_row(
     i: usize,
     y: f32,
     sel: Option<(u32, u32)>,
-    files: Option<&mut crate::files::Ctx>,
+    mut files: Option<&mut crate::files::Ctx>,
 ) -> Result<()> {
     let m = &c.messages[i];
     let bitmap = if m.picture.is_some() {
@@ -1056,11 +1089,14 @@ pub fn draw_row(
                 &row.files,
                 &m.attachments,
                 &m.revealed,
-                files,
+                files.as_deref_mut(),
                 i,
                 BODY_X,
                 top + row.files_y,
             )?;
+        }
+        if !row.embeds.cards.is_empty() {
+            crate::embeds::draw(g, dc, &row.embeds, files, BODY_X, top + row.embeds_y)?;
         }
         if let Some((l, _, _)) = &row.error {
             crate::text::draw(dc, l, BODY_X, top + row.error_y + 3.0, &g.brushes.error);
