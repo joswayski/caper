@@ -12,6 +12,7 @@ use crate::ui::{Ui, label};
 use crate::uploads::{ChipAction, DraftFile};
 use caper_client::api::Api;
 use caper_client::gateway::GatewayEvent;
+use caper_client::mentions;
 use caper_client::model::{
     Account, Apply, ChatSession, DirectConversation, Message, Space, SpaceDetail, Timeline,
 };
@@ -25,11 +26,6 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 const STYLE: &str = include_str!("style.css");
-/// The reaction picker's emoji, after the toolbar's quick three.
-const PICKER: [&str; 24] = [
-    "👍", "❤️", "😂", "🎉", "😮", "😢", "🔥", "👀", "🙏", "👏", "💯", "✅", "🚀", "🤔", "😅", "🙌",
-    "😍", "😎", "🥳", "👋", "💪", "✨", "☕", "👎",
-];
 /// Others' typing shows this long after their last update (desktop's).
 const TYPING_SHOWN: Duration = Duration::from_secs(6);
 /// Your typing is re-announced this often while you type, and ends this
@@ -172,6 +168,17 @@ struct State {
     file_keys: u64,
     /// Advanced when any file changes, so chips redraw.
     files_revision: u64,
+    /// `GET /api/people`: `@` suggestions in DMs and the new DM field.
+    people: Option<Vec<caper_client::model::Person>>,
+    /// The new DM dialog: its lookup request, whether a lookup or the
+    /// create is pending, the person found, and its error.
+    direct_lookup: u64,
+    direct_finding: bool,
+    direct_opening: bool,
+    direct_recipient: Option<caper_client::model::Person>,
+    direct_error: Option<String>,
+    /// A DM created from the dialog, opened once events are handled.
+    open_created: Option<String>,
 }
 
 impl State {
@@ -205,6 +212,63 @@ impl State {
             })
     }
 
+    /// Who `@` can suggest, never yourself, and which specials apply, as on
+    /// the desktop: a space channel offers its members, `everyone` and
+    /// `here`; a DM offers `GET /api/people`, plus its peer.
+    fn mention_people(&self) -> (Vec<mentions::Person>, mentions::Specials) {
+        let me = self.account.as_ref().map(|account| account.id.as_str());
+        if let Some(id) = &self.direct {
+            let known = self.people.as_deref().unwrap_or_default();
+            let peer = self
+                .directs
+                .iter()
+                .find(|direct| &direct.id == id)
+                .map(|direct| &direct.peer)
+                .filter(|peer| !known.iter().any(|person| person.id == peer.id))
+                .map(|peer| caper_client::model::Person {
+                    admin: peer.admin,
+                    id: peer.id.clone(),
+                    username: peer.username.clone(),
+                    display_name: peer.display_name.clone(),
+                    avatar_id: peer.avatar_id,
+                    avatar_asset: peer.avatar_asset.clone(),
+                    avatar_url: peer.avatar_url.clone(),
+                });
+            let people = known
+                .iter()
+                .chain(peer.as_ref())
+                .filter(|person| Some(person.id.as_str()) != me)
+                .map(mentions::Person::from)
+                .collect();
+            return (
+                people,
+                mentions::Specials {
+                    channel: false,
+                    feedback: true,
+                },
+            );
+        }
+        let people = self
+            .detail
+            .as_ref()
+            .filter(|detail| self.space.as_ref() == Some(&detail.space.id))
+            .map_or_else(Vec::new, |detail| {
+                detail
+                    .members
+                    .iter()
+                    .filter(|member| Some(member.id.as_str()) != me)
+                    .map(mentions::Person::from)
+                    .collect()
+            });
+        (
+            people,
+            mentions::Specials {
+                channel: true,
+                feedback: true,
+            },
+        )
+    }
+
     fn name(&self) -> String {
         self.account
             .as_ref()
@@ -236,6 +300,18 @@ pub struct App {
     ticking: Cell<bool>,
     /// The sign-in countdown's pending redraw.
     countdown: Cell<bool>,
+    /// The channel and thread composers' `:`/`@` suggestions.
+    suggestions: RefCell<Vec<Rc<crate::suggest::Popup>>>,
+    direct_dialog: RefCell<Option<DirectDialog>>,
+}
+
+/// The new DM dialog's widgets.
+struct DirectDialog {
+    window: gtk::Window,
+    field: Rc<crate::people::PeopleField>,
+    recipient: gtk::Label,
+    error: gtk::Label,
+    open: gtk::Button,
 }
 
 pub fn start(application: &gtk::Application, base: &str) {
@@ -288,8 +364,19 @@ pub fn start(application: &gtk::Application, base: &str) {
         activity: Cell::new(Instant::now()),
         ticking: Cell::new(false),
         countdown: Cell::new(false),
+        suggestions: RefCell::default(),
+        direct_dialog: RefCell::default(),
     });
     *slot.borrow_mut() = Rc::downgrade(&app);
+    for composer in [&app.ui.composer, &app.ui.thread_composer] {
+        let weak = Rc::downgrade(&app);
+        let popup = crate::suggest::Popup::new(composer, app.images.clone(), move || {
+            let app = weak.upgrade()?;
+            let state = app.state.try_borrow().ok()?;
+            Some(state.mention_people())
+        });
+        app.suggestions.borrow_mut().push(popup);
+    }
     app.connect();
     app.connect_drop();
     app.install_actions();
@@ -388,6 +475,9 @@ impl App {
         let app = self.clone();
         ui.join.connect_clicked(move |_| app.join());
         let app = self.clone();
+        ui.new_direct
+            .connect_clicked(move |_| app.open_start_direct());
+        let app = self.clone();
         ui.compose_cancel
             .connect_clicked(move |_| app.cancel_compose());
 
@@ -404,6 +494,10 @@ impl App {
             let app = self.clone();
             keys.connect_key_pressed(move |_, key, _, modifiers| {
                 app.active();
+                let popup = app.suggestions.borrow().get(usize::from(thread)).cloned();
+                if popup.is_some_and(|popup| popup.key(key, modifiers)) {
+                    return glib::Propagation::Stop;
+                }
                 if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
                     && !modifiers.contains(gdk::ModifierType::SHIFT_MASK)
                 {
@@ -675,6 +769,7 @@ impl App {
                 .unwrap_or_default();
             state.channel = Some(id.clone());
             state.direct = Some(id.clone());
+            self.load_people(&state);
             self.prepare(&mut state, None, Some(id));
         }
         self.render();
@@ -813,6 +908,208 @@ impl App {
 
     // ---------------------------------------------------------------------
     // Unread state and DMs.
+
+    /// The desktop's New direct message dialog: an exact username, with
+    /// known people suggested below it. "Find person" looks the name up;
+    /// once someone is known, "Open conversation" creates or reopens the DM.
+    fn open_start_direct(self: &Rc<Self>) {
+        self.close_start_direct();
+        {
+            let mut state = self.state.borrow_mut();
+            if state.token.is_none() {
+                return;
+            }
+            state.direct_lookup += 1;
+            state.direct_finding = false;
+            state.direct_opening = false;
+            state.direct_recipient = None;
+            state.direct_error = None;
+            self.load_people(&state);
+        }
+        let window = gtk::Window::builder()
+            .transient_for(&self.ui.window)
+            .modal(true)
+            .title("New direct message")
+            .default_width(420)
+            .resizable(false)
+            .build();
+        window.add_css_class("caper");
+        window.add_css_class("dialog");
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        root.add_css_class("dialog-body");
+        root.append(&label("New direct message", &["dialog-title"]));
+        root.append(&label("Enter an exact username.", &["muted"]));
+        let field = crate::people::PeopleField::new(self.images.clone(), "Username");
+        root.append(&field.root);
+        let recipient = label("", &[]);
+        recipient.set_visible(false);
+        root.append(&recipient);
+        let error = label("", &["error"]);
+        error.set_wrap(true);
+        error.set_visible(false);
+        root.append(&error);
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        buttons.set_halign(gtk::Align::End);
+        let cancel = gtk::Button::with_label("Cancel");
+        let open = gtk::Button::with_label("Find person");
+        open.add_css_class("primary");
+        buttons.append(&cancel);
+        buttons.append(&open);
+        root.append(&buttons);
+        window.set_child(Some(&root));
+
+        let app = self.clone();
+        field.connect_changed(move |_| {
+            {
+                let mut state = app.state.borrow_mut();
+                state.direct_lookup += 1;
+                state.direct_finding = false;
+                state.direct_recipient = None;
+                state.direct_error = None;
+            }
+            app.render_start_direct();
+        });
+        let app = self.clone();
+        field
+            .entry
+            .connect_activate(move |_| app.submit_start_direct());
+        let app = self.clone();
+        open.connect_clicked(move |_| app.submit_start_direct());
+        let app = self.clone();
+        cancel.connect_clicked(move |_| app.close_start_direct());
+        let app = Rc::downgrade(self);
+        window.connect_close_request(move |_| {
+            if let Some(app) = app.upgrade() {
+                app.direct_dialog.borrow_mut().take();
+            }
+            glib::Propagation::Proceed
+        });
+        *self.direct_dialog.borrow_mut() = Some(DirectDialog {
+            window: window.clone(),
+            field: field.clone(),
+            recipient,
+            error,
+            open,
+        });
+        self.render_start_direct();
+        window.present();
+        field.entry.grab_focus();
+    }
+
+    fn close_start_direct(&self) {
+        let dialog = self.direct_dialog.borrow_mut().take();
+        if let Some(dialog) = dialog {
+            dialog.window.destroy();
+        }
+    }
+
+    fn submit_start_direct(self: &Rc<Self>) {
+        let Some(username) = self
+            .direct_dialog
+            .borrow()
+            .as_ref()
+            .map(|dialog| dialog.field.text())
+        else {
+            return;
+        };
+        {
+            let mut state = self.state.borrow_mut();
+            let Some(token) = state.token.clone() else {
+                return;
+            };
+            if state.direct_finding || state.direct_opening || username.len() < 3 {
+                return;
+            }
+            state.direct_error = None;
+            let known = state.direct_recipient.clone().or_else(|| {
+                state
+                    .people
+                    .iter()
+                    .flatten()
+                    .find(|person| person.username == username)
+                    .cloned()
+            });
+            if let Some(person) = known {
+                state.direct_opening = true;
+                self.worker.send(Command::CreateDirect {
+                    generation: state.epoch,
+                    navigation: state.navigation,
+                    token,
+                    username: person.username,
+                });
+            } else {
+                state.direct_lookup += 1;
+                state.direct_finding = true;
+                self.worker.send(Command::LookupDirect {
+                    generation: state.epoch,
+                    navigation: state.navigation,
+                    request: state.direct_lookup,
+                    token,
+                    username,
+                });
+            }
+        }
+        self.render_start_direct();
+    }
+
+    fn render_start_direct(&self) {
+        let dialog = self.direct_dialog.borrow();
+        let Some(dialog) = dialog.as_ref() else {
+            return;
+        };
+        let state = self.state.borrow();
+        let text = dialog.field.text();
+        let pending = state.direct_finding || state.direct_opening;
+        let people: Vec<mentions::Person> = state
+            .people
+            .iter()
+            .flatten()
+            .filter(|_| !pending)
+            .filter(|person| Some(&person.id) != state.account.as_ref().map(|account| &account.id))
+            .map(mentions::Person::from)
+            .collect();
+        dialog.field.set_people(people);
+        dialog.field.entry.set_editable(!pending);
+        let recipient = state.direct_recipient.as_ref().or_else(|| {
+            state
+                .people
+                .iter()
+                .flatten()
+                .find(|person| person.username == text)
+        });
+        match recipient {
+            Some(person) => {
+                dialog
+                    .recipient
+                    .set_label(&format!("{} · @{}", person.display_name, person.username));
+                dialog.recipient.set_visible(true);
+            }
+            None => dialog.recipient.set_visible(false),
+        }
+        dialog.open.set_label(if state.direct_opening {
+            "Opening…"
+        } else if state.direct_finding {
+            "Finding…"
+        } else if recipient.is_some() {
+            "Open conversation"
+        } else {
+            "Find person"
+        });
+        dialog.open.set_sensitive(!pending && text.len() >= 3);
+        let error = state.direct_error.as_deref().unwrap_or_default();
+        dialog.error.set_label(error);
+        dialog.error.set_visible(!error.is_empty());
+    }
+
+    /// Refreshes `GET /api/people`; the previous list stays until it answers.
+    fn load_people(&self, state: &State) {
+        if let Some(token) = state.token.clone() {
+            self.worker.send(Command::LoadPeople {
+                generation: state.epoch,
+                token,
+            });
+        }
+    }
 
     fn load_directs(&self, state: &State) {
         if let Some(token) = state.token.clone() {
@@ -1751,28 +2048,10 @@ impl App {
                 })
                 .unwrap_or_default()
         };
-        let popover = gtk::Popover::new();
-        let grid = gtk::Grid::new();
-        grid.add_css_class("picker");
-        for (index, emoji) in PICKER.iter().enumerate() {
-            let button: gtk::Button = named("GtkButton", &format!("React {emoji}"));
-            button.set_label(emoji);
-            button.add_css_class("flat");
-            if mine.contains(*emoji) {
-                button.add_css_class("mine");
-            }
-            let (app, id, popover_ref) = (self.clone(), id.clone(), popover.downgrade());
-            let active = !mine.contains(*emoji);
-            button.connect_clicked(move |_| {
-                app.react(id.clone(), emoji.to_string(), active);
-                if let Some(popover) = popover_ref.upgrade() {
-                    popover.popdown();
-                }
-            });
-            grid.attach(&button, (index % 8) as i32, (index / 8) as i32, 1, 1);
-        }
-        popover.set_child(Some(&grid));
-        popup(&popover, anchor);
+        let app = self.clone();
+        crate::picker::show(&self.images, anchor, mine, move |emoji, active| {
+            app.react(id.clone(), emoji, active);
+        });
     }
 
     // ---------------------------------------------------------------------
@@ -1791,6 +2070,12 @@ impl App {
         if typing {
             self.tick();
         }
+        let created = self.state.borrow_mut().open_created.take();
+        if let Some(id) = created {
+            self.close_start_direct();
+            self.open_direct(id);
+        }
+        self.render_start_direct();
         self.render();
     }
 
@@ -1871,6 +2156,56 @@ impl App {
                 }
                 state.layout += 1;
             }
+            Event::DirectLookedUp {
+                generation,
+                request,
+                username,
+                result,
+                ..
+            } if generation == state.epoch
+                && request == state.direct_lookup
+                && state.direct_finding =>
+            {
+                state.direct_finding = false;
+                let current = self
+                    .direct_dialog
+                    .borrow()
+                    .as_ref()
+                    .map(|dialog| dialog.field.text());
+                if current.as_deref() == Some(username.as_str()) {
+                    match result {
+                        Ok(person) => state.direct_recipient = Some(person),
+                        Err(error) => state.direct_error = Some(error),
+                    }
+                }
+            }
+            Event::DirectCreated {
+                generation,
+                navigation,
+                result,
+            } if generation == state.epoch => {
+                state.direct_opening = false;
+                match result {
+                    Ok(direct) => {
+                        state.directs.retain(|item| item.id != direct.id);
+                        let id = direct.id.clone();
+                        state.directs.push(direct);
+                        state.layout += 1;
+                        if navigation == state.navigation {
+                            state.open_created = Some(id);
+                        }
+                    }
+                    Err(error) if navigation == state.navigation => {
+                        state.direct_error = Some(error);
+                    }
+                    Err(_) => {}
+                }
+            }
+            // A failed refresh keeps the previous list (or the peer fallback).
+            Event::PeopleLoaded {
+                generation,
+                result: Ok(people),
+            } if generation == state.epoch => state.people = Some(people),
             Event::UnreadLoaded {
                 epoch,
                 revision,
@@ -2914,7 +3249,7 @@ fn badge(count: u64, mention: bool) -> gtk::Label {
 }
 
 /// Shows `popover` from `anchor`, and detaches it once it closes.
-fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {
+pub fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {
     let popover = popover.as_ref();
     popover.set_parent(anchor);
     popover.set_has_arrow(false);

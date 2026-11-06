@@ -217,66 +217,6 @@ pub fn editor_tooltip(output: &egui::text_edit::TextEditOutput, text: &str) {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Token {
-    pub start: usize,
-    pub end: usize,
-    pub query: String,
-}
-
-fn query_character(value: char) -> bool {
-    value.is_ascii_alphanumeric() || matches!(value, '_' | '+' | '-')
-}
-
-// egui cursors count Unicode scalars, not UTF-8 bytes or grapheme clusters.
-pub fn token(text: &str, caret: usize) -> Option<Token> {
-    if caret > text.chars().count() {
-        return None;
-    }
-    let (visible, indices) = crate::formatting::projection(text);
-    let caret = indices.partition_point(|index| *index < caret);
-    let chars: Vec<_> = visible.chars().collect();
-    if chars
-        .get(caret)
-        .is_some_and(|c| *c == ':' || query_character(*c))
-    {
-        return None;
-    }
-    let mut start = caret;
-    while start > 0 && query_character(chars[start - 1]) {
-        start -= 1;
-    }
-    let colon = start.checked_sub(1)?;
-    if chars[colon] != ':'
-        || (colon > 0 && !chars[colon - 1].is_whitespace() && !"([{".contains(chars[colon - 1]))
-    {
-        return None;
-    }
-    // One character is an emoticon (":D", ":P", ":3"), not a search; Enter sends it as typed.
-    if caret - start == 1 {
-        return None;
-    }
-    Some(Token {
-        start: indices[colon],
-        end: indices[caret - 1] + 1,
-        query: chars[start..caret].iter().collect(),
-    })
-}
-
-pub fn insert(text: &str, token: &Token, emoji: &str) -> Option<(String, usize)> {
-    let value: String = text
-        .chars()
-        .take(token.start)
-        .chain(emoji.chars())
-        .chain(text.chars().skip(token.end))
-        .collect();
-    (value.chars().count() <= 4_000).then(|| {
-        let caret = token.start + emoji.chars().count();
-        let (value, caret, _) = crate::formatting::repair_edit(text, &value, caret, caret);
-        (value, caret)
-    })
-}
-
 /// The bundled sheets, uploaded once and shared: reactions, the picker and
 /// message text (through `shared`) draw from the same textures.
 #[derive(Default, Clone)]
@@ -343,27 +283,6 @@ impl Textures {
                 (entry.y + 64) as f32 / 1024.0,
             ),
         )
-    }
-}
-
-fn sheet(page: usize) -> &'static [u8] {
-    match page {
-        0 => include_bytes!("../../../../shared/emoji/sheet-0.png"),
-        1 => include_bytes!("../../../../shared/emoji/sheet-1.png"),
-        2 => include_bytes!("../../../../shared/emoji/sheet-2.png"),
-        3 => include_bytes!("../../../../shared/emoji/sheet-3.png"),
-        4 => include_bytes!("../../../../shared/emoji/sheet-4.png"),
-        5 => include_bytes!("../../../../shared/emoji/sheet-5.png"),
-        6 => include_bytes!("../../../../shared/emoji/sheet-6.png"),
-        7 => include_bytes!("../../../../shared/emoji/sheet-7.png"),
-        8 => include_bytes!("../../../../shared/emoji/sheet-8.png"),
-        9 => include_bytes!("../../../../shared/emoji/sheet-9.png"),
-        10 => include_bytes!("../../../../shared/emoji/sheet-10.png"),
-        11 => include_bytes!("../../../../shared/emoji/sheet-11.png"),
-        12 => include_bytes!("../../../../shared/emoji/sheet-12.png"),
-        13 => include_bytes!("../../../../shared/emoji/sheet-13.png"),
-        14 => include_bytes!("../../../../shared/emoji/sheet-14.png"),
-        _ => unreachable!("catalog references an unknown emoji sheet"),
     }
 }
 

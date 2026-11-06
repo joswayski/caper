@@ -115,6 +115,17 @@ pub fn display_name_error(value: &str, saved: Option<&str>) -> Option<&'static s
         .then_some("Display names cannot contain invisible or text-direction characters.")
 }
 
+/// A username as typed into a username field: lowercase ASCII letters,
+/// digits and underscores, at most 32.
+pub fn normalize_username(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+        .take(32)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

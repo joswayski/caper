@@ -19,6 +19,9 @@ const AVATAR_EDGE: u32 = 72;
 /// Icons are drawn at twice their display size, for HiDPI.
 const ICON_EDGE: u32 = 40;
 const MAX_FETCHES: usize = 4;
+/// Twemoji sheets are 1024px squares of 64px cells.
+const SHEET_EDGE: usize = 1024;
+const EMOJI_EDGE: usize = 64;
 
 /// The Lucide icons the client draws (`desktop/resources/icons`, white
 /// strokes recoloured per use).
@@ -148,6 +151,10 @@ pub struct Images {
     icons: RefCell<HashMap<(Icon, &'static str), gdk::Texture>>,
     mascots: RefCell<HashMap<u16, gdk::Texture>>,
     pictures: RefCell<Pictures>,
+    /// Decoded Twemoji sheets (`caper_client::emoji::sheet`), then each
+    /// emoji's 64px cell by catalog id.
+    emoji_sheets: RefCell<HashMap<usize, Vec<u8>>>,
+    emoji: RefCell<HashMap<String, gdk::Texture>>,
 }
 
 impl Images {
@@ -159,6 +166,8 @@ impl Images {
             icons: RefCell::default(),
             mascots: RefCell::default(),
             pictures: RefCell::default(),
+            emoji_sheets: RefCell::default(),
+            emoji: RefCell::default(),
         }
     }
 
@@ -178,6 +187,58 @@ impl Images {
     pub fn icon_image(&self, icon: Icon, color: &'static str, size: i32) -> gtk::Image {
         let image = gtk::Image::new();
         if let Some(texture) = self.icon(icon, color) {
+            image.set_paintable(Some(&texture));
+        }
+        image.set_pixel_size(size);
+        image
+    }
+
+    /// `entry`'s Twemoji, the same art every client draws.
+    pub fn emoji(&self, entry: &caper_client::emoji::Entry) -> Option<gdk::Texture> {
+        if let Some(texture) = self.emoji.borrow().get(&entry.id) {
+            return Some(texture.clone());
+        }
+        let mut sheets = self.emoji_sheets.borrow_mut();
+        let sheet = match sheets.entry(entry.sheet) {
+            std::collections::hash_map::Entry::Occupied(sheet) => sheet.into_mut(),
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                let sheet = gdk::Texture::from_bytes(&glib::Bytes::from_static(
+                    caper_client::emoji::sheet(entry.sheet),
+                ))
+                .ok()?;
+                let mut pixels = vec![0; SHEET_EDGE * SHEET_EDGE * 4];
+                sheet.download(&mut pixels, SHEET_EDGE * 4);
+                slot.insert(pixels)
+            }
+        };
+        let (x, y) = (entry.x as usize, entry.y as usize);
+        if x + EMOJI_EDGE > SHEET_EDGE || y + EMOJI_EDGE > SHEET_EDGE {
+            return None;
+        }
+        let mut cell = Vec::with_capacity(EMOJI_EDGE * EMOJI_EDGE * 4);
+        for row in y..y + EMOJI_EDGE {
+            let start = (row * SHEET_EDGE + x) * 4;
+            cell.extend_from_slice(&sheet[start..start + EMOJI_EDGE * 4]);
+        }
+        // `download` writes GDK's default format.
+        let texture: gdk::Texture = gdk::MemoryTexture::new(
+            EMOJI_EDGE as i32,
+            EMOJI_EDGE as i32,
+            gdk::MemoryFormat::B8g8r8a8Premultiplied,
+            &glib::Bytes::from_owned(cell),
+            EMOJI_EDGE * 4,
+        )
+        .into();
+        self.emoji
+            .borrow_mut()
+            .insert(entry.id.clone(), texture.clone());
+        Some(texture)
+    }
+
+    /// `entry` as an image `size` pixels square.
+    pub fn emoji_image(&self, entry: &caper_client::emoji::Entry, size: i32) -> gtk::Image {
+        let image = gtk::Image::new();
+        if let Some(texture) = self.emoji(entry) {
             image.set_paintable(Some(&texture));
         }
         image.set_pixel_size(size);

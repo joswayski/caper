@@ -412,14 +412,46 @@ button.tool {
   padding: 0;
 }
 
-.picker button {
-  min-width: 36px;
-  min-height: 36px;
-  font-size: 18px;
+popover.emoji-picker > contents {
+  padding: 10px;
 }
 
-.picker button.mine {
+.picker-title {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.emoji-tab {
+  min-height: 40px;
+  padding: 0;
+  border-radius: 8px;
+  box-shadow: inset 0 -2px transparent;
+}
+
+.emoji-tab image {
+  -gtk-icon-size: 22px;
+}
+
+.emoji-tab.selected {
+  box-shadow: inset 0 -2px @caper_terracotta;
+}
+
+popover.emoji-picker gridview {
+  background: transparent;
+}
+
+popover.emoji-picker gridview > child {
+  padding: 5px;
+  border-radius: 8px;
+}
+
+popover.emoji-picker gridview > child:hover {
+  background: @caper_surface_hover;
+}
+
+popover.emoji-picker image.mine {
   background: alpha(@caper_terracotta, 0.22);
+  border-radius: 6px;
 }
 
 .typing {
@@ -712,4 +744,48 @@ progressbar.upload-progress progress {
 
 .drop-card {
   padding: 24px 32px;
+}
+
+/* The composer's `:` emoji and `@` mention suggestions. */
+popover.suggestions > contents {
+  background: @caper_surface_composer;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.suggestion {
+  border-radius: 8px;
+  padding: 0 8px;
+}
+
+.suggestion:hover {
+  background: @caper_surface_hover;
+}
+
+.suggestion.selected {
+  background: #43241e;
+}
+
+.dialog-body {
+  padding: 22px;
+}
+
+.dialog-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.people-list {
+  background: @caper_surface_composer;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 4px;
+}
+
+button.section-action {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin: 0 12px 4px 0;
 }

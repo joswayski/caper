@@ -37,6 +37,7 @@ mod window_state;
 mod worker;
 
 use caper_client::caper_avatar_index;
+use caper_client::names::normalize_username;
 use caper_client::reactions::{Reacted, Reactions};
 use caper_client::sign_in::{MAX_RESENDS, clean_sign_in_code, resend_countdown, resend_wait};
 use caper_client::{
@@ -32440,15 +32441,6 @@ impl TestPass for egui::Context {
         output.textures_delta.clear();
         output
     }
-}
-
-fn normalize_username(value: &str) -> String {
-    value
-        .to_ascii_lowercase()
-        .chars()
-        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
-        .take(32)
-        .collect()
 }
 
 fn normalize_channel(value: &str) -> String {

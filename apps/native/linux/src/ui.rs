@@ -147,6 +147,7 @@ pub struct Ui {
     pub account_avatar: AvatarView,
     pub account_name: gtk::Label,
     pub sign_out: gtk::Button,
+    pub new_direct: gtk::Button,
     pub channel_title: gtk::Label,
     pub status: gtk::Label,
     pub members_toggle: gtk::ToggleButton,
@@ -286,7 +287,18 @@ impl Ui {
         let channels: gtk::ListBox = crate::app::named("GtkListBox", "Channels");
         channels.add_css_class("channels");
         lists.append(&channels);
-        lists.append(&label("Direct messages", &["section"]));
+        let direct_header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let direct_title = label("Direct messages", &["section"]);
+        direct_title.set_hexpand(true);
+        direct_header.append(&direct_title);
+        let new_direct: gtk::Button = crate::app::named("GtkButton", "New direct message");
+        new_direct.set_child(Some(&images.icon_image(Icon::Plus, "#b9bcbe", 16)));
+        new_direct.set_tooltip_text(Some("New direct message"));
+        new_direct.add_css_class("flat");
+        new_direct.add_css_class("section-action");
+        new_direct.set_valign(gtk::Align::End);
+        direct_header.append(&new_direct);
+        lists.append(&direct_header);
         let directs: gtk::ListBox = crate::app::named("GtkListBox", "Direct messages");
         directs.add_css_class("channels");
         lists.append(&directs);
@@ -456,6 +468,7 @@ impl Ui {
             account_avatar,
             account_name,
             sign_out,
+            new_direct,
             channel_title,
             status,
             members_toggle,
