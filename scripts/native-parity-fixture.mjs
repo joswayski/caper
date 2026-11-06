@@ -2219,6 +2219,43 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           ...(visiting(channel, user) ? { visitor: true } : {}),
         });
       }
+      // Joining by invite link, like apps/api/src/spaces/invite_links.rs:
+      // preview, then join (members get the same answer without using it).
+      const invitePath = /^\/api\/invites\/([A-Za-z0-9]{10})(\/join)?$/.exec(path);
+      if (invitePath) {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const [, code, joining] = invitePath;
+        const [spaceId, link] =
+          [...state.inviteLinks].flatMap(([spaceId, links]) =>
+            links.filter((link) => link.code === code).map((link) => [spaceId, link]),
+          )[0] ?? [];
+        const detail = state.spaces.find((entry) => entry.space.id === spaceId);
+        const live =
+          link &&
+          !link.revokedAt &&
+          (!link.expiresAt || Date.parse(link.expiresAt) > Date.now()) &&
+          (link.maxUses === null || link.uses < link.maxUses);
+        if (!detail || !live) return reject(response, 404, "invite link is invalid or has expired");
+        const member = detail.members.some((entry) => entry.id === user.id);
+        if (!joining && method === "GET")
+          return json(response, 200, {
+            code,
+            space: { name: detail.space.name },
+            channel: link.channel ? { name: link.channel.name } : null,
+            inviter: { username: link.createdBy.username, displayName: link.createdBy.displayName },
+            memberCount: detail.members.length,
+            expiresAt: link.expiresAt,
+            alreadyMember: member,
+          });
+        if (joining && method === "POST") {
+          if (!member) {
+            link.uses += 1;
+            detail.members.push(clone(user));
+          }
+          return json(response, 200, { space: detail.space, channelId: link.channel?.id ?? null, joined: !member });
+        }
+        return reject(response, 405, "method not allowed");
+      }
       const inviteLinksPath = /^\/api\/spaces\/([^/]+)\/invite-links(?:\/([^/]+))?(\/regenerate)?$/.exec(path);
       if (inviteLinksPath) {
         if (!user) return reject(response, 401, "Sign in required.");
