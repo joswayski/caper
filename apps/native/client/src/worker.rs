@@ -1504,6 +1504,9 @@ struct Source<'a> {
     path: &'a std::path::Path,
     name: &'a str,
     edit: Option<&'a crate::attachment_edit::Edit>,
+    /// A pasted picture in a scratch file: it keeps `name`, not the
+    /// scratch file's.
+    pasted: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1554,7 +1557,14 @@ fn upload_file<H: Host>(
                 &compressing,
                 &cancel,
             ),
-            None => crate::uploads::prepare_path_with(source.path, settings, &compressing, &cancel),
+            None => crate::uploads::prepare_path_with(source.path, settings, &compressing, &cancel)
+                .map(|mut prepared| {
+                    if source.pasted {
+                        prepared.name =
+                            crate::compress::renamed(source.name, &prepared.content_type);
+                    }
+                    prepared
+                }),
         };
         let mut prepared = match prepared.and_then(|mut prepared| {
             prepared.retain_file()?;
@@ -1759,6 +1769,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
                 path: &path,
                 name: &name,
                 edit: edit.as_ref(),
+                pasted: source_scratch.is_some(),
             };
             upload_file(
                 api, key, &token, &channel, source, prepared, &settings, cancel, events, host,

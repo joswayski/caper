@@ -874,71 +874,38 @@ struct UploadSendIntent {
     spoilers: Vec<bool>,
 }
 
-/// A file in the composer: preparing, uploading, uploaded or failed.
+/// A file in the composer: the shared upload state, plus what this client
+/// draws it with.
 struct DraftUpload {
-    /// Matches upload events; saving an edit restarts the upload with a new one.
-    key: u64,
-    /// Stays the same for the chip while uploads restart.
-    slot: u64,
-    spoiler: bool,
-    channel: String,
-    /// None belongs to the conversation composer, Some to this thread only.
-    thread_root_id: Option<String>,
-    name: String,
-    /// The picked file's name: an edited upload keeps it with its new extension.
-    source_name: String,
-    kind: model::AttachmentKind,
-    /// The selected original, available for preview before upload completes.
-    local_path: Option<std::path::PathBuf>,
+    upload: caper_client::drafts::Upload,
     /// Whether the original can be cropped, drawn on and so on before sending.
     editable: Option<attachment_edit::Kind>,
-    /// Applied to the original whenever it is prepared, including retries.
-    edit: Option<attachment_edit::Edit>,
-    /// Keep a pasted image alive through preparation, failed uploads and retries.
-    source_scratch: Option<std::sync::Arc<uploads::Scratch>>,
-    /// The picked file's size; 0 until the file was read.
-    source_size: u64,
-    /// What is stored after compression, once prepared.
-    stored_size: Option<u64>,
-    /// Video compression before upload, 0–1, while it runs.
-    compressing: Option<f32>,
-    progress: f32,
-    error: Option<String>,
-    attachment: Option<model::Attachment>,
-    uploaded_at: Option<Instant>,
-    /// The server no longer has this upload, so it must be uploaded again.
-    /// A flag rather than an `uploaded_at` a day in the past: `Instant` counts
-    /// from boot, so subtracting a day panics on a machine up less than a day.
-    upload_expired: bool,
-    uploading: bool,
-    prepared: Option<std::sync::Arc<uploads::Prepared>>,
     /// Local decode for the chip and for the sent message before its URL loads.
     thumbnail_image: Option<egui::ColorImage>,
     thumbnail: Option<egui::TextureHandle>,
-    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl DraftUpload {
-    /// A recorded voice message staged in the composer.
-    fn voice(&self) -> Option<&std::sync::Arc<uploads::Prepared>> {
-        self.prepared
-            .as_ref()
-            .filter(|prepared| prepared.voice.is_some())
+impl From<caper_client::drafts::Upload> for DraftUpload {
+    fn from(upload: caper_client::drafts::Upload) -> Self {
+        Self {
+            upload,
+            editable: None,
+            thumbnail_image: None,
+            thumbnail: None,
+        }
     }
+}
 
-    fn send_attachment(&self) -> Option<model::Attachment> {
-        self.attachment.clone().map(|mut attachment| {
-            attachment.spoiler = self.spoiler;
-            attachment
-        })
+impl std::ops::Deref for DraftUpload {
+    type Target = caper_client::drafts::Upload;
+    fn deref(&self) -> &Self::Target {
+        &self.upload
     }
+}
 
-    fn needs_upload(&self) -> bool {
-        self.attachment.is_none()
-            || self.upload_expired
-            || self
-                .uploaded_at
-                .is_some_and(|at| at.elapsed() >= Duration::from_secs(23 * 60 * 60))
+impl std::ops::DerefMut for DraftUpload {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.upload
     }
 }
 
@@ -3845,32 +3812,18 @@ impl CaperApp {
             self.local_media.push((id.into(), image.clone()));
         }
         let channel = self.selected_channel.clone().unwrap_or_default();
-        let draft = |key, name: &str, size, progress, error: Option<&str>| DraftUpload {
-            key,
-            slot: key,
-            spoiler: false,
-            channel: channel.clone(),
-            thread_root_id: None,
-            name: name.into(),
-            source_name: name.into(),
-            kind: model::AttachmentKind::Image,
-            local_path: None,
-            editable: None,
-            edit: None,
-            source_scratch: None,
-            source_size: size,
-            stored_size: Some(size),
-            compressing: None,
-            progress,
-            error: error.map(str::to_owned),
-            attachment: None,
-            uploaded_at: None,
-            upload_expired: false,
-            uploading: error.is_none() && progress < 1.0,
-            prepared: None,
-            thumbnail_image: Some(image.clone()),
-            thumbnail: None,
-            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        let draft = |key, name: &str, size, progress, error: Option<&str>| {
+            let mut upload =
+                caper_client::drafts::Upload::picked(key, channel.clone(), None, name.into(), None);
+            upload.kind = model::AttachmentKind::Image;
+            upload.source_size = size;
+            upload.stored_size = Some(size);
+            upload.progress = progress;
+            upload.error = error.map(str::to_owned);
+            upload.uploading = error.is_none() && progress < 1.0;
+            let mut draft = DraftUpload::from(upload);
+            draft.thumbnail_image = Some(image.clone());
+            draft
         };
         let mut done = draft(1, "TEST FIXTURE photo.jpg", 1_677_722, 1.0, None);
         done.stored_size = Some(146_432);
@@ -7433,7 +7386,7 @@ impl CaperApp {
         for file in files {
             file.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            ids.extend(file.attachment.map(|attachment| attachment.id));
+            ids.extend(file.upload.attachment.map(|attachment| attachment.id));
         }
         self.cancel_assets(ids);
     }
@@ -8622,7 +8575,7 @@ impl CaperApp {
             });
             self.pending_files = sent;
             self.draft_files = kept;
-            self.pending_needs_upload = self.pending_files.iter().any(DraftUpload::needs_upload);
+            self.pending_needs_upload = self.pending_files.iter().any(|file| file.needs_upload());
         }
         let thread_root_id = pending.thread_root_id.clone();
         let broadcast = pending.broadcast;
@@ -8915,48 +8868,24 @@ impl CaperApp {
         };
         let room = uploads::MAX_ATTACHMENTS.saturating_sub(count);
         if room == 0 {
-            self.error = Some(format!(
-                "You can attach up to {} files.",
-                uploads::MAX_ATTACHMENTS
-            ));
+            self.error = Some(caper_client::drafts::room_error(0));
             return;
         }
-        self.error = (files.len() > room).then(|| {
-            format!(
-                "Only {room} more file{} can be attached.",
-                if room == 1 { "" } else { "s" }
-            )
-        });
+        self.error = (files.len() > room).then(|| caper_client::drafts::room_error(room));
         for file in files.into_iter().take(room) {
             self.draft_keys += 1;
-            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let draft = DraftUpload {
-                key: self.draft_keys,
-                slot: self.draft_keys,
-                spoiler: false,
-                channel: channel.clone(),
-                thread_root_id: root.clone(),
-                name: file.name(),
-                source_name: file.name(),
-                kind: model::AttachmentKind::File,
-                local_path: Some(file.path.clone()),
-                editable: file.editable,
-                edit: file.edit.clone(),
-                source_scratch: file.scratch.clone(),
-                source_size: 0,
-                stored_size: None,
-                compressing: None,
-                progress: 0.0,
-                error: None,
-                attachment: None,
-                uploaded_at: None,
-                upload_expired: false,
-                uploading: true,
-                prepared: None,
-                thumbnail_image: None,
-                thumbnail: None,
-                cancel: cancel.clone(),
-            };
+            let mut upload = caper_client::drafts::Upload::picked(
+                self.draft_keys,
+                channel.clone(),
+                root.clone(),
+                file.name(),
+                Some(file.path.clone()),
+            );
+            upload.edit = file.edit.clone();
+            upload.source_scratch = file.scratch.clone();
+            let command = upload.command(token.clone(), settings.clone());
+            let mut draft = DraftUpload::from(upload);
+            draft.editable = file.editable;
             if open {
                 self.draft_files.push(draft);
             } else {
@@ -8965,18 +8894,7 @@ impl CaperApp {
                     .or_default()
                     .push(draft);
             }
-            self.worker.send(Command::Upload {
-                key: self.draft_keys,
-                token: token.clone(),
-                channel: channel.clone(),
-                name: file.name(),
-                path: file.file.path,
-                edit: file.file.edit,
-                source_scratch: file.file.scratch,
-                prepared: None,
-                settings: settings.clone(),
-                cancel,
-            });
+            self.worker.send(command);
         }
     }
 
@@ -9003,33 +8921,15 @@ impl CaperApp {
                 continue;
             }
             self.draft_keys += 1;
-            self.draft_files.push(DraftUpload {
-                key: self.draft_keys,
-                slot: self.draft_keys,
-                spoiler: attachment.spoiler,
-                channel: channel.clone(),
-                thread_root_id: root.clone(),
-                name: attachment.name.clone(),
-                source_name: attachment.name.clone(),
-                kind: attachment.kind,
-                local_path: None,
-                editable: None,
-                edit: None,
-                source_scratch: None,
-                source_size: attachment.size,
-                stored_size: Some(attachment.size),
-                compressing: None,
-                progress: 1.0,
-                error: None,
-                attachment: Some(attachment),
-                uploaded_at: None,
-                upload_expired: false,
-                uploading: false,
-                prepared: None,
-                thumbnail_image: None,
-                thumbnail: None,
-                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            });
+            self.draft_files.push(
+                caper_client::drafts::Upload::uploaded(
+                    self.draft_keys,
+                    channel.clone(),
+                    root.clone(),
+                    attachment,
+                )
+                .into(),
+            );
         }
         self.release_pending_files();
     }
@@ -9047,7 +8947,7 @@ impl CaperApp {
             draft
                 .cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            if let Some(file) = draft.attachment {
+            if let Some(file) = draft.upload.attachment {
                 self.cancel_assets(vec![file.id]);
             }
         }
@@ -9073,7 +8973,7 @@ impl CaperApp {
             draft
                 .cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            if let Some(file) = draft.attachment {
+            if let Some(file) = draft.upload.attachment {
                 ids.push(file.id);
             }
         }
@@ -9090,58 +8990,22 @@ impl CaperApp {
         else {
             return;
         };
-        match update {
-            worker::UploadUpdate::Retained(prepared) => {
-                draft.prepared = Some(prepared);
+        let finished = matches!(update, worker::UploadUpdate::Finished(Ok(_)));
+        if let Some(image) = draft.apply(update) {
+            let image = host::color_image(image);
+            // The upload may have finished first.
+            if let Some(attachment) = &draft.attachment {
+                self.local_media
+                    .push((attachment.id.clone(), image.clone()));
             }
-            worker::UploadUpdate::Prepared {
-                name,
-                kind,
-                source_size,
-                stored_size,
-            } => {
-                draft.name = name;
-                draft.kind = kind;
-                draft.source_size = source_size;
-                draft.stored_size = Some(stored_size);
-                draft.compressing = None;
-            }
-            worker::UploadUpdate::Compressing(fraction) => {
-                draft.compressing = Some(fraction.max(draft.compressing.unwrap_or(0.0)));
-            }
-            worker::UploadUpdate::Thumbnail(image) => {
-                let image = host::color_image(image);
-                // The upload may have finished first.
-                if let Some(attachment) = &draft.attachment {
-                    self.local_media
-                        .push((attachment.id.clone(), image.clone()));
-                }
-                draft.thumbnail_image = Some(image);
-            }
-            worker::UploadUpdate::Progress(progress) => {
-                draft.progress = progress.max(draft.progress);
-            }
-            worker::UploadUpdate::Finished(Ok(attachment)) => {
-                draft.progress = 1.0;
-                draft.uploaded_at = Some(Instant::now());
-                draft.upload_expired = false;
-                draft.uploading = false;
-                draft.error = None;
-                // The sender sees its own copy without a download.
-                if let Some(image) = draft.thumbnail_image.clone() {
-                    self.local_media.push((attachment.id.clone(), image));
-                }
-                draft.attachment = Some(attachment);
-            }
-            worker::UploadUpdate::Finished(Err(error)) => {
-                draft.uploading = false;
-                // An edit that could not be applied says so; nothing was sent.
-                draft.error = Some(if error.message == attachment_edit::FAILED {
-                    error.message
-                } else {
-                    "Failed to upload.".into()
-                });
-            }
+            draft.thumbnail_image = Some(image);
+        }
+        // The sender sees its own copy without a download.
+        if finished
+            && let (Some(attachment), Some(image)) = (&draft.attachment, &draft.thumbnail_image)
+        {
+            self.local_media
+                .push((attachment.id.clone(), image.clone()));
         }
         self.finish_pending_uploads();
         self.finish_upload_send_intent();
@@ -9160,26 +9024,10 @@ impl CaperApp {
         else {
             return;
         };
-        if file.uploading || !file.needs_upload() {
+        let Some(old) = file.restart() else {
             return;
-        }
-        let old = file.attachment.take();
-        file.error = None;
-        file.progress = 0.0;
-        file.uploading = true;
-        self.worker.send(Command::Upload {
-            key,
-            token,
-            channel: file.channel.clone(),
-            path: file.local_path.clone().unwrap_or_default(),
-            name: file.source_name.clone(),
-            // Prepared bytes already carry the edit; without them it is applied again.
-            edit: file.edit.clone(),
-            source_scratch: file.source_scratch.clone(),
-            prepared: file.prepared.clone(),
-            settings,
-            cancel: file.cancel.clone(),
-        });
+        };
+        self.worker.send(file.command(token, settings));
         if let Some(old) = old {
             self.cancel_assets(vec![old.id]);
         }
@@ -9226,7 +9074,7 @@ impl CaperApp {
         pending.attachments = self
             .pending_files
             .iter()
-            .filter_map(DraftUpload::send_attachment)
+            .filter_map(|file| file.send_attachment())
             .collect();
         self.pending_needs_upload = false;
         self.worker.send(Command::Send {
@@ -26179,38 +26027,21 @@ fn draft_tile_width(available: f32) -> f32 {
 /// its Remove ring shows while it is unfinished: packing first when that
 /// reports a fraction, then sending.
 fn draft_status(draft: &DraftUpload) -> (String, TileProgress) {
-    if let Some(error) = &draft.error {
-        (error.clone(), TileProgress::Unknown)
-    } else if draft.attachment.is_some() {
-        (String::new(), TileProgress::Known(1.0))
-    } else if let Some(fraction) = draft.compressing.filter(|_| draft.stored_size.is_none()) {
-        (
-            format!("Packing {}%", (fraction * 100.0).round() as u32),
-            TileProgress::Known(fraction),
-        )
-    } else if draft.stored_size.is_none() {
-        ("Preparing…".into(), TileProgress::Unknown)
-    } else if draft.progress >= 1.0 {
-        ("Confirming…".into(), TileProgress::Unknown)
-    } else {
-        (
-            format!("Sending {}%", (draft.progress * 100.0).round() as u32),
-            TileProgress::Known(draft.progress),
-        )
-    }
+    let (status, progress) = draft.status();
+    (
+        status,
+        match progress {
+            caper_client::drafts::Progress::Known(fraction) => TileProgress::Known(fraction),
+            caper_client::drafts::Progress::Unknown => TileProgress::Unknown,
+        },
+    )
 }
 
 fn paint_file_fallback(painter: &egui::Painter, rect: egui::Rect, name: &str) {
     let icon =
         egui::Rect::from_center_size(rect.center() - egui::vec2(0.0, 8.0), egui::vec2(24.0, 24.0));
     paint_icon(painter, icon, NavIcon::FileText, MUTED);
-    let kind = std::path::Path::new(name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .filter(|ext| {
-            !ext.is_empty() && ext.len() <= 5 && ext.chars().all(|ch| ch.is_ascii_alphanumeric())
-        })
-        .map_or_else(|| "File".to_owned(), str::to_ascii_uppercase);
+    let kind = caper_client::drafts::kind_label(name);
     painter.text(
         rect.center() + egui::vec2(0.0, 12.0),
         egui::Align2::CENTER_CENTER,
@@ -29397,35 +29228,19 @@ impl CaperApp {
         prepared: std::sync::Arc<uploads::Prepared>,
     ) -> DraftUpload {
         self.draft_keys += 1;
-        let key = self.draft_keys;
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        DraftUpload {
-            key,
-            slot: key,
-            spoiler: false,
+        let mut upload = caper_client::drafts::Upload::picked(
+            self.draft_keys,
             channel,
-            thread_root_id: root,
-            name: prepared.name.clone(),
-            source_name: prepared.name.clone(),
-            kind: model::AttachmentKind::Audio,
-            local_path: None,
-            editable: None,
-            edit: None,
-            source_scratch: None,
-            source_size: prepared.size,
-            stored_size: Some(prepared.size),
-            compressing: None,
-            progress: 0.0,
-            error: None,
-            attachment: None,
-            uploaded_at: None,
-            upload_expired: false,
-            uploading: false,
-            prepared: Some(prepared),
-            thumbnail_image: None,
-            thumbnail: None,
-            cancel,
-        }
+            root,
+            prepared.name.clone(),
+            None,
+        );
+        upload.kind = model::AttachmentKind::Audio;
+        upload.source_size = prepared.size;
+        upload.stored_size = Some(prepared.size);
+        upload.uploading = false;
+        upload.prepared = Some(prepared);
+        upload.into()
     }
 
     /// Uploads (or retries) the recorded file as it is: the prepared voice
@@ -29749,7 +29564,7 @@ impl CaperApp {
         self.draft_files
             .iter()
             .chain(self.staged_files.values().flatten())
-            .filter_map(DraftUpload::voice)
+            .filter_map(|draft| draft.voice())
             .chain(
                 self.profile_drafts
                     .values()

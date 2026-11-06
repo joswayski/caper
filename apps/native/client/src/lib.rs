@@ -14,6 +14,7 @@ pub mod blocking;
 pub mod compress;
 pub mod credentials;
 pub mod daily_icon;
+pub mod drafts;
 pub mod edits;
 pub mod effects;
 pub mod embeds;
