@@ -44,7 +44,11 @@ final class WorkspaceViewController: UIViewController {
         view.backgroundColor = UIKitStyle.blackout
         embed(conversation)
         // Browse sits under the conversation: build it after the first frame.
-        DispatchQueue.main.async { [weak self] in self?.loadBrowse() }
+        // A main-queue block still runs before the first commit; a display
+        // link first fires once that frame is on screen.
+        CADisplayLink(target: FirstFrame { [weak self] in
+            DispatchQueue.main.async { self?.loadBrowse() }
+        }, selector: #selector(FirstFrame.tick)).add(to: .main, forMode: .common)
         conversation.view.layer.shadowColor = UIColor.black.cgColor
         conversation.view.layer.shadowOpacity = 0.45
         conversation.view.layer.shadowRadius = 16

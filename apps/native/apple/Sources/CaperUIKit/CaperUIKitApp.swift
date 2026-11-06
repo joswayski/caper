@@ -66,7 +66,6 @@ enum CaperUIKitLaunch {
 final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     private var root: RootViewController?
-    private var firstFrame: CADisplayLink?
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let scene = scene as? UIWindowScene else { return }
@@ -118,17 +117,13 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// The first display refresh after the window is committed: the frame the
     /// reader sees. Logged so device runs can be read from Console.
     private func measureFirstFrame(cached: Bool) {
-        let link = CADisplayLink(target: FirstFrame { [weak self] in
-            self?.firstFrame?.invalidate()
-            self?.firstFrame = nil
+        CADisplayLink(target: FirstFrame { [weak self] in
             guard let start = CaperUIKitLaunch.processStart else { return }
             let milliseconds = Int(Date().timeIntervalSince(start) * 1000)
             CaperUIKitLaunch.log.notice("first frame \(milliseconds, privacy: .public) ms cached=\(cached, privacy: .public)")
             // Parity launches expose it to the UI tests that record it.
             if CaperUIKitLaunch.parityFixture { self?.window?.accessibilityIdentifier = "first-frame-\(milliseconds)ms-cached-\(cached)" }
-        }, selector: #selector(FirstFrame.tick))
-        link.add(to: .main, forMode: .common)
-        firstFrame = link
+        }, selector: #selector(FirstFrame.tick)).add(to: .main, forMode: .common)
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) { root?.model.applicationActivityChanged(active: true) }
@@ -153,10 +148,12 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 }
 
-private final class FirstFrame: NSObject {
+/// Runs once, on a display link's first tick: after a frame is on screen.
+final class FirstFrame: NSObject {
     private var done: (() -> Void)?
     init(_ done: @escaping () -> Void) { self.done = done }
-    @objc func tick() {
+    @objc func tick(_ link: CADisplayLink) {
+        link.invalidate()
         done?()
         done = nil
     }
