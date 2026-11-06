@@ -114,6 +114,79 @@ import XCTest
         capture("conversation, wide", app: app)
     }
 
+    func testMentionClickPreservesDraggingAndProtectsUnsavedProfileEdits() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let message = app.textViews["message-chan00000001m04"]
+        XCTAssertTrue(message.waitForExistence(timeout: 15))
+        // The resolved pill follows "Agreed, " on the first line at either width.
+        let pill = message.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 90, dy: 10))
+        pill.press(forDuration: 0.05, thenDragTo: pill.withOffset(CGVector(dx: 65, dy: 0)))
+        app.typeKey("c", modifierFlags: .command)
+        let copied = try XCTUnwrap(NSPasteboard.general.string(forType: .string))
+        XCTAssertFalse(copied.isEmpty)
+        XCTAssertLessThan(copied.count, (message.value as? String ?? "").count)
+        XCTAssertFalse(app.buttons["mention-card-close"].exists, "Dragging through a mention selects text, not a profile")
+        pill.click()
+        XCTAssertTrue(app.buttons["mention-card-edit-profile"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["mention-card-you"].exists)
+        XCTAssertFalse(app.buttons["mention-card-message"].exists)
+        capture("own mention profile", app: app)
+        app.buttons["mention-card-edit-profile"].click()
+        let name = app.textFields["Display name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.click(); name.typeKey("a", modifierFlags: .command); name.typeText("Unsaved name")
+        app.typeKey(.escape, modifierFlags: [])
+        let confirmation = app.sheets.containing(.staticText, identifier: "Discard profile changes?").firstMatch
+        let keep = confirmation.buttons["Keep editing"]
+        XCTAssertTrue(keep.waitForExistence(timeout: 5), "Escape must not silently discard profile edits")
+        capture("unsaved profile confirmation", app: app)
+        keep.click()
+        XCTAssertEqual(name.value as? String, "Unsaved name")
+        app.buttons["Close profile"].click()
+        XCTAssertTrue(confirmation.buttons["Discard"].waitForExistence(timeout: 5))
+        confirmation.buttons["Discard"].click()
+        XCTAssertTrue(app.buttons["profile-save"].waitForNonExistence(timeout: 5))
+        app.buttons["profile-avatar-chan00000001m01"].click()
+        XCTAssertTrue(app.buttons["mention-card-edit-profile"].waitForExistence(timeout: 5))
+        app.buttons["mention-card-close"].click()
+    }
+
+    func testAuthorAndMemberProfilesShareDraftAndSendThroughDirectMessages() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let author = app.buttons["profile-author-chan00000001m02"]
+        XCTAssertTrue(author.waitForExistence(timeout: 15))
+        author.hover(); app.buttons["profile-author-chan00000001m04"].hover(); author.click()
+        let composer = app.textViews["mention-card-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.click(); composer.typeText("TEST FIXTURE — independent profile draft")
+        capture("profile inline composer", app: app)
+        app.buttons["mention-card-close"].click()
+        app.buttons["profile-member-member000001"].click()
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE — independent profile draft")
+        app.descendants(matching: .any)["mention-card-more"].click()
+        app.descendants(matching: .any)["mention-card-block"].click()
+        let confirmation = app.sheets.containing(.staticText, identifier: "Block Maya?").firstMatch
+        XCTAssertTrue(confirmation.buttons["Block"].waitForExistence(timeout: 5))
+        capture("profile block confirmation", app: app)
+        confirmation.buttons["Cancel"].click()
+        author.click()
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE — independent profile draft")
+        app.buttons["mention-card-send"].click()
+        let sent = app.textViews.matching(NSPredicate(format: "value == %@", "TEST FIXTURE — independent profile draft")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 10), "Profile Send opens the confirmed DM without losing the draft")
+        XCTAssertTrue(app.buttons["mention-card-close"].waitForNonExistence(timeout: 5))
+        XCTAssertEqual(app.textViews["message-composer"].value as? String, "")
+        capture("profile message delivered", app: app)
+    }
+
     func testMemberSearchPrivateGroupsAndReopeningThePanel() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()

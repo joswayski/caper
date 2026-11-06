@@ -9,6 +9,7 @@ import CaperCore
     private let rail = NativeView(NativeStyle.blackout)
     private let sidebar = NativeView(NativeStyle.sidebar)
     private lazy var members = MemberPanel(model: model)
+    private lazy var profiles = AppKitProfilePresenter(model: model)
     private var membersPreference: Bool?
     private lazy var membersToggle = NativeButton.icon("Show members", symbol: "person.2") { [weak self] in
         guard let self else { return }
@@ -60,6 +61,15 @@ import CaperCore
         members.close = { [weak self] in
             self?.membersPreference = false
             self?.view.needsLayout = true
+        }
+        members.openProfile = { [weak self] member, view in
+            self?.profiles.show(member: member, relativeTo: view.bounds, of: view)
+        }
+        timeline.openAuthor = { [weak self] author, view in
+            self?.profiles.show(author: author, relativeTo: view.bounds, of: view)
+        }
+        timeline.openMention = { [weak self] mention, view, rect in
+            self?.profiles.show(mention: mention, relativeTo: rect, of: view)
         }
         membersToggle.setAccessibilityIdentifier("toggle-members")
         status.textColor = NativeStyle.muted

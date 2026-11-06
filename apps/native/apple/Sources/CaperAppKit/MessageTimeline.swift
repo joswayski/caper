@@ -16,6 +16,8 @@ import CaperCore
     var canLoadOlder = false
     var loadOlder: (() -> Void)?
     var react: ((String, String) -> Void)?
+    var openAuthor: ((ChatAuthor, NSView) -> Void)?
+    var openMention: ((MessageMention, NSView, NSRect) -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -146,6 +148,8 @@ import CaperCore
         if let existing = rows[message.id] { row = existing }
         else {
             row = MessageCell()
+            row.openAuthor = { [weak self] author, view in self?.openAuthor?(author, view) }
+            row.body.openMention = { [weak self] mention, view, rect in self?.openMention?(mention, view, rect) }
             rows[message.id] = row
             document.addSubview(row)
         }
@@ -165,10 +169,19 @@ import CaperCore
 }
 
 @MainActor private final class MessageCell: NativeView {
-    let body = NSTextView()
+    let body = MessageTextView()
     private let author = NativeStyle.label("", size: 13, bold: true)
     private let timestamp = NativeStyle.label("", size: 10)
     private let avatar = NSImageView()
+    var openAuthor: ((ChatAuthor, NSView) -> Void)?
+    private lazy var authorAction: NativeButton = NativeButton("") { [weak self] in
+        guard let self, let message = self.message, !message.author.isGuest else { return }
+        self.openAuthor?(message.author, self.authorAction)
+    }
+    private lazy var avatarAction: NativeButton = NativeButton("") { [weak self] in
+        guard let self, let message = self.message, !message.author.isGuest else { return }
+        self.openAuthor?(message.author, self.avatarAction)
+    }
     private let detail = NativeStyle.label("", size: 12)
     private let day = NativeStyle.label("", size: 10, bold: true)
     private let dayLeading = CALayer()
@@ -206,7 +219,9 @@ import CaperCore
         detail.textColor = NativeStyle.muted
         avatar.wantsLayer = true; avatar.layer?.cornerRadius = 10; avatar.layer?.masksToBounds = true
         avatar.setAccessibilityElement(false)
-        [body, author, timestamp, avatar, detail, day].forEach { addSubview($0) }
+        authorAction.layer?.backgroundColor = NSColor.clear.cgColor
+        avatarAction.layer?.backgroundColor = NSColor.clear.cgColor
+        [body, author, timestamp, avatar, detail, day, authorAction, avatarAction].forEach { addSubview($0) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -224,6 +239,13 @@ import CaperCore
         mentionBar.isHidden = !mentionsViewer || message.pin != nil
         CATransaction.commit()
         author.stringValue = message.author.name
+        author.setAccessibilityElement(message.author.isGuest)
+        authorAction.setAccessibilityLabel("Open profile for \(message.author.name)")
+        authorAction.setAccessibilityIdentifier("profile-author-\(message.id)")
+        authorAction.isHidden = grouped || message.author.isGuest
+        avatarAction.setAccessibilityLabel("Open profile for \(message.author.name)")
+        avatarAction.setAccessibilityIdentifier("profile-avatar-\(message.id)")
+        avatarAction.isHidden = authorAction.isHidden
         timestamp.stringValue = NativePresentation.time(message.createdAt)
         let text = NSMutableAttributedString(attributedString: NativePresentation.messageText(
             message.isDeleted ? MessageDeletion.placeholder : message.content.text,
@@ -237,6 +259,7 @@ import CaperCore
         paragraph.minimumLineHeight = 20; paragraph.maximumLineHeight = 20
         text.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: text.length))
         body.textStorage?.setAttributedString(text)
+        body.configureMentions(message.isDeleted ? [] : message.content.mentions)
         body.setAccessibilityIdentifier("message-\(message.id)")
         if NSMaxRange(range) <= body.string.utf16.count { body.setSelectedRange(range) }
         if let id = CaperAvatar.index(for: message.author.avatarId) {
@@ -284,6 +307,8 @@ import CaperCore
         let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - timeWidth - 7))
         author.frame = NSRect(x: 68, y: inset + 10, width: authorWidth, height: 20)
         timestamp.frame = NSRect(x: author.frame.maxX + 7, y: inset + 13, width: timeWidth, height: 17)
+        authorAction.frame = author.frame
+        avatarAction.frame = avatar.frame
         let footer = (detail.stringValue.isEmpty ? 0.0 : 24) + (reactions.isEmpty ? 0.0 : 32)
         let top = textTop
         body.frame = NSRect(x: 68, y: top, width: max(40, bounds.width - 88), height: max(20, bounds.height - top - footer - 12))
@@ -293,6 +318,68 @@ import CaperCore
             let width = max(54, reaction.intrinsicContentSize.width + 12)
             reaction.frame = NSRect(x: x, y: bounds.height - 40, width: width, height: 28)
             x += width + 6
+        }
+    }
+}
+
+/// TextKit still owns selection, including drags starting on a mention. Only a
+/// single stationary click on an actual resolved-person glyph opens a card.
+@MainActor private final class MessageTextView: NSTextView {
+    var openMention: ((MessageMention, NSView, NSRect) -> Void)?
+    private var people: [String: MessageMention] = [:]
+
+    func configureMentions(_ mentions: [MessageMention]) {
+        people.removeAll()
+        var actions: [NSAccessibilityCustomAction] = []
+        let text = attributedString()
+        text.enumerateAttribute(NativePresentation.mentionAttribute, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+            guard let id = value as? String, !id.isEmpty, self.people[id] == nil,
+                  let mention = mentions.first(where: { if case let .user(personID, _) = $0 { return personID == id }; return false }),
+                  case let .user(_, username) = mention else { return }
+            self.people[id] = mention
+            actions.append(NSAccessibilityCustomAction(name: "Open profile for @\(username)") { [weak self] in
+                guard let self, let openMention = self.openMention else { return false }
+                openMention(mention, self, self.bounds)
+                return true
+            })
+        }
+        setAccessibilityCustomActions(actions)
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let start = convert(event.locationInWindow, from: nil)
+        let hit = person(at: start)
+        super.mouseDown(with: event)
+        guard event.clickCount == 1, selectedRange().length == 0, let hit, let window else { return }
+        let end = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard hypot(end.x - start.x, end.y - start.y) < 3 else { return }
+        openMention?(hit.0, self, hit.1)
+    }
+
+    private func person(at point: NSPoint) -> (MessageMention, NSRect)? {
+        guard let layoutManager, let textContainer, !string.isEmpty else { return nil }
+        let origin = textContainerOrigin
+        let local = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+        let glyph = layoutManager.glyphIndex(for: local, in: textContainer)
+        guard glyph < layoutManager.numberOfGlyphs else { return nil }
+        let rect = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer)
+        guard rect.contains(local) else { return nil }
+        let index = layoutManager.characterIndexForGlyph(at: glyph)
+        guard let id = textStorage?.attribute(NativePresentation.mentionAttribute, at: index, effectiveRange: nil) as? String,
+              let mention = people[id] else { return nil }
+        return (mention, rect.offsetBy(dx: origin.x, dy: origin.y))
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let layoutManager, let textContainer else { return }
+        attributedString().enumerateAttribute(NativePresentation.mentionAttribute, in: NSRange(location: 0, length: string.utf16.count)) { value, range, _ in
+            guard let id = value as? String, self.people[id] != nil else { return }
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: textContainer) { rect, _ in
+                self.addCursorRect(rect.offsetBy(dx: self.textContainerOrigin.x, dy: self.textContainerOrigin.y), cursor: .pointingHand)
+            }
         }
     }
 }

@@ -9522,12 +9522,12 @@ private struct ProfileSheet: View {
 
 /// Hosts route backdrop/Escape/popover dismissal to the editor, rather than
 /// dropping its private draft. Identity equality avoids storing new closures on every render.
-private struct ProfileDismissAction: Equatable {
+struct ProfileDismissAction: Equatable {
     let id: UUID
     let action: () -> Void
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
 }
-private struct ProfileDismissPreference: PreferenceKey {
+struct ProfileDismissPreference: PreferenceKey {
     static let defaultValue: ProfileDismissAction? = nil
     static func reduce(value: inout ProfileDismissAction?, nextValue: () -> ProfileDismissAction?) {
         value = nextValue() ?? value

@@ -19,6 +19,7 @@ import CaperCore
     }
     private lazy var closeButton = NativeButton.icon("Close member list", symbol: "xmark") { [weak self] in self?.close?() }
     var close: (() -> Void)?
+    var openProfile: ((Member, NSView) -> Void)?
     private var searching = false
     private var spaceID: String?
     private var entries: [Entry] = []
@@ -217,7 +218,9 @@ import CaperCore
             if let existing = realized[index] { row = existing }
             else {
                 if let member = entry.member {
-                    row = MemberRow(member: member, status: entry.status, quiet: entry.quiet, raised: entry.raised)
+                    row = MemberRow(member: member, status: entry.status, quiet: entry.quiet, raised: entry.raised) { [weak self] view in
+                        self?.openProfile?(member, view)
+                    }
                 } else {
                     let label = NativeStyle.label(entry.text, size: 11, bold: true)
                     label.textColor = NativeStyle.muted
@@ -237,12 +240,20 @@ private final class MemberRow: NativeView {
     private let avatar = NativeAvatar()
     private let name: NSTextField
     private let badge = CALayer()
+    private let open: (NSView) -> Void
+    private lazy var action = NativeButton("") { [weak self] in
+        guard let self else { return }; self.open(self)
+    }
 
-    init(member: Member, status: PresenceStatus, quiet: Bool, raised: Bool) {
+    init(member: Member, status: PresenceStatus, quiet: Bool, raised: Bool, open: @escaping (NSView) -> Void) {
+        self.open = open
         name = NativeStyle.label(member.displayName, size: 12)
         let background = raised ? NSColor(CaperTheme.sidebarRaised) : NativeStyle.sidebar
         super.init(background)
-        addSubview(avatar); addSubview(name)
+        addSubview(avatar); addSubview(name); addSubview(action)
+        action.layer?.backgroundColor = NSColor.clear.cgColor
+        action.setAccessibilityIdentifier("profile-member-\(member.id)")
+        action.setAccessibilityLabel("Open profile for \(member.displayName)")
         avatar.update(member)
         name.textColor = quiet && status != .offline ? NativeStyle.muted : NativeStyle.text
         alphaValue = status == .offline ? 0.6 : 1
@@ -262,6 +273,7 @@ private final class MemberRow: NativeView {
         super.layout()
         avatar.frame = NSRect(x: 6, y: 4, width: 30, height: 30)
         name.frame = NSRect(x: 46, y: 10, width: max(0, bounds.width - 52), height: 18)
+        action.frame = bounds
         CATransaction.begin(); CATransaction.setDisableActions(true)
         badge.frame = NSRect(x: 26, y: 24, width: 10, height: 10)
         CATransaction.commit()
