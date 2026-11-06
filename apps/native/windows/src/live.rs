@@ -81,6 +81,14 @@ pub enum Update {
     Older(Box<(Conversation, Ids)>),
     /// Loading older messages started, finished or failed.
     OlderState,
+    /// The history around a message (View original): shown afresh with
+    /// that message centred and highlighted.
+    Context(Box<(Conversation, Ids)>, String),
+    /// Newer messages after the shown window: the same history with them
+    /// after the shown rows.
+    Newer(Box<(Conversation, Ids)>),
+    /// A message already shown: scroll to it and highlight it.
+    Focus(String),
     /// The open thread's messages or state changed (or it closed): the
     /// pane rebuilds from `Live::thread_view`.
     Thread,
@@ -216,6 +224,12 @@ pub struct Live {
     /// them (its root, its broadcast replies): kept out of the channel's
     /// rows, as in the egui client, until an older page brings them.
     thread_only: HashSet<String>,
+    /// The shown slice of the channel after View original jumped into its
+    /// past: from sequence `start`, up to `end` while newer messages exist
+    /// past it (egui's context window). None shows the latest history.
+    window: Option<(u64, Option<u64>)>,
+    /// Context (or newer messages) is loading.
+    pub context_loading: bool,
 }
 
 /// The thread beside the channel, as in the egui client's thread panel.
@@ -288,6 +302,8 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         thread: None,
         thread_request: 0,
         thread_only: HashSet::new(),
+        window: None,
+        context_loading: false,
     })
 }
 
@@ -418,7 +434,74 @@ impl Live {
     /// Whether `m` is one of the channel's rows (not a thread-only reply or
     /// a message only a thread loaded).
     fn in_channel(&self, m: &core::Message) -> bool {
-        m.is_channel_message() && !self.thread_only.contains(&m.id)
+        m.is_channel_message() && !self.thread_only.contains(&m.id) && self.in_window(m)
+    }
+
+    /// Whether `m` falls inside the shown window (always, at the latest).
+    fn in_window(&self, m: &core::Message) -> bool {
+        let Some((start, end)) = self.window else {
+            return true;
+        };
+        core::sequence(&m.seq).is_ok_and(|seq| seq >= start && end.is_none_or(|end| seq <= end))
+    }
+
+    /// Newer messages exist after the shown window: "Load newer messages"
+    /// and "Back to latest messages" end the history.
+    pub fn has_newer(&self) -> bool {
+        self.window.is_some_and(|(_, end)| end.is_some())
+    }
+
+    /// View original on a reply's quote: the original's thread for a thread
+    /// reply, the shown row when it is loaded, or the history around it.
+    pub fn view_original(&mut self, id: &str, thread_root: Option<&str>) {
+        if let Some(root) = thread_root {
+            self.open_thread(root);
+            return;
+        }
+        if self
+            .timeline
+            .messages()
+            .any(|m| m.id == id && self.in_channel(m))
+        {
+            self.queued.push(Update::Focus(id.to_owned()));
+            return;
+        }
+        self.load_context(id.to_owned(), false);
+    }
+
+    /// The next page after the shown window.
+    pub fn load_newer(&mut self) {
+        if self.context_loading {
+            return;
+        }
+        if let Some((_, Some(end))) = self.window {
+            self.load_context(end.to_string(), true);
+        }
+    }
+
+    /// Leaves the window for the channel's latest history.
+    pub fn back_to_latest(&mut self) {
+        self.reload();
+    }
+
+    fn load_context(&mut self, anchor: String, newer: bool) {
+        let Some(channel) = self.channel.clone() else {
+            return;
+        };
+        // Older pages and context for the previous view drop.
+        self.navigation += 1;
+        self.loading_older = false;
+        self.context_loading = true;
+        self.worker.send(Command::LoadContext {
+            generation: self.generation,
+            request: self.navigation,
+            token: self.token.clone(),
+            channel,
+            root: None,
+            anchor,
+            newer,
+        });
+        self.queued.push(Update::OlderState);
     }
 
     /// Whether message `id` is the open thread's root or one of its replies.
@@ -661,7 +744,7 @@ impl Live {
         let messages: Vec<core::Message> = self
             .timeline
             .messages()
-            .filter(|m| !self.thread_only.contains(&m.id))
+            .filter(|m| !self.thread_only.contains(&m.id) && self.in_window(m))
             .map(|m| self.shown(m))
             .collect();
         Some(conversation(
@@ -840,6 +923,8 @@ impl Live {
                     self.thread = None;
                     self.thread_request += 1;
                     self.thread_only.clear();
+                    self.window = None;
+                    self.context_loading = false;
                     self.detail = Some(detail.clone());
                     let mut timeline = core::Timeline::default();
                     if let Err(e) = timeline.reset(history.messages, &history.cursor) {
@@ -904,6 +989,12 @@ impl Live {
                         for m in &page.messages {
                             self.thread_only.remove(&m.id);
                         }
+                        // The window reaches back over the new page.
+                        if let (Some((start, _)), Some(first)) =
+                            (&mut self.window, page.messages.first())
+                        {
+                            *start = core::sequence(&first.seq).unwrap_or(*start).min(*start);
+                        }
                         if self.timeline.prepend(page.messages).is_err() {
                             return self.reload();
                         }
@@ -917,6 +1008,67 @@ impl Live {
                         self.older_error = Some(e.message);
                         out.push(Update::OlderState);
                     }
+                }
+            }
+            Event::ContextLoaded {
+                generation,
+                request,
+                channel,
+                root: None,
+                anchor,
+                newer,
+                result,
+            } if generation == current
+                && request == self.navigation
+                && self.channel.as_deref() == Some(channel.as_str()) =>
+            {
+                self.context_loading = false;
+                let page = match result {
+                    Ok(page)
+                        if page
+                            .messages
+                            .iter()
+                            .all(|m| m.channel_id == channel && m.is_channel_message())
+                            && (newer || page.messages.iter().any(|m| m.id == anchor)) =>
+                    {
+                        page
+                    }
+                    Ok(_) => {
+                        out.push(Update::Failed(
+                            "Caper returned invalid message context.".into(),
+                        ));
+                        out.push(Update::OlderState);
+                        return;
+                    }
+                    Err(e) if e.access_denied => return self.reload(),
+                    Err(e) => {
+                        out.push(Update::Failed(e.message));
+                        out.push(Update::OlderState);
+                        return;
+                    }
+                };
+                let seq = |m: Option<&core::Message>| m.and_then(|m| core::sequence(&m.seq).ok());
+                let end = seq(page.messages.last()).filter(|_| page.has_newer);
+                let start = seq(page.messages.first());
+                for m in &page.messages {
+                    self.thread_only.remove(&m.id);
+                }
+                if self.timeline.prepend(page.messages).is_err() {
+                    return self.reload();
+                }
+                if newer {
+                    if let Some((_, e)) = &mut self.window {
+                        *e = end;
+                    }
+                } else {
+                    self.window = Some((start.unwrap_or(0), end));
+                    self.has_more = page.has_more;
+                    self.older_error = None;
+                }
+                match self.rebuilt() {
+                    Some(rebuilt) if newer => out.push(Update::Newer(Box::new(rebuilt))),
+                    Some(rebuilt) => out.push(Update::Context(Box::new(rebuilt), anchor)),
+                    None => out.push(Update::OlderState),
                 }
             }
             Event::ThreadLoaded {
@@ -992,7 +1144,10 @@ impl Live {
                         .thread_root_id
                         .as_deref()
                         .is_some_and(|r| self.in_thread(r));
-                    if self.in_channel(&m) {
+                    if m.is_channel_message() && self.has_newer() {
+                        // As in egui: your message shows at the latest history.
+                        self.reload();
+                    } else if self.in_channel(&m) {
                         out.push(Update::Message(Box::new(m)));
                     }
                     if thread {
@@ -1375,6 +1530,8 @@ pub fn message(
         edited_inline: edited && grouped,
         deleted,
         reply: m.reply_to.as_ref().map(|r| model::Reply {
+            id: r.id.clone(),
+            thread_root: r.thread_root_id.clone(),
             author: person(&r.author.id, &r.author.name),
             text: if r.deleted {
                 String::new()

@@ -47,6 +47,8 @@ pub struct Brushes {
     pub hover: ID2D1SolidColorBrush,
     pub terracotta: ID2D1SolidColorBrush,
     pub selected: ID2D1SolidColorBrush,
+    /// View original's highlighted message, as in egui.
+    pub focused: ID2D1SolidColorBrush,
     pub mention: ID2D1SolidColorBrush,
     pub caper: ID2D1SolidColorBrush,
     pub link: ID2D1SolidColorBrush,
@@ -192,6 +194,7 @@ impl Gfx {
                 hover: brush(theme::HOVER.0, theme::HOVER.1)?,
                 terracotta: brush(theme::TERRACOTTA, 1.0)?,
                 selected: brush(theme::TERRACOTTA, 0.3)?,
+                focused: brush(theme::TERRACOTTA, 35.0 / 255.0)?,
                 mention: brush(theme::TERRACOTTA, 0.24)?,
                 caper: brush(theme::CAPER, 1.0)?,
                 link: brush(theme::LINK, 1.0)?,

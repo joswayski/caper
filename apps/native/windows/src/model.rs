@@ -51,6 +51,10 @@ pub struct Reaction {
 /// The message a reply quotes, drawn in a panel above it.
 #[derive(PartialEq)]
 pub struct Reply {
+    /// The quoted message, and its thread root when it is a thread reply
+    /// (View original opens that thread).
+    pub id: String,
+    pub thread_root: Option<String>,
     pub author: Person,
     /// Its text (or an attachments label); empty when it was deleted.
     pub text: String,

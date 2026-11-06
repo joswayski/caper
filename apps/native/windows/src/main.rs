@@ -249,6 +249,11 @@ pub struct App {
     /// its start loads the previous page (as in the egui client).
     redraw_head: bool,
     head_hover: bool,
+    /// The foot (Load newer / Back to latest) needs drawing; the button
+    /// under the pointer; View original's highlighted message.
+    redraw_foot: bool,
+    foot_hover: Option<usize>,
+    focused: Option<String>,
     older_armed: bool,
     /// The open thread beside the conversation, its surface and its reply box's.
     pub thread: Option<thread::Pane>,
@@ -387,6 +392,9 @@ impl App {
                 bar_drawn: None,
                 redraw_head: false,
                 head_hover: false,
+                redraw_foot: false,
+                foot_hover: None,
+                focused: None,
                 older_armed: false,
                 thread: None,
                 thread_p,
@@ -408,6 +416,8 @@ impl App {
         self.menu = None;
         self.picker = None;
         self.older_armed = false;
+        self.focused = None;
+        self.foot_hover = None;
         if self.thread.take().is_some() {
             self.dirty.layout = true;
         }
@@ -511,9 +521,25 @@ impl App {
                     let (c, ids) = *older;
                     self.prepend_history(c, ids)?;
                 }
+                live::Update::Context(context, anchor) => {
+                    let (mut c, ids) = *context;
+                    c.presence = self.c.presence;
+                    for (new, old) in c.members.iter_mut().zip(&self.c.members) {
+                        new.online = old.online;
+                    }
+                    self.ids = ids;
+                    self.set_conversation(c)?;
+                    self.focus_message(&anchor)?;
+                }
+                live::Update::Newer(newer) => {
+                    let (c, ids) = *newer;
+                    self.append_history(c, ids)?;
+                }
+                live::Update::Focus(id) => self.focus_message(&id)?,
                 live::Update::Thread => self.thread_refresh()?,
                 live::Update::OlderState => {
                     self.redraw_head = true;
+                    self.redraw_foot = true;
                     self.events |= EV_ROWS;
                     self.need = true;
                 }
@@ -1090,6 +1116,7 @@ impl App {
                 self.events |= EV_SCREEN;
             }
             live.send(text, reply, None);
+            self.set_focused(None);
         } else {
             self.c.send_local(text);
             self.rows.append(&self.g, &self.c)?;
@@ -1181,6 +1208,7 @@ impl App {
                 self.track_tool_hover();
                 self.track_reply_hover();
                 self.track_head_hover();
+                self.track_foot_hover();
                 if self.composer_drag {
                     let (tx, ty) = self.composer_text_origin();
                     let p = self.composer.hit(x - tx, y - ty - self.composer.scroll());
@@ -1226,6 +1254,10 @@ impl App {
                         self.open_thread_of(i);
                     } else if self.on_head_button(x, y) {
                         self.load_older();
+                    } else if let Some(k) = self.foot_at(x, y) {
+                        self.foot_activate(k);
+                    } else if let Some(i) = self.quote_link_at(x, y) {
+                        self.view_original_of(i);
                     } else if let Some((i, action)) = self.action_at(x, y) {
                         self.row_action(i, action);
                     } else if self.in_history(x, y) {
@@ -1298,6 +1330,8 @@ impl App {
                             || self.tool_at(x, y).is_some()
                             || self.on_head_button(x, y)
                             || self.thread_link_at(x, y).is_some()
+                            || self.foot_at(x, y).is_some()
+                            || self.quote_link_at(x, y).is_some()
                             || self.reply_cancel_rect().is_some_and(|(l, t, w, h)| {
                                 x >= l && x < l + w && y >= t && y < t + h
                             })
@@ -1824,16 +1858,42 @@ impl App {
             .map(|(top, state)| (((self.row_px(top) - y0 as f64) / s as f64) as f32, state))
             .filter(|(y, _)| *y < (y1 - y0) as f32 / s && *y + list::HEAD_H > 0.0);
         let head_hover = self.head_hover;
+        let foot: Vec<(f32, list::Head, bool)> =
+            if self.foot_h() > 0.0 && self.rows.lo < self.rows.len() {
+                (0..2)
+                    .map(|k| {
+                        let top = self.rows.bottom() + (k as f32 * list::HEAD_H) as f64;
+                        (
+                            ((self.row_px(top) - y0 as f64) / s as f64) as f32,
+                            self.foot_head(k),
+                            self.foot_hover == Some(k),
+                        )
+                    })
+                    .filter(|(y, ..)| *y < (y1 - y0) as f32 / s && *y + list::HEAD_H > 0.0)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        let focused = self
+            .focused
+            .as_ref()
+            .and_then(|id| self.ids.rows.get(id).copied());
         let (g, c, rows) = (&self.g, &self.c, &mut self.rows);
         gfx::draw_local(&self.vs, r, s, |dc| unsafe {
             dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
             if let Some((y, state)) = head {
                 list::draw_head(g, dc, state, lw, y, head_hover)?;
             }
+            for (y, foot, lit) in &foot {
+                list::draw_head_row(g, dc, foot, lw, *y, *lit)?;
+            }
             for (i, y, h, rs) in tops {
+                // The date divider above a row is not part of its hover.
+                let lead = rows.row(i).map_or(0.0, |r| r.lead);
+                if focused == Some(i) {
+                    dc.FillRectangle(&rect(0.0, y + lead, lw, y + h), &g.brushes.focused);
+                }
                 if hover == Some(i) {
-                    // The date divider above a row is not part of its hover.
-                    let lead = rows.row(i).map_or(0.0, |r| r.lead);
                     dc.FillRectangle(&rect(0.0, y + lead, lw, y + h), &g.brushes.hover);
                 }
                 list::draw_row(g, dc, c, rows, i, y, rs)?;
@@ -1849,8 +1909,9 @@ impl App {
         // drawn this frame; the margins fill in on the following frames.
         let fresh = self.drawn.is_none();
         let margin = if fresh { 0.0 } else { vh };
+        let foot_h = self.foot_h() as f64;
         if self.at_end {
-            self.scroll_top = self.rows.bottom() - vh;
+            self.scroll_top = self.rows.bottom() + foot_h - vh;
         }
         self.rows
             .measure_up_to(&self.g, &self.c, self.scroll_top - margin)?;
@@ -1859,7 +1920,7 @@ impl App {
         } else {
             f64::NEG_INFINITY
         };
-        let max = (self.rows.bottom() - vh).max(min);
+        let max = (self.rows.bottom() + foot_h - vh).max(min);
         self.scroll_top = self.scroll_top.clamp(min, max);
         self.at_end = self.scroll_top >= max - 0.5;
         self.older_armed |= self.at_end;
@@ -1906,7 +1967,7 @@ impl App {
         };
         let (lim0, lim1) = (
             self.row_px(known_top).floor() as i64,
-            self.row_px(self.rows.bottom()).ceil() as i64,
+            self.row_px(self.rows.bottom() + foot_h).ceil() as i64,
         );
         let (above, below) = if fresh { (0.0, 1.0) } else { (0.25, 1.25) };
         let n0 = (self.row_px(self.scroll_top - vh * above).floor() as i64).max(lim0);
@@ -1963,6 +2024,17 @@ impl App {
             let y0 = (self.row_px(top).floor() as i64).max(d0);
             let y1 = (self.row_px(top + list::HEAD_H as f64).ceil() as i64).min(d1);
             self.draw_strip(y0, y1)?;
+        }
+        if std::mem::take(&mut self.redraw_foot)
+            && foot_h > 0.0
+            && let Some((d0, d1)) = self.drawn
+        {
+            let b = self.rows.bottom();
+            let y0 = (self.row_px(b).floor() as i64).max(d0);
+            let y1 = (self.row_px(b + foot_h).ceil() as i64).min(d1);
+            if y1 > y0 {
+                self.draw_strip(y0, y1)?;
+            }
         }
         // Rows whose hover or selection changed.
         let mut redraw = std::mem::take(&mut self.redraw);

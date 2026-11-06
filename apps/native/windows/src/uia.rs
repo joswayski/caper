@@ -56,6 +56,11 @@ pub enum Id {
     ReplyCancel,
     /// The history's head: "Load older messages" and its other states.
     Older,
+    /// The history's foot after View original: Load newer messages (0)
+    /// and Back to latest messages (1).
+    Newer(usize),
+    /// View original on row `i`'s quote.
+    Original(usize),
     /// The thread beside the conversation, and its parts.
     Thread,
     ThreadPart(TPart),
@@ -167,6 +172,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .map(|_| Id::Older)
             .into_iter()
             .chain(a.visible_rows().map(Id::Row))
+            .chain((0..2).filter(|k| a.foot_rect(*k).is_some()).map(Id::Newer))
             .collect(),
         Id::Members => (0..a.c.members.len()).map(Id::Member).collect(),
         Id::Row(i) => a
@@ -174,6 +180,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .into_iter()
             .map(|(action, _)| Id::Control(i, action))
             .chain(a.tools(i).into_iter().map(|t| Id::Tool(i, t.tool)))
+            .chain(a.quote_link_rect(i).map(|_| Id::Original(i)))
             .collect(),
         Id::Thread => a
             .thread_parts()
@@ -198,7 +205,8 @@ fn parent(id: Id) -> Option<Id> {
         Id::Channel(_) => Id::Channels,
         Id::Row(_) => Id::History,
         Id::Control(i, _) | Id::Tool(i, _) => Id::Row(i),
-        Id::Older => Id::History,
+        Id::Older | Id::Newer(_) => Id::History,
+        Id::Original(i) => Id::Row(i),
         Id::MenuItem(_) | Id::MenuClose => Id::Menu,
         Id::Pick(_) => Id::Picker,
         Id::Member(_) => Id::Members,
@@ -233,6 +241,8 @@ fn exists(a: &App, id: Id) -> bool {
         }
         Id::Reply | Id::ReplyCancel => a.reply.is_some() && a.dialog.is_none(),
         Id::Older => a.dialog.is_none() && a.head_rect().is_some(),
+        Id::Newer(k) => a.dialog.is_none() && a.foot_rect(k).is_some(),
+        Id::Original(i) => a.dialog.is_none() && a.quote_link_rect(i).is_some(),
         Id::Thread => a.thread.is_some() && a.dialog.is_none() && a.signin.is_none(),
         Id::ThreadPart(p) => {
             a.dialog.is_none() && a.signin.is_none() && a.thread_parts().contains(&p)
@@ -293,6 +303,8 @@ fn name(a: &App, id: Id) -> String {
             format!("Replying to {}: {}", r.target.author.name, r.target.text)
         }),
         Id::ReplyCancel => "Cancel reply".into(),
+        Id::Newer(k) => a.foot_head(k).label.into(),
+        Id::Original(_) => "View original".into(),
         Id::Older => match a.live.as_ref().map(crate::live::Live::older) {
             Some(crate::live::Older::Failed) => "Couldn\u{2019}t load older messages. Retry".into(),
             Some(state) => crate::list::head_label(state).0.into(),
@@ -394,7 +406,8 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Pick(PPart::Category(_)) => UIA_TabItemControlTypeId,
         Id::Pick(PPart::Search) => UIA_EditControlTypeId,
         Id::Reply => UIA_TextControlTypeId,
-        Id::Older => UIA_ButtonControlTypeId,
+        Id::Older | Id::Newer(_) => UIA_ButtonControlTypeId,
+        Id::Original(_) => UIA_HyperlinkControlTypeId,
         Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel => UIA_ButtonControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Thread => UIA_PaneControlTypeId,
@@ -448,6 +461,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
         ),
         Id::Reply => (19, 0),
         Id::Older => (20, 0),
+        Id::Newer(k) => (26, k),
+        Id::Original(i) => (27, i),
         Id::ReplyCancel => (19, 1),
         Id::Thread => (21, 0),
         Id::ThreadPart(p) => match p {
@@ -538,6 +553,8 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Reply => a.reply_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::ReplyCancel => a.reply_cancel_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Older => a.head_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Newer(k) => a.foot_rect(k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Original(i) => a.quote_link_rect(i).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Thread => (a.thread_x(), 0.0, crate::thread::THREAD_W, a.h),
         Id::ThreadPart(p) => a.thread_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Sign(p) => a
@@ -632,9 +649,13 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
             Id::Sign(Part::Title | Part::Message) => false,
-            Id::MenuItem(_) | Id::MenuClose | Id::Tool(..) | Id::ReplyCancel | Id::Older => {
-                pattern == UIA_InvokePatternId
-            }
+            Id::MenuItem(_)
+            | Id::MenuClose
+            | Id::Tool(..)
+            | Id::ReplyCancel
+            | Id::Older
+            | Id::Newer(_)
+            | Id::Original(_) => pattern == UIA_InvokePatternId,
             Id::Pick(PPart::Category(_)) => {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
@@ -721,6 +742,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     (Id::Sign(p), Some(s)) => s.part_rect(p).is_some_and(|(_, on)| on),
                     (Id::Tool(i, t), _) => a.tools(i).iter().any(|s| s.tool == t && s.enabled),
                     (Id::ThreadPart(p), _) => a.thread_part_enabled(p),
+                    (Id::Newer(k), _) => a.foot_head(k).enabled,
                     (Id::Older, _) => a.live.as_ref().is_some_and(|l| {
                         matches!(
                             l.older(),
@@ -864,6 +886,8 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Pick(part) => a.picker_activate(part),
                 Id::ReplyCancel => a.cancel_reply(),
                 Id::Older => a.load_older(),
+                Id::Newer(k) => a.foot_activate(k),
+                Id::Original(i) => a.view_original_of(i),
                 Id::ThreadPart(p) => a.thread_activate(p),
                 _ => {}
             }

@@ -2,7 +2,10 @@
 //! older messages", "Loading…", the error with Retry, or "Beginning of
 //! conversation"), loading the previous page when the list reaches its
 //! start, and putting that page above the shown rows without moving them.
-use crate::list::{self, HEAD_H};
+//! After View original jumped into the past, the foot below the last row
+//! offers "Load newer messages" and "Back to latest messages", as in
+//! egui; the jumped-to message is centred and highlighted.
+use crate::list::{self, HEAD_H, Head};
 use crate::live::{self, Older};
 use crate::model::Conversation;
 use crate::theme::HEADER_H;
@@ -113,4 +116,207 @@ impl App {
         self.need = true;
         Ok(())
     }
+
+    /// The foot's height: two history rows while newer messages exist past
+    /// the shown window.
+    pub fn foot_h(&self) -> f32 {
+        if self.live.as_ref().is_some_and(live::Live::has_newer) {
+            2.0 * HEAD_H
+        } else {
+            0.0
+        }
+    }
+
+    /// The foot's buttons: Load newer messages, then Back to latest.
+    pub fn foot_head(&self, k: usize) -> Head<'static> {
+        let loading = self.live.as_ref().is_some_and(|l| l.context_loading);
+        Head {
+            label: FOOT[k],
+            button: true,
+            enabled: k == 1 || !loading,
+            note: None,
+        }
+    }
+
+    /// Foot button `k` in client DIPs, while the foot exists.
+    pub fn foot_rect(&self, k: usize) -> Option<(f32, f32, f32, f32)> {
+        if self.foot_h() == 0.0 || self.rows.lo >= self.rows.len() {
+            return None;
+        }
+        let r = list::head_button_rect(&self.g, &self.foot_head(k), self.list_w()).ok()?;
+        let top = self.rows.bottom() + (k as f32 * HEAD_H) as f64;
+        let y = HEADER_H + (top - self.scroll_top) as f32;
+        Some((
+            self.list_x() + r.left,
+            y + r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+        ))
+    }
+
+    /// The foot button under (x, y).
+    pub fn foot_at(&self, x: f32, y: f32) -> Option<usize> {
+        if !self.in_history(x, y) {
+            return None;
+        }
+        (0..2).find(|k| {
+            self.foot_rect(*k)
+                .is_some_and(|(l, t, w, h)| x >= l && x < l + w && y >= t && y < t + h)
+        })
+    }
+
+    /// Clicks and UIA Invoke on the foot's buttons.
+    pub fn foot_activate(&mut self, k: usize) {
+        let Some(live) = &mut self.live else {
+            return;
+        };
+        if k == 0 {
+            live.load_newer();
+        } else {
+            live.back_to_latest();
+        }
+        self.redraw_foot = true;
+        self.need = true;
+        if let Err(e) = self.drain_live() {
+            eprintln!("newer messages failed: {e:?}");
+        }
+    }
+
+    pub fn track_foot_hover(&mut self) {
+        let hover = self.pointer.and_then(|(x, y)| self.foot_at(x, y));
+        if hover != self.foot_hover {
+            self.foot_hover = hover;
+            self.redraw_foot = true;
+            self.need = true;
+        }
+    }
+
+    /// Scrolls row `id` to the middle of the history and highlights it, as
+    /// egui does for View original.
+    pub fn focus_message(&mut self, id: &str) -> Result<()> {
+        let Some(&i) = self.ids.rows.get(id) else {
+            return Ok(());
+        };
+        if i >= self.rows.len() {
+            return Ok(());
+        }
+        self.set_focused(Some(id.to_owned()));
+        // A fresh history has no width yet; measure at the drawn one so the
+        // frame's rewrap does not move the rows under the new scroll.
+        self.rows.set_width(list::Rows::body_width(self.list_w()));
+        if self.rows.lo == self.rows.len() {
+            self.rows.measure_up_to(&self.g, &self.c, f64::INFINITY)?;
+        }
+        while self.rows.lo > i {
+            let y = self.rows.top[self.rows.lo] - 1.0;
+            self.rows.measure_up_to(&self.g, &self.c, y)?;
+        }
+        let h = self.rows.height(i) as f64;
+        self.scroll_top = self.rows.top[i] + h / 2.0 - self.vh() as f64 / 2.0;
+        self.at_end = false;
+        self.need = true;
+        Ok(())
+    }
+
+    /// The highlighted message (View original's target), redrawing the
+    /// rows that gain or lose it.
+    pub fn set_focused(&mut self, id: Option<String>) {
+        if id == self.focused {
+            return;
+        }
+        for old in [self.focused.take(), id.clone()].into_iter().flatten() {
+            if let Some(&i) = self.ids.rows.get(&old) {
+                self.redraw.push(i);
+            }
+        }
+        self.focused = id;
+        self.need = true;
+    }
+
+    /// Newer messages arrived as the whole window again. When the shown
+    /// messages are its oldest ones, the new rows go after them and the
+    /// reader's place stays; otherwise it is shown afresh.
+    pub fn append_history(&mut self, mut c: Conversation, ids: live::Ids) -> Result<()> {
+        let n = self.c.messages.len();
+        let kept = c.messages.len() >= n
+            && c.messages[..n]
+                .iter()
+                .map(|m| &m.id)
+                .eq(self.c.messages.iter().map(|m| &m.id));
+        c.presence = self.c.presence;
+        for (new, old) in c.members.iter_mut().zip(&self.c.members) {
+            new.online = old.online;
+        }
+        if !kept {
+            self.ids = ids;
+            return self.set_conversation(c);
+        }
+        for (new, old) in c.messages.iter_mut().zip(&self.c.messages) {
+            new.reaction_error = old.reaction_error.clone();
+        }
+        if c.members.len() != self.c.members.len() {
+            let (channels, members) = side_layouts(&self.g, &c)?;
+            self.channel_layouts = channels;
+            self.member_layouts = members;
+            self.dirty.members = true;
+        }
+        let k = c.messages.len() - n;
+        self.c = c;
+        self.ids = ids;
+        for _ in 0..k {
+            self.rows.append(&self.g, &self.c)?;
+        }
+        self.at_end = false;
+        self.drawn = None;
+        self.events |= EV_ROWS;
+        self.need = true;
+        Ok(())
+    }
 }
+
+impl App {
+    /// The channel row `i`'s "View original" under client point (x, y).
+    pub fn quote_link_at(&self, x: f32, y: f32) -> Option<usize> {
+        if !self.in_history(x, y) || self.live.is_none() {
+            return None;
+        }
+        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let i = self.rows.row_at(ay)?;
+        let ry = (ay - self.rows.top[i]) as f32;
+        let r = self.rows.quote_link(i)?;
+        let lx = x - self.list_x();
+        (lx >= r.left && lx < r.right && ry >= r.top && ry < r.bottom).then_some(i)
+    }
+
+    /// Row `i`'s View original in client DIPs, while the row is laid out.
+    pub fn quote_link_rect(&self, i: usize) -> Option<(f32, f32, f32, f32)> {
+        if self.live.is_none() || i < self.rows.lo || i >= self.rows.len() {
+            return None;
+        }
+        let r = self.rows.quote_link(i)?;
+        let y = HEADER_H + (self.rows.top[i] - self.scroll_top) as f32;
+        Some((
+            self.list_x() + r.left,
+            y + r.top,
+            r.right - r.left,
+            r.bottom - r.top,
+        ))
+    }
+
+    /// View original on row `i`'s quote: its thread, or the original
+    /// centred and highlighted in the history.
+    pub fn view_original_of(&mut self, i: usize) {
+        let Some(r) = self.c.messages.get(i).and_then(|m| m.reply.as_ref()) else {
+            return;
+        };
+        let (id, root) = (r.id.clone(), r.thread_root.clone());
+        if let Some(live) = &mut self.live {
+            live.view_original(&id, root.as_deref());
+        }
+        if let Err(e) = self.drain_live() {
+            eprintln!("view original failed: {e:?}");
+        }
+    }
+}
+
+const FOOT: [&str; 2] = ["Load newer messages", "Back to latest messages"];

@@ -663,6 +663,19 @@ impl Rows {
     }
 }
 
+impl Rows {
+    /// Row `i`'s "View original" in its quote, relative to the row's
+    /// top-left.
+    pub fn quote_link(&self, i: usize) -> Option<Common::D2D_RECT_F> {
+        let row = self.row(i)?;
+        let q = row.quote.as_ref()?;
+        let x = BODY_X + row.width - QUOTE_PAD_X - q.view_w;
+        let y = row.lead + 4.0 + QUOTE_PAD_Y + 3.0;
+        let h = gfx::metrics(&q.view).height;
+        Some(rect(x, y, x + q.view_w, y + h))
+    }
+}
+
 /// The row above the first message: "Load older messages", "Loading…",
 /// the error and Retry, or "Beginning of conversation", as in egui.
 pub const HEAD_H: f32 = 44.0;
