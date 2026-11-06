@@ -46,6 +46,8 @@ import sys
 
 assert (Path(os.environ["TEST_APP_ROOT"]) / "prepared").is_file()
 args = sys.argv[1:]
+if "-resolvePackageDependencies" in args:
+    sys.exit(0)
 stage = "export" if "-exportArchive" in args else "archive"
 record = {"args": args}
 if stage == "export":
