@@ -6,13 +6,17 @@
 use super::{App, State};
 use crate::images::{Avatar, AvatarView, Icon};
 use crate::ui::label;
+use caper_client::compress;
 use caper_client::model::Account;
 use caper_client::names;
 use caper_client::pictures::{self, PreviousPicture};
 use caper_client::profile_edit::Draft;
+use caper_client::uploads::Scratch;
 use caper_client::worker::Command;
 use gtk::{gio, glib, prelude::*};
+use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub(super) struct ProfileDialog {
@@ -26,7 +30,7 @@ pub(super) struct ProfileDialog {
     error: Option<String>,
     picture_error: Option<String>,
     /// The picked picture's first frame, shown until it is saved.
-    local: Option<caper_client::Rgba>,
+    local: Option<caper_client::pictures::Frames>,
     /// Previous pictures: the request on its way, what loaded and the next
     /// page's cursor.
     history: Option<History>,
@@ -188,7 +192,8 @@ impl App {
         // The picture menu.
         let actions = gio::SimpleActionGroup::new();
         type Run = fn(&Rc<App>);
-        let entries: [(&str, Run); 3] = [
+        let entries: [(&str, Run); 4] = [
+            ("edit", |app| app.edit_profile_picture()),
             ("choose", |app| app.pick_profile_picture()),
             ("previous", |app| app.load_previous_pictures(None)),
             ("remove", |app| {
@@ -226,6 +231,9 @@ impl App {
                     .is_some()
             });
             let menu = gio::Menu::new();
+            if custom {
+                menu.append(Some("Edit picture…"), Some("picture.edit"));
+            }
             menu.append(Some("Choose a new picture…"), Some("picture.choose"));
             menu.append(Some("Previous pictures"), Some("picture.previous"));
             if custom {
@@ -399,7 +407,7 @@ impl App {
             if response == gtk::ResponseType::Accept
                 && let Some(path) = dialog.file().and_then(|file| file.path())
             {
-                app.prepare_profile_picture(path);
+                app.stage_profile_picture(path, None);
             }
             dialog.destroy();
             app.chooser.replace(None);
@@ -411,15 +419,212 @@ impl App {
 
     /// Prepares `path` as the draft's picture (square, center-cropped) off
     /// the main thread.
-    pub(super) fn prepare_profile_picture(self: &Rc<Self>, path: std::path::PathBuf) {
+    pub(super) fn prepare_profile_picture(
+        self: &Rc<Self>,
+        path: std::path::PathBuf,
+        edit: Option<caper_client::attachment_edit::Edit>,
+        scratch: Option<Arc<Scratch>>,
+    ) {
         let wakes = self.wakes.clone();
         if let Some(dialog) = self.profile_dialog.borrow_mut().as_mut() {
             dialog.picture_error = None;
-            dialog.draft.prepare(path, None, None, false, move || {
-                caper_client::Host::wake(&wakes)
-            });
+            dialog
+                .draft
+                .prepare(path, edit, scratch, crate::images::motion(), move || {
+                    caper_client::Host::wake(&wakes)
+                });
         }
         self.render_profile_editor();
+    }
+
+    /// A picked or downloaded picture opens in the editor on Crop; an
+    /// animated one first asks whether to keep its animation, as an edit
+    /// saves a still.
+    pub(super) fn stage_profile_picture(
+        self: &Rc<Self>,
+        path: std::path::PathBuf,
+        scratch: Option<Arc<Scratch>>,
+    ) {
+        use std::io::Read;
+        let head = std::fs::File::open(&path).and_then(|file| {
+            if file.metadata()?.len() > pictures::MAX_SOURCE_BYTES {
+                return Err(std::io::Error::other("too large"));
+            }
+            let mut head = Vec::new();
+            file.take(64 * 1024).read_to_end(&mut head)?;
+            Ok(head)
+        });
+        let head = match head {
+            Ok(head) => head,
+            Err(_) => {
+                if let Some(dialog) = self.profile_dialog.borrow_mut().as_mut() {
+                    dialog.picture_error =
+                        Some("Could not read that picture, or it is too large.".into());
+                }
+                self.render_profile_editor();
+                return;
+            }
+        };
+        let gif = pictures::is_gif(&head);
+        let animated = gif
+            || (compress::sniff("image/png", &head) && compress::png_is_animated(&head))
+            || (compress::sniff("image/webp", &head)
+                && head.get(12..16) == Some(b"VP8X")
+                && head.get(20).is_some_and(|flags| flags & 0x02 != 0));
+        if !animated {
+            self.open_picture_editor(path, scratch);
+            return;
+        }
+        let Some(parent) = self
+            .profile_dialog
+            .borrow()
+            .as_ref()
+            .map(|dialog| dialog.window.clone())
+        else {
+            return;
+        };
+        let window = gtk::Window::builder()
+            .transient_for(&parent)
+            .modal(true)
+            .title("Animated picture")
+            .resizable(false)
+            .build();
+        window.add_css_class("caper");
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        root.add_css_class("dialog-body");
+        root.set_size_request(420, -1);
+        root.append(&label("Animated picture", &["dialog-title"]));
+        let text = label(
+            "Editing saves a still frame and removes animation. Original animation upload is available for GIFs only.",
+            &["muted"],
+        );
+        text.set_wrap(true);
+        text.set_max_width_chars(48);
+        root.append(&text);
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        buttons.set_halign(gtk::Align::End);
+        let cancel = gtk::Button::with_label("Cancel");
+        let still = gtk::Button::with_label("Edit still image");
+        let keep = gtk::Button::with_label("Keep original animation");
+        keep.add_css_class("primary");
+        keep.set_sensitive(gif);
+        if !gif {
+            keep.set_tooltip_text(Some("Available for GIFs only"));
+        }
+        buttons.append(&cancel);
+        buttons.append(&still);
+        buttons.append(&keep);
+        root.append(&buttons);
+        window.set_child(Some(&root));
+        let choice = Rc::new(RefCell::new(Some((path, scratch))));
+        for (button, action) in [(&keep, 1), (&still, 2), (&cancel, 0)] {
+            let (weak, window, choice) = (Rc::downgrade(self), window.clone(), choice.clone());
+            button.connect_clicked(move |_| {
+                window.destroy();
+                let (Some(app), Some((path, scratch))) = (weak.upgrade(), choice.take()) else {
+                    return;
+                };
+                match action {
+                    1 => app.prepare_profile_picture(path, None, scratch),
+                    2 => app.open_picture_editor(path, scratch),
+                    _ => {}
+                }
+            });
+        }
+        let keys = gtk::EventControllerKey::new();
+        let weak_window = window.downgrade();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape
+                && let Some(window) = weak_window.upgrade()
+            {
+                window.destroy();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        window.add_controller(keys);
+        window.present();
+        still.grab_focus();
+    }
+
+    fn open_picture_editor(
+        self: &Rc<Self>,
+        path: std::path::PathBuf,
+        scratch: Option<Arc<Scratch>>,
+    ) {
+        self.open_editor(
+            super::editor::Target::Picture {
+                path: path.clone(),
+                scratch,
+            },
+            caper_client::attachment_edit::Kind::Image,
+            "Picture",
+            path,
+            None,
+        );
+    }
+
+    /// Edit picture…: the draft's prepared picture, or the current one
+    /// downloaded, opened in the editor.
+    fn edit_profile_picture(self: &Rc<Self>) {
+        let (prepared, url) = {
+            let dialog = self.profile_dialog.borrow();
+            let Some(dialog) = dialog.as_ref() else {
+                return;
+            };
+            (
+                dialog.draft.picture.clone(),
+                dialog.draft.preview.avatar_url.clone(),
+            )
+        };
+        if let Some(picture) = prepared {
+            let scratch = Arc::new(Scratch::new("profile-draft"));
+            if std::fs::write(scratch.path(), &picture.bytes).is_ok() {
+                self.stage_profile_picture(scratch.path().to_owned(), Some(scratch));
+            }
+            return;
+        }
+        let Some(url) = url else {
+            return;
+        };
+        let api = self.api.clone();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = api
+                .fetch_media(&url)
+                .map_err(|_| "Could not download that picture. Try again.".to_string())
+                .and_then(|bytes| {
+                    let scratch = Arc::new(Scratch::new("picture"));
+                    std::fs::write(scratch.path(), bytes)
+                        .map_err(|_| "Could not save that picture.".to_string())?;
+                    Ok(scratch)
+                });
+            let _ = sender.send_blocking(result);
+        });
+        if let Some(dialog) = self.profile_dialog.borrow_mut().as_mut() {
+            dialog.picture_error = None;
+        }
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(app) = weak.upgrade() else {
+                return;
+            };
+            if app.profile_dialog.borrow().is_none() {
+                return;
+            }
+            match result {
+                Ok(scratch) => app.stage_profile_picture(scratch.path().to_owned(), Some(scratch)),
+                Err(error) => {
+                    if let Some(dialog) = app.profile_dialog.borrow_mut().as_mut() {
+                        dialog.picture_error = Some(error);
+                    }
+                    app.render_profile_editor();
+                }
+            }
+        });
     }
 
     /// A prepared picture became the draft's.
@@ -434,9 +639,8 @@ impl App {
             };
             match result {
                 Ok((key, frames)) => {
-                    let first = frames.into_iter().next().map(|(image, _)| image);
-                    dialog.local.clone_from(&first);
-                    Some((key, first))
+                    dialog.local = Some(frames.clone());
+                    Some((key, frames))
                 }
                 Err(error) => {
                     dialog.picture_error = Some(error);
@@ -445,7 +649,7 @@ impl App {
             }
         };
         if let Some((key, image)) = result {
-            self.images.loaded(key, String::new(), image);
+            self.images.loaded(key, String::new(), Some(image));
         }
         self.render_profile_editor();
     }

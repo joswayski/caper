@@ -1209,3 +1209,63 @@ popover.menu check:checked {
   font-size: 12px;
   font-weight: 700;
 }
+
+/* The attachment editor: a blackout stage between a top bar and the tools. */
+window.editor {
+  background: @caper_blackout;
+}
+
+.editor-top {
+  padding: 10px 12px;
+  border-bottom: 1px solid @caper_border;
+}
+
+.editor-options {
+  padding: 8px 12px 0;
+  min-height: 36px;
+}
+
+.editor-tools {
+  padding: 8px 12px 14px;
+}
+
+.editor-tool {
+  padding: 6px 12px;
+  border-radius: 8px;
+}
+
+.editor-tool.selected {
+  background: alpha(@caper_terracotta, 0.22);
+  box-shadow: inset 0 0 0 1px @caper_terracotta;
+}
+
+.editor-tool.danger-tool label {
+  color: @caper_terracotta_bright;
+}
+
+.swatch {
+  padding: 3px;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 999px;
+}
+
+.swatch-dot {
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px alpha(white, 0.25);
+}
+
+.swatch.selected {
+  box-shadow: 0 0 0 2px @caper_terracotta;
+}
+
+popover.editor-text > contents {
+  background: @caper_surface;
+  padding: 4px;
+}
+
+/* The message opened from elsewhere, such as a forward's original. */
+.message .focused {
+  background: alpha(@caper_terracotta, 0.14);
+  box-shadow: inset 2px 0 @caper_terracotta;
+}

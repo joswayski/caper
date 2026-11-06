@@ -38,8 +38,6 @@ const OPTIONS: f32 = 52.0;
 const HINT: f32 = 24.0;
 /// Below this width the colours and the size take a row each.
 const NARROW: f32 = 560.0;
-/// The picture is shown at most this large; exports use the original.
-const DISPLAY_EDGE: u32 = 2048;
 /// Space around the picture; the crop frame's handles need more.
 const PADDING: f32 = 16.0;
 const CROP_PADDING: f32 = 28.0;
@@ -127,15 +125,6 @@ struct Picture {
     /// The upright original's size in pixels.
     width: u32,
     height: u32,
-}
-
-struct Loaded {
-    image: image::RgbaImage,
-    width: u32,
-    height: u32,
-    /// Whether marks can be applied: always for stills; for videos, when
-    /// this FFmpeg can overlay them.
-    marks: bool,
 }
 
 /// A text field open over the picture: a new mark, or `index` being changed.
@@ -251,7 +240,7 @@ pub struct Editor {
     /// Draw's eraser: presses remove the lines they touch instead of drawing.
     erasing: bool,
     picture: Option<Picture>,
-    loading: Option<Receiver<Option<Loaded>>>,
+    loading: Option<Receiver<Option<markup::Still>>>,
     failed: bool,
     marks: bool,
     gesture: Option<Gesture>,
@@ -290,10 +279,7 @@ impl Editor {
         let (sender, receiver) = mpsc::channel();
         let (source, repaint) = (path.to_owned(), context.clone());
         std::thread::spawn(move || {
-            let _ = sender.send(match kind {
-                Kind::Image => load_image(&source),
-                Kind::Video => load_video(&source),
-            });
+            let _ = sender.send(markup::load_still(&source, kind));
             repaint.request_repaint();
         });
         let initial = edit.unwrap_or_default();
@@ -2513,39 +2499,6 @@ fn color_image(image: &image::RgbaImage) -> egui::ColorImage {
     )
 }
 
-/// The upright still, downscaled for the screen, with its native size.
-fn load_image(path: &Path) -> Option<Loaded> {
-    let bytes = std::fs::read(path).ok()?;
-    let (image, _) = crate::compress::decode_upright(&bytes)?;
-    drop(bytes);
-    let (width, height) = (image.width(), image.height());
-    let shown = if width.max(height) > DISPLAY_EDGE {
-        image.thumbnail(DISPLAY_EDGE, DISPLAY_EDGE)
-    } else {
-        image
-    };
-    Some(Loaded {
-        image: shown.to_rgba8(),
-        width,
-        height,
-        marks: true,
-    })
-}
-
-/// A still from just after the start, as posters are, in the display orientation.
-fn load_video(path: &Path) -> Option<Loaded> {
-    let binary = crate::ffmpeg::binary()?;
-    let probe = crate::ffmpeg::probe(binary, path).ok()?;
-    let video = probe.video.as_ref()?;
-    let frame = crate::ffmpeg::poster(binary, path, &probe, DISPLAY_EDGE)?;
-    Some(Loaded {
-        image: image::DynamicImage::ImageRgb8(frame).to_rgba8(),
-        width: video.width,
-        height: video.height,
-        marks: crate::ffmpeg::overlays(binary),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2598,7 +2551,7 @@ mod tests {
                 tool,
             )
         };
-        let still = || Loaded {
+        let still = || markup::Still {
             image: image::RgbaImage::new(4, 2),
             width: 4,
             height: 2,
@@ -2627,7 +2580,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         editor.loading = Some(receiver);
         sender
-            .send(Some(Loaded {
+            .send(Some(markup::Still {
                 marks: true,
                 ..still()
             }))
@@ -2747,7 +2700,7 @@ mod tests {
         editor.loading = Some(receiver);
         let send = move || {
             sender
-                .send(Some(Loaded {
+                .send(Some(markup::Still {
                     image: image::RgbaImage::from_pixel(640, 320, image::Rgba([200, 40, 40, 255])),
                     width: 640,
                     height: 320,
@@ -3245,7 +3198,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         editor.loading = Some(receiver);
         sender
-            .send(Some(Loaded {
+            .send(Some(markup::Still {
                 image: image::RgbaImage::new(64, 64),
                 width: 64,
                 height: 64,

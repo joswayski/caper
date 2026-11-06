@@ -779,14 +779,14 @@ impl App {
     /// Opens a forward's original where it lives: its thread, after
     /// moving to its channel when it is elsewhere.
     fn open_forward_source(self: &Rc<Self>, source: caper_client::model::ForwardSource) {
-        let root = source
-            .message
-            .thread_root_id
-            .clone()
-            .unwrap_or_else(|| source.message.id.clone());
+        // A reply opens its root's thread, focused on the reply.
+        let (root, focus) = match source.message.thread_root_id.clone() {
+            Some(root) => (root, Some(source.message.id.clone())),
+            None => (source.message.id.clone(), None),
+        };
         let here = self.state.borrow().channel.as_deref() == Some(&source.message.channel_id);
         if here {
-            self.open_thread(root);
+            self.open_thread_at(root, focus);
             return;
         }
         let channel = source.message.channel_id.clone();
@@ -795,14 +795,14 @@ impl App {
                 {
                     let mut state = self.state.borrow_mut();
                     self.navigate(&mut state, Some(space), Some(channel.clone()));
-                    state.forward_focus = Some((state.navigation, channel, root));
+                    state.forward_focus = Some((state.navigation, channel, root, focus));
                 }
                 self.render();
             }
             None => {
                 self.open_direct(channel.clone());
                 let mut state = self.state.borrow_mut();
-                state.forward_focus = Some((state.navigation, channel, root));
+                state.forward_focus = Some((state.navigation, channel, root, focus));
             }
         }
     }

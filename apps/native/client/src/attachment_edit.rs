@@ -481,6 +481,55 @@ fn still_webp(head: &[u8]) -> bool {
     }
 }
 
+/// An editor shows the picture at most this large; exports use the original.
+pub const DISPLAY_EDGE: u32 = 2048;
+
+/// What an editor shows: the upright still, downscaled for the screen, with
+/// the original's size, and whether marks can be applied (always for stills;
+/// for videos, when this FFmpeg can overlay them).
+pub struct Still {
+    pub image: image::RgbaImage,
+    pub width: u32,
+    pub height: u32,
+    pub marks: bool,
+}
+
+/// Decodes `path` for an editor: a still, or a video's frame from just after
+/// the start, as posters are, in the display orientation.
+pub fn load_still(path: &Path, kind: Kind) -> Option<Still> {
+    match kind {
+        Kind::Image => {
+            let bytes = std::fs::read(path).ok()?;
+            let (image, _) = crate::compress::decode_upright(&bytes)?;
+            drop(bytes);
+            let (width, height) = (image.width(), image.height());
+            let shown = if width.max(height) > DISPLAY_EDGE {
+                image.thumbnail(DISPLAY_EDGE, DISPLAY_EDGE)
+            } else {
+                image
+            };
+            Some(Still {
+                image: shown.to_rgba8(),
+                width,
+                height,
+                marks: true,
+            })
+        }
+        Kind::Video => {
+            let binary = crate::ffmpeg::binary()?;
+            let probe = crate::ffmpeg::probe(binary, path).ok()?;
+            let video = probe.video.as_ref()?;
+            let frame = crate::ffmpeg::poster(binary, path, &probe, DISPLAY_EDGE)?;
+            Some(Still {
+                image: DynamicImage::ImageRgb8(frame).to_rgba8(),
+                width: video.width,
+                height: video.height,
+                marks: crate::ffmpeg::overlays(binary),
+            })
+        }
+    }
+}
+
 /// Renders an edit onto the upright original at its native resolution: the
 /// crop region, turned, with the marks painted over it. Images without alpha
 /// stay RGB; an unmarked crop keeps the source's bit depth.

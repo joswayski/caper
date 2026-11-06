@@ -37,6 +37,8 @@ mod admin;
 mod audio;
 #[path = "call.rs"]
 mod call;
+#[path = "editor.rs"]
+mod editor;
 #[path = "forward.rs"]
 mod forward;
 #[path = "members.rs"]
@@ -117,6 +119,10 @@ struct Thread {
     message: Option<Message>,
     request: u64,
     loading: bool,
+    /// Older replies exist before the oldest loaded one.
+    has_more: bool,
+    /// A reply to bring into view: older pages load until it is there.
+    focus: Option<String>,
 }
 
 struct Typer {
@@ -206,9 +212,12 @@ struct State {
     jump_to: Option<String>,
     /// A forward's original in another conversation: the navigation that
     /// goes there, its channel and the thread to open once it loads.
-    forward_focus: Option<(u64, String, String)>,
-    /// That thread, ready to open.
-    forward_thread: Option<String>,
+    forward_focus: Option<(u64, String, String, Option<String>)>,
+    /// That thread and the reply to focus in it, ready to open.
+    forward_thread: Option<(String, Option<String>)>,
+    /// The message opened from elsewhere, highlighted until the
+    /// conversation or thread changes.
+    focused: Option<String>,
     /// The signed-in account still needs a username and display name.
     profile_setup: bool,
     /// The open profile card's state.
@@ -335,6 +344,8 @@ pub struct App {
     state: RefCell<State>,
     /// Keep the newest message in view as rows arrive and are measured.
     follow: Cell<bool>,
+    /// The same for the thread pane.
+    thread_follow: Cell<bool>,
     /// `pin_tail` is moving the list: its scrolling is not the reader's.
     settling: Cell<bool>,
     rendered_layout: Cell<u64>,
@@ -378,6 +389,10 @@ pub struct App {
     room_timers: RefCell<Vec<(gtk::Label, u64)>>,
     room_ticking: Cell<bool>,
     report: RefCell<Option<audio::ReportDialog>>,
+    /// The open attachment editor.
+    editor: RefCell<Option<editor::EditorWindow>>,
+    /// Edited files opened in another app, kept until quit.
+    opened: RefCell<Vec<std::sync::Arc<caper_client::uploads::Scratch>>>,
 }
 
 struct PinsView {
@@ -452,10 +467,13 @@ pub fn start(application: &gtk::Application, base: &str) {
         room_timers: RefCell::default(),
         room_ticking: Cell::new(false),
         report: RefCell::default(),
+        editor: RefCell::default(),
+        opened: RefCell::default(),
         images,
         worker: Worker::new(api.clone(), Wakes(sender.clone())),
         state: RefCell::new(State::default()),
         follow: Cell::new(true),
+        thread_follow: Cell::new(true),
         settling: Cell::new(false),
         rendered_layout: Cell::new(u64::MAX),
         rendered_files: Cell::new(u64::MAX),
@@ -591,7 +609,11 @@ impl App {
         });
         let app = self.clone();
         ui.thread_close.connect_clicked(move |_| {
-            app.state.borrow_mut().thread = None;
+            {
+                let mut state = app.state.borrow_mut();
+                state.thread = None;
+                state.focused = None;
+            }
             app.render();
         });
 
@@ -699,6 +721,23 @@ impl App {
                 }
             });
         }
+
+        // The thread follows its newest reply while read at the bottom, and
+        // loads older replies near the top.
+        let app = self.clone();
+        ui.thread_list
+            .scroller
+            .vadjustment()
+            .connect_value_changed(move |adjustment| {
+                let bottom = adjustment.upper() - adjustment.page_size();
+                app.thread_follow.set(adjustment.value() >= bottom - 48.0);
+                if adjustment.upper() > adjustment.page_size()
+                    && adjustment.value() < adjustment.page_size()
+                {
+                    let app = app.clone();
+                    glib::idle_add_local_once(move || app.load_older_replies());
+                }
+            });
 
         let adjustment = ui.list.scroller.vadjustment();
         let app = self.clone();
@@ -978,6 +1017,7 @@ impl App {
         state.pending = None;
         state.compose = None;
         state.thread = None;
+        state.focused = None;
         state.typers.clear();
         state.reactions.clear();
         state.files_revision += 1;
@@ -1750,7 +1790,8 @@ impl App {
             .files
             .iter()
             .filter(|file| {
-                state.channel.as_ref() == Some(&file.channel) && file.root.as_deref() == root
+                state.channel.as_ref() == Some(&file.channel)
+                    && file.thread_root_id.as_deref() == root
             })
             .count()
     }
@@ -1793,21 +1834,11 @@ impl App {
                     state.file_keys,
                     channel.clone(),
                     root.clone(),
-                    path.clone(),
-                    scratch.clone(),
-                );
-                self.worker.send(Command::Upload {
-                    key: file.key,
-                    token: token.clone(),
-                    channel: channel.clone(),
-                    name: file.name.clone(),
                     path,
-                    edit: None,
-                    source_scratch: scratch,
-                    prepared: None,
-                    settings: settings.clone(),
-                    cancel: file.cancel.clone(),
-                });
+                    scratch,
+                );
+                self.worker
+                    .send(file.command(token.clone(), settings.clone()));
                 state.files.push(file);
             }
             state.files_revision += 1;
@@ -1843,54 +1874,34 @@ impl App {
             }
             return;
         };
-        match update {
-            UploadUpdate::Retained(prepared) => file.prepared = Some(prepared),
-            UploadUpdate::Prepared {
-                name,
-                kind,
-                source_size,
-                stored_size,
-            } => {
-                file.name = name;
-                file.kind = kind;
-                file.source_size = source_size;
-                file.stored_size = Some(stored_size);
-                file.compressing = None;
+        let storage_full = match &update {
+            UploadUpdate::Finished(Err(error)) if error.storage_full => Some(error.message.clone()),
+            _ => None,
+        };
+        if let Some(image) = file.upload.apply(update) {
+            if let Some(attachment) = &file.attachment {
+                self.images.media.insert_local(&attachment.id, &image);
             }
-            UploadUpdate::Compressing(fraction) => {
-                file.compressing = Some(fraction.max(file.compressing.unwrap_or(0.0)));
-            }
-            UploadUpdate::Thumbnail(image) => {
-                if let Some(attachment) = &file.attachment {
-                    self.images.media.insert_local(&attachment.id, &image);
-                }
-                file.thumbnail = Some(image);
-            }
-            UploadUpdate::Progress(progress) => file.progress = progress.max(file.progress),
-            UploadUpdate::Finished(Ok(attachment)) => {
-                file.progress = 1.0;
-                file.uploading = false;
-                file.error = None;
-                // You see your own copy without a download.
-                if let Some(image) = &file.thumbnail {
-                    self.images.media.insert_local(&attachment.id, image);
-                }
-                file.attachment = Some(attachment);
-            }
-            UploadUpdate::Finished(Err(error)) => {
-                file.uploading = false;
-                file.compressing = None;
-                file.error = Some(if error.storage_full {
-                    error.message
-                } else {
-                    "Failed to upload.".into()
-                });
-            }
+            file.thumbnail = Some(image);
+        }
+        if let Some(attachment) = &file.attachment
+            && let Some(image) = &file.thumbnail
+        {
+            // You see your own copy without a download.
+            self.images.media.insert_local(&attachment.id, image);
+        }
+        if storage_full.is_some() {
+            file.error = storage_full;
         }
         state.files_revision += 1;
     }
 
     fn chip_action(self: &Rc<Self>, action: ChipAction) {
+        if let ChipAction::Edit(key) = action {
+            let app = self.clone();
+            glib::idle_add_local_once(move || app.view_draft(key));
+            return;
+        }
         {
             let mut state = self.state.borrow_mut();
             match action {
@@ -1915,22 +1926,10 @@ impl App {
                     else {
                         return;
                     };
-                    if let Some(file) = state.files.iter_mut().find(|file| file.key == key) {
-                        file.error = None;
-                        file.progress = 0.0;
-                        file.uploading = true;
-                        self.worker.send(Command::Upload {
-                            key,
-                            token,
-                            channel: file.channel.clone(),
-                            path: file.path.clone(),
-                            name: file.name.clone(),
-                            edit: None,
-                            source_scratch: file.scratch.clone(),
-                            prepared: file.prepared.clone(),
-                            settings,
-                            cancel: file.cancel.clone(),
-                        });
+                    if let Some(file) = state.files.iter_mut().find(|file| file.key == key)
+                        && file.upload.restart().is_some()
+                    {
+                        self.worker.send(file.command(token, settings));
                     }
                 }
                 ChipAction::Spoiler(key, spoiler) => {
@@ -1938,6 +1937,7 @@ impl App {
                         file.spoiler = spoiler;
                     }
                 }
+                ChipAction::Edit(_) => {}
             }
             state.files_revision += 1;
         }
@@ -2126,7 +2126,9 @@ impl App {
             let files: Vec<&DraftFile> = state
                 .files
                 .iter()
-                .filter(|file| state.channel.as_ref() == Some(&file.channel) && file.root == root)
+                .filter(|file| {
+                    state.channel.as_ref() == Some(&file.channel) && file.thread_root_id == root
+                })
                 .collect();
             let composer = if thread {
                 &self.ui.thread_composer
@@ -2165,7 +2167,7 @@ impl App {
                 && state
                     .files
                     .iter()
-                    .any(|file| file.channel == channel && file.root == root);
+                    .any(|file| file.channel == channel && file.thread_root_id == root);
             if text.is_empty() && !files {
                 return;
             }
@@ -2173,7 +2175,7 @@ impl App {
                 let mine = state
                     .files
                     .iter()
-                    .filter(|file| file.channel == channel && file.root == root);
+                    .filter(|file| file.channel == channel && file.thread_root_id == root);
                 let waiting = mine.clone().any(|file| file.uploading);
                 let failed = mine.clone().any(|file| file.error.is_some());
                 if waiting || failed {
@@ -2230,7 +2232,7 @@ impl App {
             let client_id = uuid::Uuid::new_v4().to_string();
             let (sent, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut state.files)
                 .into_iter()
-                .partition(|file| file.channel == channel && file.root == thread_root);
+                .partition(|file| file.channel == channel && file.thread_root_id == thread_root);
             state.files = kept;
             state.files_revision += 1;
             let attachment_ids: Vec<String> = sent
@@ -2388,8 +2390,16 @@ impl App {
     }
 
     fn open_thread(self: &Rc<Self>, root: String) {
+        self.open_thread_at(root, None);
+    }
+
+    /// Opens `root`'s thread with `focus`, one of its replies, brought into
+    /// view and highlighted.
+    fn open_thread_at(self: &Rc<Self>, root: String, focus: Option<String>) {
+        self.thread_follow.set(focus.is_none());
         {
             let mut state = self.state.borrow_mut();
+            state.focused = focus.clone();
             state.files_revision += 1;
             let Some(channel) = state.channel.clone() else {
                 return;
@@ -2401,6 +2411,8 @@ impl App {
                 message,
                 request: state.request,
                 loading: true,
+                has_more: false,
+                focus,
             });
             self.worker.send(Command::LoadThread {
                 generation: state.generation,
@@ -2612,8 +2624,8 @@ impl App {
         }
         self.follow_forward();
         let thread = self.state.borrow_mut().forward_thread.take();
-        if let Some(root) = thread {
-            self.open_thread(root);
+        if let Some((root, focus)) = thread {
+            self.open_thread_at(root, focus);
         }
         if typing {
             self.tick();
@@ -2903,6 +2915,7 @@ impl App {
                         if let Some(thread) = &mut state.thread {
                             thread.loading = false;
                             thread.message = Some(history.root);
+                            thread.has_more = history.has_more;
                         }
                         if let Err(error) = state.timeline.prepend(history.messages) {
                             state.error = Some(error);
@@ -3151,11 +3164,11 @@ impl App {
                             self.mark_read(state);
                         }
                         self.clear_open_unread(state);
-                        if let Some((navigation, channel, root)) = state.forward_focus.take()
+                        if let Some((navigation, channel, root, focus)) = state.forward_focus.take()
                             && navigation == state.navigation
                             && state.channel.as_deref() == Some(&channel)
                         {
-                            state.forward_thread = Some(root);
+                            state.forward_thread = Some((root, focus));
                         }
                     }
                     None => {
@@ -3598,7 +3611,7 @@ impl App {
                             attachments: pending
                                 .files
                                 .iter()
-                                .filter_map(DraftFile::send_attachment)
+                                .filter_map(|file| file.send_attachment())
                                 .map(|attachment| (attachment, false))
                                 .collect(),
                             ..Default::default()
@@ -3635,6 +3648,12 @@ impl App {
                 }
                 None => Vec::new(),
             };
+            let mut thread = thread;
+            if let Some(focused) = &state.focused {
+                for row in &mut thread {
+                    row.focused = row.id == *focused;
+                }
+            }
             let thread_changed =
                 rows::apply(&self.ui.thread_list.store, &state.thread_rows, &thread);
             state.thread_rows = thread;
@@ -3643,14 +3662,92 @@ impl App {
         if changed && self.follow.get() {
             self.pin_tail();
         }
-        let count = self.ui.thread_list.store.n_items();
-        if thread_changed && count > 0 {
-            let _ = self
-                .ui
-                .thread_list
-                .view
-                .activate_action("list.scroll-to-item", Some(&(count - 1).to_variant()));
+        // A reply to focus scrolls into view once its page is here;
+        // otherwise the thread follows its newest reply.
+        let (focus, more) = {
+            let state = self.state.borrow();
+            match state.thread.as_ref() {
+                Some(thread) if !thread.loading => (
+                    thread
+                        .focus
+                        .as_ref()
+                        .map(|focus| state.thread_rows.iter().position(|row| &row.id == focus)),
+                    thread.has_more,
+                ),
+                _ => (None, false),
+            }
+        };
+        match focus {
+            Some(Some(position)) => {
+                if let Some(thread) = &mut self.state.borrow_mut().thread {
+                    thread.focus = None;
+                }
+                let _ = self.ui.thread_list.view.activate_action(
+                    "list.scroll-to-item",
+                    Some(&u32::try_from(position).unwrap_or_default().to_variant()),
+                );
+            }
+            Some(None) if more => {
+                let app = self.clone();
+                glib::idle_add_local_once(move || app.load_older_replies());
+            }
+            Some(None) => {
+                if let Some(thread) = &mut self.state.borrow_mut().thread {
+                    thread.focus = None;
+                }
+            }
+            None => {
+                let count = self.ui.thread_list.store.n_items();
+                if thread_changed && count > 0 && self.thread_follow.get() {
+                    let _ = self
+                        .ui
+                        .thread_list
+                        .view
+                        .activate_action("list.scroll-to-item", Some(&(count - 1).to_variant()));
+                }
+            }
         }
+    }
+
+    /// The thread's next older page of replies.
+    fn load_older_replies(self: &Rc<Self>) {
+        let Ok(mut state) = self.state.try_borrow_mut() else {
+            return;
+        };
+        let (generation, token) = (state.generation, state.token.clone());
+        let Some(channel) = state.channel.clone() else {
+            return;
+        };
+        state.request += 1;
+        let request = state.request;
+        let Some(root) = state.thread.as_ref().map(|thread| thread.root.clone()) else {
+            return;
+        };
+        // Pages before the oldest reply loaded, as the main list does.
+        let Some(before) = state
+            .timeline
+            .messages()
+            .find(|message| message.thread_root_id.as_deref() == Some(root.as_str()))
+            .map(|message| message.seq.clone())
+        else {
+            return;
+        };
+        let Some(thread) = state.thread.as_mut() else {
+            return;
+        };
+        if thread.loading || !thread.has_more {
+            return;
+        }
+        thread.loading = true;
+        thread.request = request;
+        self.worker.send(Command::LoadThread {
+            generation,
+            request,
+            token,
+            channel,
+            root: thread.root.clone(),
+            before: Some(before),
+        });
     }
 
     /// A muted row's bell-slash, its tooltip saying until when.

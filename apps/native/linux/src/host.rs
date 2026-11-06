@@ -11,11 +11,12 @@ pub enum Signal {
     Wake,
     Title(String),
     Front,
-    /// An uploaded picture finished loading (`image` is `None` on failure).
+    /// An uploaded picture finished loading: its frames, one for a still
+    /// (`None` on failure).
     Picture {
         asset: String,
         url: String,
-        image: Option<caper_client::Rgba>,
+        image: Option<caper_client::pictures::Frames>,
     },
     /// Message media wants fresh signed URLs.
     RefreshMedia,

@@ -66,6 +66,8 @@ pub struct Row {
     pub replies: Option<String>,
     /// It mentions you or replies to you: a terracotta-tinted row.
     pub mentioned: bool,
+    /// The message opened from elsewhere (a forward's original): highlighted.
+    pub focused: bool,
     /// It asked the Caper team, so it carries their notice.
     pub team_notice: bool,
     pub offers: Offers,
@@ -252,6 +254,7 @@ impl Row {
             reaction_error: None,
             replies: None,
             mentioned: false,
+            focused: false,
             team_notice: false,
             offers: Offers::default(),
             content: crate::content::Content::default(),
@@ -561,6 +564,7 @@ pub fn build<'a>(
                     count => format!("{count} replies"),
                 }),
             // As desktop: a pinned row keeps its pin wash instead.
+            focused: false,
             mentioned: !deleted
                 && message.pin.is_none()
                 && (replies_to_me
@@ -641,6 +645,7 @@ pub fn build<'a>(
             reaction_error: None,
             replies: None,
             mentioned: false,
+            focused: false,
             team_notice: false,
             offers: Offers::default(),
             content: draft.content,
@@ -1077,6 +1082,11 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
     } else {
         widgets.card.remove_css_class("mentioned");
     }
+    if row.focused {
+        widgets.card.add_css_class("focused");
+    } else {
+        widgets.card.remove_css_class("focused");
+    }
     widgets.notice.set_visible(row.team_notice);
     widgets.day.set_visible(row.day.is_some());
     widgets
@@ -1221,6 +1231,7 @@ mod tests {
             reaction_error: None,
             replies: None,
             mentioned: false,
+            focused: false,
             team_notice: false,
             offers: Offers::default(),
             content: Default::default(),

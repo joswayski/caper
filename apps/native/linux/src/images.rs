@@ -11,8 +11,10 @@ use crate::host::Signal;
 use caper_client::Rgba;
 use caper_client::api::Api;
 use gtk::{gdk, glib, prelude::*};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::time::Duration;
 
 /// Avatar textures are drawn at this size and scaled down by GTK.
 const AVATAR_EDGE: u32 = 72;
@@ -95,6 +97,12 @@ icons! {
     Ban => "ban",
     AudioLines => "audio-lines",
     Speech => "speech",
+    Crop => "crop",
+    Brush => "brush",
+    Type => "type",
+    Undo => "undo-2",
+    Redo => "redo-2",
+    Eraser => "eraser",
 }
 
 /// What an avatar shows: an uploaded picture, a Caper mascot, or the
@@ -139,6 +147,8 @@ impl Avatar {
 #[derive(Default)]
 struct Pictures {
     ready: HashMap<String, gdk::Texture>,
+    /// Animated pictures' frames, beside their first frame in `ready`.
+    animations: HashMap<String, Rc<AnimationFrames>>,
     /// Asset ids being fetched, and the URL each last failed with (a
     /// re-signed URL tries again).
     loading: HashSet<String>,
@@ -294,28 +304,44 @@ impl Images {
             return None;
         }
         pictures.loading.insert(asset.to_owned());
+        let animate = motion();
         let (api, signals) = (self.api.clone(), self.signals.clone());
         let (asset, url) = (asset.to_owned(), url.to_owned());
         std::thread::spawn(move || {
             let image = api
                 .fetch_media(&url)
                 .ok()
-                .and_then(|bytes| caper_client::pictures::decode(&bytes, false))
-                .and_then(|frames| frames.into_iter().next())
-                .map(|(image, _)| image);
+                .and_then(|bytes| caper_client::pictures::decode(&bytes, animate))
+                .filter(|frames| !frames.is_empty());
             let _ = signals.try_send(Signal::Picture { asset, url, image });
         });
         None
     }
 
     /// A fetch finished: keep the picture, or remember the URL that failed.
-    pub fn loaded(&self, asset: String, url: String, image: Option<Rgba>) {
+    pub fn loaded(
+        &self,
+        asset: String,
+        url: String,
+        frames: Option<caper_client::pictures::Frames>,
+    ) {
         let mut pictures = self.pictures.borrow_mut();
         pictures.loading.remove(&asset);
-        match image.and_then(|image| texture(&image)) {
-            Some(texture) => {
+        let frames: Option<AnimationFrames> = frames.and_then(|frames| {
+            frames
+                .iter()
+                .map(|(image, delay)| texture(image).map(|texture| (texture, *delay)))
+                .collect()
+        });
+        match frames.filter(|frames| !frames.is_empty()) {
+            Some(frames) => {
                 pictures.failed.remove(&asset);
-                pictures.ready.insert(asset, texture);
+                pictures.ready.insert(asset.clone(), frames[0].0.clone());
+                if frames.len() > 1 {
+                    pictures.animations.insert(asset, Rc::new(frames));
+                } else {
+                    pictures.animations.remove(&asset);
+                }
             }
             None => {
                 pictures.failed.insert(asset, url);
@@ -323,10 +349,17 @@ impl Images {
         }
     }
 
+    /// An animated picture's frames, once loaded.
+    fn animation(&self, avatar: &Avatar) -> Option<Rc<AnimationFrames>> {
+        let (asset, _) = avatar.picture.as_ref()?;
+        self.pictures.borrow().animations.get(asset).cloned()
+    }
+
     pub fn clear_pictures(&self) {
         self.media.clear();
         let mut pictures = self.pictures.borrow_mut();
         pictures.ready.clear();
+        pictures.animations.clear();
         pictures.failed.clear();
     }
 }
@@ -355,6 +388,15 @@ fn render_svg(svg: &[u8], edge: u32) -> Option<gdk::Texture> {
     )
 }
 
+/// An animated picture's frames and how long each shows.
+type AnimationFrames = Vec<(gdk::Texture, Duration)>;
+
+/// Whether pictures may move: GTK's animation setting, which follows the
+/// desktop's reduced-motion choice.
+pub fn motion() -> bool {
+    gtk::Settings::default().is_none_or(|settings| settings.is_gtk_enable_animations())
+}
+
 fn texture(image: &Rgba) -> Option<gdk::Texture> {
     let [width, height] = image.size;
     if width == 0 || height == 0 || image.pixels.len() != width * height * 4 {
@@ -379,6 +421,8 @@ fn texture(image: &Rgba) -> Option<gdk::Texture> {
 pub struct AvatarView {
     pub root: gtk::Overlay,
     picture: gtk::Image,
+    /// The running animation, replaced whenever the avatar changes.
+    ticking: Rc<Cell<Option<gtk::TickCallbackId>>>,
     initial: gtk::Label,
     dot: Option<gtk::Box>,
 }
@@ -416,12 +460,41 @@ impl AvatarView {
         Self {
             root,
             picture,
+            ticking: Rc::default(),
             initial,
             dot,
         }
     }
 
     pub fn set(&self, images: &Images, avatar: &Avatar) {
+        if let Some(tick) = self.ticking.take() {
+            tick.remove();
+        }
+        if let Some(frames) = images.animation(avatar).filter(|_| motion()) {
+            let total: Duration = frames.iter().map(|(_, delay)| *delay).sum();
+            let total = total.as_micros().max(1) as i64;
+            let (start, shown) = (Cell::new(None::<i64>), Cell::new(usize::MAX));
+            let tick = self.picture.add_tick_callback(move |image, clock| {
+                let now = clock.frame_time();
+                let first = *start.get().get_or_insert(now);
+                start.set(Some(first));
+                let mut time = (now - first) % total;
+                let mut index = 0;
+                for (position, (_, delay)) in frames.iter().enumerate() {
+                    let length = delay.as_micros() as i64;
+                    if time < length {
+                        index = position;
+                        break;
+                    }
+                    time -= length;
+                }
+                if shown.replace(index) != index {
+                    image.set_paintable(Some(&frames[index].0));
+                }
+                glib::ControlFlow::Continue
+            });
+            self.ticking.set(Some(tick));
+        }
         match images.avatar(avatar) {
             Some(texture) => {
                 self.picture.set_paintable(Some(&texture));

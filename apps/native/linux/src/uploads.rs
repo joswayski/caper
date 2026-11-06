@@ -5,39 +5,38 @@
 
 use crate::images::{Icon, Images};
 use caper_client::Rgba;
-use caper_client::model::{Attachment, AttachmentKind};
-use caper_client::uploads::{Prepared, Scratch, format_bytes};
+use caper_client::attachment_edit::Kind;
+use caper_client::drafts::{Progress, Upload};
+use caper_client::model::AttachmentKind;
+use caper_client::uploads::{Scratch, format_bytes};
 use gtk::{pango, prelude::*};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The thumbnail a chip shows.
 const CHIP_EDGE: i32 = 48;
 
 pub struct DraftFile {
-    /// Matches upload events; a retry keeps it.
-    pub key: u64,
-    pub channel: String,
-    /// `None`: the conversation composer; `Some`: that thread's.
-    pub root: Option<String>,
-    pub name: String,
-    pub kind: AttachmentKind,
-    pub path: PathBuf,
-    /// A pasted image's file, kept while it uploads and for retries.
-    pub scratch: Option<Arc<Scratch>>,
-    pub source_size: u64,
-    pub stored_size: Option<u64>,
-    pub compressing: Option<f32>,
-    pub progress: f32,
-    pub uploading: bool,
-    pub error: Option<String>,
-    pub attachment: Option<Attachment>,
-    pub prepared: Option<Arc<Prepared>>,
+    /// The upload's state, shared with the other clients.
+    pub upload: Upload,
+    /// The chip's picture: the editor's render until the prepared file's own.
     pub thumbnail: Option<Rgba>,
-    pub spoiler: bool,
-    pub cancel: Arc<AtomicBool>,
+    /// Whether the attachment editor can open it.
+    pub editable: Option<Kind>,
+}
+
+impl std::ops::Deref for DraftFile {
+    type Target = Upload;
+    fn deref(&self) -> &Upload {
+        &self.upload
+    }
+}
+
+impl std::ops::DerefMut for DraftFile {
+    fn deref_mut(&mut self) -> &mut Upload {
+        &mut self.upload
+    }
 }
 
 impl DraftFile {
@@ -52,53 +51,32 @@ impl DraftFile {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".into());
+        let mut upload = Upload::picked(key, channel, root, name, Some(path.clone()));
+        upload.source_scratch = scratch;
+        upload.source_size = std::fs::metadata(&path).map_or(0, |metadata| metadata.len());
         Self {
-            key,
-            channel,
-            root,
-            source_size: std::fs::metadata(&path).map_or(0, |metadata| metadata.len()),
-            name,
-            kind: AttachmentKind::File,
-            path,
-            scratch,
-            stored_size: None,
-            compressing: None,
-            progress: 0.0,
-            uploading: true,
-            error: None,
-            attachment: None,
-            prepared: None,
+            upload,
             thumbnail: None,
-            spoiler: false,
-            cancel: Arc::new(AtomicBool::new(false)),
+            editable: caper_client::attachment_edit::editable(&path),
         }
-    }
-
-    /// What it sends: the uploaded file, marked as a spoiler when chosen.
-    pub fn send_attachment(&self) -> Option<Attachment> {
-        self.attachment.clone().map(|mut attachment| {
-            attachment.spoiler = self.spoiler;
-            attachment
-        })
     }
 
     /// Stops its upload; the worker cancels the reservation.
     pub fn stop(&self) {
-        self.cancel.store(true, Ordering::Relaxed);
+        self.upload.abandon();
     }
 
-    /// The chip's second line.
-    pub fn status(&self) -> String {
-        if let Some(error) = &self.error {
-            return error.clone();
+    /// The chip's second line, and its progress while unfinished.
+    pub fn status(&self) -> (String, Progress) {
+        let (status, progress) = self.upload.status();
+        if status.is_empty() {
+            (
+                caper_client::uploads::size_label(self.source_size, self.stored_size),
+                progress,
+            )
+        } else {
+            (status, progress)
         }
-        if let Some(fraction) = self.compressing {
-            return format!("Compressing {}%", (fraction * 100.0).round() as u32);
-        }
-        if self.uploading {
-            return format!("Uploading {}%", (self.progress * 100.0).round() as u32);
-        }
-        caper_client::uploads::size_label(self.source_size, self.stored_size)
     }
 }
 
@@ -120,6 +98,8 @@ pub fn room(attached: usize, adding: usize) -> (usize, Option<String>) {
 
 /// What a chip's controls ask for.
 pub enum ChipAction {
+    /// Opens the file in the attachment editor.
+    Edit(u64),
     Remove(u64),
     Retry(u64),
     Spoiler(u64, bool),
@@ -163,6 +143,18 @@ pub fn chips(
                 preview.append(&icon);
             }
         }
+        if file.editable.is_some() {
+            // The picture opens the editor, as on the desktop.
+            preview.set_cursor_from_name(Some("pointer"));
+            preview.set_tooltip_text(Some("Edit"));
+            let click = gtk::GestureClick::new();
+            let (handler, key) = (handler.clone(), file.key);
+            click.connect_released(move |gesture, _, _, _| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                handler(ChipAction::Edit(key));
+            });
+            preview.add_controller(click);
+        }
         chip.append(&preview);
         let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
         text.set_valign(gtk::Align::Center);
@@ -170,8 +162,9 @@ pub fn chips(
         name.set_ellipsize(pango::EllipsizeMode::Middle);
         name.set_max_width_chars(18);
         text.append(&name);
+        let (status, progress) = file.status();
         let status = crate::ui::label(
-            &file.status(),
+            &status,
             if file.error.is_some() {
                 &["error", "small"]
             } else {
@@ -183,7 +176,10 @@ pub fn chips(
         text.append(&status);
         if file.uploading {
             let bar = gtk::ProgressBar::new();
-            bar.set_fraction(f64::from(file.compressing.unwrap_or(file.progress)));
+            match progress {
+                Progress::Known(fraction) => bar.set_fraction(f64::from(fraction)),
+                Progress::Unknown => bar.pulse(),
+            }
             bar.add_css_class("upload-progress");
             text.append(&bar);
         }
@@ -204,6 +200,13 @@ pub fn chips(
             });
             button
         };
+        if file.editable.is_some() {
+            chip.append(&button(
+                Icon::Pencil,
+                &format!("Edit {}", file.name),
+                ChipAction::Edit(key),
+            ));
+        }
         if file.error.is_some() {
             chip.append(&button(Icon::Retry, "Retry upload", ChipAction::Retry(key)));
         }
