@@ -8,6 +8,8 @@ export const fixtureIDs = {
   owner: "owner0000001",
   member: "member000001",
   other: "member000002",
+  invitedSpace: "space0000008",
+  invitedChannel: "chan00000091",
   invitee: "invitee00001",
   space: "space0000001",
   general: "chan00000001",
@@ -791,6 +793,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (Number.isInteger(body.releaseHighlightsDelay))
           state.releaseHighlightsDelay = Math.max(0, Math.min(5000, body.releaseHighlightsDelay));
         if (body.noSpaces) state.spaces = [];
+        // Maya invites the owner to her space: accept, decline, then leave it.
+        if (body.spaceInvitation && !state.spaces.some((detail) => detail.space.id === ids.invitedSpace)) {
+          const space = { id: ids.invitedSpace, name: "Maya's Book Club", ownerId: ids.member };
+          const channel = { id: ids.invitedChannel, spaceId: space.id, name: "general", private: false };
+          state.spaces.push({ space, channels: [channel], members: clone([{ ...members[1], owner: true }]) });
+          state.invitations.set(`${space.id}:${ids.owner}`, { status: "pending" });
+        }
         // A new account that still has to choose a username and display name.
         if (body.incompleteProfile) state.account = { ...state.account, username: null, displayName: null };
         if (body.feedbackTeam === true && !state.account.feedbackTeam) {
@@ -2250,7 +2259,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (joining && method === "POST") {
           if (!member) {
             link.uses += 1;
-            detail.members.push(clone(user));
+            detail.members.push({ ...clone(user), owner: false });
           }
           return json(response, 200, { space: detail.space, channelId: link.channel?.id ?? null, joined: !member });
         }
@@ -2330,10 +2339,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
                 .map((detail) => detail.space),
               invitations: state.spaces
                 .filter((detail) => state.invitations.get(`${detail.space.id}:${user.id}`)?.status === "pending")
-                .map((detail) => ({
-                  ...detail.space,
-                  inviter: { username: state.account.username, displayName: state.account.displayName },
-                })),
+                .map((detail) => {
+                  const inviter = detail.members.find((member) => member.id === detail.space.ownerId) ?? state.account;
+                  return {
+                    ...detail.space,
+                    inviter: { username: inviter.username, displayName: inviter.displayName },
+                  };
+                }),
               limits,
             });
           if (method === "POST") {
@@ -2363,7 +2375,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           if (invitation?.status !== "pending") return reject(response, 404, "resource not found");
           if (method === "POST") {
             invitation.status = "accepted";
-            detail.members.push(clone(user));
+            detail.members.push({ ...clone(user), owner: false });
             const starter =
               detail.channels.find((channel) => !channel.private && channel.name === "general") ??
               detail.channels.find((channel) => !channel.private);
@@ -2465,7 +2477,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           }
           if (method === "DELETE") {
             if (!owner && (channelId || memberId !== user.id)) return reject(response, 404, "resource not found");
-            if (memberId === state.account.id) return reject(response, 409, "The owner cannot be removed.");
+            if (memberId === detail.space.ownerId) return reject(response, 409, "The owner cannot be removed.");
             const exists = channelId
               ? (state.grants.get(channelId) ?? []).includes(memberId)
               : detail.members.some((member) => member.id === memberId);
