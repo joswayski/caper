@@ -382,8 +382,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val stored = withContext(Dispatchers.IO) { tokens.read() }
                 val account = if (stored == null) null else try {
                     api.me(stored).also { accountToken = stored }
-                } catch (error: ApiException) {
-                    if (error.status == 401) { tokens.clear(); accountToken = null; null } else throw error
+                } catch (error: CancellationException) { throw error } catch (error: Throwable) {
+                    if (error is ApiException && error.status == 401) { tokens.clear(); accountToken = null; null }
+                    else {
+                        // A failed load keeps the session, as on web: its status page offers Try again.
+                        if (requestAccountGeneration == accountGeneration) mutable.value = AppUiState(screen = SessionScreen.Unavailable(null, message(error)))
+                        return@launch
+                    }
                 }
                 if (requestAccountGeneration != accountGeneration) return@launch
                 if (account != null && (account.username == null || account.displayName == null)) {
@@ -395,7 +400,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
                 val token = requireNotNull(accountToken)
-                val list = api.spaces(token)
+                val list = try { api.spaces(token) } catch (error: CancellationException) { throw error } catch (error: Throwable) {
+                    if (requestAccountGeneration == accountGeneration)
+                        mutable.value = AppUiState(screen = SessionScreen.Unavailable(account, message(error)), account = account)
+                    return@launch
+                }
                 val directs = runCatching { api.directConversations(token) }
                 if (requestAccountGeneration != accountGeneration) return@launch
                 mutable.value = AppUiState(
@@ -452,6 +461,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    /** The status page's Try again: rerun the launch with the stored session. */
+    fun retryLoading() = loadHome()
 
     fun showLogin() { mutable.value = mutable.value.copy(screen = SessionScreen.SignedOut, error = null) }
 

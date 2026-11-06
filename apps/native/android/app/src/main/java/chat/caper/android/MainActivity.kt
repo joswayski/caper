@@ -407,6 +407,7 @@ internal data class VoiceJoinIntent(
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::requestCode)
                 is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::showLogin, viewModel::verify, viewModel::resendCode)
                 is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, state.error, null, submit = viewModel::saveProfile)
+                is SessionScreen.Unavailable -> UnavailableScreen(screen, state.loggingOut, state.error, viewModel::retryLoading, viewModel::logout)
                 SessionScreen.Home, is SessionScreen.Spaces ->
                     // Launch stays on the brand screen until the first conversation is ready.
                     if (state.restoring) BrandLoading()
@@ -3960,6 +3961,22 @@ internal fun counterTone(count: Int): Color = when {
         Spacer(Modifier.width(12.dp))
         Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
     }
+}
+
+/** Web's status pages for a launch that didn't load: today's character, what failed and Try again. */
+@Composable private fun UnavailableScreen(screen: SessionScreen.Unavailable, loggingOut: Boolean, error: String?, retry: () -> Unit, logout: () -> Unit) = AuthFrame {
+    Avatar("Caper", 72.dp, Modifier.padding(bottom = 20.dp), avatarId = LocalBrandAvatar.current)
+    if (screen.account == null) Text("SOMETHING WENT WRONG", Modifier.padding(bottom = 6.dp), color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+    Text(if (screen.account == null) "Caper didn’t load." else "Spaces are unavailable.", Modifier.semantics { heading() },
+        style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+    Text(if (screen.account == null) "Check your connection, then try again." else screen.message,
+        Modifier.padding(top = 8.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, lineHeight = 24.sp)
+    // A failed Log out says so here.
+    error?.let { Text(it, Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
+    PrimaryButton("Try again", "Loading…", false, !loggingOut, Modifier.align(Alignment.End).padding(top = 24.dp), onClick = retry)
+    // Like the Apple clients: a session that keeps failing can still sign out.
+    TextButton(logout, Modifier.align(Alignment.End).padding(top = 4.dp), enabled = !loggingOut, shape = MaterialTheme.shapes.small,
+        colors = neutralTextButtonColors(TextMuted)) { Text(if (loggingOut) "Logging out…" else "Log out") }
 }
 
 @Composable private fun LoginScreen(busy: Boolean, error: String?, clearError: () -> Unit, submit: (String) -> Unit) {

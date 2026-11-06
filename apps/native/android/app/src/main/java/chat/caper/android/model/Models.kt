@@ -523,6 +523,12 @@ sealed interface SessionScreen {
         val resends: Int = 0, val sentAt: Long = 0,
     ) : SessionScreen
     data class Profile(val account: Account) : SessionScreen
+    /**
+     * Signed in, but Caper didn't load: web's status pages. Without [account] the account itself
+     * didn't load ("Caper didn't load."); with it, the space list didn't ("Spaces are unavailable.").
+     * The token stays, and Try again reruns the launch.
+     */
+    data class Unavailable(val account: Account?, val message: String) : SessionScreen
     data class Spaces(val account: Account) : SessionScreen
 }
 
