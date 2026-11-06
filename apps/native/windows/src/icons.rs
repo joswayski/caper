@@ -42,6 +42,7 @@ icons! {
     Reply => "reply.svg",
     Retry => "rotate-ccw.svg",
     Send => "send.svg",
+    Settings => "settings.svg",
     SmilePlus => "smile-plus.svg",
     Trash => "trash-2.svg",
 }

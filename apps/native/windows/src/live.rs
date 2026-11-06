@@ -5,6 +5,7 @@
 //! no session is stored. Only used when `CAPER_API_URL` is set; the rest
 //! of the egui client's commands come later.
 use crate::model::{self, Conversation, Person, Reaction, Span};
+use caper_client::notifications::{Change, Scope};
 use caper_client::reactions::{
     REACTOR_CACHE_LIMIT, Reacted, Reactions, ReactorCache, ReactorState,
 };
@@ -109,6 +110,8 @@ pub enum Update {
     },
     /// A DM you asked for opened (None), or why it couldn't.
     DirectCreated(Option<String>),
+    /// Settings' account choices loaded, saved or failed.
+    Settings,
     /// The open thread's messages or state changed (or it closed): the
     /// pane rebuilds from `Live::thread_view`.
     Thread,
@@ -320,6 +323,17 @@ pub struct Live {
     pub requests_open: bool,
     answer: Option<bool>,
     answer_error: Option<String>,
+    /// Settings' account choices, as egui keeps them: who can start a DM,
+    /// a save in flight and why the last load or save failed; your blocked
+    /// accounts, an unblock in flight and why it failed; notifications.
+    privacy: Option<String>,
+    privacy_saving: bool,
+    privacy_error: Option<String>,
+    blocks: Option<Vec<core::BlockedAccount>>,
+    blocks_error: Option<String>,
+    block_busy: bool,
+    block_error: Option<String>,
+    notifications: caper_client::notifications::Notifications,
 }
 
 /// What a send with composer files did.
@@ -383,65 +397,276 @@ pub fn start(hwnd: HWND) -> Option<Live> {
     let worker = Worker::new(api, host.clone());
     let generation = 1;
     worker.send(Command::Restore { generation });
-    Some(Live {
-        worker,
-        media,
-        media_ready,
-        host,
-        generation,
-        navigation: 0,
-        token: None,
-        name: String::new(),
-        spaces: None,
-        space: None,
-        channel: None,
-        chat_token: None,
-        me: None,
-        timeline: core::Timeline::default(),
-        reactions: Reactions::default(),
-        queued: Vec::new(),
-        mutations: core::MessageMutations::default(),
-        pending_pins: HashSet::new(),
-        request: 0,
-        author: None,
-        detail: None,
-        has_more: false,
-        loading_older: false,
-        older_error: None,
-        thread: None,
-        thread_request: 0,
-        thread_only: HashSet::new(),
-        window: None,
-        context_loading: false,
-        unread: None,
-        unread_pending: false,
-        visit: 0,
-        visit_channel: None,
-        reads: HashMap::new(),
-        foreground: false,
-        reactors: HashMap::new(),
-        unread_spaces: Vec::new(),
-        unread_revision: 0,
-        drafts: Vec::new(),
-        draft_keys: 0,
-        uploads: None,
-        uploads_checked: false,
-        local: Vec::new(),
-        klipy: None,
-        klipy_checked: None,
-        shares: HashMap::new(),
-        directs: Vec::new(),
-        account_id: None,
-        account_name: String::new(),
-        username: None,
-        direct: None,
-        direct_name: String::new(),
-        people: Vec::new(),
-        lookup: 0,
-        requests_open: false,
-        answer: None,
-        answer_error: None,
-    })
+    Some(Live::fresh(worker, media, media_ready, host, generation))
+}
+
+impl Live {
+    /// A signed-out Live around `worker`, at `generation`.
+    fn fresh(
+        worker: Worker<WinHost>,
+        media: caper_client::media::Media<crate::files::D2d>,
+        media_ready: Arc<std::sync::atomic::AtomicBool>,
+        host: WinHost,
+        generation: u64,
+    ) -> Self {
+        Live {
+            worker,
+            media,
+            media_ready,
+            host,
+            generation,
+            navigation: 0,
+            token: None,
+            name: String::new(),
+            spaces: None,
+            space: None,
+            channel: None,
+            chat_token: None,
+            me: None,
+            timeline: core::Timeline::default(),
+            reactions: Reactions::default(),
+            queued: Vec::new(),
+            mutations: core::MessageMutations::default(),
+            pending_pins: HashSet::new(),
+            request: 0,
+            author: None,
+            detail: None,
+            has_more: false,
+            loading_older: false,
+            older_error: None,
+            thread: None,
+            thread_request: 0,
+            thread_only: HashSet::new(),
+            window: None,
+            context_loading: false,
+            unread: None,
+            unread_pending: false,
+            visit: 0,
+            visit_channel: None,
+            reads: HashMap::new(),
+            foreground: false,
+            reactors: HashMap::new(),
+            unread_spaces: Vec::new(),
+            unread_revision: 0,
+            drafts: Vec::new(),
+            draft_keys: 0,
+            uploads: None,
+            uploads_checked: false,
+            local: Vec::new(),
+            klipy: None,
+            klipy_checked: None,
+            shares: HashMap::new(),
+            directs: Vec::new(),
+            account_id: None,
+            account_name: String::new(),
+            username: None,
+            direct: None,
+            direct_name: String::new(),
+            people: Vec::new(),
+            lookup: 0,
+            requests_open: false,
+            answer: None,
+            answer_error: None,
+            privacy: None,
+            privacy_saving: false,
+            privacy_error: None,
+            blocks: None,
+            blocks_error: None,
+            block_busy: false,
+            block_error: None,
+            notifications: Default::default(),
+        }
+    }
+
+    /// Signs out (egui's `logout`): the stored session is forgotten and the
+    /// server revokes it. A signed-out Live replaces this one on the same
+    /// worker, so nothing can restore the old session meanwhile.
+    pub fn logout(self) -> Live {
+        let generation = self.generation + 1;
+        self.worker.send(Command::StopGateway);
+        self.worker.send(Command::ClearCredential { generation });
+        if let Some(token) = self.token.clone() {
+            self.worker.send(Command::Logout { generation, token });
+        }
+        let Live {
+            worker,
+            mut media,
+            media_ready,
+            host,
+            ..
+        } = self;
+        media.clear();
+        Live::fresh(worker, media, media_ready, host, generation)
+    }
+
+    fn account(&self, operation: AccountOperation) {
+        if let Some(token) = &self.token {
+            self.worker.send(Command::Account {
+                epoch: 0,
+                token: token.clone(),
+                operation,
+            });
+        }
+    }
+
+    /// Settings opened (egui's `open_settings`): privacy (unless a save is
+    /// in flight), blocks, and notifications until they have loaded.
+    pub fn load_settings(&mut self) {
+        if !self.privacy_saving {
+            self.load_privacy();
+        }
+        self.load_blocks();
+        if !self.notifications.ready() {
+            self.load_notifications();
+        }
+    }
+
+    pub fn load_privacy(&mut self) {
+        self.privacy_error = None;
+        self.account(AccountOperation::LoadPrivacy);
+    }
+
+    pub fn load_blocks(&mut self) {
+        self.blocks_error = None;
+        self.account(AccountOperation::LoadBlocks);
+    }
+
+    pub fn load_notifications(&mut self) {
+        if self.token.is_some()
+            && let Some(revision) = self.notifications.start_load()
+        {
+            self.account(AccountOperation::LoadNotifications { revision });
+        }
+    }
+
+    /// Applies a notification choice at once and saves it; a failed save
+    /// reverts with an inline error.
+    pub fn change_notifications(&mut self, scope: Scope, change: Change) {
+        if self.token.is_some() && self.notifications.begin(&scope, &change) {
+            self.account(AccountOperation::SaveNotifications { scope, change });
+        }
+    }
+
+    /// Who can start a DM with you: shown at once, reverted if the save
+    /// fails.
+    pub fn save_privacy(&mut self, value: &str) {
+        if self.privacy_saving || self.privacy.as_deref() == Some(value) {
+            return;
+        }
+        let previous = self.privacy.replace(value.to_owned());
+        self.privacy_saving = true;
+        self.privacy_error = None;
+        self.account(AccountOperation::SavePrivacy {
+            value: value.to_owned(),
+            previous,
+        });
+    }
+
+    /// Unblocks the `k`th blocked account.
+    pub fn unblock(&mut self, k: usize) {
+        let Some(account) = self.blocks.as_ref().and_then(|b| b.get(k)).cloned() else {
+            return;
+        };
+        self.block_busy = true;
+        self.block_error = None;
+        self.account(AccountOperation::SetBlock {
+            account,
+            blocked: false,
+            request: None,
+        });
+    }
+
+    /// The account's half of what Settings shows.
+    pub fn settings_snapshot(&self, snap: &mut crate::settings::Snapshot) {
+        let n = &self.notifications;
+        snap.account = self.token.is_some();
+        snap.level = n.account_level();
+        snap.voice_started = n.account_voice_started();
+        snap.notify_saving = n.saving(&Scope::Account);
+        snap.notify_load_error = n.load_error().map(str::to_owned);
+        snap.notify_error = n.error(&Scope::Account).map(str::to_owned);
+        snap.privacy.clone_from(&self.privacy);
+        snap.privacy_error.clone_from(&self.privacy_error);
+        snap.blocks = self.blocks.as_ref().map(|list| {
+            list.iter()
+                .map(|a| {
+                    let p = person(&a.id, &a.display_name);
+                    (
+                        a.display_name.clone(),
+                        a.username.clone(),
+                        p.color,
+                        p.initials,
+                    )
+                })
+                .collect()
+        });
+        snap.blocks_error.clone_from(&self.blocks_error);
+        snap.block_busy = self.block_busy;
+        snap.block_error.clone_from(&self.block_error);
+    }
+
+    /// Settings' Account results (egui's handling of each).
+    fn account_settings(&mut self, result: AccountResult, out: &mut Vec<Update>) {
+        match result {
+            AccountResult::Blocks(Ok(blocks)) => {
+                self.blocks = Some(blocks);
+                self.blocks_error = None;
+            }
+            AccountResult::Blocks(Err(e)) => self.blocks_error = Some(e),
+            AccountResult::Block {
+                account,
+                blocked,
+                result,
+                ..
+            } => {
+                self.block_busy = false;
+                match result {
+                    Err(e) => self.block_error = Some(e),
+                    Ok(()) => {
+                        self.block_error = None;
+                        let blocks = self.blocks.get_or_insert_with(Vec::new);
+                        blocks.retain(|b| b.id != account.id);
+                        if blocked {
+                            blocks.insert(0, account.clone());
+                        }
+                        for d in &mut self.directs {
+                            if d.peer.id == account.id {
+                                d.blocked = blocked;
+                            }
+                        }
+                        out.extend([Update::Badges, Update::DirectHead]);
+                    }
+                }
+            }
+            // A save in flight owns the displayed value.
+            AccountResult::Privacy(Ok(value)) if !self.privacy_saving => {
+                self.privacy = Some(value);
+            }
+            AccountResult::Privacy(Ok(_)) => {}
+            AccountResult::Privacy(Err(e)) => self.privacy_error = Some(e),
+            AccountResult::PrivacySaved { previous, result } => {
+                self.privacy_saving = false;
+                match result {
+                    Ok(value) => {
+                        self.privacy = Some(value);
+                        self.privacy_error = None;
+                    }
+                    Err(e) => {
+                        self.privacy = previous;
+                        self.privacy_error = Some(e);
+                    }
+                }
+            }
+            AccountResult::Notifications { revision, result } => {
+                self.notifications.finish_load(revision, result);
+            }
+            AccountResult::NotificationsSaved { scope, result } => {
+                self.notifications.finish_save(&scope, result);
+            }
+            _ => return,
+        }
+        out.push(Update::Settings);
+    }
 }
 
 impl Live {
@@ -2224,6 +2449,12 @@ impl Live {
                 Err(e) if navigation == self.navigation => out.push(Update::DirectCreated(Some(e))),
                 Err(_) => {}
             },
+            Event::LoggedOut {
+                generation,
+                result: Err(e),
+            } if generation == current => out.push(Update::SignedOut(Some(format!(
+                "Signed out locally; server revocation failed: {e}"
+            )))),
             Event::PeopleLoaded {
                 generation,
                 result: Ok(people),
@@ -2268,6 +2499,7 @@ impl Live {
                 }
                 out.extend([Update::Badges, Update::DirectHead]);
             }
+            Event::Account { result, .. } => self.account_settings(result, out),
             Event::DirectLookedUp {
                 generation,
                 request,

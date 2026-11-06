@@ -23,6 +23,7 @@ mod emoji;
 mod files;
 mod gifs;
 mod overlay;
+mod settings;
 // The message grammar every client shares.
 #[allow(dead_code)]
 #[path = "../../../../shared/messages/formatting.rs"]
@@ -122,6 +123,8 @@ struct Dirty {
     picker: bool,
     /// The GIF picker.
     gifs: bool,
+    /// Settings, or the account footer's menu.
+    settings: bool,
     reply: bool,
     /// The thread pane, and its reply box.
     thread: bool,
@@ -144,6 +147,7 @@ impl Dirty {
             overlay: true,
             picker: true,
             gifs: true,
+            settings: true,
             reply: true,
             thread: true,
             thread_box: true,
@@ -234,6 +238,12 @@ pub struct App {
     /// The request bar's hovered and pressed buttons.
     bar_hover: Option<directs::BarPart>,
     bar_pressed: Option<directs::BarPart>,
+    /// Settings, the account footer's menu and whether its gear is
+    /// hovered, and their surface.
+    pub settings: Option<settings::Settings>,
+    pub account_menu: Option<settings::AccountMenu>,
+    gear_hover: bool,
+    settings_p: Panel,
     pointer: Option<(f32, f32)>,
     tracking: bool,
     pub sel: Option<Sel>,
@@ -344,6 +354,7 @@ impl App {
             let thread_p = Panel::new(&g)?;
             let thread_box_p = Panel::new(&g)?;
             let card_p = Panel::new(&g)?;
+            let settings_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
             let content = g.visual()?;
             let vs = g.dcomp.CreateVirtualSurface(
@@ -377,7 +388,8 @@ impl App {
             root.AddVisual(&picker_p.visual, true, &menu_p.visual)?;
             root.AddVisual(&gifs_p.visual, true, &picker_p.visual)?;
             root.AddVisual(&dialog_p.visual, true, &gifs_p.visual)?;
-            root.AddVisual(&signin_p.visual, true, &dialog_p.visual)?;
+            root.AddVisual(&settings_p.visual, true, &dialog_p.visual)?;
+            root.AddVisual(&signin_p.visual, true, &settings_p.visual)?;
             let (channel_layouts, member_layouts) = side_layouts(&g, &c)?;
             let n = c.messages.len();
             let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
@@ -417,6 +429,10 @@ impl App {
                 hover_direct: None,
                 bar_hover: None,
                 bar_pressed: None,
+                settings: None,
+                account_menu: None,
+                gear_hover: false,
+                settings_p,
                 pointer: None,
                 tracking: false,
                 sel: None,
@@ -620,6 +636,11 @@ impl App {
                     self.bar_changed();
                 }
                 live::Update::DirectFound { request, result } => self.direct_found(request, result),
+                live::Update::Settings => {
+                    if self.settings.is_some() {
+                        self.settings_changed();
+                    }
+                }
                 live::Update::DirectCreated(error) => self.direct_created(error),
                 live::Update::Badges => {
                     self.dirty.rail = true;
@@ -1242,6 +1263,12 @@ impl App {
             self.need = true;
         }
         self.track_bar_hover();
+        let gear = self.pointer.is_some_and(|(x, y)| self.on_gear(x, y));
+        if gear != self.gear_hover {
+            self.gear_hover = gear;
+            self.dirty.sidebar = true;
+            self.need = true;
+        }
         if space != self.hover_space {
             self.hover_space = space;
             self.dirty.rail = true;
@@ -1261,7 +1288,8 @@ impl App {
 
     fn history_hover(&self) -> Option<usize> {
         let (x, y) = self.pointer?;
-        if !self.in_history(x, y) {
+        // Settings covers the history.
+        if !self.in_history(x, y) || self.settings.is_some() {
             return None;
         }
         // The toolbar reaches above its row: it keeps that row hovered.
@@ -1327,6 +1355,16 @@ impl App {
         {
             return r;
         }
+        if self.settings.is_some()
+            && let Some(r) = self.settings_input(msg, wp, x, y)
+        {
+            return r;
+        }
+        if self.account_menu.is_some()
+            && let Some(r) = self.account_menu_input(msg, wp, x, y)
+        {
+            return r;
+        }
         if let Some(r) = self.overlay_input(msg, wp, x, y, ctrl, shift) {
             return r;
         }
@@ -1355,6 +1393,10 @@ impl App {
                     self.dirty.signin = true;
                     self.close_menu();
                     self.dialog_changed();
+                    if self.settings.is_some() {
+                        self.settings_changed();
+                    }
+                    self.dirty.settings = true;
                     self.need = true;
                 }
             }
@@ -1438,7 +1480,9 @@ impl App {
                 unsafe {
                     SetCapture(self.hwnd);
                 }
-                if let Some(part) = self.bar_at(x, y) {
+                if self.on_gear(x, y) {
+                    self.toggle_account_menu();
+                } else if let Some(part) = self.bar_at(x, y) {
                     self.bar_pressed = Some(part);
                     self.dirty.composer = true;
                     self.need = true;
@@ -1569,6 +1613,7 @@ impl App {
                             || self.action_at(x, y).is_some()
                             || self.tool_at(x, y).is_some()
                             || self.on_head_button(x, y)
+                            || self.on_gear(x, y)
                             || self.thread_link_at(x, y).is_some()
                             || self.foot_at(x, y).is_some()
                             || self.quote_link_at(x, y).is_some()
@@ -1975,6 +2020,11 @@ impl App {
     }
 
     fn key(&mut self, vk: VIRTUAL_KEY, ctrl: bool, shift: bool) -> bool {
+        // Ctrl+, opens Settings, as in the egui client.
+        if ctrl && vk == VK_OEM_COMMA && self.foot_shown() {
+            self.open_settings();
+            return true;
+        }
         if ctrl && vk == VIRTUAL_KEY('C' as u16) {
             let text = if self.composer.focused {
                 let (a, b) = self.composer.selection();
@@ -2631,6 +2681,7 @@ impl App {
                     );
                 }
                 directs::draw(g, dc, &drows, dtop, dhover)?;
+                self.draw_foot(g, dc, self.h)?;
                 Ok(())
             })?;
         }
@@ -2804,6 +2855,7 @@ impl App {
         self.draw_gifs()?;
         self.draw_empty()?;
         self.draw_overlays()?;
+        self.draw_settings()?;
         self.draw_thread()?;
         self.track_card();
         self.draw_card()?;
