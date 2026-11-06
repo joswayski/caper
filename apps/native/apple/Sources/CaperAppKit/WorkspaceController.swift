@@ -6,10 +6,15 @@ import CaperCore
     private let navigationObservation = NativeObservation()
     private let timelineObservation = NativeObservation()
     private let composerObservation = NativeObservation()
-    private let membersObservation = NativeObservation()
     private let rail = NativeView(NativeStyle.blackout)
     private let sidebar = NativeView(NativeStyle.sidebar)
-    private let members = NativeView(NativeStyle.sidebar)
+    private lazy var members = MemberPanel(model: model)
+    private var membersPreference: Bool?
+    private lazy var membersToggle = NativeButton.icon("Show members", symbol: "person.2") { [weak self] in
+        guard let self else { return }
+        self.membersPreference = self.members.isHidden
+        self.view.needsLayout = true
+    }
     private let stage = NativeView(NativeStyle.conversation)
     private let timeline = MessageTimeline(frame: .zero)
     private let header = NativeStyle.label("", size: 16, bold: true)
@@ -19,8 +24,6 @@ import CaperCore
     private let composerScroll = NSScrollView()
     private let channels = NativeView()
     private let channelScroll = NSScrollView()
-    private let memberList = NativeView()
-    private let memberScroll = NSScrollView()
     private lazy var send = NativeButton("Send", primary: true) { [weak self] in self?.submit() }
     private lazy var retry = NativeButton("Retry") { [weak self] in
         guard let self else { return }
@@ -51,11 +54,14 @@ import CaperCore
     override func viewDidLoad() {
         super.viewDidLoad()
         [rail, sidebar, stage, members].forEach { view.addSubview($0) }
-        [timeline, header, status, retry, editRejected, composerScroll, send].forEach { stage.addSubview($0) }
+        [timeline, header, membersToggle, status, retry, editRejected, composerScroll, send].forEach { stage.addSubview($0) }
         [account, mute, deafen, logout, channelScroll].forEach { sidebar.addSubview($0) }
         setupList(channels, in: channelScroll)
-        setupList(memberList, in: memberScroll)
-        members.addSubview(memberScroll)
+        members.close = { [weak self] in
+            self?.membersPreference = false
+            self?.view.needsLayout = true
+        }
+        membersToggle.setAccessibilityIdentifier("toggle-members")
         status.textColor = NativeStyle.muted
         composer.font = NativeStyle.font(14)
         composer.textColor = NativeStyle.text
@@ -101,7 +107,6 @@ import CaperCore
             self.timeline.update(visible, conversationID: self.model.selectedDirectMessageID ?? self.model.selectedChannelID)
         }
         composerObservation.start { [weak self] in self?.updateComposer() }
-        membersObservation.start { [weak self] in self?.updateMembers() }
     }
 
     private func setupList(_ list: NSView, in scroll: NSScrollView) {
@@ -113,14 +118,23 @@ import CaperCore
     override func viewDidLayout() {
         super.viewDidLayout()
         let width = view.bounds.width, height = view.bounds.height
-        let memberWidth: CGFloat = width >= 1100 && model.selectedDirectMessageID == nil ? 220 : 0
+        let visible = (membersPreference ?? (width >= 1100)) && model.selectedDirectMessageID == nil
+        let docked = width >= 1100
+        let memberWidth: CGFloat = visible && docked ? 220 : 0
         rail.frame = NSRect(x: 0, y: 0, width: 64, height: height)
         sidebar.frame = NSRect(x: 64, y: 0, width: 280, height: height)
-        members.frame = NSRect(x: width - memberWidth, y: 0, width: memberWidth, height: height)
-        members.isHidden = memberWidth == 0
+        // Narrow windows keep the composer width and open members over the
+        // conversation instead of making the member control disappear.
+        members.frame = NSRect(x: width - 220, y: docked ? 0 : 48, width: 220, height: height - (docked ? 0 : 48))
+        members.setVisible(visible)
         stage.frame = NSRect(x: 344, y: 0, width: width - 344 - memberWidth, height: height)
         let center = stage.bounds.width
-        header.frame = NSRect(x: 20, y: 14, width: center - 40, height: 26)
+        header.frame = NSRect(x: 20, y: 14, width: center - 80, height: 26)
+        membersToggle.frame = NSRect(x: center - 48, y: 8, width: 32, height: 32)
+        membersToggle.isHidden = model.selectedDirectMessageID != nil
+        membersToggle.setAccessibilityLabel(visible ? "Hide members" : "Show members")
+        membersToggle.toolTip = visible ? "Hide members" : "Show members"
+        membersToggle.contentTintColor = visible ? NativeStyle.accent : NativeStyle.muted
         timeline.frame = NSRect(x: 0, y: 48, width: center, height: height - 48 - 138)
         status.frame = NSRect(x: 20, y: height - 132, width: center - 40, height: 24)
         composerScroll.frame = NSRect(x: 20, y: height - 102, width: center - 116, height: 70)
@@ -134,9 +148,7 @@ import CaperCore
         mute.frame = NSRect(x: 16, y: height - 76, width: 110, height: 30)
         deafen.frame = NSRect(x: 138, y: height - 76, width: 126, height: 30)
         logout.frame = NSRect(x: 16, y: height - 38, width: 248, height: 26)
-        memberScroll.frame = members.bounds
         layoutList(channels, width: channelScroll.contentSize.width)
-        layoutList(memberList, width: memberScroll.contentSize.width)
         for (index, button) in spaceButtons.enumerated() {
             button.frame = NSRect(x: 10, y: 18 + CGFloat(index) * 54, width: 44, height: 44)
         }
@@ -178,18 +190,6 @@ import CaperCore
         account.stringValue = model.account?.displayName ?? ""
         header.stringValue = model.selectedDirectMessage?.peer.displayName ?? "# \(model.chat.channelName)"
         view.needsLayout = true
-    }
-
-    private func updateMembers() {
-        clear(memberList)
-        let roster = model.presence.visibleMembers
-        add(NativeStyle.label("MEMBERS — \(roster.count)", size: 12, bold: true), to: memberList)
-        for snapshot in roster {
-            let member = model.profiled(snapshot)
-            let indicator = model.presence.status(for: member) == .online ? "●" : "○"
-            add(NativeStyle.label("\(indicator)  \(member.displayName)"), to: memberList)
-        }
-        layoutList(memberList, width: memberScroll.contentSize.width)
     }
 
     private func updateComposer() {

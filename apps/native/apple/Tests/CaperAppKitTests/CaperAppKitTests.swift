@@ -72,7 +72,7 @@ import XCTest
         defer { app.terminate() }
         let composer = app.textViews["message-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
-        XCTAssertTrue(app.staticTexts["MEMBERS — 3"].exists)
+        XCTAssertEqual(app.staticTexts["member-count"].value as? String, "3")
         app.buttons["channel-chan00000002"].hover()
         app.buttons["channel-chan00000003"].hover()
         composer.click()
@@ -98,6 +98,49 @@ import XCTest
         app.buttons["channel-chan00000001"].click()
         XCTAssertTrue(sent.waitForExistence(timeout: 10))
         capture("conversation, wide", app: app)
+    }
+
+    func testMemberSearchPrivateGroupsAndReopeningThePanel() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let list = app.scrollViews["member-list"]
+        XCTAssertTrue(list.waitForExistence(timeout: 15))
+        let maya = app.groups["member-member000001"]
+        XCTAssertTrue(maya.waitForExistence(timeout: 10))
+        XCTAssertEqual(maya.label, "Maya, Online")
+        capture("members", app: app)
+        app.buttons["Search members"].hover()
+        app.buttons["Close member list"].hover()
+        app.buttons["Search members"].click()
+        let search = app.searchFields["Name or username"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.typeText("FIXTURE_OWNER")
+        XCTAssertTrue(maya.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.groups["member-owner0000001"].exists, "Search includes usernames, not only display names")
+        capture("member search", app: app)
+        search.typeKey("a", modifierFlags: .command); search.typeText("no such member")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "value == %@", "No matching members.")).firstMatch.waitForExistence(timeout: 5))
+        capture("no matching members", app: app)
+        search.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(maya.waitForExistence(timeout: 5))
+        app.buttons["channel-chan00000003"].click()
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "value == %@", "In #planning  2")).firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "value == %@", "Others in this space  1")).firstMatch.exists)
+        capture("private channel members", app: app)
+        app.buttons["Close member list"].click()
+        XCTAssertTrue(list.waitForNonExistence(timeout: 5))
+        app.buttons["toggle-members"].hover()
+        app.buttons["toggle-members"].click()
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        XCTAssertTrue(maya.exists)
+        app.buttons["Search members"].click()
+        search.typeText("maya")
+        app.buttons["Close member list"].click()
+        app.buttons["toggle-members"].click()
+        XCTAssertTrue(app.groups["member-owner0000001"].waitForExistence(timeout: 5), "Closing the panel clears its filter")
     }
 
     func testSignInErrorAndSixCharacterCodeRecovery() async throws {

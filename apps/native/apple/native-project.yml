@@ -42,6 +42,8 @@ targets:
       - Tests/CaperAppKitViewTests
       - Sources/CaperAppKit/NativeControls.swift
       - Sources/CaperAppKit/MessageTimeline.swift
+      - Sources/CaperAppKit/MemberPanel.swift
+      - Sources/CaperAppKit/NativeAvatar.swift
     dependencies:
       - target: CaperCoreMacOS
       - target: CaperRTCBridge

@@ -2133,6 +2133,20 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
                   channels: detail.channels
                     .filter((channel) => canRead(channel, user))
                     .map((channel) => channelDTO(channel, user)),
+                  channelMembers: Object.fromEntries(
+                    detail.channels
+                      .filter((channel) => channel.private && canRead(channel, user))
+                      .map((channel) => [
+                        channel.id,
+                        detail.members
+                          .filter(
+                            (member) =>
+                              member.id === detail.space.ownerId ||
+                              (state.grants.get(channel.id) ?? []).includes(member.id),
+                          )
+                          .map((member) => member.id),
+                      ]),
+                  ),
                   channelInvitations: detail.channels
                     .filter((channel) => state.channelInvitations.get(`${channel.id}:${user.id}`)?.status === "pending")
                     .map((channel) => ({

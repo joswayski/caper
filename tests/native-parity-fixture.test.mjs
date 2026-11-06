@@ -442,6 +442,9 @@ test("public preview stays readable without participation; private consent grant
   const publicRoot = `/api/spaces/${ids.space}/channels/${ids.design}`;
   const privateRoot = `/api/spaces/${ids.space}/channels/${ids.private}`;
   const member = { auth: "fixture-member-token" };
+  assert.deepEqual((await request(`/api/spaces/${ids.space}`, member)).value.channelMembers, {
+    [ids.private]: [ids.owner, ids.member],
+  });
   assert.equal((await request(`${publicRoot}/membership`, { ...member, method: "DELETE" })).response.status, 204);
   assert.equal((await request(`/api/chat/channels/${ids.design}/messages`, member)).response.status, 200);
   assert.equal((await request(`/api/channels/${ids.design}/media/status`, member)).response.status, 404);
@@ -480,12 +483,18 @@ test("public preview stays readable without participation; private consent grant
   );
   const before = (await request(`/api/spaces/${ids.space}`, member)).value;
   assert.ok(!before.channels.some((channel) => channel.id === created.value.id));
+  assert.equal(before.channelMembers[created.value.id], undefined, "private reader lists stay hidden until acceptance");
   assert.equal(before.channelInvitations[0].inviter.username, "fixture_owner");
   assert.equal((await request(`/api/chat/channels/${created.value.id}/messages`, member)).response.status, 404);
   assert.equal((await request(`${root}/membership`, { ...member, method: "POST" })).response.status, 404);
   assert.equal((await request(`${root}/invitation`, { ...member, method: "POST" })).value.joined, true);
+  assert.deepEqual((await request(`/api/spaces/${ids.space}`, member)).value.channelMembers[created.value.id], [
+    ids.owner,
+    ids.member,
+  ]);
   assert.equal((await request(`/api/chat/channels/${created.value.id}/messages`, member)).response.status, 200);
   assert.equal((await request(`${root}/membership`, { ...member, method: "DELETE" })).response.status, 204);
+  assert.equal((await request(`/api/spaces/${ids.space}`, member)).value.channelMembers[created.value.id], undefined);
   assert.equal((await request(`/api/chat/channels/${created.value.id}/messages`, member)).response.status, 404);
 });
 

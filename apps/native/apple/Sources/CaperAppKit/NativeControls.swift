@@ -75,4 +75,13 @@ final class NativeButton: NSButton {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func pressed() { actionHandler() }
     override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.45 } }
+
+    static func icon(_ label: String, symbol: String, action: @escaping () -> Void) -> NativeButton {
+        let button = NativeButton(label, action: action)
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        button.imagePosition = .imageOnly
+        button.layer?.backgroundColor = NSColor.clear.cgColor
+        button.toolTip = label
+        return button
+    }
 }
