@@ -1,4 +1,5 @@
 import CaperCore
+import SwiftUI
 import UIKit
 
 /// The open channel: header, timeline and composer. The timeline is a
@@ -76,6 +77,19 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         }
         composerObserver.start { [weak self] in self?.renderComposer() }
         UIKitHosting.warmAttachGallery()
+        // SwiftUI presents message actions, who reacted, forwarding and block
+        // confirmations from an invisible child, as CaperView's conversation does.
+        let host = UIHostingController(rootView: UIKitPresentationHost(state: presentations, model: model))
+        host.view.backgroundColor = .clear
+        host.view.isUserInteractionEnabled = false
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        addChild(host)
+        view.insertSubview(host.view, at: 0)
+        NSLayoutConstraint.activate([
+            host.view.widthAnchor.constraint(equalToConstant: 1), host.view.heightAnchor.constraint(equalToConstant: 1),
+            host.view.topAnchor.constraint(equalTo: view.topAnchor), host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+        ])
+        host.didMove(toParent: self)
     }
 
     // MARK: Layout
@@ -347,7 +361,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             let grouped = NativePresentation.grouped(message, after: previous)
             let continued = next.map { NativePresentation.sameDay(message.createdAt, $0.createdAt) && NativePresentation.grouped($0, after: message) } ?? false
             nextRows[message.clientMessageId] = MessageRowState(message: message, grouped: grouped, continued: continued, viewerID: viewerID,
-                                                                focused: live && model.chat.focusedMessageID == message.id)
+                                                                focused: live && model.chat.focusedMessageID == message.id,
+                                                                chat: live ? model.chat : nil)
             items.append(.row(message.clientMessageId))
             previous = message
         }
@@ -486,9 +501,29 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     // MARK: Composer
 
-    private lazy var rowHost = RowHost(chat: model.chat, present: presentHosted) { [weak self] message in
-        guard let chat = self?.model.chat else { return }
-        Task { _ = await chat.onOpenForward?(message) }
+    private let presentations = UIKitPresentations()
+    private lazy var rowHost: RowHost = {
+        var host = RowHost(chat: model.chat, present: presentHosted) { [weak self] message in
+            guard let chat = self?.model.chat else { return }
+            Task { _ = await chat.onOpenForward?(message) }
+        }
+        host.actions = { [weak self] id, picker in self?.openActions(id, picker: picker) }
+        host.reactors = { [weak self] id, emoji in self?.presentations.reactors = .init(messageID: id, emoji: emoji) }
+        return host
+    }()
+
+    /// The long-press sheet for a loaded message; `picker` opens its emoji grid.
+    private func openActions(_ id: String, picker: Bool) {
+        guard let message = model.chat.messages.first(where: { $0.id == id }) else { return }
+        view.endEditing(true)
+        if picker {
+            let chat = model.chat
+            present(UIKitHosting.reactionPicker { emoji in
+                Task { await chat.setReaction(messageID: id, emoji: emoji, active: true) }
+            }, animated: true)
+        } else {
+            presentations.actions = message
+        }
     }
     private lazy var voice = UIKitVoiceComposer(chat: model.chat) { [weak self] words in
         self?.composer.insert(words, spaced: true) ?? false

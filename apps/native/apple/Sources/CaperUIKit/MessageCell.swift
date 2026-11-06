@@ -22,6 +22,11 @@ struct MessageRowState: Equatable {
     /// Files, a GIF, link cards or a forward, drawn by CaperCore's SwiftUI leaves.
     var extras: ChatMessage?
     var pendingAttachments: [ChatAttachment]
+    var reactions: [ReactionChipsView.Chip] = []
+    var canInteract = false
+    /// A failed reaction or pin, with Retry and Dismiss.
+    var reactionError: String?
+    var pinError: String?
     var pending: Bool
     var pendingError: String?
     var pendingRejected: Bool
@@ -33,7 +38,9 @@ struct MessageRowState: Equatable {
     /// Pins list rows: the full date, and the card paints the background.
     var inPins = false
 
-    init(message: ChatMessage, grouped: Bool, continued: Bool, viewerID: String?, focused: Bool = false, inPins: Bool = false) {
+    @MainActor
+    init(message: ChatMessage, grouped: Bool, continued: Bool, viewerID: String?, focused: Bool = false, inPins: Bool = false,
+         chat: ChatModel? = nil) {
         id = message.clientMessageId
         messageID = message.id
         authorName = message.author.name
@@ -58,6 +65,16 @@ struct MessageRowState: Equatable {
         }
         self.focused = focused && !inPins
         self.inPins = inPins
+        if !message.isDeleted {
+            reactions = (message.reactions ?? []).map { reaction in
+                .init(emoji: reaction.emoji, count: reaction.authorIds.count, own: viewerID.map(reaction.authorIds.contains) ?? false)
+            }
+        }
+        if let chat {
+            canInteract = chat.canInteract
+            reactionError = chat.reactionErrors[message.id]
+            pinError = message.isDeleted ? nil : chat.pinErrors[message.id]
+        }
     }
 
     init(pending: PendingMessage, author: ChatAuthor?, grouped: Bool, error: String?, rejected: Bool) {
@@ -134,11 +151,14 @@ struct RowHost {
     let chat: ChatModel
     let present: UIKitHosting.Present
     let openForward: (ChatMessage) -> Void
+    /// The long-press sheet; `true` opens straight to the emoji picker.
+    var actions: (_ messageID: String, _ picker: Bool) -> Void = { _, _ in }
+    var reactors: (_ messageID: String, _ emoji: String) -> Void = { _, _ in }
 }
 
 /// One message: avatar or grouped gutter, header, text and its notes. The
 /// timeline's cells and the Pins cards host it.
-final class MessageRowView: UIView {
+final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private let avatar = AvatarView(side: 34)
     private let gutter = UIView()
     private let name = UIKitStyle.label(size: 13, weight: .bold)
@@ -148,6 +168,13 @@ final class MessageRowView: UIView {
     private let body = MessageTextView()
     private let note = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
     private let extras = HostedView()
+    private let chips = ReactionChipsView()
+    private let errors = UIStackView()
+    private let errorText = UIKitStyle.label(size: 11, weight: .medium, color: UIKitStyle.error)
+    private lazy var errorRetry = CaperButton("Retry", kind: .plain, size: 11) { [weak self] in self?.retryError() }
+    private lazy var errorDismiss = CaperButton("Dismiss", kind: .plain, size: 11) { [weak self] in self?.dismissError() }
+    /// The text column's width, for laying out reaction chips.
+    var columnWidth: CGFloat = 0
     /// The model and a presenter for the hosted extras (media viewer, forwards).
     var host: RowHost?
     private let column = UIStackView()
@@ -187,7 +214,26 @@ final class MessageRowView: UIView {
         column.axis = .vertical
         column.spacing = 4
         column.alignment = .fill
-        [header, body, extras, note].forEach(column.addArrangedSubview)
+        errorText.numberOfLines = 0
+        [errorText, errorRetry, errorDismiss].forEach(errors.addArrangedSubview)
+        errors.spacing = 8
+        errors.alignment = .firstBaseline
+        errors.isHidden = true
+        [header, body, extras, chips, errors, note].forEach(column.addArrangedSubview)
+        // Holding a row opens its actions, as on SwiftUI's iPhone layout.
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+        hold.minimumPressDuration = 0.5
+        hold.delegate = self
+        addGestureRecognizer(hold)
+        chips.toggle = { [weak self] emoji in self?.toggle(emoji) }
+        chips.showReactors = { [weak self] emoji in
+            guard let self, let id = self.state?.messageID, !id.isEmpty else { return }
+            self.host?.reactors(id, emoji)
+        }
+        chips.addReaction = { [weak self] in
+            guard let self, let id = self.state?.messageID, !id.isEmpty else { return }
+            self.host?.actions(id, true)
+        }
         column.translatesAutoresizingMaskIntoConstraints = false
 
         gutter.translatesAutoresizingMaskIntoConstraints = false
@@ -271,6 +317,11 @@ final class MessageRowView: UIView {
             extras.show(Optional<EmptyView>.none)
         }
         extras.isHidden = row.extras == nil && row.pendingAttachments.isEmpty
+        chips.configure(row.reactions, messageID: row.messageID, canInteract: row.canInteract, width: max(columnWidth, 120))
+        chipsWidth = columnWidth
+        errorText.text = row.reactionError ?? row.pinError
+        errors.isHidden = errorText.text == nil
+        errorRetry.isEnabled = row.canInteract
 
         if row.deleted {
             body.isHidden = true
@@ -289,6 +340,57 @@ final class MessageRowView: UIView {
         body.accessibilityLabel = row.grouped ? "\(row.authorName), \(timeText): \(body.plainText)" : body.plainText
         body.accessibilityIdentifier = "message-text-\(row.id)"
         body.accessibilityCustomActions = actions(for: row)
+    }
+
+    private var chipsWidth: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // A rotation or a different card width rewraps the chips.
+        let width = column.bounds.width
+        if width > 0, abs(width - chipsWidth) > 0.5, let state {
+            columnWidth = width
+            chips.configure(state.reactions, messageID: state.messageID, canInteract: state.canInteract, width: width)
+            chipsWidth = width
+        }
+    }
+
+    /// A hold opens message actions rather than the text's loupe; double-tap
+    /// still selects words, and the sheet offers Copy text.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        other is UILongPressGestureRecognizer && other.view?.isDescendant(of: body) == true
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer.view === self else { return super.gestureRecognizerShouldBegin(gestureRecognizer) }
+        // Chips have their own hold (who reacted).
+        let point = gestureRecognizer.location(in: chips)
+        return chips.isHidden || !chips.bounds.contains(point)
+    }
+
+    @objc private func held(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began, let state, !state.pending, !state.messageID.isEmpty else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        host?.actions(state.messageID, false)
+    }
+
+    private func toggle(_ emoji: String) {
+        guard let state, let chat = host?.chat, !state.messageID.isEmpty, state.canInteract else { return }
+        let own = state.reactions.first { $0.emoji == emoji }?.own ?? false
+        Task { await chat.setReaction(messageID: state.messageID, emoji: emoji, active: !own) }
+    }
+
+    private func retryError() {
+        guard let state, let chat = host?.chat else { return }
+        if state.reactionError != nil { Task { await chat.retryReaction(messageID: state.messageID) } }
+        else if state.pinError != nil { Task { await chat.retryPin(messageID: state.messageID) } }
+    }
+
+    private func dismissError() {
+        guard let state, let chat = host?.chat else { return }
+        if state.reactionError != nil { chat.reactionErrors[state.messageID] = nil }
+        else { chat.pinErrors[state.messageID] = nil }
     }
 
     /// SwiftUI's rowBackground: the jump target, then pins, then mentions of you.
@@ -348,11 +450,17 @@ final class MessageRowView: UIView {
         if row.pendingError != nil, !row.pendingRejected, let retry {
             actions.append(UIAccessibilityCustomAction(name: "Retry send") { _ in retry(); return true })
         }
+        // As SwiftUI's "Message actions": the long-press sheet.
+        if !row.pending, !row.messageID.isEmpty {
+            actions.append(UIAccessibilityCustomAction(name: "Message actions") { [weak self] _ in
+                self?.host?.actions(row.messageID, false); return true
+            })
+        }
         return actions
     }
 
     override var accessibilityElements: [Any]? {
-        get { [header, body, extras, note].filter { !$0.isHidden } }
+        get { [pinBadge, header, body, extras, chips, errors, note].filter { !$0.isHidden } }
         set {}
     }
 

@@ -241,6 +241,46 @@ final class CaperUIKitTests: XCTestCase {
         screenshot("uikit-attachment-row")
     }
 
+    /// Reaction chips toggle yours; holding a row opens message actions,
+    /// whose Pin shows up in Pins with Go to message.
+    func testReactionsAndMessageActionsPin() {
+        let app = launch()
+        let latest = row(Self.latest)
+        XCTAssertTrue(latest.waitForExistence(timeout: 30))
+
+        // The latest message gets a 👍 from the actions sheet's quick reactions.
+        app.textViews["message-text-\(Self.latest)"].press(forDuration: 0.8)
+        let sheet = app.descendants(matching: .any)["message-actions-sheet"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 10), "Holding a row opens its actions")
+        screenshot("uikit-message-actions")
+        app.buttons["quick-reaction-👍"].tap()
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 10))
+        let chip = app.buttons["reaction-chip-b00000000003000-👍"]
+        XCTAssertTrue(chip.waitForExistence(timeout: 10), "The reaction appears as a chip")
+        XCTAssertTrue(chip.label.contains("selected by you"), chip.label)
+        screenshot("uikit-reaction-chip")
+        // Tapping your own chip takes it back.
+        chip.tap()
+        XCTAssertTrue(chip.waitForNonExistence(timeout: 10))
+
+        app.textViews["message-text-\(Self.latest)"].press(forDuration: 0.8)
+        XCTAssertTrue(sheet.waitForExistence(timeout: 10))
+        app.buttons["Pin message"].tap()
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 10))
+        let badge = latest.staticTexts["Pinned by you"]
+        XCTAssertTrue(badge.waitForExistence(timeout: 10), "Pinned rows say who pinned them")
+        screenshot("uikit-pinned-row")
+
+        app.buttons["channel-title-menu"].tap()
+        app.buttons["Pins"].tap()
+        let card = app.descendants(matching: .any)["pinned-message-b00000000003000"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        screenshot("uikit-pins")
+        app.buttons["go-to-message-b00000000003000"].tap()
+        XCTAssertTrue(card.waitForNonExistence(timeout: 10), "Go to message closes Pins")
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
+    }
+
     /// VoiceOver reads who and when from each row's header and can move into
     /// the text itself; controls carry labels.
     func testAccessibilityLabels() {

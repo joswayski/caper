@@ -205,4 +205,94 @@ public struct UIKitComposerAccessories: View {
         VoiceRecordingBar(target: target, height: 42).preferredColorScheme(.dark)
     }
 }
+/// What a UIKit conversation asks SwiftUI to present: message actions (the
+/// long-press sheet), who reacted, a block confirmation. `chat.forwardTarget`
+/// presents the forward picker as it does in SwiftUI.
+@MainActor @Observable public final class UIKitPresentations {
+    public var actions: ChatMessage?
+    public var reactors: ReactorsRequest?
+    public var block: BlockTarget?
+    var showingEmojiPicker = false
+    public init() {}
+
+    public struct ReactorsRequest: Identifiable, Equatable {
+        public let messageID: String
+        public let emoji: String
+        public var id: String { "\(messageID)|\(emoji)" }
+        public init(messageID: String, emoji: String) { self.messageID = messageID; self.emoji = emoji }
+    }
+
+    /// Whether any of these is showing, so the conversation leaves its gestures alone.
+    public var presenting: Bool { actions != nil || reactors != nil || block != nil }
+}
+
+/// The quick reactions on every client: 👍 ❤️ 😂.
+public enum UIKitReactions {
+    public static let quick = MessageQuickReactions.emoji
+    /// Caper's emoji artwork, where the catalog has it.
+    public static func artwork(_ emoji: String) -> CGImage? {
+        EmojiArtwork.entry(for: emoji).flatMap(EmojiArtwork.image(for:))
+    }
+}
+
+/// An invisible SwiftUI root, a child of the UIKit conversation, carrying
+/// exactly the presentations CaperView's conversation uses on iPhone.
+public struct UIKitPresentationHost: View {
+    @Bindable var state: UIKitPresentations
+    @Bindable var chat: ChatModel
+    let model: AppModel
+
+    public init(state: UIKitPresentations, model: AppModel) {
+        self.state = state; self.model = model; chat = model.chat
+    }
+
+    private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
+
+    public var body: some View {
+        Color.clear
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .sheet(item: $state.reactors) { target in
+                ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: viewerID)
+            }
+            .sheet(item: $state.actions) { message in actionsSheet(message) }
+            .sheet(item: $chat.forwardTarget) { message in ForwardPickerView(chat: chat, message: message) }
+            .modifier(BlockConfirmation(target: $state.block) { target in
+                do { try await model.block(target) } catch { chat.error = FriendlyError.message(for: error) }
+            })
+            .onChange(of: chat.isPreview) { _, preview in if preview { state.actions = nil; state.showingEmojiPicker = false } }
+            .onChange(of: chat.currentAuthor?.id) { _, _ in state.actions = nil; state.showingEmojiPicker = false }
+            .onChange(of: state.actions?.id) { _, _ in state.showingEmojiPicker = false }
+            .preferredColorScheme(.dark)
+    }
+
+    private func actionsSheet(_ message: ChatMessage) -> some View {
+        MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $state.showingEmojiPicker,
+                            canReact: chat.canInteract,
+                            canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
+                            togglePin: {
+                                state.actions = nil
+                                Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
+                            },
+                            reply: { state.actions = nil; chat.replyInThread(to: message) },
+                            canForward: chat.canForward,
+                            forward: { state.actions = nil; chat.forwardTarget = message },
+                            quickReaction: { emoji in
+                                guard chat.canInteract, let author = chat.currentAuthor,
+                                      let current = chat.messages.first(where: { $0.id == message.id }) else { return }
+                                let own = current.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(author.id) == true
+                                state.actions = nil
+                                Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: !own) }
+                            }, selectReaction: { emoji in
+                                guard chat.canInteract else { return }
+                                state.actions = nil
+                                Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
+                            },
+                            block: BlockedMessages.canBlock(message.author, viewerID: viewerID, blocked: chat.blockedAuthorIDs)
+                                ? { state.block = BlockTarget(author: message.author) } : nil,
+                            unblock: BlockedMessages.canUnblock(message.author, viewerID: viewerID, blocked: chat.blockedAuthorIDs)
+                                ? { chat.unblock(message.author) } : nil,
+                            viewReactions: { emoji in state.reactors = .init(messageID: message.id, emoji: emoji) })
+    }
+}
 #endif

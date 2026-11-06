@@ -5380,7 +5380,7 @@ enum ChatTimestamp {
 }
 
 /// Web's quick reactions, first in message actions.
-private enum MessageQuickReactions {
+enum MessageQuickReactions {
     static let emoji = ["👍", "❤️", "😂"]
 }
 
@@ -7114,7 +7114,7 @@ private struct ReactionTooltipBubble: View {
 #endif
 
 /// Who reacted, by emoji: tabs in chip order, then each person.
-private struct ReactorsSheet: View {
+struct ReactorsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var chat: ChatModel
@@ -7321,7 +7321,7 @@ private struct ParityPasteboardProbe: View {
     }
 }
 
-private struct MessageActionsSheet: View {
+struct MessageActionsSheet: View {
     @Environment(\.dismiss) private var dismiss
     let message: ChatMessage
     @Bindable var chat: ChatModel
@@ -8832,7 +8832,7 @@ private struct BlockedRunRow: View {
 }
 
 /// "Block Alex?" before any block. Unblocking needs no confirmation.
-private struct BlockConfirmation: ViewModifier {
+struct BlockConfirmation: ViewModifier {
     @Binding var target: BlockTarget?
     let block: (BlockTarget) async -> Void
     func body(content: Content) -> some View {
