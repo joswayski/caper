@@ -939,3 +939,36 @@ popover.pins > contents {
   border-color: @caper_terracotta;
   color: @caper_text;
 }
+
+/* The profile picture: its frame opens the picture menu. */
+button.picture-frame,
+button.picture-frame:hover,
+button.picture-frame:active {
+  padding: 0;
+  background: none;
+  border-radius: 48px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.picture-badge {
+  background: @caper_action;
+  border-radius: 8px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 3px solid @caper_surface;
+}
+
+button.picture-badge:hover {
+  background: @caper_action_hover;
+}
+
+.picture-badge image {
+  margin: 6px;
+}
+
+.previous-picture {
+  padding: 2px;
+  border-radius: 24px;
+}

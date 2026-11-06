@@ -310,6 +310,18 @@ impl App {
         card.close.set_sensitive(!busy);
         if profile.me {
             card.details.append(&label("You", &["muted", "small"]));
+            // As on the desktop, your own card edits your profile.
+            if state.account.is_some() {
+                let edit = gtk::Button::with_label("Edit profile");
+                edit.add_css_class("primary");
+                let weak = Rc::downgrade(self);
+                edit.connect_clicked(move |_| {
+                    if let Some(app) = weak.upgrade() {
+                        app.open_profile_editor();
+                    }
+                });
+                card.details.append(&edit);
+            }
         }
         if can_invite && open.choosing_space {
             for space in &spaces {

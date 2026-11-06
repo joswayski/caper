@@ -89,6 +89,7 @@ icons! {
     ArrowLeft => "arrow-left",
     Images => "images",
     Check => "check",
+    RotateCcw => "rotate-ccw",
     Retry => "rotate-ccw",
     Message => "message-circle",
     Ban => "ban",
@@ -377,7 +378,7 @@ fn texture(image: &Rgba) -> Option<gdk::Texture> {
 #[derive(Clone)]
 pub struct AvatarView {
     pub root: gtk::Overlay,
-    picture: gtk::Picture,
+    picture: gtk::Image,
     initial: gtk::Label,
     dot: Option<gtk::Box>,
 }
@@ -390,10 +391,10 @@ impl AvatarView {
         frame.set_overflow(gtk::Overflow::Hidden);
         frame.set_valign(gtk::Align::Start);
         frame.set_halign(gtk::Align::Start);
-        let picture = gtk::Picture::new();
-        picture.set_can_shrink(true);
-        picture.set_size_request(size, size);
-        picture.set_content_fit(gtk::ContentFit::Cover);
+        // Avatars are square: an image at a fixed pixel size has exactly
+        // that natural size, where a picture would ask for its texture's.
+        let picture = gtk::Image::new();
+        picture.set_pixel_size(size);
         let initial = gtk::Label::new(None);
         initial.add_css_class("initial");
         initial.set_size_request(size, size);
@@ -428,7 +429,7 @@ impl AvatarView {
                 self.initial.set_visible(false);
             }
             None => {
-                self.picture.set_paintable(gdk::Paintable::NONE);
+                self.picture.clear();
                 self.picture.set_visible(false);
                 self.initial.set_label(&avatar.initial());
                 self.initial.set_visible(true);

@@ -20650,7 +20650,10 @@ impl CaperApp {
                 {
                     if destination == pictures::Target::Avatar {
                         if let Some(draft) = &mut self.profile_edit {
-                            draft.prepare(context, path, edit, scratch);
+                            let context = context.clone();
+                            draft.prepare(path, edit, scratch, !motion::reduced(), move || {
+                                context.request_repaint()
+                            });
                         }
                         return;
                     }
@@ -24449,7 +24452,8 @@ impl CaperApp {
         {
             match result {
                 Ok((key, frames)) => {
-                    self.pictures.insert(context, &key, frames);
+                    self.pictures
+                        .insert(context, &key, pictures::frames(frames));
                     self.picture_edit.error = None;
                 }
                 Err(error) => self.picture_edit.error = Some((pictures::Target::Avatar, error)),
@@ -24519,7 +24523,10 @@ impl CaperApp {
                     {
                         if target == pictures::Target::Avatar {
                             if let Some(draft) = &mut self.profile_edit {
-                                draft.prepare(context, path, None, scratch);
+                                let context = context.clone();
+                                draft.prepare(path, None, scratch, !motion::reduced(), move || {
+                                    context.request_repaint()
+                                });
                             }
                         } else {
                             self.picture_edit.busy = Some((target.clone(), false));

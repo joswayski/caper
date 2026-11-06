@@ -27,6 +27,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
+#[path = "account.rs"]
+mod account;
 #[path = "forward.rs"]
 mod forward;
 #[path = "members.rs"]
@@ -195,6 +197,8 @@ struct State {
     forward_focus: Option<(u64, String, String)>,
     /// That thread, ready to open.
     forward_thread: Option<String>,
+    /// The signed-in account still needs a username and display name.
+    profile_setup: bool,
     /// The open profile card's state.
     card: Option<profile::CardState>,
     /// People you blocked (`GET /api/blocks`), once loaded.
@@ -333,6 +337,9 @@ pub struct App {
     /// The open profile card's widgets.
     profile: RefCell<Option<profile::Card>>,
     forwarding: RefCell<forward::Forwarding>,
+    profile_dialog: RefCell<Option<account::ProfileDialog>>,
+    /// Wakes the main loop from other threads.
+    wakes: Wakes,
 }
 
 struct PinsView {
@@ -389,7 +396,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     let app = Rc::new(App {
         ui,
         images,
-        worker: Worker::new(api, Wakes(sender)),
+        worker: Worker::new(api, Wakes(sender.clone())),
         state: RefCell::new(State::default()),
         follow: Cell::new(true),
         settling: Cell::new(false),
@@ -407,6 +414,8 @@ pub fn start(application: &gtk::Application, base: &str) {
         pins: RefCell::default(),
         profile: RefCell::default(),
         forwarding: RefCell::default(),
+        profile_dialog: RefCell::default(),
+        wakes: Wakes(sender.clone()),
     });
     *slot.borrow_mut() = Rc::downgrade(&app);
     for composer in [&app.ui.composer, &app.ui.thread_composer] {
@@ -458,6 +467,30 @@ impl App {
             .connect_clicked(move |_| app.request_code(false));
         let app = self.clone();
         ui.code.connect_activate(move |_| app.verify());
+        // Your avatar and name open your own card (Edit profile).
+        for target in [
+            ui.account_avatar.root.clone().upcast::<gtk::Widget>(),
+            ui.account_name.clone().upcast(),
+        ] {
+            let click = gtk::GestureClick::new();
+            let (weak, anchor) = (Rc::downgrade(self), target.clone());
+            click.connect_released(move |_, _, _, _| {
+                let Some(app) = weak.upgrade() else {
+                    return;
+                };
+                let me = app
+                    .state
+                    .borrow()
+                    .account
+                    .as_ref()
+                    .map(|account| account.id.clone());
+                if let Some(me) = me {
+                    app.open_profile(me, None, &anchor);
+                }
+            });
+            target.add_controller(click);
+            target.set_cursor_from_name(Some("pointer"));
+        }
         let app = self.clone();
         ui.code_button.connect_clicked(move |_| app.verify());
         let app = self.clone();
@@ -738,7 +771,9 @@ impl App {
             self.worker.send(Command::AssetUsage { token });
         }
         self.account_op(state, AccountOperation::LoadBlocks);
-        if let Some(space) = state.spaces.first().map(|space| space.id.clone()) {
+        if state.needs_profile() {
+            state.profile_setup = true;
+        } else if let Some(space) = state.spaces.first().map(|space| space.id.clone()) {
             self.navigate(state, Some(space), None);
         }
     }
@@ -747,6 +782,7 @@ impl App {
     /// it on the server, and return to sign-in.
     fn sign_out(self: &Rc<Self>) {
         self.close_forward();
+        self.close_profile_editor();
         {
             let mut state = self.state.borrow_mut();
             let token = state.token.take();
@@ -2395,6 +2431,7 @@ impl App {
     fn receive(self: &Rc<Self>) {
         let mut typing = false;
         let mut forwards = Vec::new();
+        let mut deferred = Vec::new();
         {
             let mut state = self.state.borrow_mut();
             while let Ok(event) = self.worker.events.try_recv() {
@@ -2405,6 +2442,9 @@ impl App {
                         request,
                         result,
                     } => forwards.push((generation, request, result)),
+                    event @ (Event::Profiled { .. } | Event::AvatarHistory { .. }) => {
+                        deferred.push(event)
+                    }
                     event => self.handle(&mut state, event),
                 }
             }
@@ -2412,7 +2452,22 @@ impl App {
         for (generation, request, result) in forwards {
             self.forward_result(generation, request, result);
         }
-
+        for event in deferred {
+            match event {
+                Event::Profiled { generation, result } => self.profiled(generation, result),
+                Event::AvatarHistory {
+                    epoch,
+                    request,
+                    result,
+                } if epoch == self.state.borrow().epoch => self.previous_pictures(request, result),
+                _ => {}
+            }
+        }
+        self.poll_profile_picture();
+        let setup = std::mem::take(&mut self.state.borrow_mut().profile_setup);
+        if setup {
+            self.open_profile_editor();
+        }
         self.follow_forward();
         let thread = self.state.borrow_mut().forward_thread.take();
         if let Some(root) = thread {
