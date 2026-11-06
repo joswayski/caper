@@ -43,6 +43,8 @@ mod call;
 mod editor;
 #[path = "forward.rs"]
 mod forward;
+#[path = "history.rs"]
+mod history;
 #[path = "members.rs"]
 mod members;
 #[path = "notify.rs"]
@@ -279,6 +281,9 @@ struct State {
     reactors: std::collections::BTreeMap<String, caper_client::reactions::ReactorCache>,
     /// The open View reactions window: message ID and selected emoji.
     reactors_view: Option<(String, String)>,
+    /// The open Message history and its latest request.
+    history: Option<history::History>,
+    history_request: u64,
     /// Privacy and notification settings.
     settings: settings::AccountSettings,
     /// Space and channel management, invites and membership.
@@ -455,6 +460,7 @@ pub struct App {
     room_timers: RefCell<Vec<(gtk::Label, u64)>>,
     room_ticking: Cell<bool>,
     report: RefCell<Option<audio::ReportDialog>>,
+    history_window: RefCell<Option<history::HistoryWindow>>,
     /// The open View reactions window.
     reactors_window: RefCell<Option<reactors::ReactorsWindow>>,
     /// The open attachment editor.
@@ -557,6 +563,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         direct_ids: RefCell::default(),
         request_ids: RefCell::default(),
         reactors_window: RefCell::default(),
+        history_window: RefCell::default(),
         members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
         ticking: Cell::new(false),
@@ -953,8 +960,9 @@ impl App {
     fn install_actions(self: &Rc<Self>) {
         let group = gio::SimpleActionGroup::new();
         type Run = fn(&Rc<App>, String);
-        let actions: [(&str, Run); 12] = [
+        let actions: [(&str, Run); 13] = [
             ("reactions", |app, id| app.open_reactors(id)),
+            ("history", |app, id| app.open_history(&id)),
             ("reply", |app, id| app.row_action(Action::Reply(id), false)),
             ("thread", |app, id| {
                 app.row_action(Action::Thread(id), false)
@@ -1262,6 +1270,7 @@ impl App {
         state.reactions.clear();
         state.reactors.clear();
         state.reactors_view = None;
+        state.history = None;
         state.files_revision += 1;
         state.direct = None;
         state.jump_to = None;
@@ -2732,6 +2741,7 @@ impl App {
                 }
             }
             Action::LoadReactors(id) => self.load_reactors(&id),
+            Action::History(id) => self.open_history(&id),
             Action::DismissReaction(id) => {
                 self.state.borrow_mut().reactions.dismiss(&id);
                 self.render();
@@ -2798,7 +2808,7 @@ impl App {
     }
 
     fn row_menu(self: &Rc<Self>, id: &str, anchor: &gtk::Widget) {
-        let (mine, pinned, forwardable, joined, in_thread, reacted) = {
+        let (mine, pinned, forwardable, joined, in_thread, reacted, edited) = {
             let state = self.state.borrow();
             let Some(message) = state.message(id) else {
                 return;
@@ -2812,6 +2822,7 @@ impl App {
                 state.session.is_some() && !message.is_deleted(),
                 message.thread_root_id.is_some(),
                 !message.is_deleted() && !state.shown_reactions(message).is_empty(),
+                !message.is_deleted() && message.forward.is_none() && message.edited_at.is_some(),
             )
         };
         let block = self.message_author_account(id).map(|account| {
@@ -2845,6 +2856,9 @@ impl App {
         }
         if mine {
             actions.append_item(&item("Edit message", "row.edit"));
+        }
+        if edited {
+            actions.append_item(&item("Message history", "row.history"));
         }
         actions.append_item(&if pinned {
             item("Unpin message", "row.unpin")
@@ -3474,6 +3488,21 @@ impl App {
                     }
                     Reacted::Failed => self.send_next_reaction(state, &message),
                 }
+            }
+            Event::MessageVersions {
+                generation,
+                request,
+                channel,
+                message,
+                result,
+            } if current(
+                generation,
+                state.generation,
+                Some(&channel),
+                state.channel.as_deref(),
+            ) =>
+            {
+                self.accept_versions(state, request, &message, result)
             }
             Event::Reactors {
                 generation,
@@ -4199,6 +4228,7 @@ impl App {
         self.render_members();
         self.render_typing();
         self.render_reactors();
+        self.render_history();
         let ui = &self.ui;
         let mut state = self.state.borrow_mut();
         let first_space = state.page() == Page::Chat && state.needs_first_space();

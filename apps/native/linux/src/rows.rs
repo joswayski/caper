@@ -737,6 +737,8 @@ pub enum Action {
     RetryReaction(String),
     /// Drop your failed reaction and its error.
     DismissReaction(String),
+    /// "(edited)": the message's retained versions.
+    History(String),
     /// A chip is hovered: load who reacted to this message.
     LoadReactors(String),
     Reply(String),
@@ -781,7 +783,10 @@ struct Widgets {
     header: gtk::Box,
     author: gtk::Label,
     time: gtk::Label,
-    edited: gtk::Label,
+    /// "(edited)" in the header, and a grouped row's inline marker: both
+    /// open the message's history.
+    edited: gtk::Button,
+    edited_inline: gtk::Button,
     pinned: gtk::Label,
     body: gtk::Label,
     content: gtk::Box,
@@ -899,8 +904,17 @@ fn build_widgets(images: &Images) -> Widgets {
     };
     let author = label("author");
     let time = label("time");
-    let edited = label("time");
-    edited.set_label("(edited)");
+    let marker = || {
+        let button: gtk::Button = crate::app::named("GtkButton", "Message history");
+        button.set_label("(edited)");
+        button.set_tooltip_text(Some("Message history"));
+        button.add_css_class("flat");
+        button.add_css_class("edited");
+        button
+    };
+    let edited = marker();
+    let edited_inline = marker();
+    edited_inline.set_halign(gtk::Align::Start);
     let pinned = label("pinned");
     let body = gtk::Label::builder()
         .xalign(0.0)
@@ -944,6 +958,7 @@ fn build_widgets(images: &Images) -> Widgets {
     content.append(&header);
     let extra = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&body);
+    content.append(&edited_inline);
     content.append(&extra);
     let forward = gtk::Box::new(gtk::Orientation::Vertical, 4);
     forward.add_css_class("forward-card");
@@ -1020,6 +1035,7 @@ fn build_widgets(images: &Images) -> Widgets {
         author,
         time,
         edited,
+        edited_inline,
         pinned,
         body,
         content: extra,
@@ -1064,7 +1080,9 @@ fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
         });
     }
     type Make = fn(String, gtk::Widget) -> Action;
-    let actions: [(&gtk::Button, Make); 8] = [
+    let actions: [(&gtk::Button, Make); 10] = [
+        (&widgets.edited, |id, _| Action::History(id)),
+        (&widgets.edited_inline, |id, _| Action::History(id)),
         (&widgets.thread_context, |id, _| Action::Thread(id)),
         (&widgets.retry_reaction, |id, _| Action::RetryReaction(id)),
         (&widgets.dismiss_reaction, |id, _| {
@@ -1192,6 +1210,7 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
     widgets.author.set_label(&row.author);
     widgets.time.set_label(&row.time);
     widgets.edited.set_visible(row.edited);
+    widgets.edited_inline.set_visible(row.edited && row.grouped);
     widgets.pinned.set_visible(row.pinned_by.is_some());
     widgets
         .pinned

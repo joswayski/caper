@@ -1515,3 +1515,25 @@ button.reactor-tab:checked {
   font-size: 12px;
   font-weight: 700;
 }
+
+/* "(edited)" opens the message history. */
+button.edited {
+  min-height: 0;
+  padding: 0;
+  color: @caper_text_muted;
+  font-size: 11px;
+}
+
+button.edited:hover {
+  background: none;
+  color: @caper_text;
+}
+
+.version-text {
+  padding: 8px;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  background: @caper_surface_raised;
+  font-family: monospace;
+  font-size: 12px;
+}
