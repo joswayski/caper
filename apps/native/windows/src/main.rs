@@ -230,7 +230,7 @@ pub struct App {
     hover_channel: Option<usize>,
     hover_member: Option<usize>,
     /// The sidebar's DM row under the pointer.
-    hover_direct: Option<usize>,
+    hover_direct: Option<directs::Spot>,
     pointer: Option<(f32, f32)>,
     tracking: bool,
     pub sel: Option<Sel>,
@@ -610,6 +610,8 @@ impl App {
                 // Names for a chip's card arrived; the next frame shows them.
                 live::Update::Reactors => self.need = true,
                 live::Update::DirectHead => self.direct_head_changed(),
+                live::Update::DirectFound { request, result } => self.direct_found(request, result),
+                live::Update::DirectCreated(error) => self.direct_created(error),
                 live::Update::Badges => {
                     self.dirty.rail = true;
                     self.dirty.sidebar = true;
@@ -1051,7 +1053,9 @@ impl App {
 
     fn focused_field_mut(&mut self) -> Option<&mut Composer> {
         if let Some(d) = &mut self.dialog {
-            return Some(&mut d.field).filter(|f| f.focused && d.kind == overlay::Kind::Edit);
+            return Some(&mut d.field).filter(|f| {
+                f.focused && matches!(d.kind, overlay::Kind::Edit | overlay::Kind::StartDirect)
+            });
         }
         if let Some(s) = &mut self.signin {
             return Some(s.field_mut()).filter(|f| f.focused);
@@ -1469,8 +1473,8 @@ impl App {
                         }
                     } else if let Some(i) = self.hover_channel {
                         self.select_channel(i);
-                    } else if let Some(k) = self.hover_direct {
-                        self.open_direct_row(k);
+                    } else if let Some(spot) = self.hover_direct {
+                        self.direct_click(spot);
                     } else if let Some(i) = self.hover_space {
                         self.select_space(i);
                     }
@@ -1530,7 +1534,9 @@ impl App {
                         .is_some_and(|(x, y)| self.in_box(x, y) || self.in_history(x, y));
                 let hand = part
                     || self.hover_channel.is_some()
-                    || self.hover_direct.is_some()
+                    || self
+                        .hover_direct
+                        .is_some_and(|s| s != directs::Spot::Heading)
                     || self.hover_space.is_some()
                     || self.pointer.is_some_and(|(x, y)| {
                         self.link_at(x, y).is_some()

@@ -35,6 +35,8 @@ pub enum Id {
     /// The sidebar's direct messages and their rows.
     Directs,
     Direct(usize),
+    /// The section heading's "New direct message".
+    NewDirect,
     History,
     Row(usize),
     /// A row's reaction chip or its error's Retry/Dismiss button.
@@ -207,7 +209,9 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .map_or_else(Vec::new, |p| p.parts().into_iter().map(Id::Pick).collect()),
         Id::Rail => (0..a.c.spaces.len()).map(Id::Space).collect(),
         Id::Channels => (0..a.c.channels.len()).map(Id::Channel).collect(),
-        Id::Directs => (0..a.direct_rows().len()).map(Id::Direct).collect(),
+        Id::Directs => std::iter::once(Id::NewDirect)
+            .chain((0..a.direct_rows().len()).map(Id::Direct))
+            .collect(),
         Id::History => a
             .head_rect()
             .filter(|(_, y, _, h)| *y + *h > crate::theme::HEADER_H)
@@ -248,7 +252,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Root => return None,
         Id::Space(_) => Id::Rail,
         Id::Channel(_) => Id::Channels,
-        Id::Direct(_) => Id::Directs,
+        Id::Direct(_) | Id::NewDirect => Id::Directs,
         Id::Row(_) => Id::History,
         Id::Control(i, _) | Id::Tool(i, _) => Id::Row(i),
         Id::Older | Id::Newer(_) => Id::History,
@@ -270,7 +274,7 @@ fn exists(a: &App, id: Id) -> bool {
             a.visible_rows().contains(&i) && a.row_controls(i).iter().any(|(c, _)| *c == action)
         }
         Id::Channel(i) => i < a.c.channels.len(),
-        Id::Directs => !a.direct_rows().is_empty(),
+        Id::Directs | Id::NewDirect => !a.direct_rows().is_empty(),
         Id::Direct(k) => k < a.direct_rows().len(),
         Id::Member(i) => i < a.c.members.len(),
         Id::Space(i) => i < a.c.spaces.len(),
@@ -341,6 +345,7 @@ fn name(a: &App, id: Id) -> String {
             }
         ),
         Id::Directs => "Direct messages".into(),
+        Id::NewDirect => "New direct message".into(),
         Id::Direct(k) => a
             .direct_rows()
             .get(k)
@@ -406,7 +411,11 @@ fn name(a: &App, id: Id) -> String {
             match p {
                 DPart::Title => d.title().into(),
                 DPart::Note => d.note(),
+                DPart::Field if d.kind == Kind::StartDirect => "Username".into(),
                 DPart::Field => "Message".into(),
+                DPart::Hint if d.kind == Kind::StartDirect => {
+                    d.recipient_label().unwrap_or_default()
+                }
                 DPart::Error => d.error.clone().unwrap_or_default(),
                 DPart::Reload => "Discard draft and load latest".into(),
                 DPart::Cancel => "Cancel".into(),
@@ -505,7 +514,9 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Older | Id::Newer(_) => UIA_ButtonControlTypeId,
         Id::Original(_) | Id::Embed(..) => UIA_HyperlinkControlTypeId,
         Id::Edited(_) | Id::File(..) | Id::BoxPart(_) => UIA_ButtonControlTypeId,
-        Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel => UIA_ButtonControlTypeId,
+        Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel | Id::NewDirect => {
+            UIA_ButtonControlTypeId
+        }
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Thread => UIA_PaneControlTypeId,
         Id::ThreadPart(TPart::Row(_)) => UIA_ListItemControlTypeId,
@@ -536,6 +547,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Channel(i) => (4, i),
         Id::Directs => (34, 0),
         Id::Direct(k) => (35, k),
+        Id::NewDirect => (36, 0),
         Id::History => (5, 0),
         Id::Row(i) => (6, i),
         Id::Members => (7, 0),
@@ -631,6 +643,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Channel(i) => App::channel_rect(i),
         Id::Directs => a.directs_rect(a.direct_rows().len()),
         Id::Direct(k) => a.direct_rect(k),
+        Id::NewDirect => a.new_direct_rect(),
         Id::History => (a.list_x(), crate::theme::HEADER_H, a.list_w(), a.vh()),
         Id::Row(i) => a.row_rect(i),
         Id::Control(i, action) => {
@@ -792,6 +805,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             }
             Id::Sign(Part::Title | Part::Message) => false,
             Id::MenuItem(_)
+            | Id::NewDirect
             | Id::MenuClose
             | Id::Tool(..)
             | Id::ReplyCancel
@@ -898,6 +912,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::Space(_)
                         | Id::Channel(_)
                         | Id::Direct(_)
+                        | Id::NewDirect
                         | Id::MenuItem(_)
                         | Id::Pick(PPart::Search)
                         | Id::Gif(GPart::Search)
@@ -1058,6 +1073,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Space(i) => a.select_space(i),
                 Id::Channel(i) => a.select_channel(i),
                 Id::Direct(k) => a.open_direct_row(k),
+                Id::NewDirect => a.open_start_direct(),
                 Id::Sign(p) => a.signin_activate(Some(p)),
                 Id::MenuItem(k) => a.menu_activate(k),
                 Id::Dialog(p) => a.dialog_activate(p),
@@ -1713,7 +1729,7 @@ fn editable() -> Id {
             a.thread.as_ref().is_some_and(|t| t.composer.focused),
         )
     }) {
-        Some((Some(Kind::Edit), _, _, _, _)) => Id::Dialog(DPart::Field),
+        Some((Some(Kind::Edit | Kind::StartDirect), _, _, _, _)) => Id::Dialog(DPart::Field),
         Some((_, true, _, _, _)) => Id::Sign(Part::Field),
         Some((_, _, true, _, _)) => Id::Pick(PPart::Search),
         Some((_, _, _, true, _)) => Id::Gif(GPart::Search),

@@ -135,7 +135,7 @@ fn column_height(
 impl Dialog {
     pub fn history(message: core::Message) -> Self {
         let revision = message.revision;
-        let mut d = Self::new(Kind::History, message, Default::default());
+        let mut d = Self::new(Kind::History, Some(message), Default::default());
         d.history = Some(Box::new(Versions {
             list: Vec::new(),
             selected: None,
@@ -503,7 +503,10 @@ impl App {
         v.loading = true;
         v.older = older;
         d.error = None;
-        d.request = live.load_versions(&d.message, before);
+        let Some(m) = d.message.as_deref() else {
+            return;
+        };
+        d.request = live.load_versions(m, before);
         self.dialog_changed();
     }
 
@@ -514,11 +517,11 @@ impl App {
         message: &str,
         result: std::result::Result<core::MessageVersions, String>,
     ) {
-        let Some(d) = self
-            .dialog
-            .as_mut()
-            .filter(|d| d.kind == Kind::History && d.request == request && d.message.id == message)
-        else {
+        let Some(d) = self.dialog.as_mut().filter(|d| {
+            d.kind == Kind::History
+                && d.request == request
+                && d.message.as_ref().is_some_and(|m| m.id == message)
+        }) else {
             return;
         };
         let Some(v) = &mut d.history else { return };
@@ -539,11 +542,9 @@ impl App {
     /// The latest copy of a message: a deletion closes its open history
     /// and a newer edit reloads its versions, as in egui.
     pub fn history_follow(&mut self, m: &core::Message) {
-        let Some(d) = self
-            .dialog
-            .as_mut()
-            .filter(|d| d.kind == Kind::History && d.message.id == m.id)
-        else {
+        let Some(d) = self.dialog.as_mut().filter(|d| {
+            d.kind == Kind::History && d.message.as_ref().is_some_and(|o| o.id == m.id)
+        }) else {
             return;
         };
         if m.is_deleted() {

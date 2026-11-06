@@ -241,6 +241,8 @@ pub enum Kind {
     Delete,
     /// Message history: its retained versions, compared word by word.
     History,
+    /// "New direct message": an exact username, found, then opened.
+    StartDirect,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -301,11 +303,13 @@ const FIELD_PAD_X: f32 = 10.0;
 const FIELD_PAD_Y: f32 = 8.0;
 /// The edit field shows this many lines, then scrolls.
 const FIELD_LINES: f32 = 6.0;
+const DIRECT_FIELD_H: f32 = 42.0;
 
 pub struct Dialog {
     pub kind: Kind,
-    /// The message as it was when the dialog opened (an edit's original).
-    pub message: Box<core::Message>,
+    /// The message as it was when the dialog opened (an edit's original);
+    /// None for the New DM dialog.
+    pub message: Option<Box<core::Message>>,
     /// The edit's draft.
     pub field: Composer,
     pub busy: bool,
@@ -321,6 +325,12 @@ pub struct Dialog {
     /// How far the history's body is scrolled, and where it shows.
     pub scroll: f32,
     pub body: Rect,
+    /// The New DM dialog's person for the typed username (someone you
+    /// know, or the lookup's answer), the username it is for, and whether
+    /// the conversation is opening.
+    pub recipient: Option<core::Person>,
+    pub resolved: String,
+    pub creating: bool,
     pub(crate) parts: Vec<(Part, Rect)>,
     pub(crate) card: Rect,
 }
@@ -334,17 +344,26 @@ impl Dialog {
         // Continue where the message ends, as on web.
         field.caret = field.text.len();
         field.anchor = field.caret;
-        Self::new(Kind::Edit, message, field)
+        Self::new(Kind::Edit, Some(message), field)
     }
 
     pub fn delete(message: core::Message) -> Self {
-        Self::new(Kind::Delete, message, Composer::default())
+        Self::new(Kind::Delete, Some(message), Composer::default())
     }
 
-    pub(crate) fn new(kind: Kind, message: core::Message, field: Composer) -> Self {
+    pub fn start_direct() -> Self {
+        let field = Composer {
+            focused: true,
+            caret_on: true,
+            ..Default::default()
+        };
+        Self::new(Kind::StartDirect, None, field)
+    }
+
+    pub(crate) fn new(kind: Kind, message: Option<core::Message>, field: Composer) -> Self {
         Self {
             kind,
-            message: Box::new(message),
+            message: message.map(Box::new),
             field,
             busy: false,
             error: None,
@@ -355,6 +374,9 @@ impl Dialog {
             history: None,
             scroll: 0.0,
             body: (0.0, 0.0, 0.0, 0.0),
+            recipient: None,
+            resolved: String::new(),
+            creating: false,
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -369,6 +391,7 @@ impl Dialog {
             Kind::Edit => "Edit message",
             Kind::Delete => "Delete message?",
             Kind::History => "Message history",
+            Kind::StartDirect => "New direct message",
         }
     }
 
@@ -382,8 +405,33 @@ impl Dialog {
             }
             Kind::History => format!(
                 "{} \u{b7} Previous versions are retained.",
-                self.message.author.name
+                self.message.as_ref().map_or("", |m| m.author.name.as_str())
             ),
+            Kind::StartDirect => "Enter an exact username.".into(),
+        }
+    }
+
+    /// Who the New DM dialog will open, as egui shows them.
+    pub fn recipient_label(&self) -> Option<String> {
+        let p = self.recipient.as_ref()?;
+        Some(format!("{} \u{b7} @{}", p.display_name, p.username))
+    }
+
+    /// The New DM field's text changed: it keeps only username characters
+    /// (egui's `normalize_username`), and a new username drops the person
+    /// found for the old one, matching someone you know instead.
+    fn username_changed(&mut self, live: Option<&crate::live::Live>) {
+        let typed = self.draft();
+        let name = caper_client::names::normalize_username(&typed);
+        if name != typed {
+            self.field.text = gfx::wide(&name);
+            self.field.caret = self.field.caret.min(self.field.text.len());
+            self.field.anchor = self.field.anchor.min(self.field.text.len());
+        }
+        if name != self.resolved {
+            self.recipient = live.and_then(|l| l.person_named(&name)).cloned();
+            self.error = None;
+            self.resolved = name;
         }
     }
 
@@ -394,6 +442,10 @@ impl Dialog {
             (Kind::Delete, false) => "Delete",
             (Kind::Delete, true) => "Deleting\u{2026}",
             (Kind::History, _) => "Close",
+            (Kind::StartDirect, true) if self.creating => "Opening\u{2026}",
+            (Kind::StartDirect, true) => "Finding\u{2026}",
+            (Kind::StartDirect, false) if self.recipient.is_some() => "Open conversation",
+            (Kind::StartDirect, false) => "Find person",
         }
     }
 
@@ -415,6 +467,7 @@ impl Dialog {
                         Kind::Edit => caper_client::edits::valid_text(&self.draft()),
                         Kind::Delete => true,
                         Kind::History => false,
+                        Kind::StartDirect => self.draft().len() >= 3,
                     }
             }
             Part::Cancel | Part::Reload | Part::Field => !self.busy,
@@ -512,6 +565,20 @@ impl Dialog {
             parts.push((Part::Field, (0.0, y, inner, fh)));
             y += fh + 4.0 + 16.0;
         }
+        if self.kind == Kind::StartDirect {
+            // One line, egui's 42-DIP username field, then who it finds.
+            y += 12.0;
+            self.field
+                .relayout_with(g, &g.formats.composer, 15.0, inner - 2.0 * FIELD_PAD_X)?;
+            parts.push((Part::Field, (0.0, y, inner, DIRECT_FIELD_H)));
+            y += DIRECT_FIELD_H;
+            if let Some(label) = self.recipient_label() {
+                y += 8.0;
+                let l = layout(g, &label, &g.formats.dialog_note, inner)?;
+                parts.push((Part::Hint, (0.0, y, inner, height(&l))));
+                y += height(&l);
+            }
+        }
         if let Some(e) = &self.error {
             y += 8.0;
             let l = layout(g, e, &g.formats.error, inner)?;
@@ -543,8 +610,12 @@ impl Dialog {
             r.1 += cy + CARD_PAD;
         }
         self.parts = parts;
-        if let Some((fx, fy, _, _)) = self.part_rect(Part::Field) {
-            self.field_origin = (fx + FIELD_PAD_X, fy + FIELD_PAD_Y);
+        if let Some((fx, fy, _, fh)) = self.part_rect(Part::Field) {
+            let pad = match self.kind {
+                Kind::StartDirect => (fh - LINE) / 2.0,
+                _ => FIELD_PAD_Y,
+            };
+            self.field_origin = (fx + FIELD_PAD_X, fy + pad);
         }
         Ok(())
     }
@@ -593,16 +664,35 @@ impl Dialog {
                             D2D1_ANTIALIAS_MODE_ALIASED,
                         );
                         let (ox, oy) = self.text_origin();
-                        self.field.draw_text(g, dc, ox, oy, None);
-                        dc.PopAxisAlignedClip();
-                        let counter = layout(g, &self.counter(), &g.formats.quote_meta, 1e6)?;
-                        crate::text::draw(
+                        let hint = match self.kind {
+                            Kind::StartDirect => {
+                                Some(layout(g, "Username", &g.formats.composer, 1e6)?)
+                            }
+                            _ => None,
+                        };
+                        self.field.draw_text(
+                            g,
                             dc,
-                            &counter,
-                            x + pw - width(&counter),
-                            y + ph + 4.0,
-                            &g.brushes.muted,
+                            ox,
+                            oy,
+                            hint.as_ref().map(|l| (l, &g.brushes.muted)),
                         );
+                        dc.PopAxisAlignedClip();
+                        if self.kind == Kind::Edit {
+                            let counter = layout(g, &self.counter(), &g.formats.quote_meta, 1e6)?;
+                            crate::text::draw(
+                                dc,
+                                &counter,
+                                x + pw - width(&counter),
+                                y + ph + 4.0,
+                                &g.brushes.muted,
+                            );
+                        }
+                    }
+                    Part::Hint => {
+                        let label = self.recipient_label().unwrap_or_default();
+                        let l = layout(g, &label, &g.formats.dialog_note, pw)?;
+                        crate::text::draw(dc, &l, x, y, &g.brushes.text);
                     }
                     Part::Error => {
                         let l = layout(
@@ -786,7 +876,7 @@ impl App {
 
     pub(crate) fn open_dialog(&mut self, d: Dialog) {
         self.set_composer_focus(false);
-        let editing = d.kind == Kind::Edit;
+        let editing = matches!(d.kind, Kind::Edit | Kind::StartDirect);
         self.dialog = Some(d);
         if editing {
             unsafe {
@@ -822,6 +912,9 @@ impl App {
     pub fn dialog_changed(&mut self) {
         let (g, w, h) = (&self.g, self.w, self.h);
         if let Some(d) = &mut self.dialog {
+            if d.kind == Kind::StartDirect {
+                d.username_changed(self.live.as_ref());
+            }
             d.field.caret_on = true;
             if let Err(e) = d.relayout(g, w, h) {
                 eprintln!("dialog layout failed: {e:?}");
@@ -859,15 +952,28 @@ impl App {
                 d.field.focused = true;
                 self.events |= EV_FOCUS;
             }
+            Part::Primary if d.kind == Kind::StartDirect => {
+                let Some(live) = &mut self.live else { return };
+                d.busy = true;
+                d.error = None;
+                // A known person opens at once; anyone else is looked up first.
+                match &d.recipient {
+                    Some(p) => {
+                        d.creating = true;
+                        live.create_direct(p.username.clone());
+                    }
+                    None => d.request = live.lookup_direct(d.draft()),
+                }
+            }
             Part::Primary | Part::Reload => {
                 let Some(live) = &mut self.live else { return };
                 d.busy = true;
                 d.error = None;
-                d.request = match (d.kind, part) {
-                    (Kind::Edit, Part::Reload) => live.reload_message(&d.message),
-                    (Kind::Edit, _) => live.edit(&d.message, d.draft()),
-                    (Kind::Delete, _) => live.delete(&d.message),
-                    (Kind::History, _) => d.request,
+                d.request = match (d.kind, part, d.message.as_deref()) {
+                    (Kind::Edit, Part::Reload, Some(m)) => live.reload_message(m),
+                    (Kind::Edit, _, Some(m)) => live.edit(m, d.draft()),
+                    (Kind::Delete, _, Some(m)) => live.delete(m),
+                    _ => d.request,
                 };
             }
             Part::Title
@@ -901,7 +1007,11 @@ impl App {
         };
         d.busy = false;
         match result {
-            Ok(m) if m.author.id != d.message.author.id => {
+            Ok(m)
+                if d.message
+                    .as_ref()
+                    .is_some_and(|o| o.author.id != m.author.id) =>
+            {
                 d.error = Some("Message author mismatch.".into())
             }
             Ok(m) if reloaded => {
@@ -909,7 +1019,7 @@ impl App {
                 d.field.caret = d.field.text.len();
                 d.field.anchor = d.field.caret;
                 d.field.focused = true;
-                d.message = m;
+                d.message = Some(m);
             }
             Ok(_) => return self.close_dialog(),
             Err(e) => {
@@ -918,6 +1028,58 @@ impl App {
             }
         }
         self.dialog_changed();
+    }
+
+    /// Opens "New direct message" (egui's `open_start_direct`).
+    pub fn open_start_direct(&mut self) {
+        if let Some(live) = &self.live {
+            live.load_people();
+        }
+        self.open_dialog(Dialog::start_direct());
+    }
+
+    /// The New DM lookup's answer: the person to open, or why not.
+    pub fn direct_found(
+        &mut self,
+        request: u64,
+        result: std::result::Result<core::Person, String>,
+    ) {
+        let Some(d) = self.dialog.as_mut().filter(|d| {
+            d.kind == Kind::StartDirect && d.busy && !d.creating && d.request == request
+        }) else {
+            return;
+        };
+        d.busy = false;
+        d.field.focused = true;
+        match result {
+            Ok(p) => d.recipient = Some(p),
+            Err(e) => d.error = Some(e),
+        }
+        self.dialog_changed();
+    }
+
+    /// A DM you asked for opened (None) or couldn't: the New DM dialog
+    /// closes or says why; without it (your own DM) the header says why.
+    pub fn direct_created(&mut self, error: Option<String>) {
+        match (
+            self.dialog.as_mut().filter(|d| d.kind == Kind::StartDirect),
+            error,
+        ) {
+            (Some(_), None) => self.close_dialog(),
+            (Some(d), Some(e)) => {
+                d.busy = false;
+                d.creating = false;
+                d.field.focused = true;
+                d.error = Some(e);
+                self.dialog_changed();
+            }
+            (None, Some(e)) => {
+                self.status = Some((e, true));
+                self.dirty.header = true;
+                self.need = true;
+            }
+            (None, None) => {}
+        }
     }
 
     pub fn deleted(&mut self, request: u64, error: Option<String>) {
@@ -1108,8 +1270,11 @@ impl App {
                         };
                         self.dialog_changed();
                     }
-                    // Ctrl+Enter saves, as in the egui client.
-                    VK_RETURN if ctrl => self.dialog_activate(Part::Primary),
+                    // Ctrl+Enter saves, as in the egui client; Enter finds or
+                    // opens the New DM's person.
+                    VK_RETURN if ctrl || d.kind == Kind::StartDirect => {
+                        self.dialog_activate(Part::Primary)
+                    }
                     VK_RETURN if d.kind == Kind::Edit && d.field.focused && !d.busy => {
                         d.field.insert(&['\n' as u16]);
                         self.dialog_changed();
@@ -1132,7 +1297,7 @@ impl App {
             }
             WM_CHAR => {
                 let c = wp.0 as u16;
-                if d.kind == Kind::Edit
+                if matches!(d.kind, Kind::Edit | Kind::StartDirect)
                     && d.field.focused
                     && !d.busy
                     && !ctrl

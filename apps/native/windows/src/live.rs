@@ -101,6 +101,14 @@ pub enum Update {
     Badges,
     /// The open DM's name or note changed (the DM list arrived).
     DirectHead,
+    /// The New DM dialog's lookup `request` answered: who it found, or why
+    /// not.
+    DirectFound {
+        request: u64,
+        result: Result<core::Person, String>,
+    },
+    /// A DM you asked for opened (None), or why it couldn't.
+    DirectCreated(Option<String>),
     /// The open thread's messages or state changed (or it closed): the
     /// pane rebuilds from `Live::thread_view`.
     Thread,
@@ -302,6 +310,10 @@ pub struct Live {
     pub direct: Option<String>,
     /// The open DM's name as its history named it, until the list knows it.
     direct_name: String,
+    /// People you share a space or a DM with, for the New DM dialog's exact
+    /// match (egui's `people`), and the last username lookup.
+    people: Vec<core::Person>,
+    lookup: u64,
 }
 
 /// What a send with composer files did.
@@ -418,6 +430,8 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         username: None,
         direct: None,
         direct_name: String::new(),
+        people: Vec::new(),
+        lookup: 0,
     })
 }
 
@@ -531,7 +545,14 @@ impl Live {
             let id = d.id.clone();
             return self.open_direct(id);
         }
-        let (Some(token), Some(username)) = (self.token.clone(), self.username.clone()) else {
+        if let Some(username) = self.username.clone() {
+            self.create_direct(username);
+        }
+    }
+
+    /// Opens the DM with `username`, creating it first when it is new.
+    pub fn create_direct(&mut self, username: String) {
+        let Some(token) = self.token.clone() else {
             return;
         };
         self.navigation += 1;
@@ -541,6 +562,37 @@ impl Live {
             token,
             username,
         });
+    }
+
+    /// Refreshes the people the New DM dialog matches (egui's `load_people`).
+    pub fn load_people(&self) {
+        if let Some(token) = &self.token {
+            self.worker.send(Command::LoadPeople {
+                generation: self.generation,
+                token: token.clone(),
+            });
+        }
+    }
+
+    /// Someone you already know, by exact username.
+    pub fn person_named(&self, username: &str) -> Option<&core::Person> {
+        self.people.iter().find(|p| p.username == username)
+    }
+
+    /// Looks a username up (`POST /api/dms/lookup`); returns the request,
+    /// which `Update::DirectFound` answers.
+    pub fn lookup_direct(&mut self, username: String) -> u64 {
+        self.lookup += 1;
+        if let Some(token) = self.token.clone() {
+            self.worker.send(Command::LookupDirect {
+                generation: self.generation,
+                navigation: self.navigation,
+                request: self.lookup,
+                token,
+                username,
+            });
+        }
+        self.lookup
     }
 
     /// The open DM's header and empty note.
@@ -2100,11 +2152,24 @@ impl Live {
                     out.push(Update::Badges);
                     if navigation == self.navigation {
                         self.open_direct(id);
+                        out.push(Update::DirectCreated(None));
                     }
                 }
-                Err(e) if navigation == self.navigation => out.push(Update::Failed(e)),
+                Err(e) if navigation == self.navigation => out.push(Update::DirectCreated(Some(e))),
                 Err(_) => {}
             },
+            Event::PeopleLoaded {
+                generation,
+                result: Ok(people),
+            } if generation == current => self.people = people,
+            Event::DirectLookedUp {
+                generation,
+                request,
+                result,
+                ..
+            } if generation == current && request == self.lookup => {
+                out.push(Update::DirectFound { request, result });
+            }
             Event::Klipy { token, config } if self.token.as_ref() == Some(&token) => {
                 self.klipy = config;
                 out.push(Update::Drafts);

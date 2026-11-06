@@ -23,6 +23,15 @@ const PITCH: f32 = 30.0;
 const GAP: f32 = 14.0;
 const LABEL_H: f32 = 28.0;
 
+/// What the pointer is over in the section: its heading, the heading's
+/// "New direct message" button, or a row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Spot {
+    Heading,
+    New,
+    Row(usize),
+}
+
 /// One row of the section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
@@ -104,17 +113,34 @@ pub fn draw(
     dc: &ID2D1DeviceContext,
     rows: &[Row],
     top: f32,
-    hover: Option<usize>,
+    hover: Option<Spot>,
 ) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
     let label = g.layout(&gfx::wide("Direct messages"), &g.formats.section, 10_000.0)?;
     text::draw(dc, &label, 20.0, top + GAP + 4.0, &g.brushes.muted);
+    // The heading's "+" shows while the heading is hovered, as in egui.
+    if matches!(hover, Some(Spot::Heading | Spot::New)) {
+        let y = top + GAP;
+        let b = rect(SIDEBAR_W - 40.0, y, SIDEBAR_W - 12.0, y + 28.0);
+        let on = hover == Some(Spot::New);
+        if on {
+            fill_round(dc, b, 6.0, &g.brushes.hover);
+        }
+        let i = rect(b.left + 5.0, b.top + 5.0, b.right - 5.0, b.bottom - 5.0);
+        crate::icons::draw(
+            dc,
+            crate::icons::Icon::Plus,
+            i,
+            if on { TEXT } else { TEXT_MUTED },
+            1.0,
+        );
+    }
     for (k, row) in rows.iter().enumerate() {
         let y = top + GAP + LABEL_H + PITCH * k as f32;
         let r = rect(12.0, y, SIDEBAR_W - 12.0, y + ROW_H);
-        let lit = hover == Some(k);
+        let lit = hover == Some(Spot::Row(k));
         if row.active {
             fill_round(dc, r, 6.0, &g.brushes.selected);
         } else if lit {
@@ -234,11 +260,38 @@ impl App {
         )
     }
 
-    pub fn direct_at(&self, x: f32, y: f32) -> Option<usize> {
-        (0..self.direct_rows().len()).find(|&k| {
-            let (l, t, w, h) = self.direct_rect(k);
-            x >= l && x < l + w && y >= t && y < t + h
-        })
+    /// The heading's "New direct message" button.
+    pub fn new_direct_rect(&self) -> Rect {
+        (
+            RAIL_W + SIDEBAR_W - 40.0,
+            self.directs_top() + GAP,
+            28.0,
+            28.0,
+        )
+    }
+
+    pub fn direct_at(&self, x: f32, y: f32) -> Option<Spot> {
+        let n = self.direct_rows().len();
+        let inside = |(l, t, w, h): Rect| x >= l && x < l + w && y >= t && y < t + h;
+        if n == 0 {
+            return None;
+        }
+        if inside(self.new_direct_rect()) {
+            return Some(Spot::New);
+        }
+        let top = self.directs_top() + GAP;
+        if inside((RAIL_W, top, SIDEBAR_W, LABEL_H)) {
+            return Some(Spot::Heading);
+        }
+        (0..n).find(|&k| inside(self.direct_rect(k))).map(Spot::Row)
+    }
+
+    pub fn direct_click(&mut self, spot: Spot) {
+        match spot {
+            Spot::New => self.open_start_direct(),
+            Spot::Row(k) => self.open_direct_row(k),
+            Spot::Heading => {}
+        }
     }
 
     /// Opens row `k`'s DM (your own is created first when it is new).
