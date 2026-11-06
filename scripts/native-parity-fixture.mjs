@@ -742,8 +742,15 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (path === "/health") return json(response, 200, { fixture: true });
       if (path === "/__fixture/push-devices" && method === "GET")
         return json(response, 200, { devices: state.pushDevices, requests: state.pushRequests });
+      if (path === "/__fixture/channel-reads" && method === "GET")
+        return json(response, 200, { reads: state.channelReads ?? null, log: state.channelReadLog ?? [] });
       if (path === "/__fixture/control" && method === "POST") {
         if (body.reset) state = initialState();
+        // Opt-in channel read state: `{ channelReads: { [channelId]: readSeq } }`.
+        if (body.channelReads !== undefined) {
+          state.channelReads = body.channelReads && { ...body.channelReads };
+          state.channelReadLog = [];
+        }
         if (body.reset || typeof body.holdSends === "boolean") {
           holdSends = !body.reset && body.holdSends;
           if (!holdSends) for (const release of heldSends) release();
@@ -1501,6 +1508,29 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const head = BigInt(channelHead(conversation.id));
         const bounded = BigInt(body.seq) > head ? head : BigInt(body.seq);
         if (bounded > BigInt(conversation.readSeq)) conversation.readSeq = String(bounded);
+        return json(response, 204);
+      }
+      // Opt-in channel read state (control `channelReads`), so other runs keep
+      // their unread behavior: the unread snapshot and channel reads.
+      if (path === "/api/spaces/unread" && method === "GET" && user && state.channelReads)
+        return json(response, 200, {
+          spaces: [
+            {
+              id: ids.space,
+              channels: Object.entries(state.channelReads).map(([id, readSeq]) => ({
+                id,
+                lastSeq: channelHead(id),
+                readSeq,
+              })),
+            },
+          ],
+          feedbackWaiting: 0,
+        });
+      const channelRead = /^\/api\/spaces\/([^/]+)\/channels\/([^/]+)\/read$/.exec(path);
+      if (channelRead && method === "POST" && user && state.channelReads) {
+        const [, , channelId] = channelRead;
+        state.channelReadLog.push({ channelId, seq: body.seq });
+        if (BigInt(body.seq) > BigInt(state.channelReads[channelId] ?? "0")) state.channelReads[channelId] = body.seq;
         return json(response, 204);
       }
       // Only with feedback-team state, so other runs keep their unread behavior.
