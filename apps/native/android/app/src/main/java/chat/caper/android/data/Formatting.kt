@@ -167,3 +167,16 @@ internal fun toggleFormat(text: String, selectionStart: Int, selectionEnd: Int, 
     if (start != end && formattedMessage(result.text).text != formattedMessage(text).text) return FormatSelection(text, selectionStart, selectionEnd)
     return result
 }
+
+/** Some of the selected source text is already bold ([bold]) or italic: the toolbar shows that button pressed (web). */
+internal fun selectionHasStyle(text: String, start: Int, end: Int, bold: Boolean): Boolean {
+    val formatted = formattedMessage(text)
+    val from = formatted.displayed(start)
+    val to = formatted.displayed(end)
+    var offset = 0
+    return formatted.runs.any { run ->
+        val hit = offset < to && offset + run.text.length > from && if (bold) run.bold else run.italic
+        offset += run.text.length
+        hit
+    }
+}

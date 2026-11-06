@@ -70,6 +70,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             val result = profileDrafts.sendActivity(item, token, profileChatSession(request),
                 blocked = { mutable.value.blockedIds }, gif = gif, gifQuery = query)
             if (request != accountGeneration || result == null) return@launch
+            activityMutable.value = activityMutable.value.let { it.copy(statuses = it.statuses + (item.id to "Reply sent")) }
             if (media == null) draft.files.forEach { discardDraftFiles(it.key) }
             else if (config != null) klipy.share(config, kind ?: if (media.sticker) KlipyKind.STICKERS else KlipyKind.GIFS,
                 media.slug, shareQuery, klipyUserAgent)
@@ -78,22 +79,28 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
-    internal fun reactToActivity(item: ActivityItem, emoji: String) {
+    internal fun reactToActivity(item: ActivityItem, emoji: String, active: Boolean = true) {
         val token = accountToken ?: return
-        if (!item.canReply) return
+        if (!item.canReply || item.id in activityMutable.value.reacting) return
         val request = accountGeneration
         val reactionRequest = ++activityReactionRequest
-        activityMutable.value = activityMutable.value.copy(error = null)
+        activityMutable.value = activityMutable.value.let { it.copy(error = null, reacting = it.reacting + item.id, statuses = it.statuses - item.id) }
         viewModelScope.launch {
             try {
                 val channel = profileDrafts.activityDestination(item, token) { mutable.value.blockedIds }
                 val (session, _) = profileChatSession(request)()
                 if (request != accountGeneration) return@launch
-                api.setReaction(token, session, channel, requireNotNull(item.messageId), emoji, true)
+                val update = api.setReaction(token, session, channel, requireNotNull(item.messageId), emoji, active)
+                // Chips show what the server now has; web confirms "Reaction added" / "Reaction removed".
+                if (request == accountGeneration) activityMutable.value = activityMutable.value.let {
+                    it.copy(reactions = it.reactions + (item.id to update.reactions), statuses = it.statuses + (item.id to if (active) "Reaction added" else "Reaction removed"))
+                }
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) {
                 if (request == accountGeneration && reactionRequest == activityReactionRequest)
                     activityMutable.value = activityMutable.value.copy(error = message(error))
+            } finally {
+                if (request == accountGeneration) activityMutable.value = activityMutable.value.let { it.copy(reacting = it.reacting - item.id) }
             }
         }
     }
@@ -512,7 +519,28 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { createChatSession(epoch) }
     }
 
+    /**
+     * Web: the server ends the session first (and with it this phone's push registration); if it
+     * can't be reached you stay signed in and are told so, rather than holding a live session.
+     */
     fun logout() {
+        val token = accountToken ?: return signOutLocally()
+        if (mutable.value.loggingOut) return
+        val request = accountGeneration
+        mutable.value = mutable.value.copy(loggingOut = true, error = null)
+        viewModelScope.launch {
+            val ended = try { api.logout(token); true }
+            catch (error: CancellationException) { throw error }
+            // An already-ended session is logged out.
+            catch (error: ApiException) { error.status == 401 }
+            catch (_: Throwable) { false }
+            if (request != accountGeneration) return@launch
+            if (ended) signOutLocally()
+            else mutable.value = mutable.value.copy(loggingOut = false, error = "Couldn’t log out. Check your connection and try again.")
+        }
+    }
+
+    private fun signOutLocally() {
         val token = accountToken
         VoiceCallService.stop(getApplication())
         ++accountGeneration
@@ -547,10 +575,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         pendingInvitationIntent = null
         pendingChannelIntent = null
         pendingDirectIntent = null
-        if (token != null) {
-            viewModelScope.launch { PushRegistration.disable(getApplication(), token) }
-            viewModelScope.launch { runCatching { api.logout(token) } }
-        }
+        // Local cleanup only: the server already revoked this session's push address.
+        if (token != null) viewModelScope.launch { PushRegistration.disable(getApplication(), token) }
         loadHome()
     }
 
@@ -1849,6 +1875,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             onFailed = { if (notify) mutable.value = mutable.value.copy(error = mutable.value.messageContextError) }, onLoaded = onLoaded)
     }
 
+    /** Opens the original of a reply quote in the open conversation, or says it's unavailable. */
+    fun openReply(reference: MessageReply) {
+        val channel = mutable.value.selectedChannel?.id ?: return
+        goToMessage(channel, reference.id, reference.threadRootId,
+            onFailed = { mutable.value = mutable.value.copy(error = mutable.value.messageContextError) }, onLoaded = {})
+    }
+
     /** Loads [targetId]'s context: around it in the conversation, or in its thread [root] (which opens). */
     private fun goToMessage(channelId: String, targetId: String, root: String?, onFailed: () -> Unit = {}, onLoaded: () -> Unit) {
         val channel = mutable.value.selectedChannel?.id ?: return
@@ -1894,7 +1927,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val after = mutable.value.channelMessages.lastOrNull()?.seq ?: return
         if (!mutable.value.hasNewerMessages || mutable.value.loadingNewer || refreshingHistory) return
         val request = generation; val anchor = historyAnchorRequest
-        mutable.value = mutable.value.copy(loadingNewer = true, refreshError = null)
+        mutable.value = mutable.value.copy(loadingNewer = true, newerError = null)
         viewModelScope.launch {
             try {
                 val page = api.history(accountToken, channel, after = after)
@@ -1906,7 +1939,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     hasNewerMessages = page.hasNewer, loadingNewer = false,
                 )
             } catch (error: Throwable) {
-                if (request == generation && anchor == historyAnchorRequest) mutable.value = mutable.value.copy(loadingNewer = false, refreshError = message(error))
+                if (request == generation && anchor == historyAnchorRequest) mutable.value = mutable.value.copy(loadingNewer = false, newerError = message(error))
             }
         }
     }
@@ -2089,6 +2122,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request == generation && mutable.value.selectedChannel?.id == channel.id) {
                     receivePin(update, sequenced = false)
                     mutable.value = mutable.value.copy(pinSaves = mutable.value.pinSaves - messageId)
+                    // Web's brief "Message pinned." confirmation.
+                    android.widget.Toast.makeText(getApplication(), if (active) "Message pinned." else "Message unpinned.", android.widget.Toast.LENGTH_SHORT).show()
                 }
             } catch (error: Throwable) {
                 if (error is kotlinx.coroutines.CancellationException) throw error
@@ -4080,7 +4115,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             thread = null, threadOnlyRows = emptySet(), replyTargets = emptyMap(), composerFocusRequest = null,
             contextStart = null, contextEnd = null, hasNewerMessages = false, loadingNewer = false,
             focusedMessageId = null, loadingMessageContext = false, messageContextError = null,
-            loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,
+            loadingOlder = false, olderError = null, newerError = null, messagesLoading = false, messagesError = null, refreshError = null,
             voiceRosters = emptyMap(),
             voiceSessionStartedAt = emptyMap(),
             gateway = GatewayStatus.DISCONNECTED, pendingMessage = if (clearPending) null else mutable.value.pendingMessage,

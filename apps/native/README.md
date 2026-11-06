@@ -225,6 +225,9 @@ adds 45 members to Fixture Studio and replaces `#general` with 3,000 generated m
 every run and client gets the same text, mentions, links, emoji and reactions). `CAPER_FIXTURE_PORT` and
 `CAPER_FIXTURE_GATEWAY_PORT` move it off 3001/3002.
 
+The owner's notifications inbox (`GET /api/notifications/inbox`, `POST /api/notifications/inbox/read`) holds two
+unread items: a mention from Alex and a 🎉 reaction from Maya in `#general`.
+
 `POST /__fixture/control` accepts:
 
 - `{ "reset": true }`, `{ "disconnect": true }`;

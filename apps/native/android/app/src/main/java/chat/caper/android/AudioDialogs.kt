@@ -88,7 +88,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     // Who can start a DM with you, and the accounts you blocked.
     if (state.account != null) MenuButton("Privacy and blocked accounts") { openPrivacy() }
     MenuButton("What’s new") { openWhatsNew() }
-    if (state.account != null) MenuButton("Log out") { close(); logout() }
+    if (state.account != null) MenuButton(if (state.loggingOut) "Logging out…" else "Log out") { if (!state.loggingOut) { close(); logout() } }
     else MenuButton("Sign in") { close(); signIn() }
 }
 

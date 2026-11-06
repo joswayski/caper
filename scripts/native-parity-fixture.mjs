@@ -255,6 +255,40 @@ function initialState() {
     pushRequests: [],
     notificationSettings: new Map(),
     notificationOverrides: new Map(),
+    // The owner's notifications inbox (GET /api/notifications/inbox), newest first.
+    inbox: [
+      {
+        id: "inbox0000002",
+        kind: "mention",
+        actorId: ids.other,
+        actorName: "Alex",
+        avatarId: 799,
+        body: "Agreed, @fixture_owner. Let’s check the narrow layout and the management dialogs too.",
+        createdAt: "2026-09-23T09:43:00.000Z",
+        unread: true,
+        spaceId: ids.space,
+        spaceName: "Fixture Studio",
+        channelId: ids.general,
+        channelName: "general",
+        messageId: `${ids.general}m04`,
+      },
+      {
+        id: "inbox0000001",
+        kind: "reaction",
+        actorId: ids.member,
+        actorName: "Maya",
+        avatarId: 31,
+        body: "TEST FIXTURE — local sample data, not a live conversation.",
+        emoji: "🎉",
+        createdAt: "2026-09-23T09:41:00.000Z",
+        unread: true,
+        spaceId: ids.space,
+        spaceName: "Fixture Studio",
+        channelId: ids.general,
+        channelName: "general",
+        messageId: `${ids.general}m01`,
+      },
+    ],
     notificationEvents: [],
     releaseHighlights: null,
     releaseHighlightsDelay: 0,
@@ -1146,6 +1180,33 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           state.notificationSettings.set(user.id, { ...settingsFor(user), ...body });
         }
         return json(response, 200, settingsDTO(user));
+      }
+      if (path === "/api/notifications/inbox" && method === "GET") {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const filter = url.searchParams.get("filter") ?? "all";
+        const matches = {
+          all: () => true,
+          dms: (item) => !item.spaceId,
+          mentions: (item) => item.kind === "mention",
+          threads: (item) => item.threadRootId && item.kind !== "reaction",
+          reactions: (item) => item.kind === "reaction",
+          invitations: (item) => ["space.invitation", "channel.invitation", "direct.request"].includes(item.kind),
+        }[filter];
+        if (!matches) return reject(response, 400, "invalid inbox filter");
+        const mine = user.id === ids.owner ? state.inbox : [];
+        const unreadOnly = url.searchParams.get("unread") === "true";
+        return json(response, 200, {
+          items: mine.filter((item) => matches(item) && (!unreadOnly || item.unread)),
+          nextCursor: null,
+          unreadCount: mine.filter((item) => item.unread).length,
+        });
+      }
+      if (path === "/api/notifications/inbox/read" && method === "POST") {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const ids_ = Array.isArray(body?.ids) ? body.ids : [];
+        const mine = user.id === ids.owner ? state.inbox : [];
+        for (const item of mine) if (ids_.includes(item.id)) item.unread = false;
+        return json(response, 200, { unreadCount: mine.filter((item) => item.unread).length });
       }
       const overridePath = /^\/api\/(?:spaces\/([^/]+)(?:\/channels\/([^/]+))?|dms\/([^/]+))\/notifications$/.exec(
         path,

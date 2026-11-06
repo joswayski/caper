@@ -18,7 +18,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -31,16 +36,21 @@ import chat.caper.android.ui.*
 import kotlinx.coroutines.delay
 
 /** A modal inbox keeps the underlying chat draft and voice call mounted. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun ActivityInboxEntry(viewModel: CaperViewModel, onOpened: () -> Unit) {
     val inbox by viewModel.activityInbox.collectAsState()
     val state by viewModel.state.collectAsState()
     val epoch = viewModel.accountEpoch
+    val own = state.chatAuthorId ?: state.account?.id
     var shown by remember { mutableStateOf(false) }
     var reacting by remember(epoch) { mutableStateOf<ActivityItem?>(null) }
     var picking by remember(epoch) { mutableStateOf(emptySet<String>()) }
     TextButton({ shown = true }, Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Icon(painterResource(R.drawable.lucide_bell), null, Modifier.size(16.dp), tint = TextMuted)
+        Spacer(Modifier.width(8.dp))
         Text("Notifications", Modifier.weight(1f), color = Text, fontSize = 13.sp)
-        if (inbox.unreadCount > 0) Text("${inbox.unreadCount}", color = TerracottaBright)
+        if (inbox.unreadCount > 0) Text(if (inbox.unreadCount > 99) "99+" else "${inbox.unreadCount}",
+            Modifier.clearAndSetSemantics { contentDescription = "${inbox.unreadCount} unread notifications" }, color = TerracottaBright)
     }
     if (!shown) return
     DisposableEffect(viewModel) {
@@ -82,7 +92,14 @@ import kotlinx.coroutines.delay
                     }
                 }
                 if (inbox.loading && inbox.visibleItems.isEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (!inbox.loading && inbox.visibleItems.isEmpty() && inbox.error == null) Text("No notifications match these filters.", color = TextMuted)
+                if (!inbox.loading && inbox.visibleItems.isEmpty() && inbox.error == null && inbox.cursor == null) Column(
+                    Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(painterResource(R.drawable.lucide_bell), null, tint = TextMuted)
+                    Text(if (inbox.unreadOnly) "You’re all caught up" else "No notifications here yet", color = Text, fontWeight = FontWeight.Bold)
+                    Text(if (inbox.unreadOnly) "No unread notifications in this view." else "Messages, mentions, replies and reactions will appear here.",
+                        color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                }
                 // The previous filter's rows stay put until the new page replaces them: dimmed after a beat
                 // (fast replies swap without a flash) and inert. Leaving the stale state is instant.
                 val still = reducedMotion()
@@ -95,6 +112,8 @@ import kotlinx.coroutines.delay
                     items(inbox.visibleItems, key = { it.id }) { item ->
                         Column(Modifier.fillMaxWidth().background(SurfaceRaised, MaterialTheme.shapes.small).padding(12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                Avatar(item.actorName, 28.dp, avatarId = item.avatarId)
+                                Spacer(Modifier.width(10.dp))
                                 Text("${if (item.unread) "● " else ""}${item.actorName}",
                                     Modifier.weight(1f).clickable(enabled = !inbox.stale && inbox.opening != item.id) {
                                         viewModel.readActivity(item, open = true) { shown = false; onOpened() }
@@ -116,13 +135,25 @@ import kotlinx.coroutines.delay
                                 }
                                 description?.let { Text(it, color = TextMuted, fontSize = 12.sp) }
                                 Text(item.body, color = Text, fontSize = 13.sp, maxLines = 3)
-                                Text(listOfNotNull(item.spaceName, item.channelName).joinToString(" · "), color = TextMuted, fontSize = 12.sp)
+                                Text(activityLocation(item), color = TextMuted, fontSize = 12.sp)
                             }
                             val direct = state.directConversations.firstOrNull { it.id == item.conversationId }
                             val writable = item.canReply && direct?.incoming != true && direct?.blocked != true && direct?.peer?.id !in state.blockedIds
-                            if (writable) Row {
+                            val saving = item.id in inbox.reacting
+                            if (writable) FlowRow(verticalArrangement = Arrangement.Center, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 TextButton({ viewModel.toggleActivityReply(item) }, Modifier.heightIn(min = 48.dp), enabled = !inbox.stale) { Text(if (item.id in inbox.expanded) "Close reply" else "Reply", color = TextMuted) }
-                                TextButton({ reacting = item }, Modifier.heightIn(min = 48.dp), enabled = !inbox.stale) { Text("React", color = TextMuted) }
+                                // After you react, the message's reactions show; yours toggle off with a tap (web).
+                                inbox.reactions[item.id].orEmpty().forEach { reaction ->
+                                    val mine = own != null && own in reaction.authorIds
+                                    Box(Modifier.heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
+                                        ReactionChip(reaction, mine, canReact = !inbox.stale && !saving,
+                                            toggle = { viewModel.reactToActivity(item, reaction.emoji, !mine) }, showReactors = {})
+                                    }
+                                }
+                                TextButton({ reacting = item }, Modifier.heightIn(min = 48.dp), enabled = !inbox.stale && !saving) { Text("React", color = TextMuted) }
+                            }
+                            inbox.statuses[item.id]?.let {
+                                Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp)
                             }
                             if (item.id in inbox.expanded) key(item.draftKey, epoch) {
                                 Column(Modifier.entrance(MOTION_FAST, dy = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -146,6 +177,10 @@ import kotlinx.coroutines.delay
         }
     }
 }
+
+/** Web's location line: "#channel · Space", or "Direct message". */
+internal fun activityLocation(item: ActivityItem): String =
+    item.spaceName?.let { space -> listOfNotNull(item.channelName?.let { "#$it" }, space).joinToString(" · ") } ?: "Direct message"
 
 /** The profile-card composer, backed by a target-keyed draft rather than an actor DM. */
 @Composable private fun ActivityReplyComposer(viewModel: CaperViewModel, item: ActivityItem, writable: Boolean, pickerInteraction: (Boolean) -> Unit) {

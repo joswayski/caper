@@ -65,7 +65,8 @@ private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.lengt
                 Text("Previous versions remain visible to people who can read this message.", color = TextMuted, fontSize = 12.sp)
                 EmojiTextField(draft, { draft = it }, Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 300.dp).focusRequester(field), placeholder = { Text("Message") }, readOnly = saving,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
-                Text("${draft.text.codePointCount(0, draft.text.length)} / 4,000", color = TextMuted, fontSize = 12.sp, style = TabularNumbers)
+                val count = draft.text.codePointCount(0, draft.text.length)
+                Text("${"%,d".format(java.util.Locale.US, count)} / 4,000", color = if (count > 4_000) ErrorText else TextMuted, fontSize = 12.sp, style = TabularNumbers)
                 error?.let { Text(it, color = ErrorText); TextButton(enabled = !saving, onClick = {
                     saving = true; error = null
                     scope.launch {

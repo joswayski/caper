@@ -620,6 +620,8 @@ data class AppUiState(
     val messageContextError: String? = null,
     val loadingOlder: Boolean = false,
     val olderError: String? = null,
+    /** The newer page failed: shown with "Retry newer messages" (web). */
+    val newerError: String? = null,
     /** Web's chat phases: first history page loading, or failed with no messages to show. */
     val messagesLoading: Boolean = false,
     val messagesError: String? = null,
@@ -683,6 +685,8 @@ data class AppUiState(
     /** Counts live `profile.updated` events, so views holding their own loaded copies (who reacted) refresh them. */
     val profileRevision: Long = 0,
     val busy: Boolean = false,
+    /** Log out is waiting for the server; a failure keeps you signed in with [error] (web). */
+    val loggingOut: Boolean = false,
     val error: String? = null,
 ) {
     val drafts: List<DraftAttachmentUi> get() = selectedChannel?.id?.let { attachmentDrafts[AttachmentDraftTarget(it)] }.orEmpty()

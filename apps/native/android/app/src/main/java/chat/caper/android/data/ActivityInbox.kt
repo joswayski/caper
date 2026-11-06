@@ -34,6 +34,12 @@ internal data class ActivityInboxState(
     val busy: Int = 0,
     /** The previous filter's rows, kept in place (dimmed and inert) until the new page arrives. */
     val stale: Boolean = false,
+    /** Reactions on an item's message after you reacted from the inbox, by item ID. */
+    val reactions: Map<String, List<chat.caper.android.model.MessageReaction>> = emptyMap(),
+    /** Items whose reaction save is in flight. */
+    val reacting: Set<String> = emptySet(),
+    /** "Reply sent", "Reaction added" and similar confirmations, by item ID. */
+    val statuses: Map<String, String> = emptyMap(),
 ) {
     val visibleItems: List<ActivityItem> get() = (items + expanded.values.filter { pinned -> items.none { it.id == pinned.id } }).sortedByDescending { it.createdAt }
 }

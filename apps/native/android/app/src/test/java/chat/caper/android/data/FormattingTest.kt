@@ -27,6 +27,17 @@ class FormattingTest {
         }
     }
 
+    @Test fun `toolbar state follows styles anywhere in the source selection`() {
+        val text = "a **bold** and _it_ c"
+        // Source offsets; the field hides the delimiters.
+        assertEquals(true, selectionHasStyle(text, 4, 8, bold = true))
+        assertEquals(true, selectionHasStyle(text, 0, 5, bold = true))
+        assertEquals(false, selectionHasStyle(text, 0, 1, bold = true))
+        assertEquals(false, selectionHasStyle(text, 4, 8, bold = false))
+        assertEquals(true, selectionHasStyle(text, 16, 18, bold = false))
+        assertEquals(false, selectionHasStyle(text, 11, 14, bold = false))
+    }
+
     @Test fun `edits discard orphan delimiters and retain literal punctuation`() {
         assertEquals(FormatSelection("", 0, 0), repairFormatEdit("**hello**", FormatSelection("****", 2, 2)))
         assertEquals(FormatSelection("", 0, 0), repairFormatEdit("**_🙂_**", FormatSelection("**__**", 3, 3)))

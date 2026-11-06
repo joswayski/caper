@@ -168,6 +168,7 @@ import chat.caper.android.data.WhatsNewSnapshot
 import chat.caper.android.data.AttachCapacity
 import chat.caper.android.data.AttachmentPolicy
 import chat.caper.android.data.VoiceMessages
+import chat.caper.android.data.isVoiceMessage
 import chat.caper.android.data.FileDrop
 import chat.caper.android.data.LinkRange
 import chat.caper.android.data.MAX_CODE_RESENDS
@@ -463,7 +464,12 @@ internal data class VoiceJoinIntent(
         is Overlay.LeaveChannel -> {
             val owner = state.selectedSpace?.space?.ownerId == state.account?.id
             val privateLoss = shown.channel.private && !owner
-            ConfirmDialog("Leave #${shown.channel.name}?", if (privateLoss) "You will lose access to this private channel. Another invitation is required to return." else "You can continue to preview this channel and join it again later.", "Leave channel", state.busy, { overlay = null }, pendingLabel = "Leaving…") {
+            val consequence = when {
+                privateLoss -> "You’ll lose access and need another invitation to return."
+                owner && shown.channel.private -> "It will leave your sidebar. You keep owner access and can rejoin from Browse channels."
+                else -> "It will leave your sidebar. You can still preview it and rejoin from Browse channels."
+            }
+            ConfirmDialog("Leave #${shown.channel.name}?", "$consequence If you’re in its voice call, you’ll disconnect.", "Leave channel", state.busy, { overlay = null }, pendingLabel = "Leaving…") {
                 viewModel.leaveChannel(shown.channel); overlay = null
             }
         }
@@ -953,9 +959,15 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 if (BuildConfig.ENABLE_NATIVE_VOICE && detail != null) rowVoice(channel, detail.space.demo, state.voiceRosters, callRowId) else RowVoice.QUIET
             }
             // Rows with voice stay listed, in list order, while collapsing or searching hides quiet rows.
-            detail?.channels?.let { channels ->
+            val listed = detail?.channels?.let { channels ->
                 listedChannels(channels, { channelsExpanded && (browsing || it.joined) && it.name.contains(channelSearch, ignoreCase = true) }, voiceOf)
-            }?.forEach { channel ->
+            }
+            if (browsing && channelsExpanded && listed.isNullOrEmpty()) Text(
+                if (channelSearch.isNotEmpty()) "No channels match your search." else "This space has no channels yet.",
+                Modifier.padding(horizontal = 8.dp, vertical = 6.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                color = TextMuted, fontSize = 12.sp,
+            )
+            listed?.forEach { channel ->
                 key(channel.id) {
                     val selected = channel.id == state.selectedChannel?.id
                     val kind = voiceOf(channel)
@@ -2247,11 +2259,21 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (narrow) BrowseButton("Browse spaces", R.drawable.lucide_hash, openNavigation, Modifier.align(Alignment.TopStart).padding(start = 11.dp, top = 8.dp))
         Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(painterResource(R.drawable.lucide_hash), null, tint = TerracottaBright)
-            Text(if (noSpaces) "Select a direct message" else "No accessible channels", fontWeight = FontWeight.Bold)
-            Text(if (noSpaces) "Open a conversation from Direct messages." else if (owner) "Create a channel or browse channels to join one." else "Browse public channels to preview and join one.", color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-            if (owner) OutlinedButton({ show(Overlay.CreateChannel) }, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), colors = neutralOutlinedButtonColors()) { Text("Create channel") }
+            Text(if (noSpaces) "Start a conversation" else "No joined channels", fontWeight = FontWeight.Bold)
+            Text(when {
+                noSpaces -> "Create a space for your people, or start a direct message."
+                owner -> "Browse channels or create one to start a conversation."
+                else -> "Browse channels to find a conversation, or accept a private channel invitation."
+            }, color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            // One primary action (web); the rest are secondary.
+            @Composable fun Action(label: String, primary: Boolean, onClick: () -> Unit) =
+                if (primary) Button(onClick, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(label) }
+                else OutlinedButton(onClick, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), colors = neutralOutlinedButtonColors()) { Text(label) }
             // Lists every channel in the sidebar (with search), in the Browse drawer on phones.
-            OutlinedButton(browseChannels, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), colors = neutralOutlinedButtonColors()) { Text("Browse channels") }
+            if (!noSpaces) Action("Browse channels", primary = !owner, onClick = browseChannels)
+            if (owner) Action("Create channel", primary = true) { show(Overlay.CreateChannel) }
+            if (noSpaces) Action("Create your first space", primary = true) { show(Overlay.CreateSpace) }
+            Action("New direct message", primary = false) { show(Overlay.StartDirect) }
         }
     }
 }
@@ -2391,6 +2413,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         reactions = messages.takeLast(FOLLOW_REACTION_ROWS).map { it.reactions },
         jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
         firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton, displacement = displacement)
+    // Screen readers hear the newest message as it arrives (web's polite live region); a blocked
+    // person's message stays collapsed for them too, and leaves the last announcement in place.
+    var announcement by remember { mutableStateOf("") }
+    val latestMessage = messages.lastOrNull()
+    LaunchedEffect(latestMessage?.id, inThread) {
+        if (!inThread && latestMessage != null && !collapsesFor(latestMessage, blocked, selfId)) announcement = messageAnnouncement(latestMessage)
+    }
+    if (announcement.isNotEmpty()) Box(Modifier.size(0.dp).semantics { liveRegion = LiveRegionMode.Polite; contentDescription = announcement })
     CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth().displacementViewport(displacement), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
         if (!inThread) item(contentType = "history") {
             HistoryRow {
@@ -2488,7 +2518,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 val grouped = groupsWithPrevious((rows.lastOrNull() as? TimelineRow.Message)?.message, pending.author?.id ?: selfId, pending.createdAt,
                     pending.threadRootId, threadContext = pending.replyTo != null, jumpTarget = state.focusedMessageId)
                 Column(Modifier.arrival(arrivals, pending.clientMessageId)) {
-                    pending.replyTo?.let { ReplyContext(it, rowState, pending.clientMessageId) }
+                    pending.replyTo?.let { reference ->
+                        // Like a sent reply's quote, it opens the original (or says it's unavailable).
+                        ReplyContext(reference, rowState, pending.clientMessageId, if (reference.deleted) null else ({
+                            viewModel.openReply(reference)
+                        }))
+                    }
                     MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped,
                         avatarAsset = pending.author?.avatarAsset, avatarUrl = pending.author?.avatarUrl, gif = pending.gif, embeds = pending.embeds)
                     Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
@@ -2514,7 +2549,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         } }
         if (newer) item(contentType = "history") {
             HistoryRow {
-                HistoryButton(if (state.loadingNewer) "Loading…" else "Load newer messages", !state.loadingNewer, viewModel::loadNewer)
+                state.newerError?.let { Text(it, color = TextMuted, fontSize = 11.sp) }
+                HistoryButton(if (state.loadingNewer) "Loading…" else if (state.newerError != null) "Retry newer messages" else "Load newer messages", !state.loadingNewer, viewModel::loadNewer)
                 HistoryButton("Back to latest", onClick = viewModel::retryMessages)
             }
         }
@@ -2970,8 +3006,11 @@ private val quickReactions = listOf("👍", "❤️", "😂")
     // A deleted message keeps only its thread and its ID.
     val deleted = message.deletedAt != null
     val canReact = state.canParticipate && own != null && !deleted
-    fun copy(label: String, value: String) {
-        clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+    // Web confirms "Text copied." and similar; Android 13+ shows its own clipboard confirmation.
+    fun copy(label: String, value: String, confirmation: String) {
+        val copied = runCatching { clipboard.setPrimaryClip(ClipData.newPlainText(label, value)) }.isSuccess
+        if (!copied) android.widget.Toast.makeText(context, "Couldn’t copy. Try again.", android.widget.Toast.LENGTH_SHORT).show()
+        else if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) android.widget.Toast.makeText(context, confirmation, android.widget.Toast.LENGTH_SHORT).show()
         onDismiss()
     }
     // Opens fully, and scrolls when the actions outgrow a short or landscape screen.
@@ -3019,14 +3058,14 @@ private val quickReactions = listOf("👍", "❤️", "😂")
                     // An attachment-only message has no text to copy.
                     links.forEach { (label, href) ->
                         SheetAction("Open link: $label") { openExternalLink(uriHandler, href); onDismiss() }
-                        SheetAction("Copy link: $label") { copy("Link", href) }
+                        SheetAction("Copy link: $label") { copy("Link", href, "Link copied.") }
                         HorizontalDivider(color = Border)
                     }
                     if (message.content.text.isNotBlank()) {
-                        SheetAction("Copy text") { copy("Message text", message.content.text) }
+                        SheetAction("Copy text") { copy("Message text", message.content.text, "Text copied.") }
                         HorizontalDivider(color = Border)
                     }
-                    SheetAction("Copy message ID") { copy("Message ID", message.id) }
+                    SheetAction("Copy message ID") { copy("Message ID", message.id, "Message ID copied.") }
                     blockLabel?.let { label ->
                         HorizontalDivider(color = Border)
                         SheetAction(label, if (label.startsWith("Block")) ErrorText else Text, onClick = onBlock)
@@ -3343,6 +3382,21 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
             Icon(painterResource(R.drawable.lucide_x), "Cancel reply", Modifier.size(16.dp), tint = TextMuted)
         }
     }
+}
+
+/** What a screen reader hears for a newly arrived message, as on web: its author and text, or what it carries. */
+internal fun messageAnnouncement(message: ChatMessage): String {
+    val attached = message.content.attachments
+    val body = message.content.text.ifEmpty {
+        when {
+            attached.isNotEmpty() && attached.all { it.isVoiceMessage } -> "sent a voice message"
+            attached.size == 1 -> "sent a file"
+            attached.isNotEmpty() -> "sent ${attached.size} files"
+            message.content.gif != null -> "sent a GIF"
+            else -> "sent a message"
+        }
+    }
+    return "${message.author.name}: $body"
 }
 
 internal const val DELETED_MESSAGE = "This message was deleted."
@@ -3981,7 +4035,7 @@ internal fun counterTone(count: Int): Color = when {
         Button({ spaceNameError(name)?.let { error = it } ?: viewModel.createSpace(name.trim()) },
             enabled = allowed && !state.busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
         ) { Text(if (state.busy) "Creating…" else "Create space") }
-        TextButton(viewModel::logout, Modifier.align(Alignment.End), shape = MaterialTheme.shapes.small) { Text("Log out", color = TextMuted) }
+        TextButton(viewModel::logout, Modifier.align(Alignment.End), enabled = !state.loggingOut, shape = MaterialTheme.shapes.small) { Text(if (state.loggingOut) "Logging out…" else "Log out", color = TextMuted) }
     }
 }
 

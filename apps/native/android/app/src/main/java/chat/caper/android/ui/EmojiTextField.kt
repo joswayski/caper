@@ -19,9 +19,14 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.TextRange
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.focus.focusProperties
+import chat.caper.android.data.selectionHasStyle
 import chat.caper.android.data.toggleFormat
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -101,11 +106,13 @@ import kotlin.math.roundToInt
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
     val transformed = remember(value.annotatedString, visualTransformation) { visualTransformation.filter(value.annotatedString) }
+    /** The selection with [marker] toggled, or null when it can't be formatted without changing its text or a link. */
+    fun formatted(marker: String) = toggleFormat(value.text, value.selection.min, value.selection.max, marker)
+        // Reject expansion rather than letting a caller truncate the selected content.
+        .takeUnless { it.text == value.text || it.text.codePointCount(0, it.text.length) > 4000 }
     fun format(marker: String) {
         if (!enabled || readOnly || value.composition != null) return
-        val result = toggleFormat(value.text, value.selection.min, value.selection.max, marker)
-        // Reject expansion rather than letting a caller truncate the selected content.
-        if (result.text == value.text || result.text.codePointCount(0, result.text.length) > 4000) return
+        val result = formatted(marker) ?: return
         history.remember(result.text)
         onValueChange(TextFieldValue(result.text, TextRange(result.start, result.end)))
     }
@@ -198,14 +205,21 @@ import kotlin.math.roundToInt
                                         if (enabled && !readOnly && focused && value.composition == null && !value.selection.collapsed) {
                                             Surface(color = Surface, shape = MaterialTheme.shapes.small) {
                                                 Row {
-                                                    TextButton({ format("**") }, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }.semantics { contentDescription = "Bold selection" },
-                                                        shape = RectangleShape, contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
-                                                        Text("B", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                                                    // Pressed when the selection already has the style; unavailable when formatting
+                                                    // would change its text or split a link (web).
+                                                    @Composable fun StyleButton(marker: String, bold: Boolean, label: String, glyph: @Composable () -> Unit) {
+                                                        val allowed = formatted(marker) != null
+                                                        val pressed = selectionHasStyle(value.text, value.selection.min, value.selection.max, bold)
+                                                        TextButton({ format(marker) }, enabled = allowed, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }
+                                                            .background(if (pressed) TerracottaWash else Color.Transparent).semantics {
+                                                                contentDescription = label
+                                                                selected = pressed
+                                                                if (!allowed) stateDescription = "This selection cannot be formatted without changing its text or link"
+                                                            },
+                                                            shape = RectangleShape, contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) { glyph() }
                                                     }
-                                                    TextButton({ format("_") }, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }.semantics { contentDescription = "Italic selection" },
-                                                        shape = RectangleShape, contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
-                                                        Text("I", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
-                                                    }
+                                                    StyleButton("**", bold = true, "Bold selection") { Text("B", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) }
+                                                    StyleButton("_", bold = false, "Italic selection") { Text("I", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic) }
                                                 }
                                             }
                                         }
