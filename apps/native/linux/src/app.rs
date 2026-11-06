@@ -16,6 +16,7 @@ use caper_client::mentions;
 use caper_client::model::{
     Account, Apply, ChatSession, DirectConversation, Message, Space, SpaceDetail, Timeline,
 };
+use caper_client::notifications::Scope;
 use caper_client::reactions::Reacted;
 use caper_client::sign_in::{MAX_RESENDS, resend_countdown, resend_wait};
 use caper_client::worker::{
@@ -33,6 +34,8 @@ mod account;
 mod forward;
 #[path = "members.rs"]
 mod members;
+#[path = "notify.rs"]
+mod notify;
 #[path = "profile.rs"]
 mod profile;
 #[path = "settings.rs"]
@@ -347,6 +350,8 @@ pub struct App {
     settings: RefCell<Option<settings::SettingsDialog>>,
     prefs: Rc<crate::prefs::Prefs>,
     effects: RefCell<caper_client::effects::Effects>,
+    /// A redraw is waiting for the next timed mute to end.
+    mute_timer: Cell<bool>,
 }
 
 struct PinsView {
@@ -426,6 +431,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         profile_dialog: RefCell::default(),
         wakes: Wakes(sender.clone()),
         settings: RefCell::default(),
+        mute_timer: Cell::new(false),
         effects: RefCell::new(caper_client::effects::Effects::new(
             prefs.get::<bool>("sound-effects-v1").unwrap_or(true),
         )),
@@ -444,6 +450,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.connect();
     app.connect_drop();
     app.install_actions();
+    app.install_notification_actions();
     app.render();
     // The window shows before any network request finishes.
     app.ui.window.present();
@@ -789,6 +796,7 @@ impl App {
         self.account_op(state, AccountOperation::LoadBlocks);
         state.settings = settings::AccountSettings::default();
         self.load_notifications(state);
+        self.start_notifications(state);
         if state.needs_profile() {
             state.profile_setup = true;
         } else if let Some(space) = state.spaces.first().map(|space| space.id.clone()) {
@@ -821,6 +829,7 @@ impl App {
             }
             state.generation += 1;
             self.worker.send(Command::StopGateway);
+            self.worker.send(Command::StopNotifications);
             self.worker.send(Command::ClearCredential {
                 generation: state.generation,
             });
@@ -1439,9 +1448,11 @@ impl App {
             }
             AccountResult::Notifications { revision, result } => {
                 state.settings.notifications.finish_load(revision, result);
+                state.layout += 1;
             }
             AccountResult::NotificationsSaved { scope, result } => {
                 state.settings.notifications.finish_save(&scope, result);
+                state.layout += 1;
             }
             AccountResult::Block {
                 account,
@@ -2490,9 +2501,17 @@ impl App {
                         request,
                         result,
                     } => forwards.push((generation, request, result)),
-                    event @ (Event::Profiled { .. } | Event::AvatarHistory { .. }) => {
-                        deferred.push(event)
+                    Event::NotificationActivity { epoch } if epoch == state.epoch => {
+                        // Unread state changed somewhere.
+                        self.refresh_unread(&mut state);
+                        self.load_directs(&state);
                     }
+                    Event::NotificationError { epoch, error } if epoch == state.epoch => {
+                        state.error = Some(error);
+                    }
+                    event @ (Event::Profiled { .. }
+                    | Event::AvatarHistory { .. }
+                    | Event::OpenNotification { .. }) => deferred.push(event),
                     event => self.handle(&mut state, event),
                 }
             }
@@ -2508,10 +2527,14 @@ impl App {
                     request,
                     result,
                 } if epoch == self.state.borrow().epoch => self.previous_pictures(request, result),
+                Event::OpenNotification { epoch, alert } if epoch == self.state.borrow().epoch => {
+                    self.open_alert(alert)
+                }
                 _ => {}
             }
         }
         self.poll_profile_picture();
+        self.renew_reading();
         let setup = std::mem::take(&mut self.state.borrow_mut().profile_setup);
         if setup {
             self.open_profile_editor();
@@ -3538,10 +3561,26 @@ impl App {
         }
     }
 
+    /// A muted row's bell-slash, its tooltip saying until when.
+    fn muted_icon(&self, label: &str) -> gtk::Image {
+        let icon = self.images.icon_image(Icon::BellOff, "#b9bcbe", 13);
+        icon.set_tooltip_text(Some(label));
+        icon
+    }
+
     fn render_layout(self: &Rc<Self>) {
         let state = self.state.borrow();
         if self.rendered_layout.replace(state.layout) == state.layout {
             return;
+        }
+        let expiring = state
+            .settings
+            .notifications
+            .next_expiry(chrono::Utc::now())
+            .is_some();
+        if expiring {
+            let app = self.clone();
+            glib::idle_add_local_once(move || app.schedule_mute_expiry());
         }
         let ui = &self.ui;
         let space_unread = |space: &str| {
@@ -3578,6 +3617,7 @@ impl App {
             let app = self.clone();
             let id = space.id.clone();
             button.connect_clicked(move |_| app.select_space(id.clone()));
+            self.scope_menu_on(&button, Scope::Space(space.id.clone()));
             ui.rail.append(&overlay);
         }
 
@@ -3611,9 +3651,20 @@ impl App {
                 name.add_css_class("unread");
             }
             line.append(&name);
+            let scope = Scope::Channel {
+                space: detail
+                    .map(|detail| detail.space.id.clone())
+                    .unwrap_or_default(),
+                channel: channel.id.clone(),
+            };
+            if let Some(muted) = state.muted_label(&scope) {
+                name.add_css_class("muted");
+                line.append(&self.muted_icon(&muted));
+            }
             if count > 0 {
                 line.append(&badge(count, mentions > 0));
             }
+            self.scope_menu_on(&line, scope);
             ui.channels.append(&line);
             if state.direct.is_none()
                 && state.channel.as_deref() == Some(&channel.id)
@@ -3652,9 +3703,15 @@ impl App {
                 name.add_css_class("unread");
             }
             line.append(&name);
+            let scope = Scope::Direct(direct.id.clone());
+            if let Some(muted) = state.muted_label(&scope) {
+                name.add_css_class("muted");
+                line.append(&self.muted_icon(&muted));
+            }
             if count > 0 {
                 line.append(&badge(count, true));
             }
+            self.scope_menu_on(&line, scope);
             ui.directs.append(&line);
             if state.direct.as_deref() == Some(&direct.id)
                 && let Some(row) = ui.directs.row_at_index(ids.len() as i32)

@@ -335,7 +335,7 @@ impl App {
 
     /// Applies a choice at once and saves it; a failed save reverts with
     /// an inline error.
-    fn change_notifications(self: &Rc<Self>, scope: Scope, change: Change) {
+    pub(super) fn change_notifications(self: &Rc<Self>, scope: Scope, change: Change) {
         {
             // Render mirrors saved values into the buttons, which toggles
             // them while the state is borrowed: nothing to save then.

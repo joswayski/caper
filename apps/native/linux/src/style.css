@@ -158,6 +158,11 @@ entry:focus-within {
   font-weight: 900;
 }
 
+popover.menu .title {
+  font-size: inherit;
+  font-weight: 700;
+}
+
 .field {
   font-weight: 700;
   margin-top: 4px;
