@@ -74,6 +74,12 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
         CaperUIKitLaunch.mark("model")
         let cached = CaperUIKitLaunch.cachedSnapshot()
         CaperUIKitLaunch.mark("cache")
+        // The cached rows' reaction artwork decodes whole sprite sheets; do it
+        // off the main thread while the window is built.
+        let emoji = Set(cached?.messages.flatMap { ($0.reactions ?? []).map(\.emoji) } ?? [])
+        if !emoji.isEmpty {
+            DispatchQueue.global(qos: .userInitiated).async { emoji.forEach { _ = UIKitReactions.artwork($0) } }
+        }
         let root = RootViewController(model: model, cached: cached)
         let window = UIWindow(windowScene: scene)
         window.rootViewController = root

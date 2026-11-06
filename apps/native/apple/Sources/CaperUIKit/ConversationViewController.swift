@@ -114,8 +114,15 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         }
         composerObserver.start { [weak self] in self?.renderComposer() }
         UIKitHosting.warmAttachGallery()
-        // SwiftUI presents message actions, who reacted, forwarding and block
-        // confirmations from an invisible child, as CaperView's conversation does.
+        // Nothing is presented before the first frame, so its SwiftUI graph waits.
+        CADisplayLink(target: FirstFrame { [weak self] in
+            DispatchQueue.main.async { self?.addPresentationHost() }
+        }, selector: #selector(FirstFrame.tick)).add(to: .main, forMode: .common)
+    }
+
+    /// SwiftUI presents message actions, who reacted, forwarding and block
+    /// confirmations from an invisible child, as CaperView's conversation does.
+    private func addPresentationHost() {
         let host = UIHostingController(rootView: UIKitPresentationHost(state: presentations, model: model))
         host.view.backgroundColor = .clear
         host.view.isUserInteractionEnabled = false
