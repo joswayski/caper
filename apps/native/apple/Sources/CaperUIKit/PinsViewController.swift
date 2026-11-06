@@ -1,4 +1,5 @@
 import CaperCore
+import SwiftUI
 import UIKit
 
 /// The channel's pinned messages (SwiftUI's PinnedMessagesView): cards with
@@ -12,6 +13,7 @@ final class PinsViewController: UIViewController, UICollectionViewDelegate {
     private let empty = UIStackView()
     private let error = UIKitStyle.label(size: 12, color: UIKitStyle.error)
     private let observer = ModelObserver()
+    private let presentations = UIKitPresentations()
     /// Block from a pinned author's card: Pins closes, the conversation confirms.
     var requestBlock: ((BlockTarget) -> Void)?
     private lazy var rowHost: RowHost = {
@@ -21,6 +23,9 @@ final class PinsViewController: UIViewController, UICollectionViewDelegate {
             self.dismiss(animated: true)
             Task { _ = await chat.onOpenForward?(message) }
         }
+        // Holding a card or a chip, and +, as on the timeline.
+        host.actions = { [weak self] id, picker in self?.openActions(id, picker: picker) }
+        host.reactors = { [weak self] id, emoji in self?.presentations.reactors = .init(messageID: id, emoji: emoji) }
         let chat = model.chat
         host.openProfiles(model: model, controller: self, messages: { chat.displayedPins }) { [weak self] target in
             guard let self else { return }
@@ -117,7 +122,36 @@ final class PinsViewController: UIViewController, UICollectionViewDelegate {
             empty.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             empty.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48),
         ])
+        let host = UIHostingController(rootView: UIKitPresentationHost(state: presentations, model: model) { [weak self] then in
+            guard let self else { return then() }
+            self.dismiss(animated: true, completion: then)
+        })
+        host.view.backgroundColor = .clear
+        host.view.isUserInteractionEnabled = false
+        host.view.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        addChild(host)
+        view.insertSubview(host.view, at: 0)
+        host.didMove(toParent: self)
         observer.start { [weak self] in self?.render() }
+    }
+
+    /// Tapping a card goes to its message, as SwiftUI's openMessage.
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        collectionView.deselectItem(at: indexPath, animated: false)
+        guard let id = dataSource.itemIdentifier(for: indexPath), let row = rows[id] else { return }
+        goTo(row.message)
+    }
+
+    private func openActions(_ id: String, picker: Bool) {
+        let chat = model.chat
+        guard let message = chat.displayedPins.first(where: { $0.id == id }) else { return }
+        if picker {
+            present(UIKitHosting.reactionPicker { emoji in
+                Task { await chat.setReaction(messageID: id, emoji: emoji, active: true) }
+            }, animated: true)
+        } else {
+            presentations.actions = message
+        }
     }
 
     private func render() {

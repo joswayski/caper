@@ -23,9 +23,15 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     /// The last session's conversation, shown until the live one is ready.
     var cached: StartupSnapshot? { didSet { if isViewLoaded { render() } } }
     var browse: (() -> Void)?
+    /// Whether a swipe right may open Browse: not over Members or a sheet.
+    var allowsBrowseSwipe: Bool { !members.isOpen && !presentations.presenting && presentedViewController == nil }
 
     private let header = UIView()
     private let channelTitle = UIKitStyle.label(size: 14, weight: .bold)
+    /// A DM's peer, beside the name, as SwiftUI's header.
+    private let peerAvatar = AvatarView(side: 28)
+    private var titleAfterBack: NSLayoutConstraint!
+    private var titleAfterAvatar: NSLayoutConstraint!
     private let subtitle = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
     private lazy var back = IconButton(icon: "arrow-left", label: "Back to Browse", size: 20) { [weak self] in self?.browse?() }
     /// In place of an empty timeline: loading, a failed first load with Try
@@ -44,6 +50,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private let typing = TypingIndicatorView()
     private let composer = ComposerView()
     private lazy var members = MembersPanel(model: model)
+    private lazy var fileDrop = UIKitFileDrop(model: model)
     private var lastFocusRevision = 0
     private var capabilitiesKey: String?
     private var collection: UICollectionView!
@@ -86,6 +93,17 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             members.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             members.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+        // A swipe left on the timeline brings Members in under the finger, as SwiftUI's MembersSwipe.
+        let membersSwipe = DirectionalSwipe(direction: -1)
+        membersSwipe.allowed = { [weak self] in
+            guard let self else { return false }
+            return self.membersAvailable && !self.members.isOpen && !self.presentations.presenting
+        }
+        membersSwipe.moved = { [weak self] in self?.view.endEditing(true); self?.members.follow($0) }
+        membersSwipe.ended = { [weak self] complete, _ in self?.members.release(opening: complete) }
+        collection.addGestureRecognizer(membersSwipe)
+        // Files dragged onto the conversation stage for its composer.
+        view.addInteraction(fileDrop.interaction)
         lastFocusRevision = model.chat.focusRevision
         timelineObserver.start { [weak self] in self?.render() }
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _) in
@@ -149,7 +167,11 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let rule = UIView()
         rule.backgroundColor = UIKitStyle.border
         rule.translatesAutoresizingMaskIntoConstraints = false
-        [back, titleMenu, connection, rule].forEach(header.addSubview)
+        [back, peerAvatar, titleMenu, connection, rule].forEach(header.addSubview)
+        peerAvatar.isHidden = true
+        peerAvatar.accessibilityElementsHidden = true
+        titleAfterBack = titleMenu.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 5)
+        titleAfterAvatar = titleMenu.leadingAnchor.constraint(equalTo: peerAvatar.trailingAnchor, constant: 1)
         // The conversation's name for VoiceOver's heading rotor, beside its menu, as on web.
         heading.accessibilityTraits = .header
         heading.accessibilityIdentifier = "selected-channel-name"
@@ -161,7 +183,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             header.heightAnchor.constraint(equalToConstant: 50),
             back.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 13),
             back.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            titleMenu.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 5),
+            titleAfterBack,
+            peerAvatar.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 5),
+            peerAvatar.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             titleMenu.topAnchor.constraint(equalTo: header.topAnchor, constant: 3),
             titleMenu.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -3),
             titles.leadingAnchor.constraint(equalTo: titleMenu.leadingAnchor, constant: 6),
@@ -441,6 +465,13 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let title = visit.map { FeedbackInbox.title(channelName: chat.channelName, spaceName: chat.spaceName, direct: $0.direct) }
             ?? (channelName.isEmpty ? "" : direct ? channelName : "# \(channelName.lowercased())")
         channelTitle.text = title
+        let peer = visit == nil && direct ? model.selectedDirectMessage?.peer : nil
+        if let peer { peerAvatar.show(name: peer.displayName, avatarID: peer.avatarId, picture: peer.avatarPicture) }
+        if peerAvatar.isHidden != (peer == nil) {
+            peerAvatar.isHidden = peer == nil
+            titleAfterBack.isActive = false; titleAfterAvatar.isActive = false
+            (peer == nil ? titleAfterBack : titleAfterAvatar).isActive = true
+        }
         let inVoice = live ? UIKitVoiceStrip.inVoice(model) : 0
         let parts = [visit == nil ? memberSummary(live: live, channelID: channelID) : nil, inVoice > 0 ? "\(inVoice) in voice" : nil]
         subtitle.text = parts.compactMap { $0 }.isEmpty ? nil : parts.compactMap { $0 }.joined(separator: " · ")

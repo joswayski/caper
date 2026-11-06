@@ -181,6 +181,38 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         UIAccessibility.post(notification: .screenChanged, argument: panel)
     }
 
+    /// A swipe left on the timeline: the panel follows the finger in.
+    func follow(_ distance: CGFloat) {
+        guard !isOpen else { return }
+        if isHidden {
+            isHidden = false
+            observer.start { [weak self] in self?.render() }
+            layoutIfNeeded()
+        }
+        let travel = panel.bounds.width + 24
+        let shown = min(travel, distance)
+        panel.transform = CGAffineTransform(translationX: travel - shown, y: 0)
+        dimming.alpha = shown / max(1, travel)
+    }
+
+    /// The swipe lifted: it settles open, or (closing being instant) hides.
+    func release(opening: Bool) {
+        guard !isOpen, !isHidden else { return }
+        guard opening else {
+            isHidden = true
+            observer.stop()
+            return
+        }
+        isOpen = true
+        let settle = { self.dimming.alpha = 1; self.panel.transform = .identity }
+        if UIKitStyle.reduceMotion { settle() } else {
+            let animator = UIViewPropertyAnimator(duration: 0.2, timingParameters: UIKitStyle.easeOut)
+            animator.addAnimations(settle)
+            animator.startAnimation()
+        }
+        UIAccessibility.post(notification: .screenChanged, argument: panel)
+    }
+
     /// Closing is instant, as everywhere in Caper.
     func close() {
         guard isOpen else { return }

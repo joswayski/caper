@@ -34,6 +34,8 @@ final class CaperUIKitTests: XCTestCase {
         let app = XCUIApplication()
         if let openURL { app.launchEnvironment["CAPER_TEST_OPEN_URL"] = openURL }
         app.launchArguments += ["-caper.space-landing.owner0000001", ""]
+        // Browse's Channels/DMs split starts even in every run.
+        app.launchArguments += ["-caper.channelSidebarChannelsShare", "0.5"]
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
         if signedIn {
@@ -248,6 +250,42 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertEqual(app.textViews["message-composer"].label, "Message #design")
     }
 
+    /// Browse as SwiftUI draws it: the Channels toggle keeps only live rooms
+    /// when collapsed, the divider adjusts, X returns to the conversation, and
+    /// the account bar's identity opens Profile.
+    func testBrowseHeaderToggleAndAccountBar() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        app.buttons["back-to-browse"].tap()
+        let toggle = app.buttons["channels-toggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        XCTAssertEqual(toggle.value as? String, "Expanded")
+        let planning = app.buttons["channel-chan00000003"]
+        XCTAssertTrue(planning.waitForExistence(timeout: 5))
+        toggle.tap()
+        XCTAssertTrue(planning.waitForNonExistence(timeout: 5), "Collapsed hides rooms nobody is in")
+        XCTAssertTrue(app.buttons["channel-chan00000002"].exists, "The live room stays")
+        XCTAssertEqual(toggle.value as? String, "Collapsed")
+        screenshot("uikit-browse-collapsed")
+        toggle.tap()
+        XCTAssertTrue(planning.waitForExistence(timeout: 5))
+
+        let divider = app.descendants(matching: .any)["sidebar-sections-resize"].firstMatch
+        XCTAssertEqual(divider.value as? String, "50 percent channels")
+        let start = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.2, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -120)))
+        XCTAssertNotEqual(divider.value as? String, "50 percent channels", "Dragging resizes the lists")
+        divider.doubleTap()
+        XCTAssertEqual(divider.value as? String, "50 percent channels", "Double-tap evens them out")
+
+        app.buttons["account-profile"].tap()
+        XCTAssertTrue(app.staticTexts["Edit profile"].firstMatch.waitForExistence(timeout: 10))
+        app.buttons["Close profile"].firstMatch.tap()
+        app.buttons["Close navigation"].tap()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 10))
+        XCTAssertTrue(row(Self.latest).isHittable, "X returns to the conversation")
+    }
+
     /// The title is the conversation's menu: Pins and Members.
     func testTitleMenuOpensPinsAndMembers() {
         let app = launch()
@@ -366,18 +404,83 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(sheet.waitForExistence(timeout: 10))
         app.buttons["Pin message"].tap()
         XCTAssertTrue(sheet.waitForNonExistence(timeout: 10))
-        let badge = latest.staticTexts["Pinned by you"]
+        let badge = latest.buttons["Pinned by you"]
         XCTAssertTrue(badge.waitForExistence(timeout: 10), "Pinned rows say who pinned them")
         screenshot("uikit-pinned-row")
+        // "Pinned by" opens the pinner's card.
+        badge.tap()
+        let profile = app.descendants(matching: .any)["mention-card"]
+        XCTAssertTrue(profile.waitForExistence(timeout: 10), "Pinned by opens the pinner's profile")
+        app.swipeDown(velocity: .fast)
+        XCTAssertTrue(profile.waitForNonExistence(timeout: 10))
 
         app.buttons["channel-title-menu"].tap()
         app.buttons["Pins"].tap()
         let card = app.descendants(matching: .any)["pinned-message-b00000000003000"]
         XCTAssertTrue(card.waitForExistence(timeout: 10))
         screenshot("uikit-pins")
+        // Holding a card opens its actions over Pins.
+        card.textViews.firstMatch.press(forDuration: 0.8)
+        XCTAssertTrue(sheet.waitForExistence(timeout: 10), "Holding a pinned card opens message actions")
+        app.swipeDown(velocity: .fast)
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(card.exists, "Pins stays open under the actions")
+        // Tapping the card's body goes to the message, as SwiftUI's.
+        card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).tap()
+        XCTAssertTrue(card.waitForNonExistence(timeout: 10), "Tapping a card goes to its message")
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
+
+        app.buttons["channel-title-menu"].tap()
+        app.buttons["Pins"].tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
         app.buttons["go-to-message-b00000000003000"].tap()
         XCTAssertTrue(card.waitForNonExistence(timeout: 10), "Go to message closes Pins")
         XCTAssertTrue(latest.waitForExistence(timeout: 10))
+    }
+
+    /// "(edited)" opens the message's history; swipes open Members and
+    /// Browse, and return from Browse, as SwiftUI's drawers.
+    func testEditedHistoryAndSwipes() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let composer = app.textViews["message-composer"]
+        composer.tap()
+        composer.typeText("TEST FIXTURE edit me")
+        app.buttons["send-message"].tap()
+        let sent = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "edit me")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 10))
+        sent.press(forDuration: 0.8)
+        XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 10))
+        app.buttons["Edit message"].tap()
+        let field = app.descendants(matching: .any)["message-edit-text"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        field.tap()
+        field.typeText(" again")
+        app.buttons["Save changes"].tap()
+        let edited = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "message-edited-")).firstMatch
+        XCTAssertTrue(edited.waitForExistence(timeout: 10), "An edited row shows (edited) as a button")
+        XCTAssertEqual(edited.label, "Edited")
+        edited.tap()
+        XCTAssertTrue(app.staticTexts["Message history"].waitForExistence(timeout: 10), "(edited) opens the history")
+        screenshot("uikit-message-history")
+        app.buttons["Close"].tap()
+        XCTAssertTrue(app.staticTexts["Message history"].waitForNonExistence(timeout: 10))
+
+        let timeline = app.collectionViews["message-timeline"]
+        timeline.swipeLeft()
+        let members = app.descendants(matching: .any)["members-panel"]
+        XCTAssertTrue(members.waitForExistence(timeout: 10), "A swipe left on the timeline opens Members")
+        app.buttons["Close member list"].tap()
+        XCTAssertTrue(members.waitForNonExistence(timeout: 10))
+
+        timeline.swipeRight()
+        let account = app.buttons["account-profile"]
+        XCTAssertTrue(account.waitForExistence(timeout: 10))
+        sleep(1)
+        XCTAssertTrue(account.isHittable, "A swipe right from mid-timeline opens Browse")
+        app.collectionViews["direct-message-list"].swipeLeft()
+        sleep(1)
+        XCTAssertTrue(composer.isHittable, "A swipe left on Browse returns to the conversation")
     }
 
     /// Reply in thread opens the thread; a reply there shows under the root
@@ -401,8 +504,9 @@ final class CaperUIKitTests: XCTestCase {
         let reply = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "a thread reply")).firstMatch
         XCTAssertTrue(reply.waitForExistence(timeout: 10))
         screenshot("uikit-thread")
-        app.buttons["thread-back"].tap()
-        XCTAssertTrue(thread.waitForNonExistence(timeout: 10))
+        // A swipe right from mid-thread goes back, as SwiftUI's ThreadBackSwipe.
+        app.collectionViews["thread-timeline"].swipeRight()
+        XCTAssertTrue(thread.waitForNonExistence(timeout: 10), "A swipe right closes the thread")
         let link = app.buttons["view-thread-b00000000003000"]
         XCTAssertTrue(link.waitForExistence(timeout: 10), "The root shows its thread link")
         XCTAssertEqual(link.value as? String, "1 reply")
@@ -410,6 +514,40 @@ final class CaperUIKitTests: XCTestCase {
         link.tap()
         XCTAssertTrue(thread.waitForExistence(timeout: 10))
         XCTAssertTrue(reply.waitForExistence(timeout: 10))
+    }
+
+    /// A channel row's menu is SwiftUI inside a UIKit cell; its Leave channel
+    /// confirmation must still present from there.
+    func testLeaveChannelConfirmationFromHostedRow() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        app.buttons["back-to-browse"].tap()
+        let options = app.buttons["channel-options-chan00000001"]
+        XCTAssertTrue(options.waitForExistence(timeout: 10))
+        options.tap()
+        app.buttons["Leave channel"].tap()
+        let title = app.staticTexts["Leave #general?"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "Leave channel's confirmation presents from the hosted row")
+        screenshot("uikit-leave-channel")
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(title.waitForNonExistence(timeout: 10))
+    }
+
+    /// A thread that fails to load says why, with Retry, as SwiftUI's.
+    func testThreadLoadErrorRetries() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        control(["failure": ["path": "/api/chat/channels/chan00000001/messages/b00000000003000/thread", "method": "GET",
+                             "status": 503, "error": "TEST FIXTURE: thread unavailable."]])
+        app.textViews["message-text-\(Self.latest)"].press(forDuration: 0.8)
+        XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 10))
+        app.buttons["Reply in thread"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["thread-view"].waitForExistence(timeout: 10))
+        let error = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "thread unavailable")).firstMatch
+        XCTAssertTrue(error.waitForExistence(timeout: 10), "The thread shows its load error")
+        screenshot("uikit-thread-error")
+        app.descendants(matching: .any)["timeline-edge"].buttons["Retry"].tap()
+        XCTAssertTrue(error.waitForNonExistence(timeout: 10), "Retry loads the thread")
     }
 
     /// Reply, from message actions, raises the keyboard in the channel's
@@ -905,7 +1043,7 @@ final class CaperUIKitParityTests: XCTestCase {
 
     private func configured(_ bundle: String, signedIn: Bool = true, cache: Bool = false) -> XCUIApplication {
         let app = XCUIApplication(bundleIdentifier: bundle)
-        app.launchArguments += ["-caper.space-landing.owner0000001", ""]
+        app.launchArguments += ["-caper.space-landing.owner0000001", "", "-caper.channelSidebarChannelsShare", "0.5"]
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
         if signedIn {

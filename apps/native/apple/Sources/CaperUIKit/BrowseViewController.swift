@@ -5,7 +5,10 @@ import UIKit
 /// Browse on iPhone: the space rail beside the selected space's channels and
 /// direct messages, with the account bar beneath. The conversation slides over it.
 final class BrowseViewController: UIViewController, UICollectionViewDelegate {
-    private enum Item: Hashable { case liveNow, channel(String), search, browseResult(String), channelInvitation(String), directHeading, activity, feedback, requests, selfDirect, direct(String), newMessage }
+    private enum Item: Hashable {
+        case notificationError, liveNow, channelsHeader, channel(String), search, browseResult(String), searchEmpty, channelInvitation(String), listError
+        case directHeading, activity, feedback, requests, selfDirect, direct(String), newMessage
+    }
 
     private let model: AppModel
     var cached: StartupSnapshot? { didSet { if isViewLoaded { render() } } }
@@ -15,15 +18,27 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private let rail = UIStackView()
     private let railScroll = UIScrollView()
     private let card = UIView()
-    private let spaceName = UIKitStyle.label(size: 17, weight: .bold)
-    private let channelsHeading = UIKitStyle.label(size: 12, weight: .bold, color: UIKitStyle.muted)
+    private let spaceName = UIKitStyle.label(size: 15, weight: .bold)
+    /// SwiftUI's narrow "Close navigation": back to the open conversation.
+    private lazy var closeNavigation = IconButton(icon: "x", label: "Close navigation", size: 16, side: 44) { [weak self] in self?.opened?() }
+    private var closeWidth: NSLayoutConstraint!
+    private let headerRule = UIView()
     private let spaceMenu = UIButton(type: .custom)
     private let spaceChevron = UIImageView(image: UIKitStyle.icon("chevron-down")?.resized(to: 16))
-    private lazy var createChannel = IconButton(icon: "plus", label: "Create channel", size: 16, side: 36) { [weak self] in
-        self?.dialog(.createChannel)
-    }
+    /// Channels above SwiftUI's draggable divider, direct messages below it,
+    /// each scrolling on its own.
     private var channels: UICollectionView!
     private var dataSource: UICollectionViewDiffableDataSource<Int, Item>!
+    private var directs: UICollectionView!
+    private var directSource: UICollectionViewDiffableDataSource<Int, Item>!
+    private let divider = SectionDivider()
+    private var channelsHeight: NSLayoutConstraint!
+    private static let shareKey = "caper.channelSidebarChannelsShare"
+    private var channelsShare = UserDefaults.standard.object(forKey: shareKey) == nil ? 0.5 : UserDefaults.standard.double(forKey: shareKey)
+    private var dragShare: Double?
+    private var dragStart: Double?
+    /// SwiftUI's Channels toggle: collapsed keeps only live rows.
+    private var channelsExpanded = true
     private var channelRows: [String: Channel] = [:]
     private var selectedChannelID: String?
     private var unread: Set<String> = []
@@ -50,8 +65,11 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         host.view.accessibilityIdentifier = "feedback-page"
         return host
     }()
-    private let accountAvatar = AvatarView(side: 32)
-    private let accountName = UIKitStyle.label(size: 14, weight: .bold)
+    private let accountAvatar = AvatarView(side: 30)
+    private let accountName = UIKitStyle.label(size: 13, weight: .medium)
+    private let presenceDot = UIView()
+    private let voiceError = UIStackView()
+    private let voiceErrorText = UIKitStyle.label(size: 11, color: UIKitStyle.error)
     private lazy var accountMenu: UIButton = {
         let button = UIButton(type: .system)
         button.setImage(UIKitStyle.icon("settings")?.resized(to: 20), for: .normal)
@@ -88,7 +106,6 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         if model.account?.debugEnabled == true {
             items.append(UIAction(title: "Audio diagnostics") { [weak self] _ in self?.dialog(.diagnostics) })
         }
-        items.append(UIAction(title: "Profile") { [weak self] _ in self?.dialog(.profile) })
         let whatsNew = UIAction(title: "What’s new") { _ in UIKitWhatsNew.open(model: model) }
         whatsNew.accessibilityIdentifier = "open-whats-new"
         items.append(whatsNew)
@@ -156,9 +173,10 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         spaceMenu.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
             completion(self?.spaceMenuItems() ?? [])
         }])
-        channelsHeading.accessibilityTraits = .header
-        createChannel.tintColor = UIKitStyle.muted
-        createChannel.accessibilityIdentifier = "create-channel"
+        closeNavigation.tintColor = UIKitStyle.muted
+        closeNavigation.translatesAutoresizingMaskIntoConstraints = false
+        headerRule.backgroundColor = UIKitStyle.border
+        headerRule.translatesAutoresizingMaskIntoConstraints = false
 
         var list = UICollectionLayoutListConfiguration(appearance: .plain)
         list.backgroundColor = .clear
@@ -168,6 +186,12 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         channels.delegate = self
         channels.translatesAutoresizingMaskIntoConstraints = false
         channels.accessibilityIdentifier = "channel-list"
+        directs = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewCompositionalLayout.list(using: list))
+        directs.backgroundColor = .clear
+        directs.delegate = self
+        directs.translatesAutoresizingMaskIntoConstraints = false
+        directs.accessibilityIdentifier = "direct-message-list"
+        directs.contentInset.top = 6
         // Joined channels are SwiftUI's own rows: name, unread and mute, quick
         // join and ⋯ options, growing into a voice card in place when live.
         let registration = UICollectionView.CellRegistration<UICollectionViewListCell, Item> { [weak self] cell, _, item in
@@ -181,6 +205,8 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
                 }.margins(.horizontal, 16).margins(.vertical, 0)
             case .liveNow:
                 cell.contentConfiguration = UIHostingConfiguration { UIKitLiveNow(model: self.model) }.margins(.horizontal, 16).margins(.vertical, 0)
+            case .notificationError:
+                cell.contentConfiguration = UIHostingConfiguration { UIKitNotificationErrorRow(model: self.model) }.margins(.all, 0)
             default:
                 break
             }
@@ -205,9 +231,13 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         let directRegistration = UICollectionView.CellRegistration<DirectRowCell, Item> { [weak self] cell, _, item in
             self?.configure(cell, item: item)
         }
-        dataSource = UICollectionViewDiffableDataSource(collectionView: channels) { collection, path, item in
+        let headerRegistration = UICollectionView.CellRegistration<ChannelsHeaderCell, Item> { [weak self] cell, _, _ in
+            self?.configure(cell)
+        }
+        let provider: UICollectionViewDiffableDataSource<Int, Item>.CellProvider = { collection, path, item in
             switch item {
-            case .channel, .liveNow: return collection.dequeueConfiguredReusableCell(using: registration, for: path, item: item)
+            case .channelsHeader: return collection.dequeueConfiguredReusableCell(using: headerRegistration, for: path, item: item)
+            case .channel, .liveNow, .notificationError: return collection.dequeueConfiguredReusableCell(using: registration, for: path, item: item)
             case .search: return collection.dequeueConfiguredReusableCell(using: searchRegistration, for: path, item: item)
             case .browseResult: return collection.dequeueConfiguredReusableCell(using: resultRegistration, for: path, item: item)
             default: break
@@ -215,62 +245,206 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             if case .channelInvitation = item { return collection.dequeueConfiguredReusableCell(using: invitationRegistration, for: path, item: item) }
             return collection.dequeueConfiguredReusableCell(using: directRegistration, for: path, item: item)
         }
-        [spaceName, spaceChevron, spaceMenu, channelsHeading, createChannel, channels].forEach(card.addSubview)
+        dataSource = UICollectionViewDiffableDataSource(collectionView: channels, cellProvider: provider)
+        directSource = UICollectionViewDiffableDataSource(collectionView: directs, cellProvider: provider)
+        buildDivider()
+        [spaceName, spaceChevron, spaceMenu, closeNavigation, headerRule, channels, divider, directs].forEach(card.addSubview)
+        closeWidth = closeNavigation.widthAnchor.constraint(equalToConstant: 44)
+        channelsHeight = channels.heightAnchor.constraint(equalToConstant: 200)
         NSLayoutConstraint.activate([
             card.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             card.leadingAnchor.constraint(equalTo: railScroll.trailingAnchor),
             card.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
             railScroll.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            spaceName.topAnchor.constraint(equalTo: card.topAnchor, constant: 18),
+            // SwiftUI's 50pt header: name and chevron (the space menu), then X, over a rule.
+            spaceName.centerYAnchor.constraint(equalTo: card.topAnchor, constant: 25),
             spaceName.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
             spaceName.trailingAnchor.constraint(lessThanOrEqualTo: spaceChevron.leadingAnchor, constant: -6),
             spaceChevron.centerYAnchor.constraint(equalTo: spaceName.centerYAnchor),
-            spaceChevron.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            spaceChevron.trailingAnchor.constraint(equalTo: closeNavigation.leadingAnchor, constant: -6),
+            closeNavigation.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -6),
+            closeNavigation.centerYAnchor.constraint(equalTo: spaceName.centerYAnchor),
+            closeNavigation.heightAnchor.constraint(equalToConstant: 44),
+            closeWidth,
             spaceMenu.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 8),
-            spaceMenu.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
+            spaceMenu.trailingAnchor.constraint(equalTo: spaceChevron.trailingAnchor, constant: 4),
             spaceMenu.centerYAnchor.constraint(equalTo: spaceName.centerYAnchor),
             spaceMenu.heightAnchor.constraint(equalToConstant: 44),
-            createChannel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -6),
-            createChannel.centerYAnchor.constraint(equalTo: channelsHeading.centerYAnchor),
-            channelsHeading.topAnchor.constraint(equalTo: spaceName.bottomAnchor, constant: 18),
-            channelsHeading.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            channels.topAnchor.constraint(equalTo: channelsHeading.bottomAnchor, constant: 6),
+            headerRule.topAnchor.constraint(equalTo: card.topAnchor, constant: 50),
+            headerRule.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            headerRule.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            headerRule.heightAnchor.constraint(equalToConstant: 1),
+            channels.topAnchor.constraint(equalTo: headerRule.bottomAnchor),
             channels.leadingAnchor.constraint(equalTo: card.leadingAnchor),
             channels.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-            channels.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            channelsHeight,
+            divider.topAnchor.constraint(equalTo: channels.bottomAnchor),
+            divider.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            divider.heightAnchor.constraint(equalToConstant: Self.dividerHeight),
+            directs.topAnchor.constraint(equalTo: divider.bottomAnchor),
+            directs.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            directs.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            directs.bottomAnchor.constraint(equalTo: card.bottomAnchor),
         ])
     }
 
+    // MARK: Sections divider
+
+    private static let dividerHeight: CGFloat = 24
+    /// Points the two lists share, below the header and above the card's end.
+    private var available: Double { max(0, Double(card.bounds.height) - 51 - (model.account == nil ? 0 : Double(Self.dividerHeight))) }
+    private var lowerShare: Double { min(96, available / 3) / max(available, 1) }
+    private var split: Double { min(max(dragShare ?? channelsShare, lowerShare), 1 - lowerShare) }
+
+    private func buildDivider() {
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        divider.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(dragDivider(_:))))
+        let reset = UITapGestureRecognizer(target: self, action: #selector(resetDivider))
+        reset.numberOfTapsRequired = 2
+        divider.addGestureRecognizer(reset)
+        divider.step = { [weak self] down in
+            guard let self else { return }
+            let delta = 10 / max(self.available, 1)
+            self.setShare(down ? self.split + delta : self.split - delta)
+        }
+    }
+
+    @objc private func dragDivider(_ pan: UIPanGestureRecognizer) {
+        switch pan.state {
+        case .began: dragStart = split
+        case .changed:
+            dragShare = min(max((dragStart ?? split) + Double(pan.translation(in: card).y) / max(available, 1), lowerShare), 1 - lowerShare)
+            layoutSplit()
+        default:
+            if let dragShare { setShare(dragShare) }
+            dragShare = nil; dragStart = nil
+        }
+    }
+
+    @objc private func resetDivider() { setShare(0.5) }
+
+    private func setShare(_ share: Double) {
+        channelsShare = min(max(share, lowerShare), 1 - lowerShare)
+        UserDefaults.standard.set(channelsShare, forKey: Self.shareKey)
+        layoutSplit()
+    }
+
+    private func layoutSplit() {
+        let hasDirects = model.account != nil && live
+        divider.isHidden = !hasDirects
+        directs.isHidden = !hasDirects
+        let height = hasDirects ? available * split : max(0, Double(card.bounds.height) - 51)
+        if abs(channelsHeight.constant - height) > 0.5 { channelsHeight.constant = height }
+        divider.accessibilityValue = "\(Int((split * 100).rounded())) percent channels"
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        layoutSplit()
+    }
+
+    /// Channels, its count, and the owner's Create channel and ⋯ menu.
+    private func configure(_ cell: ChannelsHeaderCell) {
+        let live = self.live
+        let count = (live ? model.detail : cached?.detail)?.channels.filter(\.joined).count ?? 0
+        let owner = live && model.isOwner
+        cell.configure(count: count, expanded: channelsExpanded, owner: owner, canCreate: model.canCreateChannel)
+        cell.toggled = { [weak self] in
+            guard let self else { return }
+            self.channelsExpanded.toggle()
+            UIKitBrowse.playToggle(self.channelsExpanded)
+            self.render()
+        }
+        cell.create = { [weak self] in self?.dialog(.createChannel) }
+        cell.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            guard let self else { return completion([]) }
+            let create = UIAction(title: "Create channel", attributes: self.model.canCreateChannel ? [] : .disabled) { [weak self] _ in
+                self?.dialog(.createChannel)
+            }
+            let fold = UIAction(title: "\(self.channelsExpanded ? "Collapse" : "Expand") channels") { [weak self] _ in
+                guard let self else { return }
+                self.channelsExpanded.toggle()
+                self.render()
+            }
+            completion([create, fold])
+        }])
+    }
+
+    /// SwiftUI's phone account bar: a bordered raised box with your voice
+    /// error (dismissible) over the avatar and name, which open Profile, and
+    /// the account menu.
     private func buildAccountBar() {
-        let bar = UIView()
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(bar)
+        let box = UIStackView()
+        box.axis = .vertical
+        box.backgroundColor = UIKitStyle.raised
+        box.layer.cornerRadius = 6
+        box.layer.borderWidth = 1
+        box.layer.borderColor = UIKitStyle.border.cgColor
+        box.clipsToBounds = true
+        box.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(box)
+
+        voiceErrorText.numberOfLines = 0
+        let dismiss = IconButton(icon: "x", label: "Dismiss voice error", size: 14, side: 44) { [weak self] in self?.model.voice.error = nil }
+        dismiss.tintColor = UIKitStyle.muted
+        [voiceErrorText, dismiss].forEach(voiceError.addArrangedSubview)
+        voiceError.alignment = .center
+        voiceError.spacing = 8
+        voiceError.isLayoutMarginsRelativeArrangement = true
+        voiceError.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 9, bottom: 0, trailing: 0)
+        voiceError.accessibilityIdentifier = "voice-error"
+        voiceError.isHidden = true
+
+        let row = UIView()
         accountName.lineBreakMode = .byTruncatingTail
+        // SwiftUI's PresenceDot: a 10pt dot under a 2pt centred stroke, over
+        // the avatar's corner; outside the avatar, which clips to its circle.
+        presenceDot.layer.cornerRadius = 5.5
+        presenceDot.layer.borderWidth = 2
+        presenceDot.layer.borderColor = UIKitStyle.raised.cgColor
+        presenceDot.translatesAutoresizingMaskIntoConstraints = false
         let identity = UIStackView(arrangedSubviews: [accountAvatar, accountName])
-        identity.spacing = 10
+        identity.spacing = 7
         identity.alignment = .center
+        identity.isUserInteractionEnabled = false
         identity.translatesAutoresizingMaskIntoConstraints = false
-        identity.isAccessibilityElement = true
-        identity.accessibilityIdentifier = "account-identity"
-        self.identity = identity
-        bar.addSubview(identity)
-        bar.addSubview(accountMenu)
+        let profile = UIButton(type: .custom)
+        profile.translatesAutoresizingMaskIntoConstraints = false
+        profile.addSubview(identity)
+        presenceDot.isUserInteractionEnabled = false
+        profile.addSubview(presenceDot)
+        profile.accessibilityIdentifier = "account-profile"
+        profile.addAction(UIAction { [weak self] _ in self?.dialog(.profile) }, for: .primaryActionTriggered)
+        self.profile = profile
+        row.addSubview(profile)
+        row.addSubview(accountMenu)
+        accountMenu.tintColor = UIKitStyle.muted
+        [voiceError, row].forEach(box.addArrangedSubview)
         NSLayoutConstraint.activate([
-            bar.topAnchor.constraint(equalTo: card.bottomAnchor),
-            bar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
-            bar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
-            bar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            bar.heightAnchor.constraint(equalToConstant: 52 + 16),
-            identity.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 6),
-            identity.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            identity.trailingAnchor.constraint(lessThanOrEqualTo: accountMenu.leadingAnchor, constant: -8),
-            accountMenu.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
-            accountMenu.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            box.topAnchor.constraint(equalTo: card.bottomAnchor, constant: 12),
+            box.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            box.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            box.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            row.heightAnchor.constraint(equalToConstant: 52),
+            presenceDot.widthAnchor.constraint(equalToConstant: 11),
+            presenceDot.heightAnchor.constraint(equalToConstant: 11),
+            presenceDot.trailingAnchor.constraint(equalTo: accountAvatar.trailingAnchor, constant: 0.5),
+            presenceDot.bottomAnchor.constraint(equalTo: accountAvatar.bottomAnchor, constant: 0.5),
+            profile.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 4),
+            profile.topAnchor.constraint(equalTo: row.topAnchor, constant: 4),
+            profile.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -4),
+            profile.trailingAnchor.constraint(equalTo: accountMenu.leadingAnchor, constant: -5),
+            identity.leadingAnchor.constraint(equalTo: profile.leadingAnchor),
+            identity.centerYAnchor.constraint(equalTo: profile.centerYAnchor),
+            identity.trailingAnchor.constraint(lessThanOrEqualTo: profile.trailingAnchor),
+            accountMenu.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -4),
+            accountMenu.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             accountMenu.widthAnchor.constraint(equalToConstant: 44),
             accountMenu.heightAnchor.constraint(equalToConstant: 44),
         ])
     }
-    private var identity: UIStackView!
+    private var profile: UIButton!
 
     // MARK: Rendering
 
@@ -290,17 +464,20 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         let menuable = live && detail?.space.demo != true && model.account != nil
         spaceMenu.isEnabled = menuable
         spaceChevron.isHidden = !menuable
-        createChannel.isHidden = !(live && model.isOwner)
-        createChannel.isEnabled = model.canCreateChannel
-        let joined = detail?.channels.filter(\.joined) ?? []
-        channelsHeading.text = "CHANNELS  \(joined.count)"
-        channelsHeading.accessibilityLabel = "Channels, \(joined.count)"
+        // The X goes back to a conversation, so it shows only when one is open.
+        let canClose = live && (model.selectedChannelID != nil || model.selectedDirectMessageID != nil || model.visit != nil)
+        closeNavigation.isHidden = !canClose
+        closeWidth.constant = canClose ? 44 : 0
+        let joined = live ? UIKitBrowse.listedChannels(model, expanded: channelsExpanded) : detail?.channels.filter(\.joined) ?? []
         let previous = channelRows
         let previousBrowse = browseRows
         channelRows = Dictionary(uniqueKeysWithValues: joined.map { ($0.id, $0) })
         var snapshot = NSDiffableDataSourceSnapshot<Int, Item>()
         snapshot.appendSections([0])
+        if live && model.notificationError != nil { snapshot.appendItems([.notificationError]) }
         if live && UIKitLiveNow.shows(model) { snapshot.appendItems([.liveNow]) }
+        snapshot.appendItems([.channelsHeader])
+        snapshot.reconfigureItems(dataSource.snapshot().indexOfItem(.channelsHeader) != nil ? [.channelsHeader] : [])
         snapshot.appendItems(joined.map { .channel($0.id) })
         // Browse channels: a search field, then every matching channel.
         if live, selectedSpace != browsedSpaceID { browsedSpaceID = selectedSpace; browsingChannels = false; channelSearch = "" }
@@ -309,6 +486,10 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             let results = (detail?.channels ?? []).filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
             browseRows = Dictionary(results.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             snapshot.appendItems([.search] + results.map { .browseResult($0.id) })
+            if results.isEmpty {
+                snapshot.appendItems([.searchEmpty])
+                snapshot.reconfigureItems(dataSource.snapshot().indexOfItem(.searchEmpty) != nil ? [.searchEmpty] : [])
+            }
             snapshot.reconfigureItems(results.filter { previousBrowse[$0.id] != nil }.map { .browseResult($0.id) })
         } else { browseRows = [:] }
         // Private channel invitations, under the channels.
@@ -318,21 +499,40 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         // Selection and unread state live in the cell; reconfigure all visible rows cheaply.
         // Hosted rows observe the model themselves; reconfigure only a changed channel.
         snapshot.reconfigureItems(joined.filter { previous[$0.id] != nil && previous[$0.id] != $0 }.map { .channel($0.id) })
-        appendDirect(to: &snapshot, live: live)
+        listError = live ? model.error ?? model.directMessagesError : nil
+        if listError != nil {
+            snapshot.appendItems([.listError])
+            snapshot.reconfigureItems(dataSource.snapshot().indexOfItem(.listError) != nil ? [.listError] : [])
+        }
         dataSource.apply(snapshot, animatingDifferences: false)
+        var directSnapshot = NSDiffableDataSourceSnapshot<Int, Item>()
+        appendDirect(to: &directSnapshot, live: live)
+        directSource.apply(directSnapshot, animatingDifferences: false)
+        layoutSplit()
         let showingFeedback = live && model.isFeedbackTeam && model.showingFeedback
         render(page: feedback, showing: showingFeedback)
         render(page: requests, showing: !showingFeedback && live && model.account != nil && model.showingMessageRequests)
-        [spaceName, channelsHeading, channels].forEach { $0.accessibilityElementsHidden = feedback.parent != nil || requests.parent != nil }
+        [spaceMenu, closeNavigation, channels, divider, directs].forEach { $0.accessibilityElementsHidden = feedback.parent != nil || requests.parent != nil }
 
         let account = model.account
         let name = account?.displayName ?? account?.username ?? ""
         accountName.text = name
         accountAvatar.show(name: name, avatarID: account?.avatarId, picture: account?.avatarPicture)
-        identity.accessibilityLabel = name.isEmpty ? nil : "Signed in as \(name)"
+        profile.accessibilityLabel = name.isEmpty ? "Sign in to edit your profile" : "Edit profile for \(name)"
+        let presence = live ? model.ownPresence : nil
+        presenceDot.backgroundColor = switch presence {
+        case .online?: UIKitStyle.green
+        case .idle?: UIColor(red: 0.72, green: 0.60, blue: 0.35, alpha: 1)
+        default: UIKitStyle.border
+        }
+        profile.accessibilityValue = presence.map { $0.rawValue.prefix(1).uppercased() + $0.rawValue.dropFirst() } ?? "Status unavailable"
+        let error = live ? model.voice.error : nil
+        voiceErrorText.text = error
+        voiceError.isHidden = error == nil
     }
 
     private var railKey: [String] = []
+    private var listError: String?
 
     private func renderRail(_ spaces: [Space], selected: String?, unreadSpaces: Set<String>) {
         // Live tiles are SwiftUI's and follow selection, unread and voice themselves.
@@ -447,7 +647,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         // Unread, selection and mute live in the cells; reconfigure the survivors.
         snapshot.reconfigureItems(items.filter {
             if case let .direct(id) = $0 { return previous[id] != nil }
-            return dataSource.snapshot().indexOfItem($0) != nil
+            return directSource.snapshot().indexOfItem($0) != nil
         })
     }
 
@@ -475,7 +675,12 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private func configure(_ cell: DirectRowCell, item: Item) {
         switch item {
         case .directHeading:
-            cell.heading("DIRECT MESSAGES") { [weak self] in self?.newDirectMessage() }
+            cell.heading("Direct messages") { [weak self] in self?.newDirectMessage() }
+        case .searchEmpty:
+            cell.note(channelSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      ? "This space has no channels yet." : "No channels match your search.", id: "browse-channels-empty")
+        case .listError:
+            cell.note(listError ?? "", id: "browse-error", color: UIKitStyle.error, size: 11)
         case .activity:
             let unread = UIKitActivity.unread(model)
             cell.show(icon: "bell", text: "Notifications", highlighted: true, unread: unread > 0 ? unread : nil)
@@ -526,10 +731,10 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             cell.show(icon: "plus", text: "New message")
             cell.accessibilityLabel = "New message"
             cell.accessibilityIdentifier = "new-message"
-        case .channel, .channelInvitation, .liveNow, .search, .browseResult:
+        case .channel, .channelInvitation, .liveNow, .search, .browseResult, .channelsHeader, .notificationError:
             break
         }
-        if case .directHeading = item { return }
+        switch item { case .directHeading, .searchEmpty, .listError: return; default: break }
         cell.isAccessibilityElement = true
         cell.accessibilityTraits = cell.accessibilityValue?.hasPrefix("Selected") == true ? [.button, .selected] : .button
     }
@@ -545,7 +750,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
                         point: CGPoint) -> UIContextMenuConfiguration? {
         guard live, let path = indexPaths.first else { return nil }
         let model = self.model
-        switch dataSource.itemIdentifier(for: path) {
+        switch source(for: collectionView).itemIdentifier(for: path) {
         case let .direct(id):
             model.refreshNotificationSettingsIfStale()
             return UIContextMenuConfiguration(actionProvider: { _ in UIMenu(children: NotificationMenus.direct(model, conversationID: id)) })
@@ -562,6 +767,10 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             self.browsingChannels.toggle()
             self.channelSearch = ""
             self.render()
+            // The search field sits under the joined channels: bring it into the pane.
+            if self.browsingChannels, let path = self.dataSource.indexPath(for: .search) {
+                self.channels.scrollToItem(at: path, at: .top, animated: !UIKitStyle.reduceMotion)
+            }
         }
         browse.accessibilityIdentifier = "browse-channels"
         var items: [UIMenuElement] = [browse]
@@ -581,6 +790,10 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         return items
     }
 
+    private func source(for collection: UICollectionView) -> UICollectionViewDiffableDataSource<Int, Item> {
+        collection === directs ? directSource : dataSource
+    }
+
     /// A workspace dialog over Browse.
     func dialog(_ item: WorkspaceSheet) {
         guard presentedViewController == nil else { return }
@@ -589,10 +802,10 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: false)
-        switch dataSource.itemIdentifier(for: indexPath) {
+        switch source(for: collectionView).itemIdentifier(for: indexPath) {
         case let .browseResult(id):
             if live, let channel = browseRows[id] { Task { await model.select(channel: channel) } }
-        case .channel, .liveNow, .search:
+        case .channel, .liveNow, .search, .channelsHeader, .searchEmpty, .listError, .notificationError:
             break
         case let .channelInvitation(id):
             if let invitation = channelInvitations[id] { dialog(.channelInvitation(invitation)) }
@@ -624,8 +837,10 @@ final class DirectRowCell: UICollectionViewListCell {
     enum CountStyle { case neutral, unread }
 
     private let icon = UIImageView()
-    private let avatar = AvatarView(side: 24)
-    private let name = UIKitStyle.label(size: 15, weight: .medium)
+    /// SwiftUI's 20pt avatar in a 24pt column, aligned with the icons.
+    private let avatar = AvatarView(side: 20)
+    private let avatarBox = UIView()
+    private let name = UIKitStyle.label(size: 13, weight: .medium)
     private let youTag = UIKitStyle.label(size: 10, weight: .bold, color: UIKitStyle.muted)
     private let bell = UIImageView(image: UIKitStyle.icon("bell-off")?.resized(to: 14))
     private let count = PaddedLabel()
@@ -650,7 +865,9 @@ final class DirectRowCell: UICollectionViewListCell {
         dot.layer.cornerRadius = 4
         let spacer = UIView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        [icon, avatar, name, youTag, bell, spacer, count, dot].forEach(stack.addArrangedSubview)
+        avatar.translatesAutoresizingMaskIntoConstraints = false
+        avatarBox.addSubview(avatar)
+        [icon, avatarBox, name, youTag, bell, spacer, count, dot].forEach(stack.addArrangedSubview)
         stack.spacing = 9
         stack.setCustomSpacing(6, after: name)
         stack.alignment = .center
@@ -658,21 +875,33 @@ final class DirectRowCell: UICollectionViewListCell {
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
         [icon, avatar, name, youTag, bell, count, dot].forEach { $0.isAccessibilityElement = false }
+        leading = stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 25)
+        trailing = stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -25)
         NSLayoutConstraint.activate([
             icon.widthAnchor.constraint(equalToConstant: 24), icon.heightAnchor.constraint(equalToConstant: 24),
+            avatarBox.widthAnchor.constraint(equalToConstant: 24), avatarBox.heightAnchor.constraint(equalToConstant: 20),
+            avatar.leadingAnchor.constraint(equalTo: avatarBox.leadingAnchor),
+            avatar.centerYAnchor.constraint(equalTo: avatarBox.centerYAnchor),
+            leading, trailing,
             count.heightAnchor.constraint(equalToConstant: 18), count.widthAnchor.constraint(greaterThanOrEqualToConstant: 20),
             dot.widthAnchor.constraint(equalToConstant: 8), dot.heightAnchor.constraint(equalToConstant: 8),
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 17),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -17),
             stack.topAnchor.constraint(equalTo: contentView.topAnchor),
             stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    private var leading: NSLayoutConstraint!
+    private var trailing: NSLayoutConstraint!
 
     private func reset() {
-        [icon, avatar, youTag, bell, count, dot].forEach { $0.isHidden = true }
+        [icon, avatarBox, youTag, bell, count, dot].forEach { $0.isHidden = true }
+        leading.constant = 25
+        trailing.constant = -25
+        name.numberOfLines = 1
+        name.isAccessibilityElement = false
+        name.accessibilityTraits = []
+        accessibilityIdentifier = nil
         add?.isHidden = true
         stack.isUserInteractionEnabled = false
         contentView.alpha = 1
@@ -694,6 +923,8 @@ final class DirectRowCell: UICollectionViewListCell {
             add = button
         }
         add?.isHidden = false
+        leading.constant = 16
+        trailing.constant = -6
         stack.isUserInteractionEnabled = true
         name.text = text
         name.font = UIKitStyle.font(12, .bold)
@@ -717,10 +948,10 @@ final class DirectRowCell: UICollectionViewListCell {
         }
         if let avatar {
             self.avatar.show(name: avatar.0, avatarID: avatar.1, picture: avatar.2)
-            self.avatar.isHidden = false
+            avatarBox.isHidden = false
         }
         self.name.text = text
-        self.name.font = UIKitStyle.font(15, bold ? .bold : .medium)
+        self.name.font = UIKitStyle.font(13, bold ? .bold : .medium)
         self.name.textColor = selected || highlighted ? UIKitStyle.text : UIKitStyle.muted
         youTag.text = tag
         youTag.isHidden = tag == nil
@@ -743,16 +974,123 @@ final class DirectRowCell: UICollectionViewListCell {
         var background = UIBackgroundConfiguration.listPlainCell()
         background.backgroundColor = selected ? UIKitStyle.terracotta.withAlphaComponent(0.16) : .clear
         background.cornerRadius = 6
-        background.backgroundInsets = NSDirectionalEdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8)
+        background.backgroundInsets = NSDirectionalEdgeInsets(top: 1, leading: 16, bottom: 1, trailing: 16)
         backgroundConfiguration = background
     }
+
+    /// A line of text in the list: Browse's empty search, or an error.
+    func note(_ text: String, id: String, color: UIColor = UIKitStyle.muted, size: CGFloat = 12) {
+        reset()
+        leading.constant = 16
+        trailing.constant = -16
+        name.text = text
+        name.numberOfLines = 0
+        name.font = UIKitStyle.font(size)
+        name.textColor = color
+        isAccessibilityElement = true
+        accessibilityLabel = text
+        accessibilityTraits = .staticText
+        accessibilityIdentifier = id
+    }
+}
+
+/// SwiftUI's Channels header: a toggle whose chevron turns ("Channels" and
+/// the count), with the owner's Create channel and Channel options.
+final class ChannelsHeaderCell: UICollectionViewListCell {
+    var toggled: (() -> Void)?
+    var create: (() -> Void)?
+    var menu: UIMenu? { didSet { options.menu = menu } }
+    private let toggle = UIButton(type: .custom)
+    private let chevron = UIImageView(image: UIKitStyle.icon("chevron-down")?.resized(to: 16).withRenderingMode(.alwaysTemplate))
+    private let title = UIKitStyle.label("Channels", size: 12, weight: .bold, color: UIKitStyle.muted)
+    private let count = UIKitStyle.label(size: 10, weight: .bold, color: UIKitStyle.muted)
+    private lazy var add = IconButton(icon: "plus", label: "Create channel", size: 16, side: 44) { [weak self] in self?.create?() }
+    private let options = UIButton(type: .system)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundConfiguration = .clear()
+        chevron.tintColor = UIKitStyle.muted
+        let label = UIStackView(arrangedSubviews: [chevron, title, count])
+        label.spacing = 6
+        label.alignment = .center
+        label.isUserInteractionEnabled = false
+        label.translatesAutoresizingMaskIntoConstraints = false
+        toggle.addSubview(label)
+        toggle.translatesAutoresizingMaskIntoConstraints = false
+        toggle.accessibilityIdentifier = "channels-toggle"
+        toggle.addAction(UIAction { [weak self] _ in self?.toggled?() }, for: .primaryActionTriggered)
+        add.tintColor = UIKitStyle.muted
+        add.accessibilityIdentifier = "create-channel"
+        options.setImage(UIKitStyle.icon("ellipsis")?.resized(to: 16), for: .normal)
+        options.tintColor = UIKitStyle.muted
+        options.showsMenuAsPrimaryAction = true
+        options.accessibilityLabel = "Channel options"
+        options.accessibilityIdentifier = "channel-options"
+        options.translatesAutoresizingMaskIntoConstraints = false
+        let row = UIStackView(arrangedSubviews: [toggle, UIView(), add, options])
+        row.alignment = .center
+        row.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(row)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: toggle.leadingAnchor),
+            label.trailingAnchor.constraint(equalTo: toggle.trailingAnchor),
+            label.centerYAnchor.constraint(equalTo: toggle.centerYAnchor),
+            toggle.heightAnchor.constraint(equalToConstant: 44),
+            options.widthAnchor.constraint(equalToConstant: 44), options.heightAnchor.constraint(equalToConstant: 44),
+            row.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            row.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -6),
+            row.topAnchor.constraint(equalTo: contentView.topAnchor),
+            row.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(count value: Int, expanded: Bool, owner: Bool, canCreate: Bool) {
+        count.text = "\(value)"
+        let turn = { self.chevron.transform = expanded ? .identity : CGAffineTransform(rotationAngle: -.pi / 2) }
+        if UIKitStyle.reduceMotion || window == nil { turn() }
+        else { UIView.animate(withDuration: 0.15, delay: 0, options: .curveEaseOut, animations: turn) }
+        toggle.accessibilityLabel = "Channels, \(value)"
+        toggle.accessibilityValue = expanded ? "Expanded" : "Collapsed"
+        add.isHidden = !owner
+        add.isEnabled = canCreate
+        add.accessibilityHint = canCreate ? nil : "Channel limit reached."
+        options.isHidden = !owner
+    }
+}
+
+/// The rule between Channels and Direct messages: drag to resize, double-tap
+/// to even them out; VoiceOver adjusts it like a slider.
+final class SectionDivider: UIView {
+    var step: ((_ down: Bool) -> Void)?
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let line = UIView()
+        line.backgroundColor = UIKitStyle.border
+        line.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(line)
+        NSLayoutConstraint.activate([
+            line.leadingAnchor.constraint(equalTo: leadingAnchor), line.trailingAnchor.constraint(equalTo: trailingAnchor),
+            line.centerYAnchor.constraint(equalTo: centerYAnchor), line.heightAnchor.constraint(equalToConstant: 1),
+        ])
+        isAccessibilityElement = true
+        accessibilityTraits = .adjustable
+        accessibilityLabel = "Channels and direct messages divider"
+        accessibilityHint = "Drag to resize the channel and direct message lists."
+        accessibilityIdentifier = "sidebar-sections-resize"
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func accessibilityIncrement() { step?(true) }
+    override func accessibilityDecrement() { step?(false) }
 }
 
 /// A label with horizontal padding, for counts in capsules.
 final class PaddedLabel: UILabel {
+    var padding: CGFloat = 12
     override var intrinsicContentSize: CGSize {
         let size = super.intrinsicContentSize
-        return CGSize(width: size.width + 12, height: size.height)
+        return CGSize(width: size.width + padding, height: size.height)
     }
 }
 

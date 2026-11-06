@@ -27,6 +27,17 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private let presentations = UIKitPresentations()
     private var closing = false
     private var lastVisible: String?
+    private var broadcastRow: UIView?
+    private lazy var fileDrop = UIKitFileDrop(model: model, inThread: true)
+    /// The preview note, a failed action, Retry session and the pending note.
+    private lazy var notices: UIHostingController<UIKitThreadNotices> = {
+        let host = UIHostingController(rootView: UIKitThreadNotices(chat: model.chat, direct: model.selectedDirectMessageID != nil))
+        host.sizingOptions = .intrinsicContentSize
+        host.view.backgroundColor = .clear
+        host.view.setContentHuggingPriority(.required, for: .vertical)
+        host.view.setContentCompressionResistancePriority(.required, for: .vertical)
+        return host
+    }()
     var closed: (() -> Void)?
 
     init(model: AppModel) {
@@ -100,7 +111,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             case .edge:
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: TimelineEdgeCell.reuse, for: path) as! TimelineEdgeCell
                 cell.retry = { [weak self] in Task { await self?.chat.loadThread() } }
-                cell.configure(self.chat.threadError != nil ? .failed : .loading)
+                cell.configure(self.chat.threadError != nil ? .failed : .loading, error: self.chat.threadError)
                 return cell
             case let .day(key):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: path) as! DayDividerCell
@@ -146,9 +157,19 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             guard let chat = self?.chat else { return }
             chat.threadBroadcast.toggle()
         }, for: .primaryActionTriggered)
-        view.addSubview(broadcast)
-
-        view.addSubview(composer)
+        let broadcastRow = UIView()
+        broadcastRow.addSubview(broadcast)
+        // Notices, the broadcast toggle and the composer stack, so the preview
+        // note takes the composer's place instead of leaving its space.
+        let bottom = UIStackView(arrangedSubviews: [notices.view, broadcastRow, composer])
+        bottom.axis = .vertical
+        bottom.spacing = 4
+        bottom.setCustomSpacing(-8, after: broadcastRow)
+        bottom.translatesAutoresizingMaskIntoConstraints = false
+        addChild(notices)
+        view.addSubview(bottom)
+        notices.didMove(toParent: self)
+        self.broadcastRow = broadcastRow
         composer.textView.accessibilityIdentifier = "thread-composer"
         composer.model = model
         composer.changed = { [weak self] text in self?.chat.threadDraft = text }
@@ -193,19 +214,34 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             status.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             status.centerYAnchor.constraint(equalTo: collection.centerYAnchor),
             status.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48),
-            broadcast.topAnchor.constraint(equalTo: collection.bottomAnchor, constant: 4),
-            broadcast.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
-            broadcast.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18),
+            bottom.topAnchor.constraint(equalTo: collection.bottomAnchor, constant: 4),
+            bottom.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            bottom.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            bottom.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
+            broadcast.topAnchor.constraint(equalTo: broadcastRow.topAnchor),
+            broadcast.bottomAnchor.constraint(equalTo: broadcastRow.bottomAnchor),
+            broadcast.leadingAnchor.constraint(equalTo: broadcastRow.leadingAnchor, constant: 18),
+            broadcast.trailingAnchor.constraint(equalTo: broadcastRow.trailingAnchor, constant: -18),
             broadcast.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
-            composer.topAnchor.constraint(equalTo: broadcast.bottomAnchor, constant: -8),
-            composer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-            composer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
         ])
-        // An edge swipe goes back, as the conversation's does to Browse.
-        let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(edgeSwiped(_:)))
-        edge.edges = .left
-        view.addGestureRecognizer(edge)
+        // As SwiftUI's ThreadBackSwipe: a swipe right from anywhere follows
+        // the finger back to the channel.
+        let swipeBack = DirectionalSwipe(direction: 1)
+        swipeBack.allowed = { [weak self] in self.map { !$0.closing && $0.presentedViewController == nil } ?? false }
+        swipeBack.moved = { [weak self] distance in
+            self?.view.endEditing(true)
+            self?.view.transform = CGAffineTransform(translationX: distance, y: 0)
+        }
+        swipeBack.ended = { [weak self] complete, _ in
+            guard let self else { return }
+            guard complete else {
+                UIView.animate(withDuration: UIKitStyle.reduceMotion ? 0 : UIKitStyle.motionFast) { self.view.transform = .identity }
+                return
+            }
+            self.close(slid: true)
+        }
+        view.addGestureRecognizer(swipeBack)
+        view.addInteraction(fileDrop.interaction)
 
         observer.start { [weak self] in self?.render() }
         composerObserver.start { [weak self] in self?.renderComposer() }
@@ -214,16 +250,14 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
 
     override func accessibilityPerformEscape() -> Bool { close(); return true }
 
-    @objc private func edgeSwiped(_ gesture: UIScreenEdgePanGestureRecognizer) {
-        if gesture.state == .ended, gesture.translation(in: view).x > 80 { close() }
-    }
-
-    private func close() {
+    /// `slid`: a swipe already moved the thread aside; it leaves without the
+    /// modal's slide down.
+    private func close(slid: Bool = false) {
         guard !closing else { return }
         closing = true
         model.threadVisibilityChanged(rootID: nil, seq: nil)
         chat.closeThread()
-        dismiss(animated: !UIKitStyle.reduceMotion) { [weak self] in self?.closed?() }
+        dismiss(animated: !slid && !UIKitStyle.reduceMotion) { [weak self] in self?.closed?() }
     }
 
     // MARK: Rendering
@@ -332,7 +366,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         broadcast.configuration?.image = UIImage(systemName: on ? "checkmark.square.fill" : "square",
                                                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 18))
         broadcast.configuration?.baseForegroundColor = on ? UIKitStyle.terracottaBright : UIKitStyle.muted
-        broadcast.isHidden = !ready
+        broadcastRow?.isHidden = !ready
+        // A preview shows its note instead of a composer, as SwiftUI.
+        composer.isHidden = chat.isPreview
         broadcast.isEnabled = chat.pendingMessage == nil
         broadcast.accessibilityLabel = "Also send to \(target)"
         broadcast.accessibilityValue = on ? "1" : "0"

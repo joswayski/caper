@@ -1,6 +1,7 @@
 #if os(iOS)
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// The SwiftUI surfaces the UIKit iPhone client hosts rather than rewrites:
 /// on-demand pickers, drawers, editors and viewers, and attachment content
@@ -64,6 +65,14 @@ import UIKit
     /// conversation selects it on the model and closes the sheet.
     public static func newDirectMessage(model: AppModel) -> UIViewController {
         let host = controller { close in NewDirectMessageSheet(model: model, close: close) }
+        sheet(host, background: CaperTheme.surface)
+        host.sheetPresentationController?.detents = [.large()]
+        return host
+    }
+
+    /// A message's edit history, as SwiftUI's "(edited)" opens.
+    public static func messageHistory(chat: ChatModel, message: ChatMessage) -> UIViewController {
+        let host = controller { close in MessageHistoryView(chat: chat, message: message, close: close) }
         sheet(host, background: CaperTheme.surface)
         host.sheetPresentationController?.detents = [.large()]
         return host
@@ -640,6 +649,114 @@ public struct UIKitComposerNotices: View {
     }
 }
 
+/// SwiftUI's file drop onto a conversation or thread, for UIKit: the drop
+/// overlay while files hover, then the files staged for the composer that was
+/// targeted when they arrived.
+@MainActor public final class UIKitFileDrop: NSObject, UIDropInteractionDelegate {
+    private let model: AppModel
+    private let inThread: Bool
+    private var target: ChatModel.AttachmentTarget?
+    private var overlay: UIView?
+    public private(set) lazy var interaction = UIDropInteraction(delegate: self)
+
+    public init(model: AppModel, inThread: Bool = false) {
+        self.model = model; self.inThread = inThread
+    }
+
+    private var chat: ChatModel { model.chat }
+
+    public func dropInteraction(_ interaction: UIDropInteraction, canHandle session: UIDropSession) -> Bool {
+        session.hasItemsConforming(toTypeIdentifiers: [UTType.item.identifier])
+    }
+
+    public func dropInteraction(_ interaction: UIDropInteraction, sessionDidEnter session: UIDropSession) {
+        target = chat.attachmentTarget(inThread: inThread)
+        guard chat.canAttach, overlay == nil, let view = interaction.view else { return }
+        let direct = model.selectedDirectMessageID != nil || model.visit?.direct == true
+        let text = AttachmentPolicy.dropText(channel: chat.channelName, direct: direct,
+                                             attached: inThread ? chat.threadAttachmentDrafts.count : chat.attachmentDrafts.count)
+        let host = UIHostingController(rootView: FileDropOverlay(title: inThread ? "Add files to thread" : text.title, detail: text.detail)
+            .preferredColorScheme(.dark))
+        host.view.backgroundColor = .clear
+        host.view.isUserInteractionEnabled = false
+        host.view.frame = view.bounds
+        host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(host.view)
+        overlay = host.view
+    }
+
+    public func dropInteraction(_ interaction: UIDropInteraction, sessionDidUpdate session: UIDropSession) -> UIDropProposal {
+        UIDropProposal(operation: chat.canAttach ? .copy : .forbidden)
+    }
+
+    public func dropInteraction(_ interaction: UIDropInteraction, sessionDidExit session: UIDropSession) { hide() }
+    public func dropInteraction(_ interaction: UIDropInteraction, sessionDidEnd session: UIDropSession) { hide() }
+
+    public func dropInteraction(_ interaction: UIDropInteraction, performDrop session: UIDropSession) {
+        hide()
+        guard let target = target ?? chat.attachmentTarget(inThread: inThread) else { return }
+        self.target = nil
+        let providers = session.items.map(\.itemProvider)
+        let chat = chat
+        Task { @MainActor in
+            var files: [LocalAttachmentFile] = []
+            for provider in providers {
+                let dropped: DroppedAttachment? = await withCheckedContinuation { done in
+                    _ = provider.loadTransferable(type: DroppedAttachment.self) { done.resume(returning: try? $0.get()) }
+                }
+                if let dropped { files.append(dropped.file) }
+            }
+            chat.addAttachments(files, to: target)
+        }
+    }
+
+    private func hide() {
+        overlay?.removeFromSuperview()
+        overlay = nil
+    }
+}
+
+/// What SwiftUI's thread shows around its reply composer: the preview note in
+/// place of it, a failed action, Retry session, and a channel message still
+/// pending, which blocks replies.
+public struct UIKitThreadNotices: View {
+    @Bindable var chat: ChatModel
+    let direct: Bool
+    public init(chat: ChatModel, direct: Bool) { self.chat = chat; self.direct = direct }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if chat.isPreview {
+                Text(direct ? "You can’t reply in this conversation." : "Join the channel to reply.")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.text).padding(6)
+                    .accessibilityIdentifier("thread-preview-note")
+            } else {
+                if let error = chat.error, chat.pendingMessage == nil {
+                    Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let error = chat.sessionError {
+                    HStack(spacing: 8) {
+                        Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
+                        Button("Retry session") { Task { await chat.retrySession() } }.buttonStyle(.plain)
+                            .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.text)
+                    }
+                }
+                if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,
+                   !chat.sending, chat.error != nil || chat.sendRejected {
+                    Text("Confirm or dismiss the pending message before sending a reply.")
+                        .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("thread-pending-note")
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .preferredColorScheme(.dark)
+    }
+}
+
 /// A space's rail tile, exactly as SwiftUI draws it on iPhone: icon, the
 /// unread dot, mention count, muted bell, voice badge and selection glow.
 public struct UIKitSpaceRailTile: View {
@@ -667,6 +784,23 @@ public struct UIKitComposerLinkPreview: View {
         .task(id: chat.composerPreviewLink) { await chat.loadComposerLinkPreview() }
         .preferredColorScheme(.dark)
     }
+}
+
+/// Browse's Channels section, as SwiftUI lists it: collapsed, it keeps only
+/// live rows (your call's card and rooms with people in voice).
+@MainActor public enum UIKitBrowse {
+    public static func listedChannels(_ model: AppModel, expanded: Bool) -> [Channel] {
+        LiveNow.listed(model.detail?.channels.filter(\.joined) ?? [], expanded: expanded) { channelIsLive(model, $0) }
+    }
+    /// The Channels toggle's sound, when sound effects are on.
+    public static func playToggle(_ on: Bool) { CaperEffects.shared.toggle(on) }
+}
+
+/// A failed notification change under Browse's header, with Dismiss.
+public struct UIKitNotificationErrorRow: View {
+    @Bindable var model: AppModel
+    public init(model: AppModel) { self.model = model }
+    public var body: some View { NotificationErrorRow(model: model).preferredColorScheme(.dark) }
 }
 
 /// The counter's colour for a draft of `count` Unicode scalars.
@@ -779,14 +913,20 @@ public struct UIKitPresentationHost: View {
     let model: AppModel
     /// The thread's host, or the channel's: only the frontmost one presents forwards.
     let inThread: Bool
+    /// A sheet's host, such as Pins: Reply and Forward close the sheet first,
+    /// then continue in the conversation underneath.
+    let leave: ((@escaping () -> Void) -> Void)?
 
-    public init(state: UIKitPresentations, model: AppModel, inThread: Bool = false) {
-        self.state = state; self.model = model; chat = model.chat; self.inThread = inThread
+    public init(state: UIKitPresentations, model: AppModel, inThread: Bool = false,
+                leave: ((@escaping () -> Void) -> Void)? = nil) {
+        self.state = state; self.model = model; chat = model.chat; self.inThread = inThread; self.leave = leave
     }
 
-    private var forwards: Binding<ChatMessage?> {
-        (chat.threadRootID != nil) == inThread ? $chat.forwardTarget : .constant(nil)
-    }
+    /// Only the frontmost conversation host presents forwards, never a sheet's.
+    private var frontmost: Bool { leave == nil && (chat.threadRootID != nil) == inThread }
+    private var forwards: Binding<ChatMessage?> { frontmost ? $chat.forwardTarget : .constant(nil) }
+    /// A forward whose source can't be opened: the forwarded conversation itself.
+    private var forwardConversations: Binding<ChatMessage?> { frontmost ? $chat.forwardConversationTarget : .constant(nil) }
 
     private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
 
@@ -799,6 +939,7 @@ public struct UIKitPresentationHost: View {
             }
             .sheet(item: $state.actions) { message in actionsSheet(message) }
             .sheet(item: forwards) { message in ForwardPickerView(chat: chat, message: message) }
+            .sheet(item: forwardConversations) { message in ForwardConversationView(chat: chat, messageID: message.id) }
             .modifier(BlockConfirmation(target: $state.block) { target in
                 do { try await model.block(target) } catch { chat.error = FriendlyError.message(for: error) }
             })
@@ -817,10 +958,16 @@ public struct UIKitPresentationHost: View {
                                 Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
                             },
                             // Inside a thread, Reply already replies there.
-                            reply: inThread ? nil : { state.actions = nil; chat.replyInThread(to: message) },
+                            reply: inThread ? nil : {
+                                state.actions = nil
+                                if let leave { leave { chat.replyInThread(to: message) } } else { chat.replyInThread(to: message) }
+                            },
                             inThread: inThread,
                             canForward: chat.canForward,
-                            forward: { state.actions = nil; chat.forwardTarget = message },
+                            forward: {
+                                state.actions = nil
+                                if let leave { leave { chat.forwardTarget = message } } else { chat.forwardTarget = message }
+                            },
                             quickReaction: { emoji in
                                 guard chat.canInteract, let author = chat.currentAuthor,
                                       let current = chat.messages.first(where: { $0.id == message.id }) else { return }

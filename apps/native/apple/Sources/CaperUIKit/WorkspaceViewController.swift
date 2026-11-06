@@ -50,9 +50,19 @@ final class WorkspaceViewController: UIViewController {
         conversation.view.layer.shadowOffset = CGSize(width: -12, height: 0)
         browse.opened = { [weak self] in self?.slide(browsing: false) }
         conversation.browse = { [weak self] in self?.slide(browsing: true) }
-        let pan = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(edgePan(_:)))
-        pan.edges = .left
-        conversation.view.addGestureRecognizer(pan)
+        // As SwiftUI's DrawerSwipe: a swipe right from anywhere on the
+        // conversation brings Browse in under the finger; a swipe left on
+        // Browse returns to the conversation.
+        let toBrowse = DirectionalSwipe(direction: 1)
+        toBrowse.allowed = { [weak self] in self.map { !$0.browsing && $0.conversation.allowsBrowseSwipe } ?? false }
+        toBrowse.moved = { [weak self] distance in
+            guard let self else { return }
+            self.loadBrowse()
+            self.conversation.view.endEditing(true)
+            self.update(progress: min(1, distance / max(1, self.view.bounds.width)))
+        }
+        toBrowse.ended = { [weak self] complete, _ in self?.slide(browsing: complete) }
+        conversation.view.addGestureRecognizer(toBrowse)
         // No channel to show yet: start in Browse.
         // As SwiftUI's phone layout: Browse covers the conversation while the
         // model's navigationOpen says so. Opening a channel or DM (a row, a voice
@@ -60,13 +70,16 @@ final class WorkspaceViewController: UIViewController {
         model.narrowLayout = true
         observer.start { [weak self] in
             guard let self else { return }
-            let hasChannel = self.model.selectedChannelID != nil || self.model.selectedDirectMessageID != nil
-                || self.model.visit != nil || self.cached?.channelID != nil
+            let hasChannel = self.hasConversation
             if !hasChannel && !self.browsing { self.slide(browsing: true, animated: false, record: false) }
             else if hasChannel && self.model.navigationOpen != self.browsing { self.slide(browsing: self.model.navigationOpen) }
         }
         update(progress: browsing ? 1 : 0)
         buildBanner()
+    }
+
+    private var hasConversation: Bool {
+        model.selectedChannelID != nil || model.selectedDirectMessageID != nil || model.visit != nil || cached?.channelID != nil
     }
 
     private func buildBanner() {
@@ -124,6 +137,17 @@ final class WorkspaceViewController: UIViewController {
     private func loadBrowse() {
         guard browse.parent == nil else { return }
         embed(browse, below: conversation.view)
+        let back = DirectionalSwipe(direction: -1)
+        back.allowed = { [weak self] in
+            guard let self else { return false }
+            return self.browsing && self.hasConversation && self.browse.presentedViewController == nil
+        }
+        back.moved = { [weak self] distance in
+            guard let self else { return }
+            self.update(progress: max(0, 1 - distance / max(1, self.view.bounds.width)))
+        }
+        back.ended = { [weak self] complete, _ in self?.slide(browsing: !complete) }
+        browse.view.addGestureRecognizer(back)
         browse.view.isUserInteractionEnabled = browsing
         browse.view.accessibilityElementsHidden = !browsing
     }
@@ -151,18 +175,6 @@ final class WorkspaceViewController: UIViewController {
         let travel = view.bounds.width + 40
         conversation.view.transform = CGAffineTransform(translationX: travel * progress, y: 0)
         if browse.isViewLoaded { browse.view.isUserInteractionEnabled = progress > 0.5 }
-    }
-
-    @objc private func edgePan(_ pan: UIScreenEdgePanGestureRecognizer) {
-        let width = max(1, view.bounds.width)
-        let progress = min(1, max(0, pan.translation(in: view).x / width))
-        switch pan.state {
-        case .began: loadBrowse()
-        case .changed: update(progress: progress)
-        case .ended, .cancelled:
-            slide(browsing: progress > 0.35 || pan.velocity(in: view).x > 600)
-        default: break
-        }
     }
 
 

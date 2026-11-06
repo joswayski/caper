@@ -60,6 +60,10 @@ struct MessageRowState: Equatable {
     var authorProfile = false
     /// Pins list rows: the full date, and the card paints the background.
     var inPins = false
+    /// Someone else's reply to you: terracotta tint and bar, as SwiftUI.
+    var repliesToViewer = false
+    var admin = false
+    var guest = false
 
     @MainActor
     init(message: ChatMessage, grouped: Bool, continued: Bool, viewerID: String?, focused: Bool = false, inPins: Bool = false,
@@ -68,6 +72,10 @@ struct MessageRowState: Equatable {
         messageID = message.id
         authorName = message.author.name
         authorProfile = !message.author.isGuest
+        admin = message.author.isAdmin
+        guest = message.author.isGuest
+        repliesToViewer = !message.isDeleted && message.author.id != viewerID && viewerID != nil
+            && message.replyTo?.author.id == viewerID
         avatarID = message.author.avatarId
         picture = message.author.avatarPicture
         createdAt = message.createdAt
@@ -225,6 +233,10 @@ struct RowHost {
     /// A person pill or the author's avatar or name: their profile card.
     var openMention: (_ messageID: String, _ userID: String) -> Void = { _, _ in }
     var openAuthor: (_ messageID: String) -> Void = { _ in }
+    /// "Pinned by …": the pinner's card.
+    var openPinner: (_ messageID: String) -> Void = { _ in }
+    /// "(edited)": the edit history.
+    var history: (_ messageID: String) -> Void = { _ in }
 }
 
 /// One message: avatar or grouped gutter, header, text and its notes. The
@@ -235,6 +247,9 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private let name = UIKitStyle.label(size: 13, weight: .bold)
     private let time = UIKitStyle.label(size: 10, color: UIKitStyle.muted)
     private let edited = UIKitStyle.label("(edited)", size: 10, color: UIKitStyle.muted)
+    private let adminBadge = MessageRowView.badge("ADMIN", color: UIKitStyle.pinGold, fill: UIKitStyle.pinGold.withAlphaComponent(0.1),
+                                                  stroke: UIKitStyle.pinGold.withAlphaComponent(0.55), label: "Admin")
+    private let guestBadge = MessageRowView.badge("GUEST", color: UIKitStyle.muted, fill: .clear, stroke: UIKitStyle.border, label: "Guest")
     private let header = UIStackView()
     private let body = MessageTextView()
     private let note = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
@@ -281,7 +296,11 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         header.axis = .horizontal
         header.alignment = .firstBaseline
         header.spacing = 7
-        [name, time, edited].forEach(header.addArrangedSubview)
+        [name, adminBadge, guestBadge, time, edited].forEach(header.addArrangedSubview)
+        adminBadge.layer.shadowColor = UIKitStyle.pinGold.cgColor
+        adminBadge.layer.shadowOpacity = 0.45
+        adminBadge.layer.shadowRadius = 4
+        adminBadge.layer.shadowOffset = .zero
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         name.lineBreakMode = .byTruncatingTail
         time.setContentHuggingPriority(.required, for: .horizontal)
@@ -307,6 +326,16 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         hold.minimumPressDuration = 0.5
         hold.delegate = self
         addGestureRecognizer(hold)
+        // "(edited)" opens the history; "Pinned by" the pinner's card.
+        for (view, action) in [(edited, #selector(openHistory)), (pinBadge, #selector(openPinner))] as [(UIView, Selector)] {
+            view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: action))
+            view.isUserInteractionEnabled = true
+        }
+        pinBadge.accessibilityTraits = .button
+        edited.isAccessibilityElement = true
+        edited.accessibilityLabel = "Edited"
+        edited.accessibilityHint = "Opens message history"
+        edited.accessibilityTraits = .button
         // The avatar and name open the author's card; pills open theirs.
         for view in [gutter, name] as [UIView] {
             let tap = UITapGestureRecognizer(target: self, action: #selector(openAuthor))
@@ -409,6 +438,8 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         if let pinnedBy = row.pinnedBy {
             pinBadge.attributedText = Self.pinBadge("Pinned by \(pinnedBy)")
             pinBadge.accessibilityLabel = "Pinned by \(pinnedBy)"
+            pinBadge.accessibilityHint = "Opens their profile"
+            pinBadge.accessibilityIdentifier = "pinned-by-\(row.messageID)"
         }
         header.isHidden = row.grouped
         avatar.isHidden = row.grouped
@@ -417,11 +448,15 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         let timeText = row.inPins ? Self.fullDate(row.createdAt) : NativePresentation.time(row.createdAt)
         time.text = row.pending ? (row.pendingError == nil ? "Sending…" : "") : timeText
         edited.isHidden = !row.edited
-        header.accessibilityLabel = [row.authorName, row.pending ? "sending" : timeText, row.edited ? "edited" : ""]
+        edited.accessibilityIdentifier = "message-edited-\(row.messageID)"
+        adminBadge.isHidden = !row.admin
+        guestBadge.isHidden = !row.guest
+        header.accessibilityLabel = [row.authorName, row.admin ? "Admin" : "", row.guest ? "Guest" : "",
+                                     row.pending ? "sending" : timeText]
             .filter { !$0.isEmpty }.joined(separator: ", ")
 
         tint.backgroundColor = Self.background(row)
-        let highlighted = row.focused || (row.pinnedBy == nil && row.mentionsViewer)
+        let highlighted = row.focused || (row.pinnedBy == nil && (row.mentionsViewer || row.repliesToViewer))
         accent.isHidden = !(highlighted || row.revealedBlocked)
         accent.backgroundColor = highlighted ? UIKitStyle.terracotta : UIKitStyle.border
 
@@ -503,6 +538,36 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         return chips.isHidden || !chips.bounds.contains(point)
     }
 
+    @objc private func openHistory() {
+        guard let state, state.edited, !state.messageID.isEmpty else { return }
+        host?.history(state.messageID)
+    }
+
+    @objc private func openPinner() {
+        guard let state, state.pinnedBy != nil, !state.messageID.isEmpty else { return }
+        host?.openPinner(state.messageID)
+    }
+
+    /// SwiftUI's AdminBadge and guest marker: 9pt bold caps in a 4pt-cornered box.
+    private static func badge(_ text: String, color: UIColor, fill: UIColor, stroke: UIColor, label: String) -> UILabel {
+        let badge = PaddedLabel()
+        badge.padding = 10
+        badge.text = text
+        badge.font = UIKitStyle.font(9, .bold)
+        badge.textColor = color
+        badge.backgroundColor = fill
+        badge.layer.borderColor = stroke.cgColor
+        badge.layer.borderWidth = 1
+        badge.layer.cornerRadius = 4
+        badge.layer.cornerCurve = .continuous
+        badge.textAlignment = .center
+        badge.setContentHuggingPriority(.required, for: .horizontal)
+        badge.setContentCompressionResistancePriority(.required, for: .horizontal)
+        badge.isHidden = true
+        badge.accessibilityLabel = label
+        return badge
+    }
+
     @objc private func openAuthor() {
         guard let state, state.authorProfile, !state.messageID.isEmpty else { return }
         host?.openAuthor(state.messageID)
@@ -539,8 +604,11 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         if row.inPins { return .clear }
         if row.focused { return UIKitStyle.terracotta.withAlphaComponent(0.12) }
         if row.pinnedBy != nil { return row.pinMine ? UIKitStyle.terracotta.withAlphaComponent(0.12) : UIKitStyle.pinGold.withAlphaComponent(0.06) }
+        if row.repliesToViewer { return UIKitStyle.terracotta.withAlphaComponent(0.12) }
         if row.mentionsViewer { return UIKitStyle.terracotta.withAlphaComponent(0.08) }
-        return row.revealedBlocked ? UIKitStyle.surface : .clear
+        if row.revealedBlocked { return UIKitStyle.surface }
+        // Other replies get a faint wash.
+        return row.replyTo != nil ? UIKitStyle.text.withAlphaComponent(0.03) : .clear
     }
 
     private static func pinBadge(_ text: String) -> NSAttributedString {
@@ -616,6 +684,16 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         if row.pendingError != nil, !row.pendingRejected, let retry {
             actions.append(UIAccessibilityCustomAction(name: "Retry send") { _ in retry(); return true })
         }
+        if row.edited, !row.messageID.isEmpty {
+            actions.append(UIAccessibilityCustomAction(name: "Message history") { [weak self] _ in
+                self?.host?.history(row.messageID); return true
+            })
+        }
+        if let pinnedBy = row.pinnedBy, !row.messageID.isEmpty {
+            actions.append(UIAccessibilityCustomAction(name: "Open profile for \(pinnedBy == "you" ? "you" : pinnedBy)") { [weak self] _ in
+                self?.host?.openPinner(row.messageID); return true
+            })
+        }
         // As SwiftUI's "Message actions": the long-press sheet.
         if !row.pending, !row.messageID.isEmpty {
             actions.append(UIAccessibilityCustomAction(name: "Message actions") { [weak self] _ in
@@ -626,7 +704,9 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     }
 
     override var accessibilityElements: [Any]? {
-        get { [pinBadge, replyContext, header, body, extras, chips, errors, threadLink, note].filter { !$0.isHidden } }
+        // "(edited)" is its own button after the header, as SwiftUI's.
+        get { [pinBadge, replyContext, header, edited, body, extras, chips, errors, threadLink, note]
+            .filter { !$0.isHidden && !($0 === edited && header.isHidden) } }
         set {}
     }
 
@@ -700,23 +780,28 @@ final class TimelineEdgeCell: UICollectionViewCell {
         super.init(frame: frame)
         let stack = UIStackView(arrangedSubviews: [label, button])
         stack.spacing = 6
+        label.numberOfLines = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
         button.addAction(UIAction { [weak self] _ in self?.retry?() }, for: .primaryActionTriggered)
         NSLayoutConstraint.activate([
             stack.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            contentView.heightAnchor.constraint(equalToConstant: 44),
+            stack.topAnchor.constraint(greaterThanOrEqualTo: contentView.topAnchor, constant: 6),
+            stack.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, constant: -36),
+            contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(_ edge: TimelineEdge) {
+    /// `error` is the load's own message when it has one, as a thread's.
+    func configure(_ edge: TimelineEdge, error: String? = nil) {
         switch edge {
         case .beginning: label.text = "Beginning of conversation"
         case .loading: label.text = "Loading older messages…"
-        case .failed: label.text = "Couldn’t load older messages."
+        case .failed: label.text = error ?? "Couldn’t load older messages."
         }
+        label.textColor = edge == .failed && error != nil ? UIKitStyle.error : UIKitStyle.muted
         button.isHidden = edge != .failed
         accessibilityIdentifier = "timeline-edge"
     }
@@ -920,6 +1005,18 @@ final class ThreadLinkButton: UIControl {
             controller.view.endEditing(true)
             controller.present(UIKitHosting.profileCard(model: model, author: message.author, requestBlock: block),
                                animated: !UIKitStyle.reduceMotion)
+        } }
+        openPinner = { [weak controller] messageID in MainActor.assumeIsolated {
+            guard let controller, let pin = messages().first(where: { $0.id == messageID })?.pin else { return }
+            controller.view.endEditing(true)
+            controller.present(UIKitHosting.profileCard(model: model, author: pin.author, requestBlock: block),
+                               animated: !UIKitStyle.reduceMotion)
+        } }
+        history = { [weak controller] messageID in MainActor.assumeIsolated {
+            guard let controller, controller.presentedViewController == nil,
+                  let message = messages().first(where: { $0.id == messageID }) else { return }
+            controller.view.endEditing(true)
+            controller.present(UIKitHosting.messageHistory(chat: model.chat, message: message), animated: !UIKitStyle.reduceMotion)
         } }
     }
 }
