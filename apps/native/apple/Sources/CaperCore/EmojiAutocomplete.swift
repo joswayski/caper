@@ -18,9 +18,9 @@ extension EnvironmentValues {
     }
 }
 
-struct EmojiAutocompleteMatch: Equatable {
-    let replacementRange: NSRange
-    let choices: [EmojiCatalogEntry]
+public struct EmojiAutocompleteMatch: Equatable {
+    public let replacementRange: NSRange
+    public let choices: [EmojiCatalogEntry]
 }
 
 enum EmojiAutocomplete {
@@ -98,22 +98,22 @@ enum EmojiAutocomplete {
 
 /// The composer's active token. Emoji (`:`) and mention (`@`) tokens can never
 /// both be active, so they share one popup with a row type per kind.
-enum ComposerAutocompleteMatch: Equatable {
+public enum ComposerAutocompleteMatch: Equatable {
     case emoji(EmojiAutocompleteMatch)
     case mention(MentionAutocompleteMatch)
 
-    var count: Int {
+    public var count: Int {
         switch self {
         case let .emoji(match): return match.choices.count
         case let .mention(match): return match.choices.count
         }
     }
-    var isMention: Bool {
+    public var isMention: Bool {
         if case .mention = self { return true }
         return false
     }
     /// Row identities for scrolling the selected row into view.
-    var ids: [String] {
+    public var ids: [String] {
         switch self {
         case let .emoji(match): return match.choices.map(\.id)
         case let .mention(match): return match.choices.map(\.id)
@@ -223,9 +223,7 @@ struct ComposerSuggestionsView: View {
 
 extension ComposerSuggestionsView {
     static func mentionLabel(_ candidate: MentionCandidate) -> String {
-        candidate.kind == .member
-            ? "\(candidate.displayName), @\(candidate.username)\(candidate.invited ? ", already invited" : "")"
-            : "@\(candidate.username), \(candidate.displayName)"
+        candidate.accessibilityLabel
     }
 }
 

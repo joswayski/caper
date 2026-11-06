@@ -36,6 +36,20 @@ public enum NativePresentation {
         MentionAutocomplete.mentionsCurrentUser(message, currentUserID: viewerID)
     }
 
+    /// Both native hosts use the shipping composer's context, ranking and
+    /// source UTF-16 ranges, including formatting delimiters and IME guards.
+    @MainActor public static func autocomplete(text: String, selection: NSRange, markedText: Bool,
+                                               model: AppModel) -> ComposerAutocompleteMatch? {
+        ComposerAutocomplete.match(text: text, selection: selection, markedText: markedText, mentions: model.composerMentions)
+    }
+
+    public static func inserting(choice: Int, in text: String, match: ComposerAutocompleteMatch) -> (text: String, selection: NSRange)? {
+        ComposerAutocomplete.inserting(choice: choice, in: text, match: match)
+    }
+
+    /// The same bundled artwork as SwiftUI, without exposing a SwiftUI view.
+    public static func emojiImage(for entry: EmojiCatalogEntry) -> CGImage? { EmojiArtwork.image(for: entry) }
+
     public static func resend(secondsSince sentAt: Date?, codesSent: Int, now: Date) -> (label: String, enabled: Bool, allowed: Bool) {
         let seconds = CodeResend.secondsRemaining(sentAt: sentAt, now: now)
         let allowed = codesSent <= CodeResend.maximumResends
@@ -95,5 +109,21 @@ public enum NativePresentation {
         let framesetter = CTFramesetterCreateWithAttributedString(text)
         return ceil(CTFramesetterSuggestFrameSizeWithConstraints(framesetter, CFRange(location: 0, length: text.length),
             nil, CGSize(width: max(1, width), height: .greatestFiniteMagnitude), nil).height)
+    }
+}
+
+extension AppModel {
+    /// Single context source for SwiftUI, AppKit and UIKit composers. The
+    /// viewer is excluded; channel specials never leak into DMs or visits.
+    var composerMentions: MentionSource {
+        let viewerID = chat.currentAuthor?.id ?? account?.id
+        if let visit {
+            return .visit(reporter: visit.reporter, messages: chat.messages, people: people, accountID: viewerID)
+        }
+        if let selectedDirectMessageID {
+            return .direct(peer: directMessages.first { $0.id == selectedDirectMessageID }?.peer,
+                people: people, accountID: viewerID)
+        }
+        return .space(members: detail?.members ?? [], excluding: viewerID)
     }
 }

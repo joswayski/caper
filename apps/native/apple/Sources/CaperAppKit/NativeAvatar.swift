@@ -7,7 +7,7 @@ import CaperCore
     private let saved = NSImageView()
     private let initial = NativeStyle.label("", size: 11, bold: true)
     private let pictureLayer = CALayer()
-    private var member: Member?
+    private var picture: CaperPicture?
     private var requestID: String?
     private var frames: ProfilePictureFrames?
     private var loading: Task<Void, Never>?
@@ -29,11 +29,18 @@ import CaperCore
     deinit { loading?.cancel(); NSWorkspace.shared.notificationCenter.removeObserver(self) }
 
     func update(_ member: Member) {
-        guard self.member != member else { return }
-        self.member = member
-        saved.image = CaperAvatar.image(for: member.avatarId)
-        initial.stringValue = String(member.displayName.prefix(1)).uppercased()
-        initial.isHidden = saved.image != nil
+        update(name: member.displayName, avatarId: member.avatarId, picture: member.avatarPicture)
+    }
+
+    func update(_ candidate: MentionCandidate) {
+        update(name: candidate.displayName, avatarId: candidate.avatarId, picture: candidate.picture)
+    }
+
+    private func update(name: String, avatarId: Int?, picture: CaperPicture?) {
+        self.picture = picture
+        saved.image = CaperAvatar.image(for: avatarId)
+        initial.stringValue = String(name.prefix(1)).uppercased()
+        initial.isHidden = frames?.images.first != nil || saved.image != nil
         refreshPicture()
     }
 
@@ -61,7 +68,7 @@ import CaperCore
     }
 
     private func refreshPicture() {
-        guard let picture = member?.avatarPicture, let window, bounds.width > 0 else {
+        guard let picture, let window, bounds.width > 0 else {
             loading?.cancel(); loading = nil; requestID = nil; frames = nil
             showPicture()
             return

@@ -2,21 +2,26 @@ import Foundation
 
 /// A composer `@` suggestion: a person, the `everyone`/`here` specials
 /// offered only in space channels, or `feedback`, offered in every conversation.
-struct MentionCandidate: Equatable, Identifiable, Sendable {
-    enum Kind: Equatable, Sendable { case member, everyone, here, feedback }
-    let kind: Kind
+public struct MentionCandidate: Equatable, Identifiable, Sendable {
+    public enum Kind: Equatable, Sendable { case member, everyone, here, feedback }
+    public let kind: Kind
     /// The user's external id, or the special's name.
-    let id: String
+    public let id: String
     /// Inserted as `@username `.
-    let username: String
+    public let username: String
     /// A member's display name, or the special's muted description.
-    let displayName: String
-    var avatarId: Int? = nil
+    public let displayName: String
+    public internal(set) var avatarId: Int? = nil
     /// Already has a pending invitation to the space or channel being
     /// managed; the username field's row says so.
     var invited = false
     /// A person's custom picture over their mascot.
-    var picture: CaperPicture? = nil
+    public internal(set) var picture: CaperPicture? = nil
+
+    public var accessibilityLabel: String {
+        kind == .member ? "\(displayName), @\(username)\(invited ? ", already invited" : "")"
+            : "@\(username), \(displayName)"
+    }
 
     static let everyone = MentionCandidate(kind: .everyone, id: "everyone", username: "everyone",
                                            displayName: "Everyone in this channel")
@@ -112,9 +117,9 @@ struct MentionQuery: Equatable {
     let query: String
 }
 
-struct MentionAutocompleteMatch: Equatable {
-    let replacementRange: NSRange
-    let choices: [MentionCandidate]
+public struct MentionAutocompleteMatch: Equatable {
+    public let replacementRange: NSRange
+    public let choices: [MentionCandidate]
 }
 
 /// One `@name` token in message text.

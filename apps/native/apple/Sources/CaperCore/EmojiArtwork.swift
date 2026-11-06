@@ -2,10 +2,10 @@ import Foundation
 import SwiftUI
 import ImageIO
 
-struct EmojiCatalogEntry: Codable, Identifiable, Sendable, Equatable {
-    let id: String
-    let emoji: String
-    let name: String
+public struct EmojiCatalogEntry: Codable, Identifiable, Sendable, Equatable {
+    public let id: String
+    public let emoji: String
+    public let name: String
     let keywords: String
     let category: String
     let selectable: Bool

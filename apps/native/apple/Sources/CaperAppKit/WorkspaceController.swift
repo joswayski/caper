@@ -23,6 +23,8 @@ import CaperCore
     private let account = NativeStyle.label("")
     private let composer = ComposerTextView()
     private let composerScroll = NSScrollView()
+    private let suggestions = ComposerSuggestions()
+    private var suggestionsDismissed = false
     private let channels = NativeView()
     private let channelScroll = NSScrollView()
     private lazy var send = NativeButton("Send", primary: true) { [weak self] in self?.submit() }
@@ -55,7 +57,7 @@ import CaperCore
     override func viewDidLoad() {
         super.viewDidLoad()
         [rail, sidebar, stage, members].forEach { view.addSubview($0) }
-        [timeline, header, membersToggle, status, retry, editRejected, composerScroll, send].forEach { stage.addSubview($0) }
+        [timeline, header, membersToggle, status, retry, editRejected, composerScroll, send, suggestions].forEach { stage.addSubview($0) }
         [account, mute, deafen, logout, channelScroll].forEach { sidebar.addSubview($0) }
         setupList(channels, in: channelScroll)
         members.close = { [weak self] in
@@ -88,6 +90,10 @@ import CaperCore
         composer.setAccessibilityIdentifier("message-composer")
         composer.delegate = self
         composer.submit = { [weak self] in self?.submit() }
+        composer.handleKey = { [weak self] in self?.handleSuggestionKey($0) == true }
+        composer.focusChanged = { [weak self] in self?.refreshSuggestions() }
+        composer.setAccessibilityHelp("Return sends. Shift-Return adds a new line. Use arrows and Return or Tab to choose a suggestion; Escape dismisses.")
+        suggestions.accept = { [weak self] in self?.acceptSuggestion($0) }
         composerScroll.documentView = composer
         composerScroll.hasVerticalScroller = true
         composerScroll.autohidesScrollers = true
@@ -152,6 +158,7 @@ import CaperCore
         composer.frame.size.width = composerScroll.contentSize.width
         composer.minSize = NSSize(width: 0, height: 70)
         send.frame = NSRect(x: center - 84, y: height - 70, width: 64, height: 38)
+        layoutSuggestions()
         retry.frame = NSRect(x: center - 84, y: height - 108, width: 64, height: 30)
         editRejected.frame = NSRect(x: 20, y: height - 168, width: 200, height: 30)
         channelScroll.frame = NSRect(x: 0, y: 0, width: 280, height: height - 116)
@@ -223,12 +230,57 @@ import CaperCore
         mute.title = model.voice.muted ? "Unmute" : "Mute"
         deafen.title = model.voice.deafened ? "Undeafen" : "Deafen"
         mute.setAccessibilityLabel(mute.title); deafen.setAccessibilityLabel(deafen.title)
+        refreshSuggestions()
     }
 
     func textDidChange(_ notification: Notification) {
         composer.needsDisplay = true
         model.chat.draft = composer.string
         model.chat.draftChanged(composer.string)
+        suggestionsDismissed = false
+        refreshSuggestions()
+    }
+    func textViewDidChangeSelection(_ notification: Notification) {
+        suggestionsDismissed = false
+        refreshSuggestions()
+    }
+    private func refreshSuggestions() {
+        let active = composer.isEditable && composer.window?.firstResponder === composer && !suggestionsDismissed
+        suggestions.update(active ? NativePresentation.autocomplete(text: composer.string, selection: composer.selectedRange(),
+            markedText: composer.hasMarkedText(), model: model) : nil)
+        layoutSuggestions()
+    }
+    private func layoutSuggestions() {
+        let width = suggestions.match?.isMention == true ? composerScroll.frame.width : min(260, composerScroll.frame.width)
+        suggestions.frame = NSRect(x: composerScroll.frame.minX, y: composerScroll.frame.minY - suggestions.height - 8,
+            width: width, height: suggestions.height)
+    }
+    private func handleSuggestionKey(_ event: NSEvent) -> Bool {
+        guard !composer.hasMarkedText(), suggestions.match != nil else { return false }
+        switch event.keyCode {
+        case 125, 126:
+            suggestions.move(down: event.keyCode == 125); return true
+        case 36, 48:
+            guard !event.modifierFlags.contains(.shift) else { return false }
+            acceptSuggestion(suggestions.selected); return true
+        case 53:
+            suggestionsDismissed = true; suggestions.update(nil); return true
+        default: return false
+        }
+    }
+    private func acceptSuggestion(_ index: Int) {
+        guard composer.isEditable, !composer.hasMarkedText(), let match = suggestions.match,
+              match == NativePresentation.autocomplete(text: composer.string, selection: composer.selectedRange(), markedText: false, model: model),
+              let result = NativePresentation.inserting(choice: index, in: composer.string, match: match) else { return }
+        composer.window?.makeFirstResponder(composer)
+        // insertText, rather than assigning string, preserves native undo.
+        // Separate completion from the typed query and subsequent typing.
+        composer.breakUndoCoalescing()
+        composer.insertText(result.text, replacementRange: NSRange(location: 0, length: composer.string.utf16.count))
+        composer.breakUndoCoalescing()
+        composer.setSelectedRange(result.selection)
+        suggestionsDismissed = true
+        suggestions.update(nil)
     }
     private func submit() {
         guard send.isEnabled, !composer.hasMarkedText() else { return }
@@ -271,6 +323,8 @@ import CaperCore
 /// outside composition; Shift-Return remains an ordinary newline.
 private final class ComposerTextView: NSTextView {
     var submit: (() -> Void)?
+    var handleKey: ((NSEvent) -> Bool)?
+    var focusChanged: (() -> Void)?
     var placeholder = "" {
         didSet { if oldValue != placeholder { needsDisplay = true } }
     }
@@ -282,8 +336,19 @@ private final class ComposerTextView: NSTextView {
         }
     }
     override func keyDown(with event: NSEvent) {
+        if handleKey?(event) == true { return }
         if event.keyCode == 36, !event.modifierFlags.contains(.shift), !hasMarkedText() {
             submit?()
         } else { super.keyDown(with: event) }
+    }
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        if result { focusChanged?() }
+        return result
+    }
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result { DispatchQueue.main.async { [weak self] in self?.focusChanged?() } }
+        return result
     }
 }

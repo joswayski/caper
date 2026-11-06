@@ -4704,15 +4704,7 @@ private struct ChatView: View {
     /// `GET /api/people` (the DM's other participant until that loads); in a
     /// feedback visit, the reporter and people in the loaded messages. The
     /// signed-in account is never suggested; `@feedback` is offered everywhere.
-    private var mentionSource: MentionSource {
-        if let visit = model.visit {
-            return .visit(reporter: visit.reporter, messages: chat.messages, people: model.people, accountID: viewerID)
-        }
-        if let id = model.selectedDirectMessageID {
-            return .direct(peer: model.directMessages.first { $0.id == id }?.peer, people: model.people, accountID: viewerID)
-        }
-        return .space(members: model.detail?.members ?? [], excluding: viewerID)
-    }
+    private var mentionSource: MentionSource { model.composerMentions }
     /// Web's counter tones at 3500 / 3750 / 3900 characters.
     private var counterTone: Color {
         let count = chat.draft.unicodeScalars.count

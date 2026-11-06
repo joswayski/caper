@@ -114,6 +114,99 @@ import XCTest
         capture("conversation, wide", app: app)
     }
 
+    func testAutocompleteKeyboardPointerUndoAndSelection() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        let message = app.textViews["message-chan00000001m04"]
+        let originalFrame = message.frame
+        composer.click(); composer.typeText("@")
+        let feedback = app.buttons["mention-suggestion-feedback"]
+        XCTAssertTrue(feedback.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["mention-suggestion-fixture_owner"].exists)
+        XCTAssertTrue(app.buttons["mention-suggestion-everyone"].exists)
+        XCTAssertEqual(message.frame, originalFrame, "The popup overlays rather than reflows message history")
+        capture("mention suggestions", app: app)
+        // Up wraps to the last row below the fold; Down wraps back to the first.
+        composer.typeKey(.upArrow, modifierFlags: [])
+        XCTAssertTrue(app.buttons["mention-suggestion-here"].isHittable)
+        composer.typeKey(.downArrow, modifierFlags: [])
+        composer.typeKey(.downArrow, modifierFlags: [])
+        composer.typeKey(.return, modifierFlags: [])
+        XCTAssertEqual(composer.value as? String, "@alex ", "Return accepts the selected row, not a send")
+        composer.typeKey("z", modifierFlags: .command)
+        XCTAssertEqual(composer.value as? String, "@", "Autocomplete is one native undoable edit")
+        // AppKit selects the restored replacement on undo. Collapsing that
+        // selection resumes suggestions; a selected token must not open them.
+        composer.typeKey("c", modifierFlags: .command)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "@")
+        XCTAssertFalse(feedback.exists)
+        composer.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(feedback.waitForExistence(timeout: 5))
+        composer.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(feedback.waitForNonExistence(timeout: 5))
+        composer.typeKey(.return, modifierFlags: .shift)
+        XCTAssertEqual(composer.value as? String, "@\n")
+
+        composer.typeKey("a", modifierFlags: .command)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("👩‍💻 @ma tail", forType: .string)
+        composer.typeKey("v", modifierFlags: .command)
+        for _ in 0..<5 { composer.typeKey(.leftArrow, modifierFlags: []) }
+        let maya = app.buttons["mention-suggestion-maya"]
+        XCTAssertTrue(maya.waitForExistence(timeout: 5))
+        app.buttons["send-message"].hover(); maya.hover(); maya.click()
+        XCTAssertEqual(composer.value as? String, "👩‍💻 @maya  tail", "UTF-16 replacement preserves the Unicode prefix and suffix")
+        composer.typeText("next")
+        XCTAssertEqual(composer.value as? String, "👩‍💻 @maya next tail", "The caret remains just after the inserted separator")
+        composer.typeKey("a", modifierFlags: .command); composer.typeText("@ma")
+        XCTAssertTrue(maya.waitForExistence(timeout: 5))
+        composer.typeKey(.leftArrow, modifierFlags: .shift)
+        XCTAssertTrue(maya.waitForNonExistence(timeout: 5), "A noncollapsed selection suppresses suggestions")
+        composer.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(maya.waitForExistence(timeout: 5))
+        composer.typeKey(.return, modifierFlags: .shift)
+        XCTAssertEqual(composer.value as? String, "@ma\n", "Shift-Return adds a newline even with suggestions open")
+    }
+
+    func testAutocompleteEmojiAndDirectMessageScope() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        composer.click(); composer.typeText(":rocket")
+        let rocket = app.buttons["emoji-suggestion-1f680"]
+        XCTAssertTrue(rocket.waitForExistence(timeout: 5))
+        capture("emoji suggestions", app: app)
+        composer.typeKey(.tab, modifierFlags: [])
+        XCTAssertEqual(composer.value as? String, "🚀")
+        XCTAssertTrue(rocket.waitForNonExistence(timeout: 5))
+        composer.typeKey("a", modifierFlags: .command); composer.typeText("@ma")
+        XCTAssertTrue(app.buttons["mention-suggestion-maya"].waitForExistence(timeout: 5))
+        app.buttons["profile-author-chan00000001m02"].click()
+        XCTAssertTrue(app.buttons["mention-card-message"].waitForExistence(timeout: 5))
+        app.buttons["mention-card-message"].click()
+        XCTAssertTrue(app.buttons["mention-card-close"].waitForNonExistence(timeout: 5))
+        composer.click(); composer.typeText("@")
+        XCTAssertTrue(app.buttons["mention-suggestion-feedback"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["mention-suggestion-maya"].exists)
+        XCTAssertFalse(app.buttons["mention-suggestion-everyone"].exists, "Channel broadcasts never leak into DMs")
+        XCTAssertFalse(app.buttons["mention-suggestion-here"].exists)
+        XCTAssertFalse(app.buttons["mention-suggestion-fixture_owner"].exists)
+        capture("DM mention suggestions", app: app)
+        composer.typeKey(.escape, modifierFlags: [])
+        composer.typeKey("a", modifierFlags: .command); composer.typeText("@maya hello from autocomplete")
+        composer.typeKey(.return, modifierFlags: [])
+        let sent = app.textViews.matching(NSPredicate(format: "value == %@", "@maya hello from autocomplete")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, "")
+    }
+
     func testMentionClickPreservesDraggingAndProtectsUnsavedProfileEdits() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()

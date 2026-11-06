@@ -15,6 +15,38 @@ final class MentionAutocompleteTests: XCTestCase {
     }
     private var space: MentionSource { .space(members: members, excluding: selfID) }
 
+    @MainActor func testNativeHostCompletionKeepsContextWireRangesAndIMEGuards() throws {
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        model.account = Account(id: selfID, username: "fixture_self", displayName: "Alice Myself")
+        model.detail = SpaceDetail(space: Space(id: "Space1234567", name: "Fixture", ownerId: selfID), channels: [], members: members)
+        func match(_ text: String, selection: NSRange? = nil, marked: Bool = false) -> ComposerAutocompleteMatch? {
+            NativePresentation.autocomplete(text: text, selection: selection ?? caret(text), markedText: marked, model: model)
+        }
+        let source = "👩‍💻 **@al** tail"
+        let found = try XCTUnwrap(match(source, selection: NSRange(location: 11, length: 0)))
+        guard case let .mention(mention) = found else { return XCTFail("Expected people") }
+        XCTAssertEqual(mention.choices.map(\.username), ["alice", "alicia", "bob", "zed", "malice"])
+        XCTAssertEqual(mention.replacementRange, NSRange(location: 8, length: 3))
+        let inserted = try XCTUnwrap(NativePresentation.inserting(choice: 0, in: source, match: found))
+        XCTAssertEqual(inserted.text, "👩‍💻 **@alice**  tail")
+        XCTAssertEqual(inserted.selection, NSRange(location: 17, length: 0))
+        XCTAssertNil(match("@fixture"), "The account is excluded even before the chat session loads")
+        XCTAssertNil(match("@al", marked: true))
+        XCTAssertNil(match("@al", selection: NSRange(location: 1, length: 2)))
+        XCTAssertNotNil(match("@ev"))
+        XCTAssertNil(NativePresentation.inserting(choice: 99, in: source, match: found))
+        let full = String(repeating: "x", count: 3_996) + " @al"
+        XCTAssertNil(NativePresentation.inserting(choice: 0, in: full, match: try XCTUnwrap(match(full))))
+
+        model.directMessages = [DirectMessageConversation(id: "dm", peer: DirectMessagePeer(id: "Bob000000001", username: "bob", displayName: "Bob"), lastSeq: "0", readSeq: "0")]
+        model.selectedDirectMessageID = "dm"
+        XCTAssertNil(match("@ev"), "A selected DM overrides the still-loaded space members and broadcasts")
+        XCTAssertNil(match("@al"))
+        guard case let .mention(direct)? = match("@") else { return XCTFail("Expected the DM peer and team") }
+        XCTAssertEqual(direct.choices.map(\.username), ["feedback", "bob"])
+        XCTAssertNil(match("@bo", marked: true))
+    }
+
     func testDraftHighlightsUseCompleteNamesAndConversationScope() {
         let text = "🙂 @Alice, @ali @missing bob@alice.com @@alice (@feedback)\n@Here @everyone @feedbacks"
         func highlighted(_ source: MentionSource) -> [String] {
