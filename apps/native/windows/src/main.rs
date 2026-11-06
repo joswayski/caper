@@ -34,6 +34,7 @@ mod model;
 mod signin;
 mod text;
 mod theme;
+mod thread;
 mod uia;
 
 use bench::{Action, Bench};
@@ -77,7 +78,7 @@ pub(crate) const TIMER_CARET: usize = 2;
 const TIMER_LIVE: usize = 3;
 /// The sign-in screen's spinner and resend countdown.
 const TIMER_SIGNIN: usize = 4;
-const WHEEL_STEP: f64 = 48.0;
+pub(crate) const WHEEL_STEP: f64 = 48.0;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
 thread_local! {
@@ -104,6 +105,9 @@ struct Dirty {
     overlay: bool,
     picker: bool,
     reply: bool,
+    /// The thread pane, and its reply box.
+    thread: bool,
+    thread_box: bool,
 }
 
 impl Dirty {
@@ -120,6 +124,8 @@ impl Dirty {
             overlay: true,
             picker: true,
             reply: true,
+            thread: true,
+            thread_box: true,
         }
     }
 }
@@ -244,6 +250,10 @@ pub struct App {
     redraw_head: bool,
     head_hover: bool,
     older_armed: bool,
+    /// The open thread beside the conversation, its surface and its reply box's.
+    pub thread: Option<thread::Pane>,
+    thread_p: Panel,
+    thread_box_p: Panel,
     quit: bool,
 }
 
@@ -276,6 +286,8 @@ impl App {
             let dialog_p = Panel::new(&g)?;
             let picker_p = Panel::new(&g)?;
             let reply_p = Panel::new(&g)?;
+            let thread_p = Panel::new(&g)?;
+            let thread_box_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
             let content = g.visual()?;
             let vs = g.dcomp.CreateVirtualSurface(
@@ -296,6 +308,8 @@ impl App {
                 &history_clip,
                 &composer_p.visual,
                 &reply_p.visual,
+                &thread_p.visual,
+                &thread_box_p.visual,
                 &members.visual,
             ] {
                 root.AddVisual(v, true, &prev)?;
@@ -374,6 +388,9 @@ impl App {
                 redraw_head: false,
                 head_hover: false,
                 older_armed: false,
+                thread: None,
+                thread_p,
+                thread_box_p,
                 quit: false,
             })
         }
@@ -391,6 +408,9 @@ impl App {
         self.menu = None;
         self.picker = None;
         self.older_armed = false;
+        if self.thread.take().is_some() {
+            self.dirty.layout = true;
+        }
         self.scroll_top = 0.0;
         self.at_end = true;
         self.drawn = None;
@@ -491,6 +511,7 @@ impl App {
                     let (c, ids) = *older;
                     self.prepend_history(c, ids)?;
                 }
+                live::Update::Thread => self.thread_refresh()?,
                 live::Update::OlderState => {
                     self.redraw_head = true;
                     self.events |= EV_ROWS;
@@ -597,7 +618,7 @@ impl App {
     }
 
     pub fn list_w(&self) -> f32 {
-        (self.w - RAIL_W - SIDEBAR_W - MEMBERS_W).max(160.0)
+        (self.w - RAIL_W - SIDEBAR_W - MEMBERS_W - self.thread_w()).max(160.0)
     }
 
     pub fn box_rect(&self) -> (f32, f32, f32, f32) {
@@ -697,6 +718,14 @@ impl App {
     }
 
     pub fn set_composer_focus(&mut self, focused: bool) {
+        // One text field has focus: the reply box in the thread gives it up.
+        if focused
+            && let Some(t) = &mut self.thread
+            && t.composer.focused
+        {
+            t.composer.focused = false;
+            self.dirty.thread_box = true;
+        }
         if self.composer.focused == focused {
             return;
         }
@@ -836,6 +865,11 @@ impl App {
         if let Some(p) = &self.picker {
             return p.search.focused.then(|| (&p.search, p.text_origin()));
         }
+        if let Some(t) = &self.thread
+            && t.composer.focused
+        {
+            return Some((&t.composer, self.thread_text_origin()));
+        }
         self.composer
             .focused
             .then(|| (&self.composer, self.composer_text_origin()))
@@ -851,6 +885,11 @@ impl App {
         if let Some(p) = &mut self.picker {
             return Some(&mut p.search).filter(|f| f.focused);
         }
+        if let Some(t) = &mut self.thread
+            && t.composer.focused
+        {
+            return Some(&mut t.composer);
+        }
         Some(&mut self.composer).filter(|c| c.focused)
     }
 
@@ -862,6 +901,8 @@ impl App {
             self.signin_changed(text);
         } else if self.picker.is_some() {
             self.picker_changed(text);
+        } else if self.thread.as_ref().is_some_and(|t| t.composer.focused) {
+            self.thread_composer_changed();
         } else {
             self.composer_changed();
         }
@@ -1048,7 +1089,7 @@ impl App {
                 self.dirty.reply = true;
                 self.events |= EV_SCREEN;
             }
-            live.send(text, reply);
+            live.send(text, reply, None);
         } else {
             self.c.send_local(text);
             self.rows.append(&self.g, &self.c)?;
@@ -1081,6 +1122,11 @@ impl App {
         {
             return r;
         }
+        if self.thread.is_some()
+            && let Some(r) = self.thread_input(msg, wp, x, y, ctrl, shift)
+        {
+            return r;
+        }
         match msg {
             WM_SIZE => {
                 let (pw, ph) = ((lp.0 & 0xffff) as f32, ((lp.0 >> 16) & 0xffff) as f32);
@@ -1108,6 +1154,8 @@ impl App {
                         self.dirty.overlay = true;
                     } else if self.signin.is_some() {
                         self.dirty.signin = true;
+                    } else if self.thread.as_ref().is_some_and(|t| t.composer.focused) {
+                        self.dirty.thread_box = true;
                     } else {
                         self.dirty.composer = true;
                     }
@@ -1159,6 +1207,7 @@ impl App {
                     SetCapture(self.hwnd);
                 }
                 if self.in_box(x, y) {
+                    self.set_thread_focus(false);
                     self.set_composer_focus(true);
                     let (tx, ty) = self.composer_text_origin();
                     let p = self.composer.hit(x - tx, y - ty - self.composer.scroll());
@@ -1167,11 +1216,14 @@ impl App {
                     self.composer_changed();
                 } else {
                     self.set_composer_focus(false);
+                    self.set_thread_focus(false);
                     if let Some((i, k)) = self.tool_at(x, y) {
                         if let Some(t) = self.tools(i).get(k) {
                             self.tool_activate(i, t.tool);
                         }
                     } else if self.reply_click(x, y) {
+                    } else if let Some(i) = self.thread_link_at(x, y) {
+                        self.open_thread_of(i);
                     } else if self.on_head_button(x, y) {
                         self.load_older();
                     } else if let Some((i, action)) = self.action_at(x, y) {
@@ -1245,6 +1297,7 @@ impl App {
                             || self.action_at(x, y).is_some()
                             || self.tool_at(x, y).is_some()
                             || self.on_head_button(x, y)
+                            || self.thread_link_at(x, y).is_some()
                             || self.reply_cancel_rect().is_some_and(|(l, t, w, h)| {
                                 x >= l && x < l + w && y >= t && y < t + h
                             })
@@ -1548,6 +1601,8 @@ impl App {
                     self.at_end = true;
                     self.need = true;
                 }
+                // As on web, Escape closes the thread when nothing else takes it.
+                VK_ESCAPE if self.thread.is_some() => self.close_thread(),
                 _ => return false,
             }
             return true;
@@ -2203,6 +2258,7 @@ impl App {
         // Before the panels, which take the rest of the damage flags.
         self.draw_actions()?;
         self.draw_overlays()?;
+        self.draw_thread()?;
         self.draw_panels()?;
         unsafe { self.g.dcomp.Commit()? };
         if let Some(live) = &self.live {

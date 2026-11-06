@@ -12,6 +12,7 @@ use crate::actions::{PPart, Tool};
 use crate::list::Action;
 use crate::overlay::{Kind, Part as DPart};
 use crate::signin::Part;
+use crate::thread::Part as TPart;
 use crate::{App, composer::Composer, gfx};
 use std::cell::Cell;
 use windows::Win32::Foundation::*;
@@ -55,6 +56,9 @@ pub enum Id {
     ReplyCancel,
     /// The history's head: "Load older messages" and its other states.
     Older,
+    /// The thread beside the conversation, and its parts.
+    Thread,
+    ThreadPart(TPart),
 }
 
 fn na() -> Error {
@@ -70,6 +74,9 @@ fn field(a: &App, id: Id) -> &Composer {
     if let (Id::Pick(_), Some(p)) = (id, &a.picker) {
         return &p.search;
     }
+    if let (Id::ThreadPart(TPart::Field), Some(t)) = (id, &a.thread) {
+        return &t.composer;
+    }
     match (id, &a.signin, &a.dialog) {
         (Id::Dialog(_), _, Some(d)) => &d.field,
         (Id::Sign(_), Some(s), _) => s.field(),
@@ -84,6 +91,9 @@ fn field_mut(a: &mut App, id: Id) -> &mut Composer {
     if let (Id::Pick(_), Some(p)) = (id, &mut a.picker) {
         return &mut p.search;
     }
+    if let (Id::ThreadPart(TPart::Field), Some(t)) = (id, &mut a.thread) {
+        return &mut t.composer;
+    }
     match (id, &mut a.signin) {
         (Id::Sign(_), Some(s)) => s.field_mut(),
         _ => &mut a.composer,
@@ -97,6 +107,8 @@ fn field_changed(a: &mut App, id: Id, text: bool) {
         a.picker_changed(text);
     } else if matches!(id, Id::Sign(_)) {
         a.signin_changed(text);
+    } else if matches!(id, Id::ThreadPart(_)) {
+        a.thread_composer_changed();
     } else {
         a.composer_changed();
     }
@@ -109,6 +121,9 @@ fn focused(a: &App) -> Option<Id> {
     }
     if let Some(p) = &a.picker {
         return p.search.focused.then_some(Id::Pick(PPart::Search));
+    }
+    if a.thread.as_ref().is_some_and(|t| t.composer.focused) {
+        return Some(Id::ThreadPart(TPart::Field));
     }
     match &a.signin {
         Some(s) => s.field().focused.then_some(Id::Sign(Part::Field)),
@@ -126,6 +141,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
     match id {
         Id::Root => {
             let mut out = vec![Id::Rail, Id::Channels, Id::History];
+            out.extend(a.thread.as_ref().map(|_| Id::Thread));
             if a.reply.is_some() {
                 out.extend([Id::Reply, Id::ReplyCancel]);
             }
@@ -159,6 +175,18 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .map(|(action, _)| Id::Control(i, action))
             .chain(a.tools(i).into_iter().map(|t| Id::Tool(i, t.tool)))
             .collect(),
+        Id::Thread => a
+            .thread_parts()
+            .into_iter()
+            .filter(|p| !matches!(p, TPart::Chip(..) | TPart::Add(_)))
+            .map(Id::ThreadPart)
+            .collect(),
+        Id::ThreadPart(TPart::Row(i)) => a
+            .thread_parts()
+            .into_iter()
+            .filter(|p| matches!(p, TPart::Chip(r, _) | TPart::Add(r) if *r == i))
+            .map(Id::ThreadPart)
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -174,6 +202,8 @@ fn parent(id: Id) -> Option<Id> {
         Id::MenuItem(_) | Id::MenuClose => Id::Menu,
         Id::Pick(_) => Id::Picker,
         Id::Member(_) => Id::Members,
+        Id::ThreadPart(TPart::Chip(i, _) | TPart::Add(i)) => Id::ThreadPart(TPart::Row(i)),
+        Id::ThreadPart(_) => Id::Thread,
         _ => Id::Root,
     })
 }
@@ -203,6 +233,10 @@ fn exists(a: &App, id: Id) -> bool {
         }
         Id::Reply | Id::ReplyCancel => a.reply.is_some() && a.dialog.is_none(),
         Id::Older => a.dialog.is_none() && a.head_rect().is_some(),
+        Id::Thread => a.thread.is_some() && a.dialog.is_none() && a.signin.is_none(),
+        Id::ThreadPart(p) => {
+            a.dialog.is_none() && a.signin.is_none() && a.thread_parts().contains(&p)
+        }
         _ => (a.signin.is_none() && a.dialog.is_none()) || id == Id::Root,
     }
 }
@@ -224,49 +258,18 @@ fn name(a: &App, id: Id) -> String {
             }
         ),
         Id::History => format!("Messages in #{}", c.channels[c.channel].name),
-        Id::Row(i) => {
-            let m = &c.messages[i];
-            let text = a.rows.row(i).map(|r| r.plain.clone()).unwrap_or_default();
-            let mut name = String::new();
-            if let Some(r) = &m.reply {
-                if r.deleted {
-                    name.push_str("Replying to a deleted message. ");
-                } else {
-                    name.push_str(&format!("Replying to {}: {}. ", r.author.name, r.text));
-                }
-            }
-            if let Some(who) = &m.pinned_by {
-                name.push_str(&format!("Pinned by {who}. "));
-            }
-            if m.thread_context {
-                name.push_str("Replied to a thread. ");
-            }
-            name.push_str(&format!(
-                "{}, {}: {}",
-                c.members[m.author].name, m.time, text
-            ));
-            if m.edited_inline {
-                name.push_str(" (edited)");
-            }
-            if let Some(n) = m.thread_replies {
-                let s = if n == 1 { "reply" } else { "replies" };
-                name.push_str(&format!(". {n} {s}, View thread"));
-            }
-            name
-        }
+        Id::Row(i) => row_name(c, i, a.rows.row(i).map(|r| r.plain.clone())),
         // Each chip as the egui client labels it.
-        Id::Control(i, Action::Chip(k)) => {
-            c.messages[i]
-                .reactions
-                .get(k)
-                .map_or_else(String::new, |r| {
-                    let n = r.count;
-                    let s = if n == 1 { "reaction" } else { "reactions" };
-                    let you = if r.mine { ", including you" } else { "" };
-                    let name = crate::emoji::find(&r.emoji).map_or(r.emoji.as_str(), |e| &e.name);
-                    format!("{name}, {n} {s}{you}")
-                })
-        }
+        Id::Control(i, Action::Chip(k)) => chip_name(c, i, k),
+        Id::Thread => a.thread_name(),
+        Id::ThreadPart(TPart::Row(i)) => a.thread.as_ref().map_or_else(String::new, |t| {
+            row_name(&t.c, i, t.rows.row(i).map(|r| r.plain.clone()))
+        }),
+        Id::ThreadPart(TPart::Chip(i, k)) => a
+            .thread
+            .as_ref()
+            .map_or_else(String::new, |t| chip_name(&t.c, i, k)),
+        Id::ThreadPart(p) => a.thread_part_name(p),
         Id::Control(_, Action::Add) => "Add reaction".into(),
         Id::Control(_, Action::Retry) => "Retry".into(),
         Id::Control(_, Action::Dismiss) => "Dismiss".into(),
@@ -330,6 +333,53 @@ fn name(a: &App, id: Id) -> String {
     }
 }
 
+/// A message row's name: its reply, pin and thread context, author, time
+/// and text, as the egui client's accessibility labels read.
+fn row_name(c: &crate::model::Conversation, i: usize, text: Option<String>) -> String {
+    let m = &c.messages[i];
+    let text = text.unwrap_or_default();
+    let mut name = String::new();
+    if let Some(r) = &m.reply {
+        if r.deleted {
+            name.push_str("Replying to a deleted message. ");
+        } else {
+            name.push_str(&format!("Replying to {}: {}. ", r.author.name, r.text));
+        }
+    }
+    if let Some(who) = &m.pinned_by {
+        name.push_str(&format!("Pinned by {who}. "));
+    }
+    if m.thread_context {
+        name.push_str("Replied to a thread. ");
+    }
+    name.push_str(&format!(
+        "{}, {}: {}",
+        c.members[m.author].name, m.time, text
+    ));
+    if m.edited_inline {
+        name.push_str(" (edited)");
+    }
+    if let Some(n) = m.thread_replies {
+        let s = if n == 1 { "reply" } else { "replies" };
+        name.push_str(&format!(". {n} {s}, View thread"));
+    }
+    name
+}
+
+/// A reaction chip's name, as the egui client labels it.
+fn chip_name(c: &crate::model::Conversation, i: usize, k: usize) -> String {
+    c.messages[i]
+        .reactions
+        .get(k)
+        .map_or_else(String::new, |r| {
+            let n = r.count;
+            let s = if n == 1 { "reaction" } else { "reactions" };
+            let you = if r.mine { ", including you" } else { "" };
+            let name = crate::emoji::find(&r.emoji).map_or(r.emoji.as_str(), |e| &e.name);
+            format!("{name}, {n} {s}{you}")
+        })
+}
+
 fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
     match id {
         Id::Root => UIA_PaneControlTypeId,
@@ -347,6 +397,11 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Older => UIA_ButtonControlTypeId,
         Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel => UIA_ButtonControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
+        Id::Thread => UIA_PaneControlTypeId,
+        Id::ThreadPart(TPart::Row(_)) => UIA_ListItemControlTypeId,
+        Id::ThreadPart(TPart::Broadcast) => UIA_CheckBoxControlTypeId,
+        Id::ThreadPart(TPart::Field) => UIA_EditControlTypeId,
+        Id::ThreadPart(_) => UIA_ButtonControlTypeId,
         Id::Dialog(DPart::Field) => UIA_EditControlTypeId,
         Id::Dialog(DPart::Title | DPart::Note | DPart::Error) => UIA_TextControlTypeId,
         Id::Dialog(_) => UIA_ButtonControlTypeId,
@@ -394,6 +449,17 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Reply => (19, 0),
         Id::Older => (20, 0),
         Id::ReplyCancel => (19, 1),
+        Id::Thread => (21, 0),
+        Id::ThreadPart(p) => match p {
+            TPart::Close => (22, 0),
+            TPart::Older => (22, 1),
+            TPart::Broadcast => (22, 2),
+            TPart::Field => (22, 3),
+            TPart::Send => (22, 4),
+            TPart::Row(i) => (23, i),
+            TPart::Chip(i, k) => (24, i * 64 + k.min(62)),
+            TPart::Add(i) => (24, i * 64 + 63),
+        },
         Id::Control(i, action) => (
             11,
             i * 64
@@ -472,6 +538,8 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Reply => a.reply_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::ReplyCancel => a.reply_cancel_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Older => a.head_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::Thread => (a.thread_x(), 0.0, crate::thread::THREAD_W, a.h),
+        Id::ThreadPart(p) => a.thread_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Sign(p) => a
             .signin
             .as_ref()
@@ -537,6 +605,7 @@ fn safe_array_unknown(v: &[IUnknown]) -> *mut SAFEARRAY {
     IInvokeProvider,
     ISelectionItemProvider,
     IValueProvider,
+    IToggleProvider,
     ITextProvider,
     ITextProvider2
 )]
@@ -591,8 +660,15 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     || pattern == UIA_TextPatternId
                     || pattern == UIA_TextPattern2Id
             }
-            Id::Row(_) => pattern == UIA_TextPatternId,
+            Id::Row(_) | Id::ThreadPart(TPart::Row(_)) => pattern == UIA_TextPatternId,
             Id::Control(..) => pattern == UIA_InvokePatternId,
+            Id::ThreadPart(TPart::Field) => {
+                pattern == UIA_ValuePatternId
+                    || pattern == UIA_TextPatternId
+                    || pattern == UIA_TextPattern2Id
+            }
+            Id::ThreadPart(TPart::Broadcast) => pattern == UIA_TogglePatternId,
+            Id::ThreadPart(_) => pattern == UIA_InvokePatternId,
             _ => false,
         };
         if ok {
@@ -613,12 +689,18 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 UIA_ControlTypePropertyId => VARIANT::from(control_type(id).0),
                 UIA_AutomationIdPropertyId => VARIANT::from(BSTR::from(match id {
                     Id::Row(i) => format!("message-{}", a.c.messages[i].id),
+                    Id::ThreadPart(TPart::Row(i)) => {
+                        a.thread.as_ref().map_or_else(String::new, |t| {
+                            format!("thread-message-{}", t.c.messages[i].id)
+                        })
+                    }
                     _ => format!("{id:?}"),
                 })),
                 UIA_FrameworkIdPropertyId => VARIANT::from(BSTR::from("Win32")),
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
                     id,
                     Id::Composer
+                        | Id::ThreadPart(TPart::Field)
                         | Id::Space(_)
                         | Id::Channel(_)
                         | Id::MenuItem(_)
@@ -638,6 +720,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         .is_some_and(|item| item.enabled()),
                     (Id::Sign(p), Some(s)) => s.part_rect(p).is_some_and(|(_, on)| on),
                     (Id::Tool(i, t), _) => a.tools(i).iter().any(|s| s.tool == t && s.enabled),
+                    (Id::ThreadPart(p), _) => a.thread_part_enabled(p),
                     (Id::Older, _) => a.live.as_ref().is_some_and(|l| {
                         matches!(
                             l.older(),
@@ -721,6 +804,7 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
                 Id::Pick(PPart::Search) => a.picker_activate(PPart::Search),
+                Id::ThreadPart(TPart::Field) => a.set_thread_focus(true),
                 _ => {}
             }
             Ok(())
@@ -780,6 +864,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Pick(part) => a.picker_activate(part),
                 Id::ReplyCancel => a.cancel_reply(),
                 Id::Older => a.load_older(),
+                Id::ThreadPart(p) => a.thread_activate(p),
                 _ => {}
             }
             Ok(())
@@ -847,6 +932,28 @@ impl IValueProvider_Impl for Node_Impl {
     }
 }
 
+impl IToggleProvider_Impl for Node_Impl {
+    fn Toggle(&self) -> Result<()> {
+        let id = self.id;
+        with(|a| {
+            if let Id::ThreadPart(p) = id {
+                a.thread_activate(p);
+            }
+            Ok(())
+        })
+    }
+
+    fn ToggleState(&self) -> Result<ToggleState> {
+        with(|a| {
+            Ok(if a.thread.as_ref().is_some_and(|t| t.broadcast) {
+                ToggleState_On
+            } else {
+                ToggleState_Off
+            })
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Text: one implementation over two sources, a text field (the composer or
 // the sign-in field) and a message row.
@@ -856,12 +963,15 @@ enum Doc {
     /// The composer or the sign-in field, by node.
     Field(Id),
     Row(usize),
+    /// A row in the thread pane.
+    ThreadRow(usize),
 }
 
 impl Doc {
     fn of(id: Id) -> Self {
         match id {
             Id::Row(i) => Self::Row(i),
+            Id::ThreadPart(TPart::Row(i)) => Self::ThreadRow(i),
             _ => Self::Field(id),
         }
     }
@@ -870,6 +980,7 @@ impl Doc {
         match self {
             Self::Field(id) => id,
             Self::Row(i) => Id::Row(i),
+            Self::ThreadRow(i) => Id::ThreadPart(TPart::Row(i)),
         }
     }
 
@@ -879,6 +990,12 @@ impl Doc {
             Self::Row(i) if exists(a, Id::Row(i)) => {
                 Ok(a.rows.row(i).map(|r| r.plain16.clone()).unwrap_or_default())
             }
+            Self::ThreadRow(i) if exists(a, self.id()) => Ok(a
+                .thread
+                .as_ref()
+                .and_then(|t| t.rows.row(i))
+                .map(|r| r.plain16.clone())
+                .unwrap_or_default()),
             _ => Err(na()),
         }
     }
@@ -887,6 +1004,7 @@ impl Doc {
         match self {
             Self::Field(id) => field(a, id).layout.clone(),
             Self::Row(i) => a.rows.row(i).map(|r| r.text.clone()),
+            Self::ThreadRow(i) => a.thread.as_ref()?.rows.row(i).map(|r| r.text.clone()),
         }
     }
 
@@ -900,8 +1018,10 @@ impl Doc {
             (Self::Field(Id::Pick(_)), _) => {
                 a.picker.as_ref().map_or((0.0, 0.0), |p| p.text_origin())
             }
+            (Self::Field(Id::ThreadPart(_)), _) => a.thread_text_origin(),
             (Self::Field(_), _) => a.composer_text_origin(),
             (Self::Row(i), _) => a.row_text_origin(i),
+            (Self::ThreadRow(i), _) => a.thread_row_text_origin(i),
         }
     }
 
@@ -910,6 +1030,8 @@ impl Doc {
             Self::Field(id) => field(a, id).selection(),
             Self::Row(i) => App::sel_for(a.sel, i, a.row_len(i))
                 .map_or((0, 0), |(s, e)| (s as usize, e as usize)),
+            // The thread's rows are read, not selected.
+            Self::ThreadRow(_) => (0, 0),
         }
     }
 
@@ -922,6 +1044,7 @@ impl Doc {
                 field_changed(a, id, false);
             }
             Self::Row(i) => a.set_sel(Some(((i, s as u32), (i, e as u32)))),
+            Self::ThreadRow(_) => {}
         }
     }
 }
@@ -1370,11 +1493,13 @@ fn editable() -> Id {
             a.dialog.as_ref().map(|d| d.kind),
             a.signin.is_some(),
             a.picker.is_some(),
+            a.thread.as_ref().is_some_and(|t| t.composer.focused),
         )
     }) {
-        Some((Some(Kind::Edit), _, _)) => Id::Dialog(DPart::Field),
-        Some((_, true, _)) => Id::Sign(Part::Field),
-        Some((_, _, true)) => Id::Pick(PPart::Search),
+        Some((Some(Kind::Edit), _, _, _)) => Id::Dialog(DPart::Field),
+        Some((_, true, _, _)) => Id::Sign(Part::Field),
+        Some((_, _, true, _)) => Id::Pick(PPart::Search),
+        Some((_, _, _, true)) => Id::ThreadPart(TPart::Field),
         _ => Id::Composer,
     }
 }

@@ -81,6 +81,9 @@ pub enum Update {
     Older(Box<(Conversation, Ids)>),
     /// Loading older messages started, finished or failed.
     OlderState,
+    /// The open thread's messages or state changed (or it closed): the
+    /// pane rebuilds from `Live::thread_view`.
+    Thread,
     /// A new message, or the latest state of a shown one (its reactions,
     /// text or deletion changed), whose row is then rebuilt.
     Message(Box<core::Message>),
@@ -205,6 +208,27 @@ pub struct Live {
     pub has_more: bool,
     pub loading_older: bool,
     pub older_error: Option<String>,
+    /// The open thread, and the last thread request (results for earlier
+    /// ones drop).
+    pub thread: Option<Thread>,
+    thread_request: u64,
+    /// Channel messages the timeline holds only because a thread loaded
+    /// them (its root, its broadcast replies): kept out of the channel's
+    /// rows, as in the egui client, until an older page brings them.
+    thread_only: HashSet<String>,
+}
+
+/// The thread beside the channel, as in the egui client's thread panel.
+pub struct Thread {
+    pub root: String,
+    request: u64,
+    pub loading: bool,
+    /// Older replies exist before `before`.
+    pub has_more: bool,
+    before: Option<String>,
+    pub error: Option<String>,
+    /// The failed request was an older page, so Retry repeats it.
+    retry_older: bool,
 }
 
 /// What the top of the history offers, as in the egui client.
@@ -261,6 +285,9 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         has_more: false,
         loading_older: false,
         older_error: None,
+        thread: None,
+        thread_request: 0,
+        thread_only: HashSet::new(),
     })
 }
 
@@ -318,8 +345,10 @@ impl Live {
         });
     }
 
-    /// Sends `text` to the open channel, replying to message `reply_to`.
-    pub fn send(&self, text: String, reply_to: Option<String>) {
+    /// Sends `text` to the open channel, replying to message `reply_to`;
+    /// with `thread`, into that root's thread (and to the channel too when
+    /// its flag is set).
+    pub fn send(&self, text: String, reply_to: Option<String>, thread: Option<(String, bool)>) {
         let (Some(channel), Some(chat_token)) = (&self.channel, &self.chat_token) else {
             return;
         };
@@ -331,8 +360,8 @@ impl Live {
             channel: channel.clone(),
             client_id,
             text,
-            thread_root_id: None,
-            broadcast: false,
+            broadcast: thread.as_ref().is_some_and(|(_, b)| *b),
+            thread_root_id: thread.map(|(root, _)| root),
             reply_to_id: reply_to,
             attachment_ids: Vec::new(),
             spoiler_attachment_ids: Vec::new(),
@@ -367,10 +396,7 @@ impl Live {
             if m.id == id {
                 root = m.thread_root_id.clone();
             }
-            if m.seq.parse::<u64>().is_ok_and(|seq| seq > old)
-                && m.id != id
-                && m.is_channel_message()
-            {
+            if m.seq.parse::<u64>().is_ok_and(|seq| seq > old) && m.id != id && self.in_channel(m) {
                 out.push(Update::Message(Box::new(self.shown(m))));
             }
         }
@@ -379,11 +405,32 @@ impl Live {
             if let Some(m) = self
                 .timeline
                 .messages()
-                .find(|m| m.id == id && m.is_channel_message())
+                .find(|m| m.id == id && self.in_channel(m))
             {
                 out.push(Update::Message(Box::new(self.shown(m))));
             }
         }
+        if self.in_thread(id) || root.is_some_and(|r| self.in_thread(&r)) {
+            out.push(Update::Thread);
+        }
+    }
+
+    /// Whether `m` is one of the channel's rows (not a thread-only reply or
+    /// a message only a thread loaded).
+    fn in_channel(&self, m: &core::Message) -> bool {
+        m.is_channel_message() && !self.thread_only.contains(&m.id)
+    }
+
+    /// Whether message `id` is the open thread's root or one of its replies.
+    fn in_thread(&self, id: &str) -> bool {
+        let Some(t) = &self.thread else {
+            return false;
+        };
+        id == t.root
+            || self
+                .timeline
+                .messages()
+                .any(|m| m.id == id && m.thread_root_id.as_deref() == Some(&t.root))
     }
 
     /// A message as the viewer sees it: your pending reactions drawn over
@@ -398,9 +445,14 @@ impl Live {
 
     /// Message `id` again, after its pending reactions changed.
     fn republish(&mut self, id: &str) {
-        if let Some(m) = self.timeline.messages().find(|m| m.id == id) {
+        if let Some(m) = self.timeline.messages().find(|m| m.id == id)
+            && self.in_channel(m)
+        {
             let shown = self.shown(m);
             self.queued.push(Update::Message(Box::new(shown)));
+        }
+        if self.in_thread(id) {
+            self.queued.push(Update::Thread);
         }
     }
 
@@ -580,7 +632,7 @@ impl Live {
         let Some(before) = self
             .timeline
             .messages()
-            .find(|m| m.is_channel_message())
+            .find(|m| self.in_channel(m))
             .map(|m| m.seq.clone())
         else {
             return false;
@@ -606,15 +658,106 @@ impl Live {
             invitations: Vec::new(),
             limits: None,
         });
-        let messages: Vec<core::Message> =
-            self.timeline.messages().map(|m| self.shown(m)).collect();
+        let messages: Vec<core::Message> = self
+            .timeline
+            .messages()
+            .filter(|m| !self.thread_only.contains(&m.id))
+            .map(|m| self.shown(m))
+            .collect();
         Some(conversation(
             &spaces,
             detail,
             channel,
             &messages,
             self.me.as_deref(),
+            false,
         ))
+    }
+
+    /// Opens message `root`'s thread beside the channel.
+    pub fn open_thread(&mut self, root: &str) {
+        if self.thread.as_ref().is_some_and(|t| t.root == root) {
+            return;
+        }
+        self.thread = Some(Thread {
+            root: root.to_owned(),
+            request: 0,
+            loading: true,
+            has_more: false,
+            before: None,
+            error: None,
+            retry_older: false,
+        });
+        self.load_thread(false);
+    }
+
+    pub fn close_thread(&mut self) {
+        self.thread_request += 1;
+        if self.thread.take().is_some() {
+            self.queued.push(Update::Thread);
+        }
+    }
+
+    /// Loads the open thread's latest replies, or (with `older`) the page
+    /// before the oldest shown one.
+    pub fn load_thread(&mut self, older: bool) {
+        let (Some(channel), Some(t)) = (self.channel.clone(), self.thread.as_mut()) else {
+            return;
+        };
+        self.thread_request += 1;
+        t.request = self.thread_request;
+        t.loading = true;
+        t.error = None;
+        t.retry_older = older;
+        self.worker.send(Command::LoadThread {
+            generation: self.generation,
+            request: t.request,
+            token: self.token.clone(),
+            channel,
+            root: t.root.clone(),
+            before: if older { t.before.clone() } else { None },
+        });
+        self.queued.push(Update::Thread);
+    }
+
+    /// Retry after a failed thread load repeats the page that failed.
+    pub fn retry_thread(&mut self) {
+        let older = self.thread.as_ref().is_some_and(|t| t.retry_older);
+        self.load_thread(older);
+    }
+
+    /// The open thread's root and replies as rows (deleted replies left
+    /// out, as in the egui client), with the root's reply count.
+    pub fn thread_view(&self) -> Option<(Conversation, Ids, Option<u64>)> {
+        let t = self.thread.as_ref()?;
+        let (detail, channel) = (self.detail.as_ref()?, self.channel.as_ref()?);
+        let spaces = core::Spaces {
+            spaces: Vec::new(),
+            invitations: Vec::new(),
+            limits: None,
+        };
+        let root = self.timeline.messages().find(|m| m.id == t.root);
+        let count = root
+            .and_then(|m| m.thread.as_ref())
+            .map(|s| s.reply_count)
+            .filter(|n| *n > 0);
+        let messages: Vec<core::Message> = self
+            .timeline
+            .messages()
+            .filter(|m| {
+                !m.is_deleted() && (m.id == t.root || m.thread_root_id.as_deref() == Some(&t.root))
+            })
+            .map(|m| self.shown(m))
+            .collect();
+        let (c, ids) = conversation(
+            &spaces,
+            detail,
+            channel,
+            &messages,
+            self.me.as_deref(),
+            true,
+        );
+        Some((c, ids, count))
     }
 
     /// Reloads the open channel from history.
@@ -694,6 +837,9 @@ impl Live {
                     self.has_more = history.has_more;
                     self.loading_older = false;
                     self.older_error = None;
+                    self.thread = None;
+                    self.thread_request += 1;
+                    self.thread_only.clear();
                     self.detail = Some(detail.clone());
                     let mut timeline = core::Timeline::default();
                     if let Err(e) = timeline.reset(history.messages, &history.cursor) {
@@ -722,8 +868,14 @@ impl Live {
                         },
                         Clone::clone,
                     );
-                    let (conversation, ids) =
-                        conversation(&spaces, &detail, &channel, &messages, self.me.as_deref());
+                    let (conversation, ids) = conversation(
+                        &spaces,
+                        &detail,
+                        &channel,
+                        &messages,
+                        self.me.as_deref(),
+                        false,
+                    );
                     out.push(Update::Loaded(Box::new((conversation, ids))));
                     self.worker.send(Command::Connect {
                         generation: current,
@@ -749,6 +901,9 @@ impl Live {
                 match result {
                     Ok(page) => {
                         self.has_more = page.has_more;
+                        for m in &page.messages {
+                            self.thread_only.remove(&m.id);
+                        }
                         if self.timeline.prepend(page.messages).is_err() {
                             return self.reload();
                         }
@@ -764,6 +919,68 @@ impl Live {
                     }
                 }
             }
+            Event::ThreadLoaded {
+                generation,
+                request,
+                channel,
+                root,
+                result,
+            } if generation == current
+                && self.channel.as_deref() == Some(channel.as_str())
+                && self
+                    .thread
+                    .as_ref()
+                    .is_some_and(|t| t.request == request && t.root == root) =>
+            {
+                match result {
+                    Ok(page)
+                        if page.root.id == root
+                            && page.root.channel_id == channel
+                            && page.root.thread_root_id.is_none()
+                            && page.messages.iter().all(|m| {
+                                m.channel_id == channel
+                                    && m.thread_root_id.as_deref() == Some(root.as_str())
+                            }) =>
+                    {
+                        let before = page.messages.first().map(|m| m.seq.clone());
+                        let rows: Vec<core::Message> =
+                            std::iter::once(page.root).chain(page.messages).collect();
+                        let loaded: HashSet<String> =
+                            self.timeline.messages().map(|m| m.id.clone()).collect();
+                        self.thread_only.extend(
+                            rows.iter()
+                                .filter(|m| m.is_channel_message() && !loaded.contains(&m.id))
+                                .map(|m| m.id.clone()),
+                        );
+                        let merged = self.timeline.prepend(rows);
+                        if let Some(t) = &mut self.thread {
+                            t.loading = false;
+                            t.has_more = page.has_more;
+                            t.before = before.or(t.before.take());
+                            if let Err(e) = merged {
+                                t.error = Some(e);
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        if let Some(t) = &mut self.thread {
+                            t.loading = false;
+                            t.error = Some("This thread could not be loaded.".into());
+                        }
+                    }
+                    Err(e) if e.access_denied => {
+                        self.thread = None;
+                        out.push(Update::Failed(e.message));
+                    }
+                    Err(e) => {
+                        if let Some(t) = &mut self.thread {
+                            t.loading = false;
+                            t.error = Some(e.message);
+                        }
+                    }
+                }
+                out.push(Update::Thread);
+            }
             Event::Sent {
                 generation, result, ..
             } if generation == current => match result {
@@ -771,7 +988,16 @@ impl Live {
                     if self.timeline.merge_sent(m.clone()).is_err() {
                         self.reload();
                     }
-                    out.push(Update::Message(Box::new(m)));
+                    let thread = m
+                        .thread_root_id
+                        .as_deref()
+                        .is_some_and(|r| self.in_thread(r));
+                    if self.in_channel(&m) {
+                        out.push(Update::Message(Box::new(m)));
+                    }
+                    if thread {
+                        out.push(Update::Thread);
+                    }
                 }
                 Err(f) => out.push(Update::Failed(f.message)),
             },
@@ -978,6 +1204,7 @@ pub fn conversation(
     channel: &str,
     messages: &[core::Message],
     me: Option<&str>,
+    thread: bool,
 ) -> (Conversation, Ids) {
     let order = detail.member_order(Some(channel));
     let mut ids = Ids {
@@ -991,8 +1218,9 @@ pub fn conversation(
         .collect();
     let listed = members.len();
     let mut out = Vec::with_capacity(messages.len());
-    // Thread-only replies live in their thread, not the channel.
-    for m in messages.iter().filter(|m| m.is_channel_message()) {
+    // Thread-only replies live in their thread, not the channel. In the
+    // thread pane the root and replies are shown without their thread links.
+    for m in messages.iter().filter(|m| thread || m.is_channel_message()) {
         let Some((author, grouped, date)) = ids.place(m) else {
             continue;
         };
@@ -1001,6 +1229,10 @@ pub fn conversation(
         }
         let mut row = message(m, author, grouped, me);
         row.date = date;
+        if thread {
+            row.thread_replies = None;
+            row.thread_context = false;
+        }
         out.push(row);
     }
     let joined: Vec<&core::Channel> = detail.channels.iter().filter(|c| c.joined).collect();

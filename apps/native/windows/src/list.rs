@@ -640,6 +640,27 @@ impl Rows {
             .map(|row| controls(row, content_top(grouped)))
             .unwrap_or_default()
     }
+
+    /// Row `i`'s link into a thread, from the row's top: a root's "N replies
+    /// · View thread" or a broadcast reply's "Replied to a thread · View
+    /// thread".
+    pub fn thread_link(&self, i: usize, grouped: bool) -> Option<Common::D2D_RECT_F> {
+        let row = self.row(i)?;
+        let top = content_top(grouped);
+        if let Some((_, w, view)) = &row.thread {
+            let vw = gfx::metrics(view).widthIncludingTrailingWhitespace;
+            let y = top + row.thread_y;
+            return Some(rect(BODY_X, y, BODY_X + 6.0 + w + 8.0 + vw, y + THREAD_H));
+        }
+        let m = gfx::metrics(row.context.as_ref()?);
+        let y = top + row.context_y;
+        Some(rect(
+            BODY_X,
+            y,
+            BODY_X + m.widthIncludingTrailingWhitespace,
+            y + m.height,
+        ))
+    }
 }
 
 /// The row above the first message: "Load older messages", "Loading…",
@@ -657,26 +678,50 @@ pub fn head_label(state: crate::live::Older) -> (&'static str, bool) {
     }
 }
 
+/// What a history head shows: a centred label or quiet bordered button,
+/// optionally after a muted note (the error before Retry).
+pub struct Head<'a> {
+    pub label: &'a str,
+    pub button: bool,
+    pub enabled: bool,
+    pub note: Option<&'a str>,
+}
+
+impl crate::live::Older {
+    pub fn head(self) -> Head<'static> {
+        let (label, button) = head_label(self);
+        Head {
+            label,
+            button,
+            enabled: self != crate::live::Older::Loading,
+            note: (self == crate::live::Older::Failed).then_some(HEAD_ERROR),
+        }
+    }
+}
+
 /// The head's button (or label) rectangle relative to the head's top-left,
 /// for a list `full` DIPs wide.
 pub fn head_rect(g: &Gfx, state: crate::live::Older, full: f32) -> Result<Common::D2D_RECT_F> {
-    let (label, button) = head_label(state);
-    let format = if button {
+    head_button_rect(g, &state.head(), full)
+}
+
+pub fn head_button_rect(g: &Gfx, head: &Head, full: f32) -> Result<Common::D2D_RECT_F> {
+    let format = if head.button {
         &g.formats.head_button
     } else {
         &g.formats.head
     };
-    let w =
-        gfx::metrics(&g.layout(&gfx::wide(label), format, 1e6)?).widthIncludingTrailingWhitespace;
-    let bw = if button { w + 20.0 } else { w };
+    let w = gfx::metrics(&g.layout(&gfx::wide(head.label), format, 1e6)?)
+        .widthIncludingTrailingWhitespace;
+    let bw = if head.button { w + 20.0 } else { w };
     let mut x = (full - bw) / 2.0;
-    if state == crate::live::Older::Failed {
-        // "Couldn't load older messages." then Retry, centred together.
-        let note = g.layout(&gfx::wide(HEAD_ERROR), &g.formats.head, 1e6)?;
+    if let Some(note) = head.note {
+        // The note, then the button, centred together.
+        let note = g.layout(&gfx::wide(note), &g.formats.head, 1e6)?;
         let nw = gfx::metrics(&note).widthIncludingTrailingWhitespace;
         x = (full - (nw + 8.0 + bw)) / 2.0 + nw + 8.0;
     }
-    let h = if button { 27.0 } else { 16.0 };
+    let h = if head.button { 27.0 } else { 16.0 };
     Ok(rect(x, (HEAD_H - h) / 2.0, x + bw, (HEAD_H + h) / 2.0))
 }
 
@@ -691,11 +736,21 @@ pub fn draw_head(
     y: f32,
     hover: bool,
 ) -> Result<()> {
-    let (label, button) = head_label(state);
-    let r = head_rect(g, state, full)?;
+    draw_head_row(g, dc, &state.head(), full, y, hover)
+}
+
+pub fn draw_head_row(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    head: &Head,
+    full: f32,
+    y: f32,
+    hover: bool,
+) -> Result<()> {
+    let r = head_button_rect(g, head, full)?;
     let r = rect(r.left, r.top + y, r.right, r.bottom + y);
-    if state == crate::live::Older::Failed {
-        let note = g.layout(&gfx::wide(HEAD_ERROR), &g.formats.head, 1e6)?;
+    if let Some(note) = head.note {
+        let note = g.layout(&gfx::wide(note), &g.formats.head, 1e6)?;
         let nw = gfx::metrics(&note).widthIncludingTrailingWhitespace;
         let nh = gfx::metrics(&note).height;
         crate::text::draw(
@@ -706,29 +761,29 @@ pub fn draw_head(
             &g.brushes.muted,
         );
     }
-    if !button {
-        let l = g.layout(&gfx::wide(label), &g.formats.head, 1e6)?;
+    if !head.button {
+        let l = g.layout(&gfx::wide(head.label), &g.formats.head, 1e6)?;
         crate::text::draw(dc, &l, r.left, r.top, &g.brushes.muted);
         return Ok(());
     }
     // Web's quiet bordered history button.
-    let enabled = state != crate::live::Older::Loading;
-    if enabled && hover {
+    let lit = head.enabled && hover;
+    if lit {
         fill_round(dc, r, 7.0, &g.brushes.border);
     }
     stroke_round(
         dc,
         r,
         7.0,
-        if enabled && hover {
+        if lit {
             &g.brushes.muted
         } else {
             &g.brushes.border
         },
     );
-    let l = g.layout(&gfx::wide(label), &g.formats.head_button, 1e6)?;
+    let l = g.layout(&gfx::wide(head.label), &g.formats.head_button, 1e6)?;
     let lh = gfx::metrics(&l).height;
-    let brush = if enabled && hover {
+    let brush = if lit {
         &g.brushes.text
     } else {
         &g.brushes.muted

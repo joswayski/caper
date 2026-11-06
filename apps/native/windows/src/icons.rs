@@ -25,6 +25,7 @@ macro_rules! icons {
 }
 
 icons! {
+    Check => "check.svg",
     Close => "x.svg",
     Copy => "copy.svg",
     Hash => "hash.svg",
@@ -33,6 +34,7 @@ icons! {
     Pin => "pin.svg",
     PinOff => "pin-off.svg",
     Reply => "reply.svg",
+    Send => "send.svg",
     SmilePlus => "smile-plus.svg",
     Trash => "trash-2.svg",
 }

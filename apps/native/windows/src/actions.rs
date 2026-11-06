@@ -654,6 +654,13 @@ impl App {
         let Some(id) = self.c.messages.get(i).map(|m| m.id.clone()) else {
             return;
         };
+        self.open_picker_for(i, id, anchor);
+    }
+
+    /// Opens "Add a reaction" for message `id` at `anchor`; `row` is its
+    /// channel row (the thread pane passes one past the rows).
+    pub fn open_picker_for(&mut self, row: usize, id: String, anchor: (f32, f32)) {
+        let i = row;
         if self.picker.as_ref().is_some_and(|p| p.id == id) {
             return self.close_picker();
         }
