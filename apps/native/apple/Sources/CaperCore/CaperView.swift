@@ -5356,9 +5356,21 @@ enum ChatTimestamp {
     /// The last full-date formatter, rebuilt when the locale or time zone changes.
     private static var fullDateFormatter: (key: String, formatter: DateFormatter)?
 
+    /// Parsed timestamps: grouping, day dividers and row times each ask for
+    /// the same message's date, and ISO 8601 parsing is slow enough to show
+    /// in a cold launch.
+    private static var parsed: [String: Date?] = [:]
+
     /// RFC 3339, with or without fractional seconds.
     static func date(_ value: String) -> Date? {
-        fractional.date(from: value) ?? whole.date(from: value)
+        lock.lock()
+        if let cached = parsed[value] { lock.unlock(); return cached }
+        lock.unlock()
+        let date = fractional.date(from: value) ?? whole.date(from: value)
+        lock.lock(); defer { lock.unlock() }
+        if parsed.count >= 4096 { parsed.removeAll(keepingCapacity: true) }
+        parsed[value] = date
+        return date
     }
 
     /// "Monday, September 28, 2026" (the locale's full date style).
