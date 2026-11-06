@@ -1,0 +1,46 @@
+name: Install apt packages
+description: >-
+  Installs Ubuntu packages without hanging on a trickling mirror. Downloads run
+  separately with per-attempt timeouts so each retry resumes partial files,
+  later attempts switch to archive.ubuntu.com, and the .debs are cached.
+inputs:
+  packages:
+    description: Space-separated package names.
+    required: true
+  cache-key:
+    description: Cache key for the downloaded packages.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@v4
+      with:
+        path: ~/apt-archives
+        key: ${{ inputs.cache-key }}-${{ runner.os }}-${{ runner.arch }}
+    - shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        if compgen -G "$HOME/apt-archives/*.deb" >/dev/null; then
+          sudo cp "$HOME"/apt-archives/*.deb /var/cache/apt/archives/
+        fi
+        opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30)
+        for attempt in 1 2 3 4; do
+          # Hosted images read their mirror list from this file.
+          if [ "$attempt" -ge 3 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            echo "http://archive.ubuntu.com/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+          # shellcheck disable=SC2086
+          if timeout 180 sudo apt-get "${opts[@]}" update &&
+             timeout 300 sudo apt-get "${opts[@]}" install -y --no-install-recommends --download-only $PACKAGES; then
+            # shellcheck disable=SC2086
+            sudo apt-get install -y --no-install-recommends --no-download $PACKAGES
+            mkdir -p "$HOME/apt-archives"
+            cp /var/cache/apt/archives/*.deb "$HOME/apt-archives/" 2>/dev/null || true
+            exit 0
+          fi
+          echo "apt download attempt $attempt failed; retrying"
+          sleep 10
+        done
+        exit 1
