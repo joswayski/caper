@@ -15,6 +15,18 @@ class FormattingTest {
         assertEquals(FormatSelection("", 0, 0), history.edit("**x**", FormatSelection("****", 2, 2)))
     }
 
+    @Test fun `typing on at the end of a styled draft keeps the style`() {
+        // Types one character at a time with the caret at the visible end, as the composer maps it.
+        fun type(start: String, typed: String) = typed.fold(start) { text, c ->
+            val caret = formattedMessage(text).let { it.original(it.text.length) }
+            FormatEditHistory().edit(text, FormatSelection(text.substring(0, caret) + c + text.substring(caret), caret + 1, caret + 1)).text
+        }
+        assertEquals("**bold** and", type("**bold**", " and"))
+        assertEquals("**bolder**", type("**bold**", "er"))
+        assertEquals("_it_ x", type("_it_", " x"))
+        assertEquals("**a** _b_ c", type("**a** _b_", " c"))
+    }
+
     @Test fun `visible clipboard and replacements preserve emoji and link targets`() {
         assertEquals("hello 🙂", copiedFormatText("**hello _🙂_**", 0, 14))
         assertEquals("ell", copiedFormatText("**hello**", 3, 6))

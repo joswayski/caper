@@ -98,6 +98,18 @@ internal fun repairFormatEdit(previous: String, next: FormatSelection): FormatSe
     if (previous == next.text) return next
     val before = formattedMessage(previous).sourceIndices.toSet()
     if (before.size == previous.length) return next
+    // At the end of a styled draft the caret sits inside the closing delimiters, so typing extends
+    // the style. Whitespace can't end a style, so it goes after them, as web serializes it:
+    // "**bold**" + " and" keeps "**bold** and" rather than losing both markers.
+    val typed = next.text.length - previous.length
+    if (typed > 0 && next.start == next.end) {
+        val at = next.start - typed
+        if (at > 0 && next.text.startsWith(previous.substring(0, at)) && next.text.endsWith(previous.substring(at)) &&
+            next.text.substring(at, next.start).all(::formatSpace) && (at until previous.length).none { it in before }) {
+            val moved = previous + next.text.substring(at, next.start)
+            if (formattedMessage(moved).sourceIndices.size == before.size + typed) return FormatSelection(moved, moved.length, moved.length)
+        }
+    }
     var prefix = 0
     while (prefix < minOf(previous.length, next.text.length) && previous[prefix] == next.text[prefix]) prefix++
     var suffix = 0
