@@ -114,6 +114,12 @@ pub enum Update {
     },
     /// The reply to delete request `request`: None once deleted.
     Deleted(u64, Option<String>),
+    /// Attachment images loaded or their URLs were refreshed: rows with
+    /// attachments redraw.
+    Media,
+    /// An attachment to open in the browser or player, once its URL was
+    /// refreshed.
+    Open(String),
     /// A page of message `message`'s versions for request `request`, or
     /// why it failed (for its history).
     Versions {
@@ -198,6 +204,10 @@ impl Ids {
 
 pub struct Live {
     worker: Worker<WinHost>,
+    /// Attachment images (the shared cache, as in egui), and whether one of
+    /// its fetches finished since it was last polled.
+    pub media: caper_client::media::Media<crate::files::D2d>,
+    media_ready: Arc<std::sync::atomic::AtomicBool>,
     pub host: WinHost,
     generation: u64,
     /// The latest navigation; results for earlier ones are dropped.
@@ -306,11 +316,21 @@ pub fn start(hwnd: HWND) -> Option<Live> {
             return None;
         }
     };
+    let media_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let media = caper_client::media::Media::new(Some(api.clone()), {
+        let (host, ready) = (host.clone(), media_ready.clone());
+        Arc::new(move || {
+            ready.store(true, std::sync::atomic::Ordering::Release);
+            host.wake();
+        })
+    });
     let worker = Worker::new(api, host.clone());
     let generation = 1;
     worker.send(Command::Restore { generation });
     Some(Live {
         worker,
+        media,
+        media_ready,
         host,
         generation,
         navigation: 0,
@@ -350,6 +370,27 @@ pub fn start(hwnd: HWND) -> Option<Live> {
 }
 
 impl Live {
+    /// Applies finished image loads and starts queued ones, and asks for
+    /// fresh signed URLs of shown attachments about to expire. Returns
+    /// whether an image arrived.
+    pub fn pump_media(&mut self, tex: &mut crate::files::D2d) -> bool {
+        let now = std::time::Instant::now();
+        let ready = self
+            .media_ready
+            .swap(false, std::sync::atomic::Ordering::Acquire);
+        self.media.poll(tex, now);
+        if let Some(token) = &self.token {
+            let ids = self.media.take_refresh(now);
+            if !ids.is_empty() {
+                self.worker.send(Command::RefreshAttachmentUrls {
+                    token: token.clone(),
+                    ids,
+                });
+            }
+        }
+        ready
+    }
+
     pub fn request_code(&self, email: String) {
         self.worker.send(Command::RequestCode {
             generation: self.generation,
@@ -1607,6 +1648,16 @@ impl Live {
             }) if generation == current => out.push(Update::Connection(
                 (!online && !detail.is_empty()).then_some(detail),
             )),
+            Event::AttachmentUrls {
+                ids,
+                result: Ok(urls),
+                ..
+            } => {
+                if let Some(url) = self.media.refreshed(&ids, urls) {
+                    out.push(Update::Open(url));
+                }
+                out.push(Update::Media);
+            }
             // Everything else (reactions, edits, threads, voice, unread
             // state, notifications...) is not shown by this client yet.
             _ => {}
@@ -1863,6 +1914,12 @@ pub fn message(
                 p.author.name.clone()
             }
         }),
+        attachments: if deleted {
+            Vec::new()
+        } else {
+            m.content.attachments.clone()
+        },
+        revealed: Default::default(),
     }
 }
 

@@ -63,6 +63,8 @@ pub enum Id {
     Original(usize),
     /// Row `i`'s "(edited)" marker, which opens its message history.
     Edited(usize),
+    /// Row `i`'s attachment `k`.
+    File(usize, usize),
     /// The thread beside the conversation, and its parts.
     Thread,
     ThreadPart(TPart),
@@ -189,6 +191,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .chain(a.tools(i).into_iter().map(|t| Id::Tool(i, t.tool)))
             .chain(a.quote_link_rect(i).map(|_| Id::Original(i)))
             .chain(a.edited_rect(i).map(|_| Id::Edited(i)))
+            .chain(a.file_ids(i).into_iter().map(move |k| Id::File(i, k)))
             .collect(),
         Id::Thread => a
             .thread_parts()
@@ -214,7 +217,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Row(_) => Id::History,
         Id::Control(i, _) | Id::Tool(i, _) => Id::Row(i),
         Id::Older | Id::Newer(_) => Id::History,
-        Id::Original(i) | Id::Edited(i) => Id::Row(i),
+        Id::Original(i) | Id::Edited(i) | Id::File(i, _) => Id::Row(i),
         Id::MenuItem(_) | Id::MenuClose => Id::Menu,
         Id::Pick(_) => Id::Picker,
         Id::Member(_) => Id::Members,
@@ -252,6 +255,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Newer(k) => a.dialog.is_none() && a.foot_rect(k).is_some(),
         Id::Original(i) => a.dialog.is_none() && a.quote_link_rect(i).is_some(),
         Id::Edited(i) => a.dialog.is_none() && a.edited_rect(i).is_some(),
+        Id::File(i, k) => a.dialog.is_none() && a.file_rect(i, k).is_some(),
         Id::Thread => a.thread.is_some() && a.dialog.is_none() && a.signin.is_none(),
         Id::ThreadPart(p) => {
             a.dialog.is_none() && a.signin.is_none() && a.thread_parts().contains(&p)
@@ -331,6 +335,7 @@ fn name(a: &App, id: Id) -> String {
         Id::Newer(k) => a.foot_head(k).label.into(),
         Id::Original(_) => "View original".into(),
         Id::Edited(_) => "Message history".into(),
+        Id::File(i, k) => a.file_label(i, k),
         Id::Older => match a.live.as_ref().map(crate::live::Live::older) {
             Some(crate::live::Older::Failed) => "Couldn\u{2019}t load older messages. Retry".into(),
             Some(state) => crate::list::head_label(state).0.into(),
@@ -442,7 +447,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Reply => UIA_TextControlTypeId,
         Id::Older | Id::Newer(_) => UIA_ButtonControlTypeId,
         Id::Original(_) => UIA_HyperlinkControlTypeId,
-        Id::Edited(_) => UIA_ButtonControlTypeId,
+        Id::Edited(_) | Id::File(..) => UIA_ButtonControlTypeId,
         Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel => UIA_ButtonControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Thread => UIA_PaneControlTypeId,
@@ -507,6 +512,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Newer(k) => (26, k),
         Id::Original(i) => (27, i),
         Id::Edited(i) => (28, i),
+        Id::File(i, k) => (29, i * 16 + k.min(15)),
         Id::ReplyCancel => (19, 1),
         Id::Thread => (21, 0),
         Id::ThreadPart(p) => match p {
@@ -600,6 +606,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Newer(k) => a.foot_rect(k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Original(i) => a.quote_link_rect(i).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Edited(i) => a.edited_rect(i).unwrap_or((0.0, 0.0, 0.0, 0.0)),
+        Id::File(i, k) => a.file_rect(i, k).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Thread => (a.thread_x(), 0.0, crate::thread::THREAD_W, a.h),
         Id::ThreadPart(p) => a.thread_part_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Sign(p) => a
@@ -701,7 +708,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             | Id::Older
             | Id::Newer(_)
             | Id::Original(_)
-            | Id::Edited(_) => pattern == UIA_InvokePatternId,
+            | Id::Edited(_)
+            | Id::File(..) => pattern == UIA_InvokePatternId,
             Id::Pick(PPart::Category(_)) => {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
@@ -954,6 +962,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Newer(k) => a.foot_activate(k),
                 Id::Original(i) => a.view_original_of(i),
                 Id::Edited(i) => a.open_history_of(i),
+                Id::File(i, k) => a.file_activate(i, k, false),
                 Id::ThreadPart(p) => a.thread_activate(p),
                 _ => {}
             }

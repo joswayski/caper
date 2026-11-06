@@ -90,6 +90,9 @@ pub struct Message {
     pub unread: bool,
     /// Who pinned it ("you" for yourself), shown above it.
     pub pinned_by: Option<String>,
+    /// Its files, and which spoilers among them are revealed.
+    pub attachments: Vec<caper_client::model::Attachment>,
+    pub revealed: std::collections::HashSet<String>,
 }
 
 pub struct Channel {
@@ -543,6 +546,8 @@ impl Conversation {
             reaction_error: None,
             date: None,
             pinned_by: None,
+            attachments: Vec::new(),
+            revealed: Default::default(),
         });
     }
 }
@@ -575,6 +580,8 @@ impl Conversation {
             reaction_error: None,
             date: None,
             pinned_by: None,
+            attachments: Vec::new(),
+            revealed: Default::default(),
         });
     }
 }

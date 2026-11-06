@@ -378,7 +378,7 @@ impl Pane {
         for (i, y) in rows {
             let h = self.rows.height(i);
             if y + off < HEADER_H + vh && y + h + off > HEADER_H {
-                list::draw_row(g, dc, &self.c, &mut self.rows, i, y + off, None)?;
+                list::draw_row(g, dc, &self.c, &mut self.rows, i, y + off, None, None)?;
             }
         }
         if let (Some(y), Some(n)) = (s.count, self.count) {

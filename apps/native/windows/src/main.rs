@@ -18,6 +18,7 @@ mod bench;
 mod card;
 mod composer;
 mod emoji;
+mod files;
 mod overlay;
 // The message grammar every client shares.
 #[allow(dead_code)]
@@ -82,6 +83,8 @@ const TIMER_LIVE: usize = 3;
 const TIMER_SIGNIN: usize = 4;
 /// A chip's who-reacted card, once the pointer rests on it.
 pub(crate) const TIMER_CARD: usize = 5;
+/// The next frame of a shown GIF.
+const TIMER_MEDIA: usize = 7;
 /// Re-reads the unread badges, as egui does every 15 s.
 const TIMER_UNREAD: usize = 6;
 pub(crate) const WHEEL_STEP: f64 = 48.0;
@@ -222,6 +225,8 @@ pub struct App {
     selecting: bool,
     composer_drag: bool,
     redraw: Vec<usize>,
+    /// Rows whose GIFs play, redrawn when their next frame is due.
+    gif_rows: Vec<usize>,
     dirty: Dirty,
     need: bool,
     box_h: f32,
@@ -385,6 +390,7 @@ impl App {
                 selecting: false,
                 composer_drag: false,
                 redraw: Vec::new(),
+                gif_rows: Vec::new(),
                 dirty: Dirty::all(),
                 need: true,
                 box_h: 0.0,
@@ -458,6 +464,7 @@ impl App {
             return Ok(());
         };
         let updates = live.drain();
+        let images = live.pump_media(&mut files::D2d(self.g.dc.clone()));
         let requests = live
             .host
             .requests
@@ -480,6 +487,9 @@ impl App {
             if let Some(title) = requests.title {
                 let _ = SetWindowTextW(self.hwnd, &HSTRING::from(title));
             }
+        }
+        if images {
+            self.media_changed();
         }
         for u in updates {
             match u {
@@ -590,6 +600,7 @@ impl App {
                         new.reaction_error = error;
                         new.date = old.date.clone();
                         new.unread = old.unread;
+                        new.revealed = old.revealed.clone();
                         if new == *old {
                             continue;
                         }
@@ -624,6 +635,8 @@ impl App {
                     result,
                 } => self.edited(request, reloaded, result),
                 live::Update::Deleted(request, error) => self.deleted(request, error),
+                live::Update::Media => self.media_changed(),
+                live::Update::Open(url) => open_link(&url),
                 live::Update::Versions {
                     request,
                     message,
@@ -1271,6 +1284,7 @@ impl App {
                     self.need = true;
                 }
                 TIMER_CARD => self.show_card(),
+                TIMER_MEDIA => self.next_gif_frame(),
                 TIMER_UNREAD => {
                     if let Some(l) = &mut self.live {
                         l.refresh_unread();
@@ -1351,6 +1365,8 @@ impl App {
                         self.view_original_of(i);
                     } else if let Some(i) = self.edited_at(x, y) {
                         self.open_history_of(i);
+                    } else if let Some((i, k, hide)) = self.file_at(x, y) {
+                        self.file_activate(i, k, hide);
                     } else if let Some((i, action)) = self.action_at(x, y) {
                         self.row_action(i, action);
                     } else if self.in_history(x, y) {
@@ -1426,6 +1442,7 @@ impl App {
                             || self.foot_at(x, y).is_some()
                             || self.quote_link_at(x, y).is_some()
                             || self.edited_at(x, y).is_some()
+                            || self.file_at(x, y).is_some()
                             || self.reply_cancel_rect().is_some_and(|(l, t, w, h)| {
                                 x >= l && x < l + w && y >= t && y < t + h
                             })
@@ -2095,7 +2112,12 @@ impl App {
             .and_then(|id| self.ids.rows.get(id).copied());
         let kb = self.kb_control();
         let (g, c, rows) = (&self.g, &self.c, &mut self.rows);
-        gfx::draw_local(&self.vs, r, s, |dc| unsafe {
+        let mut tex = files::D2d(g.dc.clone());
+        let mut media = self
+            .live
+            .as_mut()
+            .map(|l| files::Ctx::new(&mut l.media, &mut tex));
+        let result = gfx::draw_local(&self.vs, r, s, |dc| unsafe {
             dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
             if let Some((y, state)) = head {
                 list::draw_head(g, dc, state, lw, y, head_hover)?;
@@ -2112,7 +2134,7 @@ impl App {
                 if hover == Some(i) {
                     dc.FillRectangle(&rect(0.0, y + lead, lw, y + h), &g.brushes.hover);
                 }
-                list::draw_row(g, dc, c, rows, i, y, rs)?;
+                list::draw_row(g, dc, c, rows, i, y, rs, media.as_mut())?;
                 // The keyboard-focused control's terracotta ring.
                 if let Some((_, action)) = kb.filter(|(k, _)| *k == i)
                     && let Some((_, r)) = rows
@@ -2130,7 +2152,12 @@ impl App {
                 }
             }
             Ok(())
-        })
+        });
+        let drawn = media.map(|m| (m.next, m.animated, m.media.busy()));
+        if let Some((next, animated, busy)) = drawn {
+            self.media_drawn(next, animated, busy);
+        }
+        result
     }
 
     fn update_history(&mut self) -> Result<()> {
@@ -2746,7 +2773,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 
 /// Opens a message link in the default browser. `links::segments` only
 /// yields web addresses.
-fn open_link(href: &str) {
+pub(crate) fn open_link(href: &str) {
     unsafe {
         let _ = windows::Win32::UI::Shell::ShellExecuteW(
             None,

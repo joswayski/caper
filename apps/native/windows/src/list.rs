@@ -35,6 +35,9 @@ pub struct Row {
     pub header: Option<Header>,
     pub text_y: f32,
     pub picture_y: f32,
+    /// The message's attachments, below its text.
+    pub files: crate::files::Files,
+    pub files_y: f32,
     /// Each reaction chip's label, its width and whether it is yours.
     pub reactions: Vec<(IDWriteTextLayout, f32, bool)>,
     pub reactions_y: f32,
@@ -491,6 +494,8 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         header,
         text_y: 0.0,
         picture_y: 0.0,
+        files: crate::files::build(g, &m.attachments)?,
+        files_y: 0.0,
         add: c.is_live() && !m.deleted && !reactions.is_empty(),
         reactions,
         reactions_y: 0.0,
@@ -603,6 +608,11 @@ fn place(row: &mut Row, m: &crate::model::Message) {
     if let Some(p) = &m.picture {
         y += 6.0 + p.height as f32;
     }
+    row.files_y = y + 6.0;
+    if !row.files.list.is_empty() {
+        let width = row.width;
+        y += 6.0 + crate::files::place(&mut row.files, &m.attachments, &m.revealed, width);
+    }
     row.reactions_y = y + 6.0;
     if !row.reactions.is_empty() {
         y += 6.0 + REACTION_H;
@@ -676,6 +686,31 @@ impl Rows {
 }
 
 impl Rows {
+    /// Row `i`'s attachment under (x, y) relative to the row's top-left:
+    /// its index, and whether the point is on a revealed spoiler's "Hide
+    /// spoiler" button.
+    pub fn file_at(&self, i: usize, grouped: bool, x: f32, y: f32) -> Option<(usize, bool)> {
+        let row = self.row(i)?;
+        let (x, y) = (x - BODY_X, y - content_top(grouped) - row.files_y);
+        let inside =
+            |r: &Common::D2D_RECT_F| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+        let f = row.files.list.iter().find(|f| inside(&f.rect))?;
+        Some((f.index, inside(&crate::files::hide_rect(f.rect).0)))
+    }
+
+    /// Row `i`'s attachment `k` relative to the row's top-left.
+    pub fn file_rect(&self, i: usize, grouped: bool, k: usize) -> Option<Common::D2D_RECT_F> {
+        let row = self.row(i)?;
+        let f = row.files.list.iter().find(|f| f.index == k)?;
+        let (dx, dy) = (BODY_X, content_top(grouped) + row.files_y);
+        Some(rect(
+            f.rect.left + dx,
+            f.rect.top + dy,
+            f.rect.right + dx,
+            f.rect.bottom + dy,
+        ))
+    }
+
     /// Row `i`'s "(edited)" marker after its text, or with `in_time` its
     /// header's time, which carries the marker on an ungrouped row,
     /// relative to the row's top-left.
@@ -854,6 +889,7 @@ pub fn draw_row(
     i: usize,
     y: f32,
     sel: Option<(u32, u32)>,
+    files: Option<&mut crate::files::Ctx>,
 ) -> Result<()> {
     let m = &c.messages[i];
     let bitmap = if m.picture.is_some() {
@@ -1012,6 +1048,19 @@ pub fn draw_row(
         }
         if let Some((l, _, ex, ey)) = &row.edited {
             crate::text::draw(dc, l, BODY_X + ex, ty + ey, &g.brushes.muted);
+        }
+        if !row.files.list.is_empty() {
+            crate::files::draw(
+                g,
+                dc,
+                &row.files,
+                &m.attachments,
+                &m.revealed,
+                files,
+                i,
+                BODY_X,
+                top + row.files_y,
+            )?;
         }
         if let Some((l, _, _)) = &row.error {
             crate::text::draw(dc, l, BODY_X, top + row.error_y + 3.0, &g.brushes.error);

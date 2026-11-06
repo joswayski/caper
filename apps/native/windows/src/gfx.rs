@@ -123,6 +123,9 @@ pub struct Formats {
     pub head_button: IDWriteTextFormat,
     /// Message history's compared text: egui's 12px monospace.
     pub mono: IDWriteTextFormat,
+    /// An attachment card's name and its detail line (one line each).
+    pub file_name: IDWriteTextFormat,
+    pub file_detail: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -290,6 +293,8 @@ impl Gfx {
                     12.0,
                     w!("en-us"),
                 )?,
+                file_name: fmt(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
+                file_detail: fmt(11.0, DWRITE_FONT_WEIGHT_NORMAL)?,
             };
             let f = &formats;
             for f in [
@@ -310,6 +315,17 @@ impl Gfx {
                 &f.thread_view,
             ] {
                 f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            }
+            for f in [&f.file_name, &f.file_detail] {
+                f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+                let sign = dwrite.CreateEllipsisTrimmingSign(f)?;
+                f.SetTrimming(
+                    &DWRITE_TRIMMING {
+                        granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                        ..Default::default()
+                    },
+                    &sign,
+                )?;
             }
             let sign = dwrite.CreateEllipsisTrimmingSign(&f.quote)?;
             f.quote.SetTrimming(
