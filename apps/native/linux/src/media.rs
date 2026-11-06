@@ -161,6 +161,20 @@ impl Media {
         }
     }
 
+    /// Your own upload's local copy, so its message needs no download.
+    pub fn insert_local(&self, key: &str, image: &Rgba) {
+        if matches!(self.entries.borrow().get(key), Some(Entry::Ready(_))) {
+            return;
+        }
+        if let Some(texture) = texture(image) {
+            let frames = Rc::new(vec![(texture, Duration::ZERO)]);
+            self.entries
+                .borrow_mut()
+                .insert(key.to_owned(), Entry::Ready(frames.clone()));
+            self.wake(key, &frames);
+        }
+    }
+
     fn wake(&self, key: &str, frames: &Rc<Frames>) {
         let waiters = self.waiters.borrow_mut().remove(key).unwrap_or_default();
         for picture in waiters.iter().filter_map(glib::WeakRef::upgrade) {

@@ -17,6 +17,9 @@ pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
 /// drawn with Lucide's `send`.
 pub struct Composer {
     pub root: gtk::Box,
+    /// The files staged in it (`crate::uploads`).
+    pub chips: gtk::Box,
+    pub attach: gtk::Button,
     pub view: gtk::TextView,
     pub placeholder: gtk::Label,
     pub send: gtk::Button,
@@ -24,8 +27,31 @@ pub struct Composer {
 
 impl Composer {
     fn new(images: &Images) -> Self {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
         root.add_css_class("composer");
+        let chips = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        chips.add_css_class("chips");
+        chips.set_visible(false);
+        let chip_scroller = gtk::ScrolledWindow::builder()
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .child(&chips)
+            .build();
+        // Hidden with its chips.
+        chips
+            .bind_property("visible", &chip_scroller, "visible")
+            .sync_create()
+            .build();
+        root.append(&chip_scroller);
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        root.append(&line);
+        let attach: gtk::Button = crate::app::named("GtkButton", "Attach files");
+        attach.set_child(Some(&images.icon_image(Icon::Plus, "#b9bcbe", 18)));
+        attach.set_tooltip_text(Some("Attach files"));
+        attach.set_valign(gtk::Align::End);
+        attach.add_css_class("flat");
+        attach.add_css_class("send");
+        line.append(&attach);
         let view: gtk::TextView = crate::app::named("GtkTextView", "Message");
         view.set_wrap_mode(gtk::WrapMode::WordChar);
         view.set_accepts_tab(false);
@@ -45,19 +71,21 @@ impl Composer {
         overlay.set_child(Some(&field));
         overlay.add_overlay(&placeholder);
         overlay.set_hexpand(true);
-        root.append(&overlay);
+        line.append(&overlay);
         let send: gtk::Button = crate::app::named("GtkButton", "Send message");
         send.set_child(Some(&images.icon_image(Icon::Send, "#b9bcbe", 18)));
         send.set_tooltip_text(Some("Send"));
         send.set_valign(gtk::Align::End);
         send.add_css_class("flat");
         send.add_css_class("send");
-        root.append(&send);
+        line.append(&send);
         let empty = placeholder.clone();
         view.buffer()
             .connect_changed(move |buffer| empty.set_visible(buffer.char_count() == 0));
         Self {
             root,
+            chips,
+            attach,
             view,
             placeholder,
             send,
@@ -137,6 +165,10 @@ pub struct Ui {
     pub join_label: gtk::Label,
     pub join: gtk::Button,
     pub thread_panel: gtk::Box,
+    pub conversation: gtk::Box,
+    pub drop: gtk::Box,
+    pub drop_title: gtk::Label,
+    pub drop_detail: gtk::Label,
     pub thread_close: gtk::Button,
     pub thread_list: List,
     pub thread_composer: Composer,
@@ -335,7 +367,29 @@ impl Ui {
         join_bar.append(&join_label);
         join_bar.append(&join);
         conversation.append(&join_bar);
-        chat.append(&conversation);
+        // Files dragged over the conversation: the shared drop text.
+        let stage = gtk::Overlay::new();
+        stage.set_hexpand(true);
+        stage.set_child(Some(&conversation));
+        let drop = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        drop.add_css_class("drop");
+        drop.set_can_target(false);
+        drop.set_visible(false);
+        let drop_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        drop_card.add_css_class("drop-card");
+        drop_card.set_halign(gtk::Align::Center);
+        drop_card.set_valign(gtk::Align::Center);
+        drop_card.set_vexpand(true);
+        drop_card.append(&images.icon_image(Icon::FileUp, "#f3f4f5", 32));
+        let drop_title = label("", &["title"]);
+        drop_title.set_halign(gtk::Align::Center);
+        let drop_detail = label("", &["muted"]);
+        drop_detail.set_halign(gtk::Align::Center);
+        drop_card.append(&drop_title);
+        drop_card.append(&drop_detail);
+        drop.append(&drop_card);
+        stage.add_overlay(&drop);
+        chat.append(&stage);
 
         let members_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
         members_panel.add_css_class("members");
@@ -420,6 +474,10 @@ impl Ui {
             join_label,
             join,
             thread_panel,
+            conversation,
+            drop,
+            drop_title,
+            drop_detail,
             thread_close,
             thread_list,
             thread_composer,

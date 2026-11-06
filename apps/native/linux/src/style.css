@@ -666,3 +666,50 @@ window.caper.viewer button.step {
   border-radius: 999px;
   background: alpha(@caper_surface, 0.85);
 }
+
+/* Composer files: chips with progress, retry, spoiler and remove. */
+.chips {
+  padding: 2px 0 4px;
+}
+
+.chip {
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 6px 4px 6px 6px;
+}
+
+.chip.failed {
+  border-color: alpha(@caper_error_text, 0.6);
+}
+
+.chip-preview {
+  background: @caper_surface_raised;
+  border-radius: 6px;
+}
+
+progressbar.upload-progress trough,
+progressbar.upload-progress progress {
+  min-height: 3px;
+  border-radius: 2px;
+}
+
+progressbar.upload-progress progress {
+  background: @caper_action;
+}
+
+.attach-menu {
+  padding: 4px;
+}
+
+/* Files dragged over a conversation. */
+.drop {
+  background: alpha(@caper_blackout, 0.82);
+  border: 2px dashed @caper_border;
+  border-radius: 12px;
+  margin: 12px;
+}
+
+.drop-card {
+  padding: 24px 32px;
+}

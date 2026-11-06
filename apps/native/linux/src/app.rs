@@ -9,6 +9,7 @@ use crate::host::{Signal, Wakes};
 use crate::images::{Avatar, AvatarView, Icon, Images};
 use crate::rows::{self, Action, Row};
 use crate::ui::{Ui, label};
+use crate::uploads::{ChipAction, DraftFile};
 use caper_client::api::Api;
 use caper_client::gateway::GatewayEvent;
 use caper_client::model::{
@@ -75,6 +76,8 @@ struct Pending {
     text: String,
     created_at: String,
     thread: Option<String>,
+    /// Its uploaded files, returned to the composer if the send fails.
+    files: Vec<DraftFile>,
 }
 
 /// What the main composer is doing besides a new message.
@@ -160,6 +163,15 @@ struct State {
     typing_edited: Option<Instant>,
     /// Advanced when the rail, sidebar or member list changes.
     layout: u64,
+    /// Upload settings once `GET /api/assets/usage` answered (`None`:
+    /// unavailable or not yet known).
+    uploads: Option<caper_client::compress::Compression>,
+    uploads_checked: bool,
+    /// Files in every composer, uploading or uploaded.
+    files: Vec<DraftFile>,
+    file_keys: u64,
+    /// Advanced when any file changes, so chips redraw.
+    files_revision: u64,
 }
 
 impl State {
@@ -212,6 +224,9 @@ pub struct App {
     /// `pin_tail` is moving the list: its scrolling is not the reader's.
     settling: Cell<bool>,
     rendered_layout: Cell<u64>,
+    rendered_files: Cell<u64>,
+    /// The open file dialog: GTK drops a native dialog nothing holds.
+    chooser: RefCell<Option<gtk::FileChooserNative>>,
     channel_ids: RefCell<Vec<String>>,
     direct_ids: RefCell<Vec<String>>,
     /// Member avatars by account id, for presence changes in place.
@@ -265,6 +280,8 @@ pub fn start(application: &gtk::Application, base: &str) {
         follow: Cell::new(true),
         settling: Cell::new(false),
         rendered_layout: Cell::new(u64::MAX),
+        rendered_files: Cell::new(u64::MAX),
+        chooser: RefCell::default(),
         channel_ids: RefCell::default(),
         direct_ids: RefCell::default(),
         member_views: RefCell::default(),
@@ -274,6 +291,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     });
     *slot.borrow_mut() = Rc::downgrade(&app);
     app.connect();
+    app.connect_drop();
     app.install_actions();
     app.render();
     // The window shows before any network request finishes.
@@ -392,6 +410,12 @@ impl App {
                     app.send_message(thread);
                     return glib::Propagation::Stop;
                 }
+                if matches!(key, gdk::Key::v | gdk::Key::V)
+                    && modifiers.contains(gdk::ModifierType::CONTROL_MASK)
+                    && app.paste_files(thread)
+                {
+                    return glib::Propagation::Stop;
+                }
                 if key == gdk::Key::Escape && !thread && app.state.borrow().compose.is_some() {
                     app.cancel_compose();
                     return glib::Propagation::Stop;
@@ -403,6 +427,10 @@ impl App {
             composer
                 .send
                 .connect_clicked(move |_| app.send_message(thread));
+            let app = self.clone();
+            composer
+                .attach
+                .connect_clicked(move |button| app.attach_menu(thread, button.upcast_ref()));
             let app = self.clone();
             composer.view.buffer().connect_changed(move |buffer| {
                 if buffer.char_count() > 0 {
@@ -550,6 +578,9 @@ impl App {
         state.layout += 1;
         self.load_directs(state);
         self.refresh_unread(state);
+        if let Some(token) = state.token.clone() {
+            self.worker.send(Command::AssetUsage { token });
+        }
         if let Some(space) = state.spaces.first().map(|space| space.id.clone()) {
             self.navigate(state, Some(space), None);
         }
@@ -561,6 +592,20 @@ impl App {
         {
             let mut state = self.state.borrow_mut();
             let token = state.token.take();
+            let uploaded: Vec<String> = state
+                .files
+                .iter()
+                .inspect(|file| file.stop())
+                .filter_map(|file| file.attachment.as_ref().map(|file| file.id.clone()))
+                .collect();
+            if let Some(token) = token.clone()
+                && !uploaded.is_empty()
+            {
+                self.worker.send(Command::CancelAssets {
+                    token,
+                    ids: uploaded,
+                });
+            }
             state.generation += 1;
             self.worker.send(Command::StopGateway);
             self.worker.send(Command::ClearCredential {
@@ -647,6 +692,7 @@ impl App {
         state.thread = None;
         state.typers.clear();
         state.reactions.clear();
+        state.files_revision += 1;
         state.direct = None;
         state.status = "Loading…".into();
         state.error = None;
@@ -903,6 +949,413 @@ impl App {
     }
 
     // ---------------------------------------------------------------------
+    // Files: attach, paste, drop, upload, retry and remove.
+
+    /// Whether this conversation takes files now.
+    fn can_attach(state: &State) -> bool {
+        state.uploads.is_some()
+            && state.token.is_some()
+            && state.session.is_some()
+            && state.joined()
+            && !state
+                .detail
+                .as_ref()
+                .is_some_and(|detail| detail.space.demo)
+    }
+
+    fn files_in(state: &State, root: Option<&str>) -> usize {
+        state
+            .files
+            .iter()
+            .filter(|file| {
+                state.channel.as_ref() == Some(&file.channel) && file.root.as_deref() == root
+            })
+            .count()
+    }
+
+    /// The composer's root: the open thread's for its composer.
+    fn composer_root(state: &State, thread: bool) -> Option<String> {
+        thread
+            .then(|| state.thread.as_ref().map(|thread| thread.root.clone()))
+            .flatten()
+    }
+
+    /// Starts preparing and uploading `paths` (at most ten per composer).
+    fn add_files(
+        self: &Rc<Self>,
+        paths: Vec<(
+            std::path::PathBuf,
+            Option<std::sync::Arc<caper_client::uploads::Scratch>>,
+        )>,
+        thread: bool,
+    ) {
+        {
+            let mut state = self.state.borrow_mut();
+            let (Some(settings), Some(token), Some(channel)) = (
+                state.uploads.clone(),
+                state.token.clone(),
+                state.channel.clone(),
+            ) else {
+                return;
+            };
+            if paths.is_empty() || !Self::can_attach(&state) {
+                return;
+            }
+            let root = Self::composer_root(&state, thread);
+            let (room, error) =
+                crate::uploads::room(Self::files_in(&state, root.as_deref()), paths.len());
+            state.send_error = error;
+            for (path, scratch) in paths.into_iter().take(room) {
+                state.file_keys += 1;
+                let file = DraftFile::new(
+                    state.file_keys,
+                    channel.clone(),
+                    root.clone(),
+                    path.clone(),
+                    scratch.clone(),
+                );
+                self.worker.send(Command::Upload {
+                    key: file.key,
+                    token: token.clone(),
+                    channel: channel.clone(),
+                    name: file.name.clone(),
+                    path,
+                    edit: None,
+                    source_scratch: scratch,
+                    prepared: None,
+                    settings: settings.clone(),
+                    cancel: file.cancel.clone(),
+                });
+                state.files.push(file);
+            }
+            state.files_revision += 1;
+        }
+        self.render();
+    }
+
+    fn upload_update(
+        &self,
+        state: &mut State,
+        key: u64,
+        token: String,
+        update: caper_client::worker::UploadUpdate,
+    ) {
+        use caper_client::worker::UploadUpdate;
+        let file = state
+            .files
+            .iter_mut()
+            .chain(
+                state
+                    .pending
+                    .iter_mut()
+                    .flat_map(|pending| pending.files.iter_mut()),
+            )
+            .find(|file| file.key == key);
+        let Some(file) = file else {
+            // Removed while it uploaded: give its reservation back.
+            if let UploadUpdate::Finished(Ok(attachment)) = update {
+                self.worker.send(Command::CancelAssets {
+                    token,
+                    ids: vec![attachment.id],
+                });
+            }
+            return;
+        };
+        match update {
+            UploadUpdate::Retained(prepared) => file.prepared = Some(prepared),
+            UploadUpdate::Prepared {
+                name,
+                kind,
+                source_size,
+                stored_size,
+            } => {
+                file.name = name;
+                file.kind = kind;
+                file.source_size = source_size;
+                file.stored_size = Some(stored_size);
+                file.compressing = None;
+            }
+            UploadUpdate::Compressing(fraction) => {
+                file.compressing = Some(fraction.max(file.compressing.unwrap_or(0.0)));
+            }
+            UploadUpdate::Thumbnail(image) => {
+                if let Some(attachment) = &file.attachment {
+                    self.images.media.insert_local(&attachment.id, &image);
+                }
+                file.thumbnail = Some(image);
+            }
+            UploadUpdate::Progress(progress) => file.progress = progress.max(file.progress),
+            UploadUpdate::Finished(Ok(attachment)) => {
+                file.progress = 1.0;
+                file.uploading = false;
+                file.error = None;
+                // You see your own copy without a download.
+                if let Some(image) = &file.thumbnail {
+                    self.images.media.insert_local(&attachment.id, image);
+                }
+                file.attachment = Some(attachment);
+            }
+            UploadUpdate::Finished(Err(error)) => {
+                file.uploading = false;
+                file.compressing = None;
+                file.error = Some(if error.storage_full {
+                    error.message
+                } else {
+                    "Failed to upload.".into()
+                });
+            }
+        }
+        state.files_revision += 1;
+    }
+
+    fn chip_action(self: &Rc<Self>, action: ChipAction) {
+        {
+            let mut state = self.state.borrow_mut();
+            match action {
+                ChipAction::Remove(key) => {
+                    if let Some(index) = state.files.iter().position(|file| file.key == key) {
+                        let file = state.files.remove(index);
+                        file.stop();
+                        if let (Some(token), Some(attachment)) =
+                            (state.token.clone(), &file.attachment)
+                        {
+                            self.worker.send(Command::CancelAssets {
+                                token,
+                                ids: vec![attachment.id.clone()],
+                            });
+                        }
+                    }
+                    state.send_error = None;
+                }
+                ChipAction::Retry(key) => {
+                    let (Some(token), Some(settings)) =
+                        (state.token.clone(), state.uploads.clone())
+                    else {
+                        return;
+                    };
+                    if let Some(file) = state.files.iter_mut().find(|file| file.key == key) {
+                        file.error = None;
+                        file.progress = 0.0;
+                        file.uploading = true;
+                        self.worker.send(Command::Upload {
+                            key,
+                            token,
+                            channel: file.channel.clone(),
+                            path: file.path.clone(),
+                            name: file.name.clone(),
+                            edit: None,
+                            source_scratch: file.scratch.clone(),
+                            prepared: file.prepared.clone(),
+                            settings,
+                            cancel: file.cancel.clone(),
+                        });
+                    }
+                }
+                ChipAction::Spoiler(key, spoiler) => {
+                    if let Some(file) = state.files.iter_mut().find(|file| file.key == key) {
+                        file.spoiler = spoiler;
+                    }
+                }
+            }
+            state.files_revision += 1;
+        }
+        self.render();
+    }
+
+    /// The attach menu: \"Upload a file\", or why it cannot add more.
+    fn attach_menu(self: &Rc<Self>, thread: bool, anchor: &gtk::Widget) {
+        let attached = {
+            let state = self.state.borrow();
+            Self::files_in(&state, Self::composer_root(&state, thread).as_deref())
+        };
+        let popover = gtk::Popover::new();
+        let menu = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        menu.add_css_class("attach-menu");
+        if let Some(hint) = (attached >= caper_client::uploads::MAX_ATTACHMENTS)
+            .then_some("Remove a file to add another.")
+        {
+            menu.append(&label(hint, &["muted", "small"]));
+        }
+        let upload: gtk::Button = named("GtkButton", "Upload a file");
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        line.append(&self.images.icon_image(Icon::FileUp, "#f3f4f5", 16));
+        line.append(&label("Upload a file", &[]));
+        upload.set_child(Some(&line));
+        upload.add_css_class("flat");
+        upload.set_sensitive(attached < caper_client::uploads::MAX_ATTACHMENTS);
+        let (app, popover_ref) = (self.clone(), popover.downgrade());
+        upload.connect_clicked(move |_| {
+            if let Some(popover) = popover_ref.upgrade() {
+                popover.popdown();
+            }
+            app.pick_files(thread);
+        });
+        menu.append(&upload);
+        popover.set_child(Some(&menu));
+        popup(&popover, anchor);
+    }
+
+    /// The system's file dialog for any files.
+    fn pick_files(self: &Rc<Self>, thread: bool) {
+        if self.chooser.borrow().is_some() {
+            return;
+        }
+        #[allow(deprecated)]
+        let dialog = gtk::FileChooserNative::new(
+            Some("Upload a file"),
+            Some(&self.ui.window),
+            gtk::FileChooserAction::Open,
+            Some("Upload"),
+            Some("Cancel"),
+        );
+        #[allow(deprecated)]
+        dialog.set_select_multiple(true);
+        let app = self.clone();
+        #[allow(deprecated)]
+        dialog.connect_response(move |dialog, response| {
+            if response == gtk::ResponseType::Accept {
+                let files = dialog.files();
+                let paths = (0..files.n_items())
+                    .filter_map(|index| files.item(index).and_downcast::<gio::File>())
+                    .filter_map(|file| file.path())
+                    .map(|path| (path, None))
+                    .collect();
+                app.add_files(paths, thread);
+            }
+            dialog.destroy();
+            app.chooser.replace(None);
+        });
+        #[allow(deprecated)]
+        dialog.show();
+        self.chooser.replace(Some(dialog));
+    }
+
+    /// Ctrl+V in a composer: copied files, else a copied image. Text pastes
+    /// stay with the text view. Returns whether it took the paste.
+    fn paste_files(self: &Rc<Self>, thread: bool) -> bool {
+        if !Self::can_attach(&self.state.borrow()) {
+            return false;
+        }
+        let clipboard = self.ui.window.clipboard();
+        let formats = clipboard.formats();
+        let app = self.clone();
+        if formats.contains_type(gdk::FileList::static_type()) {
+            clipboard.read_value_async(
+                gdk::FileList::static_type(),
+                glib::Priority::DEFAULT,
+                gio::Cancellable::NONE,
+                move |value| {
+                    let paths = value
+                        .ok()
+                        .and_then(|value| value.get::<gdk::FileList>().ok())
+                        .map(|list| {
+                            list.files()
+                                .iter()
+                                .filter_map(|file| file.path())
+                                .map(|path| (path, None))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    app.add_files(paths, thread);
+                },
+            );
+            return true;
+        }
+        if formats.contains_type(gdk::Texture::static_type())
+            && !formats.contain_mime_type("text/plain")
+        {
+            clipboard.read_texture_async(gio::Cancellable::NONE, move |texture| {
+                let Ok(Some(texture)) = texture else {
+                    return;
+                };
+                let scratch = std::sync::Arc::new(caper_client::uploads::Scratch::new("png"));
+                match texture.save_to_png(scratch.path()) {
+                    Ok(()) => {
+                        app.add_files(vec![(scratch.path().to_owned(), Some(scratch))], thread)
+                    }
+                    Err(_) => {
+                        app.state.borrow_mut().send_error =
+                            Some("Could not save the clipboard image.".into());
+                        app.render();
+                    }
+                }
+            });
+            return true;
+        }
+        false
+    }
+
+    /// Files dragged onto the conversation attach to its composer.
+    fn connect_drop(self: &Rc<Self>) {
+        let target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        let app = self.clone();
+        target.connect_enter(move |_, _, _| {
+            let state = app.state.borrow();
+            if !Self::can_attach(&state) {
+                return gdk::DragAction::empty();
+            }
+            let (title, detail) = caper_client::uploads::drop_text(
+                &state.channel_name,
+                state.direct.is_some(),
+                Self::files_in(&state, None),
+            );
+            app.ui.drop_title.set_label(&title);
+            app.ui.drop_detail.set_label(&detail);
+            app.ui.drop.set_visible(true);
+            gdk::DragAction::COPY
+        });
+        let app = self.clone();
+        target.connect_leave(move |_| app.ui.drop.set_visible(false));
+        let app = self.clone();
+        target.connect_drop(move |_, value, _, _| {
+            app.ui.drop.set_visible(false);
+            let Ok(list) = value.get::<gdk::FileList>() else {
+                return false;
+            };
+            let paths: Vec<_> = list
+                .files()
+                .iter()
+                .filter_map(|file| file.path())
+                .map(|path| (path, None))
+                .collect();
+            let any = !paths.is_empty();
+            app.add_files(paths, false);
+            any
+        });
+        self.ui.conversation.add_controller(target);
+    }
+
+    fn render_files(self: &Rc<Self>) {
+        let state = self.state.borrow();
+        if self.rendered_files.replace(state.files_revision) == state.files_revision {
+            return;
+        }
+        let handler: Rc<dyn Fn(ChipAction)> = {
+            let app = Rc::downgrade(self);
+            Rc::new(move |action| {
+                if let Some(app) = app.upgrade() {
+                    // Rebuilding the chips drops the clicked button.
+                    glib::idle_add_local_once(move || app.chip_action(action));
+                }
+            })
+        };
+        for thread in [false, true] {
+            let root = Self::composer_root(&state, thread);
+            let files: Vec<&DraftFile> = state
+                .files
+                .iter()
+                .filter(|file| state.channel.as_ref() == Some(&file.channel) && file.root == root)
+                .collect();
+            let composer = if thread {
+                &self.ui.thread_composer
+            } else {
+                &self.ui.composer
+            };
+            crate::uploads::chips(&composer.chips, &self.images, &files, &handler);
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // Sending, replies, edits, deletes, pins and reactions.
 
     fn send_message(self: &Rc<Self>, thread: bool) {
@@ -913,9 +1366,6 @@ impl App {
         };
         let draft = composer.text();
         let text = draft.trim();
-        if text.is_empty() {
-            return;
-        }
         {
             let mut state = self.state.borrow_mut();
             let Some(chat_token) = state.session.as_ref().map(|session| session.token.clone())
@@ -925,7 +1375,43 @@ impl App {
             let Some(channel) = state.channel.clone() else {
                 return;
             };
+            let editing = !thread && matches!(state.compose, Some(Compose::Edit { .. }));
+            let root = thread
+                .then(|| state.thread.as_ref().map(|thread| thread.root.clone()))
+                .flatten();
+            let files = !editing
+                && state
+                    .files
+                    .iter()
+                    .any(|file| file.channel == channel && file.root == root);
+            if text.is_empty() && !files {
+                return;
+            }
+            if files {
+                let mine = state
+                    .files
+                    .iter()
+                    .filter(|file| file.channel == channel && file.root == root);
+                let waiting = mine.clone().any(|file| file.uploading);
+                let failed = mine.clone().any(|file| file.error.is_some());
+                if waiting || failed {
+                    state.send_error = Some(
+                        if waiting {
+                            "Wait for your files to finish uploading."
+                        } else {
+                            "Retry or remove the files that failed to upload."
+                        }
+                        .into(),
+                    );
+                    drop(state);
+                    self.render();
+                    return;
+                }
+            }
             if !thread && let Some(Compose::Edit { original, .. }) = &state.compose {
+                if text.is_empty() {
+                    return;
+                }
                 let original = original.clone();
                 state.edit_request += 1;
                 let request = state.edit_request;
@@ -960,11 +1446,26 @@ impl App {
                 _ => None,
             };
             let client_id = uuid::Uuid::new_v4().to_string();
+            let (sent, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut state.files)
+                .into_iter()
+                .partition(|file| file.channel == channel && file.root == thread_root);
+            state.files = kept;
+            state.files_revision += 1;
+            let attachment_ids: Vec<String> = sent
+                .iter()
+                .filter_map(|file| file.attachment.as_ref().map(|file| file.id.clone()))
+                .collect();
+            let spoiler_attachment_ids: Vec<String> = sent
+                .iter()
+                .filter(|file| file.spoiler)
+                .filter_map(|file| file.attachment.as_ref().map(|file| file.id.clone()))
+                .collect();
             state.pending = Some(Pending {
                 client_id: client_id.clone(),
                 text: text.to_owned(),
                 created_at: chrono::Local::now().to_rfc3339(),
                 thread: thread_root.clone(),
+                files: sent,
             });
             if !thread {
                 state.compose = None;
@@ -981,8 +1482,8 @@ impl App {
                 thread_root_id: thread_root,
                 broadcast: false,
                 reply_to_id,
-                attachment_ids: Vec::new(),
-                spoiler_attachment_ids: Vec::new(),
+                attachment_ids,
+                spoiler_attachment_ids,
                 gif: None,
                 suppress_embeds: false,
             });
@@ -1107,6 +1608,7 @@ impl App {
     fn open_thread(self: &Rc<Self>, root: String) {
         {
             let mut state = self.state.borrow_mut();
+            state.files_revision += 1;
             let Some(channel) = state.channel.clone() else {
                 return;
             };
@@ -1504,8 +2006,11 @@ impl App {
                     }
                     Err(failure) => {
                         state.send_error = Some(failure.message);
-                        state.returned_draft =
-                            pending.map(|pending| (pending.text, pending.thread.is_some()));
+                        if let Some(pending) = pending {
+                            state.files.extend(pending.files);
+                            state.files_revision += 1;
+                            state.returned_draft = Some((pending.text, pending.thread.is_some()));
+                        }
                     }
                 }
             }
@@ -1637,6 +2142,11 @@ impl App {
                     Err(error) => state.error = Some(error),
                 }
             }
+            Event::AssetUsage { token, settings } if state.token.as_ref() == Some(&token) => {
+                state.uploads = settings;
+                state.uploads_checked = true;
+            }
+            Event::Upload { key, token, update } => self.upload_update(state, key, token, update),
             Event::AttachmentUrls { token, ids, result }
                 if state.token.as_ref() == Some(&token) =>
             {
@@ -1865,6 +2375,7 @@ impl App {
     fn render(self: &Rc<Self>) {
         self.render_rows();
         self.render_layout();
+        self.render_files();
         self.render_presence();
         self.render_typing();
         let ui = &self.ui;
@@ -1922,6 +2433,21 @@ impl App {
         ui.composer.root.set_visible(joined);
         ui.composer.view.set_sensitive(can_send);
         ui.composer.send.set_sensitive(can_send);
+        let attach = Self::can_attach(&state);
+        let editing = matches!(state.compose, Some(Compose::Edit { .. }));
+        ui.composer.attach.set_sensitive(attach && !editing);
+        ui.thread_composer.attach.set_sensitive(attach);
+        let why = if attach {
+            "Attach files"
+        } else if state.token.is_some() && state.uploads_checked && state.uploads.is_none()
+            || !state.joined()
+        {
+            "File uploads are unavailable"
+        } else {
+            "Checking file uploads…"
+        };
+        ui.composer.attach.set_tooltip_text(Some(why));
+        ui.thread_composer.attach.set_tooltip_text(Some(why));
         ui.join_bar
             .set_visible(!joined && state.channel.is_some() && state.page() == Page::Chat);
         ui.join_label.set_label(&format!(
@@ -2091,7 +2617,15 @@ impl App {
                         author: &session.author,
                         created_at: &pending.created_at,
                         text: &pending.text,
-                        content: Default::default(),
+                        content: crate::content::Content {
+                            attachments: pending
+                                .files
+                                .iter()
+                                .filter_map(DraftFile::send_attachment)
+                                .map(|attachment| (attachment, false))
+                                .collect(),
+                            ..Default::default()
+                        },
                     })
             };
             let main = rows::build(

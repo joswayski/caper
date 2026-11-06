@@ -915,9 +915,58 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// The drop overlay's title and detail line, as every client words it
+/// (`shared/messages/drop-cases.json`).
+pub fn drop_text(channel: &str, direct: bool, attached: usize) -> (String, String) {
+    let room = MAX_ATTACHMENTS.saturating_sub(attached);
+    let title = format!("Attach to {}{channel}", if direct { "" } else { "#" });
+    let detail = if room == 0 {
+        format!("{MAX_ATTACHMENTS} files attached. Remove one to add another.")
+    } else if room == MAX_ATTACHMENTS {
+        format!("Up to {MAX_ATTACHMENTS} files. Add a message before sending.")
+    } else {
+        format!(
+            "{room} more file{}. Add a message before sending.",
+            if room == 1 { "" } else { "s" }
+        )
+    };
+    (title, detail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(serde::Deserialize)]
+    struct DropCases {
+        cases: Vec<DropCase>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct DropCase {
+        note: String,
+        channel: String,
+        direct: bool,
+        attached: usize,
+        title: String,
+        detail: String,
+    }
+
+    #[test]
+    fn shared_drop_cases_produce_identical_text() {
+        let cases: DropCases =
+            serde_json::from_str(include_str!("../../../../shared/messages/drop-cases.json"))
+                .expect("valid shared drop cases");
+        assert!(cases.cases.len() >= 5, "the shared cases loaded");
+        for case in cases.cases {
+            assert_eq!(
+                drop_text(&case.channel, case.direct, case.attached),
+                (case.title, case.detail),
+                "{}",
+                case.note
+            );
+        }
+    }
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::sync::Mutex;

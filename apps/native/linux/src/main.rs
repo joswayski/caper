@@ -16,6 +16,7 @@ mod markup;
 mod media;
 mod rows;
 mod ui;
+mod uploads;
 mod viewer;
 
 use gtk::{gio, glib, prelude::*};
