@@ -691,6 +691,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     private func renderComposer() {
         let chat = model.chat
+        if isLive, !model.navigationOpen { composer.claimFocus(chat, inThread: false) }
         let name = model.selectedChannel?.name ?? cached?.channelName ?? chat.channelName
         let ready = isLive && chat.canInteract && !model.previewingChannel
         renderDirectBar()
@@ -702,6 +703,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         composer.show(draft: chat.draft)
         composer.refreshContext()
         composer.textView.pasteAttachments = chat.canAttach ? { [weak chat] in chat?.pasteAttachments() ?? false } : nil
+        composer.showLinkPreview(ready ? UIKitComposerLinkPreview(chat: chat) : nil)
+        composer.showCount(ready ? chat.draft.unicodeScalars.count : 0)
         composer.showAccessories(ready && UIKitComposerAccessories.shows(chat: chat)
                                  ? UIKitComposerAccessories(chat: chat, present: presentHosted) : nil)
         composer.showVoice(button: ready ? voice.button : nil, bar: voice.bar, recording: ready && voice.isRecording)

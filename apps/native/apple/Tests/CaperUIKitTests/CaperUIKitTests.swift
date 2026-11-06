@@ -172,6 +172,20 @@ final class CaperUIKitTests: XCTestCase {
         screenshot("uikit-new-messages")
     }
 
+    /// The rail is SwiftUI's: an unread space gets its dot and says so.
+    func testRailShowsUnreadSpace() {
+        control(["channelReads": ["chan00000002": "0"]])
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        app.buttons["back-to-browse"].tap()
+        let tile = app.buttons["space-space0000001"]
+        XCTAssertTrue(tile.waitForExistence(timeout: 10))
+        let unread = NSPredicate(format: "value CONTAINS %@", "Unread messages")
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: unread, evaluatedWith: tile)], timeout: 15), .completed)
+        XCTAssertTrue((tile.value as? String)?.hasPrefix("Selected") == true)
+        screenshot("uikit-rail-unread")
+    }
+
     /// A reply's context jumps to the old message; the bar then offers Load
     /// newer messages and Back to latest, which returns to the live end.
     func testJumpThenBackToLatest() {
@@ -396,6 +410,54 @@ final class CaperUIKitTests: XCTestCase {
         link.tap()
         XCTAssertTrue(thread.waitForExistence(timeout: 10))
         XCTAssertTrue(reply.waitForExistence(timeout: 10))
+    }
+
+    /// Reply, from message actions, raises the keyboard in the channel's
+    /// composer; Reply in thread does the same for the thread's.
+    func testReplyFocusesTheComposer() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let composer = app.textViews["message-composer"]
+        let focused = NSPredicate(format: "hasKeyboardFocus == true")
+        app.textViews["message-text-\(Self.latest)"].press(forDuration: 0.8)
+        XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 10))
+        app.buttons.matching(NSPredicate(format: "label == %@", "Reply")).firstMatch.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: focused, evaluatedWith: composer)], timeout: 10), .completed,
+                       "Reply focuses the channel composer")
+        screenshot("uikit-reply-focus")
+
+        app.textViews["message-text-\(Self.latest)"].press(forDuration: 0.8)
+        XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 10))
+        app.buttons["Reply in thread"].tap()
+        let thread = app.textViews["thread-composer"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 10))
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: focused, evaluatedWith: thread)], timeout: 10), .completed,
+                       "Reply in thread focuses the thread composer")
+    }
+
+    /// A link in the draft gets SwiftUI's card inside the box, with ×; a long
+    /// draft shows the counter from 3,000 characters.
+    func testComposerLinkPreviewAndCounter() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let composer = app.textViews["message-composer"]
+        composer.tap()
+        composer.typeText("see https://example.com/fixture ")
+        let remove = app.buttons["Remove link preview"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5), "The draft's link gets a card")
+        XCTAssertTrue(remove.isHittable, "The box grows to show it")
+        screenshot("uikit-composer-link-preview")
+        remove.tap()
+        XCTAssertTrue(remove.waitForNonExistence(timeout: 5))
+
+        UIPasteboard.general.string = String(repeating: "a", count: 3100)
+        composer.press(forDuration: 1.0)
+        let paste = app.menuItems["Paste"].exists ? app.menuItems["Paste"] : app.buttons["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5))
+        paste.tap()
+        let counter = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", "of 4,000 characters")).firstMatch
+        XCTAssertTrue(counter.waitForExistence(timeout: 10), "The counter shows from 3,000")
+        screenshot("uikit-composer-counter")
     }
 
     /// Someone typing shows above the composer and clears when they stop.

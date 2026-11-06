@@ -1246,7 +1246,7 @@ private struct SpaceRail: View {
 
 /// One space in the rail. Kept out of SpaceRail's body so the Swift type
 /// checker handles each piece in reasonable time.
-private struct SpaceRailButton: View {
+struct SpaceRailButton: View {
     @Bindable var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovered = false
@@ -4706,13 +4706,7 @@ private struct ChatView: View {
     /// signed-in account is never suggested; `@feedback` is offered everywhere.
     private var mentionSource: MentionSource { model.composerMentions }
     /// Web's counter tones at 3500 / 3750 / 3900 characters.
-    private var counterTone: Color {
-        let count = chat.draft.unicodeScalars.count
-        if count >= 3900 { return Color(red: 1, green: 130/255, blue: 124/255) }
-        if count >= 3750 { return Color(red: 237/255, green: 163/255, blue: 97/255) }
-        if count >= 3500 { return Color(red: 228/255, green: 199/255, blue: 106/255) }
-        return CaperTheme.muted
-    }
+    private var counterTone: Color { ComposerCounter.tone(chat.draft.unicodeScalars.count) }
     private var typingLabel: String {
         if chat.typingNames.count > 2 { return "Several people are typing…" }
         let names = chat.typingNames.joined(separator: " and ")
@@ -5301,6 +5295,17 @@ private struct TypingDots: View {
     case true?: return nil
     case false?: return "Joining is not available at this time."
     case nil: return "Checking voice availability…"
+    }
+}
+
+/// The draft's length under the composer from 3,000 of 4,000 characters,
+/// warming as it nears the limit.
+enum ComposerCounter {
+    static func tone(_ count: Int) -> Color {
+        if count >= 3900 { return Color(red: 1, green: 130/255, blue: 124/255) }
+        if count >= 3750 { return Color(red: 237/255, green: 163/255, blue: 97/255) }
+        if count >= 3500 { return Color(red: 228/255, green: 199/255, blue: 106/255) }
+        return CaperTheme.muted
     }
 }
 

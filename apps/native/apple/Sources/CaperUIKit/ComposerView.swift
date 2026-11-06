@@ -1,4 +1,5 @@
 import CaperCore
+import CoreText
 import SwiftUI
 import UIKit
 
@@ -38,6 +39,21 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     /// Escape closes them until the draft or caret moves again.
     private var dismissed = false
     private let recordingBar = HostedView()
+    /// The draft's link card inside the box, and the length counter under it.
+    /// A sizing host, so the box grows when the card loads after typing pauses.
+    private let linkPreview: UIHostingController<AnyView> = {
+        let host = UIHostingController(rootView: AnyView(EmptyView()))
+        host.sizingOptions = .intrinsicContentSize
+        host.view.backgroundColor = .clear
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        host.view.setContentHuggingPriority(.required, for: .vertical)
+        host.view.setContentCompressionResistancePriority(.required, for: .vertical)
+        return host
+    }()
+    private var linkPreviewShown = false
+    private let counter = UIKitStyle.label(size: 10, color: UIKitStyle.muted)
+    private var fieldToBottom: NSLayoutConstraint!
+    private var fieldToCounter: [NSLayoutConstraint] = []
     private var height: NSLayoutConstraint!
     /// The shared draft rendering sets Satoshi 14 itself, as SwiftUI does.
     private let font = UIKitStyle.font(14, scaled: false)
@@ -113,6 +129,15 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         fieldRow.alignment = .bottom
         fieldRow.translatesAutoresizingMaskIntoConstraints = false
         field.addSubview(fieldRow)
+        field.addSubview(linkPreview.view)
+        counter.translatesAutoresizingMaskIntoConstraints = false
+        // Satoshi with tabular digits, as SwiftUI's .monospacedDigit().
+        let base = UIKitStyle.font(10, scaled: false)
+        counter.font = UIFont(descriptor: base.fontDescriptor.addingAttributes([.featureSettings: [[
+            UIFontDescriptor.FeatureKey.type: kNumberSpacingType, UIFontDescriptor.FeatureKey.selector: kMonospacedNumbersSelector,
+        ]]]), size: 10)
+        counter.isHidden = true
+        addSubview(counter)
         recordingBar.isHidden = true
         field.addSubview(recordingBar)
         // Outside the clipped box, so the held microphone's lock hint can rise above it.
@@ -136,22 +161,24 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             suggestions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
             field.topAnchor.constraint(equalTo: suggestions.bottomAnchor),
             field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
-            field.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
             send.leadingAnchor.constraint(equalTo: field.trailingAnchor, constant: 8),
             send.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
             send.bottomAnchor.constraint(equalTo: field.bottomAnchor),
             fieldRow.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: 4),
             fieldRow.trailingAnchor.constraint(equalTo: microphone.leadingAnchor),
             fieldRow.topAnchor.constraint(equalTo: field.topAnchor),
-            fieldRow.bottomAnchor.constraint(equalTo: field.bottomAnchor),
+            linkPreview.view.topAnchor.constraint(equalTo: fieldRow.bottomAnchor),
+            linkPreview.view.leadingAnchor.constraint(equalTo: field.leadingAnchor),
+            linkPreview.view.trailingAnchor.constraint(equalTo: field.trailingAnchor),
+            linkPreview.view.bottomAnchor.constraint(equalTo: field.bottomAnchor),
             microphone.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: -2),
-            microphone.bottomAnchor.constraint(equalTo: field.bottomAnchor),
+            microphone.bottomAnchor.constraint(equalTo: fieldRow.bottomAnchor),
             microphone.widthAnchor.constraint(equalToConstant: 36),
             microphone.heightAnchor.constraint(equalToConstant: 42),
             // The bar covers the field beside the microphone, which stays under the finger.
             recordingBar.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: 8),
             recordingBar.trailingAnchor.constraint(equalTo: microphone.leadingAnchor),
-            recordingBar.bottomAnchor.constraint(equalTo: field.bottomAnchor),
+            recordingBar.bottomAnchor.constraint(equalTo: fieldRow.bottomAnchor),
             recordingBar.heightAnchor.constraint(equalToConstant: 42),
             textView.leadingAnchor.constraint(equalTo: text.leadingAnchor),
             textView.trailingAnchor.constraint(equalTo: text.trailingAnchor),
@@ -162,6 +189,13 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             placeholder.topAnchor.constraint(equalTo: textView.topAnchor, constant: 12),
             placeholder.trailingAnchor.constraint(lessThanOrEqualTo: textView.trailingAnchor),
         ])
+        fieldToBottom = field.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
+        fieldToBottom.isActive = true
+        fieldToCounter = [
+            counter.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 4),
+            counter.centerXAnchor.constraint(equalTo: centerXAnchor),
+            counter.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+        ]
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -172,13 +206,35 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         textView.isEditable = enabled
         if !enabled { suggestions.show(nil); textView.hideEmojiName() }
         send.isEnabled = enabled && canSend
-        // Eggshell when there is something to send; neutral chrome otherwise.
-        send.backgroundColor = send.isEnabled ? UIKitStyle.action : .clear
+        // Eggshell when there is something to send; otherwise the raised
+        // neutral chrome of SwiftUI's PrimaryActionFill.
+        send.backgroundColor = send.isEnabled ? UIKitStyle.action : UIKitStyle.raised
         send.tintColor = send.isEnabled ? UIKitStyle.blackout : UIKitStyle.muted
         send.layer.borderColor = (send.isEnabled ? UIKitStyle.action : UIKitStyle.border).cgColor
         attach.isEnabled = enabled && canAttach
         attach.accessibilityValue = attachReason
         emoji.isEnabled = enabled && canPickExpressions
+    }
+
+    /// The channel draft's link card (the thread composer has none).
+    /// Set once per conversation: the hosted view follows the draft itself.
+    func showLinkPreview<Content: View>(_ content: Content?) {
+        guard (content != nil) != linkPreviewShown else { return }
+        linkPreviewShown = content != nil
+        linkPreview.rootView = content.map { AnyView($0) } ?? AnyView(EmptyView())
+    }
+
+    /// SwiftUI's "3,214 / 4,000" from 3,000 characters, warming near the limit.
+    func showCount(_ count: Int) {
+        let shown = count >= 3000
+        guard shown || !counter.isHidden else { return }
+        counter.text = "\(count.formatted()) / 4,000"
+        counter.textColor = UIKitComposerCounter.color(count)
+        counter.accessibilityLabel = "\(count.formatted()) of 4,000 characters"
+        guard counter.isHidden == shown else { return }
+        counter.isHidden = !shown
+        if shown { fieldToBottom.isActive = false; NSLayoutConstraint.activate(fieldToCounter) }
+        else { NSLayoutConstraint.deactivate(fieldToCounter); fieldToBottom.isActive = true }
     }
 
     /// Staged files and voice notices above the box, when there are any.
@@ -351,6 +407,35 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         highlighting = false
         textView.becomeFirstResponder()
         edited()
+    }
+
+    private var focusing: UUID?
+    /// SwiftUI's ReplyComposerFocus: Reply asks for the keyboard; keep trying
+    /// until the composer can take it (a closing sheet, a sliding pane), then
+    /// consume the request. Call from an observed render.
+    func claimFocus(_ chat: ChatModel, inThread: Bool) {
+        guard let request = chat.composerFocusRequest(inThread: inThread), focusing != request else { return }
+        focusing = request
+        func attempt(_ left: Int) {
+            guard chat.composerFocusRequest(inThread: inThread) == request else { focusing = nil; return }
+            if window != nil, textView.isEditable, presentedByNothing, textView.becomeFirstResponder() {
+                chat.consumeComposerFocus(request)
+                focusing = nil
+            } else if left > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { attempt(left - 1) }
+            } else { focusing = nil }
+        }
+        attempt(60)
+    }
+
+    /// No sheet covers the composer's screen.
+    private var presentedByNothing: Bool {
+        var responder: UIResponder? = self
+        while let next = responder?.next {
+            if let controller = next as? UIViewController { return controller.presentedViewController == nil || controller.presentedViewController?.isBeingDismissed == true }
+            responder = next
+        }
+        return true
     }
 
     private func submit() {

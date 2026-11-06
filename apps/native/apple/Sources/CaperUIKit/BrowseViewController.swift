@@ -335,12 +335,22 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     private var railKey: [String] = []
 
     private func renderRail(_ spaces: [Space], selected: String?, unreadSpaces: Set<String>) {
-        let key = spaces.map { "\($0.id)|\($0.name)|\($0.id == selected)|\(unreadSpaces.contains($0.id))|\($0.iconAsset ?? "")" }
+        // Live tiles are SwiftUI's and follow selection, unread and voice themselves.
+        let key = spaces.map { live ? "\($0.id)|\($0.name)|\($0.iconAsset ?? "")"
+            : "\($0.id)|\($0.name)|\($0.id == selected)|\(unreadSpaces.contains($0.id))|\($0.iconAsset ?? "")" }
             + [live ? "live" : "", "\(model.canCreateSpace)"] + (live ? model.invitations.map { "invite|\($0.id)|\($0.name)" } : [])
         guard key != railKey else { return }
         railKey = key
         rail.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for space in spaces {
+            if live {
+                let tile = HostedView()
+                tile.show(UIKitSpaceRailTile(model: model, space: space))
+                NSLayoutConstraint.activate([tile.widthAnchor.constraint(equalToConstant: 44), tile.heightAnchor.constraint(equalToConstant: 44)])
+                rail.addArrangedSubview(tile)
+                continue
+            }
+            // The cached first paint: a plain tile until the live workspace is in.
             let name = space.demo == true ? "Caper" : space.name
             let tile = UIButton(type: .custom)
             tile.translatesAutoresizingMaskIntoConstraints = false

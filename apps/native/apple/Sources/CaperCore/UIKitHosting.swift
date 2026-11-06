@@ -592,6 +592,14 @@ public struct UIKitComposerNotices: View {
                         .accessibilityIdentifier("back-to-latest")
                 }.font(CaperTheme.font(11)).buttonStyle(CaperSecondaryButton()).padding(10)
             }
+            if let sessionError = chat.sessionError {
+                HStack(spacing: 8) {
+                    Text(sessionError).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
+                    Button("Retry session") { Task { await chat.retrySession() } }.buttonStyle(.plain)
+                        .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.text)
+                    Spacer()
+                }.padding(.horizontal, 18)
+            }
             if let error = chat.error, chat.pendingMessage == nil, !chat.loadFailed, !chat.displayedMessages.isEmpty {
                 Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
@@ -610,9 +618,60 @@ public struct UIKitComposerNotices: View {
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("voice-error-inline")
             }
+            // A 1:1 request you sent, until they accept.
+            if let conversation = model.selectedDirectMessage, conversation.peer.id != model.account?.id,
+               conversation.status == .outgoing {
+                Text(MessageRequests.waitingNotice(for: conversation.peer))
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
+                    .accessibilityIdentifier("message-request-waiting")
+            }
+            // A thread reply that failed while its thread is closed.
+            if let root = chat.pendingMessage?.threadRootId, !chat.sending,
+               chat.error != nil || chat.sendRejected, chat.threadRootID != root {
+                HStack(spacing: 8) {
+                    Text(chat.sendRejected ? "A thread reply wasn’t sent." : "A thread reply couldn’t be confirmed.")
+                        .foregroundStyle(CaperTheme.error)
+                    Button("Review reply") { Task { await chat.openThread(root) } }.buttonStyle(CaperSecondaryButton())
+                }.font(CaperTheme.font(11)).padding(.horizontal, 18)
+            }
         }
         .preferredColorScheme(.dark)
     }
+}
+
+/// A space's rail tile, exactly as SwiftUI draws it on iPhone: icon, the
+/// unread dot, mention count, muted bell, voice badge and selection glow.
+public struct UIKitSpaceRailTile: View {
+    @Bindable var model: AppModel
+    let space: Space
+    public init(model: AppModel, space: Space) { self.model = model; self.space = space }
+    public var body: some View {
+        SpaceRailButton(model: model, space: space, narrow: true)
+            .accessibilityIdentifier("space-\(space.id)")
+            .preferredColorScheme(.dark)
+    }
+}
+
+/// Inside the channel composer's box: the draft's first link card, loaded
+/// after a pause in typing, with × to send without it.
+public struct UIKitComposerLinkPreview: View {
+    let chat: ChatModel
+    public init(chat: ChatModel) { self.chat = chat }
+    public var body: some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: 0)
+            ComposerEmbedPreview(chat: chat)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: chat.composerPreviewLink) { await chat.loadComposerLinkPreview() }
+        .preferredColorScheme(.dark)
+    }
+}
+
+/// The counter's colour for a draft of `count` Unicode scalars.
+public enum UIKitComposerCounter {
+    public static func color(_ count: Int) -> UIColor { UIColor(ComposerCounter.tone(count)) }
 }
 
 /// A joined channel's Browse row, exactly as SwiftUI draws it on iPhone: name,

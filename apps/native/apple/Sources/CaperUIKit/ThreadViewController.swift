@@ -211,14 +211,6 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         composerObserver.start { [weak self] in self?.renderComposer() }
     }
 
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        // Reply in thread focuses the reply composer.
-        if let request = chat.composerFocusRequest(inThread: true) {
-            chat.consumeComposerFocus(request)
-            composer.textView.becomeFirstResponder()
-        }
-    }
 
     override func accessibilityPerformEscape() -> Bool { close(); return true }
 
@@ -317,6 +309,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     }
 
     private func renderComposer() {
+        // Reply in thread, or Reply while the thread is open, raises the keyboard.
+        composer.claimFocus(chat, inThread: true)
         let ready = chat.threadRootID != nil && chat.canInteract && !chat.isPreview
         composer.configure(prompt: "Reply to thread…", enabled: ready, canSend: chat.canPressSend(inThread: true),
                            canAttach: chat.canAttach, attachReason: chat.canAttach ? nil : chat.attachUnavailableReason,
