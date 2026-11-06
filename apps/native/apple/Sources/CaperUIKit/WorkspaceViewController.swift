@@ -51,7 +51,8 @@ final class WorkspaceViewController: UIViewController {
         model.narrowLayout = true
         observer.start { [weak self] in
             guard let self else { return }
-            let hasChannel = self.model.selectedChannelID != nil || self.model.selectedDirectMessageID != nil || self.cached?.channelID != nil
+            let hasChannel = self.model.selectedChannelID != nil || self.model.selectedDirectMessageID != nil
+                || self.model.visit != nil || self.cached?.channelID != nil
             if !hasChannel && !self.browsing { self.slide(browsing: true, animated: false) }
             else if hasChannel && self.model.navigationOpen != self.browsing { self.slide(browsing: self.model.navigationOpen) }
         }

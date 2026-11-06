@@ -20,6 +20,10 @@ export const fixtureIDs = {
   request: "dm0000000003",
   memberDirect: "dm0000000004",
   stranger: "stranger0001",
+  // Opt-in feedback-team state (`{ feedbackTeam: true }`): a space the owner is
+  // not in, whose #plans holds Maya's report, visited without joining.
+  visitSpace: "space0000009",
+  visitChannel: "chan00000009",
 };
 const ids = fixtureIDs;
 /** Links that get cards, without repeats, skipping any written `<like this>`. */
@@ -386,8 +390,11 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       : id === ids.demoSpace
         ? demoSpace
         : state.spaces.find((detail) => detail.space.id === id)?.space;
-  const canRead = (channel, user) =>
+  const visiting = (channel, user) =>
+    !!user?.feedbackTeam && channel?.spaceId === ids.visitSpace && !canRead(channel, user, false);
+  const canRead = (channel, user, visits = true) =>
     channel?.id === ids.demo ||
+    (visits && !!user?.feedbackTeam && channel?.spaceId === ids.visitSpace) ||
     (!!user &&
       (channel?.direct
         ? user.id === state.account.id && state.directs.some((conversation) => conversation.id === channel.id)
@@ -761,6 +768,50 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (Number.isInteger(body.releaseHighlightsDelay))
           state.releaseHighlightsDelay = Math.max(0, Math.min(5000, body.releaseHighlightsDelay));
         if (body.noSpaces) state.spaces = [];
+        if (body.feedbackTeam === true && !state.account.feedbackTeam) {
+          state.account.feedbackTeam = true;
+          const space = { id: ids.visitSpace, name: "Maya's Workshop", ownerId: ids.member };
+          const channel = { id: ids.visitChannel, spaceId: space.id, name: "plans", private: false };
+          const rows = [
+            ["The upload sheet looks great so far.", members[2]],
+            ["TEST FIXTURE @feedback uploads stall at 90% on hotel wifi", members[1], [{ type: "feedback" }]],
+          ].map(([text, member, mentions], index) => ({
+            id: `${channel.id}m${String(index + 1).padStart(2, "0")}`,
+            channelId: channel.id,
+            seq: String(index + 1),
+            author: author(member),
+            content: { version: 1, type: "text", text, ...(mentions ? { mentions } : {}) },
+            clientMessageId: `00000000-0000-4000-8000-00000000009${index + 1}`,
+            createdAt: `2026-09-23T10:0${index}:00.000Z`,
+          }));
+          state.spaces.push({ space, channels: [channel], members: clone([members[1], members[2]]) });
+          state.messages.set(channel.id, rows);
+          state.createdEvents.set(
+            channel.id,
+            rows.map((message) => ({
+              type: "message.created",
+              channelId: channel.id,
+              seq: message.seq,
+              message: clone(message),
+            })),
+          );
+          state.feedback = [
+            {
+              id: rows[1].id,
+              messageId: rows[1].id,
+              threadRootId: rows[1].id,
+              createdAt: rows[1].createdAt,
+              text: "TEST FIXTURE @feedback uploads stall at 90% on hotel wifi",
+              attachments: 0,
+              reporter: { id: ids.member, username: "maya", displayName: "Maya", avatarId: 31 },
+              channel: { id: channel.id, name: channel.name, direct: false },
+              space: { id: space.id, name: space.name },
+              replyCount: 0,
+              answered: false,
+              archived: false,
+            },
+          ];
+        }
         if (typeof body.uploadsEnabled === "boolean") state.uploadsEnabled = body.uploadsEnabled;
         if (Number.isSafeInteger(body.multipartPartBytes) && body.multipartPartBytes > 0)
           state.multipartPartBytes = body.multipartPartBytes;
@@ -1452,6 +1503,27 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (bounded > BigInt(conversation.readSeq)) conversation.readSeq = String(bounded);
         return json(response, 204);
       }
+      // Only with feedback-team state, so other runs keep their unread behavior.
+      if (path === "/api/spaces/unread" && method === "GET" && user?.feedbackTeam)
+        return json(response, 200, {
+          spaces: [],
+          feedbackWaiting: (state.feedback ?? []).filter((report) => !report.answered && !report.archived).length,
+        });
+      if (path === "/api/feedback" && method === "GET") {
+        if (!user?.feedbackTeam) return reject(response, 404, "resource not found");
+        const archived = url.searchParams.get("archived") === "true";
+        return json(response, 200, {
+          reports: (state.feedback ?? []).filter((report) => report.archived === archived),
+          cursor: null,
+        });
+      }
+      if (path === "/api/feedback/archive" && method === "PUT") {
+        if (!user?.feedbackTeam) return reject(response, 404, "resource not found");
+        for (const report of state.feedback ?? [])
+          if (report.channel.id === body?.channelId && report.threadRootId === body?.threadRootId)
+            report.archived = body?.archived === true;
+        return json(response, 204);
+      }
       if (path === "/api/account/me")
         return user ? json(response, 200, user) : reject(response, 401, "Sign in required.");
       if (path === "/api/account/avatar/history" && method === "GET") {
@@ -1988,6 +2060,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           ...page,
           pinnedMessages,
           cursor: channelHead(channel.id),
+          ...(visiting(channel, user) ? { visitor: true } : {}),
         });
       }
       const inviteLinksPath = /^\/api\/spaces\/([^/]+)\/invite-links(?:\/([^/]+))?(\/regenerate)?$/.exec(path);

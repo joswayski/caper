@@ -5,7 +5,7 @@ import UIKit
 /// Browse on iPhone: the space rail beside the selected space's channels and
 /// direct messages, with the account bar beneath. The conversation slides over it.
 final class BrowseViewController: UIViewController, UICollectionViewDelegate {
-    private enum Item: Hashable { case liveNow, channel(String), search, browseResult(String), channelInvitation(String), directHeading, requests, selfDirect, direct(String), newMessage }
+    private enum Item: Hashable { case liveNow, channel(String), search, browseResult(String), channelInvitation(String), directHeading, activity, feedback, requests, selfDirect, direct(String), newMessage }
 
     private let model: AppModel
     var cached: StartupSnapshot? { didSet { if isViewLoaded { render() } } }
@@ -40,6 +40,14 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         host.view.backgroundColor = UIKitStyle.sidebar
         host.view.translatesAutoresizingMaskIntoConstraints = false
         host.view.accessibilityIdentifier = "message-requests-page"
+        return host
+    }()
+    /// The feedback team's inbox, pushed the same way; it wins over requests.
+    private lazy var feedback: UIHostingController<UIKitFeedbackInbox> = {
+        let host = UIHostingController(rootView: UIKitFeedbackInbox(model: model))
+        host.view.backgroundColor = UIKitStyle.sidebar
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        host.view.accessibilityIdentifier = "feedback-page"
         return host
     }()
     private let accountAvatar = AvatarView(side: 32)
@@ -312,7 +320,10 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         snapshot.reconfigureItems(joined.filter { previous[$0.id] != nil && previous[$0.id] != $0 }.map { .channel($0.id) })
         appendDirect(to: &snapshot, live: live)
         dataSource.apply(snapshot, animatingDifferences: false)
-        renderRequests(live && model.account != nil && model.showingMessageRequests)
+        let showingFeedback = live && model.isFeedbackTeam && model.showingFeedback
+        render(page: feedback, showing: showingFeedback)
+        render(page: requests, showing: !showingFeedback && live && model.account != nil && model.showingMessageRequests)
+        [spaceName, channelsHeading, channels].forEach { $0.accessibilityElementsHidden = feedback.parent != nil || requests.parent != nil }
 
         let account = model.account
         let name = account?.displayName ?? account?.username ?? ""
@@ -413,7 +424,10 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         let previous = directRows
         let others = model.visibleDirectMessages.filter { $0.peer.id != account.id }
         directRows = Dictionary(model.directMessages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var items: [Item] = [.directHeading]
+        // SwiftUI's order: Notifications, Feedback (the team), requests.
+        var items: [Item] = [.directHeading, .activity]
+        _ = (UIKitActivity.unread(model), model.feedbackWaiting, model.visit?.channelID)
+        if model.isFeedbackTeam { items.append(.feedback) }
         if !model.messageRequests.isEmpty { items.append(.requests) }
         items.append(.selfDirect)
         items += others.map { .direct($0.id) }
@@ -427,31 +441,46 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         })
     }
 
-    private func renderRequests(_ showing: Bool) {
-        if showing, requests.parent == nil {
-            addChild(requests)
-            card.addSubview(requests.view)
+    /// A page pushed over the lists (requests, the feedback inbox), as on iPhone.
+    private func render(page: UIViewController, showing: Bool) {
+        if showing, page.parent == nil {
+            addChild(page)
+            card.addSubview(page.view)
             NSLayoutConstraint.activate([
-                requests.view.topAnchor.constraint(equalTo: card.topAnchor, constant: 8),
-                requests.view.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-                requests.view.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-                requests.view.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+                page.view.topAnchor.constraint(equalTo: card.topAnchor, constant: 8),
+                page.view.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+                page.view.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+                page.view.bottomAnchor.constraint(equalTo: card.bottomAnchor),
             ])
-            requests.didMove(toParent: self)
-            UIAccessibility.post(notification: .screenChanged, argument: requests.view)
-        } else if !showing, requests.parent != nil {
-            requests.willMove(toParent: nil)
-            requests.view.removeFromSuperview()
-            requests.removeFromParent()
+            page.didMove(toParent: self)
+            UIAccessibility.post(notification: .screenChanged, argument: page.view)
+        } else if !showing, page.parent != nil {
+            page.willMove(toParent: nil)
+            page.view.removeFromSuperview()
+            page.removeFromParent()
             UIAccessibility.post(notification: .screenChanged, argument: channels)
         }
-        [spaceName, channelsHeading, channels].forEach { $0.accessibilityElementsHidden = showing }
     }
 
     private func configure(_ cell: DirectRowCell, item: Item) {
         switch item {
         case .directHeading:
             cell.heading("DIRECT MESSAGES") { [weak self] in self?.newDirectMessage() }
+        case .activity:
+            let unread = UIKitActivity.unread(model)
+            cell.show(icon: "bell", text: "Notifications", highlighted: true, unread: unread > 0 ? unread : nil)
+            cell.accessibilityLabel = "Notifications"
+            cell.accessibilityValue = unread > 0 ? "\(unread) unread" : ""
+            cell.accessibilityHint = "Opens your notifications"
+            cell.accessibilityIdentifier = "activity-inbox"
+        case .feedback:
+            let waiting = model.feedbackWaiting
+            cell.show(icon: "chevron-right", text: FeedbackInbox.title, highlighted: model.visit != nil,
+                      unread: waiting > 0 ? waiting : nil)
+            cell.accessibilityLabel = FeedbackInbox.title
+            cell.accessibilityValue = waiting > 0 ? "\(waiting) feedback conversations waiting for a reply" : ""
+            cell.accessibilityHint = "Opens the feedback inbox"
+            cell.accessibilityIdentifier = "feedback-inbox"
         case .requests:
             let count = model.messageRequests.count
             cell.show(icon: "chevron-right", text: "Message requests", count: "\(count)", countStyle: .neutral)
@@ -557,6 +586,11 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             break
         case let .channelInvitation(id):
             if let invitation = channelInvitations[id] { dialog(.channelInvitation(invitation)) }
+        case .activity:
+            guard presentedViewController == nil else { return }
+            present(UIKitActivity.inbox(model: model), animated: !UIKitStyle.reduceMotion)
+        case .feedback:
+            model.showingFeedback = true
         case .requests:
             model.showingMessageRequests = true
         case .selfDirect:

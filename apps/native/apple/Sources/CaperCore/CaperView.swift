@@ -2087,7 +2087,7 @@ struct SidebarIconButton: ButtonStyle {
 
 /// Who is in voice in a channel: your own call's participants while you are in
 /// it, else the read-only presence roster.
-@MainActor private func voiceOccupants(_ model: AppModel, channelID: String) -> [VoiceSpectator] {
+@MainActor func voiceOccupants(_ model: AppModel, channelID: String) -> [VoiceSpectator] {
     // `voiceRoster` also covers a visited space channel, outside the open space.
     guard model.voice.isActive(channelID: channelID) else { return model.voiceRoster(for: channelID) }
     return model.voice.participants.map { participant -> VoiceSpectator in
@@ -8498,7 +8498,7 @@ private struct FeedbackPullToRefresh: ViewModifier {
 /// page in Browse on narrow layouts. Newest first; a row visits its
 /// conversation at the reported message, with its thread open. "Show
 /// archived" switches it to the threads the team archived.
-private struct FeedbackInboxList: View {
+struct FeedbackInboxList: View {
     @Bindable var model: AppModel
     let pushed: Bool
     private var archived: Bool { model.showingArchivedFeedback }

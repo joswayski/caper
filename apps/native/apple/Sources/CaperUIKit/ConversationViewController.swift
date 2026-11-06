@@ -221,7 +221,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     }
 
     /// The member list applies to a channel, not a preview.
-    private var membersAvailable: Bool { isLive && !direct && !model.previewingChannel && model.detail != nil }
+    /// A feedback visit has no member list.
+    private var membersAvailable: Bool { isLive && !direct && model.visit == nil && !model.previewingChannel && model.detail != nil }
 
     private func buildTimeline() {
         let size = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .estimated(64))
@@ -368,7 +369,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private var directBarHeight: NSLayoutConstraint?
 
     /// The open conversation: a channel, or a DM.
-    private var conversationID: String? { model.selectedChannelID ?? model.selectedDirectMessageID }
+    /// The open channel or DM, or the conversation a feedback visit reads.
+    private var conversationID: String? { model.selectedChannelID ?? model.selectedDirectMessageID ?? model.visit?.channelID }
     private var direct: Bool { model.selectedDirectMessageID != nil }
     /// The open DM's peer, other than yourself.
     private var peerConversation: DirectMessageConversation? {
@@ -405,13 +407,19 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let channelID = live ? conversationID : cached?.channelID
         let direct = live && self.direct
         let channelName = live ? (model.selectedChannel?.name ?? chat.channelName) : (cached?.channelName ?? "")
-        // A DM reads as the person's name; a channel as "# name".
-        let title = channelName.isEmpty ? "" : direct ? channelName : "# \(channelName.lowercased())"
+        let visit = live ? model.visit : nil
+        // A DM reads as the person's name; a channel as "# name"; a visit as
+        // "#plans · Studio" or "Alice & Bob", from the visited history.
+        let title = visit.map { FeedbackInbox.title(channelName: chat.channelName, spaceName: chat.spaceName, direct: $0.direct) }
+            ?? (channelName.isEmpty ? "" : direct ? channelName : "# \(channelName.lowercased())")
         channelTitle.text = title
-        subtitle.text = memberSummary(live: live, channelID: channelID)
+        let inVoice = live ? UIKitVoiceStrip.inVoice(model) : 0
+        let parts = [visit == nil ? memberSummary(live: live, channelID: channelID) : nil, inVoice > 0 ? "\(inVoice) in voice" : nil]
+        subtitle.text = parts.compactMap { $0 }.isEmpty ? nil : parts.compactMap { $0 }.joined(separator: " · ")
         subtitle.isHidden = subtitle.text == nil
-        heading.accessibilityLabel = direct ? "Direct message with \(channelName)" : title
-        titleMenu.accessibilityLabel = direct ? "\(channelName) options" : "#\(channelName.lowercased()) options"
+        heading.accessibilityLabel = visit != nil ? "Visiting \(title)" : direct ? "Direct message with \(channelName)" : title
+        titleMenu.accessibilityLabel = visit != nil ? "\(title) options"
+            : direct ? "\(channelName) options" : "#\(channelName.lowercased()) options"
         titleMenu.accessibilityValue = subtitle.text
         titleMenu.isEnabled = live
         renderConnection(live ? chat.liveState : .connected)
@@ -633,7 +641,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let name = model.selectedChannel?.name ?? cached?.channelName ?? chat.channelName
         let ready = isLive && chat.canInteract && !model.previewingChannel
         renderDirectBar()
-        composer.configure(prompt: isLive && direct ? "Message \(chat.channelName)" : "Message #\(name.lowercased())", enabled: ready,
+        composer.configure(prompt: isLive && (direct || model.visit?.direct == true) ? "Message \(chat.channelName)" : "Message #\(name.lowercased())", enabled: ready,
                            canSend: chat.canPressSend(inThread: false),
                            canAttach: chat.canAttach,
                            attachReason: chat.canAttach ? nil : chat.attachUnavailableReason,

@@ -418,6 +418,61 @@ final class CaperUIKitTests: XCTestCase {
         screenshot("uikit-draft-formatting-sent")
     }
 
+    /// Notifications sits atop Direct messages and opens the activity inbox.
+    func testActivityInbox() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        app.buttons["back-to-browse"].tap()
+        let entry = app.cells["activity-inbox"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 10))
+        XCTAssertEqual(entry.label, "Notifications")
+        entry.tap()
+        let mention = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "check the narrow layout")).firstMatch
+        XCTAssertTrue(mention.waitForExistence(timeout: 10), "The fixture's mention is listed")
+        screenshot("uikit-activity-inbox")
+        app.buttons["Done"].firstMatch.tap()
+        XCTAssertTrue(mention.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(entry.exists)
+    }
+
+    /// The feedback team's inbox: Feedback under Notifications pushes the
+    /// list; a report visits a space the owner is not in, at the report; Back
+    /// returns to the inbox.
+    func testFeedbackInboxVisitsAReport() {
+        control(["feedbackTeam": true])
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        app.buttons["back-to-browse"].tap()
+        let inbox = app.cells["feedback-inbox"]
+        XCTAssertTrue(inbox.waitForExistence(timeout: 10))
+        let waiting = NSPredicate(format: "value == %@", "1 feedback conversations waiting for a reply")
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation(for: waiting, evaluatedWith: inbox)], timeout: 10), .completed,
+                       "The row counts reports waiting for a reply")
+        screenshot("uikit-browse-feedback-rows")
+        inbox.tap()
+        let report = app.buttons["feedback-report-chan00000009m02"]
+        XCTAssertTrue(report.waitForExistence(timeout: 10))
+        screenshot("uikit-feedback-inbox")
+        report.tap()
+        let title = app.buttons["channel-title-menu"]
+        XCTAssertTrue(row("00000000-0000-4000-8000-000000000092").waitForExistence(timeout: 10), "The visit opens at the report")
+        XCTAssertEqual(title.label, "#plans · Maya's Workshop options")
+        XCTAssertEqual(app.textViews["message-composer"].label, "Message #plans")
+        screenshot("uikit-feedback-visit")
+        title.tap()
+        XCTAssertTrue(app.buttons["Pins"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Members")).firstMatch.exists,
+                       "A visit has no member list")
+        app.buttons["Pins"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["No pinned messages"].waitForExistence(timeout: 5))
+        app.buttons["close-pins"].tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        app.buttons["back-to-browse"].tap()
+        XCTAssertTrue(report.waitForExistence(timeout: 10), "Back returns to the inbox")
+        app.buttons["feedback-back"].firstMatch.tap()
+        XCTAssertTrue(inbox.waitForExistence(timeout: 10))
+    }
+
     /// The account menu opens SwiftUI's release notes sheet.
     func testWhatsNew() {
         let app = launch()

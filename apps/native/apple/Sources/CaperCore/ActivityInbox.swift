@@ -81,7 +81,7 @@ struct ActivityInboxEntry: View {
     }
 }
 
-private struct ActivityInboxView: View {
+struct ActivityInboxView: View {
     @Bindable var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var reactionItem: ActivityItem?

@@ -422,6 +422,34 @@ public struct UIKitMessageRequests: View {
     }
 }
 
+/// The feedback team's inbox on iPhone: the page Browse pushes in place of
+/// its lists, pulled to refresh. A row visits its conversation.
+public struct UIKitFeedbackInbox: View {
+    @Bindable var model: AppModel
+    public init(model: AppModel) { self.model = model }
+    public var body: some View {
+        ScrollView { FeedbackInboxList(model: model, pushed: true) }
+            .refreshable { await model.refreshFeedback() }
+            .background(CaperTheme.sidebar).preferredColorScheme(.dark)
+    }
+}
+
+/// The account's notifications inbox ("Notifications" atop Direct messages):
+/// SwiftUI's sheet, polling while it is up as SwiftUI's binding has it.
+@MainActor public enum UIKitActivity {
+    public static func unread(_ model: AppModel) -> Int { model.activityUnread }
+
+    public static func inbox(model: AppModel) -> UIViewController {
+        model.activityShown = true
+        let host = UIKitHosting.controller { _ in
+            ActivityInboxView(model: model).onDisappear { model.activityShown = false }
+        }
+        UIKitHosting.sheet(host, background: CaperTheme.surface)
+        host.sheetPresentationController?.detents = [.large()]
+        return host
+    }
+}
+
 /// What replaces a DM's composer: Accept, Decline or Block in an incoming
 /// request, Unblock in a conversation with someone you blocked.
 public struct UIKitDirectBar: View {
@@ -498,6 +526,11 @@ public struct UIKitVoiceStrip: View {
         if model.visit != nil { return model.visitChannel.flatMap { model.isVisitVoice($0) ? $0 : nil } }
         guard model.selectedDirectMessageID == nil, let channel = model.selectedChannel, channel.joined else { return nil }
         return channel
+    }
+
+    /// The header subtitle's "N in voice" for the open (or visited) channel.
+    public static func inVoice(_ model: AppModel) -> Int {
+        channel(model).map { voiceOccupants(model, channelID: $0.id).count } ?? 0
     }
 
     public var body: some View {
