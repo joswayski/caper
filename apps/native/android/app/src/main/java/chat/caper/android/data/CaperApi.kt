@@ -592,7 +592,8 @@ class CaperApi(
 }
 
 private val externalId = Regex("^[A-Za-z0-9]{12}$")
-private val assetId = Regex("^[A-Za-z0-9]{16}$")
+/** Attachments have 16-character IDs; profile pictures and space icons 20 (the API's `pictures::ID_LENGTH`). */
+private val assetId = Regex("^[A-Za-z0-9]{16}([A-Za-z0-9]{4})?$")
 fun String.assetPathId(): String = also { require(assetId.matches(it)) { "Invalid file ID." } }
 private fun String.isStorageUrl() = startsWith("https://") || startsWith("http://")
 

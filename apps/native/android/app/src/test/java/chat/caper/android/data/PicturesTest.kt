@@ -108,7 +108,8 @@ class PicturesTest {
         assertEquals("Couldn’t reach Caper. Check your connection.", pictureError(IOException("reset"), avatar))
     }
 
-    private val id = "PiCtUrE123456789"
+    // Picture IDs are 20 characters, unlike attachments' 16.
+    private val id = "PiCtUrE1234567890123"
 
     private fun reservation() = """{"id":"$id","kind":"image","upload":{"method":"PUT","url":"${server.url("/r2/original/$id?X-Amz-Signature=abc")}",
         "headers":{"content-type":"image/webp","content-disposition":"inline; filename=\"avatar.webp\""}}}"""
