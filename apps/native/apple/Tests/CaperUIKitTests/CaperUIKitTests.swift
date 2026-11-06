@@ -328,6 +328,41 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(typing.waitForNonExistence(timeout: 10), "Stopping clears it")
     }
 
+    /// A person pill opens their card, as do the author's avatar and the members list.
+    func testMentionAndAuthorCards() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let composer = app.textViews["message-composer"]
+        composer.tap()
+        composer.typeText("TEST FIXTURE ping @maya about it")
+        app.buttons["send-message"].tap()
+        let sent = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "ping @maya")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 10))
+        let pill = sent.links.firstMatch
+        XCTAssertTrue(pill.waitForExistence(timeout: 10), "The resolved mention is a link VoiceOver can reach")
+        pill.tap()
+        let card = app.descendants(matching: .any)["mention-card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Tapping a pill opens the card")
+        XCTAssertTrue(app.buttons["mention-card-message"].waitForExistence(timeout: 5), "Maya's card offers Message")
+        screenshot("uikit-mention-card")
+        app.swipeDown(velocity: .fast)
+        XCTAssertTrue(card.waitForNonExistence(timeout: 10))
+
+        // The author's avatar on the newest unbroken row.
+        let latest = row(Self.latest)
+        latest.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 34, dy: 26)).tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "The author's avatar opens their card")
+        app.swipeDown(velocity: .fast)
+        XCTAssertTrue(card.waitForNonExistence(timeout: 10))
+
+        app.buttons["channel-title-menu"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Members")).firstMatch.tap()
+        let member = app.cells.matching(NSPredicate(format: "label == %@", "Open profile for Maya")).firstMatch
+        XCTAssertTrue(member.waitForExistence(timeout: 10))
+        member.tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "A member opens their card")
+    }
+
     /// Browse lists DMs under the channels; New message opens a DM by exact
     /// username, and the conversation sends like a channel.
     func testNewDirectMessageOpensAndSends() {

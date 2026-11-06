@@ -69,6 +69,53 @@ import UIKit
         return host
     }
 
+    /// The mention card for a pill in `message`; nil when the id is no person there.
+    public static func profileCard(model: AppModel, userID: String, in message: ChatMessage,
+                                   requestBlock: @escaping (BlockTarget) -> Void) -> UIViewController? {
+        guard let pill = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
+            .first(where: { $0.id == userID }) else { return nil }
+        return profileCard(model: model, person: resolve(model) { MentionCard.resolve(pill, members: $0, people: $1, peers: $2, account: $3, viewerID: $4) },
+                           requestBlock: requestBlock)
+    }
+
+    /// The card for a message's author (avatar or name).
+    public static func profileCard(model: AppModel, author: ChatAuthor, requestBlock: @escaping (BlockTarget) -> Void) -> UIViewController {
+        profileCard(model: model, person: resolve(model) { MentionCard.resolve(author, members: $0, people: $1, peers: $2, account: $3, viewerID: $4) },
+                    requestBlock: requestBlock)
+    }
+
+    /// The card for someone in the member list.
+    public static func profileCard(model: AppModel, member: Member, requestBlock: @escaping (BlockTarget) -> Void) -> UIViewController {
+        let pill = MentionPill(id: member.id, username: member.username)
+        return profileCard(model: model, person: resolve(model) { MentionCard.resolve(pill, members: $0, people: $1, peers: $2, account: $3, viewerID: $4) },
+                           requestBlock: requestBlock)
+    }
+
+    private static func resolve(_ model: AppModel, _ body: ([Member], [Person]?, [DirectMessagePeer], Account?, String?) -> MentionCardPerson) -> MentionCardPerson {
+        body(model.detail?.members ?? [], model.people, model.directMessages.map(\.peer), model.account,
+             model.chat.currentAuthor?.id ?? model.account?.id)
+    }
+
+    /// A sheet, as SwiftUI's MentionCardHost presents on iPhone. Block closes
+    /// the card first; the conversation then asks to confirm.
+    private static func profileCard(model: AppModel, person: MentionCardPerson, requestBlock: @escaping (BlockTarget) -> Void) -> UIViewController {
+        let box = WeakController()
+        var pendingBlock: BlockTarget?
+        let host = DisappearingHostingController(rootView: AnyView(
+            MentionCardView(model: model, person: person, requestBlock: { target in
+                pendingBlock = target
+                if box.value?.presentingViewController != nil { box.value?.dismiss(animated: true) }
+            }, close: { box.value?.dismiss(animated: true) })
+            .preferredColorScheme(.dark)))
+        box.value = host
+        host.overrideUserInterfaceStyle = .dark
+        host.disappeared = { if let target = pendingBlock { pendingBlock = nil; requestBlock(target) } }
+        sheet(host, background: CaperTheme.surface)
+        host.sheetPresentationController?.detents = [.large()]
+        host.view.accessibilityIdentifier = "mention-card"
+        return host
+    }
+
     static func sheet(_ host: UIViewController, background: Color) {
         host.view.backgroundColor = UIColor(background)
         host.modalPresentationStyle = .pageSheet
@@ -93,6 +140,15 @@ import UIKit
             host.modalPresentationStyle = .overFullScreen
             present(host)
         }
+    }
+}
+
+/// Reports when its sheet has finished closing, so a follow-up can present.
+private final class DisappearingHostingController: UIHostingController<AnyView> {
+    var disappeared: (() -> Void)?
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if isBeingDismissed || presentingViewController == nil { disappeared?() }
     }
 }
 

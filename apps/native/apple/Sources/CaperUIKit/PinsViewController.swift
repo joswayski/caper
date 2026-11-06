@@ -12,12 +12,23 @@ final class PinsViewController: UIViewController, UICollectionViewDelegate {
     private let empty = UIStackView()
     private let error = UIKitStyle.label(size: 12, color: UIKitStyle.error)
     private let observer = ModelObserver()
-    private lazy var rowHost = RowHost(chat: model.chat, present: { [weak self] in self?.present($0, animated: false) }) { [weak self] message in
-        guard let self else { return }
-        let chat = self.model.chat
-        self.dismiss(animated: true)
-        Task { _ = await chat.onOpenForward?(message) }
-    }
+    /// Block from a pinned author's card: Pins closes, the conversation confirms.
+    var requestBlock: ((BlockTarget) -> Void)?
+    private lazy var rowHost: RowHost = {
+        var host = RowHost(chat: model.chat, present: { [weak self] in self?.present($0, animated: false) }) { [weak self] message in
+            guard let self else { return }
+            let chat = self.model.chat
+            self.dismiss(animated: true)
+            Task { _ = await chat.onOpenForward?(message) }
+        }
+        let chat = model.chat
+        host.openProfiles(model: model, controller: self, messages: { chat.displayedPins }) { [weak self] target in
+            guard let self else { return }
+            let request = self.requestBlock
+            self.dismiss(animated: true) { request?(target) }
+        }
+        return host
+    }()
 
     init(model: AppModel) {
         self.model = model

@@ -45,6 +45,10 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         }
         host.actions = { [weak self] id, picker in self?.openActions(id, picker: picker) }
         host.reactors = { [weak self] id, emoji in self?.presentations.reactors = .init(messageID: id, emoji: emoji) }
+        let chat = model.chat
+        host.openProfiles(model: model, controller: self, messages: { chat.displayedMessages + chat.displayedThreadMessages }) { [weak self] target in
+            self?.presentations.block = target
+        }
         return host
     }()
 

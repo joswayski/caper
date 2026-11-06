@@ -173,6 +173,12 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         var items: [UIMenuElement] = [
             UIAction(title: "Pins", image: UIKitStyle.icon("pin")) { [weak self] _ in self?.showPins() },
         ]
+        members.openProfile = { [weak self] member in
+            guard let self else { return }
+            self.present(UIKitHosting.profileCard(model: self.model, member: member) { [weak self] target in
+                self?.presentations.block = target
+            }, animated: !UIKitStyle.reduceMotion)
+        }
         if membersAvailable {
             let title = members.isOpen ? "Hide members" : "Members"
             items.append(UIAction(title: memberCount.map { "\(title) · \($0)" } ?? title, image: UIKitStyle.icon("users")) { [weak self] _ in
@@ -206,6 +212,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     private func showPins() {
         let pins = PinsViewController(model: model)
+        pins.requestBlock = { [weak self] target in self?.presentations.block = target }
         if let sheet = pins.sheetPresentationController {
             sheet.detents = [.medium(), .large()]
             sheet.prefersGrabberVisible = true
@@ -562,6 +569,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         host.openThread = { [weak self] root in
             guard let chat = self?.model.chat else { return }
             Task { await chat.openThread(root) }
+        }
+        let chat = model.chat
+        host.openProfiles(model: model, controller: self, messages: { chat.displayedChannelMessages }) { [weak self] target in
+            self?.presentations.block = target
         }
         return host
     }()

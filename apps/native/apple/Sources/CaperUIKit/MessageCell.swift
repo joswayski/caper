@@ -43,6 +43,8 @@ struct MessageRowState: Equatable {
     var focused = false
     /// A blocked author's message the reader chose to show.
     var revealedBlocked = false
+    /// The avatar and name open the author's card; guests have none.
+    var authorProfile = false
     /// Pins list rows: the full date, and the card paints the background.
     var inPins = false
 
@@ -52,6 +54,7 @@ struct MessageRowState: Equatable {
         id = message.clientMessageId
         messageID = message.id
         authorName = message.author.name
+        authorProfile = !message.author.isGuest
         avatarID = message.author.avatarId
         picture = message.author.avatarPicture
         createdAt = message.createdAt
@@ -119,9 +122,27 @@ struct MessageRowState: Equatable {
 
 /// Selectable message text drawn by TextKit 2. It sizes to its text, so the
 /// collection view measures a row only when the row is realized.
-final class MessageTextView: UITextView, NSTextLayoutManagerDelegate {
+final class MessageTextView: UITextView, NSTextLayoutManagerDelegate, UITextViewDelegate {
     /// The message text without decorative link symbols, for copying and VoiceOver.
     var plainText: String { LinkPills.plain(text ?? "") }
+    /// A tapped person pill: its user id.
+    var openMention: ((String) -> Void)?
+    static let mentionScheme = "caper-mention"
+
+    static func mentionID(_ url: URL) -> String? {
+        url.scheme == mentionScheme ? URLComponents(url: url, resolvingAgainstBaseURL: false)?.path : nil
+    }
+
+    func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem, defaultAction: UIAction) -> UIAction? {
+        guard case let .link(url) = textItem.content, let id = Self.mentionID(url) else { return defaultAction }
+        return UIAction { [weak self] _ in self?.openMention?(id) }
+    }
+
+    func textView(_ textView: UITextView, menuConfigurationFor textItem: UITextItem, defaultMenu: UIMenu) -> UITextItem.MenuConfiguration? {
+        // A held pill opens message actions, like any held text.
+        if case let .link(url) = textItem.content, Self.mentionID(url) != nil { return nil }
+        return .init(menu: defaultMenu)
+    }
 
     init() {
         super.init(frame: .zero, textContainer: nil)
@@ -139,7 +160,9 @@ final class MessageTextView: UITextView, NSTextLayoutManagerDelegate {
         textContainer.lineFragmentPadding = 0
         dataDetectorTypes = []
         adjustsFontForContentSizeCategory = false
-        linkTextAttributes = [.foregroundColor: UIKitStyle.link]
+        // Links carry their own colour, so person pills (links too) keep theirs.
+        linkTextAttributes = [:]
+        delegate = self
         translatesAutoresizingMaskIntoConstraints = false
         setContentCompressionResistancePriority(.required, for: .vertical)
         accessibilityTraits.insert(.staticText)
@@ -182,6 +205,9 @@ struct RowHost {
     var actions: (_ messageID: String, _ picker: Bool) -> Void = { _, _ in }
     var reactors: (_ messageID: String, _ emoji: String) -> Void = { _, _ in }
     var openThread: (_ rootID: String) -> Void = { _ in }
+    /// A person pill or the author's avatar or name: their profile card.
+    var openMention: (_ messageID: String, _ userID: String) -> Void = { _, _ in }
+    var openAuthor: (_ messageID: String) -> Void = { _ in }
 }
 
 /// One message: avatar or grouped gutter, header, text and its notes. The
@@ -218,6 +244,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private var bottom: NSLayoutConstraint!
     private var avatarWidth: NSLayoutConstraint!
     private var state: MessageRowState?
+    private var authorTaps: [UITapGestureRecognizer] = []
     var retry: (() -> Void)?
 
     override init(frame: CGRect) {
@@ -256,6 +283,17 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         hold.minimumPressDuration = 0.5
         hold.delegate = self
         addGestureRecognizer(hold)
+        // The avatar and name open the author's card; pills open theirs.
+        for view in [gutter, name] as [UIView] {
+            let tap = UITapGestureRecognizer(target: self, action: #selector(openAuthor))
+            view.addGestureRecognizer(tap)
+            view.isUserInteractionEnabled = true
+            authorTaps.append(tap)
+        }
+        body.openMention = { [weak self] id in
+            guard let self, let messageID = self.state?.messageID, !messageID.isEmpty else { return }
+            self.host?.openMention(messageID, id)
+        }
         chips.toggle = { [weak self] emoji in self?.toggle(emoji) }
         chips.showReactors = { [weak self] emoji in
             guard let self, let id = self.state?.messageID, !id.isEmpty else { return }
@@ -325,6 +363,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
 
     func configure(_ row: MessageRowState) {
         state = row
+        authorTaps.forEach { $0.isEnabled = row.authorProfile && !row.pending }
         // SwiftUI's grouped rows read about 4pt further apart than their 2pt padding.
         let topPadding: CGFloat = row.grouped ? 6 : 10
         top.constant = topPadding
@@ -424,6 +463,11 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         return chips.isHidden || !chips.bounds.contains(point)
     }
 
+    @objc private func openAuthor() {
+        guard let state, state.authorProfile, !state.messageID.isEmpty else { return }
+        host?.openAuthor(state.messageID)
+    }
+
     @objc private func held(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began, let state, !state.pending, !state.messageID.isEmpty else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -483,7 +527,19 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         text.enumerateAttribute(NativePresentation.mentionAttribute, in: NSRange(location: 0, length: text.length)) { value, range, _ in
             if value == nil { text.addAttribute(.foregroundColor, value: row.pending ? UIKitStyle.muted : UIKitStyle.body, range: range) }
         }
+        text.enumerateAttribute(.link, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            if value != nil { text.addAttribute(.foregroundColor, value: UIKitStyle.link, range: range) }
+        }
         LinkPills.decorate(text, size: size)
+        // Resolved people open their card; after the link pills, which they never get.
+        guard !row.pending else { return text }
+        text.enumerateAttribute(NativePresentation.mentionAttribute, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            guard let id = value as? String, !id.isEmpty else { return }
+            var components = URLComponents()
+            components.scheme = MessageTextView.mentionScheme
+            components.path = id
+            if let url = components.url { text.addAttribute(.link, value: url, range: range) }
+        }
         return text
     }
 
@@ -495,8 +551,21 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
                 return true
             })
         }
-        body.attributedText?.enumerateAttribute(.link, in: NSRange(location: 0, length: body.attributedText?.length ?? 0)) { value, _, _ in
+        if row.authorProfile, !row.messageID.isEmpty {
+            actions.append(UIAccessibilityCustomAction(name: "Open profile for \(row.authorName)") { [weak self] _ in
+                self?.host?.openAuthor(row.messageID); return true
+            })
+        }
+        let shown = body.attributedText ?? NSAttributedString()
+        shown.enumerateAttribute(.link, in: NSRange(location: 0, length: shown.length)) { value, range, _ in
             guard let url = value as? URL else { return }
+            if let id = MessageTextView.mentionID(url) {
+                let name = shown.attributedSubstring(from: range).string.trimmingCharacters(in: CharacterSet(charactersIn: "@ "))
+                actions.append(UIAccessibilityCustomAction(name: "Open profile for \(name)") { [weak self] _ in
+                    self?.host?.openMention(row.messageID, id); return true
+                })
+                return
+            }
             actions.append(UIAccessibilityCustomAction(name: "Open \(url.host ?? url.absoluteString)") { _ in
                 UIApplication.shared.open(url)
                 return true
@@ -778,4 +847,24 @@ final class ThreadLinkButton: UIControl {
     }
 
     override var isHighlighted: Bool { didSet { backgroundColor = isHighlighted ? UIKitStyle.text.withAlphaComponent(0.08) : .clear } }
+}
+
+@MainActor extension RowHost {
+    /// Person pills and authors open their profile card over `controller`;
+    /// Block on the card closes it, then `block` asks to confirm.
+    mutating func openProfiles(model: AppModel, controller: UIViewController, messages: @escaping @MainActor () -> [ChatMessage],
+                               block: @escaping (BlockTarget) -> Void) {
+        openMention = { [weak controller] messageID, userID in MainActor.assumeIsolated {
+            guard let controller, let message = messages().first(where: { $0.id == messageID }),
+                  let card = UIKitHosting.profileCard(model: model, userID: userID, in: message, requestBlock: block) else { return }
+            controller.view.endEditing(true)
+            controller.present(card, animated: !UIKitStyle.reduceMotion)
+        } }
+        openAuthor = { [weak controller] messageID in MainActor.assumeIsolated {
+            guard let controller, let message = messages().first(where: { $0.id == messageID }), !message.author.isGuest else { return }
+            controller.view.endEditing(true)
+            controller.present(UIKitHosting.profileCard(model: model, author: message.author, requestBlock: block),
+                               animated: !UIKitStyle.reduceMotion)
+        } }
+    }
 }
