@@ -32,6 +32,7 @@ import SwiftUI
     private func show(_ person: MentionCardPerson, rect: NSRect, view: NSView) {
         guard let window = view.window else { return }
         if let popover, popover.isShown {
+            popover.animates = false
             popover.performClose(nil)
             guard !popover.isShown else { return }
         }
@@ -46,7 +47,11 @@ import SwiftUI
             requestBlock: { [weak self, weak window] target in
                 guard let self, let window else { return }
                 self.confirmBlock(target, window: window)
-            }, close: { [weak popover] in popover?.close() })
+            }, close: { [weak popover] in
+                // Entrances animate, closing is instant on every motion setting.
+                popover?.animates = false
+                popover?.close()
+            })
             .onPreferenceChange(ProfileDismissPreference.self) { [weak self] action in self?.dismissAction = action }
             .preferredColorScheme(.dark)
             .tint(CaperTheme.terracottaBright))
@@ -57,13 +62,18 @@ import SwiftUI
 
     public func popoverShouldClose(_ popover: NSPopover) -> Bool {
         if let dismissAction { dismissAction.action(); return false }
-        return draft?.preventsImplicitDismissal != true
+        guard draft?.preventsImplicitDismissal != true else { return false }
+        popover.animates = false
+        return true
     }
 
     public func popoverDidClose(_ notification: Notification) {
         // Releasing the host runs the card's onDisappear (including a requested
         // block) and leaves its account-scoped draft in the model for reopening.
-        popover?.contentViewController = nil
+        guard let closed = notification.object as? NSPopover else { return }
+        closed.contentViewController = nil
+        // A delayed old notification must never tear down its replacement.
+        guard popover === closed else { return }
         popover = nil; draft = nil; dismissAction = nil
     }
 
