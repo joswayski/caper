@@ -23,6 +23,9 @@ pub struct Composer {
     pub view: gtk::TextView,
     pub placeholder: gtk::Label,
     pub send: gtk::Button,
+    /// A thread reply's "Also send to #channel" (hidden in the channel's
+    /// composer).
+    pub broadcast: gtk::CheckButton,
 }
 
 impl Composer {
@@ -82,6 +85,11 @@ impl Composer {
         let empty = placeholder.clone();
         view.buffer()
             .connect_changed(move |buffer| empty.set_visible(buffer.char_count() == 0));
+        let broadcast: gtk::CheckButton =
+            crate::app::named("GtkCheckButton", "Also send to channel");
+        broadcast.add_css_class("broadcast");
+        broadcast.set_visible(false);
+        root.append(&broadcast);
         Self {
             root,
             chips,
@@ -89,6 +97,7 @@ impl Composer {
             view,
             placeholder,
             send,
+            broadcast,
         }
     }
 
@@ -129,6 +138,8 @@ impl List {
 
 pub struct Ui {
     pub window: gtk::ApplicationWindow,
+    /// "Zoom N%", shown briefly at the top right when the zoom changes.
+    pub zoom_notice: gtk::Label,
     pub pages: gtk::Stack,
     pub steps: gtk::Stack,
     pub email: gtk::Entry,
@@ -173,6 +184,8 @@ pub struct Ui {
     pub members: gtk::ListBox,
     pub list: List,
     pub error: gtk::Label,
+    /// The banner's way to try again: Retry, Try again or Retry session.
+    pub error_retry: gtk::Button,
     pub compose_bar: gtk::Box,
     pub compose_label: gtk::Label,
     pub compose_cancel: gtk::Button,
@@ -440,7 +453,21 @@ impl Ui {
 
         let error = label("", &["error", "banner"]);
         error.set_wrap(true);
-        conversation.append(&error);
+        error.set_hexpand(true);
+        error.set_xalign(0.0);
+        let error_retry = gtk::Button::with_label("Retry");
+        error_retry.add_css_class("inline");
+        error_retry.set_valign(gtk::Align::Center);
+        error_retry.set_visible(false);
+        let error_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        error_bar.add_css_class("error-bar");
+        error_bar.append(&error);
+        error_bar.append(&error_retry);
+        error
+            .bind_property("visible", &error_bar, "visible")
+            .sync_create()
+            .build();
+        conversation.append(&error_bar);
         let list = List::new("Messages", images, main_rows);
         conversation.append(&list.scroller);
         let typing = label("", &["typing"]);
@@ -557,14 +584,24 @@ impl Ui {
         thread_error.set_wrap(true);
         thread_panel.append(&thread_error);
         let thread_composer = Composer::new(images);
+        thread_composer.broadcast.set_visible(true);
         thread_panel.append(&thread_composer.root);
         thread_panel.set_visible(false);
         chat.append(&thread_panel);
         pages.add_named(&chat, Some("chat"));
-        window.set_child(Some(&pages));
+        let root = gtk::Overlay::new();
+        root.set_child(Some(&pages));
+        let zoom_notice = label("", &["zoom-notice"]);
+        zoom_notice.set_halign(gtk::Align::End);
+        zoom_notice.set_valign(gtk::Align::Start);
+        zoom_notice.set_can_target(false);
+        zoom_notice.set_visible(false);
+        root.add_overlay(&zoom_notice);
+        window.set_child(Some(&root));
 
         Self {
             window,
+            zoom_notice,
             pages,
             steps,
             email,
@@ -607,6 +644,7 @@ impl Ui {
             members,
             list,
             error,
+            error_retry,
             compose_bar,
             compose_label,
             compose_cancel,

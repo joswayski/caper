@@ -672,6 +672,42 @@ impl super::State {
     }
 
     /// Caper team accounts can't be blocked.
+    /// A message author you may block or unblock from its menu: not you,
+    /// a guest, or (unless already blocked) Caper staff.
+    pub(super) fn blockable_author(
+        &self,
+        author: &caper_client::model::Author,
+    ) -> Option<BlockedAccount> {
+        let me = self.account.as_ref().map(|account| account.id.as_str());
+        if author.is_guest
+            || Some(author.id.as_str()) == me
+            || (!self.blocked(&author.id) && (author.admin || self.protected(&author.id)))
+        {
+            return None;
+        }
+        let username = self
+            .detail
+            .iter()
+            .flat_map(|detail| &detail.members)
+            .find(|member| member.id == author.id)
+            .map(|member| member.username.clone())
+            .or_else(|| {
+                self.directs
+                    .iter()
+                    .find(|direct| direct.peer.id == author.id)
+                    .map(|direct| direct.peer.username.clone())
+            })
+            .unwrap_or_default();
+        Some(BlockedAccount {
+            id: author.id.clone(),
+            username,
+            display_name: author.name.clone(),
+            avatar_id: author.avatar_id,
+            avatar_asset: author.avatar_asset.clone(),
+            avatar_url: author.avatar_url.clone(),
+        })
+    }
+
     pub(super) fn protected(&self, id: &str) -> bool {
         self.directs
             .iter()

@@ -22,6 +22,7 @@ mod suggest;
 mod ui;
 mod uploads;
 mod viewer;
+mod zoom;
 
 use gtk::{gio, glib, prelude::*};
 

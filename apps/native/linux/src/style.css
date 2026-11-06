@@ -254,6 +254,10 @@ list.channels > row:selected {
   padding: 8px 20px;
 }
 
+.error-bar > button {
+  margin-right: 20px;
+}
+
 listview.messages {
   background: transparent;
   color: @caper_text;
@@ -1293,4 +1297,46 @@ popover.editor-text > contents {
 
 .rail button.icon.selected {
   box-shadow: 0 0 0 2px @caper_terracotta;
+}
+
+/* "Replied to a thread · View thread" above a broadcast reply. */
+button.thread-context {
+  padding: 0;
+  min-height: 0;
+  margin-left: 52px;
+  font-size: 11.5px;
+  color: @caper_text_muted;
+  background: none;
+}
+
+button.thread-context:hover {
+  color: @caper_text;
+}
+
+checkbutton.broadcast {
+  font-size: 11.5px;
+  color: @caper_text_muted;
+}
+
+/* "New messages": the first message unread when you arrived. */
+.new-messages {
+  margin: 8px 18px 4px 18px;
+  color: @caper_terracotta_bright;
+  font-size: 10px;
+}
+
+.new-messages separator {
+  background: @caper_terracotta;
+  min-height: 1px;
+}
+
+/* "Zoom N%", briefly, after the zoom changes. */
+.zoom-notice {
+  margin: 16px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+  font-weight: 700;
+  font-size: 14px;
 }

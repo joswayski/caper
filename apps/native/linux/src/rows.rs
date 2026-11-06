@@ -64,10 +64,16 @@ pub struct Row {
     pub reaction_error: Option<String>,
     /// "3 replies", on a thread root in the main list.
     pub replies: Option<String>,
+    /// A thread reply also sent to the channel, in the main list: "Replied
+    /// to a thread · View thread" above it.
+    pub broadcast: bool,
     /// It mentions you or replies to you: a terracotta-tinted row.
     pub mentioned: bool,
     /// The message opened from elsewhere (a forward's original): highlighted.
     pub focused: bool,
+    /// The first message that was unread when you opened the conversation:
+    /// a "New messages" divider above it.
+    pub unread: bool,
     /// It asked the Caper team, so it carries their notice.
     pub team_notice: bool,
     pub offers: Offers,
@@ -253,8 +259,10 @@ impl Row {
             reactions: Vec::new(),
             reaction_error: None,
             replies: None,
+            broadcast: false,
             mentioned: false,
             focused: false,
+            unread: false,
             team_notice: false,
             offers: Offers::default(),
             content: crate::content::Content::default(),
@@ -446,8 +454,8 @@ pub fn build<'a>(
             previous = None;
             day.clone_from(&this_day);
         }
-        // A reply quote or pin keeps its header, like desktop.
-        let header = row.reply.is_some() || row.pinned_by.is_some();
+        // A reply quote, pin or thread link keeps its header, like desktop.
+        let header = row.reply.is_some() || row.pinned_by.is_some() || row.broadcast;
         let current = grouping::Row::new(&author.id, created_at, header);
         let grouped = grouping::grouped(previous.as_ref(), &current);
         previous = Some(current);
@@ -558,13 +566,18 @@ pub fn build<'a>(
             replies: message
                 .thread
                 .as_ref()
-                .filter(|thread| !viewer.in_thread && thread.reply_count > 0)
+                // A broadcast reply's channel copy carries its root's summary.
+                .filter(|thread| {
+                    !viewer.in_thread && message.thread_root_id.is_none() && thread.reply_count > 0
+                })
                 .map(|thread| match thread.reply_count {
                     1 => "1 reply".to_owned(),
                     count => format!("{count} replies"),
                 }),
+            broadcast: !viewer.in_thread && message.broadcast && message.thread_root_id.is_some(),
             // As desktop: a pinned row keeps its pin wash instead.
             focused: false,
+            unread: false,
             mentioned: !deleted
                 && message.pin.is_none()
                 && (replies_to_me
@@ -644,8 +657,10 @@ pub fn build<'a>(
             reactions: Vec::new(),
             reaction_error: None,
             replies: None,
+            broadcast: false,
             mentioned: false,
             focused: false,
+            unread: false,
             team_notice: false,
             offers: Offers::default(),
             content: draft.content,
@@ -727,6 +742,7 @@ pub type Handler = Rc<dyn Fn(Action)>;
 struct Widgets {
     root: gtk::Box,
     day: gtk::Label,
+    unread: gtk::Box,
     reply: gtk::Label,
     avatar: AvatarView,
     gap: gtk::Box,
@@ -746,6 +762,7 @@ struct Widgets {
     retry_reaction: gtk::Button,
     dismiss_reaction: gtk::Button,
     replies: gtk::Button,
+    thread_context: gtk::Button,
     tools: gtk::Box,
     quick: Vec<gtk::Button>,
     pick: gtk::Button,
@@ -821,6 +838,15 @@ fn build_widgets(images: &Images) -> Widgets {
         .ellipsize(pango::EllipsizeMode::End)
         .css_classes(["quote"])
         .build();
+    // A terracotta rule with "New messages" at its end.
+    let unread = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    unread.add_css_class("new-messages");
+    let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+    rule.set_hexpand(true);
+    rule.set_valign(gtk::Align::Center);
+    unread.append(&rule);
+    unread.append(&gtk::Label::new(Some("New messages")));
+    unread.set_visible(false);
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let avatar = AvatarView::new(36, false);
     let gap = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -862,6 +888,13 @@ fn build_widgets(images: &Images) -> Widgets {
     reaction_error.append(&reaction_error_label);
     reaction_error.append(&retry_reaction);
     reaction_error.append(&dismiss_reaction);
+    let thread_context: gtk::Button =
+        crate::app::named("GtkButton", "Replied to a thread · View thread");
+    thread_context.set_label("Replied to a thread · View thread");
+    thread_context.add_css_class("flat");
+    thread_context.add_css_class("thread-context");
+    thread_context.set_halign(gtk::Align::Start);
+    thread_context.set_visible(false);
     let replies = gtk::Button::new();
     replies.add_css_class("flat");
     replies.add_css_class("replies");
@@ -927,7 +960,9 @@ fn build_widgets(images: &Images) -> Widgets {
     blocked.append(&blocked_toggle);
     root.append(&blocked);
     root.append(&day);
+    root.append(&unread);
     root.append(&reply);
+    root.append(&thread_context);
     root.append(&overlay);
     Widgets {
         blocked,
@@ -937,6 +972,7 @@ fn build_widgets(images: &Images) -> Widgets {
         card: overlay.clone(),
         root,
         day,
+        unread,
         reply,
         avatar,
         gap,
@@ -954,6 +990,7 @@ fn build_widgets(images: &Images) -> Widgets {
         retry_reaction,
         dismiss_reaction,
         replies,
+        thread_context,
         tools,
         quick,
         pick,
@@ -987,7 +1024,8 @@ fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
         });
     }
     type Make = fn(String, gtk::Widget) -> Action;
-    let actions: [(&gtk::Button, Make); 7] = [
+    let actions: [(&gtk::Button, Make); 8] = [
+        (&widgets.thread_context, |id, _| Action::Thread(id)),
         (&widgets.retry_reaction, |id, _| Action::RetryReaction(id)),
         (&widgets.dismiss_reaction, |id, _| {
             Action::DismissReaction(id)
@@ -1088,6 +1126,7 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
         widgets.card.remove_css_class("focused");
     }
     widgets.notice.set_visible(row.team_notice);
+    widgets.unread.set_visible(row.unread);
     widgets.day.set_visible(row.day.is_some());
     widgets
         .day
@@ -1191,6 +1230,7 @@ fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
         .set_label(row.reaction_error.as_deref().unwrap_or_default());
     widgets.retry_reaction.set_visible(row.offers.act);
     widgets.replies.set_visible(row.replies.is_some());
+    widgets.thread_context.set_visible(row.broadcast);
     widgets
         .replies
         .set_label(row.replies.as_deref().unwrap_or_default());
@@ -1230,8 +1270,10 @@ mod tests {
             reactions: Vec::new(),
             reaction_error: None,
             replies: None,
+            broadcast: false,
             mentioned: false,
             focused: false,
+            unread: false,
             team_notice: false,
             offers: Offers::default(),
             content: Default::default(),

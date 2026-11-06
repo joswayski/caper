@@ -87,6 +87,17 @@ fn clear_list(list: &gtk::ListBox) {
     }
 }
 
+/// What the conversation's error banner can try again.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Retry {
+    /// The conversation failed to open: "Try again".
+    Reload,
+    /// An older page failed: "Retry".
+    Older,
+    /// No messaging session: "Retry session".
+    Session,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Loading,
@@ -220,6 +231,19 @@ struct State {
     /// The message opened from elsewhere, highlighted until the
     /// conversation or thread changes.
     focused: Option<String>,
+    /// Each channel's read and last sequence from the latest unread load.
+    reads: HashMap<String, (u64, u64)>,
+    /// What was unread in the open channel when you arrived: "New messages"
+    /// goes above the first such message from someone else.
+    unread_boundary: Option<(u64, u64)>,
+    /// The visit's read snapshot is on its way; marking read waits for it.
+    unread_visit_pending: bool,
+    /// What the error banner's button tries again.
+    retry: Option<Retry>,
+    /// Unsent composer text by conversation, restored on return.
+    drafts: HashMap<String, String>,
+    /// The opened conversation's draft, for the composer at the next render.
+    restore_draft: Option<String>,
     /// The signed-in account still needs a username and display name.
     profile_setup: bool,
     /// The open profile card's state.
@@ -348,6 +372,13 @@ pub struct App {
     follow: Cell<bool>,
     /// The same for the thread pane.
     thread_follow: Cell<bool>,
+    /// A conversation's draft is being put back: not typing.
+    restoring: Cell<bool>,
+    /// The app stylesheet, reloaded at the interface zoom.
+    style: gtk::CssProvider,
+    zoom: Cell<f64>,
+    /// Hides "Zoom N%" when the latest change is two seconds old.
+    zoom_shown: Cell<u64>,
     /// `pin_tail` is moving the list: its scrolling is not the reader's.
     settling: Cell<bool>,
     rendered_layout: Cell<u64>,
@@ -426,12 +457,11 @@ pub fn start(application: &gtk::Application, base: &str) {
     if let Some(settings) = gtk::Settings::default() {
         settings.set_gtk_application_prefer_dark_theme(true);
     }
+    let style = gtk::CssProvider::new();
     if let Some(display) = gdk::Display::default() {
-        let provider = gtk::CssProvider::new();
-        provider.load_from_data(STYLE);
         gtk::style_context_add_provider_for_display(
             &display,
-            &provider,
+            &style,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
     }
@@ -450,6 +480,8 @@ pub fn start(application: &gtk::Application, base: &str) {
     let ui = Ui::build(application, &images, handler(false), handler(true));
     let prefs = Rc::new(crate::prefs::Prefs::load());
     prefs.follow_window(&ui.window);
+    let zoom = crate::zoom::valid(prefs.get::<f64>("zoom").unwrap_or(1.0));
+    style.load_from_data(&crate::zoom::scale_css(STYLE, zoom));
     let repaint = sender.clone();
     let voice = caper_client::voice::Voice::new(
         api.base().clone(),
@@ -476,6 +508,10 @@ pub fn start(application: &gtk::Application, base: &str) {
         state: RefCell::new(State::default()),
         follow: Cell::new(true),
         thread_follow: Cell::new(true),
+        restoring: Cell::new(false),
+        style,
+        zoom: Cell::new(zoom),
+        zoom_shown: Cell::new(0),
         settling: Cell::new(false),
         rendered_layout: Cell::new(u64::MAX),
         rendered_files: Cell::new(u64::MAX),
@@ -518,6 +554,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.connect_voice();
     app.connect_drop();
     app.install_actions();
+    app.install_shortcuts();
     app.install_notification_actions();
     app.install_admin_actions();
     app.render();
@@ -609,6 +646,8 @@ impl App {
             }
             app.render();
         });
+        let app = self.clone();
+        ui.error_retry.connect_clicked(move |_| app.retry());
         let app = self.clone();
         ui.thread_close.connect_clicked(move |_| {
             {
@@ -718,7 +757,7 @@ impl App {
                 .connect_clicked(move |button| app.attach_menu(thread, button.upcast_ref()));
             let app = self.clone();
             composer.view.buffer().connect_changed(move |buffer| {
-                if buffer.char_count() > 0 {
+                if buffer.char_count() > 0 && !app.restoring.get() {
                     app.typed();
                 }
             });
@@ -761,10 +800,101 @@ impl App {
     }
 
     /// The row menu's actions, each taking the message id.
+    /// Window shortcuts the desktop has: Ctrl+, opens Settings, End jumps
+    /// to the latest message (outside text fields), and Ctrl+= / Ctrl+− /
+    /// Ctrl+0 zoom the interface.
+    fn install_shortcuts(self: &Rc<Self>) {
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
+            let Some(app) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let control = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+            let others =
+                modifiers.intersects(gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK);
+            if others {
+                return glib::Propagation::Proceed;
+            }
+            let zoom = app.zoom.get();
+            let next = match key {
+                gdk::Key::comma if control => {
+                    let app = app.clone();
+                    glib::idle_add_local_once(move || app.open_settings());
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::equal | gdk::Key::plus | gdk::Key::KP_Add if control => {
+                    crate::zoom::zoom_in(zoom)
+                }
+                gdk::Key::minus | gdk::Key::underscore | gdk::Key::KP_Subtract if control => {
+                    crate::zoom::zoom_out(zoom)
+                }
+                gdk::Key::_0 | gdk::Key::KP_0 if control => 1.0,
+                gdk::Key::End if !control => {
+                    let typing =
+                        gtk::prelude::GtkWindowExt::focus(&app.ui.window).is_some_and(|widget| {
+                            widget.is::<gtk::TextView>()
+                                || widget.is::<gtk::Text>()
+                                || widget.is::<gtk::Entry>()
+                        });
+                    if typing || app.state.borrow().page() != Page::Chat {
+                        return glib::Propagation::Proceed;
+                    }
+                    app.follow.set(true);
+                    app.pin_tail();
+                    return glib::Propagation::Stop;
+                }
+                _ => return glib::Propagation::Proceed,
+            };
+            app.set_zoom(next);
+            glib::Propagation::Stop
+        });
+        self.ui.window.add_controller(keys);
+    }
+
+    fn set_zoom(self: &Rc<Self>, factor: f64) {
+        if factor != self.zoom.replace(factor) {
+            self.prefs.set("zoom", factor);
+            self.style
+                .load_from_data(&crate::zoom::scale_css(STYLE, factor));
+        }
+        let notice = &self.ui.zoom_notice;
+        notice.set_label(&format!("Zoom {:.0}%", factor * 100.0));
+        notice.set_visible(true);
+        let shown = self.zoom_shown.get() + 1;
+        self.zoom_shown.set(shown);
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_secs(2), move || {
+            if let Some(app) = weak.upgrade()
+                && app.zoom_shown.get() == shown
+            {
+                app.ui.zoom_notice.set_visible(false);
+            }
+        });
+    }
+
     fn install_actions(self: &Rc<Self>) {
         let group = gio::SimpleActionGroup::new();
         type Run = fn(&Rc<App>, String);
-        let actions: [(&str, Run); 6] = [
+        let actions: [(&str, Run); 11] = [
+            ("reply", |app, id| app.row_action(Action::Reply(id), false)),
+            ("thread", |app, id| {
+                app.row_action(Action::Thread(id), false)
+            }),
+            ("copy-id", |app, id| app.ui.window.clipboard().set_text(&id)),
+            ("block", |app, id| {
+                let account = app.message_author_account(&id);
+                if let Some(account) = account {
+                    app.confirm_block(account);
+                }
+            }),
+            ("unblock", |app, id| {
+                let account = app.message_author_account(&id);
+                if let Some(account) = account {
+                    app.set_block(account, false);
+                }
+            }),
             ("forward", |app, id| app.open_forward(&id)),
             ("edit", |app, id| app.start_edit(&id)),
             ("delete", |app, id| app.confirm_delete(id)),
@@ -985,6 +1115,16 @@ impl App {
             state.channel_name = name;
         }
         state.channel.clone_from(&channel);
+        // As desktop: snapshot the read position fresh on arrival, before
+        // this visit marks anything read, so the divider stays put.
+        state.unread_boundary = None;
+        state.unread_visit_pending = false;
+        state.restore_draft = Some(
+            channel
+                .as_ref()
+                .and_then(|channel| state.drafts.remove(channel))
+                .unwrap_or_default(),
+        );
         self.prepare(state, space, channel);
     }
 
@@ -1003,6 +1143,7 @@ impl App {
                 .unwrap_or_default();
             state.channel = Some(id.clone());
             state.direct = Some(id.clone());
+            state.restore_draft = Some(state.drafts.remove(&id).unwrap_or_default());
             self.load_people(&state);
             self.prepare(&mut state, None, Some(id));
         }
@@ -1010,6 +1151,19 @@ impl App {
     }
 
     fn leave_conversation(&self, state: &mut State) {
+        // The composer's unsent text stays with its conversation (an edit
+        // in progress is not a draft).
+        if let Some(channel) = state.channel.clone()
+            && !matches!(state.compose, Some(Compose::Edit { .. }))
+        {
+            let buffer = self.ui.composer.view.buffer();
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+            if text.trim().is_empty() {
+                state.drafts.remove(&channel);
+            } else {
+                state.drafts.insert(channel, text.to_string());
+            }
+        }
         self.set_typing(state, false);
         state.generation += 1;
         state.navigation += 1;
@@ -1030,6 +1184,7 @@ impl App {
         }
         state.status = "Loading…".into();
         state.error = None;
+        state.retry = None;
         state.send_error = None;
         state.layout += 1;
         // DMs started or answered elsewhere appear as you move around.
@@ -1067,6 +1222,7 @@ impl App {
                 self.leave_conversation(state);
                 state.channel = Some(direct.clone());
                 state.direct = Some(direct.clone());
+                state.restore_draft = Some(state.drafts.remove(&direct).unwrap_or_default());
                 self.prepare(state, None, Some(direct));
             }
             None => {
@@ -1662,6 +1818,9 @@ impl App {
 
     /// Marks the open conversation read through its newest message.
     fn mark_read(&self, state: &mut State) {
+        if state.unread_visit_pending {
+            return;
+        }
         let (Some(token), Some(channel)) = (state.token.clone(), state.channel.clone()) else {
             return;
         };
@@ -1975,6 +2134,25 @@ impl App {
             app.pick_files(thread);
         });
         menu.append(&upload);
+        let paste: gtk::Button = named("GtkButton", "Paste from clipboard");
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        line.append(&self.images.icon_image(Icon::Copy, "#f3f4f5", 16));
+        line.append(&label("Paste from clipboard", &[]));
+        paste.set_child(Some(&line));
+        paste.add_css_class("flat");
+        paste.set_sensitive(attached < caper_client::uploads::MAX_ATTACHMENTS);
+        let (app, popover_ref) = (self.clone(), popover.downgrade());
+        paste.connect_clicked(move |_| {
+            if let Some(popover) = popover_ref.upgrade() {
+                popover.popdown();
+            }
+            if !app.paste_files(thread) {
+                app.state.borrow_mut().send_error =
+                    Some("Nothing to paste. Copy an image or files first.".into());
+                app.render();
+            }
+        });
+        menu.append(&paste);
         popover.set_child(Some(&menu));
         popup(&popover, anchor);
     }
@@ -2152,6 +2330,7 @@ impl App {
         };
         let draft = composer.text();
         let text = draft.trim();
+        let broadcast = thread && composer.broadcast.is_active();
         {
             let mut state = self.state.borrow_mut();
             let Some(chat_token) = state.session.as_ref().map(|session| session.token.clone())
@@ -2266,7 +2445,7 @@ impl App {
                 client_id,
                 text: text.to_owned(),
                 thread_root_id: thread_root,
-                broadcast: false,
+                broadcast,
                 reply_to_id,
                 attachment_ids,
                 spoiler_attachment_ids,
@@ -2277,6 +2456,7 @@ impl App {
         if !thread {
             self.follow.set(true);
         }
+        composer.broadcast.set_active(false);
         composer.view.buffer().set_text("");
         self.render();
     }
@@ -2495,8 +2675,18 @@ impl App {
         }
     }
 
+    /// Who wrote `id`, when the menu may block or unblock them.
+    fn message_author_account(&self, id: &str) -> Option<caper_client::model::BlockedAccount> {
+        let state = self.state.borrow();
+        let message = state.message(id)?;
+        if message.is_deleted() {
+            return None;
+        }
+        state.blockable_author(&message.author)
+    }
+
     fn row_menu(self: &Rc<Self>, id: &str, anchor: &gtk::Widget) {
-        let (mine, pinned, forwardable) = {
+        let (mine, pinned, forwardable, joined, in_thread) = {
             let state = self.state.borrow();
             let Some(message) = state.message(id) else {
                 return;
@@ -2507,8 +2697,19 @@ impl App {
                 }),
                 message.pin.is_some(),
                 forward::forwardable(message),
+                state.session.is_some() && !message.is_deleted(),
+                message.thread_root_id.is_some(),
             )
         };
+        let block = self.message_author_account(id).map(|account| {
+            let blocked = self.state.borrow().blocked(&account.id);
+            let name = if account.username.is_empty() {
+                account.display_name.clone()
+            } else {
+                format!("@{}", account.username)
+            };
+            (blocked, name)
+        });
         let menu = gio::Menu::new();
         let item = |label: &str, action: &str| {
             let item = gio::MenuItem::new(Some(label), None);
@@ -2516,6 +2717,16 @@ impl App {
             item
         };
         let actions = gio::Menu::new();
+        // In the desktop's order.
+        if joined {
+            actions.append_item(&item("Reply", "row.reply"));
+        }
+        if joined && !in_thread {
+            actions.append_item(&item("Reply in thread", "row.thread"));
+        }
+        if forwardable {
+            actions.append_item(&item("Forward message", "row.forward"));
+        }
         if mine {
             actions.append_item(&item("Edit message", "row.edit"));
         }
@@ -2524,14 +2735,21 @@ impl App {
         } else {
             item("Pin message", "row.pin")
         });
-        if forwardable {
-            actions.append_item(&item("Forward message", "row.forward"));
-        }
         actions.append_item(&item("Copy text", "row.copy"));
+        actions.append_item(&item("Copy message ID", "row.copy-id"));
         menu.append_section(None, &actions);
-        if mine {
+        if mine || block.is_some() {
             let danger = gio::Menu::new();
-            danger.append_item(&item("Delete message", "row.delete"));
+            if mine {
+                danger.append_item(&item("Delete message", "row.delete"));
+            }
+            if let Some((blocked, name)) = block {
+                danger.append_item(&if blocked {
+                    item(&format!("Unblock {name}"), "row.unblock")
+                } else {
+                    item(&format!("Block {name}"), "row.block")
+                });
+            }
             menu.append_section(None, &danger);
         }
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
@@ -2828,10 +3046,36 @@ impl App {
             } if generation == state.epoch => state.people = Some(people),
             Event::UnreadLoaded {
                 epoch,
+                visit: Some(visit),
+                result,
+                ..
+            } if epoch == state.epoch => {
+                if visit == state.navigation && state.unread_visit_pending {
+                    state.unread_visit_pending = false;
+                    if let Ok(unread) = &result {
+                        state.unread_boundary = unread
+                            .spaces
+                            .iter()
+                            .flat_map(|space| &space.channels)
+                            .find(|channel| Some(&channel.id) == state.channel.as_ref())
+                            .and_then(|channel| {
+                                let read = channel.read_seq.as_deref()?.parse::<u64>().ok()?;
+                                let last = channel.last_seq.parse::<u64>().ok()?;
+                                (read < last).then_some((read, last))
+                            });
+                    }
+                    if state.joined() {
+                        self.mark_read(state);
+                    }
+                }
+            }
+            Event::UnreadLoaded {
+                epoch,
                 revision,
                 result: Ok(unread),
                 ..
             } if epoch == state.epoch && revision == state.unread_revision => {
+                let mut reads = HashMap::new();
                 state.unread = unread
                     .spaces
                     .into_iter()
@@ -2846,6 +3090,7 @@ impl App {
                                     .and_then(|seq| seq.parse::<u64>().ok())
                                     .unwrap_or(0);
                                 let last = channel.last_seq.parse::<u64>().unwrap_or(0);
+                                reads.insert(channel.id.clone(), (read, last));
                                 let count = channel.unread_count.unwrap_or(u64::from(last > read));
                                 (channel.id, (count, channel.mention_count.unwrap_or(0)))
                             })
@@ -2853,6 +3098,7 @@ impl App {
                         (space.id, channels)
                     })
                     .collect();
+                state.reads = reads;
                 state.layout += 1;
                 self.clear_open_unread(state);
             }
@@ -2896,8 +3142,24 @@ impl App {
                             state.error = Some(error);
                         }
                     }
-                    Err(error) => state.error = Some(error.message),
+                    Err(_) => {
+                        state.error = Some("Couldn’t load older messages.".into());
+                        state.retry = Some(Retry::Older);
+                    }
                 }
+            }
+            Event::SessionCreated { generation, result } if generation == state.generation => {
+                match result {
+                    Ok(session) => {
+                        state.session = Some(session);
+                        state.session_error = None;
+                    }
+                    Err(error) => {
+                        state.session_error = Some(error);
+                        state.retry = Some(Retry::Session);
+                    }
+                }
+                state.layout += 1;
             }
             Event::ThreadLoaded {
                 generation,
@@ -3163,11 +3425,25 @@ impl App {
                         state.has_more = history.has_more;
                         match session {
                             Ok(session) => state.session = Some(session),
-                            Err(error) => state.session_error = Some(error),
+                            Err(error) => {
+                                state.session_error = Some(error);
+                                state.retry = Some(Retry::Session);
+                            }
                         }
                         self.follow.set(true);
                         self.connect_gateway(state, history.channel.id);
                         self.worker.showing(state.channel.as_deref());
+                        if state.direct.is_none()
+                            && let Some(token) = state.token.clone()
+                        {
+                            state.unread_visit_pending = true;
+                            self.worker.send(Command::LoadUnread {
+                                epoch: state.epoch,
+                                revision: state.unread_revision,
+                                visit: Some(state.navigation),
+                                token,
+                            });
+                        }
                         if state.joined() {
                             self.mark_read(state);
                         }
@@ -3189,14 +3465,59 @@ impl App {
                 state.layout += 1;
             }
             Err(error) => {
+                // The last conversation's messages don't stay under the new title.
+                state.timeline = Timeline::default();
+                state.markup.clear();
                 state.status.clear();
                 state.error = Some(error.message);
+                state.retry = Some(Retry::Reload);
+                state.layout += 1;
             }
         }
     }
 
+    /// The error banner's button.
+    fn retry(self: &Rc<Self>) {
+        {
+            let mut state = self.state.borrow_mut();
+            let Some(retry) = state.retry.take() else {
+                return;
+            };
+            state.error = None;
+            match retry {
+                Retry::Reload => self.reload(&mut state),
+                Retry::Older => {}
+                Retry::Session => {
+                    let name = state
+                        .account
+                        .as_ref()
+                        .and_then(|account| account.display_name.clone())
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or_else(|| "Guest".into());
+                    state.session_error = None;
+                    self.worker.send(Command::CreateSession {
+                        generation: state.generation,
+                        token: state.token.clone(),
+                        name,
+                    });
+                }
+            }
+            if retry == Retry::Older {
+                drop(state);
+                self.load_older();
+            }
+        }
+        self.render();
+    }
+
     /// The open conversation shows no unread badge while you read it.
     fn clear_open_unread(&self, state: &mut State) {
+        // What you read here no longer counts as new when you come back.
+        if let Some(channel) = &state.channel
+            && let Some((read, last)) = state.reads.get_mut(channel)
+        {
+            *read = (*read).max(*last);
+        }
         if let (Some(space), Some(channel)) = (&state.space, &state.channel)
             && state.direct.is_none()
             && let Some(entry) = state
@@ -3366,6 +3687,16 @@ impl App {
     // Rendering: each part updates only when its content changed.
 
     fn render(self: &Rc<Self>) {
+        let draft = self
+            .state
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut state| state.restore_draft.take());
+        if let Some(draft) = draft {
+            self.restoring.set(true);
+            self.ui.composer.view.buffer().set_text(&draft);
+            self.restoring.set(false);
+        }
         self.render_rows();
         self.render_voice();
         self.render_layout();
@@ -3409,8 +3740,21 @@ impl App {
         let error = state.error.as_deref().unwrap_or_default();
         ui.signin_error.set_label(error);
         ui.signin_error.set_visible(!error.is_empty());
-        ui.error.set_label(error);
-        ui.error.set_visible(!error.is_empty());
+        // A missing session shows in the banner when nothing else does.
+        let session = (error.is_empty() && state.retry == Some(Retry::Session))
+            .then(|| state.session_error.clone())
+            .flatten()
+            .unwrap_or_default();
+        let shown = if error.is_empty() { &session } else { error };
+        ui.error.set_label(shown);
+        ui.error.set_visible(!shown.is_empty());
+        let retry = state.retry.filter(|_| !shown.is_empty());
+        ui.error_retry.set_visible(retry.is_some());
+        ui.error_retry.set_label(match retry {
+            Some(Retry::Reload) => "Try again",
+            Some(Retry::Session) => "Retry session",
+            _ => "Retry",
+        });
 
         let direct = state.direct.is_some();
         ui.channel_title
@@ -3422,6 +3766,15 @@ impl App {
                 format!("# {}", state.channel_name)
             });
         ui.status.set_label(&state.status);
+        // DMs are named after the other person, without a channel `#`.
+        let destination = if direct {
+            state.channel_name.clone()
+        } else {
+            format!("#{}", state.channel_name)
+        };
+        ui.thread_composer
+            .broadcast
+            .set_label(Some(&format!("Also send to {destination}")));
         let joined = state.joined();
         let can_send = state.session.is_some();
         ui.composer.root.set_visible(joined);
@@ -3635,6 +3988,30 @@ impl App {
                 &mut state.markup,
                 &viewer(false),
             );
+            let mut main = main;
+            // Hidden while older history could still hold earlier unread messages.
+            if let Some((read, last)) = state.unread_boundary.filter(|_| state.direct.is_none())
+                && (!state.has_more
+                    || state.timeline.messages().next().is_some_and(|message| {
+                        message.seq.parse::<u64>().is_ok_and(|seq| seq <= read + 1)
+                    }))
+                && let Some(first) = state
+                    .timeline
+                    .messages()
+                    .filter(|message| message.is_channel_message())
+                    .find(|message| {
+                        message
+                            .seq
+                            .parse::<u64>()
+                            .is_ok_and(|seq| seq > read && seq <= last)
+                            && author.as_deref() != Some(message.author.id.as_str())
+                            && me.as_deref() != Some(message.author.id.as_str())
+                            && !blocked.contains(&message.author.id)
+                    })
+                && let Some(row) = main.iter_mut().find(|row| row.id == first.id)
+            {
+                row.unread = true;
+            }
             let changed = rows::apply(&self.ui.list.store, &state.rows, &main);
             state.rows = main;
             let thread = match &state.thread {
