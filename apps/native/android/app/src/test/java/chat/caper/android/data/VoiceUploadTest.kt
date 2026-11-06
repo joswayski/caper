@@ -38,7 +38,7 @@ class VoiceUploadTest {
         val attachment = AttachmentUploader(CaperApi(baseUrl = server.url("/").toString())).upload("account-secret", "channel00001", prepared)
 
         val create = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
-        assertEquals(setOf("channelId", "filename", "contentType", "byteSize", "sourceByteSize", "durationMs", "voice", "waveform"), create.keys)
+        assertEquals(setOf("channelId", "filename", "contentType", "byteSize", "sourceByteSize", "durationMs", "voice", "waveform", "multipart"), create.keys)
         assertTrue(create["voice"]!!.jsonPrimitive.boolean)
         assertEquals(waveform, create["waveform"]!!.jsonPrimitive.content)
         assertEquals(4_200L, create["durationMs"]!!.jsonPrimitive.long)

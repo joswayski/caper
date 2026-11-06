@@ -248,6 +248,8 @@ object AttachmentPolicy {
     fun uploadErrorMessage(error: Throwable): String = when {
         error is ApiException && error.code == "storage_full" -> "You’ve used all of your file storage."
         error is ApiException && error.code == "media_metadata" -> error.message
+        error is ApiException && error.code == "media_too_large" -> "Photos, videos and audio can be up to 5 GB."
+        error is ApiException && error.code == "upload_incomplete" -> "The upload did not arrive intact. Try again."
         error is ApiException && error.status == 413 -> "This file is too large to upload."
         error is ApiException && error.status == 429 -> "Uploading too quickly. Try again shortly."
         error is ApiException && error.status == 404 -> "You can no longer upload to this conversation."

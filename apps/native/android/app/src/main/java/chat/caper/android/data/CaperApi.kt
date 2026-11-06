@@ -294,11 +294,26 @@ class CaperApi(
             if (previewContentType != null && previewByteSize != null) putJsonObject("preview") {
                 put("contentType", previewContentType); put("byteSize", previewByteSize)
             }
+            // Files larger than one part may come back with a multipart plan instead of one upload.
+            put("multipart", true)
         }, token)
         reservation.id.assetPathId()
-        require(reservation.upload.method == "PUT" && reservation.upload.url.isStorageUrl()) { "The upload service returned an invalid response." }
+        val plan = reservation.multipart
+        require(
+            if (plan != null) plan.partBytes > 0 && plan.partCount.toLong() == (byteSize + plan.partBytes - 1) / plan.partBytes
+            else reservation.upload?.let { it.method == "PUT" && it.url.isStorageUrl() } == true,
+        ) { "The upload service returned an invalid response." }
         reservation.previewUpload?.let { require(it.method == "PUT" && it.url.isStorageUrl()) { "The upload service returned an invalid response." } }
         return reservation
+    }
+
+    /** Presigned PUTs for some [parts] (numbered from 1) of a multipart upload; only storage URLs are kept. */
+    suspend fun assetParts(token: String, id: String, parts: List<Int>): Map<Int, PresignedUpload> {
+        val response: AssetPartUrls = post(
+            "/api/assets/${id.assetPathId()}/parts", buildJsonObject { putJsonArray("parts") { parts.forEach { add(it) } } }, token,
+        )
+        return response.parts.filter { it.number in parts && it.method == "PUT" && it.url.isStorageUrl() }
+            .associate { it.number to PresignedUpload(it.method, it.url, it.headers) }
     }
 
     /** `409` means storage has not seen the upload yet; [AttachmentUploader] retries a few times. */
@@ -319,7 +334,7 @@ class CaperApi(
             put("width", width); put("height", height)
         }, token)
         reservation.id.assetPathId()
-        require(reservation.upload.method == "PUT" && reservation.upload.url.isStorageUrl()) { "The upload service returned an invalid response." }
+        require(reservation.upload?.let { it.method == "PUT" && it.url.isStorageUrl() } == true) { "The upload service returned an invalid response." }
         return reservation
     }
 

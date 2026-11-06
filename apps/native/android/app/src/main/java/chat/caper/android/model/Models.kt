@@ -293,7 +293,15 @@ object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
 /** `GET /api/assets/usage`: stored bytes, the allowance and the compression settings. */
 @Serializable data class AssetUsage(val used: Long, val limit: Long, val compression: CompressionSettings = CompressionSettings())
 @Serializable data class PresignedUpload(val method: String = "PUT", val url: String, val headers: Map<String, String> = emptyMap())
-@Serializable data class AssetReservation(val id: String, val kind: String = "file", val upload: PresignedUpload, val previewUpload: PresignedUpload? = null)
+/** A large file goes up in [partCount] parts of [partBytes] (the last may be shorter) instead of one PUT. */
+@Serializable data class MultipartPlan(val partBytes: Long, val partCount: Int)
+/** Either one presigned [upload] or, for a large file, a [multipart] plan whose part URLs are asked for as they go. */
+@Serializable data class AssetReservation(
+    val id: String, val kind: String = "file", val upload: PresignedUpload? = null, val multipart: MultipartPlan? = null,
+    val previewUpload: PresignedUpload? = null,
+)
+@Serializable data class AssetPartUrl(val number: Int, val method: String = "PUT", val url: String, val headers: Map<String, String> = emptyMap())
+@Serializable data class AssetPartUrls(val parts: List<AssetPartUrl> = emptyList())
 /** A completed picture upload, already applied: the [account] (profile picture) or the [space] (icon) with it. */
 @Serializable data class PictureCompletion(val id: String, val account: Account? = null, val space: Space? = null)
 

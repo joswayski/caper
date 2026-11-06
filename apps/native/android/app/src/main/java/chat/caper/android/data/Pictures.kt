@@ -139,7 +139,7 @@ class PictureUploader(
         )
         try {
             currentCoroutineContext().ensureActive()
-            api.putUpload(reservation.upload, size, { ByteArrayInputStream(picture.bytes) })
+            api.putUpload(checkNotNull(reservation.upload), size, { ByteArrayInputStream(picture.bytes) })
             val result = complete(token, reservation.id, draft)
             currentCoroutineContext().ensureActive()
             val applied = when (target) {

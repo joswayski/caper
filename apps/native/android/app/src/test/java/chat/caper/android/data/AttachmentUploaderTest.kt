@@ -64,7 +64,7 @@ class AttachmentUploaderTest {
         assertEquals("/api/assets", create.path)
         assertEquals("Bearer account-secret", create.headers["Authorization"])
         val body = Json.parseToJsonElement(create.body.readUtf8()).jsonObject
-        assertEquals(setOf("channelId", "filename", "contentType", "byteSize", "sourceByteSize", "width", "height", "preview"), body.keys)
+        assertEquals(setOf("channelId", "filename", "contentType", "byteSize", "sourceByteSize", "width", "height", "preview", "multipart"), body.keys)
         assertEquals("channel00001", body["channelId"]!!.jsonPrimitive.content)
         assertEquals(1500L, body["byteSize"]!!.jsonPrimitive.long)
         assertEquals(9000L, body["sourceByteSize"]!!.jsonPrimitive.long)
@@ -226,6 +226,75 @@ class AttachmentUploaderTest {
         server.enqueue(MockResponse().setResponseCode(503).setBody("""{"error":"uploads unavailable"}"""))
         val error = runCatching { CaperApi(baseUrl = server.url("/").toString()).assetUsage("account-secret") }.exceptionOrNull()
         assertEquals(503, (error as ApiException).status)
+    }
+
+    @Test(timeout = 10000) fun `large files go up in parts with fresh urls for a failed part, then complete`() = runBlocking {
+        val bytes = ByteArray(10) { (it * 7 + 3).toByte() }
+        val file = folder.newFile("big.mp4").apply { writeBytes(bytes) }
+        val created = java.util.concurrent.atomic.AtomicReference<String>()
+        val partRequests = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val puts = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+        val issued = java.util.concurrent.atomic.AtomicInteger()
+        val failedOnce = java.util.concurrent.atomic.AtomicBoolean()
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                val path = request.path!!
+                return when {
+                    path == "/api/assets" -> {
+                        created.set(request.body.readUtf8())
+                        MockResponse().setResponseCode(201).setBody("""{"id":"$id","kind":"video","multipart":{"partBytes":4,"partCount":3}}""")
+                    }
+                    path == "/api/assets/$id/parts" -> {
+                        val body = request.body.readUtf8()
+                        partRequests += body
+                        val numbers = Json.parseToJsonElement(body).jsonObject["parts"]!!.jsonArray.map { it.jsonPrimitive.int }
+                        MockResponse().setBody(numbers.joinToString(",", """{"parts":[""", "]}") {
+                            """{"number":$it,"method":"PUT","url":"${server.url("/r2/part/$it?sig=${issued.incrementAndGet()}")}","headers":{}}"""
+                        })
+                    }
+                    path.startsWith("/r2/part/") -> {
+                        val number = path.removePrefix("/r2/part/").substringBefore("?")
+                        if (number == "2" && failedOnce.compareAndSet(false, true)) MockResponse().setResponseCode(500)
+                        else MockResponse().also { puts[path] = request.body.readByteArray() }
+                    }
+                    path == "/api/assets/$id/complete" ->
+                        MockResponse().setBody("""{"id":"$id","kind":"video","contentType":"video/mp4","name":"big.mp4","size":10}""")
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+        val progress = java.util.Collections.synchronizedList(mutableListOf<Float>())
+        val uploader = AttachmentUploader(CaperApi(baseUrl = server.url("/").toString()), partRetryDelaysMs = listOf(1, 1))
+
+        val attachment = uploader.upload("account-secret", "channel00001", PreparedAttachment(file, "big.mp4", "video/mp4", "video", 10)) { progress += it }
+
+        assertEquals(id, attachment.id)
+        assertEquals(true, Json.parseToJsonElement(created.get()).jsonObject["multipart"]!!.jsonPrimitive.content.toBoolean())
+        // Each part carries exactly its slice; the short last part included.
+        val received = puts.entries.sortedBy { it.key.removePrefix("/r2/part/").substringBefore("?") }
+        assertEquals(listOf("1", "2", "3"), received.map { it.key.removePrefix("/r2/part/").substringBefore("?") })
+        assertArrayEquals(bytes, received.fold(ByteArray(0)) { all, part -> all + part.value })
+        assertEquals(listOf(4, 4, 2), received.map { it.value.size })
+        // The failed part was sent again with a URL asked for after the failure.
+        assertTrue(failedOnce.get())
+        val asked = partRequests.flatMap { body -> Json.parseToJsonElement(body).jsonObject["parts"]!!.jsonArray.map { it.jsonPrimitive.int } }
+        assertEquals("a fresh URL was asked for the retried part only", listOf(1, 2, 2, 3), asked.sorted())
+        assertEquals(1f, progress.last())
+    }
+
+    @Test(timeout = 10000) fun `missing parts are not retried at complete and the reservation is cancelled`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(201).setBody(reservation(preview = false)))
+        server.enqueue(MockResponse().setResponseCode(200))
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"upload incomplete","code":"upload_incomplete"}"""))
+        server.enqueue(MockResponse().setResponseCode(200))
+        val uploader = AttachmentUploader(CaperApi(baseUrl = server.url("/").toString()), completeRetryDelaysMs = listOf(1, 1))
+
+        val error = runCatching { uploader.upload("account-secret", "channel00001", prepared(preview = false)) }.exceptionOrNull()
+
+        assertEquals("The upload did not arrive intact. Try again.", AttachmentPolicy.uploadErrorMessage(error!!))
+        listOf("/api/assets", "/r2/original/$id?X-Amz-Signature=abc", "/api/assets/$id/complete", "/api/assets/$id/cancel")
+            .forEach { assertEquals(it, server.takeRequest().path) }
+        assertEquals(4, server.requestCount)
     }
 
     @Test fun `invalid asset ids never reach a url path`() {
