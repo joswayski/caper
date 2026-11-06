@@ -7,7 +7,7 @@ struct FormattedMessageRun: Equatable, Decodable {
 }
 
 /// The deliberately small Markdown subset shared with the web composer.
-enum MessageFormatting {
+public enum MessageFormatting {
     static func runs(_ text: String) -> [FormattedMessageRun] {
         projection(text).runs
     }
@@ -33,7 +33,7 @@ enum MessageFormatting {
         }
     }
 
-    static func normalizedSelection(_ text: String, selection: NSRange) -> NSRange {
+    public static func normalizedSelection(_ text: String, selection: NSRange) -> NSRange {
         let parsed = projection(text)
         return parsed.sourceRange(parsed.visibleRange(selection))
     }
@@ -133,7 +133,7 @@ enum MessageFormatting {
 
     /// Edits may erase one side or all contents of a style. Drop only punctuation
     /// that was hidden before the edit and would otherwise become an orphan marker.
-    static func repairEdit(_ previous: String, text: String, selection: NSRange) -> (text: String, selection: NSRange) {
+    public static func repairEdit(_ previous: String, text: String, selection: NSRange) -> (text: String, selection: NSRange) {
         guard previous != text else { return (text, selection) }
         let before = Array(previous.utf16), after = Array(text.utf16)
         let oldVisible = Set(projection(previous).sourceIndices)
@@ -157,7 +157,7 @@ enum MessageFormatting {
                           selection: NSRange(location: start, length: end - start))
     }
 
-    static func toggle(_ text: String, selection: NSRange, marker: String) -> (text: String, selection: NSRange)? {
+    public static func toggle(_ text: String, selection: NSRange, marker: String) -> (text: String, selection: NSRange)? {
         let source = text as NSString, width = (marker as NSString).length
         guard ["**", "_"].contains(marker), selection.location >= 0, selection.location <= source.length,
               selection.length >= 0, selection.length <= source.length - selection.location else { return nil }

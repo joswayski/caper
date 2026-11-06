@@ -3,12 +3,27 @@ import SwiftUI
 import UIKit
 
 /// The conversation composer, as SwiftUI's phone layout draws it: one box
-/// holding Attach (+), a native TextKit 2 UITextView, Emojis/GIFs/Stickers and
-/// the microphone, with Send beside it and staged files and voice notices
-/// above. The text view keeps dictation, marked text (Japanese, Chinese,
-/// Korean IMEs), autocorrect and VoiceOver's value, caret and selection.
-final class ComposerView: UIView, UITextViewDelegate {
-    let textView = ComposerTextView(usingTextLayoutManager: true)
+/// holding Attach (+), the native text view, Emojis/GIFs/Stickers and the
+/// microphone, with Send beside it and staged files and voice notices above.
+/// The text view is the shipping composer's own TextKit 1 UITextView: Markdown
+/// delimiters keep their source offsets but draw nothing, so bold, italic,
+/// mention and link highlights, caret moves, deletion and copy match SwiftUI,
+/// and dictation, marked text (Japanese, Chinese, Korean IMEs), autocorrect,
+/// undo and VoiceOver's value, caret and selection stay native.
+final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegate {
+    let textView: ComposerTextView = {
+        let storage = NSTextStorage()
+        let layout = DraftLinkLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        layout.addTextContainer(container)
+        let view = ComposerTextView(frame: .zero, textContainer: container)
+        layout.delegate = view.composerGlyphs
+        return view
+    }()
+    /// Attribute and selection fixes made here, not by the person typing.
+    private var highlighting = false
     private let placeholder = UIKitStyle.label(size: 14, color: UIKitStyle.muted)
     private let field = UIView()
     private let fieldRow = UIStackView()
@@ -24,7 +39,8 @@ final class ComposerView: UIView, UITextViewDelegate {
     private var dismissed = false
     private let recordingBar = HostedView()
     private var height: NSLayoutConstraint!
-    private let font = UIKitStyle.font(14)
+    /// The shared draft rendering sets Satoshi 14 itself, as SwiftUI does.
+    private let font = UIKitStyle.font(14, scaled: false)
     /// Text edits; the owner writes them to the model's draft.
     var changed: ((String) -> Void)?
     var submitted: (() -> Void)?
@@ -48,7 +64,6 @@ final class ComposerView: UIView, UITextViewDelegate {
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.backgroundColor = .clear
         textView.font = font
-        textView.adjustsFontForContentSizeCategory = true
         textView.textColor = UIKitStyle.text
         textView.tintColor = UIKitStyle.terracottaBright
         textView.keyboardAppearance = .dark
@@ -56,9 +71,24 @@ final class ComposerView: UIView, UITextViewDelegate {
         textView.textContainer.lineFragmentPadding = 5
         textView.showsHorizontalScrollIndicator = false
         textView.delegate = self
-        textView.returnPressed = { [weak self] in self?.submit() }
+        // As on the shipping iPhone composer, Return adds a line; Send sends.
+        textView.accessibilityHint = "Use the Send button when composing with the iPhone keyboard."
         textView.autocompleteActive = { [weak self] in self?.suggestions.match != nil }
-        textView.autocompleteKey = { [weak self] in self?.handle($0) }
+        textView.handleKey = { [weak self] in self?.handle($0) }
+        textView.formatSelection = { [weak self] in self?.format($0) }
+        let touchDown = TouchDownObserver(target: nil, action: nil)
+        touchDown.cancelsTouchesInView = false
+        touchDown.delaysTouchesEnded = false
+        touchDown.touched = { [weak textView] in textView?.touched() }
+        textView.addGestureRecognizer(touchDown)
+        // Holding (or hovering) an emoji shows its :name:.
+        let hold = UILongPressGestureRecognizer(target: textView, action: #selector(ComposerTextView.inspectEmojiHold(_:)))
+        hold.minimumPressDuration = 0.5
+        hold.allowableMovement = 10
+        hold.cancelsTouchesInView = false
+        hold.delegate = self
+        textView.addGestureRecognizer(hold)
+        textView.addGestureRecognizer(UIHoverGestureRecognizer(target: textView, action: #selector(ComposerTextView.inspectEmojiHover(_:))))
         suggestions.accepted = { [weak self] in self?.accept($0) }
         textView.accessibilityIdentifier = "message-composer"
         // The text view's own label carries the prompt.
@@ -140,7 +170,7 @@ final class ComposerView: UIView, UITextViewDelegate {
         placeholder.text = prompt
         textView.accessibilityLabel = prompt
         textView.isEditable = enabled
-        if !enabled { suggestions.show(nil) }
+        if !enabled { suggestions.show(nil); textView.hideEmojiName() }
         send.isEnabled = enabled && canSend
         // Eggshell when there is something to send; neutral chrome otherwise.
         send.backgroundColor = send.isEnabled ? UIKitStyle.action : .clear
@@ -171,8 +201,11 @@ final class ComposerView: UIView, UITextViewDelegate {
     /// and never while an input method is composing.
     func show(draft: String) {
         guard textView.markedTextRange == nil, textView.text != draft else { return }
+        textView.hideEmojiName()
         textView.text = draft
+        dismissed = false
         refresh()
+        render()
     }
 
     /// Puts text at the caret (an emoji, dictated words), as typing would.
@@ -188,25 +221,110 @@ final class ComposerView: UIView, UITextViewDelegate {
         return true
     }
 
+    /// Typing that would break a Markdown pair (deleting one `*` of `**`, say)
+    /// is repaired as SwiftUI's composer repairs it.
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
+        guard !highlighting, textView.markedTextRange == nil,
+              textView.undoManager?.isUndoing != true, textView.undoManager?.isRedoing != true else { return true }
+        let proposed = (textView.text as NSString).replacingCharacters(in: range, with: replacement)
+        let result = MessageFormatting.repairEdit(textView.text, text: proposed,
+                                                  selection: NSRange(location: range.location + replacement.utf16.count, length: 0))
+        guard result.text != proposed,
+              let all = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument) else { return true }
+        highlighting = true
+        textView.replace(all, withText: result.text)
+        textView.selectedRange = result.selection
+        highlighting = false
+        edited()
+        return false
+    }
+
     func textViewDidChange(_ textView: UITextView) {
-        refresh()
-        changed?(textView.text)
-        dismissed = false
-        suggest()
+        guard !highlighting else { return }
+        self.textView.hideEmojiName()
+        edited()
     }
 
     func textViewDidChangeSelection(_ textView: UITextView) {
+        guard !highlighting else { return }
         dismissed = false
-        suggest()
+        render()
     }
 
-    func textViewDidBeginEditing(_ textView: UITextView) { suggest() }
-    func textViewDidEndEditing(_ textView: UITextView) { suggestions.show(nil) }
+    func textViewDidBeginEditing(_ textView: UITextView) { render() }
+    func textViewDidEndEditing(_ textView: UITextView) {
+        self.textView.hideEmojiName()
+        suggestions.show(nil)
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) { textView.hideEmojiName() }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+    /// Bold and Italic lead the edit menu, as in SwiftUI.
+    func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+        guard textView.isEditable else { return nil }
+        return UIMenu(children: [UIMenu(title: "", options: .displayInline, children: [
+            UIAction(title: "B", discoverabilityTitle: "Bold") { [weak self] _ in self?.format("**") },
+            UIAction(title: "I", discoverabilityTitle: "Italic") { [weak self] _ in self?.format("_") },
+        ])] + suggestedActions)
+    }
+
+    /// Wraps or unwraps the selection in `marker` (Command-B, Command-I, the menu).
+    private func format(_ marker: String) {
+        guard textView.isEditable, textView.markedTextRange == nil,
+              let result = MessageFormatting.toggle(textView.text, selection: textView.selectedRange, marker: marker),
+              result.text.unicodeScalars.count <= 4000, result.text != textView.text,
+              let all = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument) else { return }
+        highlighting = true
+        textView.replace(all, withText: result.text)
+        textView.selectedRange = result.selection
+        highlighting = false
+        edited()
+    }
+
+    /// After any change to the draft: size, report, re-render, re-suggest.
+    private func edited() {
+        refresh()
+        changed?(textView.text)
+        dismissed = false
+        render()
+    }
+
+    /// Keeps the caret off hidden delimiters, then draws the draft's
+    /// formatting, mentions and links and updates the suggestions.
+    private func render() {
+        guard !highlighting else { return }
+        if textView.markedTextRange == nil {
+            highlighting = true
+            textView.selectedRange = MessageFormatting.normalizedSelection(textView.text, selection: textView.selectedRange)
+            if let model { highlightDraft(textView.textStorage, source: model.composerMentions) }
+            for key in [NSAttributedString.Key.composerDelimiter, .obliqueness, .backgroundColor, .draftLink, .kern] {
+                textView.typingAttributes.removeValue(forKey: key)
+            }
+            textView.typingAttributes[.font] = font
+            textView.typingAttributes[.foregroundColor] = UIKitStyle.text
+            highlighting = false
+        }
+        suggest()
+    }
+    private var mentions: MentionSource?
+
+    /// Members can finish loading, or the conversation change, under the same
+    /// draft: re-render its mentions and suggestions when the context moves.
+    func refreshContext() {
+        guard let model else { return }
+        let next = model.composerMentions
+        guard next != mentions else { return }
+        mentions = next
+        render()
+    }
 
     /// The shared match for the caret: none while an input method composes,
     /// with a selection, or after Escape.
     func suggest() {
-        guard let model, !dismissed, textView.isFirstResponder, textView.isEditable else { return suggestions.show(nil) }
+        guard !highlighting, let model, !dismissed, textView.isFirstResponder, textView.isEditable else { return suggestions.show(nil) }
         suggestions.show(NativePresentation.autocomplete(text: textView.text, selection: textView.selectedRange,
                                                          markedText: textView.markedTextRange != nil, model: model))
     }
@@ -227,10 +345,12 @@ final class ComposerView: UIView, UITextViewDelegate {
         guard textView.isEditable, let match = suggestions.match,
               let result = NativePresentation.inserting(choice: index, in: textView.text, match: match),
               let all = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument) else { return }
+        highlighting = true
         textView.replace(all, withText: result.text)
         textView.selectedRange = result.selection
+        highlighting = false
         textView.becomeFirstResponder()
-        suggest()
+        edited()
     }
 
     private func submit() {
@@ -240,6 +360,8 @@ final class ComposerView: UIView, UITextViewDelegate {
     }
 
     private func refresh() {
+        // As SwiftUI's composer: VoiceOver reads the draft as it will be sent.
+        textView.accessibilityValue = textView.text
         placeholder.isHidden = !textView.text.isEmpty
         let lineHeight = font.lineHeight
         let fitting = textView.sizeThatFits(CGSize(width: textView.bounds.width > 0 ? textView.bounds.width : 240, height: .greatestFiniteMagnitude)).height
@@ -260,39 +382,6 @@ final class ComposerView: UIView, UITextViewDelegate {
         if let hit = super.hitTest(point, with: event) { return hit }
         let inMicrophone = convert(point, to: microphone)
         return microphone.hitTest(inMicrophone, with: event)
-    }
-}
-
-/// A hardware Return sends; Shift-Return, Option-Return and the software
-/// keyboard's return add a line. Return during IME composition confirms the
-/// candidate, as the input method expects.
-final class ComposerTextView: UITextView {
-    var returnPressed: (() -> Void)?
-
-    var autocompleteActive: (() -> Bool)?
-    var autocompleteKey: ((String) -> Void)?
-
-    /// While suggestions show, the hardware arrows, Return, Tab and Escape drive them.
-    override var keyCommands: [UIKeyCommand]? {
-        guard markedTextRange == nil, autocompleteActive?() == true else { return super.keyCommands }
-        return [UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow, "\r", "\t", UIKeyCommand.inputEscape].map {
-            let command = UIKeyCommand(input: $0, modifierFlags: [], action: #selector(autocompleteCommand(_:)))
-            command.wantsPriorityOverSystemBehavior = true
-            return command
-        } + (super.keyCommands ?? [])
-    }
-
-    @objc private func autocompleteCommand(_ command: UIKeyCommand) {
-        if let input = command.input { autocompleteKey?(input) }
-    }
-
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if let key = presses.first?.key, key.keyCode == .keyboardReturnOrEnter, autocompleteActive?() != true,
-           key.modifierFlags.isDisjoint(with: [.shift, .alternate]), markedTextRange == nil, let returnPressed {
-            returnPressed()
-            return
-        }
-        super.pressesBegan(presses, with: event)
     }
 }
 

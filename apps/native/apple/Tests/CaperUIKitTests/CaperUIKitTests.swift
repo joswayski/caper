@@ -399,6 +399,41 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(sent.links.firstMatch.waitForExistence(timeout: 10), "The picked mention resolves to a pill")
     }
 
+    /// The draft renders like the message will: Markdown delimiters stay in
+    /// the source but draw nothing, and a resolved mention is highlighted.
+    /// (Typing on after a closing delimiter is covered by the shared
+    /// formatting rules, not here.)
+    func testComposerDraftFormatting() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let composer = app.textViews["message-composer"]
+        composer.tap()
+        composer.typeText("TEST FIXTURE for @maya **bold**")
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE for @maya **bold**", "VoiceOver reads the draft as it will be sent")
+        screenshot("uikit-draft-formatting")
+        app.buttons["send-message"].tap()
+        let sent = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "for @maya bold")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 10))
+        XCTAssertTrue(sent.links.firstMatch.exists, "The mention resolved")
+        screenshot("uikit-draft-formatting-sent")
+    }
+
+    /// The account menu opens SwiftUI's release notes sheet.
+    func testWhatsNew() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        app.buttons["back-to-browse"].tap()
+        app.buttons["account-settings"].tap()
+        let item = app.buttons["open-whats-new"].firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 5))
+        item.tap()
+        let sheet = app.descendants(matching: .any)["whats-new"].firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 10))
+        screenshot("uikit-whats-new")
+        app.buttons["Done"].firstMatch.tap()
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 10))
+    }
+
     /// Owners reach Invite people and Space settings from the space name,
     /// Create channel from Channels, and channel settings from a held channel.
     func testOwnerWorkflows() {

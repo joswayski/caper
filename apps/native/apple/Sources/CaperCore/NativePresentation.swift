@@ -115,7 +115,7 @@ public enum NativePresentation {
 extension AppModel {
     /// Single context source for SwiftUI, AppKit and UIKit composers. The
     /// viewer is excluded; channel specials never leak into DMs or visits.
-    var composerMentions: MentionSource {
+    public var composerMentions: MentionSource {
         let viewerID = chat.currentAuthor?.id ?? account?.id
         if let visit {
             return .visit(reporter: visit.reporter, messages: chat.messages, people: people, accountID: viewerID)

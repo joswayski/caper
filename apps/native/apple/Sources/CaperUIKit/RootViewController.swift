@@ -13,6 +13,8 @@ final class RootViewController: UIViewController {
     private let saver = ModelObserver()
     private let deliveries = ModelObserver()
     private var saveWork: DispatchWorkItem?
+    /// Mounted once the live workspace is ready, after first paint.
+    private var whatsNew: UIViewController?
 
     private enum Kind: Equatable { case loading, signIn, onboarding, empty, workspace }
 
@@ -66,6 +68,14 @@ final class RootViewController: UIViewController {
             cached = nil
             (current as? WorkspaceViewController)?.cached = nil
         }
+        if whatsNew == nil, model.phase == .ready, !model.restoringWorkspace, model.account != nil {
+            let host = UIKitWhatsNew.presenter(model: model)
+            addChild(host)
+            host.view.frame = .zero
+            view.addSubview(host.view)
+            host.didMove(toParent: self)
+            whatsNew = host
+        }
         guard kind != currentKind else { return }
         currentKind = kind
         let next: UIViewController
@@ -88,7 +98,7 @@ final class RootViewController: UIViewController {
         addChild(next)
         next.view.frame = view.bounds
         next.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(next.view)
+        view.insertSubview(next.view, at: 0)
         next.didMove(toParent: self)
         current = next
         UIAccessibility.post(notification: .screenChanged, argument: nil)

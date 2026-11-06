@@ -265,13 +265,13 @@ struct SuggestionRow: ViewModifier {
 
 #if os(iOS) || os(macOS)
 extension NSAttributedString.Key {
-    static let composerDelimiter = NSAttributedString.Key("CaperComposerDelimiter")
+    public static let composerDelimiter = NSAttributedString.Key("CaperComposerDelimiter")
 }
 
 /// TextKit keeps the original string (and native selection/IME/undo coordinates),
 /// but recognized Markdown delimiters have no drawn glyph or advance.
-final class ComposerGlyphs: NSObject, NSLayoutManagerDelegate {
-    func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
+public final class ComposerGlyphs: NSObject, NSLayoutManagerDelegate {
+    public func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
                        properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
                        characterIndexes charIndexes: UnsafePointer<Int>, font: PlatformComposerFont,
                        forGlyphRange glyphRange: NSRange) -> Int {
@@ -291,15 +291,15 @@ final class ComposerGlyphs: NSObject, NSLayoutManagerDelegate {
 }
 
 #if os(iOS)
-typealias PlatformComposerFont = UIFont
+public typealias PlatformComposerFont = UIFont
 #else
-typealias PlatformComposerFont = NSFont
+public typealias PlatformComposerFont = NSFont
 #endif
 
 /// Attribute-only rendering preserves the wire draft and native editing transactions.
 /// First-character kerning reserves space for the drawing-only URL icon; the
 /// glyph delegate independently hides delimiters in the same source coordinates.
-@MainActor func highlightDraft(_ storage: NSTextStorage, source: MentionSource) {
+@MainActor public func highlightDraft(_ storage: NSTextStorage, source: MentionSource) {
     let projection = MessageFormatting.projection(storage.string)
     let visible = projection.runs.map(\.text).joined()
     let ranges = MentionAutocomplete.draftHighlights(in: visible, source: source).map { range in
@@ -364,8 +364,8 @@ typealias PlatformComposerFont = NSFont
 #endif
 
 #if os(iOS)
-final class ComposerTextView: UITextView {
-    fileprivate let composerGlyphs = ComposerGlyphs()
+public final class ComposerTextView: UITextView {
+    public let composerGlyphs = ComposerGlyphs()
     private var navigationRange: NSRange?
     private var navigationAnchor = 0
     @objc private func moveVisible(_ command: UIKeyCommand) {
@@ -377,24 +377,24 @@ final class ComposerTextView: UITextView {
             activeAtStart: selectedRange.length > 0 && navigationAnchor == NSMaxRange(selectedRange))
         selectedRange = next; navigationRange = next
     }
-    override func deleteBackward() {
+    public override func deleteBackward() {
         guard markedTextRange == nil else { super.deleteBackward(); return }
         guard let range = MessageFormatting.deletionRange(text, selection: selectedRange, backward: true) else { return }
         selectedRange = range
         super.deleteBackward()
     }
-    override func copy(_ sender: Any?) {
+    public override func copy(_ sender: Any?) {
         guard selectedRange.length > 0 else { return }
         UIPasteboard.general.string = MessageFormatting.copiedText(text, selection: selectedRange)
     }
-    override func cut(_ sender: Any?) {
+    public override func cut(_ sender: Any?) {
         guard isEditable, selectedRange.length > 0, markedTextRange == nil else { return }
         copy(sender); deleteBackward()
     }
-    var autocompleteActive: (() -> Bool)?
-    var handleKey: ((String) -> Void)?
-    var pasteAttachments: (() -> Bool)?
-    var formatSelection: ((String) -> Void)?
+    public var autocompleteActive: (() -> Bool)?
+    public var handleKey: ((String) -> Void)?
+    public var pasteAttachments: (() -> Bool)?
+    public var formatSelection: ((String) -> Void)?
     @objc func formatBold(_ sender: Any?) { formatSelection?("**") }
     @objc func formatItalic(_ sender: Any?) { formatSelection?("_") }
     private var emojiTooltip: UILabel?
@@ -402,11 +402,11 @@ final class ComposerTextView: UITextView {
     private var inspectedRange: NSRange?
     private var holdPoint: CGPoint?
 
-    func hideEmojiName() {
+    public func hideEmojiName() {
         emojiHover?.cancel(); emojiHover = nil; inspectedRange = nil
         emojiTooltip?.removeFromSuperview(); emojiTooltip = nil
     }
-    override func didMoveToWindow() {
+    public override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil { hideEmojiName() }
     }
@@ -446,7 +446,7 @@ final class ComposerTextView: UITextView {
             UIView.animate(withDuration: 0.14, delay: 0, options: .curveEaseOut) { label.alpha = 1; label.transform = .identity }
         }
     }
-    @objc func inspectEmojiHold(_ gesture: UILongPressGestureRecognizer) {
+    @objc public func inspectEmojiHold(_ gesture: UILongPressGestureRecognizer) {
         let point = gesture.location(in: self)
         switch gesture.state {
         case .began:
@@ -462,7 +462,7 @@ final class ComposerTextView: UITextView {
         default: hideEmojiName()
         }
     }
-    @objc func inspectEmojiHover(_ gesture: UIHoverGestureRecognizer) {
+    @objc public func inspectEmojiHover(_ gesture: UIHoverGestureRecognizer) {
         guard gesture.state != .ended, gesture.state != .cancelled,
               let emoji = emoji(at: gesture.location(in: self)) else { hideEmojiName(); return }
         guard inspectedRange != emoji.range else { return }
@@ -472,10 +472,10 @@ final class ComposerTextView: UITextView {
             self?.showEmojiName(emoji.name, rect: emoji.rect)
         }
     }
-    override func paste(_ sender: Any?) {
+    public override func paste(_ sender: Any?) {
         if pasteAttachments?() != true { super.paste(sender) }
     }
-    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+    public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(paste(_:)), isEditable, pasteAttachments != nil,
            NativeAttachmentPaste.hasAttachments { return true }
         return super.canPerformAction(action, withSender: sender)
@@ -486,8 +486,8 @@ final class ComposerTextView: UITextView {
     private var focusHeld = false
     private var covered = false
     private var focusRelease: Task<Void, Never>?
-    override var canBecomeFirstResponder: Bool { !focusHeld && super.canBecomeFirstResponder }
-    func setCovered(_ covered: Bool) {
+    public override var canBecomeFirstResponder: Bool { !focusHeld && super.canBecomeFirstResponder }
+    public func setCovered(_ covered: Bool) {
         guard covered != self.covered else { return }
         self.covered = covered
         focusRelease?.cancel(); focusRelease = nil
@@ -497,9 +497,9 @@ final class ComposerTextView: UITextView {
             self?.focusHeld = false
         }
     }
-    func touched() { hideEmojiName(); if !covered { focusRelease?.cancel(); focusRelease = nil; focusHeld = false } }
-    override func accessibilityActivate() -> Bool { touched(); return super.accessibilityActivate() }
-    override var keyCommands: [UIKeyCommand]? {
+    public func touched() { hideEmojiName(); if !covered { focusRelease?.cancel(); focusRelease = nil; focusHeld = false } }
+    public override func accessibilityActivate() -> Bool { touched(); return super.accessibilityActivate() }
+    public override var keyCommands: [UIKeyCommand]? {
         var formatting = [UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(formatBold(_:))),
                           UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(formatItalic(_:)))]
         if markedTextRange == nil {
@@ -522,9 +522,9 @@ final class ComposerTextView: UITextView {
 }
 
 /// Sees a finger land on the composer, then steps aside for its own gestures.
-private final class TouchDownObserver: UIGestureRecognizer {
-    var touched: (() -> Void)?
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) { touched?(); state = .failed }
+public final class TouchDownObserver: UIGestureRecognizer {
+    public var touched: (() -> Void)?
+    public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) { touched?(); state = .failed }
 }
 
 struct NativeMessageTextEditor: UIViewRepresentable {

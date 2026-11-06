@@ -81,6 +81,9 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             items.append(UIAction(title: "Audio diagnostics") { [weak self] _ in self?.dialog(.diagnostics) })
         }
         items.append(UIAction(title: "Profile") { [weak self] _ in self?.dialog(.profile) })
+        let whatsNew = UIAction(title: "What’s new") { _ in UIKitWhatsNew.open(model: model) }
+        whatsNew.accessibilityIdentifier = "open-whats-new"
+        items.append(whatsNew)
         let notifications = UIAction(title: "Notifications") { [weak self] _ in self?.dialog(.notifications) }
         notifications.accessibilityIdentifier = "open-notifications"
         let privacy = UIAction(title: "Privacy and blocked accounts") { [weak self] _ in self?.dialog(.privacy) }

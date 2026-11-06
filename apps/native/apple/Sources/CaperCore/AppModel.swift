@@ -4965,7 +4965,7 @@ public final class ChatModel {
     func attachmentNotice(target: AttachmentTarget) -> String? { attachmentNotices[target] }
 
     /// Return false for ordinary text/links so the native editor handles them.
-    func pasteAttachments(inThread: Bool = false) -> Bool {
+    public func pasteAttachments(inThread: Bool = false) -> Bool {
         guard let target = attachmentTarget(inThread: inThread) else { return false }
         do {
             let files = try NativeAttachmentPaste.stage()

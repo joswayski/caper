@@ -600,6 +600,23 @@ public struct UIKitTimelineEntry {
     }
 }
 
+/// SwiftUI's What's new: the release-notes sheet, opened from the account
+/// menu or shown once for a new build's unread notes. Its zero-size host
+/// sits in the root; the automatic check waits, as on SwiftUI, until nothing
+/// else is presented and no call is starting.
+@MainActor public enum UIKitWhatsNew {
+    public static func presenter(model: AppModel) -> UIViewController {
+        let host = UIHostingController(rootView: Color.clear.modifier(WhatsNewPresentation(model: model)).preferredColorScheme(.dark))
+        host.overrideUserInterfaceStyle = .dark
+        host.view.backgroundColor = .clear
+        host.view.isUserInteractionEnabled = false
+        host.view.accessibilityElementsHidden = true
+        return host
+    }
+
+    public static func open(model: AppModel) { model.whatsNew.open() }
+}
+
 /// The account menu's audio settings, stored where SwiftUI keeps them.
 @MainActor public enum UIKitAudioSettings {
     public static var soundEffects: Bool {

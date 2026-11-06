@@ -52,7 +52,7 @@ extension MentionCandidate {
 }
 
 /// Who the composer may suggest in the open conversation.
-struct MentionSource: Equatable, Sendable {
+public struct MentionSource: Equatable, Sendable {
     var members: [MentionCandidate]
     /// `everyone` and `here`: space channels only.
     var specials: Bool

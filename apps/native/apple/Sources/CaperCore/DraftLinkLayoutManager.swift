@@ -7,7 +7,7 @@ import AppKit
 
 #if os(iOS) || os(macOS)
 extension NSAttributedString.Key {
-    static let draftLink = NSAttributedString.Key("chat.caper.draftLink")
+    public static let draftLink = NSAttributedString.Key("chat.caper.draftLink")
 }
 
 /// TextKit 1 decoration, not an attachment or a replacement string. Reserve
@@ -16,10 +16,10 @@ extension NSAttributedString.Key {
 /// pasteboard text, accessibility and undo remain owned by the text view.
 /// The icon belongs to the first character's selection/hit area, not a new
 /// caret stop. A wrapped URL gets one leading icon and a pill on each line.
-final class DraftLinkLayoutManager: NSLayoutManager {
+public final class DraftLinkLayoutManager: NSLayoutManager {
     static let iconAdvance: CGFloat = 14
 
-    override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
+    public override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         guard let storage = textStorage else {
             super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
             return
@@ -66,7 +66,7 @@ final class DraftLinkLayoutManager: NSLayoutManager {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
     }
 
-    override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
+    public override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         guard let storage = textStorage else {
             super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
             return
