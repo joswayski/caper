@@ -106,6 +106,15 @@ pub struct Space {
     pub name: String,
 }
 
+/// The open DM: its peer's name, whether it is your own (notes to
+/// yourself), and what an empty conversation says under "No messages yet."
+#[derive(Clone, PartialEq, Debug)]
+pub struct Direct {
+    pub name: String,
+    pub own: bool,
+    pub note: String,
+}
+
 pub struct Conversation {
     pub spaces: Vec<Space>,
     pub space: usize,
@@ -118,6 +127,9 @@ pub struct Conversation {
     /// Whether `Person::online` is known (the gateway reports presence).
     pub presence: bool,
     pub messages: Vec<Message>,
+    /// A DM instead of a channel: `channel` is then past `channels` (no
+    /// channel row is selected) and there is no member list.
+    pub direct: Option<Direct>,
     demo: Option<Demo>,
 }
 
@@ -145,7 +157,44 @@ impl Conversation {
             listed_members,
             presence: false,
             messages,
+            direct: None,
             demo: None,
+        }
+    }
+
+    /// The header's title: the channel's name, or the DM peer's.
+    pub fn title(&self) -> String {
+        match &self.direct {
+            Some(d) => d.name.clone(),
+            None => self
+                .channels
+                .get(self.channel)
+                .map_or_else(String::new, |c| c.name.clone()),
+        }
+    }
+
+    /// The conversation as the composer and screen readers name it:
+    /// `#general`, or the peer's name in a DM.
+    pub fn place(&self) -> String {
+        match &self.direct {
+            Some(d) => d.name.clone(),
+            None => format!("#{}", self.title()),
+        }
+    }
+
+    /// What an empty conversation shows: "No messages yet." and its note
+    /// (egui's), or your own DM's single line.
+    pub fn empty_text(&self) -> (Option<&'static str>, String) {
+        match &self.direct {
+            Some(d) if d.own => (
+                None,
+                "You can message yourself here to keep notes, reminders, and ideas.".into(),
+            ),
+            Some(d) => (Some("No messages yet."), d.note.clone()),
+            None => (
+                Some("No messages yet."),
+                format!("Start the conversation in {}.", self.place()),
+            ),
         }
     }
 
@@ -434,6 +483,7 @@ impl Conversation {
             listed_members: AUTHORS,
             presence: true,
             messages: Vec::with_capacity(count + 512),
+            direct: None,
             demo: Some(demo),
         };
         for _ in 0..count {

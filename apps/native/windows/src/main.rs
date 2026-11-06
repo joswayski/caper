@@ -17,6 +17,7 @@ mod actions;
 mod bench;
 mod card;
 mod composer;
+mod directs;
 mod embeds;
 mod emoji;
 mod files;
@@ -228,6 +229,8 @@ pub struct App {
     hover_space: Option<usize>,
     hover_channel: Option<usize>,
     hover_member: Option<usize>,
+    /// The sidebar's DM row under the pointer.
+    hover_direct: Option<usize>,
     pointer: Option<(f32, f32)>,
     tracking: bool,
     pub sel: Option<Sel>,
@@ -266,6 +269,9 @@ pub struct App {
     /// The composer's GIF picker.
     pub gifs: Option<gifs::Picker>,
     gifs_p: Panel,
+    /// An empty conversation's "No messages yet." and what it last drew.
+    empty_p: Panel,
+    empty_drawn: Option<((Option<&'static str>, String), f32, f32)>,
     pub reply: Option<actions::ReplyBar>,
     reply_p: Panel,
     tool_hover: Option<usize>,
@@ -330,6 +336,7 @@ impl App {
             let dialog_p = Panel::new(&g)?;
             let picker_p = Panel::new(&g)?;
             let gifs_p = Panel::new(&g)?;
+            let empty_p = Panel::new(&g)?;
             let reply_p = Panel::new(&g)?;
             let thread_p = Panel::new(&g)?;
             let thread_box_p = Panel::new(&g)?;
@@ -352,6 +359,7 @@ impl App {
                 &sidebar.visual,
                 &header.visual,
                 &history_clip,
+                &empty_p.visual,
                 &composer_p.visual,
                 &reply_p.visual,
                 &thread_p.visual,
@@ -403,6 +411,7 @@ impl App {
                 hover_space: None,
                 hover_channel: None,
                 hover_member: None,
+                hover_direct: None,
                 pointer: None,
                 tracking: false,
                 sel: None,
@@ -432,6 +441,8 @@ impl App {
                 picker_p,
                 gifs: None,
                 gifs_p,
+                empty_p,
+                empty_drawn: None,
                 reply: None,
                 reply_p,
                 tool_hover: None,
@@ -552,7 +563,7 @@ impl App {
                 live::Update::Loaded(loaded) => {
                     let (c, ids) = *loaded;
                     // Unsent text stays with its channel, as in the egui client.
-                    if let Some(old) = self.ids.channels.get(self.c.channel).cloned() {
+                    if let Some(old) = self.ids.open.clone() {
                         let text = std::mem::take(&mut self.composer.text);
                         if text.is_empty() {
                             self.drafts.remove(&old);
@@ -561,16 +572,16 @@ impl App {
                         }
                     }
                     // A reply belongs to the channel it was started in.
-                    if self.ids.channels.get(self.c.channel) != ids.channels.get(c.channel) {
+                    if self.ids.open != ids.open {
                         self.reply = None;
                     }
                     self.ids = ids;
                     self.status = None;
                     self.close_signin()?;
                     self.set_conversation(c)?;
-                    let new = self.ids.channels.get(self.c.channel);
+                    let new = self.ids.open.clone();
                     self.composer.text = new
-                        .and_then(|id| self.drafts.remove(id))
+                        .and_then(|id| self.drafts.remove(&id))
                         .unwrap_or_default();
                     self.composer.caret = self.composer.text.len();
                     self.composer.anchor = self.composer.caret;
@@ -598,6 +609,7 @@ impl App {
                 live::Update::Focus(id) => self.focus_message(&id)?,
                 // Names for a chip's card arrived; the next frame shows them.
                 live::Update::Reactors => self.need = true,
+                live::Update::DirectHead => self.direct_head_changed(),
                 live::Update::Badges => {
                     self.dirty.rail = true;
                     self.dirty.sidebar = true;
@@ -764,7 +776,7 @@ impl App {
     }
 
     pub fn list_w(&self) -> f32 {
-        (self.w - RAIL_W - SIDEBAR_W - MEMBERS_W - self.thread_w()).max(160.0)
+        (self.w - RAIL_W - SIDEBAR_W - self.members_w() - self.thread_w()).max(160.0)
     }
 
     pub fn box_rect(&self) -> (f32, f32, f32, f32) {
@@ -1202,11 +1214,17 @@ impl App {
         let inside = |(l, t, w, h): (f32, f32, f32, f32), x: f32, y: f32| {
             x >= l && x < l + w && y >= t && y < t + h
         };
-        let (mut space, mut channel, mut member) = (None, None, None);
+        let (mut space, mut channel, mut member, mut direct) = (None, None, None, None);
         if let Some((x, y)) = self.pointer {
             space = (0..self.c.spaces.len()).find(|&i| inside(Self::space_rect(i), x, y));
             channel = (0..self.c.channels.len()).find(|&i| inside(Self::channel_rect(i), x, y));
             member = (0..self.c.listed_members).find(|&i| inside(self.member_rect(i), x, y));
+            direct = self.direct_at(x, y);
+        }
+        if direct != self.hover_direct {
+            self.hover_direct = direct;
+            self.dirty.sidebar = true;
+            self.need = true;
         }
         if space != self.hover_space {
             self.hover_space = space;
@@ -1451,6 +1469,8 @@ impl App {
                         }
                     } else if let Some(i) = self.hover_channel {
                         self.select_channel(i);
+                    } else if let Some(k) = self.hover_direct {
+                        self.open_direct_row(k);
                     } else if let Some(i) = self.hover_space {
                         self.select_space(i);
                     }
@@ -1510,6 +1530,7 @@ impl App {
                         .is_some_and(|(x, y)| self.in_box(x, y) || self.in_history(x, y));
                 let hand = part
                     || self.hover_channel.is_some()
+                    || self.hover_direct.is_some()
                     || self.hover_space.is_some()
                     || self.pointer.is_some_and(|(x, y)| {
                         self.link_at(x, y).is_some()
@@ -2074,7 +2095,12 @@ impl App {
         self.dirty.header |= self.header.ensure(&self.g, px(lw), px(HEADER_H))?;
         self.header.offset((lx * s).round(), 0.0)?;
         self.dirty.members |= self.members.ensure(&self.g, px(MEMBERS_W), px(h))?;
-        self.members.offset(((w - MEMBERS_W) * s).round(), 0.0)?;
+        // A DM has no member list: the column steps aside.
+        if self.members_w() > 0.0 {
+            self.members.offset(((w - MEMBERS_W) * s).round(), 0.0)?;
+        } else {
+            self.members.offset(-10_000.0, 0.0)?;
+        }
         let bw = lw - 36.0;
         self.box_h = self.box_height(bw)?;
         let (bx, by, _, _) = self.box_rect();
@@ -2255,7 +2281,8 @@ impl App {
         self.rows
             .measure_up_to(&self.g, &self.c, self.scroll_top - margin)?;
         let min = if self.rows.lo == 0 {
-            self.rows.top[0] - self.head_h() as f64
+            // An empty conversation has no first row.
+            self.rows.top.first().copied().unwrap_or(0.0) - self.head_h() as f64
         } else {
             f64::NEG_INFINITY
         };
@@ -2500,6 +2527,7 @@ impl App {
         }
         if d.sidebar {
             let (hover, layouts) = (self.hover_channel, &self.channel_layouts);
+            let (drows, dtop, dhover) = (self.direct_rows(), self.directs_top(), self.hover_direct);
             self.sidebar.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
                 let t = g.layout(
@@ -2570,22 +2598,28 @@ impl App {
                         },
                     );
                 }
+                directs::draw(g, dc, &drows, dtop, dhover)?;
                 Ok(())
             })?;
         }
         if d.header {
-            let name = c
-                .channels
-                .get(c.channel)
-                .map_or_else(String::new, |ch| ch.name.clone());
+            let (name, hashed) = (c.title(), c.direct.is_none());
             let lw = self.list_w();
             let status = self.status.as_ref().map(|(s, e)| (s.as_str(), *e));
             self.header.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
-                let hash = g.layout(&gfx::wide("#"), &g.formats.header, 40.0)?;
-                text::draw(dc, &hash, 24.0, 16.0, &g.brushes.muted);
+                if hashed {
+                    let hash = g.layout(&gfx::wide("#"), &g.formats.header, 40.0)?;
+                    text::draw(dc, &hash, 24.0, 16.0, &g.brushes.muted);
+                }
                 let l = g.layout(&gfx::wide(&name), &g.formats.header, 10_000.0)?;
-                text::draw(dc, &l, 40.0, 16.0, &g.brushes.text);
+                text::draw(
+                    dc,
+                    &l,
+                    if hashed { 40.0 } else { 24.0 },
+                    16.0,
+                    &g.brushes.text,
+                );
                 if let Some((status, error)) = status {
                     let l =
                         g.layout(&gfx::wide(status), &g.formats.time, (lw - 200.0).max(40.0))?;
@@ -2673,7 +2707,7 @@ impl App {
         }
         if d.composer {
             let (_, _, bw, bh) = self.box_rect();
-            let placeholder = format!("Message #{}", c.channels[c.channel].name);
+            let placeholder = format!("Message {}", c.place());
             let comp = &self.composer;
             let (drafts, tiles, top, notice) = self.box_files(bw);
             let gif = self.gif_shown().then_some((bw, self.gifs.is_some()));
@@ -2731,6 +2765,7 @@ impl App {
         // Before the panels, which take the rest of the damage flags.
         self.draw_actions()?;
         self.draw_gifs()?;
+        self.draw_empty()?;
         self.draw_overlays()?;
         self.draw_thread()?;
         self.track_card();

@@ -99,6 +99,8 @@ pub enum Update {
     /// The account's unread state changed: the rail's dots and mention
     /// counts and the sidebar's dots.
     Badges,
+    /// The open DM's name or note changed (the DM list arrived).
+    DirectHead,
     /// The open thread's messages or state changed (or it closed): the
     /// pane rebuilds from `Live::thread_view`.
     Thread,
@@ -144,6 +146,8 @@ pub struct Ids {
     /// Id of each `Conversation::spaces` and `Conversation::channels` entry.
     pub spaces: Vec<String>,
     pub channels: Vec<String>,
+    /// The open conversation's id (a channel or a DM), for its draft.
+    pub open: Option<String>,
     /// The newest row, for grouping the next message under it.
     last: Option<grouping::Row>,
     /// Messages shown, so a send's reply and its gateway echo appear once.
@@ -289,6 +293,15 @@ pub struct Live {
     pub klipy: Option<caper_client::klipy::Config>,
     klipy_checked: Option<std::time::Instant>,
     shares: HashMap<String, caper_client::klipy::Share>,
+    /// Your DMs as the server last listed them, your account (for your own
+    /// DM), and the open DM while one is open instead of a channel.
+    pub directs: Vec<core::DirectConversation>,
+    pub account_id: Option<String>,
+    pub account_name: String,
+    username: Option<String>,
+    pub direct: Option<String>,
+    /// The open DM's name as its history named it, until the list knows it.
+    direct_name: String,
 }
 
 /// What a send with composer files did.
@@ -399,6 +412,12 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         klipy: None,
         klipy_checked: None,
         shares: HashMap::new(),
+        directs: Vec::new(),
+        account_id: None,
+        account_name: String::new(),
+        username: None,
+        direct: None,
+        direct_name: String::new(),
     })
 }
 
@@ -453,10 +472,13 @@ impl Live {
         spaces: core::Spaces,
         out: &mut Vec<Update>,
     ) {
+        self.account_id = Some(account.id.clone());
+        self.username.clone_from(&account.username);
         self.name = account
             .display_name
             .or(account.username)
             .unwrap_or_default();
+        self.account_name.clone_from(&self.name);
         let Some(space) = spaces.spaces.first().map(|s| s.id.clone()) else {
             out.push(Update::Failed("This account has no spaces.".into()));
             return;
@@ -467,6 +489,7 @@ impl Live {
         });
         self.token = Some(token);
         self.check_klipy();
+        self.load_directs();
         self.spaces = Some(spaces);
         self.navigate(Some(space), None);
     }
@@ -477,6 +500,61 @@ impl Live {
             && self.uploads.is_some()
             && self.channel.is_some()
             && self.chat_token.is_some()
+    }
+
+    /// Refreshes the DM list (with the unread badges, as egui does).
+    fn load_directs(&self) {
+        if let Some(token) = &self.token {
+            self.worker.send(Command::LoadDirects {
+                generation: self.generation,
+                token: token.clone(),
+            });
+        }
+    }
+
+    /// Opens a DM in place of the channel; the space's channels stay.
+    pub fn open_direct(&mut self, id: String) {
+        if self.direct.as_deref() != Some(id.as_str()) {
+            self.navigate(None, Some(id));
+        }
+    }
+
+    /// Your own DM: opened, or created first (egui's
+    /// `select_or_create_self_direct`).
+    pub fn open_self_direct(&mut self) {
+        let me = self.account_id.clone();
+        if let Some(d) = self
+            .directs
+            .iter()
+            .find(|d| Some(&d.peer.id) == me.as_ref())
+        {
+            let id = d.id.clone();
+            return self.open_direct(id);
+        }
+        let (Some(token), Some(username)) = (self.token.clone(), self.username.clone()) else {
+            return;
+        };
+        self.navigation += 1;
+        self.worker.send(Command::CreateDirect {
+            generation: self.generation,
+            navigation: self.navigation,
+            token,
+            username,
+        });
+    }
+
+    /// The open DM's header and empty note.
+    pub fn direct_head(&self) -> Option<crate::model::Direct> {
+        let id = self.direct.as_ref()?;
+        let d = self.directs.iter().find(|d| &d.id == id);
+        Some(crate::model::Direct {
+            name: d.map_or_else(|| self.direct_name.clone(), |d| d.peer.display_name.clone()),
+            own: d.is_some_and(|d| Some(&d.peer.id) == self.account_id.as_ref()),
+            note: d.map_or_else(
+                || "Only you and this person can read this conversation.".into(),
+                core::DirectConversation::empty_note,
+            ),
+        })
     }
 
     /// Asks for KLIPY's key while GIFs are unavailable, at most once a
@@ -1182,6 +1260,7 @@ impl Live {
             self.me.as_deref(),
             false,
             self.unread_row().as_deref(),
+            self.direct_head(),
         ))
     }
 
@@ -1268,6 +1347,7 @@ impl Live {
             self.me.as_deref(),
             true,
             None,
+            self.direct_head(),
         );
         Some((c, ids, count))
     }
@@ -1275,7 +1355,12 @@ impl Live {
     /// Reloads the open channel from history.
     fn reload(&mut self) {
         if let Some(channel) = self.channel.clone() {
-            self.navigate(self.space.clone(), Some(channel));
+            let space = if self.direct.is_some() {
+                None
+            } else {
+                self.space.clone()
+            };
+            self.navigate(space, Some(channel));
         }
     }
 
@@ -1308,6 +1393,7 @@ impl Live {
     /// waits for its snapshot, this is that snapshot too.
     pub fn refresh_unread(&mut self) {
         self.check_klipy();
+        self.load_directs();
         let Some(token) = self.token.clone() else {
             return;
         };
@@ -1354,6 +1440,26 @@ impl Live {
             return;
         };
         let seq = self.timeline.cursor();
+        if self.direct.as_ref() == Some(&channel) {
+            // A DM's cursor: never backwards, and a request is not read by
+            // looking at it.
+            let Some(d) = self.directs.iter_mut().find(|d| d.id == channel) else {
+                return;
+            };
+            if d.status == core::DirectStatus::Incoming
+                || core::sequence(&d.read_seq).unwrap_or(0) >= core::sequence(&seq).unwrap_or(0)
+            {
+                return;
+            }
+            d.read_seq.clone_from(&seq);
+            self.queued.push(Update::Badges);
+            self.worker.send(Command::ReadDirect {
+                token,
+                id: channel,
+                seq,
+            });
+            return;
+        }
         let read = self
             .reads
             .get(&channel)
@@ -1422,9 +1528,13 @@ impl Live {
                     // (its gateway, sends) carry the old generation and drop.
                     self.generation += 1;
                     let current = self.generation;
-                    let (Some(detail), Some((history, session))) =
-                        (prepared.detail, prepared.conversation)
-                    else {
+                    // A DM has no space of its own: the open space's
+                    // channels stay beside it, as in egui.
+                    let direct = prepared.detail.is_none();
+                    let (Some(detail), Some((history, session))) = (
+                        prepared.detail.or_else(|| self.detail.clone()),
+                        prepared.conversation,
+                    ) else {
                         out.push(Update::Failed("No joined channel in this space.".into()));
                         return;
                     };
@@ -1457,6 +1567,8 @@ impl Live {
                     let channel = history.channel.id.clone();
                     self.channel = Some(channel.clone());
                     self.space = Some(detail.space.id.clone());
+                    self.direct = direct.then(|| channel.clone());
+                    self.direct_name.clone_from(&history.channel.name);
                     let messages: Vec<core::Message> = timeline.messages().cloned().collect();
                     let cursor = timeline.cursor();
                     self.timeline = timeline;
@@ -1480,6 +1592,7 @@ impl Live {
                         self.me.as_deref(),
                         false,
                         unread.as_deref(),
+                        self.direct_head(),
                     );
                     out.push(Update::Loaded(Box::new((conversation, ids))));
                     self.mark_read();
@@ -1488,7 +1601,7 @@ impl Live {
                         token: self.token.clone(),
                         channel,
                         cursor,
-                        presence: Some((detail.space.id.clone(), Vec::new())),
+                        presence: (!direct).then(|| (detail.space.id.clone(), Vec::new())),
                         media: gateway::MediaWatch::default(),
                     });
                 }
@@ -1952,6 +2065,46 @@ impl Live {
             }) if generation == current => out.push(Update::Connection(
                 (!online && !detail.is_empty()).then_some(detail),
             )),
+            Event::DirectsLoaded {
+                result: Ok(directs),
+                ..
+            } if self.token.is_some() => {
+                // A read acknowledged here is never undone by an older list.
+                let reads: HashMap<String, String> = self
+                    .directs
+                    .iter()
+                    .map(|d| (d.id.clone(), d.read_seq.clone()))
+                    .collect();
+                self.directs = directs;
+                for d in &mut self.directs {
+                    if let Some(read) = reads.get(&d.id)
+                        && core::sequence(read).unwrap_or(0)
+                            > core::sequence(&d.read_seq).unwrap_or(0)
+                    {
+                        d.read_seq.clone_from(read);
+                    }
+                }
+                out.push(Update::Badges);
+                if self.direct.is_some() {
+                    // The header and empty note follow the list.
+                    out.push(Update::DirectHead);
+                }
+            }
+            Event::DirectCreated {
+                navigation, result, ..
+            } => match result {
+                Ok(direct) => {
+                    self.directs.retain(|d| d.id != direct.id);
+                    let id = direct.id.clone();
+                    self.directs.push(direct);
+                    out.push(Update::Badges);
+                    if navigation == self.navigation {
+                        self.open_direct(id);
+                    }
+                }
+                Err(e) if navigation == self.navigation => out.push(Update::Failed(e)),
+                Err(_) => {}
+            },
             Event::Klipy { token, config } if self.token.as_ref() == Some(&token) => {
                 self.klipy = config;
                 out.push(Update::Drafts);
@@ -2046,8 +2199,14 @@ pub fn conversation(
     me: Option<&str>,
     thread: bool,
     unread: Option<&str>,
+    direct: Option<model::Direct>,
 ) -> (Conversation, Ids) {
-    let order = detail.member_order(Some(channel));
+    // A DM lists no members: its authors are known from its messages.
+    let order = if direct.is_some() {
+        Vec::new()
+    } else {
+        detail.member_order(Some(channel))
+    };
     let mut ids = Ids {
         members: order.iter().map(|m| m.id.clone()).collect(),
         spaces: spaces.spaces.iter().map(|s| s.id.clone()).collect(),
@@ -2088,7 +2247,12 @@ pub fn conversation(
             private: c.private,
         })
         .collect();
-    let selected = joined.iter().position(|c| c.id == channel).unwrap_or(0);
+    ids.open = Some(channel.to_owned());
+    let selected = if direct.is_some() {
+        joined.len()
+    } else {
+        joined.iter().position(|c| c.id == channel).unwrap_or(0)
+    };
     let space = spaces
         .spaces
         .iter()
@@ -2103,6 +2267,7 @@ pub fn conversation(
         .collect();
     let mut c = Conversation::live(spaces, space, channels, selected, members, out);
     c.listed_members = listed;
+    c.direct = direct;
     (c, ids)
 }
 

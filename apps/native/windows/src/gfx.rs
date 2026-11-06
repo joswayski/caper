@@ -135,6 +135,12 @@ pub struct Formats {
     /// The composer's GIF badge (egui's 8.5) and the GIF picker's tabs (13).
     pub gif_badge: IDWriteTextFormat,
     pub gif_tab: IDWriteTextFormat,
+    /// A DM row's name (egui's 13, bold while unread), its "you" or
+    /// status note (12) and its small avatar's initials.
+    pub direct_name: IDWriteTextFormat,
+    pub direct_unread: IDWriteTextFormat,
+    pub direct_note: IDWriteTextFormat,
+    pub direct_initials: IDWriteTextFormat,
 }
 
 pub struct Gfx {
@@ -310,6 +316,10 @@ impl Gfx {
                 embed_text: fmt(13.6, DWRITE_FONT_WEIGHT_NORMAL)?,
                 gif_badge: fmt(8.5, DWRITE_FONT_WEIGHT_NORMAL)?,
                 gif_tab: fmt(13.0, DWRITE_FONT_WEIGHT_NORMAL)?,
+                direct_name: fmt(13.0, DWRITE_FONT_WEIGHT_MEDIUM)?,
+                direct_unread: fmt(13.0, DWRITE_FONT_WEIGHT_BOLD)?,
+                direct_note: fmt(12.0, DWRITE_FONT_WEIGHT_MEDIUM)?,
+                direct_initials: fmt(8.5, DWRITE_FONT_WEIGHT_BOLD)?,
             };
             let f = &formats;
             for f in [

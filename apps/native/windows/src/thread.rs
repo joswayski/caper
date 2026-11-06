@@ -91,7 +91,7 @@ pub struct Pane {
 
 impl Pane {
     fn new(g: &Gfx, root: String, channel: &str) -> Result<Self> {
-        let destination = format!("#{channel}");
+        let destination = channel.to_owned();
         let title = g.layout(&gfx::wide("Thread"), &g.formats.name, 1e6)?;
         let sub = g.layout(
             &gfx::wide(&format!("in {destination}")),
@@ -442,7 +442,7 @@ impl App {
     }
 
     pub fn thread_x(&self) -> f32 {
-        self.w - MEMBERS_W - THREAD_W
+        self.w - self.members_w() - THREAD_W
     }
 
     /// The history's height in the pane.
@@ -641,12 +641,7 @@ impl App {
         let state = (t.loading, t.has_more, t.error.is_some());
         let opened = self.thread.as_ref().is_none_or(|p| p.root != root);
         if opened {
-            let channel = self
-                .c
-                .channels
-                .get(self.c.channel)
-                .map_or("", |c| c.name.as_str());
-            let mut pane = Pane::new(&self.g, root, channel)?;
+            let mut pane = Pane::new(&self.g, root, &self.c.place())?;
             pane.box_h = pane
                 .composer
                 .relayout(&self.g, box_w() - 2.0 * composer::PAD)?

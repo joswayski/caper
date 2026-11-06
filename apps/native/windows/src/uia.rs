@@ -32,6 +32,9 @@ pub enum Id {
     Space(usize),
     Channels,
     Channel(usize),
+    /// The sidebar's direct messages and their rows.
+    Directs,
+    Direct(usize),
     History,
     Row(usize),
     /// A row's reaction chip or its error's Retry/Dismiss button.
@@ -173,7 +176,11 @@ fn children(a: &App, id: Id) -> Vec<Id> {
     }
     match id {
         Id::Root => {
-            let mut out = vec![Id::Rail, Id::Channels, Id::History];
+            let mut out = vec![Id::Rail, Id::Channels];
+            if !a.direct_rows().is_empty() {
+                out.push(Id::Directs);
+            }
+            out.push(Id::History);
             out.extend(a.thread.as_ref().map(|_| Id::Thread));
             if a.reply.is_some() {
                 out.extend([Id::Reply, Id::ReplyCancel]);
@@ -200,6 +207,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .map_or_else(Vec::new, |p| p.parts().into_iter().map(Id::Pick).collect()),
         Id::Rail => (0..a.c.spaces.len()).map(Id::Space).collect(),
         Id::Channels => (0..a.c.channels.len()).map(Id::Channel).collect(),
+        Id::Directs => (0..a.direct_rows().len()).map(Id::Direct).collect(),
         Id::History => a
             .head_rect()
             .filter(|(_, y, _, h)| *y + *h > crate::theme::HEADER_H)
@@ -240,6 +248,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Root => return None,
         Id::Space(_) => Id::Rail,
         Id::Channel(_) => Id::Channels,
+        Id::Direct(_) => Id::Directs,
         Id::Row(_) => Id::History,
         Id::Control(i, _) | Id::Tool(i, _) => Id::Row(i),
         Id::Older | Id::Newer(_) => Id::History,
@@ -261,6 +270,8 @@ fn exists(a: &App, id: Id) -> bool {
             a.visible_rows().contains(&i) && a.row_controls(i).iter().any(|(c, _)| *c == action)
         }
         Id::Channel(i) => i < a.c.channels.len(),
+        Id::Directs => !a.direct_rows().is_empty(),
+        Id::Direct(k) => k < a.direct_rows().len(),
         Id::Member(i) => i < a.c.members.len(),
         Id::Space(i) => i < a.c.spaces.len(),
         Id::Sign(p) => a.signin.as_ref().is_some_and(|s| s.part_rect(p).is_some()),
@@ -329,7 +340,12 @@ fn name(a: &App, id: Id) -> String {
                 ""
             }
         ),
-        Id::History => format!("Messages in #{}", c.channels[c.channel].name),
+        Id::Directs => "Direct messages".into(),
+        Id::Direct(k) => a
+            .direct_rows()
+            .get(k)
+            .map_or_else(String::new, crate::directs::Row::label),
+        Id::History => format!("Messages in {}", c.place()),
         Id::Row(i) => row_name(c, i, a.rows.row(i).map(|r| r.plain.clone())),
         // Each chip as the egui client labels it.
         Id::Control(i, Action::Chip(k)) => chip_name(c, i, k),
@@ -355,7 +371,7 @@ fn name(a: &App, id: Id) -> String {
                 "offline"
             }
         ),
-        Id::Composer => format!("Message #{}", c.channels[c.channel].name),
+        Id::Composer => format!("Message {}", c.place()),
         Id::Menu => "Message actions".into(),
         Id::MenuClose => "Close message actions".into(),
         Id::Tool(_, t) => t.label(),
@@ -473,8 +489,8 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Root => UIA_PaneControlTypeId,
         Id::Rail => UIA_ListControlTypeId,
         Id::Space(_) => UIA_ListItemControlTypeId,
-        Id::Channels | Id::History | Id::Members => UIA_ListControlTypeId,
-        Id::Channel(_) | Id::Row(_) | Id::Member(_) => UIA_ListItemControlTypeId,
+        Id::Channels | Id::Directs | Id::History | Id::Members => UIA_ListControlTypeId,
+        Id::Channel(_) | Id::Direct(_) | Id::Row(_) | Id::Member(_) => UIA_ListItemControlTypeId,
         Id::Composer | Id::Sign(Part::Field) => UIA_EditControlTypeId,
         Id::Sign(Part::Title | Part::Message) => UIA_TextControlTypeId,
         Id::Menu => UIA_MenuControlTypeId,
@@ -518,6 +534,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Space(i) => (2, i),
         Id::Channels => (3, 0),
         Id::Channel(i) => (4, i),
+        Id::Directs => (34, 0),
+        Id::Direct(k) => (35, k),
         Id::History => (5, 0),
         Id::Row(i) => (6, i),
         Id::Members => (7, 0),
@@ -611,6 +629,8 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Space(i) => App::space_rect(i),
         Id::Channels => (crate::theme::RAIL_W, 0.0, crate::theme::SIDEBAR_W, a.h),
         Id::Channel(i) => App::channel_rect(i),
+        Id::Directs => a.directs_rect(a.direct_rows().len()),
+        Id::Direct(k) => a.direct_rect(k),
         Id::History => (a.list_x(), crate::theme::HEADER_H, a.list_w(), a.vh()),
         Id::Row(i) => a.row_rect(i),
         Id::Control(i, action) => {
@@ -627,12 +647,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
                     )
                 })
         }
-        Id::Members => (
-            a.w - crate::theme::MEMBERS_W,
-            0.0,
-            crate::theme::MEMBERS_W,
-            a.h,
-        ),
+        Id::Members => (a.w - a.members_w(), 0.0, a.members_w(), a.h),
         Id::Member(i) => a.member_rect(i),
         Id::Composer => a.box_rect(),
         Id::Menu => a
@@ -772,7 +787,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
 
     fn GetPatternProvider(&self, pattern: UIA_PATTERN_ID) -> Result<IUnknown> {
         let ok = match self.id {
-            Id::Space(_) | Id::Channel(_) => {
+            Id::Space(_) | Id::Channel(_) | Id::Direct(_) => {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
             Id::Sign(Part::Title | Part::Message) => false,
@@ -882,6 +897,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::ThreadPart(TPart::Field)
                         | Id::Space(_)
                         | Id::Channel(_)
+                        | Id::Direct(_)
                         | Id::MenuItem(_)
                         | Id::Pick(PPart::Search)
                         | Id::Gif(GPart::Search)
@@ -1041,6 +1057,7 @@ impl IInvokeProvider_Impl for Node_Impl {
             match id {
                 Id::Space(i) => a.select_space(i),
                 Id::Channel(i) => a.select_channel(i),
+                Id::Direct(k) => a.open_direct_row(k),
                 Id::Sign(p) => a.signin_activate(Some(p)),
                 Id::MenuItem(k) => a.menu_activate(k),
                 Id::Dialog(p) => a.dialog_activate(p),
@@ -1084,6 +1101,7 @@ impl ISelectionItemProvider_Impl for Node_Impl {
             Ok(match id {
                 Id::Space(i) => i == a.c.space,
                 Id::Channel(i) => i == a.c.channel,
+                Id::Direct(k) => a.direct_rows().get(k).is_some_and(|r| r.active),
                 Id::Pick(PPart::Category(k)) => {
                     a.picker.as_ref().and_then(|p| p.selected_category()) == Some(k)
                 }
