@@ -235,6 +235,11 @@ unread items: a mention from Alex and a 🎉 reaction from Maya in `#general`.
 - typing: `{ "typing": { "channelId": "chan00000001", "active": true } }`;
 - read-only voice rosters: `{ "media": { "channelId": "chan00000002", "participants": [{ "id": "fixture-voice", "name": "TEST FIXTURE Voice", "muted": false, "deafened": false }] } }`;
 - `{ "mediaAccessDenied": { "channelId": "chan00000002" } }` (add `"denied": false` to allow again).
+- uploads: `{ "uploadsEnabled": true }`. Reservations that send `"multipart": true` for files over one part
+  (64 MiB, or `{ "multipartPartBytes": 4 }` for small test files) get a part plan, `POST /api/assets/{id}/parts`
+  and part PUTs like the API, and `complete` answers `upload_incomplete` (409) while parts are missing;
+  `{ "failPart": 2 }` fails part 2's next PUT once with 500. `GET /__fixture/assets/{id}` reports an upload's
+  size, part plan, state and, once assembled, its SHA-256.
 
 Media join and participant-token operations return 503.
 

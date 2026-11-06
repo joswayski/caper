@@ -232,6 +232,10 @@ function initialState() {
     sendKeys: new Map(),
     uploadsEnabled: false,
     assets: new Map(),
+    // Like the API: files over one part go up in parts when the client asks.
+    multipartPartBytes: 64 * 1024 * 1024,
+    // Part numbers whose next PUT fails once (with 500), like a dropped storage request.
+    failParts: [],
     typingRevision: 0,
     media: new Map([
       [
@@ -717,11 +721,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       let bytes = 0;
       const chunks = [];
       const assetPut = /^\/api\/assets\/([^/]+)\/fixture-(upload|preview)$/.exec(path);
+      const partPut = /^\/api\/assets\/([^/]+)\/fixture-part\/([1-9][0-9]*)$/.exec(path);
       // Recordings go up whole, like asset parts; everything else stays small.
-      const audio = assetPut || path === "/api/dictation";
+      const audio = assetPut || partPut || path === "/api/dictation";
+      const limit = partPut ? 1024 ** 3 : audio ? 8 * 1024 * 1024 : 256 * 1024;
       for await (const chunk of request) {
         bytes += chunk.length;
-        if (bytes > (audio ? 8 * 1024 * 1024 : 256 * 1024)) return reject(response, 413, "Fixture request too large.");
+        if (bytes > limit) return reject(response, 413, "Fixture request too large.");
         chunks.push(chunk);
       }
       const method = request.method;
@@ -756,6 +762,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           state.releaseHighlightsDelay = Math.max(0, Math.min(5000, body.releaseHighlightsDelay));
         if (body.noSpaces) state.spaces = [];
         if (typeof body.uploadsEnabled === "boolean") state.uploadsEnabled = body.uploadsEnabled;
+        if (Number.isSafeInteger(body.multipartPartBytes) && body.multipartPartBytes > 0)
+          state.multipartPartBytes = body.multipartPartBytes;
+        if (Number.isSafeInteger(body.failPart) && body.failPart > 0) state.failParts.push(body.failPart);
         if (body.clearFailures) state.failures = [];
         if (body.failure) state.failures.push(body.failure);
         if (body.disconnect) for (const client of sockets) client.socket.destroy();
@@ -968,7 +977,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             body.height <= 0)
         )
           return reject(response, 400, "Invalid profile picture.");
-        const id = randomUUID().replaceAll("-", "").slice(0, 15);
+        // Like the API: pictures have 20-character IDs, attachments 16 (native clients check).
+        const id = randomUUID()
+          .replaceAll("-", "")
+          .slice(0, avatar ? 20 : 16);
         const voice = body.voice === true;
         if (
           voice &&
@@ -1005,6 +1017,25 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const origin = `${first(request.headers["x-forwarded-proto"]) || "http"}://${
           first(request.headers["x-forwarded-host"]) || request.headers.host || `127.0.0.1:${request.socket.localPort}`
         }`;
+        const asset = state.assets.get(id);
+        asset.origin = origin;
+        // The API's rule (assets/multipart.rs): parts of at least one part size, few enough that no
+        // file needs more than 10,000, in whole MiB.
+        const mib = 1024 * 1024;
+        const needed = Math.ceil(body.byteSize / 10_000);
+        const partBytes = needed > state.multipartPartBytes ? Math.ceil(needed / mib) * mib : state.multipartPartBytes;
+        if (body.multipart === true && !avatar && body.byteSize > state.multipartPartBytes) {
+          asset.partBytes = partBytes;
+          asset.partCount = Math.ceil(body.byteSize / partBytes);
+          asset.parts = new Map();
+          return json(response, 200, {
+            id,
+            multipart: { partBytes, partCount: asset.partCount },
+            ...(body.preview
+              ? { previewUpload: { url: `${origin}/api/assets/${id}/fixture-preview`, headers: {} } }
+              : {}),
+          });
+        }
         return json(response, 200, {
           id,
           ...(avatar ? { kind: "image" } : {}),
@@ -1019,6 +1050,40 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             ? { previewUpload: { url: `${origin}/api/assets/${id}/fixture-preview`, headers: {} } }
             : {}),
         });
+      }
+      const assetParts = /^\/api\/assets\/([^/]+)\/parts$/.exec(path);
+      if (assetParts && method === "POST") {
+        const asset = state.assets.get(assetParts[1]);
+        if (!user || !asset || asset.ownerId !== user.id || asset.deleted || asset.attachment || !asset.parts)
+          return reject(response, 404, "resource not found");
+        const numbers = [...new Set(Array.isArray(body.parts) ? body.parts : [])].sort((a, b) => a - b);
+        if (
+          numbers.length === 0 ||
+          numbers.length > 100 ||
+          numbers.some((number) => !Number.isSafeInteger(number) || number < 1 || number > asset.partCount)
+        )
+          return reject(response, 400, "invalid part numbers");
+        return json(response, 200, {
+          parts: numbers.map((number) => ({
+            number,
+            method: "PUT",
+            url: `${asset.origin}/api/assets/${assetParts[1]}/fixture-part/${number}`,
+            headers: {},
+          })),
+        });
+      }
+      if (partPut && method === "PUT") {
+        const asset = state.assets.get(partPut[1]);
+        const number = Number(partPut[2]);
+        if (!asset?.parts || asset.deleted || number > asset.partCount)
+          return reject(response, 404, "Asset not found.");
+        const failing = state.failParts.indexOf(number);
+        if (failing >= 0) {
+          state.failParts.splice(failing, 1);
+          return reject(response, 500, "TEST FIXTURE: part upload failed once.");
+        }
+        asset.parts.set(number, Buffer.concat(chunks));
+        return json(response, 204);
       }
       if (assetPut && method === "PUT") {
         const asset = state.assets.get(assetPut[1]);
@@ -1047,6 +1112,20 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const asset = state.assets.get(assetComplete[1]);
         if (!user || !asset || asset.ownerId !== user.id || asset.deleted)
           return reject(response, 404, "Asset not found.");
+        if (asset.parts && !asset.attachment) {
+          // Like the API: wrong-sized parts reject the file; missing ones are upload_incomplete.
+          const expected = (number) =>
+            number < asset.partCount ? asset.partBytes : asset.size - asset.partBytes * (asset.partCount - 1);
+          if ([...asset.parts].some(([number, part]) => part.length !== expected(number)))
+            return reject(response, 422, "file does not match its declared size or type");
+          if (asset.parts.size !== asset.partCount)
+            return json(response, 409, { error: "upload not finished", code: "upload_incomplete" });
+          const hash = createHash("sha256");
+          for (let number = 1; number <= asset.partCount; number++) hash.update(asset.parts.get(number));
+          asset.sha256 = hash.digest("hex");
+          asset.bytes = asset.size;
+          asset.parts = new Map();
+        }
         if (asset.bytes !== asset.size) return reject(response, 422, "Upload incomplete.");
         if (asset.purpose === "avatar") {
           const first = !asset.completed;
@@ -1082,6 +1161,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               status: "ready",
             };
         return json(response, 200, asset.attachment);
+      }
+      const fixtureAsset = /^\/__fixture\/assets\/([^/]+)$/.exec(path);
+      if (fixtureAsset && method === "GET") {
+        const asset = state.assets.get(fixtureAsset[1]);
+        if (!asset) return reject(response, 404, "Asset not found.");
+        return json(response, 200, {
+          size: asset.size,
+          multipart: asset.partCount ? { partBytes: asset.partBytes, partCount: asset.partCount } : null,
+          completed: Boolean(asset.attachment || asset.completed),
+          deleted: Boolean(asset.deleted),
+          ...(asset.sha256 ? { sha256: asset.sha256 } : {}),
+        });
       }
       const assetCancel = /^\/api\/assets\/([^/]+)\/cancel$/.exec(path);
       if (assetCancel && method === "POST") {
