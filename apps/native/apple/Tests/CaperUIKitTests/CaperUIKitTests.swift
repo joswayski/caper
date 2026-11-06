@@ -315,6 +315,19 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(reply.waitForExistence(timeout: 10))
     }
 
+    /// Someone typing shows above the composer and clears when they stop.
+    func testTypingIndicator() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        control(["typing": ["channelId": "chan00000001"]])
+        let typing = app.otherElements["typing-indicator"]
+        XCTAssertTrue(typing.waitForExistence(timeout: 10))
+        XCTAssertEqual(typing.label, "Maya is typing…")
+        screenshot("uikit-typing")
+        control(["typing": ["channelId": "chan00000001", "active": false]])
+        XCTAssertTrue(typing.waitForNonExistence(timeout: 10), "Stopping clears it")
+    }
+
     /// Browse lists DMs under the channels; New message opens a DM by exact
     /// username, and the conversation sends like a channel.
     func testNewDirectMessageOpensAndSends() {

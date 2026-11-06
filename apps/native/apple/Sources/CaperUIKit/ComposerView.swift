@@ -267,3 +267,85 @@ final class HostedView: UIView {
         content?.invalidateIntrinsicContentSize()
     }
 }
+
+/// "Maya is typing…" above the composer, after three bouncing dots like web's
+/// keyframes: up and back over the first 60% of a 1.2 s cycle, each dot 0.15 s
+/// behind the last. Core Animation runs it off the main thread; Reduce Motion
+/// keeps the dots still. Collapses to nothing when nobody is typing.
+final class TypingIndicatorView: UIView {
+    private let label = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
+    private let dots = (0..<3).map { _ in UIView() }
+    private var visible: NSLayoutConstraint!
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        clipsToBounds = true
+        let dotRow = UIStackView(arrangedSubviews: dots)
+        dotRow.spacing = 3
+        dotRow.alignment = .center
+        for dot in dots {
+            dot.backgroundColor = UIKitStyle.muted
+            dot.layer.cornerRadius = 2
+            dot.alpha = 0.45
+            NSLayoutConstraint.activate([dot.widthAnchor.constraint(equalToConstant: 4), dot.heightAnchor.constraint(equalToConstant: 4)])
+        }
+        dotRow.isAccessibilityElement = false
+        label.lineBreakMode = .byTruncatingTail
+        let row = UIStackView(arrangedSubviews: [dotRow, label])
+        row.spacing = 7
+        row.alignment = .center
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        visible = heightAnchor.constraint(equalToConstant: 20)
+        let hidden = heightAnchor.constraint(equalToConstant: 0)
+        hidden.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            hidden,
+            row.leadingAnchor.constraint(equalTo: leadingAnchor),
+            row.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            row.centerYAnchor.constraint(equalTo: topAnchor, constant: 10),
+        ])
+        accessibilityIdentifier = "typing-indicator"
+        isHidden = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    var text: String { label.text ?? "" }
+
+    func show(_ text: String) {
+        guard text != label.text || isHidden != text.isEmpty else { return }
+        label.text = text
+        isHidden = text.isEmpty
+        visible.isActive = !text.isEmpty
+        isAccessibilityElement = !text.isEmpty
+        accessibilityLabel = text
+        text.isEmpty ? stop() : animate()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil, !isHidden { animate() }
+    }
+
+    private func animate() {
+        guard !UIKitStyle.reduceMotion, dots.first?.layer.animation(forKey: "bounce") == nil else { return }
+        let now = CACurrentMediaTime()
+        for (index, dot) in dots.enumerated() {
+            let lift = CAKeyframeAnimation(keyPath: "transform.translation.y")
+            lift.values = [0, -3, 0, 0]
+            let fade = CAKeyframeAnimation(keyPath: "opacity")
+            fade.values = [0.45, 1, 0.45, 0.45]
+            let group = CAAnimationGroup()
+            for animation in [lift, fade] { animation.keyTimes = [0, 0.25, 0.5, 1] }
+            group.animations = [lift, fade]
+            group.duration = 1.2
+            group.repeatCount = .infinity
+            group.beginTime = now + Double(index) * 0.15
+            group.fillMode = .backwards
+            dot.layer.add(group, forKey: "bounce")
+        }
+    }
+
+    private func stop() { dots.forEach { $0.layer.removeAnimation(forKey: "bounce") } }
+}

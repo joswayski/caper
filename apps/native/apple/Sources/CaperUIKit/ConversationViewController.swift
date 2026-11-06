@@ -27,7 +27,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private let subtitle = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
     private lazy var back = IconButton(icon: "arrow-left", label: "Back to Browse", size: 20) { [weak self] in self?.browse?() }
     private let status = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
-    private let typing = UIKitStyle.label(size: 11, weight: .medium, color: UIKitStyle.muted)
+    private let typing = TypingIndicatorView()
     private let composer = ComposerView()
     private lazy var members = MembersPanel(model: model)
     private var lastFocusRevision = 0
@@ -276,7 +276,6 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         status.textAlignment = .center
         status.numberOfLines = 0
         view.addSubview(status)
-        typing.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(typing)
         NSLayoutConstraint.activate([
             collection.topAnchor.constraint(equalTo: header.bottomAnchor),
@@ -403,10 +402,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         }
         let viewer = model.account?.id ?? cached?.accountID
         let typingText = live && !chat.typingNames.isEmpty ? Self.typingLabel(chat.typingNames) : ""
-        if typing.text != typingText {
-            typing.text = typingText
-            typing.accessibilityLabel = typingText
-        }
+        typing.show(typingText)
         if live, let error = chat.error, messages.isEmpty { status.text = error }
         else if live, chat.loading && messages.isEmpty { status.text = "Loading messages…" }
         else { status.text = nil }
@@ -660,11 +656,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     }
 
     static func typingLabel(_ names: [String]) -> String {
-        switch names.count {
-        case 1: return "\(names[0]) is typing…"
-        case 2: return "\(names[0]) and \(names[1]) are typing…"
-        default: return "Several people are typing…"
-        }
+        if names.count > 2 { return "Several people are typing…" }
+        return "\(names.joined(separator: " and ")) \(names.count == 1 ? "is" : "are") typing…"
     }
 }
 
