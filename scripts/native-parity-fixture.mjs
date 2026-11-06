@@ -1061,7 +1061,11 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           : reject(response, 503, "TEST FIXTURE: uploads disabled.");
       if (path === "/api/assets" && method === "POST") {
         if (!user || !state.uploadsEnabled) return reject(response, 503, "Uploads unavailable.");
-        const avatar = body.purpose === "avatar";
+        // Pictures: a profile picture, or an icon for a space you own.
+        const icon = body.purpose === "spaceIcon";
+        const avatar = body.purpose === "avatar" || icon;
+        if (icon && !state.spaces.some((entry) => entry.space.id === body.spaceId && entry.space.ownerId === user.id))
+          return reject(response, 404, "resource not found");
         const channel = channelFor(body.channelId);
         if (!avatar && (!channel || !canParticipate(channel, user))) return reject(response, 404, "resource not found");
         if (
@@ -1117,7 +1121,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         }
         state.assets.set(id, {
           ownerId: user.id,
-          purpose: avatar ? "avatar" : "attachment",
+          purpose: icon ? "spaceIcon" : avatar ? "avatar" : "attachment",
+          ...(icon ? { spaceId: body.spaceId } : {}),
           channelId: body.channelId,
           name: body.filename,
           contentType: body.contentType,
@@ -1223,7 +1228,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           return reject(response, 404, "Asset not found.");
         if (asset.image && assetPut[2] === "upload" && asset.parts) return reject(response, 404, "Asset not found.");
         if (assetPut[2] === "upload") asset.bytes = bytes;
-        if (assetPut[2] === "upload" && (asset.image || asset.voice || asset.purpose === "avatar"))
+        if (
+          assetPut[2] === "upload" &&
+          (asset.image || asset.voice || asset.purpose === "avatar" || asset.purpose === "spaceIcon")
+        )
           asset.data = Buffer.concat(chunks);
         if (assetPut[2] === "preview" && asset.image && asset.preview) asset.previewData = Buffer.concat(chunks);
         return json(response, 204);
@@ -1236,7 +1244,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (
           !data ||
           asset.deleted ||
-          (asset.purpose === "avatar" && !asset.completed) ||
+          ((asset.purpose === "avatar" || asset.purpose === "spaceIcon") && !asset.completed) ||
           (asset.image && !asset.attachment)
         )
           return reject(response, 404, "Asset not found.");
@@ -1279,6 +1287,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           asset.partSize = 0;
         }
         if (asset.bytes !== asset.size) return reject(response, 422, "Upload incomplete.");
+        if (asset.purpose === "spaceIcon") {
+          const space = spaceFor(asset.spaceId);
+          if (!space || space.ownerId !== user.id) return reject(response, 404, "Asset not found.");
+          if (!asset.completed) Object.assign(space, { iconAsset: assetComplete[1], iconUrl: asset.url });
+          asset.completed = true;
+          return json(response, 200, { id: assetComplete[1], kind: "image", status: "ready", space });
+        }
         if (asset.purpose === "avatar") {
           const first = !asset.completed;
           asset.completed = true;
@@ -2264,6 +2279,16 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           return json(response, 200, { space: detail.space, channelId: link.channel?.id ?? null, joined: !member });
         }
         return reject(response, 405, "method not allowed");
+      }
+      const spaceIcon = /^\/api\/spaces\/([^/]+)\/icon$/.exec(path);
+      if (spaceIcon && method === "DELETE") {
+        const detail = state.spaces.find(
+          (entry) => entry.space.id === spaceIcon[1] && entry.space.ownerId === user?.id,
+        );
+        if (!detail) return reject(response, user ? 404 : 401, "resource not found");
+        delete detail.space.iconAsset;
+        delete detail.space.iconUrl;
+        return json(response, 200, detail.space);
       }
       const inviteLinksPath = /^\/api\/spaces\/([^/]+)\/invite-links(?:\/([^/]+))?(\/regenerate)?$/.exec(path);
       if (inviteLinksPath) {
