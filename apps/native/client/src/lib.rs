@@ -17,6 +17,7 @@ pub mod daily_icon;
 pub mod edits;
 pub mod effects;
 pub mod embeds;
+pub mod emoji;
 pub mod feedback;
 pub mod ffmpeg;
 pub mod forwarding;

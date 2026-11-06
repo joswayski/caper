@@ -893,6 +893,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tungstenite",
+ "unicode-segmentation",
  "url",
  "uuid",
  "webpx",
