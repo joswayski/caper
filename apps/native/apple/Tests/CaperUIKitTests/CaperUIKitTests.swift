@@ -121,7 +121,9 @@ final class CaperUIKitTests: XCTestCase {
 
         // The first page holds 2951–3000; scrolling up fetches 2901–2950.
         let timeline = app.collectionViews["message-timeline"]
-        let older = row("00000000-0000-4000-9000-000000002920")
+        // Any row before the first page proves a fetch; fast swipes can fly past a specific one.
+        let older = app.cells.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND identifier < %@",
+                                                   "message-row-", "message-row-00000000-0000-4000-9000-000000002951")).firstMatch
         for _ in 0..<40 where !older.exists {
             timeline.swipeDown(velocity: .fast)
         }
@@ -279,6 +281,38 @@ final class CaperUIKitTests: XCTestCase {
         app.buttons["go-to-message-b00000000003000"].tap()
         XCTAssertTrue(card.waitForNonExistence(timeout: 10), "Go to message closes Pins")
         XCTAssertTrue(latest.waitForExistence(timeout: 10))
+    }
+
+    /// Reply in thread opens the thread; a reply there shows under the root
+    /// as "1 reply · View thread", which reopens it.
+    func testReplyInThreadAndViewThread() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        app.textViews["message-text-\(Self.latest)"].press(forDuration: 0.8)
+        let sheet = app.descendants(matching: .any)["message-actions-sheet"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 10))
+        app.buttons["Reply in thread"].tap()
+        let thread = app.descendants(matching: .any)["thread-view"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 10), "Reply in thread opens the thread")
+        XCTAssertTrue(app.staticTexts["in #general"].exists)
+        let composer = app.textViews["thread-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.label, "Reply to thread…")
+        composer.tap()
+        composer.typeText("TEST FIXTURE — a thread reply")
+        app.buttons["send-message"].tap()
+        let reply = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "a thread reply")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
+        screenshot("uikit-thread")
+        app.buttons["thread-back"].tap()
+        XCTAssertTrue(thread.waitForNonExistence(timeout: 10))
+        let link = app.buttons["view-thread-b00000000003000"]
+        XCTAssertTrue(link.waitForExistence(timeout: 10), "The root shows its thread link")
+        XCTAssertEqual(link.value as? String, "1 reply")
+        screenshot("uikit-thread-link")
+        link.tap()
+        XCTAssertTrue(thread.waitForExistence(timeout: 10))
+        XCTAssertTrue(reply.waitForExistence(timeout: 10))
     }
 
     /// VoiceOver reads who and when from each row's header and can move into

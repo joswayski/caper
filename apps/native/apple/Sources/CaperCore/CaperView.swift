@@ -7924,7 +7924,7 @@ struct ReactionPicker: View {
     }
 }
 
-private struct NativeReplyContext: View {
+struct NativeReplyContext: View {
     let reference: MessageReply
     let motionKey: String
     @Bindable var chat: ChatModel
@@ -8111,7 +8111,7 @@ private struct ReplyExpandButton: ButtonStyle {
     }
 }
 
-private struct NativeReplyDraft: View {
+struct NativeReplyDraft: View {
     let reference: MessageReply
     @Bindable var chat: ChatModel
     let root: String

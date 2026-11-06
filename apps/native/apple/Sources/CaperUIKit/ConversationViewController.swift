@@ -290,8 +290,26 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             && !(model.chat.loading && model.chat.messages.isEmpty && cached?.messages.isEmpty == false)
     }
 
+    private weak var thread: ThreadViewController?
+
+    /// Opening a thread (View thread, Reply in thread, a jump) covers the conversation.
+    private func presentThreadIfNeeded() {
+        guard model.chat.threadRootID != nil, thread?.presentingViewController == nil, view.window != nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.thread?.presentingViewController == nil, self.model.chat.threadRootID != nil else { return }
+            let controller = ThreadViewController(model: self.model)
+            self.thread = controller
+            controller.closed = { [weak self] in self?.thread = nil }
+            self.view.endEditing(true)
+            let top = self.presentedViewController ?? self
+            if top !== self { self.dismiss(animated: false) { self.present(controller, animated: !UIKitStyle.reduceMotion) } }
+            else { self.present(controller, animated: !UIKitStyle.reduceMotion) }
+        }
+    }
+
     private func render() {
         let chat = model.chat
+        presentThreadIfNeeded()
         let live = isLive
         let channelID = live ? model.selectedChannelID : cached?.channelID
         let channelName = live ? (model.selectedChannel?.name ?? chat.channelName) : (cached?.channelName ?? "")
@@ -344,35 +362,11 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     private func apply(messages: [ChatMessage], pending: PendingMessage?, author: ChatAuthor?, viewerID: String?,
                        key: String?, live: Bool, error: String?, rejected: Bool) {
-        var items: [Item] = []
-        var nextRows: [String: MessageRowState] = [:]
-        var nextDays: [String: String] = [:]
-        if edge != nil { items.append(.edge) }
-        var previous: ChatMessage?
-        for (index, message) in messages.enumerated() {
-            if previous.map({ !NativePresentation.sameDay($0.createdAt, message.createdAt) }) ?? true,
-               let label = NativePresentation.dayLabel(message.createdAt) {
-                let key = "day-\(message.clientMessageId)"
-                nextDays[key] = label
-                items.append(.day(key))
-                previous = nil
-            }
-            let next = index + 1 < messages.count ? messages[index + 1] : nil
-            let grouped = NativePresentation.grouped(message, after: previous)
-            let continued = next.map { NativePresentation.sameDay(message.createdAt, $0.createdAt) && NativePresentation.grouped($0, after: message) } ?? false
-            nextRows[message.clientMessageId] = MessageRowState(message: message, grouped: grouped, continued: continued, viewerID: viewerID,
-                                                                focused: live && model.chat.focusedMessageID == message.id,
-                                                                chat: live ? model.chat : nil)
-            items.append(.row(message.clientMessageId))
-            previous = message
-        }
-        if let pending, nextRows[pending.id] == nil {
-            let groupedPending = previous.map { $0.author.id == author?.id && NativePresentation.sameDay($0.createdAt, pending.createdAt) } ?? false
-            if let last = previous, groupedPending { nextRows[last.clientMessageId]?.continued = true }
-            nextRows[pending.id] = MessageRowState(pending: pending, author: author, grouped: groupedPending,
-                                                   error: error, rejected: rejected)
-            items.append(.row(pending.id))
-        }
+        var built = TimelineRows.build(messages, pending: pending, author: author, viewerID: viewerID,
+                                       focusedID: live ? model.chat.focusedMessageID : nil, chat: live ? model.chat : nil,
+                                       error: error, rejected: rejected)
+        if edge != nil { built.items.insert(.edge, at: 0) }
+        let items = built.items, nextRows = built.rows, nextDays = built.days
 
         let switched = key != shownKey
         // Uploads and GIFs are optional server configuration; recheck per conversation.
@@ -509,6 +503,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         }
         host.actions = { [weak self] id, picker in self?.openActions(id, picker: picker) }
         host.reactors = { [weak self] id, emoji in self?.presentations.reactors = .init(messageID: id, emoji: emoji) }
+        host.openThread = { [weak self] root in
+            guard let chat = self?.model.chat else { return }
+            Task { await chat.openThread(root) }
+        }
         return host
     }()
 
@@ -593,5 +591,44 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         case 2: return "\(names[0]) and \(names[1]) are typing…"
         default: return "Several people are typing…"
         }
+    }
+}
+
+/// Timeline items from messages: day dividers, grouping (the same person
+/// within minutes reads as one block), and the optimistic pending row.
+enum TimelineRows {
+    struct Built {
+        var items: [ConversationViewController.Item] = []
+        var rows: [String: MessageRowState] = [:]
+        var days: [String: String] = [:]
+    }
+
+    @MainActor static func build(_ messages: [ChatMessage], pending: PendingMessage?, author: ChatAuthor?, viewerID: String?,
+                                 focusedID: String?, chat: ChatModel?, error: String?, rejected: Bool, inThread: Bool = false) -> Built {
+        var built = Built()
+        var previous: ChatMessage?
+        for (index, message) in messages.enumerated() {
+            if previous.map({ !NativePresentation.sameDay($0.createdAt, message.createdAt) }) ?? true,
+               let label = NativePresentation.dayLabel(message.createdAt) {
+                let key = "day-\(message.clientMessageId)"
+                built.days[key] = label
+                built.items.append(.day(key))
+                previous = nil
+            }
+            let next = index + 1 < messages.count ? messages[index + 1] : nil
+            let grouped = NativePresentation.grouped(message, after: previous)
+            let continued = next.map { NativePresentation.sameDay(message.createdAt, $0.createdAt) && NativePresentation.grouped($0, after: message) } ?? false
+            built.rows[message.clientMessageId] = MessageRowState(message: message, grouped: grouped, continued: continued, viewerID: viewerID,
+                                                                  focused: focusedID == message.id, chat: chat, inThread: inThread)
+            built.items.append(.row(message.clientMessageId))
+            previous = message
+        }
+        if let pending, built.rows[pending.id] == nil {
+            let groupedPending = previous.map { $0.author.id == author?.id && NativePresentation.sameDay($0.createdAt, pending.createdAt) } ?? false
+            if let last = previous, groupedPending { built.rows[last.clientMessageId]?.continued = true }
+            built.rows[pending.id] = MessageRowState(pending: pending, author: author, grouped: groupedPending, error: error, rejected: rejected)
+            built.items.append(.row(pending.id))
+        }
+        return built
     }
 }

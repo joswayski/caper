@@ -1,0 +1,353 @@
+import CaperCore
+import SwiftUI
+import UIKit
+
+/// A thread on iPhone (SwiftUI's NativeThreadView in its full-screen cover):
+/// back, "Thread in #channel", the root message, its replies and a reply
+/// composer with "Also send to #channel". Closing ends the thread in the model.
+final class ThreadViewController: UIViewController, UICollectionViewDelegate {
+    typealias Item = ConversationViewController.Item
+
+    private let model: AppModel
+    private var chat: ChatModel { model.chat }
+    private let subtitle = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
+    private let status = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
+    private let composer = ComposerView()
+    private let broadcast = UIButton(type: .custom)
+    private var collection: UICollectionView!
+    private var dataSource: UICollectionViewDiffableDataSource<Int, Item>!
+    private var rows: [String: MessageRowState] = [:]
+    private var days: [String: String] = [:]
+    private var shownRoot: String?
+    private var followingTail = true
+    private let observer = ModelObserver()
+    private let composerObserver = ModelObserver()
+    private let presentations = UIKitPresentations()
+    private var closing = false
+    private var lastVisible: String?
+    var closed: (() -> Void)?
+
+    init(model: AppModel) {
+        self.model = model
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .fullScreen
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private lazy var rowHost: RowHost = {
+        var host = RowHost(chat: model.chat, present: { [weak self] in
+            if self?.presentedViewController == nil { self?.present($0, animated: false) }
+        }) { [weak self] message in
+            guard let chat = self?.model.chat else { return }
+            Task { _ = await chat.onOpenForward?(message) }
+        }
+        host.actions = { [weak self] id, picker in self?.openActions(id, picker: picker) }
+        host.reactors = { [weak self] id, emoji in self?.presentations.reactors = .init(messageID: id, emoji: emoji) }
+        return host
+    }()
+
+    private lazy var voice = UIKitVoiceComposer(chat: model.chat, inThread: true) { [weak self] words in
+        self?.composer.insert(words, spaced: true) ?? false
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIKitStyle.conversation
+        view.accessibilityIdentifier = "thread-view"
+
+        let header = UIView()
+        header.translatesAutoresizingMaskIntoConstraints = false
+        let back = IconButton(icon: "arrow-left", label: "Back to channel", size: 20) { [weak self] in self?.close() }
+        back.tintColor = UIKitStyle.muted
+        back.accessibilityIdentifier = "thread-back"
+        let title = UIKitStyle.label("Thread", size: 15, weight: .bold)
+        title.accessibilityTraits = .header
+        subtitle.lineBreakMode = .byTruncatingTail
+        let titles = UIStackView(arrangedSubviews: [title, subtitle])
+        titles.axis = .vertical
+        titles.spacing = 3
+        titles.translatesAutoresizingMaskIntoConstraints = false
+        let rule = UIView()
+        rule.backgroundColor = UIKitStyle.border
+        rule.translatesAutoresizingMaskIntoConstraints = false
+        [back, titles, rule].forEach(header.addSubview)
+        view.addSubview(header)
+
+        let size = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .estimated(64))
+        let section = NSCollectionLayoutSection(group: .vertical(layoutSize: size, subitems: [NSCollectionLayoutItem(layoutSize: size)]))
+        section.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 8, trailing: 0)
+        collection = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewCompositionalLayout(section: section))
+        collection.translatesAutoresizingMaskIntoConstraints = false
+        collection.backgroundColor = .clear
+        collection.alwaysBounceVertical = true
+        collection.showsVerticalScrollIndicator = false
+        collection.keyboardDismissMode = .interactive
+        collection.delegate = self
+        collection.accessibilityIdentifier = "thread-timeline"
+        collection.register(MessageCell.self, forCellWithReuseIdentifier: MessageCell.reuse)
+        collection.register(DayDividerCell.self, forCellWithReuseIdentifier: DayDividerCell.reuse)
+        collection.register(TimelineEdgeCell.self, forCellWithReuseIdentifier: TimelineEdgeCell.reuse)
+        dataSource = UICollectionViewDiffableDataSource(collectionView: collection) { [weak self] collection, path, item in
+            guard let self else { return nil }
+            switch item {
+            case .edge:
+                let cell = collection.dequeueReusableCell(withReuseIdentifier: TimelineEdgeCell.reuse, for: path) as! TimelineEdgeCell
+                cell.retry = { [weak self] in Task { await self?.chat.loadThread() } }
+                cell.configure(self.chat.threadError != nil ? .failed : .loading)
+                return cell
+            case let .day(key):
+                let cell = collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: path) as! DayDividerCell
+                cell.configure(self.days[key] ?? "")
+                return cell
+            case let .row(id):
+                let cell = collection.dequeueReusableCell(withReuseIdentifier: MessageCell.reuse, for: path) as! MessageCell
+                cell.row.host = self.rowHost
+                if let row = self.rows[id] {
+                    cell.retry = row.pending ? { [weak self] in Task { await self?.chat.send(inThread: true, retryPending: true) } } : nil
+                    cell.configure(row)
+                }
+                return cell
+            }
+        }
+        view.addSubview(collection)
+        status.numberOfLines = 0
+        status.textAlignment = .center
+        view.addSubview(status)
+
+        // "Also send to #channel": a checkbox that reads as a switch to VoiceOver.
+        var configuration = UIButton.Configuration.plain()
+        configuration.imagePadding = 8
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
+        broadcast.configuration = configuration
+        broadcast.contentHorizontalAlignment = .leading
+        broadcast.translatesAutoresizingMaskIntoConstraints = false
+        broadcast.accessibilityIdentifier = "thread-broadcast"
+        broadcast.addAction(UIAction { [weak self] _ in
+            guard let chat = self?.chat else { return }
+            chat.threadBroadcast.toggle()
+        }, for: .primaryActionTriggered)
+        view.addSubview(broadcast)
+
+        view.addSubview(composer)
+        composer.textView.accessibilityIdentifier = "thread-composer"
+        composer.changed = { [weak self] text in self?.chat.threadDraft = text }
+        composer.submitted = { [weak self] in self?.send() }
+        composer.attachTapped = { [weak self] in
+            guard let self, let drawer = UIKitHosting.attachDrawer(chat: self.chat, inThread: true) else { return }
+            self.present(drawer, animated: false)
+        }
+        composer.emojiTapped = { [weak self] in
+            guard let self else { return }
+            let composer = self.composer
+            self.present(UIKitHosting.expressionPicker(chat: self.chat, inThread: true) { composer.insert($0) }, animated: true)
+        }
+
+        let host = UIHostingController(rootView: UIKitPresentationHost(state: presentations, model: model, inThread: true))
+        host.view.backgroundColor = .clear
+        host.view.isUserInteractionEnabled = false
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        addChild(host)
+        view.insertSubview(host.view, at: 0)
+        host.didMove(toParent: self)
+
+        NSLayoutConstraint.activate([
+            host.view.widthAnchor.constraint(equalToConstant: 1), host.view.heightAnchor.constraint(equalToConstant: 1),
+            host.view.topAnchor.constraint(equalTo: view.topAnchor), host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            header.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            header.heightAnchor.constraint(equalToConstant: 50),
+            back.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 13),
+            back.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            titles.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 5),
+            titles.trailingAnchor.constraint(lessThanOrEqualTo: header.trailingAnchor, constant: -18),
+            titles.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            rule.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            rule.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+            rule.bottomAnchor.constraint(equalTo: header.bottomAnchor),
+            rule.heightAnchor.constraint(equalToConstant: 1),
+            collection.topAnchor.constraint(equalTo: header.bottomAnchor),
+            collection.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            collection.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            status.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            status.centerYAnchor.constraint(equalTo: collection.centerYAnchor),
+            status.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -48),
+            broadcast.topAnchor.constraint(equalTo: collection.bottomAnchor, constant: 4),
+            broadcast.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
+            broadcast.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -18),
+            broadcast.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            composer.topAnchor.constraint(equalTo: broadcast.bottomAnchor, constant: -8),
+            composer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            composer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
+        ])
+        // An edge swipe goes back, as the conversation's does to Browse.
+        let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(edgeSwiped(_:)))
+        edge.edges = .left
+        view.addGestureRecognizer(edge)
+
+        observer.start { [weak self] in self?.render() }
+        composerObserver.start { [weak self] in self?.renderComposer() }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // Reply in thread focuses the reply composer.
+        if let request = chat.composerFocusRequest(inThread: true) {
+            chat.consumeComposerFocus(request)
+            composer.textView.becomeFirstResponder()
+        }
+    }
+
+    override func accessibilityPerformEscape() -> Bool { close(); return true }
+
+    @objc private func edgeSwiped(_ gesture: UIScreenEdgePanGestureRecognizer) {
+        if gesture.state == .ended, gesture.translation(in: view).x > 80 { close() }
+    }
+
+    private func close() {
+        guard !closing else { return }
+        closing = true
+        model.threadVisibilityChanged(rootID: nil, seq: nil)
+        chat.closeThread()
+        dismiss(animated: !UIKitStyle.reduceMotion) { [weak self] in self?.closed?() }
+    }
+
+    // MARK: Rendering
+
+    private var direct: Bool { model.selectedDirectMessageID != nil }
+
+    private func render() {
+        guard let rootID = chat.threadRootID else {
+            // The model closed it (another conversation, a denied thread).
+            if !closing { closing = true; dismiss(animated: false) { [weak self] in self?.closed?() } }
+            return
+        }
+        subtitle.text = direct ? "with \(chat.channelName)" : "in #\(chat.channelName)"
+        let viewer = chat.currentAuthor?.id ?? model.account?.id
+        let root = chat.displayedMessages.first { $0.id == rootID }
+        let replies = chat.displayedThreadMessages.filter { $0.id != rootID }
+        let pending = chat.pendingMessage.flatMap { $0.threadRootId == rootID ? $0 : nil }
+
+        var items: [Item] = []
+        var nextRows: [String: MessageRowState] = [:]
+        var nextDays: [String: String] = [:]
+        if let root, !root.isDeleted {
+            nextRows[root.clientMessageId] = MessageRowState(message: root, grouped: false, continued: false, viewerID: viewer,
+                                                             focused: chat.focusedMessageID == root.id, chat: chat, inThread: true)
+            items.append(.row(root.clientMessageId))
+            if let count = root.thread?.replyCount, count > 0 {
+                nextDays["replies"] = "\(count) \(count == 1 ? "reply" : "replies")"
+                items.append(.day("replies"))
+            }
+        }
+        if (chat.threadLoading && replies.isEmpty) || chat.threadError != nil || chat.threadHasMore { items.append(.edge) }
+        let built = TimelineRows.build(replies, pending: pending, author: chat.currentAuthor, viewerID: viewer,
+                                       focusedID: chat.focusedMessageID, chat: chat, error: chat.error,
+                                       rejected: chat.sendRejected, inThread: true)
+        items += built.items.filter { if case .day = $0 { false } else { true } }
+        nextRows.merge(built.rows) { _, new in new }
+        nextDays.merge(built.days) { _, new in new }
+
+        if replies.isEmpty && !chat.threadLoading && chat.threadError == nil {
+            status.text = chat.isPreview ? "No replies yet." : "No replies yet. Start the thread."
+        } else { status.text = nil }
+        status.isHidden = status.text == nil
+
+        let switched = rootID != shownRoot
+        let survivors = Set(dataSource.snapshot().itemIdentifiers)
+        var snapshot = NSDiffableDataSourceSnapshot<Int, Item>()
+        snapshot.appendSections([0])
+        snapshot.appendItems(items)
+        snapshot.reconfigureItems(items.filter { item in
+            guard survivors.contains(item) else { return false }
+            switch item {
+            case let .row(id): return rows[id] != nextRows[id]
+            case let .day(key): return days[key] != nextDays[key]
+            case .edge: return true
+            }
+        })
+        rows = nextRows
+        days = nextDays
+        shownRoot = rootID
+        if switched { followingTail = true }
+        let follow = followingTail
+        dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
+            guard let self, follow else { return }
+            self.collection.layoutIfNeeded()
+            let bottom = max(-self.collection.adjustedContentInset.top,
+                             self.collection.contentSize.height + self.collection.adjustedContentInset.bottom - self.collection.bounds.height)
+            self.collection.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+        }
+        // Marks the thread read; only when what's visible changes, never per render.
+        let visible = "\(rootID):\(replies.last?.seq ?? "")"
+        if visible != lastVisible {
+            lastVisible = visible
+            let model = model, seq = replies.last?.seq
+            DispatchQueue.main.async { model.threadVisibilityChanged(rootID: rootID, seq: seq) }
+        }
+    }
+
+    private func renderComposer() {
+        let ready = chat.threadRootID != nil && chat.canInteract && !chat.isPreview
+        composer.configure(prompt: "Reply to thread…", enabled: ready, canSend: chat.canPressSend(inThread: true),
+                           canAttach: chat.canAttach, attachReason: chat.canAttach ? nil : chat.attachUnavailableReason,
+                           canPickExpressions: ready)
+        composer.show(draft: chat.threadDraft)
+        composer.showAccessories(ready && UIKitComposerAccessories.shows(chat: chat, inThread: true)
+                                 ? UIKitComposerAccessories(chat: chat, inThread: true, present: { [weak self] in
+                                     if self?.presentedViewController == nil { self?.present($0, animated: false) }
+                                 }) : nil)
+        composer.showVoice(button: ready ? voice.button : nil, bar: voice.bar, recording: ready && voice.isRecording)
+
+        let on = chat.threadBroadcast
+        let target = direct ? chat.channelName : "#\(chat.channelName)"
+        let text = NSMutableAttributedString(string: "Also send to ", attributes: [.font: UIKitStyle.font(11), .foregroundColor: UIKitStyle.muted])
+        text.append(NSAttributedString(string: target, attributes: [.font: UIKitStyle.font(11, .bold), .foregroundColor: UIKitStyle.muted]))
+        broadcast.configuration?.attributedTitle = AttributedString(text)
+        broadcast.configuration?.image = UIImage(systemName: on ? "checkmark.square.fill" : "square",
+                                                withConfiguration: UIImage.SymbolConfiguration(pointSize: 18))
+        broadcast.configuration?.baseForegroundColor = on ? UIKitStyle.terracottaBright : UIKitStyle.muted
+        broadcast.isHidden = !ready
+        broadcast.isEnabled = chat.pendingMessage == nil
+        broadcast.accessibilityLabel = "Also send to \(target)"
+        broadcast.accessibilityValue = on ? "1" : "0"
+        broadcast.accessibilityTraits = .button
+    }
+
+    private func send() {
+        guard chat.canPressSend(inThread: true) else { return }
+        followingTail = true
+        let chat = chat
+        Task { await chat.send(inThread: true) }
+    }
+
+    private func openActions(_ id: String, picker: Bool) {
+        guard let message = chat.messages.first(where: { $0.id == id }) else { return }
+        view.endEditing(true)
+        if picker {
+            let chat = chat
+            present(UIKitHosting.reactionPicker { emoji in
+                Task { await chat.setReaction(messageID: id, emoji: emoji, active: true) }
+            }, animated: true)
+        } else {
+            presentations.actions = message
+        }
+    }
+
+    // MARK: Scrolling
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView.isTracking || scrollView.isDecelerating else { return }
+        let bottom = scrollView.contentSize.height + scrollView.adjustedContentInset.bottom - scrollView.bounds.height
+        followingTail = scrollView.contentOffset.y >= bottom - 48
+        if scrollView.contentOffset.y + scrollView.adjustedContentInset.top < 400, chat.threadHasMore, !chat.threadLoading {
+            let chat = chat
+            Task { await chat.loadThread(older: true) }
+        }
+        if scrollView.contentOffset.y > bottom - 400, chat.threadHasNewer, !chat.threadLoading {
+            let chat = chat
+            Task { await chat.loadThread(newer: true) }
+        }
+    }
+}

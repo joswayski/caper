@@ -139,6 +139,21 @@ public struct UIKitMessageExtras: View {
     }
 }
 
+/// The message a row replies to, above it; tapping jumps to it.
+public struct UIKitReplyContext: View {
+    let reference: MessageReply
+    let motionKey: String
+    let chat: ChatModel
+    public init(reference: MessageReply, motionKey: String, chat: ChatModel) {
+        self.reference = reference; self.motionKey = motionKey; self.chat = chat
+    }
+    public var body: some View {
+        NativeReplyContext(reference: reference, motionKey: motionKey, chat: chat)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .preferredColorScheme(.dark)
+    }
+}
+
 /// Above the composer: voice notices, a failed dictation's Retry, and the
 /// staged files (tap to edit, remove, spoiler).
 public struct UIKitComposerAccessories: View {
@@ -152,6 +167,9 @@ public struct UIKitComposerAccessories: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let root = replyRoot, let reference = chat.replyTargets[root] {
+                NativeReplyDraft(reference: reference, chat: chat, root: root)
+            }
             if let notice = inThread ? chat.threadAttachmentNotice : chat.attachmentNotice {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
                     .fixedSize(horizontal: false, vertical: true)
@@ -164,8 +182,11 @@ public struct UIKitComposerAccessories: View {
         .preferredColorScheme(.dark)
     }
 
+    private var replyRoot: String? { inThread ? chat.threadRootID : "channel" }
+
     /// Whether anything shows, so the composer collapses the space otherwise.
     public static func shows(chat: ChatModel, inThread: Bool = false) -> Bool {
+        if let root = inThread ? chat.threadRootID : "channel", chat.replyTargets[root] != nil { return true }
         let owner = VoiceComposerID(chat: chat, inThread: inThread)
         let recorder = VoiceMessageRecorder.shared
         return (inThread ? chat.threadAttachmentNotice : chat.attachmentNotice) != nil
@@ -241,9 +262,15 @@ public struct UIKitPresentationHost: View {
     @Bindable var state: UIKitPresentations
     @Bindable var chat: ChatModel
     let model: AppModel
+    /// The thread's host, or the channel's: only the frontmost one presents forwards.
+    let inThread: Bool
 
-    public init(state: UIKitPresentations, model: AppModel) {
-        self.state = state; self.model = model; chat = model.chat
+    public init(state: UIKitPresentations, model: AppModel, inThread: Bool = false) {
+        self.state = state; self.model = model; chat = model.chat; self.inThread = inThread
+    }
+
+    private var forwards: Binding<ChatMessage?> {
+        (chat.threadRootID != nil) == inThread ? $chat.forwardTarget : .constant(nil)
     }
 
     private var viewerID: String? { chat.currentAuthor?.id ?? model.account?.id }
@@ -256,7 +283,7 @@ public struct UIKitPresentationHost: View {
                 ReactorsSheet(chat: chat, messageID: target.messageID, emoji: target.emoji, viewerID: viewerID)
             }
             .sheet(item: $state.actions) { message in actionsSheet(message) }
-            .sheet(item: $chat.forwardTarget) { message in ForwardPickerView(chat: chat, message: message) }
+            .sheet(item: forwards) { message in ForwardPickerView(chat: chat, message: message) }
             .modifier(BlockConfirmation(target: $state.block) { target in
                 do { try await model.block(target) } catch { chat.error = FriendlyError.message(for: error) }
             })
@@ -274,7 +301,9 @@ public struct UIKitPresentationHost: View {
                                 state.actions = nil
                                 Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
                             },
-                            reply: { state.actions = nil; chat.replyInThread(to: message) },
+                            // Inside a thread, Reply already replies there.
+                            reply: inThread ? nil : { state.actions = nil; chat.replyInThread(to: message) },
+                            inThread: inThread,
                             canForward: chat.canForward,
                             forward: { state.actions = nil; chat.forwardTarget = message },
                             quickReaction: { emoji in

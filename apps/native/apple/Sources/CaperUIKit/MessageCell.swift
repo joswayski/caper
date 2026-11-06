@@ -27,6 +27,12 @@ struct MessageRowState: Equatable {
     /// A failed reaction or pin, with Retry and Dismiss.
     var reactionError: String?
     var pinError: String?
+    /// The message this one replies to, shown above it.
+    var replyTo: MessageReply?
+    /// Under a channel row: its thread's replies, or "Replied to a thread".
+    var thread: ThreadLink?
+    /// Opened from the thread view: no thread link of its own.
+    var inThread = false
     var pending: Bool
     var pendingError: String?
     var pendingRejected: Bool
@@ -40,7 +46,7 @@ struct MessageRowState: Equatable {
 
     @MainActor
     init(message: ChatMessage, grouped: Bool, continued: Bool, viewerID: String?, focused: Bool = false, inPins: Bool = false,
-         chat: ChatModel? = nil) {
+         chat: ChatModel? = nil, inThread: Bool = false) {
         id = message.clientMessageId
         messageID = message.id
         authorName = message.author.name
@@ -68,6 +74,16 @@ struct MessageRowState: Equatable {
         if !message.isDeleted {
             reactions = (message.reactions ?? []).map { reaction in
                 .init(emoji: reaction.emoji, count: reaction.authorIds.count, own: viewerID.map(reaction.authorIds.contains) ?? false)
+            }
+        }
+        self.inThread = inThread
+        replyTo = message.isDeleted ? nil : message.replyTo
+        if !inThread && !inPins {
+            if message.threadRootId == nil, let summary = message.thread, summary.replyCount > 0 {
+                thread = ThreadLink(rootID: message.id, replyCount: summary.replyCount,
+                                    participants: summary.participants, unread: chat?.threadUnread(message.id) ?? false)
+            } else if let root = message.threadRootId {
+                thread = ThreadLink(rootID: root, replyCount: 0, participants: [], unread: chat?.threadUnread(root) ?? false)
             }
         }
         if let chat {
@@ -146,6 +162,15 @@ final class MessageTextView: UITextView, NSTextLayoutManagerDelegate {
     }
 }
 
+/// A row's link into its thread.
+struct ThreadLink: Equatable {
+    let rootID: String
+    /// Zero on a reply sent to the channel too: "Replied to a thread".
+    let replyCount: Int
+    let participants: [ChatAuthor]
+    let unread: Bool
+}
+
 /// What a row's hosted SwiftUI leaves need from the conversation.
 struct RowHost {
     let chat: ChatModel
@@ -154,6 +179,7 @@ struct RowHost {
     /// The long-press sheet; `true` opens straight to the emoji picker.
     var actions: (_ messageID: String, _ picker: Bool) -> Void = { _, _ in }
     var reactors: (_ messageID: String, _ emoji: String) -> Void = { _, _ in }
+    var openThread: (_ rootID: String) -> Void = { _ in }
 }
 
 /// One message: avatar or grouped gutter, header, text and its notes. The
@@ -181,6 +207,9 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private let accent = UIView()
     private let tint = UIView()
     private let pinBadge = UIKitStyle.label(size: 10, weight: .medium, color: UIKitStyle.muted)
+    private let replyContext = HostedView()
+    private let above = UIStackView()
+    private let threadLink = ThreadLinkButton()
     private var top: NSLayoutConstraint!
     private var badgeTop: NSLayoutConstraint!
     private var columnUnderBadge: NSLayoutConstraint!
@@ -219,7 +248,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         errors.spacing = 8
         errors.alignment = .firstBaseline
         errors.isHidden = true
-        [header, body, extras, chips, errors, note].forEach(column.addArrangedSubview)
+        [header, body, extras, chips, errors, threadLink, note].forEach(column.addArrangedSubview)
         // Holding a row opens its actions, as on SwiftUI's iPhone layout.
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
         hold.minimumPressDuration = 0.5
@@ -243,11 +272,22 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         self.addSubview(gutter)
         self.addSubview(column)
         pinBadge.isHidden = true
-        self.addSubview(pinBadge)
+        replyContext.isHidden = true
+        above.axis = .vertical
+        above.alignment = .leading
+        above.spacing = 5
+        above.translatesAutoresizingMaskIntoConstraints = false
+        [pinBadge, replyContext].forEach(above.addArrangedSubview)
+        replyContext.widthAnchor.constraint(equalTo: above.widthAnchor).isActive = true
+        self.addSubview(above)
+        threadLink.addAction(UIAction { [weak self] _ in
+            guard let self, let link = self.state?.thread else { return }
+            self.host?.openThread(link.rootID)
+        }, for: .touchUpInside)
 
         top = column.topAnchor.constraint(equalTo: self.topAnchor, constant: 10)
-        badgeTop = pinBadge.topAnchor.constraint(equalTo: self.topAnchor, constant: 10)
-        columnUnderBadge = column.topAnchor.constraint(equalTo: pinBadge.bottomAnchor, constant: 5)
+        badgeTop = above.topAnchor.constraint(equalTo: self.topAnchor, constant: 10)
+        columnUnderBadge = column.topAnchor.constraint(equalTo: above.bottomAnchor, constant: 5)
         bottom = column.bottomAnchor.constraint(equalTo: self.bottomAnchor, constant: -10)
         bottom.priority = .init(999)
         avatarWidth = gutter.widthAnchor.constraint(equalToConstant: 34)
@@ -268,8 +308,8 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
             gutter.heightAnchor.constraint(greaterThanOrEqualToConstant: 1),
             column.leadingAnchor.constraint(equalTo: gutter.trailingAnchor, constant: 10),
             column.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -18),
-            pinBadge.leadingAnchor.constraint(equalTo: column.leadingAnchor),
-            pinBadge.trailingAnchor.constraint(lessThanOrEqualTo: column.trailingAnchor),
+            above.leadingAnchor.constraint(equalTo: column.leadingAnchor),
+            above.trailingAnchor.constraint(equalTo: column.trailingAnchor),
             badgeTop, top, bottom,
             self.heightAnchor.constraint(greaterThanOrEqualTo: gutter.heightAnchor),
         ])
@@ -290,8 +330,17 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         bottom.constant = row.continued ? -2 : -10
         // "Pinned by …" heads the row, over the text column.
         pinBadge.isHidden = row.pinnedBy == nil
-        top.isActive = row.pinnedBy == nil
-        columnUnderBadge.isActive = row.pinnedBy != nil
+        if let host, let reply = row.replyTo {
+            replyContext.show(UIKitReplyContext(reference: reply, motionKey: row.id, chat: host.chat))
+            replyContext.isHidden = false
+        } else {
+            replyContext.show(Optional<EmptyView>.none)
+            replyContext.isHidden = true
+        }
+        let hasAbove = !pinBadge.isHidden || !replyContext.isHidden
+        // Deactivate before activating, so the two never conflict for a frame.
+        if hasAbove { top.isActive = false; columnUnderBadge.isActive = true }
+        else { columnUnderBadge.isActive = false; top.isActive = true }
         if let pinnedBy = row.pinnedBy {
             pinBadge.attributedText = Self.pinBadge("Pinned by \(pinnedBy)")
             pinBadge.accessibilityLabel = "Pinned by \(pinnedBy)"
@@ -320,6 +369,8 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         chips.configure(row.reactions, messageID: row.messageID, canInteract: row.canInteract, width: max(columnWidth, 120))
         chipsWidth = columnWidth
         errorText.text = row.reactionError ?? row.pinError
+        threadLink.isHidden = row.thread == nil
+        if let link = row.thread { threadLink.configure(link) }
         errors.isHidden = errorText.text == nil
         errorRetry.isEnabled = row.canInteract
 
@@ -460,7 +511,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     }
 
     override var accessibilityElements: [Any]? {
-        get { [pinBadge, header, body, extras, chips, errors, note].filter { !$0.isHidden } }
+        get { [pinBadge, replyContext, header, body, extras, chips, errors, threadLink, note].filter { !$0.isHidden } }
         set {}
     }
 
@@ -594,4 +645,73 @@ final class DayDividerCell: UICollectionViewCell {
         label.text = text
         accessibilityLabel = text
     }
+}
+
+/// "3 replies · View thread" with the repliers' faces, or "Replied to a
+/// thread · View thread" under a reply also sent to the channel.
+final class ThreadLinkButton: UIControl {
+    private let faces = UIStackView()
+    private let label = UILabel()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        faces.spacing = 5
+        faces.isUserInteractionEnabled = false
+        label.isUserInteractionEnabled = false
+        let row = UIStackView(arrangedSubviews: [faces, label, UIView()])
+        row.spacing = 8
+        row.alignment = .center
+        row.isUserInteractionEnabled = false
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        layer.cornerRadius = 8
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            row.topAnchor.constraint(equalTo: topAnchor),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+            heightAnchor.constraint(greaterThanOrEqualToConstant: 32),
+        ])
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// A bare UIControl has no default activation; VoiceOver taps fire like a touch.
+    override func accessibilityActivate() -> Bool { sendActions(for: .touchUpInside); return true }
+
+    func configure(_ link: ThreadLink) {
+        faces.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let text = NSMutableAttributedString()
+        let medium = UIKitStyle.font(11, .medium)
+        if link.replyCount > 0 {
+            for person in link.participants {
+                let face = AvatarView(side: 24)
+                face.show(name: person.name, avatarID: person.avatarId, picture: person.avatarPicture)
+                faces.addArrangedSubview(face)
+            }
+            text.append(NSAttributedString(string: "\(link.replyCount) \(link.replyCount == 1 ? "reply" : "replies")",
+                                           attributes: [.font: UIKitStyle.font(11, .bold), .foregroundColor: UIKitStyle.terracottaBright]))
+            if link.unread {
+                text.append(NSAttributedString(string: "  ● Unread", attributes: [.font: medium, .foregroundColor: UIKitStyle.pinGold]))
+            }
+            text.append(NSAttributedString(string: "  View thread", attributes: [.font: medium, .foregroundColor: UIKitStyle.muted]))
+        } else {
+            if let icon = UIKitStyle.icon("thread")?.resized(to: 14).withTintColor(UIKitStyle.terracottaBright, renderingMode: .alwaysOriginal) {
+                let attachment = NSTextAttachment(image: icon)
+                attachment.bounds = CGRect(x: 0, y: -3, width: 14, height: 14)
+                text.append(NSAttributedString(attachment: attachment))
+                text.append(NSAttributedString(string: " "))
+            }
+            text.append(NSAttributedString(string: "Replied to a thread · View thread",
+                                           attributes: [.font: medium, .foregroundColor: UIKitStyle.terracottaBright]))
+        }
+        faces.isHidden = faces.arrangedSubviews.isEmpty
+        label.attributedText = text
+        accessibilityLabel = link.unread ? "View thread, unread" : "View thread"
+        accessibilityValue = link.replyCount > 0 ? "\(link.replyCount) \(link.replyCount == 1 ? "reply" : "replies")" : nil
+        accessibilityIdentifier = "view-thread-\(link.rootID)"
+    }
+
+    override var isHighlighted: Bool { didSet { backgroundColor = isHighlighted ? UIKitStyle.text.withAlphaComponent(0.08) : .clear } }
 }
