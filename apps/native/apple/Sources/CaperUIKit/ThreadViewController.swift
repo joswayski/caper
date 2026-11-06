@@ -278,7 +278,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         var snapshot = NSDiffableDataSourceSnapshot<Int, Item>()
         snapshot.appendSections([0])
         snapshot.appendItems(items)
-        snapshot.reconfigureItems(items.filter { item in
+        let changed = items.filter { item in
             guard survivors.contains(item) else { return false }
             switch item {
             case let .row(id): return rows[id] != nextRows[id]
@@ -286,7 +286,10 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             case let .blocked(key): return runs[key] != built.runs[key]
             case .edge: return true
             }
-        })
+        }
+        let reload = changed.filter { if case let .row(id) = $0 { nextRows[id]?.remeasures(from: rows[id]) == true } else { false } }
+        snapshot.reloadItems(reload)
+        snapshot.reconfigureItems(changed.filter { !reload.contains($0) })
         rows = nextRows
         days = nextDays
         runs = built.runs

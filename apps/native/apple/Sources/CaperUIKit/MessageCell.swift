@@ -5,6 +5,14 @@ import UIKit
 /// One timeline row's display state. Built per snapshot from the model; cells
 /// read it only when they are realized.
 struct MessageRowState: Equatable {
+    /// A send that is confirmed, fails or is retried changes the row's
+    /// height in ways a reconfigured cell keeps; such rows reload instead.
+    func remeasures(from previous: MessageRowState?) -> Bool {
+        guard let previous else { return false }
+        return previous.pending != pending || previous.pendingError != pendingError || previous.pendingRejected != pendingRejected
+    }
+
+
     var id: String
     /// The server's id; pending rows have none.
     var messageID: String
@@ -21,7 +29,8 @@ struct MessageRowState: Equatable {
     var deleted: Bool
     /// Files, a GIF, link cards or a forward, drawn by CaperCore's SwiftUI leaves.
     var extras: ChatMessage?
-    var pendingAttachments: [ChatAttachment]
+    /// The optimistic row's files, GIF and link card.
+    var pendingContent: PendingMessage?
     var reactions: [ReactionChipsView.Chip] = []
     var canInteract = false
     /// A failed reaction or pin, with Retry and Dismiss.
@@ -36,6 +45,10 @@ struct MessageRowState: Equatable {
     var pending: Bool
     var pendingError: String?
     var pendingRejected: Bool
+    /// A failed send's actions, as SwiftUI's PendingMessageRow: Retry (send),
+    /// or for a rejected one Edit (with an empty draft) and Dismiss.
+    var pendingUploadFailed = false
+    var pendingCanEdit = true
     /// "you" or the pinner's name, on a pinned message.
     var pinnedBy: String?
     var pinMine = false
@@ -66,7 +79,7 @@ struct MessageRowState: Equatable {
         edited = message.forward == nil && !message.isDeleted && (message.revision ?? 1) > 1
         deleted = message.isDeleted
         extras = UIKitMessageExtras.shows(message) ? message : nil
-        pendingAttachments = []
+        pendingContent = nil
         pending = false
         pendingError = nil
         pendingRejected = false
@@ -98,7 +111,8 @@ struct MessageRowState: Equatable {
         }
     }
 
-    init(pending: PendingMessage, author: ChatAuthor?, grouped: Bool, error: String?, rejected: Bool) {
+    init(pending: PendingMessage, author: ChatAuthor?, grouped: Bool, error: String?, rejected: Bool,
+         uploadFailed: Bool = false, canEdit: Bool = true) {
         id = pending.id
         messageID = ""
         authorName = author?.name ?? "Guest"
@@ -113,10 +127,13 @@ struct MessageRowState: Equatable {
         edited = false
         deleted = false
         extras = nil
-        pendingAttachments = pending.attachments
+        pendingContent = pending
+        replyTo = pending.replyTo
         self.pending = true
         pendingError = error
         pendingRejected = rejected
+        pendingUploadFailed = uploadFailed
+        pendingCanEdit = canEdit
     }
 }
 
@@ -223,10 +240,16 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private let note = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
     private let extras = HostedView()
     private let chips = ReactionChipsView()
+    /// A failed reaction or pin inline with Retry and Dismiss; a failed send
+    /// as SwiftUI's PendingMessageRow, its actions under the message.
     private let errors = UIStackView()
+    private let errorActions = UIStackView()
     private let errorText = UIKitStyle.label(size: 11, weight: .medium, color: UIKitStyle.error)
-    private lazy var errorRetry = CaperButton("Retry", kind: .plain, size: 11) { [weak self] in self?.retryError() }
-    private lazy var errorDismiss = CaperButton("Dismiss", kind: .plain, size: 11) { [weak self] in self?.dismissError() }
+    private lazy var errorRetry = CaperButton("Retry", kind: .compact, size: 12) { [weak self] in self?.retryError() }
+    private lazy var errorDismiss = CaperButton("Dismiss", kind: .compact, size: 12) { [weak self] in self?.dismissError() }
+    private lazy var errorEdit = CaperButton("Edit", kind: .compact, size: 12) { [weak self] in
+        _ = self?.host?.chat.discardRejected(edit: true)
+    }
     /// The text column's width, for laying out reaction chips.
     var columnWidth: CGFloat = 0
     /// The model and a presenter for the hosted extras (media viewer, forwards).
@@ -273,9 +296,10 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         column.spacing = 4
         column.alignment = .fill
         errorText.numberOfLines = 0
-        [errorText, errorRetry, errorDismiss].forEach(errors.addArrangedSubview)
-        errors.spacing = 8
-        errors.alignment = .firstBaseline
+        [errorRetry, errorEdit, errorDismiss, UIView()].forEach(errorActions.addArrangedSubview)
+        [errorText, errorActions].forEach(errors.addArrangedSubview)
+        errorText.setContentHuggingPriority(.required, for: .horizontal)
+        for button in [errorRetry, errorEdit, errorDismiss] { button.setContentHuggingPriority(.required, for: .horizontal) }
         errors.isHidden = true
         [header, body, extras, chips, errors, threadLink, note].forEach(column.addArrangedSubview)
         // Holding a row opens its actions, as on SwiftUI's iPhone layout.
@@ -403,19 +427,37 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
 
         if let host, let message = row.extras {
             extras.show(UIKitMessageExtras(message: message, chat: host.chat, present: host.present, openForward: { host.openForward(message) }))
-        } else if let host, !row.pendingAttachments.isEmpty {
-            extras.show(UIKitMessageExtras(pending: row.pendingAttachments, chat: host.chat, present: host.present))
+        } else if let host, let pending = row.pendingContent, UIKitMessageExtras.shows(pending) {
+            extras.show(UIKitMessageExtras(pending: pending, chat: host.chat, present: host.present))
         } else {
             extras.show(Optional<EmptyView>.none)
         }
-        extras.isHidden = row.extras == nil && row.pendingAttachments.isEmpty
+        extras.isHidden = row.extras == nil && !(row.pendingContent.map(UIKitMessageExtras.shows) ?? false)
         chips.configure(row.reactions, messageID: row.messageID, canInteract: row.canInteract, width: max(columnWidth, 120))
         chipsWidth = columnWidth
-        errorText.text = row.reactionError ?? row.pinError
+        if let error = row.pendingError {
+            errorText.text = row.pendingUploadFailed ? error : "\(row.pendingRejected ? "Not sent." : "Not confirmed yet.") \(error)"
+            errorRetry.setTitle(row.pendingUploadFailed ? "Retry" : "Retry send")
+        } else {
+            errorText.text = row.reactionError ?? row.pinError
+            errorRetry.setTitle("Retry")
+        }
+        let rejected = row.pendingError != nil && row.pendingRejected
+        errorRetry.isHidden = rejected
+        // A GIF has no draft to return to.
+        errorEdit.isHidden = !rejected || row.pendingContent?.gif != nil
+        errorEdit.isEnabled = row.pendingCanEdit
+        errorEdit.accessibilityHint = row.pendingCanEdit ? nil : "Clear your current draft to edit this message."
+        errorDismiss.isHidden = row.pendingError != nil && !rejected
+        let sending = row.pendingError != nil
+        errors.axis = sending ? .vertical : .horizontal
+        errors.alignment = sending ? .fill : .center
+        errors.spacing = sending ? 5 : 8
+        errorActions.spacing = sending ? 12 : 8
         threadLink.isHidden = row.thread == nil
         if let link = row.thread { threadLink.configure(link) }
         errors.isHidden = errorText.text == nil
-        errorRetry.isEnabled = row.canInteract
+        errorRetry.isEnabled = row.canInteract || row.pending
 
         if row.deleted {
             body.isHidden = true
@@ -424,11 +466,9 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         } else {
             body.isHidden = row.text.isEmpty
             if !row.text.isEmpty { body.attributedText = Self.render(row) }
-            var lines: [String] = []
-            if let error = row.pendingError { lines.append("\(row.pendingRejected ? "Not sent." : "Not confirmed yet.") \(error)") }
-            note.isHidden = lines.isEmpty
-            note.text = lines.joined(separator: "\n")
-            note.textColor = row.pendingError == nil ? UIKitStyle.muted : UIKitStyle.error
+            note.isHidden = true
+            note.text = nil
+            note.textColor = UIKitStyle.muted
         }
         self.alpha = row.pending && row.pendingError == nil ? 0.6 : 1
         body.accessibilityLabel = row.grouped ? "\(row.authorName), \(timeText): \(body.plainText)" : body.plainText
@@ -482,12 +522,14 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
 
     private func retryError() {
         guard let state, let chat = host?.chat else { return }
+        if state.pending { retry?(); return }
         if state.reactionError != nil { Task { await chat.retryReaction(messageID: state.messageID) } }
         else if state.pinError != nil { Task { await chat.retryPin(messageID: state.messageID) } }
     }
 
     private func dismissError() {
         guard let state, let chat = host?.chat else { return }
+        if state.pending { _ = chat.discardRejected(); return }
         if state.reactionError != nil { chat.reactionErrors[state.messageID] = nil }
         else { chat.pinErrors[state.messageID] = nil }
     }

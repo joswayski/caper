@@ -107,9 +107,10 @@ enum UIKitStyle {
 }
 
 /// Web's primary action: eggshell with a blackout label; disabled, it steps
-/// back to neutral chrome. Secondary buttons are bordered neutral chrome.
+/// back to neutral chrome. Secondary buttons are bordered neutral chrome;
+/// compact ones are SwiftUI's CaperSecondaryButton, as on message rows.
 final class CaperButton: UIButton {
-    enum Kind { case primary, secondary, plain }
+    enum Kind { case primary, secondary, compact, plain }
     private let kind: Kind
     private let handler: () -> Void
 
@@ -121,7 +122,7 @@ final class CaperButton: UIButton {
         configuration.title = title
         configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
             var attributes = attributes
-            attributes.font = UIKitStyle.font(size, kind == .plain ? .regular : .bold)
+            attributes.font = UIKitStyle.font(size, kind == .plain ? .regular : kind == .compact ? .medium : .bold)
             return attributes
         }
         if let icon {
@@ -129,7 +130,11 @@ final class CaperButton: UIButton {
             configuration.imagePlacement = .trailing
             configuration.imagePadding = 12
         }
-        configuration.contentInsets = kind == .plain ? .zero : NSDirectionalEdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20)
+        configuration.contentInsets = switch kind {
+        case .plain: .zero
+        case .compact: NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
+        default: NSDirectionalEdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20)
+        }
         self.configuration = configuration
         layer.cornerRadius = 8
         layer.cornerCurve = .continuous
@@ -160,6 +165,12 @@ final class CaperButton: UIButton {
             layer.borderWidth = 1
             layer.borderColor = UIKitStyle.border.cgColor
             button.configuration?.baseForegroundColor = enabled ? UIKitStyle.text : UIKitStyle.muted
+        case .compact:
+            backgroundColor = button.isHighlighted ? UIKitStyle.composer : UIKitStyle.raised
+            layer.borderWidth = 1
+            layer.borderColor = UIKitStyle.border.cgColor
+            button.configuration?.baseForegroundColor = UIKitStyle.text
+            alpha = enabled ? 1 : 0.45
         case .plain:
             backgroundColor = .clear
             button.configuration?.baseForegroundColor = enabled ? UIKitStyle.muted : UIKitStyle.muted.withAlphaComponent(0.5)

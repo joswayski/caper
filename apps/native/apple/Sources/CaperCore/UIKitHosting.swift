@@ -279,18 +279,23 @@ private final class WeakController {
 /// below its text. Tapping media opens the viewer through `present`.
 public struct UIKitMessageExtras: View {
     let message: ChatMessage?
-    let pending: [ChatAttachment]
+    let pending: PendingMessage?
     let chat: ChatModel
     let present: UIKitHosting.Present
     let openForward: () -> Void
 
     public init(message: ChatMessage, chat: ChatModel, present: @escaping UIKitHosting.Present, openForward: @escaping () -> Void) {
-        self.message = message; pending = []; self.chat = chat; self.present = present; self.openForward = openForward
+        self.message = message; pending = nil; self.chat = chat; self.present = present; self.openForward = openForward
     }
 
-    /// The optimistic row's local copies.
-    public init(pending: [ChatAttachment], chat: ChatModel, present: @escaping UIKitHosting.Present) {
+    /// The optimistic row: local copies of its files, its GIF and the
+    /// composer's link card, as SwiftUI's PendingMessageRow.
+    public init(pending: PendingMessage, chat: ChatModel, present: @escaping UIKitHosting.Present) {
         message = nil; self.pending = pending; self.chat = chat; self.present = present; openForward = {}
+    }
+
+    public static func shows(_ pending: PendingMessage) -> Bool {
+        !pending.attachments.isEmpty || pending.gif != nil || !pending.embeds.isEmpty
     }
 
     /// Whether a message has anything here; rows without it host nothing.
@@ -313,8 +318,10 @@ public struct UIKitMessageExtras: View {
                         .accessibilityIdentifier("feedback-notified-\(message.id)")
                 }
                 ForwardCardView(message: message, chat: chat, open: openForward)
-            } else if !pending.isEmpty {
-                MessageAttachmentsView(attachments: pending, chat: nil).opacity(0.7)
+            } else if let pending {
+                if !pending.attachments.isEmpty { MessageAttachmentsView(attachments: pending.attachments, chat: nil).opacity(0.7) }
+                if let gif = pending.gif { MessageGifView(gif: gif).opacity(0.7) }
+                MessageEmbedsView(embeds: pending.embeds)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

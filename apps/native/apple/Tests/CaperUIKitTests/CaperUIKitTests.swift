@@ -1,5 +1,22 @@
 import XCTest
 
+@MainActor
+extension XCTestCase {
+    /// Fixture controls: reset, live messages from Alex.
+    func control(_ body: [String: Any]) {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        let done = expectation(description: "fixture control")
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            done.fulfill()
+        }.resume()
+        wait(for: [done], timeout: 10)
+    }
+}
+
 /// The development UIKit client against the local parity fixture in bench mode
 /// (`CAPER_BENCH_MESSAGES=3000`: 3,000 #general messages in pages of 50).
 /// `uikit-screenshots.sh` starts the fixture; it never reaches a real server.
@@ -34,20 +51,6 @@ final class CaperUIKitTests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
-    }
-
-    /// Fixture controls: reset, live messages from Alex.
-    private func control(_ body: [String: Any]) {
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        let done = expectation(description: "fixture control")
-        URLSession.shared.dataTask(with: request) { _, response, _ in
-            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-            done.fulfill()
-        }.resume()
-        wait(for: [done], timeout: 10)
     }
 
     private func row(_ id: String) -> XCUIElement { app.cells["message-row-\(id)"] }
@@ -109,6 +112,48 @@ final class CaperUIKitTests: XCTestCase {
         let sent = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "sent from UIKit")).firstMatch
         XCTAssertTrue(sent.waitForExistence(timeout: 10))
         XCTAssertTrue(sent.isHittable, "The timeline follows your own message")
+        XCTAssertEqual((composer.value as? String) ?? "", "")
+    }
+
+    /// SwiftUI's pending row: an unknown outcome offers Retry send; a rejected
+    /// send offers Edit (back to the composer) and Dismiss.
+    func testFailedSendsRetryEditAndDismiss() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let composer = app.textViews["message-composer"]
+        let send = app.buttons["send-message"]
+        let path = "/api/chat/channels/chan00000001/messages"
+        control(["failure": ["path": path, "method": "POST", "status": 503]])
+        composer.tap()
+        composer.typeText("TEST FIXTURE unsure")
+        send.tap()
+        let retry = app.buttons["Retry send"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Dismiss"].exists)
+        screenshot("uikit-pending-unknown")
+        retry.tap()
+        let confirmed = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "TEST FIXTURE unsure")).firstMatch
+        XCTAssertTrue(retry.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(confirmed.exists)
+
+        control(["failure": ["path": path, "method": "POST", "status": 422, "error": "TEST FIXTURE: refused."]])
+        composer.typeText("TEST FIXTURE refused")
+        send.tap()
+        let edit = app.buttons["Edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Not sent. TEST FIXTURE: refused."].exists)
+        XCTAssertFalse(retry.exists)
+        screenshot("uikit-pending-rejected")
+        edit.tap()
+        XCTAssertTrue(edit.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE refused", "Edit returns the text to the composer")
+
+        control(["failure": ["path": path, "method": "POST", "status": 422, "error": "TEST FIXTURE: refused."]])
+        send.tap()
+        let dismiss = app.buttons["Dismiss"]
+        XCTAssertTrue(dismiss.waitForExistence(timeout: 10))
+        dismiss.tap()
+        XCTAssertTrue(dismiss.waitForNonExistence(timeout: 5))
         XCTAssertEqual((composer.value as? String) ?? "", "")
     }
 
@@ -810,6 +855,32 @@ final class CaperUIKitParityTests: XCTestCase {
             XCTAssertTrue(app.textFields["Email address"].waitForExistence(timeout: 30))
             sleep(2)
             capture("\(prefix)-login")
+            app.terminate()
+        }
+    }
+
+    /// A failed send in each app: unknown outcome (Retry send), then rejected
+    /// (Edit and Dismiss).
+    func testFailedSendPairs() throws {
+        try requireSwiftUI()
+        let path = "/api/chat/channels/chan00000001/messages"
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            let app = configured(bundle)
+            app.launch()
+            let composer = app.textViews["message-composer"]
+            XCTAssertTrue(composer.waitForExistence(timeout: 30))
+            sleep(2)
+            for (status, text, action) in [(503, "TEST FIXTURE unsure", "Retry send"), (422, "TEST FIXTURE refused", "Edit")] {
+                control(["failure": ["path": path, "method": "POST", "status": status, "error": "TEST FIXTURE: refused."]])
+                composer.tap()
+                composer.typeText(text)
+                app.buttons["Send message"].firstMatch.tap()
+                XCTAssertTrue(app.buttons[action].firstMatch.waitForExistence(timeout: 10), "\(prefix) \(action)")
+                sleep(1)
+                capture("\(prefix)-pending-\(status)")
+                if status == 503 { app.buttons[action].firstMatch.tap(); sleep(2) }
+            }
             app.terminate()
         }
     }

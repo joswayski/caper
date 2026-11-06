@@ -529,7 +529,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             case .edge: return true
             }
         }
-        snapshot.reconfigureItems(changed)
+        let reload = changed.filter { if case let .row(id) = $0 { nextRows[id]?.remeasures(from: rows[id]) == true } else { false } }
+        snapshot.reloadItems(reload)
+        snapshot.reconfigureItems(changed.filter { !reload.contains($0) })
         rows = nextRows
         days = nextDays
         blockedRuns = nextRuns
@@ -802,7 +804,12 @@ enum TimelineRows {
         if let pending, built.rows[pending.id] == nil {
             let groupedPending = previous.map { $0.author.id == author?.id && NativePresentation.sameDay($0.createdAt, pending.createdAt) } ?? false
             if let last = previous, groupedPending { built.rows[last.clientMessageId]?.continued = true }
-            built.rows[pending.id] = MessageRowState(pending: pending, author: author, grouped: groupedPending, error: error, rejected: rejected)
+            // Read the draft only for a rejected send, so typing doesn't rebuild rows.
+            let canEdit = !(rejected && error != nil) || chat.map {
+                inThread ? $0.threadDraft.isEmpty && $0.threadAttachmentDrafts.isEmpty : $0.draft.isEmpty && $0.attachmentDrafts.isEmpty
+            } ?? true
+            built.rows[pending.id] = MessageRowState(pending: pending, author: author, grouped: groupedPending, error: error, rejected: rejected,
+                                                     uploadFailed: error != nil && chat?.sendUploadFailed == true, canEdit: canEdit)
             built.items.append(.row(pending.id))
         }
         return built
