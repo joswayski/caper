@@ -1,6 +1,5 @@
-# Temporary probe branch only; never merged. Runs the macOS 15 hosted UI
-# failures on unchanged main and on the Escape fix, with keyboard navigation
-# at the image default and then turned on.
+# Temporary probe branch only; never merged. Each isolated hosted runner
+# verifies the Audio candidate under one explicitly checked keyboard policy.
 name: Apple macOS 15 probe
 on:
   push:
@@ -12,16 +11,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: main
-            ref: 441e0f17e06d0c32467d448f6bebe49a7eccdbe6
-          - name: escape-fix
-            ref: b3c4bdf67756a04aaa09502a4717b4ed961196c5
+          - name: disabled
+            mode: 0
+          - name: enabled
+            mode: 2
     runs-on: macos-15
     timeout-minutes: 75
+    env:
+      SOURCE_SHA: 7c8888793f4be8bb66bf9b0e2a64eb4368e17d25
+      KEYBOARD_MODE: ${{ matrix.mode }}
+      KEYBOARD_POLICY: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.ref }}
+          ref: ${{ env.SOURCE_SHA }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -31,10 +34,17 @@ jobs:
       - uses: ./.github/actions/mobile-rust
         with:
           platform: apple
-      - name: Environment
+      - name: Assert source and effective keyboard policy
         run: |
-          sw_vers; xcodebuild -version; git rev-parse HEAD
-          echo "AppleKeyboardUIMode=$(defaults read -g AppleKeyboardUIMode 2>/dev/null || echo unset)"
+          mkdir -p probe
+          sw_vers | tee probe/environment.txt
+          xcodebuild -version | tee -a probe/environment.txt
+          git rev-parse HEAD | tee -a probe/environment.txt
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          # Disposable GitHub host only, never Jose's Mac or simulator queue.
+          defaults write -g AppleKeyboardUIMode -int "$KEYBOARD_MODE"
+          test "$(defaults read -g AppleKeyboardUIMode)" = "$KEYBOARD_MODE"
+          swift -e 'import AppKit; let expected = ProcessInfo.processInfo.environment["KEYBOARD_MODE"] == "2"; let actual = NSApplication.shared.isFullKeyboardAccessEnabled; print("Effective AppKit Keyboard navigation: \(actual), expected: \(expected)"); precondition(actual == expected)' | tee -a probe/environment.txt
       - name: Clear macOS notices off the screen
         run: |
           osascript -e 'quit app "System Settings"' 2>/dev/null || true
@@ -42,36 +52,33 @@ jobs:
           defaults read chat.caper.macos 2>/dev/null | sed -n 's/^ *"\(NSWindow Frame [^"]*\)".*/\1/p' |
             while IFS= read -r key; do defaults delete chat.caper.macos "$key"; done
           sleep 2
-      - name: Run with the image's keyboard navigation setting
+      - name: Run Audio and focus regression tests
         continue-on-error: true
         run: |
+          set +e
           bash apps/native/apple/parity-screenshots.sh macos \
             -only-testing:CaperMacOSParityTests/CaperParityUITests/testAudioDevicesOpenSeparateChoicesAndDismissWithoutChangingVolume \
             -only-testing:CaperMacOSParityTests/CaperParityUITests/testVoiceEntryAndAudioPreferencesWithoutFeatureFlag \
-            -only-testing:CaperMacOSParityTests/CaperParityUITests/testThreadFocusDoesNotOutlineOtherThreadLinks
-      - name: Keep the first result
+            -only-testing:CaperMacOSParityTests/CaperParityUITests/testThreadFocusDoesNotOutlineOtherThreadLinks \
+            2>&1 | tee probe/tests.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > probe/test-exit-code
+          exit "$status"
+      - name: Keep results
         if: always()
         run: |
-          mkdir -p probe/default
-          mv apps/native/apple/ParityResults.xcresult probe/default/ 2>/dev/null || true
-          mv apps/native/apple/parity-artifacts probe/default/ 2>/dev/null || true
-      - name: Run with keyboard navigation on
-        continue-on-error: true
-        run: |
-          defaults write -g AppleKeyboardUIMode -int 2
-          echo "AppleKeyboardUIMode=$(defaults read -g AppleKeyboardUIMode)"
-          bash apps/native/apple/parity-screenshots.sh macos \
-            -only-testing:CaperMacOSParityTests/CaperParityUITests/testAudioDevicesOpenSeparateChoicesAndDismissWithoutChangingVolume \
-            -only-testing:CaperMacOSParityTests/CaperParityUITests/testVoiceEntryAndAudioPreferencesWithoutFeatureFlag
-      - name: Keep the second result
-        if: always()
-        run: |
-          mkdir -p probe/keyboard-navigation
-          mv apps/native/apple/ParityResults.xcresult probe/keyboard-navigation/ 2>/dev/null || true
-          mv apps/native/apple/parity-artifacts probe/keyboard-navigation/ 2>/dev/null || true
+          mkdir -p probe
+          mv apps/native/apple/ParityResults.xcresult probe/ 2>/dev/null || true
+          mv apps/native/apple/parity-artifacts probe/ 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: macos15-probe-${{ matrix.name }}
           path: probe/
           retention-days: 7
+      - name: Require actual test success and intended focus path
+        if: always()
+        run: |
+          test "$(cat probe/test-exit-code)" = 0
+          grep -F "Audio menu keyboard navigation: $KEYBOARD_POLICY" probe/tests.log
+          grep -F 'Executed 3 tests, with 0 failures' probe/tests.log
