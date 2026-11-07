@@ -549,9 +549,13 @@ export async function startFixture({
     }
     return found;
   };
+  // The Caper team replies in a visited conversation as themselves.
   const canParticipate = (channel, user) =>
     canRead(channel, user) &&
-    (channel.direct || channel.id === ids.demo || (state.joins.get(channel.id) ?? []).includes(user.id));
+    (channel.direct ||
+      channel.id === ids.demo ||
+      visiting(channel, user) ||
+      (state.joins.get(channel.id) ?? []).includes(user.id));
   const channelDTO = (channel, user) => ({
     ...channel,
     joined: !!channel.direct || channel.id === ids.demo || (state.joins.get(channel.id) ?? []).includes(user?.id),
@@ -2555,6 +2559,11 @@ export async function startFixture({
               thread: clone(root.thread),
             });
           }
+          // A team reply in a report's thread answers it, as on the API.
+          if (root && user?.feedbackTeam)
+            for (const report of state.feedback ?? [])
+              if (report.channel.id === channel.id && report.threadRootId === root.id)
+                Object.assign(report, { answered: true, replyCount: root.thread.replyCount });
           messages.push(message);
           state.messages.set(channel.id, messages);
           state.sendKeys.set(key, { token: request.headers["x-caper-chat-token"], text: body.text, message });
