@@ -17,7 +17,7 @@ use caper_client::worker::Command;
 use gtk::{gdk, glib, prelude::*};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// An inline reply's send, by the row's draft key.
 #[derive(Default)]
@@ -128,6 +128,29 @@ impl App {
         });
     }
 
+    /// `filter`'s first page, loaded ahead into its window.
+    fn prefetch_inbox(&self, filter: Filter) {
+        let Ok(mut state) = self.state.try_borrow_mut() else {
+            return;
+        };
+        let Some(token) = state.token.clone() else {
+            return;
+        };
+        let Some(request) = state.inbox.prefetch(filter) else {
+            return;
+        };
+        self.worker.send(Command::LoadActivity {
+            epoch: state.epoch,
+            request,
+            token,
+            more: false,
+            filter,
+            unread: state.inbox.unread_only,
+            cursor: None,
+            through: None,
+        });
+    }
+
     pub(super) fn open_inbox(self: &Rc<Self>) {
         {
             let mut state = self.state.borrow_mut();
@@ -197,15 +220,18 @@ impl App {
         let retry = gtk::Button::with_label("Retry");
         error_line.append(&error);
         error_line.append(&retry);
-        root.append(&error_line);
+        // As web, loading, empty and error states sit in the results, which
+        // keep their height, so nothing above or below them moves.
         let status = label("", &["muted"]);
-        status.set_xalign(0.0);
-        root.append(&status);
+        status.set_vexpand(true);
+        status.set_valign(gtk::Align::Center);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
         list.add_css_class("inbox-list");
         let more = gtk::Button::with_label("Load more");
         more.set_halign(gtk::Align::Start);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        content.append(&error_line);
+        content.append(&status);
         content.append(&list);
         content.append(&more);
         root.append(
@@ -235,12 +261,33 @@ impl App {
                 };
                 if state.inbox.filter != filter {
                     state.inbox.filter = filter;
-                    app.load_inbox(&mut state, false, false);
+                    if state.inbox.switched() {
+                        app.load_inbox(&mut state, false, false);
+                    }
                     drop(state);
                     let app = app.clone();
                     glib::idle_add_local_once(move || app.render_inbox());
                 }
             });
+        }
+        // As web, a hovered or focused filter loads ahead.
+        for (filter, tab) in &tabs {
+            let motion = gtk::EventControllerMotion::new();
+            let focus = gtk::EventControllerFocus::new();
+            for controller in [
+                motion.upcast_ref::<gtk::EventController>(),
+                focus.upcast_ref(),
+            ] {
+                let (app, filter) = (Rc::downgrade(self), *filter);
+                controller.connect_local("enter", false, move |_| {
+                    if let Some(app) = app.upgrade() {
+                        app.prefetch_inbox(filter);
+                    }
+                    None
+                });
+            }
+            tab.add_controller(motion);
+            tab.add_controller(focus);
         }
         let app = Rc::downgrade(self);
         unread.connect_active_notify(move |switch| {
@@ -250,7 +297,9 @@ impl App {
             };
             if state.inbox.unread_only != switch.is_active() {
                 state.inbox.unread_only = switch.is_active();
-                app.load_inbox(&mut state, false, false);
+                if state.inbox.switched() {
+                    app.load_inbox(&mut state, false, false);
+                }
                 drop(state);
                 let app = app.clone();
                 glib::idle_add_local_once(move || app.render_inbox());
@@ -316,7 +365,7 @@ impl App {
         }
         self.close_activity_gifs();
         if let Ok(mut state) = self.state.try_borrow_mut() {
-            state.inbox.shown = false;
+            state.inbox.close();
         }
     }
 
@@ -414,8 +463,18 @@ impl App {
             .find(|(_, (_, view))| view.has_focus())
             .map(|(key, _)| key.clone());
         clear(&open.list);
+        // Inert at once, dimmed only if the new page takes over 150 ms, as
+        // web: fast answers swap rows without a visible dim.
         open.list.set_sensitive(!inbox.stale);
-        open.list.set_opacity(if inbox.stale { 0.5 } else { 1.0 });
+        open.list.set_opacity(1.0);
+        if inbox.stale {
+            let list = open.list.downgrade();
+            glib::timeout_add_local_once(Duration::from_millis(150), move || {
+                if let Some(list) = list.upgrade().filter(|list| !list.is_sensitive()) {
+                    list.set_opacity(0.5);
+                }
+            });
+        }
         for item in &visible {
             let row = self.inbox_row(&state, item, &mut open.composers);
             open.list.append(&row);
