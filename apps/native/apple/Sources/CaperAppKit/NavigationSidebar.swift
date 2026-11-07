@@ -298,8 +298,11 @@ import CaperCore
         row.update(channel.name, symbol: channel.private ? "lock" : "number", selected: model.selectedChannelID == channel.id,
             unread: model.channelUnread(channel.id), muted: model.notificationsMuted(.channel(spaceID: channel.spaceId, channelID: channel.id)))
         row.open.setAccessibilityIdentifier("\(browsing ? "browse-channel" : "channel")-\(channel.id)")
+        let accessibleName = channel.name + (channel.private ? ", private" : "")
+        row.open.setAccessibilityLabel(accessibleName)
         if browsing {
             row.detail.stringValue = channel.joined ? "Joined" : "Read-only preview"
+            if channel.private { row.open.setAccessibilityLabel("\(accessibleName), \(row.detail.stringValue)") }
             row.open.setAccessibilityHelp(row.detail.stringValue)
         }
         row.options.setAccessibilityIdentifier("\(browsing ? "browse-options" : "channel-options")-\(channel.id)")
