@@ -16,14 +16,31 @@ jobs:
             source: caff5dbcfa65467ebab703863794936f260d9048
           - name: frozen-77873879
             source: 77873879bccc7e49369ffac16ce66bd6aaa34e5d
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 90
     env:
       SOURCE_SHA: ${{ matrix.source }}
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_SHA }}
+      - name: Require a disposable desktop large enough for unchanged wide tests
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(uname -m)" = x86_64
+          mkdir -p ui
+          # Same Intel VM display setup as native.yml, never Jose's Mac.
+          if [[ -x '/Library/Application Support/Veertu/Anka/addons/change_res' ]]; then
+            '/Library/Application Support/Veertu/Anka/addons/change_res' 1920x1080x32@30
+          elif [[ -x '/Library/Application Support/VMware Tools/vmware-resolutionSet' ]]; then
+            '/Library/Application Support/VMware Tools/vmware-resolutionSet' 1920 1080
+          fi
+          sleep 3
+          system_profiler SPDisplaysDataType > ui/display.txt
+          swift -e 'import AppKit; let frame = NSScreen.main!.visibleFrame; print("Visible screen: \(frame)"); precondition(frame.width >= 1440 && frame.height >= 900, "Hosted desktop cannot fit the unchanged wide tests")' | tee -a ui/display.txt
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -38,6 +55,7 @@ jobs:
           mkdir -p ui
           sw_vers | tee ui/environment.txt
           xcodebuild -version | tee -a ui/environment.txt
+          uname -m | tee -a ui/environment.txt
           git rev-parse HEAD | tee -a ui/environment.txt
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           shasum -a 256 scripts/native-parity-fixture.mjs apps/native/apple/native-project.yml apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift > ui/source-hashes.txt
@@ -76,24 +94,33 @@ jobs:
             testMentionClickPreservesDraggingAndProtectsUnsavedProfileEdits
           )
           printf '%s\n' "${tests[@]}" > ui/selected-tests.txt
-          arguments=()
-          for test in "${tests[@]}"; do arguments+=("-only-testing:CaperAppKitTests/CaperAppKitTests/$test"); done
-          set +e
-          xcodebuild -project apps/native/apple/CaperNative.xcodeproj -scheme CaperAppKitTests \
-            -destination "platform=macOS,arch=$(uname -m)" -derivedDataPath apps/native/apple/DerivedData-UI \
-            -resultBundlePath ui/UIResults.xcresult -parallel-testing-enabled NO \
-            -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 \
-            "${arguments[@]}" test 2>&1 | tee ui/tests.log
-          status=${PIPESTATUS[0]}
-          echo "$status" > ui/test-exit-code
-          exit "$status"
+          # A failed async XCTest continued into the next method in the original
+          # run. Separate runner processes keep its assertions from contaminating
+          # the next result; all twelve unchanged methods still run exactly once.
+          arguments=(-project apps/native/apple/CaperNative.xcodeproj -scheme CaperAppKitTests
+            -destination "platform=macOS,arch=$(uname -m)" -derivedDataPath apps/native/apple/DerivedData-UI)
+          xcodebuild "${arguments[@]}" build-for-testing 2>&1 | tee ui/build.log
+          for test in "${tests[@]}"; do
+            directory="ui/$test"
+            mkdir -p "$directory"
+            set +e
+            xcodebuild "${arguments[@]}" -resultBundlePath "$directory/Results.xcresult" \
+              -parallel-testing-enabled NO -test-timeouts-enabled YES \
+              -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 \
+              "-only-testing:CaperAppKitTests/CaperAppKitTests/$test" test-without-building 2>&1 | tee "$directory/tests.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$directory/test-exit-code"
+          done
       - name: Export actual results and captures
         if: always()
         run: |
-          if [[ -d ui/UIResults.xcresult ]]; then
-            xcrun xcresulttool get test-results summary --path ui/UIResults.xcresult > ui/summary.json
-            xcrun xcresulttool export attachments --path ui/UIResults.xcresult --output-path ui/captures
-          fi
+          for bundle in ui/*/Results.xcresult; do
+            [[ -d "$bundle" ]] || continue
+            directory="$(dirname "$bundle")"
+            xcrun xcresulttool get test-results summary --path "$bundle" > "$directory/summary.json"
+            xcrun xcresulttool export attachments --path "$bundle" --output-path "$directory/captures"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -106,12 +133,20 @@ jobs:
           python3 - <<'PY'
           import json, pathlib, re
           path = pathlib.Path('ui')
-          summary = json.loads((path / 'summary.json').read_text())
           expected = set((path / 'selected-tests.txt').read_text().splitlines())
-          outcomes = re.findall(r"Test Case '-\[CaperAppKitTests\.CaperAppKitTests (\w+)\]' (passed|failed|skipped) \(", (path / 'tests.log').read_text())
-          assert len(expected) == 12 and len(outcomes) == 12, (expected, outcomes)
-          assert {name for name, _ in outcomes} == expected, outcomes
-          assert int((path / 'test-exit-code').read_text()) == 0, summary
-          assert summary['totalTestCount'] == 12 and summary['passedTests'] == 12, summary
-          assert summary['failedTests'] == 0 and summary['skippedTests'] == 0, summary
+          assert len(expected) == 12, expected
+          assert {p.parent.name for p in path.glob('*/summary.json')} == expected
+          failures = []
+          for name in sorted(expected):
+              directory = path / name
+              summary = json.loads((directory / 'summary.json').read_text())
+              outcomes = re.findall(r"Test Case '-\[CaperAppKitTests\.CaperAppKitTests (\w+)\]' (passed|failed|skipped) \(", (directory / 'tests.log').read_text())
+              code = int((directory / 'test-exit-code').read_text())
+              passed = (outcomes == [(name, 'passed')] and code == 0
+                        and summary['totalTestCount'] == 1 and summary['passedTests'] == 1
+                        and summary['failedTests'] == 0 and summary['skippedTests'] == 0)
+              print(name, 'exit', code, 'outcomes', outcomes, 'summary', summary)
+              if not passed:
+                  failures.append(name)
+          assert not failures, failures
           PY
