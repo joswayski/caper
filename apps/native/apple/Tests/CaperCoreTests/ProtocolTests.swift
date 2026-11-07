@@ -63,15 +63,25 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(mutations.pinned(messages: [], confirmed: [remote]), [remote], "Rollback does not insert unloaded pins into history")
     }
 
-    func testMessageHistoryDiffPreservesSeparateEditsAndUnicode() {
+    /// Every client runs these same cases, generated from web; see shared/messages/history-diff-cases.json.
+    func testMessageHistoryDiffFollowsTheSharedCases() throws {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("shared/messages/history-diff-cases.json"))) as! [String: Any]
+        let cases = json["cases"] as! [[String: Any]]
+        XCTAssertGreaterThan(cases.count, 20)
+        for fixture in cases {
+            func runs(_ key: String) -> [MessageDiffToken] {
+                (fixture[key] as! [[Any]]).map { MessageDiffToken(text: $0[0] as! String, changed: $0[1] as! Bool) }
+            }
+            let (old, new) = messageDiff(before: fixture["before"] as! String, after: fixture["after"] as! String)
+            XCTAssertEqual(old, runs("old"), fixture["note"] as! String)
+            XCTAssertEqual(new, runs("new"), fixture["note"] as! String)
+        }
+    }
+
+    func testMessageHistoryValidation() {
         let before = "Meet Friday 🙂\nKeep this unchanged\nAt 9"
-        let after = "Meet Saturday 🚀\nKeep this unchanged\nAt 11"
-        let (old, new) = messageDiff(before: before, after: after)
-        XCTAssertEqual(old.map(\.text).joined(), before)
-        XCTAssertEqual(new.map(\.text).joined(), after)
-        XCTAssertEqual(old.filter(\.changed).map(\.text).joined(), "Friday🙂9")
-        XCTAssertEqual(new.filter(\.changed).map(\.text).joined(), "Saturday🚀11")
-        XCTAssertTrue(old.filter { ["Keep", "this", "unchanged"].contains($0.text) }.allSatisfy { !$0.changed })
         let original = MessageVersion(revision: 1, content: ChatContent(version: 1, type: "text", text: before), createdAt: "2026-10-01T00:00:00Z")
         let revised = MessageVersion(revision: 2, content: original.content, createdAt: "2026-10-02T00:00:00Z")
         XCTAssertTrue(MessageVersions(messageId: "message", versions: [revised, original], hasMore: false).isValid(messageID: "message", before: nil))

@@ -1,4 +1,5 @@
 import Foundation
+@_implementationOnly import CaperMobile
 
 public struct UnreadThread: Codable, Equatable, Sendable {
     public let rootId: String
@@ -554,22 +555,32 @@ struct MessageDiffToken: Equatable {
     let changed: Bool
 }
 
-/// A word-level Myers diff preserving whitespace, Unicode and separate edits.
+/// Each version as runs, marked where web's history view highlights it (shared/messages/history_diff.rs).
 func messageDiff(before: String, after: String) -> ([MessageDiffToken], [MessageDiffToken]) {
-    let pattern = try! NSRegularExpression(pattern: "\\s+|[\\p{L}\\p{N}_]+|[^\\s\\p{L}\\p{N}_]+")
-    func tokens(_ text: String) -> [String] {
-        pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).map { (text as NSString).substring(with: $0.range) }
-    }
-    let old = tokens(before), new = tokens(after)
-    var removed = Set<Int>(), added = Set<Int>()
-    for change in new.difference(from: old) {
-        switch change {
-        case .remove(let offset, _, _): removed.insert(offset)
-        case .insert(let offset, _, _): added.insert(offset)
+    var old = before, new = after
+    return old.withUTF8 { oldBytes in
+        new.withUTF8 { newBytes in
+            let spans = caper_mobile_history_diff_spans(oldBytes.baseAddress, oldBytes.count, newBytes.baseAddress, newBytes.count)
+            defer { caper_mobile_ints_free(spans) }
+            let split = 1 + Int(spans.data[0]) * 4
+            func runs(_ bytes: UnsafeBufferPointer<UInt8>, _ range: Range<Int>) -> [MessageDiffToken] {
+                var result: [MessageDiffToken] = []
+                var end = 0
+                func add(_ start: Int, _ limit: Int, _ changed: Bool) {
+                    if start < limit { result.append(.init(text: String(decoding: UnsafeBufferPointer(rebasing: bytes[start..<limit]), as: UTF8.self), changed: changed)) }
+                }
+                for span in stride(from: range.lowerBound, to: range.upperBound, by: 4) {
+                    let start = Int(spans.data[span + 2]), limit = Int(spans.data[span + 3])
+                    add(end, start, false)
+                    add(start, limit, true)
+                    end = limit
+                }
+                add(end, bytes.count, false)
+                return result
+            }
+            return (runs(oldBytes, 1..<split), runs(newBytes, split..<spans.len))
         }
     }
-    return (old.enumerated().map { MessageDiffToken(text: $0.element, changed: removed.contains($0.offset)) },
-            new.enumerated().map { MessageDiffToken(text: $0.element, changed: added.contains($0.offset)) })
 }
 
 public struct MessagePin: Codable, Equatable, Sendable {
