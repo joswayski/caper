@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreMedia
+import CryptoKit
 import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
@@ -1342,6 +1343,45 @@ final class AttachmentTests: XCTestCase {
     }
 
     // MARK: Metadata on unchanged originals
+
+    func testSharedMetadataFixtures() async throws {
+        struct Fixture: Decodable {
+            let file: String
+            let contentType: String
+            let expected: String
+        }
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let directory = root.appendingPathComponent("shared/media/metadata")
+        let fixtures = try JSONDecoder().decode([Fixture].self, from: Data(contentsOf: directory.appendingPathComponent("cases.json")))
+        XCTAssertFalse(fixtures.isEmpty, "The shared metadata corpus must not be empty")
+        for fixture in fixtures {
+            let source = directory.appendingPathComponent("inputs").appendingPathComponent(fixture.file)
+            let context = "\(fixture.file) (\(fixture.contentType))"
+            let originalHash = try metadataHash(source)
+            do {
+                let output = try await AttachmentMetadata.cleanCopy(of: source, contentType: fixture.contentType)
+                defer { AttachmentStaging.remove(output.url) }
+                XCTAssertEqual(try metadataHash(output.url), fixture.expected, context)
+                XCTAssertEqual(output.size, try output.url.resourceValues(forKeys: [.fileSizeKey]).fileSize, context)
+            } catch {
+                // The public Apple boundary deliberately presents unsupported
+                // and malformed media as the same non-technical refusal.
+                XCTAssertTrue(["refused:unsupported", "refused:malformed"].contains(fixture.expected), "\(context): \(error)")
+                XCTAssertEqual((error as? APIError)?.code, "media_metadata", context)
+                XCTAssertEqual((error as? APIError)?.message, AttachmentMetadata.refusalMessage, context)
+            }
+            XCTAssertEqual(try metadataHash(source), originalHash, "Cleaner changed source: \(context)")
+        }
+    }
+
+    private func metadataHash(_ url: URL) throws -> String {
+        let file = try FileHandle(forReadingFrom: url)
+        defer { try? file.close() }
+        var hash = SHA256()
+        while let bytes = try file.read(upToCount: 1024 * 1024), !bytes.isEmpty { hash.update(data: bytes) }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
 
     private func cleaned(_ data: Data, contentType: String) async throws -> Data {
         let file = try await AttachmentMetadata.cleanCopy(of: data, contentType: contentType)
