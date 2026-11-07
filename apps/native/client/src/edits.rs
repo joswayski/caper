@@ -1,8 +1,10 @@
 //! Message edits: what an edited text must be, and the retained
-//! versions the history pages through and compares word by word.
+//! versions the history pages through and compares as web does.
 
 use crate::model::MessageVersion;
-use similar::{ChangeTag, TextDiff};
+
+#[path = "../../../../shared/messages/history_diff.rs"]
+mod history_diff;
 
 pub fn valid_text(text: &str) -> bool {
     !text.trim().is_empty()
@@ -14,22 +16,16 @@ pub fn valid_text(text: &str) -> bool {
 
 pub type DiffTokens = Vec<(String, bool)>;
 
-/// Word-level before and after tokens, each marked when it changed.
+/// The before and after texts as runs, each marked when web's history view
+/// highlights it (`shared/messages/history_diff.rs`).
 pub fn diff(before: &str, after: &str) -> (DiffTokens, DiffTokens) {
-    let mut old = Vec::new();
-    let mut new = Vec::new();
-    for change in TextDiff::from_words(before, after).iter_all_changes() {
-        let token = (change.value().to_owned(), change.tag() != ChangeTag::Equal);
-        match change.tag() {
-            ChangeTag::Equal => {
-                old.push(token.clone());
-                new.push(token);
-            }
-            ChangeTag::Delete => old.push(token),
-            ChangeTag::Insert => new.push(token),
-        }
-    }
-    (old, new)
+    let (old, new) = history_diff::highlights(before, after);
+    let tokens = |text: &str, runs: history_diff::Highlights| {
+        runs.into_iter()
+            .map(|(range, changed)| (text[range].to_owned(), changed))
+            .collect()
+    };
+    (tokens(before, old), tokens(after, new))
 }
 
 /// Adds a page of versions, newest first: an older page appends the
@@ -69,41 +65,27 @@ pub fn version_label(version: &MessageVersion) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn separated_changes_preserve_unicode_and_whitespace() {
-        let before = "Meet Friday 🙂\nKeep this unchanged\nAt 9";
-        let after = "Meet Saturday 🚀\nKeep this unchanged\nAt 11";
-        let (old, new) = diff(before, after);
-        assert_eq!(
-            old.iter()
-                .map(|(text, _)| text.as_str())
-                .collect::<String>(),
-            before
-        );
-        assert_eq!(
-            new.iter()
-                .map(|(text, _)| text.as_str())
-                .collect::<String>(),
-            after
-        );
-        assert!(
-            old.iter()
-                .filter(|(text, _)| text.contains("Keep"))
-                .all(|(_, changed)| !changed)
-        );
-        assert!(
-            old.iter()
-                .filter(|(_, changed)| *changed)
-                .map(|(text, _)| text.as_str())
-                .collect::<String>()
-                .contains("Friday")
-        );
-        assert!(
-            new.iter()
-                .filter(|(_, changed)| *changed)
-                .map(|(text, _)| text.as_str())
-                .collect::<String>()
-                .contains("Saturday")
-        );
+    fn highlights_follow_the_shared_cases() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../shared/messages/history-diff-cases.json"
+        ))
+        .unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            let text = |key: &str| case[key].as_str().unwrap();
+            let expected =
+                |key: &str| -> DiffTokens { serde_json::from_value(case[key].clone()).unwrap() };
+            let (old, new) = diff(text("before"), text("after"));
+            assert_eq!(
+                (old, new),
+                (expected("old"), expected("new")),
+                "{}",
+                text("note")
+            );
+        }
+    }
+
+    #[test]
+    fn edited_text_rules() {
         assert!(valid_text(&"🙂".repeat(4000)));
         assert!(!valid_text(&"🙂".repeat(4001)));
         assert!(!valid_text(" \n\t"));
