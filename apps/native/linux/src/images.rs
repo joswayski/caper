@@ -89,6 +89,7 @@ icons! {
     Link => "link",
     Inbox => "inbox",
     ArrowLeft => "arrow-left",
+    ArrowRight => "arrow-right",
     Images => "images",
     Check => "check",
     RotateCcw => "rotate-ccw",

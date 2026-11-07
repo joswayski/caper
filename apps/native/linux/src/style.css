@@ -146,6 +146,77 @@ entry:focus-within {
   background: @caper_blackout;
 }
 
+/* Sign-in, as desktop: a 440px column under the wordmark, a 52px field
+   with 16px text, and the action right-aligned below it. */
+.signin-column {
+  margin: 100px 20px 48px;
+}
+
+.signin-column .wordmark {
+  margin-bottom: 58px;
+}
+
+.signin-intro {
+  margin-top: 4px;
+  font-size: 16px;
+}
+
+label.signin-field {
+  margin: 20px 0 8px;
+  font-size: 14px;
+}
+
+entry.signin-entry {
+  min-height: 52px;
+  padding: 0 14px;
+  font-size: 16px;
+  background: @caper_surface_composer;
+}
+
+.signin-error {
+  margin-top: 12px;
+  padding: 14px 12px;
+  border: 1px solid @caper_terracotta;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.signin-status {
+  margin-top: 12px;
+  font-size: 14px;
+}
+
+button.login-action {
+  margin-top: 12px;
+  min-height: 58px;
+  padding: 0 15px 0 21px;
+  border-radius: 7px;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+button.login-action.compact {
+  min-width: 200px;
+}
+
+button.login-action:disabled {
+  border: 1px solid @caper_border;
+}
+
+.signin-links {
+  margin-top: 10px;
+}
+
+.signin-links button {
+  padding: 0;
+  font-size: 13.6px;
+}
+
+.signin-spam {
+  margin-top: 8px;
+  font-size: 13.6px;
+}
+
 .card {
   background: @caper_surface;
   border: 1px solid @caper_border;

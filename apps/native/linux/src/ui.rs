@@ -375,10 +375,13 @@ pub struct Ui {
     pub zoom_notice: gtk::Label,
     pub pages: gtk::Stack,
     pub steps: gtk::Stack,
+    pub signin_actions: gtk::Stack,
     pub email: gtk::Entry,
-    pub email_button: gtk::Button,
+    pub email_button: LoginAction,
     pub code: gtk::Entry,
-    pub code_button: gtk::Button,
+    pub code_button: LoginAction,
+    pub last_attempt: gtk::Label,
+    pub spam_hint: gtk::Label,
     pub resend: gtk::Button,
     pub other_email: gtk::Button,
     pub code_hint: gtk::Label,
@@ -517,74 +520,114 @@ impl Ui {
         loading.set_halign(gtk::Align::Center);
         pages.add_named(&loading, Some("loading"));
 
-        // Sign-in: email, then the emailed code.
-        let card = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        card.add_css_class("card");
-        card.set_halign(gtk::Align::Center);
-        card.set_valign(gtk::Align::Center);
-        card.set_size_request(400, -1);
+        // Sign-in, as desktop: the wordmark over a 440px column (email,
+        // then the emailed code), its action right-aligned under the field.
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        column.add_css_class("signin-column");
+        column.set_halign(gtk::Align::Center);
+        column.set_size_request(440, -1);
+        // GTK 4.8 doesn't name a picture after its alternative text.
+        let signin_wordmark: gtk::Picture = crate::app::named("GtkPicture", "Caper");
+        if let Some(texture) = crate::images::wordmark(132, 35) {
+            signin_wordmark.set_paintable(Some(&texture));
+        }
+        signin_wordmark.set_size_request(132, 35);
+        signin_wordmark.set_can_shrink(true);
+        signin_wordmark.set_content_fit(gtk::ContentFit::ScaleDown);
+        signin_wordmark.set_alternative_text(Some("Caper"));
+        let signin_wordmark_line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        signin_wordmark_line.add_css_class("wordmark");
+        signin_wordmark_line.set_halign(gtk::Align::Start);
+        signin_wordmark_line.append(&signin_wordmark);
+        column.append(&signin_wordmark_line);
         let steps = gtk::Stack::new();
         steps.set_vhomogeneous(false);
-        let email_step = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        email_step.append(&label("Sign in to Caper", &["title"]));
-        let intro = label(
-            "Use your email to create an account or log back in.",
-            &["muted"],
-        );
-        intro.set_wrap(true);
-        intro.set_max_width_chars(44);
-        email_step.append(&intro);
-        let email_label = label("Email", &["field"]);
-        email_step.append(&email_label);
+        let step = |title: &str, intro: &gtk::Label, field: &str, entry: &gtk::Entry| {
+            let step = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let title = label(title, &["first-title"]);
+            title.set_xalign(0.0);
+            step.append(&title);
+            intro.add_css_class("signin-intro");
+            intro.set_wrap(true);
+            intro.set_xalign(0.0);
+            // Wrapped labels ask for their whole text's width; keep 440px.
+            intro.set_max_width_chars(44);
+            step.append(intro);
+            let field = label(field, &["field", "signin-field"]);
+            field.set_xalign(0.0);
+            // The label names the field for assistive technologies.
+            field.set_mnemonic_widget(Some(entry));
+            step.append(&field);
+            entry.add_css_class("signin-entry");
+            step.append(entry);
+            step
+        };
         let email = gtk::Entry::builder()
             .placeholder_text("you@example.com")
             .input_purpose(gtk::InputPurpose::Email)
             .build();
-        // The label names the field for assistive technologies.
-        email_label.set_mnemonic_widget(Some(&email));
-        email_step.append(&email);
-        let email_button = gtk::Button::with_label("Continue");
-        email_button.add_css_class("primary");
-        email_step.append(&email_button);
-        steps.add_named(&email_step, Some("email"));
-        let code_step = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        code_step.append(&label("Check your email", &["title"]));
-        let code_hint = label("", &["muted"]);
-        code_hint.set_wrap(true);
-        // Wrapped labels ask for their whole text's width; keep the card's.
-        code_hint.set_max_width_chars(44);
-        code_step.append(&code_hint);
-        let code_label = label("Sign-in code", &["field"]);
-        code_step.append(&code_label);
+        let intro = label(
+            "Use your email to create an account or log back in.",
+            &["muted"],
+        );
+        steps.add_named(
+            &step("Welcome to Caper", &intro, "Email address", &email),
+            Some("email"),
+        );
         let code = gtk::Entry::builder()
             .placeholder_text("e.g. ABC234")
             .build();
-        code_label.set_mnemonic_widget(Some(&code));
-        code_step.append(&code);
-        let code_button = gtk::Button::with_label("Continue");
-        code_button.add_css_class("primary");
-        code_step.append(&code_button);
-        let links = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        links.set_homogeneous(true);
-        let resend = gtk::Button::with_label("Resend code");
-        resend.add_css_class("flat");
+        let code_hint = label("", &["muted"]);
+        steps.add_named(
+            &step("Check your email.", &code_hint, "Sign-in code", &code),
+            Some("code"),
+        );
+        column.append(&steps);
+        let signin_error = label("", &["error", "signin-error"]);
+        signin_error.set_wrap(true);
+        signin_error.set_xalign(0.0);
+        column.append(&signin_error);
+        let signin_status = label("", &["muted", "signin-status"]);
+        signin_status.set_wrap(true);
+        signin_status.set_xalign(0.0);
+        column.append(&signin_status);
+        let last_attempt = label(
+            "One attempt left. Check the code carefully.",
+            &["field", "signin-status"],
+        );
+        last_attempt.set_wrap(true);
+        last_attempt.set_xalign(0.0);
+        column.append(&last_attempt);
+        let actions = gtk::Stack::new();
+        actions.set_vhomogeneous(false);
+        let email_button = LoginAction::new(images, "Email me a code", false);
+        actions.add_named(&email_button.button, Some("email"));
+        let code_actions = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let code_button = LoginAction::new(images, "Continue", true);
+        code_actions.append(&code_button.button);
+        let links = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+        links.add_css_class("signin-links");
         let other_email = gtk::Button::with_label("Use a different email");
         other_email.add_css_class("flat");
-        links.append(&resend);
+        let resend = gtk::Button::with_label("Resend code");
+        resend.add_css_class("flat");
         links.append(&other_email);
-        code_step.append(&links);
-        steps.add_named(&code_step, Some("code"));
-        card.append(&steps);
-        let signin_status = label("", &["muted"]);
-        signin_status.set_wrap(true);
-        card.append(&signin_status);
-        let signin_error = label("", &["error"]);
-        signin_error.set_wrap(true);
-        card.append(&signin_error);
-        let signin = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        links.append(&resend);
+        code_actions.append(&links);
+        let spam_hint = label(
+            "Still nothing? Check your spam folder, or try again in 15 minutes.",
+            &["muted", "signin-spam"],
+        );
+        spam_hint.set_wrap(true);
+        spam_hint.set_xalign(0.0);
+        code_actions.append(&spam_hint);
+        actions.add_named(&code_actions, Some("code"));
+        column.append(&actions);
+        let signin = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(&column)
+            .build();
         signin.add_css_class("signin");
-        signin.append(&card);
-        card.set_vexpand(true);
         pages.add_named(&signin, Some("signin"));
 
         // Web's first-space page.
@@ -592,7 +635,8 @@ impl Ui {
         first.add_css_class("first-space");
         first.set_halign(gtk::Align::Center);
         first.set_size_request(440, -1);
-        let wordmark = gtk::Picture::new();
+        // GTK 4.8 doesn't name a picture after its alternative text.
+        let wordmark: gtk::Picture = crate::app::named("GtkPicture", "Caper");
         if let Some(texture) = crate::images::wordmark(132, 35) {
             wordmark.set_paintable(Some(&texture));
         }
@@ -1154,10 +1198,13 @@ impl Ui {
             zoom_notice,
             pages,
             steps,
+            signin_actions: actions,
             email,
             email_button,
             code,
             code_button,
+            last_attempt,
+            spam_hint,
             resend,
             other_email,
             code_hint,
@@ -1304,5 +1351,52 @@ impl RequestBar {
             error,
             waiting,
         }
+    }
+}
+
+/// Desktop's sign-in action: eggshell with its label and an arrow, 58px
+/// tall, neutral chrome (and a muted arrow) until it can be used. A compact
+/// one keeps desktop's 200px minimum.
+pub struct LoginAction {
+    pub button: gtk::Button,
+    label: gtk::Label,
+    ready: gtk::Image,
+    idle: gtk::Image,
+}
+
+impl LoginAction {
+    fn new(images: &Images, text: &str, compact: bool) -> Self {
+        let button: gtk::Button = crate::app::named("GtkButton", text);
+        button.add_css_class("primary");
+        button.add_css_class("login-action");
+        if compact {
+            button.add_css_class("compact");
+        }
+        button.set_halign(gtk::Align::End);
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 32);
+        let label = label(text, &[]);
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        line.append(&label);
+        let ready = images.icon_image(Icon::ArrowRight, "#0c0d0f", 16);
+        let idle = images.icon_image(Icon::ArrowRight, "#b9bcbe", 16);
+        line.append(&ready);
+        line.append(&idle);
+        button.set_child(Some(&line));
+        let action = Self {
+            button,
+            label,
+            ready,
+            idle,
+        };
+        action.set(text, false);
+        action
+    }
+
+    pub fn set(&self, text: &str, enabled: bool) {
+        self.label.set_label(text);
+        self.button.set_sensitive(enabled);
+        self.ready.set_visible(enabled);
+        self.idle.set_visible(!enabled);
     }
 }

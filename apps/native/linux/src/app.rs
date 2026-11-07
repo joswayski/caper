@@ -190,6 +190,10 @@ struct State {
     email: String,
     challenge: Option<String>,
     code_sent_at: Option<Instant>,
+    /// Code attempts the server allows before a new code is needed.
+    attempts_remaining: Option<u64>,
+    /// A new code arrived: the old one's field empties, as desktop.
+    clear_code: bool,
     resends: u8,
     resending: bool,
     signin_status: Option<&'static str>,
@@ -830,9 +834,24 @@ impl App {
         ui.email.connect_activate(move |_| app.request_code(false));
         let app = self.clone();
         ui.email_button
+            .button
             .connect_clicked(move |_| app.request_code(false));
         let app = self.clone();
         ui.code.connect_activate(move |_| app.verify());
+        // As desktop: an edit clears the error and decides whether the
+        // action can be used.
+        for entry in [ui.email.clone(), ui.code.clone()] {
+            let app = self.clone();
+            entry.connect_changed(move |_| {
+                if let Ok(mut state) = app.state.try_borrow_mut() {
+                    if !state.busy {
+                        state.error = None;
+                    }
+                    drop(state);
+                    app.render();
+                }
+            });
+        }
         let app = self.clone();
         ui.first_name
             .connect_activate(move |_| app.create_first_space());
@@ -873,7 +892,14 @@ impl App {
             target.set_cursor_from_name(Some("pointer"));
         }
         let app = self.clone();
-        ui.code_button.connect_clicked(move |_| app.verify());
+        ui.code_button.button.connect_clicked(move |_| {
+            // Out of attempts, it asks for a new code instead.
+            if app.state.borrow().attempts_remaining == Some(0) {
+                app.request_code(true);
+            } else {
+                app.verify();
+            }
+        });
         let app = self.clone();
         ui.resend.connect_clicked(move |_| app.request_code(true));
         let app = self.clone();
@@ -883,6 +909,7 @@ impl App {
                 state.challenge = None;
                 state.error = None;
                 state.signin_status = None;
+                state.attempts_remaining = None;
                 state.resends = 0;
             }
             app.render();
@@ -1255,8 +1282,6 @@ impl App {
                     generation: state.generation,
                     email,
                 });
-            } else {
-                state.error = Some("Enter your email address.".into());
             }
         }
         self.render();
@@ -1273,9 +1298,8 @@ impl App {
             let Some(challenge) = state.challenge.clone() else {
                 return;
             };
-            if code.is_empty() {
-                state.error = Some("Enter the code from your email.".into());
-            } else {
+            // As desktop: Enter does what the button can, nothing more.
+            if code.len() == 6 && state.attempts_remaining != Some(0) {
                 state.busy = true;
                 state.error = None;
                 self.worker.send(Command::VerifyCode {
@@ -3354,6 +3378,9 @@ impl App {
             self.continue_jump();
         }
         self.render_pins();
+        if std::mem::take(&mut self.state.borrow_mut().clear_code) {
+            self.ui.code.set_text("");
+        }
         let created = self.state.borrow_mut().open_created.take();
         if let Some(id) = created {
             self.close_start_direct();
@@ -3393,6 +3420,8 @@ impl App {
                     Ok(challenge) => {
                         state.challenge = Some(challenge);
                         state.code_sent_at = Some(Instant::now());
+                        state.attempts_remaining = None;
+                        state.clear_code = true;
                         if resend {
                             state.resends = state.resends.saturating_add(1);
                             state.signin_status =
@@ -3408,6 +3437,7 @@ impl App {
                 attempts_remaining,
             } if generation == state.generation => {
                 state.busy = false;
+                state.attempts_remaining = attempts_remaining;
                 match result {
                     Ok((token, account, spaces)) => {
                         state.challenge = None;
@@ -3418,12 +3448,7 @@ impl App {
                         });
                         self.establish(state, token, account, spaces);
                     }
-                    Err(error) => {
-                        state.error = Some(match attempts_remaining {
-                            Some(left) => format!("{error} {left} attempts left."),
-                            None => error,
-                        })
-                    }
+                    Err(error) => state.error = Some(error),
                 }
             }
             Event::Credential {
@@ -4674,45 +4699,93 @@ impl App {
         let ui = &self.ui;
         let mut state = self.state.borrow_mut();
         let first_space = state.page() == Page::Chat && state.needs_first_space();
-        ui.pages.set_visible_child_name(match state.page() {
+        let page = match state.page() {
             Page::Loading => "loading",
             Page::SignIn => "signin",
             Page::Chat if first_space => "first-space",
             Page::Chat => "chat",
-        });
+        };
+        let step = if state.challenge.is_some() {
+            "code"
+        } else {
+            "email"
+        };
+        // As desktop: arriving at a step puts the caret in its field.
+        let arrived = page == "signin"
+            && (ui.pages.visible_child_name().as_deref() != Some(page)
+                || ui.steps.visible_child_name().as_deref() != Some(step));
+        ui.pages.set_visible_child_name(page);
         if first_space {
             self.render_first_space(&state);
         }
-        ui.steps
+        ui.steps.set_visible_child_name(step);
+        if arrived {
+            if state.challenge.is_some() {
+                ui.code.grab_focus();
+            } else {
+                ui.email.grab_focus();
+            }
+        }
+        ui.code_hint.set_label(&format!(
+            "Enter the six-character code sent to {}. It expires in 10 minutes.",
+            state.email
+        ));
+        ui.signin_actions
             .set_visible_child_name(if state.challenge.is_some() {
                 "code"
             } else {
                 "email"
             });
-        ui.code_hint.set_label(&format!(
-            "Enter the six-character code sent to {}. It expires in 10 minutes.",
-            state.email
-        ));
-        ui.email_button.set_sensitive(!state.busy);
-        ui.code_button.set_sensitive(!state.busy);
-        ui.email_button
-            .set_label(if state.busy && !state.resending {
+        // As desktop: each action waits for something it can send.
+        ui.email_button.set(
+            if state.busy {
                 "Sending…"
             } else {
-                "Continue"
-            });
-        ui.code_button.set_label(if state.busy && !state.resending {
-            "Checking…"
+                "Email me a code"
+            },
+            !state.busy && ui.email.text().contains('@'),
+        );
+        let exhausted = state.attempts_remaining == Some(0);
+        let resends_left = state.resends < MAX_RESENDS;
+        ui.code.set_sensitive(!exhausted);
+        if exhausted {
+            // Counts as a resend; at the limit the API would send nothing.
+            ui.code_button.button.set_visible(resends_left);
+            ui.code_button.set(
+                if state.busy {
+                    "Sending…"
+                } else {
+                    "Email me a new code"
+                },
+                !state.busy,
+            );
         } else {
-            "Continue"
-        });
+            let mut code = ui.code.text().to_string();
+            caper_client::sign_in::clean_sign_in_code(&mut code);
+            ui.code_button.button.set_visible(true);
+            ui.code_button.set(
+                if state.busy && !state.resending {
+                    "Checking…"
+                } else {
+                    "Continue"
+                },
+                !state.busy && code.len() == 6,
+            );
+        }
+        ui.last_attempt
+            .set_visible(state.challenge.is_some() && state.attempts_remaining == Some(1));
+        ui.spam_hint.set_visible(!resends_left);
         self.render_resend(&state);
-        let status = state.signin_status.unwrap_or_default();
-        ui.signin_status.set_label(status);
-        ui.signin_status.set_visible(!status.is_empty());
         let error = state.error.as_deref().unwrap_or_default();
         ui.signin_error.set_label(error);
         ui.signin_error.set_visible(!error.is_empty());
+        // Desktop shows one of the two: the error, else the status.
+        let status = state
+            .signin_status
+            .filter(|_| error.is_empty() && state.challenge.is_some())
+            .unwrap_or_default();
+        ui.signin_status.set_label(status);
+        ui.signin_status.set_visible(!status.is_empty());
         // A missing session shows in the banner when nothing else does. A
         // preview has none by design: its Join bar says so.
         let session = (error.is_empty() && state.retry == Some(Retry::Session) && state.joined())
@@ -4882,7 +4955,8 @@ impl App {
 
     fn render_resend(self: &Rc<Self>, state: &State) {
         let ui = &self.ui;
-        ui.resend.set_visible(state.resends < MAX_RESENDS);
+        ui.resend
+            .set_visible(state.resends < MAX_RESENDS && state.attempts_remaining != Some(0));
         match state
             .code_sent_at
             .and_then(|sent| resend_wait(sent.elapsed()))
