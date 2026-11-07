@@ -412,6 +412,18 @@ final class CaperParityUITests: XCTestCase {
         add.tap()
     }
 
+    /// Formatted text typed through the platform keyboard stays exactly as
+    /// typed: closing a style and typing on must not carry it onto later words.
+    func testTypingFormattedTextKeepsItExactly() throws {
+        let app = launch()
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing message composer")
+        XCTAssertTrue(focus(composer))
+        let draft = "**Release check** for _the voice beta_: see **both _builds_** and **Done** when"
+        composer.typeText(draft)
+        XCTAssertEqual(composer.value as? String, draft, "A closed style must not spread onto the words typed after it")
+    }
+
     func testColonEmojiSuggestionsPreserveDraftAndFocusWithoutSending() throws {
         let app = launch()
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
