@@ -17,8 +17,10 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
     init(model: AppModel) { self.model = model }
 
     func start() {
+        // UNUserNotificationCenter throws outside an app bundle, as in the
+        // bundle-less xctest host that runs CaperCore's unit tests.
         guard ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] != "parity",
-              let model, let account = model.account, accountID != account.id else { return }
+              Bundle.main.bundleURL.pathExtension == "app", let model, let account = model.account, accountID != account.id else { return }
         stop()
         accountID = account.id
         let epoch = self.epoch
