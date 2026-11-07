@@ -4,6 +4,8 @@ import CaperCore
 @MainActor final class WorkspaceController: NSViewController, NSTextViewDelegate {
     private let model: AppModel
     private let inThread: Bool
+    var showSettings: (() -> Void)?
+    var showWhatsNew: (() -> Void)?
     private var presentationParent: NSViewController { parent as? WorkspaceController ?? self }
     private var threadPane: WorkspaceController?
     private let threadObservation = NativeObservation()
@@ -190,6 +192,8 @@ import CaperCore
             navigation.show = { [weak self] item in
                 guard let self else { return }; self.dialogs.show(item, in: self)
             }
+            navigation.showSettings = { [weak self] in self?.showSettings?() }
+            navigation.showWhatsNew = { [weak self] in self?.showWhatsNew?() }
             navigation.showActivity = { [weak self] in
                 guard let self else { return }
                 self.picker.close(restoringFocus: false)

@@ -8344,12 +8344,17 @@ extension EnvironmentValues {
 
 /// The Settings scene is also available before signing in, through Caper → Settings.
 @MainActor public struct CaperSettingsView: View {
-    @State private var loginItem = CaperLoginItem.shared
+    @State private var loginItem: CaperLoginItem
     @Bindable private var effects = CaperEffects.shared
     @Bindable private var voiceMessages = VoiceMessageSettings.shared
     @Bindable private var notes: WhatsNewModel
     @Environment(\.desktopUpdates) private var updates
-    public init(whatsNew: WhatsNewModel) { notes = whatsNew }
+    private let managesPresentation: Bool
+    public init(whatsNew: WhatsNewModel, loginItem: CaperLoginItem = .shared, managesPresentation: Bool = true) {
+        notes = whatsNew
+        _loginItem = State(initialValue: loginItem)
+        self.managesPresentation = managesPresentation
+    }
 
     public var body: some View {
         ScrollView {
@@ -8365,6 +8370,10 @@ extension EnvironmentValues {
                         }
                     }.toggleStyle(.switch).disabled(!loginItem.available)
                         .accessibilityIdentifier("launch-at-login")
+                    if !loginItem.available {
+                        Text("Startup registration is disabled in this build.")
+                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    }
                     if loginItem.status == .requiresApproval {
                         Text("Launch at login needs approval in System Settings.")
                             .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
@@ -8422,8 +8431,11 @@ extension EnvironmentValues {
         .tint(CaperTheme.terracotta)
         .buttonStyle(CaperSecondaryButton())
         .accessibilityIdentifier("desktop-settings")
-        .onAppear { CaperFontLoader.register(); loginItem.refresh(); notes.settingsOpen = true }
-        .onDisappear { notes.settingsOpen = false }
+        .onAppear {
+            CaperFontLoader.register(); loginItem.refresh()
+            if managesPresentation { notes.settingsOpen = true }
+        }
+        .onDisappear { if managesPresentation { notes.settingsOpen = false } }
         .sheet(item: Binding(get: { notes.settingsOpen ? notes.presentation : nil }, set: { notes.presentation = $0 })) { display in
             WhatsNewSheet(notes: notes, display: notes.presentation ?? display)
         }
