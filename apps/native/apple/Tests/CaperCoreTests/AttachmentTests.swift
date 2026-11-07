@@ -2762,7 +2762,7 @@ private final class AttachmentDrag: NSObject, NSDraggingInfo {
     var draggingSource: Any? { nil }
     var draggingLocation: NSPoint { .zero }
     var draggedImageLocation: NSPoint { .zero }
-    var draggedImage: NSImage { NSImage(size: NSSize(width: 1, height: 1)) }
+    var draggedImage: NSImage? { NSImage(size: NSSize(width: 1, height: 1)) }
     var draggingSequenceNumber: Int { 1 }
     var draggingFormation: NSDraggingFormation = .default
     var animatesToDestination = false
@@ -2770,7 +2770,7 @@ private final class AttachmentDrag: NSObject, NSDraggingInfo {
     var springLoadingHighlight: NSSpringLoadingHighlight { .none }
     func resetSpringLoading() {}
     func slideDraggedImage(to screenPoint: NSPoint) {}
-    func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
                                 searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
 }
