@@ -5,6 +5,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import chat.caper.android.data.RESENT_CODE_STATUS
 import chat.caper.android.model.SessionScreen
 import chat.caper.android.ui.CaperTheme
 import org.junit.Rule
@@ -28,13 +29,23 @@ class SignInUiTest {
 
     @Test fun codeStepAnnouncesItsErrorAtOnceAndTheLastAttemptPolitely() {
         compose.setContent { CaperTheme {
-            VerifyScreen(SessionScreen.Verify("challenge", "owner@example.test", attemptsRemaining = 1), busy = false,
+            VerifyScreen(SessionScreen.Verify("challenge", "owner@example.test", attemptsRemaining = 1, resends = 1), busy = false,
                 error = "That code is incorrect or expired.", clearError = {}, back = {}, submit = { _, _ -> }, resend = {})
         } }
         compose.onNodeWithText("Check your email.").assert(isHeading())
         compose.onNode(hasSetTextAction() and hasContentDescription("Sign-in code")).assertExists()
         compose.onNode(announced("That code is incorrect or expired.", LiveRegionMode.Assertive)).assertExists()
         compose.onNode(announced("One attempt left. Check the code carefully.", LiveRegionMode.Polite)).assertExists()
+        // Web shows the new-code notice only while no error is shown.
+        compose.onNodeWithText(RESENT_CODE_STATUS).assertDoesNotExist()
+    }
+
+    @Test fun aResentCodeIsAnnouncedPolitely() {
+        compose.setContent { CaperTheme {
+            VerifyScreen(SessionScreen.Verify("challenge", "owner@example.test", resends = 1), busy = false,
+                error = null, clearError = {}, back = {}, submit = { _, _ -> }, resend = {})
+        } }
+        compose.onNode(announced(RESENT_CODE_STATUS, LiveRegionMode.Polite)).assertExists()
     }
 
     @Test fun noErrorMeansNoAlert() {
