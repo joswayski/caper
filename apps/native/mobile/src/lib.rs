@@ -262,6 +262,46 @@ pub fn emoji_suggestions(query: &str) -> Vec<i32> {
     })
 }
 
+/// `part`, a slice of `text`, as `[utf16_start, utf16_end]`, or `[utf16_start,
+/// utf16_end, utf8_start, utf8_end]` with `utf8`.
+fn slice_span(text: &str, part: &str, utf8: bool) -> Vec<i32> {
+    let start = part.as_ptr() as usize - text.as_ptr() as usize;
+    let end = start + part.len();
+    let mut cursor = Utf16Cursor::new(text);
+    let mut out = vec![offset(cursor.at(start)), offset(cursor.at(end))];
+    if utf8 {
+        out.extend([offset(start), offset(end)]);
+    }
+    out
+}
+
+/// One value per character of ASCII text.
+fn ascii(text: &str) -> Vec<i32> {
+    text.bytes().map(i32::from).collect()
+}
+
+/// Web's `normalizeChannelName` (`names::normalize_channel`): the channel
+/// name as typed, one ASCII character per value.
+pub fn channel_name(text: &str) -> Vec<i32> {
+    ascii(&names::normalize_channel(text))
+}
+
+/// Web's `channelNameError` (`channel`) or `spaceNameError` for `text`: the
+/// message's ASCII characters, or nothing when the name is valid.
+pub fn name_error(text: &str, channel: bool) -> Vec<i32> {
+    let error = if channel {
+        names::channel_name_error(text)
+    } else {
+        names::space_name_error(text)
+    };
+    error.map_or_else(Vec::new, ascii)
+}
+
+/// The space name web sends for `text` (`name.trim()`), as `slice_span`.
+pub fn space_name_span(text: &str, utf8: bool) -> Vec<i32> {
+    slice_span(text, names::space_name(text), utf8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +570,44 @@ mod tests {
                 let name = name.as_str().unwrap();
                 assert_eq!(names::has_hidden(name), hidden, "{name:?}");
             }
+        }
+    }
+
+    #[test]
+    fn space_and_channel_names_follow_the_shared_cases() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../shared/names/channel-cases.json"))
+                .unwrap();
+        let chars = |values: Vec<i32>| {
+            values
+                .into_iter()
+                .map(|c| c as u8 as char)
+                .collect::<String>()
+        };
+        let message = |case: &serde_json::Value| case["error"].as_str().unwrap_or("").to_owned();
+        for case in cases["normalize"].as_array().unwrap() {
+            let input = case["input"].as_str().unwrap();
+            assert_eq!(
+                chars(channel_name(input)),
+                case["output"].as_str().unwrap(),
+                "{input:?}"
+            );
+        }
+        for case in cases["channelErrors"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            assert_eq!(chars(name_error(name, true)), message(case), "{name:?}");
+        }
+        for case in cases["spaceNames"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            assert_eq!(chars(name_error(name, false)), message(case), "{name:?}");
+            let span = space_name_span(name, true);
+            let trimmed = case["trimmed"].as_str().unwrap();
+            assert_eq!(utf16(name, span[0]..span[1]), trimmed, "{name:?}");
+            assert_eq!(
+                &name[span[2] as usize..span[3] as usize],
+                trimmed,
+                "{name:?}"
+            );
         }
     }
 

@@ -623,7 +623,11 @@ variation selector right after a visible character, and tag characters only
 inside a subdivision flag (U+1F3F4 … U+E007F). The rule is
 `apps/api/src/names.rs`, mirrored for inline errors by `apps/web/src/names.ts`
 and the native clients' `apps/native/client/src/names.rs` (Android and Apple call
-it through `apps/native/mobile`). Each runs `shared/names/cases.json`. Only
+it through `apps/native/mobile`). Each runs `shared/names/cases.json`. Space and
+channel names follow web's `spaceNameError`, `channelNameError` and
+`normalizeChannelName` (`apps/web/src/spaces/client.ts`) on every client through
+the same file, with JavaScript's white space for the trim and for dashes; web
+generates `shared/names/channel-cases.json` and every client runs it. Only
 new writes are checked: a stored display name stays savable while unchanged; a
 space rename must use a valid name. Attachment file names have these characters
 removed instead of failing (control characters still fail). Message text is not

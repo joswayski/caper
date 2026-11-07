@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "vitest";
 import { displayNameError } from "./account/client.ts";
 import { hasHiddenNameCharacters } from "./names.ts";
-import { spaceNameError } from "./spaces/client.ts";
+import { channelNameError, normalizeChannelName, spaceNameError } from "./spaces/client.ts";
 
 // The same cases as apps/api/src/names.rs.
 const allowed = [
@@ -68,4 +69,22 @@ test("space and display name errors explain the invisible-character rule", () =>
   // A name saved before the rule stays savable while it is unchanged.
   assert.equal(displayNameError(" Legacy​Name ", "Legacy​Name"), undefined);
   assert.match(displayNameError("Other​Name", "Legacy​Name")!, /invisible/);
+});
+
+// Generated from these functions; every native client replays them through
+// apps/native/client/src/names.rs.
+test("space and channel names follow the shared cases", () => {
+  const shared = JSON.parse(
+    readFileSync(new URL("../../../shared/names/channel-cases.json", import.meta.url), "utf8"),
+  ) as {
+    normalize: { input: string; output: string }[];
+    channelErrors: { name: string; error: string | null }[];
+    spaceNames: { name: string; trimmed: string; error: string | null }[];
+  };
+  for (const { input, output } of shared.normalize) assert.equal(normalizeChannelName(input), output, input);
+  for (const { name, error } of shared.channelErrors) assert.equal(channelNameError(name) ?? null, error, name);
+  for (const { name, trimmed, error } of shared.spaceNames) {
+    assert.equal(name.trim(), trimmed, name);
+    assert.equal(spaceNameError(name) ?? null, error, name);
+  }
 });

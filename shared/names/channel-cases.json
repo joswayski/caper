@@ -1,0 +1,622 @@
+{
+  "description": "Web's space and channel name rules (apps/web/src/spaces/client.ts: normalizeChannelName, channelNameError, spaceNameError, and the name.trim() createSpace sends), generated from web; apps/web/src/names.test.ts checks them. Every client runs them through apps/native/client/src/names.rs. The trims and whitespace are JavaScript's (\\s), not each platform's.",
+  "normalize": [
+    {
+      "input": "",
+      "output": ""
+    },
+    {
+      "input": " ",
+      "output": ""
+    },
+    {
+      "input": "Product Launch",
+      "output": "product-launch"
+    },
+    {
+      "input": "  Product---Launch! ",
+      "output": "product-launch-"
+    },
+    {
+      "input": "RUST  DESKTOP",
+      "output": "rust-desktop"
+    },
+    {
+      "input": "product-launch",
+      "output": "product-launch"
+    },
+    {
+      "input": "-lead",
+      "output": "lead"
+    },
+    {
+      "input": "--lead",
+      "output": "lead"
+    },
+    {
+      "input": " -lead",
+      "output": "lead"
+    },
+    {
+      "input": "- -lead",
+      "output": "lead"
+    },
+    {
+      "input": "trail-",
+      "output": "trail-"
+    },
+    {
+      "input": "trail - ",
+      "output": "trail-"
+    },
+    {
+      "input": "trail--",
+      "output": "trail-"
+    },
+    {
+      "input": "a.b",
+      "output": "ab"
+    },
+    {
+      "input": "a . b",
+      "output": "a-b"
+    },
+    {
+      "input": "a_b",
+      "output": "ab"
+    },
+    {
+      "input": "a1b2",
+      "output": "ab"
+    },
+    {
+      "input": "123abc",
+      "output": "abc"
+    },
+    {
+      "input": "\u00e9mile",
+      "output": "mile"
+    },
+    {
+      "input": "\u00dcn\u00efc\u00f6d\u00e9 caf\u00e9",
+      "output": "ncd-caf"
+    },
+    {
+      "input": "\u0130stanbul",
+      "output": "istanbul"
+    },
+    {
+      "input": "Kelvin \u212a",
+      "output": "kelvin-k"
+    },
+    {
+      "input": "stra\u00dfe",
+      "output": "strae"
+    },
+    {
+      "input": "\uff21\uff22\uff23",
+      "output": ""
+    },
+    {
+      "input": "\u65e5\u672c\u8a9e chat",
+      "output": "chat"
+    },
+    {
+      "input": "\ud83d\ude00 party \ud83c\udf89",
+      "output": "party-"
+    },
+    {
+      "input": "\u03a3\u0391\u03a3 news",
+      "output": "news"
+    },
+    {
+      "input": "\u01c4ungla",
+      "output": "ungla"
+    },
+    {
+      "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "input": "a----------------------------------------------------------------------------------------------------b",
+      "output": "a-b"
+    },
+    {
+      "input": "a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a ",
+      "output": "a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-"
+    },
+    {
+      "input": "ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ",
+      "output": "ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab-ab"
+    },
+    {
+      "input": "-----a",
+      "output": "a"
+    },
+    {
+      "input": "a\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00b",
+      "output": "ab"
+    },
+    {
+      "input": "\u001cab",
+      "output": "ab"
+    },
+    {
+      "input": "Tab\tSeparated\tWords",
+      "output": "tab-separated-words"
+    },
+    {
+      "input": "line\r\nbreak",
+      "output": "line-break"
+    },
+    {
+      "input": "a b",
+      "output": "a-b"
+    },
+    {
+      "input": "a\tb",
+      "output": "a-b"
+    },
+    {
+      "input": "a\nb",
+      "output": "a-b"
+    },
+    {
+      "input": "a\rb",
+      "output": "a-b"
+    },
+    {
+      "input": "a\u000bb",
+      "output": "a-b"
+    },
+    {
+      "input": "a\fb",
+      "output": "a-b"
+    },
+    {
+      "input": "a\u00a0b",
+      "output": "a-b"
+    },
+    {
+      "input": "a\u1680b",
+      "output": "a-b"
+    },
+    {
+      "input": "a\u2000b",
+      "output": "a-b"
+    },
+    {
+      "input": "a\u200ab",
+      "output": "a-b"
+    },
+    {
+      "input": "a\u2028b",
+      "output": "a-b"
+    },
+    {
+      "input": "a\u2029b",
+      "output": "a-b"
+    },
+    {
+      "input": "a\u202fb",
+      "output": "a-b"
+    },
+    {
+      "input": "a\u205fb",
+      "output": "a-b"
+    },
+    {
+      "input": "a\u3000b",
+      "output": "a-b"
+    },
+    {
+      "input": "a\ufeffb",
+      "output": "a-b"
+    },
+    {
+      "input": "a\u0085b",
+      "output": "ab"
+    },
+    {
+      "input": "a\u180eb",
+      "output": "ab"
+    },
+    {
+      "input": "a\u200bb",
+      "output": "ab"
+    },
+    {
+      "input": "a\u001cb",
+      "output": "ab"
+    },
+    {
+      "input": "a\u001fb",
+      "output": "ab"
+    },
+    {
+      "input": " lead",
+      "output": "lead"
+    },
+    {
+      "input": "\tlead",
+      "output": "lead"
+    },
+    {
+      "input": "\nlead",
+      "output": "lead"
+    },
+    {
+      "input": "\rlead",
+      "output": "lead"
+    },
+    {
+      "input": "\u000blead",
+      "output": "lead"
+    },
+    {
+      "input": "\flead",
+      "output": "lead"
+    },
+    {
+      "input": "\u00a0lead",
+      "output": "lead"
+    },
+    {
+      "input": "\u1680lead",
+      "output": "lead"
+    },
+    {
+      "input": "\u2000lead",
+      "output": "lead"
+    },
+    {
+      "input": "\u200alead",
+      "output": "lead"
+    },
+    {
+      "input": "\u2028lead",
+      "output": "lead"
+    },
+    {
+      "input": "\u2029lead",
+      "output": "lead"
+    },
+    {
+      "input": "\u202flead",
+      "output": "lead"
+    },
+    {
+      "input": "\u205flead",
+      "output": "lead"
+    },
+    {
+      "input": "\u3000lead",
+      "output": "lead"
+    },
+    {
+      "input": "\ufefflead",
+      "output": "lead"
+    },
+    {
+      "input": "\u0085lead",
+      "output": "lead"
+    },
+    {
+      "input": "\u180elead",
+      "output": "lead"
+    },
+    {
+      "input": "\u200blead",
+      "output": "lead"
+    },
+    {
+      "input": "\u001clead",
+      "output": "lead"
+    },
+    {
+      "input": "\u001flead",
+      "output": "lead"
+    }
+  ],
+  "channelErrors": [
+    {
+      "name": "",
+      "error": "Enter a channel name."
+    },
+    {
+      "name": "a",
+      "error": null
+    },
+    {
+      "name": "general",
+      "error": null
+    },
+    {
+      "name": "a-b",
+      "error": null
+    },
+    {
+      "name": "product-launch",
+      "error": null
+    },
+    {
+      "name": "a--b",
+      "error": "Use lowercase letters separated by single dashes."
+    },
+    {
+      "name": "-a",
+      "error": "Use lowercase letters separated by single dashes."
+    },
+    {
+      "name": "a-",
+      "error": "Use lowercase letters separated by single dashes."
+    },
+    {
+      "name": "-",
+      "error": "Use lowercase letters separated by single dashes."
+    },
+    {
+      "name": "A",
+      "error": "Use lowercase letters separated by single dashes."
+    },
+    {
+      "name": "a1",
+      "error": "Use lowercase letters separated by single dashes."
+    },
+    {
+      "name": "a b",
+      "error": "Use lowercase letters separated by single dashes."
+    },
+    {
+      "name": "a_b",
+      "error": "Use lowercase letters separated by single dashes."
+    },
+    {
+      "name": "\u00e9",
+      "error": "Use lowercase letters separated by single dashes."
+    },
+    {
+      "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "error": null
+    },
+    {
+      "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "error": "Channel names can be at most 80 characters."
+    },
+    {
+      "name": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      "error": "Channel names can be at most 80 characters."
+    },
+    {
+      "name": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+      "error": "Channel names can be at most 80 characters."
+    },
+    {
+      "name": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+      "error": "Use lowercase letters separated by single dashes."
+    },
+    {
+      "name": "a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a",
+      "error": "Channel names can be at most 80 characters."
+    },
+    {
+      "name": "abc-def-ghi",
+      "error": null
+    },
+    {
+      "name": "abc-DEF",
+      "error": "Use lowercase letters separated by single dashes."
+    },
+    {
+      "name": "ab\u0000",
+      "error": "Use lowercase letters separated by single dashes."
+    }
+  ],
+  "spaceNames": [
+    {
+      "name": "",
+      "trimmed": "",
+      "error": "Enter a space name."
+    },
+    {
+      "name": "  ",
+      "trimmed": "",
+      "error": "Enter a space name."
+    },
+    {
+      "name": "Studio",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "  Studio  ",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "Family \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66",
+      "trimmed": "Family \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67\u200d\ud83d\udc66",
+      "error": null
+    },
+    {
+      "name": "Team\u202emaeT",
+      "trimmed": "Team\u202emaeT",
+      "error": "Space names cannot contain invisible or text-direction characters."
+    },
+    {
+      "name": "Stu\u0007dio",
+      "trimmed": "Stu\u0007dio",
+      "error": "Space names cannot contain control characters."
+    },
+    {
+      "name": "Studio\u0000",
+      "trimmed": "Studio\u0000",
+      "error": "Space names cannot contain control characters."
+    },
+    {
+      "name": "Stu\u200bdio",
+      "trimmed": "Stu\u200bdio",
+      "error": "Space names cannot contain invisible or text-direction characters."
+    },
+    {
+      "name": "\u200bStudio",
+      "trimmed": "\u200bStudio",
+      "error": "Space names cannot contain invisible or text-direction characters."
+    },
+    {
+      "name": "Caf\u00e9 \u2615",
+      "trimmed": "Caf\u00e9 \u2615",
+      "error": null
+    },
+    {
+      "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "trimmed": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "error": null
+    },
+    {
+      "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "trimmed": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "error": "Space names can be at most 80 characters."
+    },
+    {
+      "name": " xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx ",
+      "trimmed": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "error": null
+    },
+    {
+      "name": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+      "trimmed": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+      "error": null
+    },
+    {
+      "name": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+      "trimmed": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+      "error": "Space names can be at most 80 characters."
+    },
+    {
+      "name": "Stu\u007fdio",
+      "trimmed": "Stu\u007fdio",
+      "error": "Space names cannot contain control characters."
+    },
+    {
+      "name": "Stu\u009fdio",
+      "trimmed": "Stu\u009fdio",
+      "error": "Space names cannot contain control characters."
+    },
+    {
+      "name": "Stu\u00a0dio",
+      "trimmed": "Stu\u00a0dio",
+      "error": null
+    },
+    {
+      "name": "\u00adStudio",
+      "trimmed": "\u00adStudio",
+      "error": "Space names cannot contain invisible or text-direction characters."
+    },
+    {
+      "name": " Studio ",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\tStudio\t",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\nStudio\n",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\rStudio\r",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\u000bStudio\u000b",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\fStudio\f",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\u00a0Studio\u00a0",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\u1680Studio\u1680",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\u2000Studio\u2000",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\u200aStudio\u200a",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\u2028Studio\u2028",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\u2029Studio\u2029",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\u202fStudio\u202f",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\u205fStudio\u205f",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\u3000Studio\u3000",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\ufeffStudio\ufeff",
+      "trimmed": "Studio",
+      "error": null
+    },
+    {
+      "name": "\u0085Studio\u0085",
+      "trimmed": "\u0085Studio\u0085",
+      "error": "Space names cannot contain control characters."
+    },
+    {
+      "name": "\u180eStudio\u180e",
+      "trimmed": "\u180eStudio\u180e",
+      "error": "Space names cannot contain invisible or text-direction characters."
+    },
+    {
+      "name": "\u200bStudio\u200b",
+      "trimmed": "\u200bStudio\u200b",
+      "error": "Space names cannot contain invisible or text-direction characters."
+    },
+    {
+      "name": "\u001cStudio\u001c",
+      "trimmed": "\u001cStudio\u001c",
+      "error": "Space names cannot contain control characters."
+    },
+    {
+      "name": "\u001fStudio\u001f",
+      "trimmed": "\u001fStudio\u001f",
+      "error": "Space names cannot contain control characters."
+    }
+  ]
+}

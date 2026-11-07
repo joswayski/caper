@@ -717,7 +717,7 @@ impl Api {
             "api/spaces",
             Some(token),
             None,
-            Some(json!({"name":name.trim()})),
+            Some(json!({"name":crate::names::space_name(name)})),
         )
     }
 
@@ -727,7 +727,7 @@ impl Api {
             &format!("api/spaces/{id}"),
             Some(token),
             None,
-            Some(json!({"name":name.trim()})),
+            Some(json!({"name":crate::names::space_name(name)})),
         )
     }
 

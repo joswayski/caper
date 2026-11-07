@@ -14,6 +14,7 @@ workspace, so mobile builds never compile the desktop client's media stack.
 | Links | `shared/messages/links.rs` | `data/Links.kt` | `MessageLinks.swift` |
 | Mention tokens | `shared/messages/mentions.rs` | `MentionAutocomplete.kt` (`mentionSpans`) | `MentionAutocomplete.swift` (`tokens`) |
 | Name characters | `apps/native/client/src/names.rs` | `model/Names.kt` | `Names.swift` |
+| Space and channel names | `apps/native/client/src/names.rs` | `MainActivity.kt` (`spaceNameError`, `channelNameError`) | `Models.swift` (`WorkspaceValidation`) |
 
 The host code keeps its own types and editing helpers and calls Rust for the
 parse. Results are flat `i32` arrays of offsets into the caller's string
@@ -30,7 +31,7 @@ through a second encoding; `src/lib.rs` documents each layout.
   library for the host so JVM unit tests run the same code.
 
 Each client's tests run the shared case files (`shared/messages/*-cases.json`,
-`shared/names/cases.json`) through its bridge. Here:
+`shared/names/*.json`) through its bridge. Here:
 
 ```sh
 cargo fmt -- --check

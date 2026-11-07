@@ -154,6 +154,41 @@ pub unsafe extern "C" fn caper_mobile_name_has_hidden(utf8: *const u8, len: usiz
     crate::names::has_hidden(unsafe { text(utf8, len) })
 }
 
+/// `crate::channel_name(text)`: web's normalized channel name, one ASCII
+/// character per value.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_channel_name(utf8: *const u8, len: usize) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    crate::channel_name(unsafe { text(utf8, len) }).into()
+}
+
+/// `crate::name_error(text, channel)`: the ASCII message, or nothing.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_name_error(
+    utf8: *const u8,
+    len: usize,
+    channel: bool,
+) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    crate::name_error(unsafe { text(utf8, len) }, channel).into()
+}
+
+/// `crate::space_name_span(text, true)`: the trimmed name's four offsets.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_space_name(utf8: *const u8, len: usize) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    crate::space_name_span(unsafe { text(utf8, len) }, true).into()
+}
+
 /// # Safety
 /// `ints` must come from this library and be released only once.
 #[unsafe(no_mangle)]

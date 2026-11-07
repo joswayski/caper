@@ -41,5 +41,12 @@ CaperMobileInts caper_mobile_emoji_suggestions(const uint8_t *utf8, size_t len);
 void caper_mobile_ints_free(CaperMobileInts ints);
 // Whether a display or space name holds a character names may not.
 bool caper_mobile_name_has_hidden(const uint8_t *utf8, size_t len);
+// Web's normalizeChannelName: one ASCII character per value.
+CaperMobileInts caper_mobile_channel_name(const uint8_t *utf8, size_t len);
+// Web's channelNameError (channel) or spaceNameError: the message's ASCII
+// characters, or none when the name is valid.
+CaperMobileInts caper_mobile_name_error(const uint8_t *utf8, size_t len, bool channel);
+// The space name web sends (name.trim()): utf16 start, utf16 end, utf8 start, utf8 end.
+CaperMobileInts caper_mobile_space_name(const uint8_t *utf8, size_t len);
 
 #endif

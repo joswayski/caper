@@ -232,3 +232,58 @@ pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_nameHasHi
         _ => JNI_FALSE,
     }
 }
+
+/// `CaperMobile.channelName(text)`: `crate::channel_name`.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live string.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_channelName(
+    env: *mut JNIEnv,
+    _class: jclass,
+    text: jstring,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    match unsafe { string(env, text) } {
+        // SAFETY: forwarded from the JVM's call.
+        Some(text) => unsafe { int_array(env, &crate::channel_name(&text)) },
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// `CaperMobile.nameError(text, channel)`: `crate::name_error`.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live string.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_nameError(
+    env: *mut JNIEnv,
+    _class: jclass,
+    text: jstring,
+    channel: jboolean,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    match unsafe { string(env, text) } {
+        // SAFETY: forwarded from the JVM's call.
+        Some(text) => unsafe { int_array(env, &crate::name_error(&text, channel != JNI_FALSE)) },
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// `CaperMobile.spaceName(text)`: `crate::space_name_span(text, false)`.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live string.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_spaceName(
+    env: *mut JNIEnv,
+    _class: jclass,
+    text: jstring,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    match unsafe { string(env, text) } {
+        // SAFETY: forwarded from the JVM's call.
+        Some(text) => unsafe { int_array(env, &crate::space_name_span(&text, false)) },
+        None => std::ptr::null_mut(),
+    }
+}

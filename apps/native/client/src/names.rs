@@ -126,9 +126,20 @@ pub fn normalize_username(value: &str) -> String {
         .collect()
 }
 
-/// Web's spaces/client.ts validation copy.
+/// White space as web's `\s` and `String.prototype.trim` see it.
+fn web_space(c: char) -> bool {
+    (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}'
+}
+
+/// The space name web sends: `name.trim()`, with JavaScript's white space.
+pub fn space_name(name: &str) -> &str {
+    name.trim_matches(web_space)
+}
+
+/// Web's `spaceNameError` (apps/web/src/spaces/client.ts), on the name before
+/// `space_name` trims it.
 pub fn space_name_error(name: &str) -> Option<&'static str> {
-    let trimmed = name.trim();
+    let trimmed = space_name(name);
     if trimmed.is_empty() {
         Some("Enter a space name.")
     } else if trimmed.chars().count() > 80 {
@@ -142,7 +153,7 @@ pub fn space_name_error(name: &str) -> Option<&'static str> {
     }
 }
 
-/// Web's channel name rule; check the name without its trailing dash.
+/// Web's `channelNameError`; check the name without its trailing dash.
 pub fn channel_name_error(name: &str) -> Option<&'static str> {
     if name.is_empty() {
         Some("Enter a channel name.")
@@ -158,22 +169,21 @@ pub fn channel_name_error(name: &str) -> Option<&'static str> {
     }
 }
 
-/// A channel name as typed: lowercase letters with single dashes, at most 80.
+/// Web's `normalizeChannelName`, a channel name as typed: lowercased, each
+/// run of white space a dash, then only `a`–`z` and single dashes, without a
+/// leading dash (a trailing one stays while typing), at most 80.
 pub fn normalize_channel(value: &str) -> String {
     let mut output = String::new();
     for character in value.to_lowercase().chars() {
-        if character.is_ascii_lowercase() {
-            output.push(character);
-        } else if (character.is_whitespace() || character == '-')
-            && !output.is_empty()
-            && !output.ends_with('-')
+        // Web turns white space into a dash before it drops other characters.
+        let character = if web_space(character) { '-' } else { character };
+        if character.is_ascii_lowercase()
+            || (character == '-' && !output.is_empty() && !output.ends_with('-'))
         {
-            output.push('-');
-        }
-        if output.chars().count() >= 80 {
-            break;
+            output.push(character);
         }
     }
+    output.truncate(80);
     output
 }
 
@@ -181,12 +191,42 @@ pub fn normalize_channel(value: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Generated from web; every client runs them (shared/names/channel-cases.json).
     #[test]
-    fn channel_names_match_web_normalization() {
-        assert_eq!(normalize_channel("  Product---Launch! "), "product-launch-");
-        assert_eq!(normalize_channel("RUST  DESKTOP"), "rust-desktop");
-        assert_eq!(channel_name_error("product-launch"), None);
-        assert!(channel_name_error("product--launch").is_some());
+    fn space_and_channel_names_follow_the_shared_cases() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../shared/names/channel-cases.json"))
+                .unwrap();
+        let text = |case: &serde_json::Value, key: &str| case[key].as_str().map(str::to_owned);
+        for case in cases["normalize"].as_array().unwrap() {
+            let input = text(case, "input").unwrap();
+            assert_eq!(
+                Some(normalize_channel(&input)),
+                text(case, "output"),
+                "{input:?}"
+            );
+        }
+        for case in cases["channelErrors"].as_array().unwrap() {
+            let name = text(case, "name").unwrap();
+            assert_eq!(
+                channel_name_error(&name).map(str::to_owned),
+                text(case, "error"),
+                "{name:?}"
+            );
+        }
+        for case in cases["spaceNames"].as_array().unwrap() {
+            let name = text(case, "name").unwrap();
+            assert_eq!(
+                Some(space_name(&name).to_owned()),
+                text(case, "trimmed"),
+                "{name:?}"
+            );
+            assert_eq!(
+                space_name_error(&name).map(str::to_owned),
+                text(case, "error"),
+                "{name:?}"
+            );
+        }
     }
 
     // The same cases as apps/api/src/names.rs.
