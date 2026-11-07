@@ -806,6 +806,20 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           const channel = { id: ids.invitedChannel, spaceId: space.id, name: "general", private: false };
           state.spaces.push({ space, channels: [channel], members: clone([{ ...members[1], owner: true }]) });
           state.invitations.set(`${space.id}:${ids.owner}`, { status: "pending" });
+          // With `inbox: true`, the invitation also heads the notifications inbox.
+          if (body.spaceInvitation?.inbox)
+            state.inbox.unshift({
+              id: "inbox0000003",
+              kind: "space.invitation",
+              actorId: ids.member,
+              actorName: "Maya",
+              avatarId: 31,
+              body: "TEST FIXTURE — Join Maya's Book Club.",
+              createdAt: "2026-09-23T09:45:00.000Z",
+              unread: true,
+              spaceId: space.id,
+              spaceName: space.name,
+            });
         }
         // A new account that still has to choose a username and display name.
         if (body.incompleteProfile) state.account = { ...state.account, username: null, displayName: null };
