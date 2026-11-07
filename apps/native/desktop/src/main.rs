@@ -1088,6 +1088,8 @@ const REACTOR_TOOLTIP_WIDTH: f32 = 280.0;
 const REACTOR_TOOLTIP_EMOJI: f32 = 36.0;
 
 struct CaperApp {
+    /// `BENCH`'s scripted scenario (`caper_client::bench`), inert otherwise.
+    bench: caper_client::bench::Bench,
     daily_icon: Option<daily_icon::DailyIcon>,
     window_state: Option<window_state::WindowState>,
     zoom_factor: Option<f32>,
@@ -1526,6 +1528,7 @@ impl CaperApp {
         let reaction_textures = emoji::Textures::shared(context);
         reaction_textures.preload(context, emoji::CATEGORIES[0].0);
         let mut app = Self {
+            bench: caper_client::bench::Bench::from_env("caper-desktop", Instant::now()),
             daily_icon: None,
             window_state: None,
             zoom_factor: None,
@@ -9921,13 +9924,62 @@ fn pointer_follows_touch_release(events: &mut Vec<egui::Event>) {
     }
 }
 
+impl CaperApp {
+    /// The bench's scripted input for this frame, as a person would give it:
+    /// wheel scrolling over the messages and typing into the composer.
+    fn bench_input(&mut self, context: &egui::Context, raw_input: &mut egui::RawInput) {
+        use caper_client::bench::Action;
+        match self.bench.step() {
+            Action::ScrollUp(points) => {
+                let over = raw_input
+                    .screen_rect
+                    .map_or(egui::pos2(720.0, 450.0), |rect| rect.center());
+                raw_input.events.push(egui::Event::PointerMoved(over));
+                raw_input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, points),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Unknown,
+                    modifiers: egui::Modifiers::default(),
+                });
+            }
+            Action::Type(character) => {
+                context.memory_mut(|memory| {
+                    memory.request_focus(egui::Id::unique("message-composer"));
+                });
+                raw_input.events.push(egui::Event::Text(character.into()));
+            }
+            Action::Quit => context.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::None => {}
+        }
+    }
+
+    /// At the start of each frame, which is when the one before it was drawn.
+    fn bench_frame(&mut self, context: &egui::Context) {
+        self.bench.painted();
+        let showing = self.account.is_some() && self.timeline.messages().next().is_some();
+        self.bench.showing(showing);
+        if self.bench.wants_frames() {
+            context.request_repaint();
+        } else if let Some(after) = self.bench.next_check() {
+            context.request_repaint_after(after);
+        } else if showing {
+            // The next frame's start confirms this one showed the messages.
+            context.request_repaint();
+        }
+    }
+}
+
 impl eframe::App for CaperApp {
     fn persist_egui_memory(&self) -> bool {
         self.persist_preferences
     }
 
-    fn raw_input_hook(&mut self, _: &egui::Context, raw_input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, context: &egui::Context, raw_input: &mut egui::RawInput) {
         pointer_follows_touch_release(&mut raw_input.events);
+        if self.bench.active() {
+            self.bench_input(context, raw_input);
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -9965,6 +10017,9 @@ impl eframe::App for CaperApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let context = &ui.ctx().clone();
+        if self.bench.active() {
+            self.bench_frame(context);
+        }
         if let Some(window) = &mut self.window_state {
             window.update(context);
         }
@@ -33135,6 +33190,7 @@ fn endpoint(args: &[String], fixture: Option<&str>) -> Result<String, String> {
 }
 
 fn main() -> eframe::Result {
+    let process_start = Instant::now();
     let args: Vec<String> = std::env::args().collect();
     let fixture = args
         .windows(2)
@@ -33224,6 +33280,7 @@ fn main() -> eframe::Result {
         },
         Box::new(move |creation| {
             let mut app = CaperApp::new(&creation.egui_ctx, api, fixture.as_deref());
+            app.bench = caper_client::bench::Bench::from_env("caper-desktop", process_start);
             if fixture.is_none() {
                 app.window_state = Some(window_state::WindowState::load(creation.storage));
             }
