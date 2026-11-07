@@ -97,6 +97,11 @@ pub fn named<T: IsA<glib::Object>>(class: &str, name: &str) -> T {
         .expect("a GTK widget class")
 }
 
+/// Direct messages rows that aren't DMs: your notes before they exist, and
+/// New message. Neither is a valid conversation id.
+const SELF_NOTES: &str = "\u{0}self-notes";
+const NEW_MESSAGE: &str = "\u{0}new-message";
+
 fn clear(container: &gtk::Box) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
@@ -944,8 +949,11 @@ impl App {
             let id = usize::try_from(row.index())
                 .ok()
                 .and_then(|index| app.direct_ids.borrow().get(index).cloned());
-            if let Some(id) = id {
-                app.open_direct(id);
+            match id {
+                Some(id) if id == NEW_MESSAGE => app.open_start_direct(),
+                Some(id) if id == SELF_NOTES => app.create_self_notes(),
+                Some(id) => app.open_direct(id),
+                None => {}
             }
         });
         let app = self.clone();
@@ -1426,6 +1434,31 @@ impl App {
                 .unwrap_or_default(),
         );
         self.prepare(state, space, channel);
+    }
+
+    /// Your notes don't exist yet: create the DM with yourself, which then
+    /// opens as any created DM does.
+    fn create_self_notes(self: &Rc<Self>) {
+        let mut state = self.state.borrow_mut();
+        let (Some(token), Some(username)) = (
+            state.token.clone(),
+            state
+                .account
+                .as_ref()
+                .and_then(|account| account.username.clone()),
+        ) else {
+            return;
+        };
+        if state.direct_opening {
+            return;
+        }
+        state.direct_opening = true;
+        self.worker.send(Command::CreateDirect {
+            generation: state.epoch,
+            navigation: state.navigation,
+            token,
+            username,
+        });
     }
 
     fn open_direct(self: &Rc<Self>, id: String) {
@@ -5315,25 +5348,70 @@ impl App {
         clear_list(&ui.directs);
         let mut ids = Vec::new();
         let me = state.account.as_ref().map(|account| account.id.as_str());
+        // As desktop: your own notes come first, whether or not that DM
+        // exists yet (choosing it creates it).
+        if let Some(account) = &state.account {
+            let own = state
+                .directs
+                .iter()
+                .find(|direct| Some(direct.peer.id.as_str()) == me);
+            let display = account
+                .display_name
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| account.username.clone())
+                .unwrap_or_else(|| "You".into());
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let avatar = AvatarView::new(22, false);
+            avatar.set(
+                &self.images,
+                &Avatar::new(
+                    &display,
+                    account.avatar_id,
+                    &account.avatar_asset,
+                    &account.avatar_url,
+                ),
+            );
+            line.append(&avatar.root);
+            let name = label(&display, &[]);
+            name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            let unread = own.is_some_and(|direct| direct.has_unread());
+            if unread {
+                name.add_css_class("unread");
+            }
+            line.append(&name);
+            let you = label("you", &["muted", "direct-suffix"]);
+            you.set_hexpand(true);
+            you.set_xalign(0.0);
+            line.append(&you);
+            if unread {
+                let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                dot.add_css_class("self-unread");
+                dot.set_valign(gtk::Align::Center);
+                line.append(&dot);
+            }
+            let row: gtk::ListBoxRow = named("GtkListBoxRow", &format!("{display} you"));
+            row.set_child(Some(&line));
+            ui.directs.append(&row);
+            match own {
+                Some(own) => {
+                    if state.direct.as_deref() == Some(&own.id) {
+                        ui.directs.select_row(Some(&row));
+                    }
+                    ids.push(own.id.clone());
+                }
+                None => ids.push(SELF_NOTES.into()),
+            }
+        }
         // Requests live under "Message requests".
-        for direct in state
-            .directs
-            .iter()
-            .filter(|direct| direct.status != DirectStatus::Incoming)
-        {
+        for direct in state.directs.iter().filter(|direct| {
+            direct.status != DirectStatus::Incoming && Some(direct.peer.id.as_str()) != me
+        }) {
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             let avatar = AvatarView::new(22, false);
             avatar.set(&self.images, &peer_avatar(direct));
             line.append(&avatar.root);
-            let you = Some(direct.peer.id.as_str()) == me;
-            let name = label(
-                &if you {
-                    format!("{} (you)", direct.peer.display_name)
-                } else {
-                    direct.peer.display_name.clone()
-                },
-                &[],
-            );
+            let name = label(&direct.peer.display_name, &[]);
             name.set_ellipsize(gtk::pango::EllipsizeMode::End);
             name.set_hexpand(true);
             let blocked = direct.blocked || state.blocked(&direct.peer.id);
@@ -5369,6 +5447,18 @@ impl App {
                 ui.directs.select_row(Some(&row));
             }
             ids.push(direct.id.clone());
+        }
+        // As desktop: a quiet "New message" row ends the list.
+        if state.account.is_some() {
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            line.append(&self.images.icon_image(Icon::Plus, "#b9bcbe", 14));
+            line.append(&label("New message", &["muted"]));
+            // An action, not a place: choosing it keeps the open DM selected.
+            let row: gtk::ListBoxRow = named("GtkListBoxRow", "New message");
+            row.set_selectable(false);
+            row.set_child(Some(&line));
+            ui.directs.append(&row);
+            ids.push(NEW_MESSAGE.into());
         }
         if state.direct.is_none() {
             ui.directs.unselect_all();
