@@ -14,7 +14,7 @@ import XCTest
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES", "-caper.space-landing.owner0000001", ""]
         // Normal flows start at the shipping defaults. Persistence flows omit
         // these argument-domain overrides on their second real app launch.
-        if !preservePanelWidths { app.launchArguments += ["-caper.membersWidth", "220", "-caper.channelSidebarWidth", "280"] }
+        if !preservePanelWidths { app.launchArguments += ["-caper.membersWidth", "220", "-caper.channelSidebarWidth", "280", "-caper.threadPanelWidth", "340"] }
         app.launch()
         return app
     }
@@ -1042,13 +1042,27 @@ import XCTest
         XCTAssertEqual(seedBody.value as? String, seedText)
         XCTAssertTrue(composer.isHittable); XCTAssertTrue(editor.isHittable)
         XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX, "Wide windows show both timelines without overlap")
-        let divider = app.descendants(matching: .any)["thread-divider"]
-        XCTAssertTrue(divider.exists); divider.hover()
+        let divider = app.sliders["thread-panel-resize"]
+        XCTAssertTrue(divider.exists); XCTAssertEqual(divider.value as? String, "340 pixels")
+        app.buttons["channel-pins"].hover(); back.hover(); divider.hover()
         let handle = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         handle.press(forDuration: 0.15, thenDragTo: handle.withOffset(CGVector(dx: timeline.frame.width - 380, dy: 0)))
         XCTAssertEqual(timeline.frame.width, 380, accuracy: 3, "Dragging the divider resizes the native thread pane")
         divider.click(); divider.typeKey(.rightArrow, modifierFlags: [])
-        XCTAssertEqual(timeline.frame.width, 364, accuracy: 3, "Keyboard resizing uses the same saved width")
+        XCTAssertEqual(timeline.frame.width, 370, accuracy: 3, "Like shipping SwiftUI, Right narrows by ten")
+        divider.typeKey(.home, modifierFlags: [])
+        XCTAssertEqual(timeline.frame.width, 300, accuracy: 1)
+        capture("thread minimum width and focused handle", app: app)
+        divider.typeKey(.end, modifierFlags: [])
+        XCTAssertEqual(timeline.frame.width, 600, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(channel.frame.width, 300)
+        capture("thread maximum width and adjacent channel", app: app)
+        divider.doubleClick()
+        XCTAssertEqual(timeline.frame.width, 340, accuracy: 1)
+        divider.typeKey(.leftArrow, modifierFlags: [])
+        divider.typeKey(.leftArrow, modifierFlags: [])
+        divider.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(timeline.frame.width, 370, accuracy: 1)
         XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX)
         XCTAssertEqual(editor.value as? String, "")
         XCTAssertFalse(pane.buttons["Cancel reply"].exists, "Reply in thread opens the root without quoting it")
@@ -1066,11 +1080,13 @@ import XCTest
         let sidebar = app.sliders["channel-sidebar-resize"]
         sidebar.click(); sidebar.typeKey(.end, modifierFlags: [])
         XCTAssertFalse(channel.exists, "Widening navigation can fold the channel without changing window size")
+        XCTAssertFalse(divider.exists, "A folded thread has no width control")
         XCTAssertTrue(editor.isHittable); XCTAssertEqual(editor.value as? String, threadDraft)
         XCTAssertFalse(app.sliders["members-panel-resize"].exists)
         capture("wide sidebar folds channel beside thread", app: app)
         sidebar.typeKey(.home, modifierFlags: [])
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(timeline.frame.width, 370, accuracy: 1, "Folding never replaces the preferred thread width")
         XCTAssertEqual(composer.value as? String, channelDraft)
         XCTAssertEqual(editor.value as? String, threadDraft)
         XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX)
@@ -1159,6 +1175,7 @@ import XCTest
         XCTAssertEqual(broadcast.value as? String, "0", "Broadcast applies to one send only")
         resize(app, width: 1280)
         XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, channelDraft)
+        XCTAssertEqual(timeline.frame.width, 370, accuracy: 1, "Reopening roots at narrow widths retains the saved split width")
         channel.scroll(byDeltaX: 0, deltaY: -10000)
         let channelShared = channel.textViews["message-\(sharedID)"]
         XCTAssertTrue(channelShared.waitForExistence(timeout: 5))
@@ -1231,6 +1248,22 @@ import XCTest
         capture("surviving replies beneath a deleted root", app: app)
         back.click(); survivingThread.click()
         XCTAssertTrue(editor.waitForExistence(timeout: 5)); XCTAssertEqual(editor.value as? String, otherDraft)
+        XCTAssertEqual(divider.value as? String, "370 pixels")
+        app.terminate()
+        let relaunched = launch(preservePanelWidths: true)
+        defer { relaunched.terminate() }
+        XCTAssertTrue(relaunched.textViews["message-composer"].waitForExistence(timeout: 15))
+        resize(relaunched, width: 1280)
+        let history = relaunched.scrollViews["message-timeline"]
+        history.scroll(byDeltaX: 0, deltaY: 10000)
+        let restoredRoot = history.buttons["thread-summary-\(rootID)"]
+        XCTAssertTrue(restoredRoot.waitForExistence(timeout: 5)); restoredRoot.click()
+        let restored = relaunched.sliders["thread-panel-resize"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 5))
+        XCTAssertEqual(restored.value as? String, "370 pixels", "A real relaunch reads the committed width, not the launch override")
+        XCTAssertEqual(relaunched.scrollViews["thread-timeline"].frame.width, 370, accuracy: 1)
+        capture("thread preference restored after relaunch", app: relaunched)
+        restored.doubleClick()
     }
 
     func testOwnMessageActionsEditConflictHistoryAndDeleteConfirmation() async throws {
