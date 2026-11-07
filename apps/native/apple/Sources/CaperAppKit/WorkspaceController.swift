@@ -524,7 +524,8 @@ import CaperCore
 
     private func messageAction(_ message: ChatMessage, action: MessageAction, anchor: NSView) {
         let chat = model.chat
-        guard let current = dialogs.currentMessage(message), !current.isDeleted else { return }
+        guard let current = dialogs.currentMessage(message) else { return }
+        if current.isDeleted { guard case .openThread = action else { return } }
         let context = dialogs.messageContext
         switch action {
         case .reply: chat.reply(to: current, inThread: inThread)
@@ -572,7 +573,15 @@ import CaperCore
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
         }
         let copyID = NavigationMenuItem("Copy message ID", action: perform { copy($0.id) })
-        if current.isDeleted { return NavigationMenus.menu([copyID]) }
+        if current.isDeleted {
+            var items: [NSMenuItem] = []
+            if !inThread, current.threadRootId != nil || (current.thread?.replyCount ?? 0) > 0 {
+                items.append(NavigationMenuItem("View thread", action: perform { [weak self, weak anchor] in
+                    guard let self, let anchor else { return }; self.messageAction($0, action: .openThread, anchor: anchor)
+                }))
+            }
+            return NavigationMenus.menu(items + [copyID])
+        }
         var items: [NSMenuItem] = [NavigationMenuItem("Add reaction…", enabled: chat.canInteract, action: perform { [weak self, weak anchor] in
             guard let self, let anchor else { return }; self.messageAction($0, action: .addReaction, anchor: anchor)
         }), .separator()]
