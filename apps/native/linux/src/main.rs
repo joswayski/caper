@@ -30,6 +30,7 @@ mod zoom;
 use gtk::{gio, glib, prelude::*};
 
 fn main() -> glib::ExitCode {
+    let process_start = std::time::Instant::now();
     fonts::prepare();
     let args: Vec<String> = std::env::args().collect();
     let base = args
@@ -42,7 +43,7 @@ fn main() -> glib::ExitCode {
         .application_id("chat.caper.linux")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
-    application.connect_activate(move |application| app::start(application, &base));
+    application.connect_activate(move |application| app::start(application, &base, process_start));
     // GTK must not read Caper's own arguments.
     application.run_with_args::<&str>(&[])
 }

@@ -37,6 +37,8 @@ mod account;
 mod admin;
 #[path = "audio.rs"]
 mod audio;
+#[path = "bench.rs"]
+mod bench;
 #[path = "call.rs"]
 mod call;
 #[path = "context.rs"]
@@ -632,7 +634,7 @@ struct DirectDialog {
     open: gtk::Button,
 }
 
-pub fn start(application: &gtk::Application, base: &str) {
+pub fn start(application: &gtk::Application, base: &str, process_start: Instant) {
     let api = match Api::new(base) {
         Ok(api) => api,
         Err(error) => {
@@ -803,6 +805,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.install_notification_actions();
     app.install_admin_actions();
     app.render();
+    app.connect_bench(process_start);
     // The window shows before any network request finishes.
     app.ui.window.present();
     app.worker.send(Command::Restore { generation: 0 });

@@ -229,6 +229,12 @@ adds 45 members to Fixture Studio and replaces `#general` with 3,000 generated m
 every run and client gets the same text, mentions, links, emoji and reactions). `CAPER_FIXTURE_PORT` and
 `CAPER_FIXTURE_GATEWAY_PORT` move it off 3001/3002.
 
+The egui desktop and the Linux client run the Windows client's scripted scenarios too
+(`caper_client::bench`): with `BENCH` set to `startup`, `idle`, `scroll` or `typing`, a signed-in client
+waits until its first frame showing the conversation's messages, settles 2 s, runs the scenario and quits,
+appending the Windows client's JSON line (plus `content_ms`, process start to that frame) to `BENCH_OUT`.
+CPU and memory (RSS and PSS) come from `/proc/self`.
+
 The owner's notifications inbox (`GET /api/notifications/inbox`, `POST /api/notifications/inbox/read`) holds two
 unread items: a mention from Alex and a 🎉 reaction from Maya in `#general`.
 
