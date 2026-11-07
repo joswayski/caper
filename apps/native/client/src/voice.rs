@@ -46,6 +46,18 @@ pub fn session_duration(started_at: u64, now: u64) -> String {
     }
 }
 
+/// A room card's one line of names: "Maya", "Maya and Alex", "Maya, Alex
+/// and Sam", or "Maya, Alex and 3 more".
+pub fn room_names(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [first, second] => format!("{first} and {second}"),
+        [first, second, third] => format!("{first}, {second} and {third}"),
+        [first, second, rest @ ..] => format!("{first}, {second} and {} more", rest.len()),
+    }
+}
+
 /// Web keeps a voice lit this long after its last loud 32 ms window.
 pub const SPEAKING_RELEASE: Duration = Duration::from_millis(180);
 
@@ -1356,6 +1368,23 @@ impl ConnectionReport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn room_names_read_as_one_line() {
+        for (names, expected) in [
+            (&[][..], ""),
+            (&["Maya"][..], "Maya"),
+            (&["Maya", "Alex"][..], "Maya and Alex"),
+            (&["Maya", "Alex", "Sam"][..], "Maya, Alex and Sam"),
+            (&["Maya", "Alex", "Sam", "Ana"][..], "Maya, Alex and 2 more"),
+            (
+                &["Maya", "Alex", "Sam", "Ana", "Lee"][..],
+                "Maya, Alex and 3 more",
+            ),
+        ] {
+            assert_eq!(super::room_names(names), expected);
+        }
+    }
+
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;

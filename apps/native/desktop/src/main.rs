@@ -14428,7 +14428,7 @@ impl CaperApp {
                         .iter()
                         .map(|person| person.name.as_str())
                         .collect();
-                    let names = room_names(&names);
+                    let names = caper_client::voice::room_names(&names);
                     let galley = truncated_galley(
                         ui,
                         &names,
@@ -27318,18 +27318,6 @@ fn call_face_slots(total: usize, per_row: usize) -> (usize, usize) {
         (total, 0)
     } else {
         (capacity - 1, total - (capacity - 1))
-    }
-}
-
-/// A room card's one line of names: "Maya", "Maya and Alex", "Maya, Alex
-/// and Sam", or "Maya, Alex and 3 more".
-fn room_names(names: &[&str]) -> String {
-    match names {
-        [] => String::new(),
-        [one] => (*one).to_owned(),
-        [first, second] => format!("{first} and {second}"),
-        [first, second, third] => format!("{first}, {second} and {third}"),
-        [first, second, rest @ ..] => format!("{first}, {second} and {} more", rest.len()),
     }
 }
 
@@ -50696,23 +50684,6 @@ mod tests {
                 expected,
                 "{total} in rows of {per_row}"
             );
-        }
-    }
-
-    #[test]
-    fn room_names_read_as_one_line() {
-        for (names, expected) in [
-            (&[][..], ""),
-            (&["Maya"][..], "Maya"),
-            (&["Maya", "Alex"][..], "Maya and Alex"),
-            (&["Maya", "Alex", "Sam"][..], "Maya, Alex and Sam"),
-            (&["Maya", "Alex", "Sam", "Ana"][..], "Maya, Alex and 2 more"),
-            (
-                &["Maya", "Alex", "Sam", "Ana", "Lee"][..],
-                "Maya, Alex and 3 more",
-            ),
-        ] {
-            assert_eq!(super::room_names(names), expected);
         }
     }
 
