@@ -1034,6 +1034,7 @@ impl App {
     /// Mutes and failed changes show in the DM rows and menu; the rows
     /// redraw again when the earliest timed mute ends.
     fn mutes_changed(&mut self) {
+        self.dirty.rail = true;
         self.dirty.sidebar = true;
         self.dirty.dm_menu = true;
         self.events |= EV_ROWS;
@@ -2719,6 +2720,9 @@ impl App {
     fn draw_panels(&mut self) -> Result<()> {
         let s = self.scale;
         let (space_badges, channel_badges) = self.badges();
+        let space_muted: Vec<bool> = (0..self.c.spaces.len())
+            .map(|i| self.space_muted(i).is_some())
+            .collect();
         let g = &self.g;
         let c = &self.c;
         let d = std::mem::take(&mut self.dirty);
@@ -2755,7 +2759,29 @@ impl App {
                         .unwrap_or_default();
                     let l = g.layout(&gfx::wide(&initial), &g.formats.rail, w)?;
                     l.SetMaxHeight(h)?;
-                    text::draw(dc, &l, r.left, r.top, &g.brushes.text);
+                    // egui dims a muted space's tile and badges its corner
+                    // with the bell-slash.
+                    let muted = space_muted.get(i).copied().unwrap_or(false);
+                    if muted {
+                        text::draw(
+                            dc,
+                            &l,
+                            r.left,
+                            r.top,
+                            &dc.CreateSolidColorBrush(&gfx::color(TEXT, 0.5), None)?,
+                        );
+                        let b = rect(r.left - 6.0, r.top - 6.0, r.left + 12.0, r.top + 12.0);
+                        fill_round(dc, b, 9.0, &g.solid(BLACKOUT));
+                        icons::draw(
+                            dc,
+                            icons::Icon::BellOff,
+                            rect(b.left + 3.0, b.top + 3.0, b.right - 3.0, b.bottom - 3.0),
+                            TEXT_MUTED,
+                            1.0,
+                        );
+                    } else {
+                        text::draw(dc, &l, r.left, r.top, &g.brushes.text);
+                    }
                     // egui's unread dot in the rail margin, and the
                     // terracotta mention count on the tile's corner.
                     let (unread, mentions) = space_badges.get(i).copied().unwrap_or_default();

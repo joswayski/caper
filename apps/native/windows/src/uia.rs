@@ -413,6 +413,9 @@ fn name(a: &App, id: Id) -> String {
                 let unit = if mentions == 1 { "mention" } else { "mentions" };
                 n.push_str(&format!(", {mentions} {unit}"));
             }
+            if let Some(label) = a.space_muted(i) {
+                n.push_str(&format!(", {label}"));
+            }
             n
         }
         Id::Channels => format!("Channels in {}", c.spaces[c.space].name),

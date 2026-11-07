@@ -1023,6 +1023,12 @@ impl App {
         Some(Scope::Space(self.ids.spaces.get(self.c.space)?.clone()))
     }
 
+    /// Space `i`'s bell-slash label while it is muted (the rail's badge).
+    pub fn space_muted(&self, i: usize) -> Option<String> {
+        let live = self.live.as_ref().filter(|_| self.c.is_live())?;
+        live.muted(&Scope::Space(self.ids.spaces.get(i)?.clone()))
+    }
+
     /// Channel `i`'s notification scope, in a live account.
     pub fn channel_scope(&self, i: usize) -> Option<Scope> {
         let Some(Scope::Space(space)) = self.space_scope() else {
