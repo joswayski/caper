@@ -2108,30 +2108,32 @@ struct SidebarIconButton: ButtonStyle {
 /// Web's voiceAction for one channel: join, switch, or a join under way. Rows
 /// show it as a headphones shortcut; live rooms' cards and the phone strip
 /// label it.
-@MainActor private struct ChannelVoiceAction {
+@MainActor public struct ChannelVoiceAction {
     let model: AppModel
     let channel: Channel
 
+    public init(model: AppModel, channel: Channel) { self.model = model; self.channel = channel }
+
     /// Your call is in this channel, from joining until it has left.
-    var active: Bool { model.voice.isActive(channelID: channel.id) }
+    public var active: Bool { model.voice.isActive(channelID: channel.id) }
     /// Your call is here or on its way: rows offer no shortcut.
-    var here: Bool { active || model.pendingVoiceChannelID == channel.id }
+    public var here: Bool { active || model.pendingVoiceChannelID == channel.id }
     /// In a call elsewhere: the action switches your call here.
-    var switches: Bool { inVoiceCall(model.voice) && !active }
+    public var switches: Bool { inVoiceCall(model.voice) && !active }
     private var pending: Bool {
         model.pendingVoiceChannelID != nil || model.voice.phase == .joining || model.voice.phase == .reconnecting || model.voice.phase == .leaving
     }
-    var enabled: Bool { !pending && model.voiceAvailable(in: channel) == true }
+    public var enabled: Bool { !pending && model.voiceAvailable(in: channel) == true }
     /// Joining… or Leaving… here: disabled, but keeping its fill (web's aria-busy).
-    var busy: Bool { model.pendingVoiceChannelID == channel.id || active }
+    public var busy: Bool { model.pendingVoiceChannelID == channel.id || active }
     /// The visible label: Join, Switch, Joining… or Leaving….
-    var title: String {
+    public var title: String {
         if model.pendingVoiceChannelID == channel.id { return "Joining…" }
         if active { return model.voice.phase == .leaving ? "Leaving…" : "Joining…" }
         return switches ? "Switch" : "Join"
     }
     /// The accessible name, which also names the channel.
-    var description: String {
+    public var description: String {
         switch title {
         case "Joining…": return "Joining voice in #\(channel.name)"
         case "Leaving…": return "Leaving voice in #\(channel.name)"
@@ -2139,11 +2141,11 @@ struct SidebarIconButton: ButtonStyle {
         default: return "Join voice in #\(channel.name)"
         }
     }
-    var help: String {
+    public var help: String {
         active ? description : voiceAvailabilityHelp(model.voiceAvailable(in: channel)) ?? description
     }
     /// Joins (verified at click time) without changing the chat being read.
-    func join() { Task { await model.joinVoice(channel: channel) } }
+    public func join() { Task { await model.joinVoice(channel: channel) } }
 }
 
 /// Whether you are in a call, from joining until it has left.
@@ -2171,17 +2173,50 @@ private enum LiveNowPalette {
 }
 
 /// Someone in your call, as its card, the phone strip and the full list show them.
-private struct CallPerson: Identifiable {
-    let id: String
-    let name: String
-    let avatarID: Int?
-    let picture: CaperPicture?
-    let isSelf: Bool
-    let muted: Bool
-    let deafened: Bool
-    let speaking: Bool
+public struct CallPerson: Identifiable {
+    public let id: String
+    public let name: String
+    public let avatarID: Int?
+    public let picture: CaperPicture?
+    public let isSelf: Bool
+    public let muted: Bool
+    public let deafened: Bool
+    public let speaking: Bool
     /// You muted them for yourself only.
-    let locallyMuted: Bool
+    public let locallyMuted: Bool
+}
+
+/// Native hosts use the shipping presentation rules, not a second roster or
+/// call engine. Timer/speaking reads belong to the card, not its navigation owner.
+@MainActor public enum VoicePresentation {
+    public static func people(_ model: AppModel) -> [CallPerson] { callPeople(model) }
+    public static func startedAt(_ model: AppModel) -> Double? { callStartedAt(model) }
+    public static func pending(_ voice: VoiceClient) -> String? { callPending(voice) }
+    public static func active(_ voice: VoiceClient) -> Bool { inVoiceCall(voice) }
+    public static func isLive(_ model: AppModel, _ channel: Channel) -> Bool { channelIsLive(model, channel) }
+    public static func isVisit(_ model: AppModel, _ channel: Channel) -> Bool { model.isVisitVoice(channel) }
+    public static func occupants(_ model: AppModel, channelID: String) -> [VoiceSpectator] { voiceOccupants(model, channelID: channelID) }
+    public static func state(_ person: CallPerson) -> String { VoiceFace.state(person) }
+    public static func duration(startedAt: Double, now: Date) -> String { VoiceSessionDuration.format(startedAtMilliseconds: startedAt, now: now) }
+    public static var callFill: Color { LiveNowPalette.callFill }
+    public static var callBorder: Color { LiveNowPalette.callBorder }
+    public static var roomFill: Color { LiveNowPalette.roomFill }
+    public static var roomBorder: Color { LiveNowPalette.roomBorder }
+    public static var connecting: Color { LiveNowPalette.connecting }
+    public static var disconnect: Color { LiveNowPalette.disconnect }
+
+    public static func toggleMute(_ voice: VoiceClient) {
+        CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) }
+    }
+    public static func toggleDeafen(_ voice: VoiceClient) {
+        CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) }
+    }
+    public static func leave(_ model: AppModel) {
+        if model.voice.phase == .connected { CaperEffects.shared.play(.disconnect) }
+        model.leaveVoice()
+    }
+    public static func sliderFeedback(_ value: Double) { CaperEffects.shared.slider(value / 200) }
+    public static func muteFeedback(_ muted: Bool) { CaperEffects.shared.toggle(!muted) }
 }
 
 /// Everyone in your call: you first, then in the order they joined. Your own
