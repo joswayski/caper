@@ -205,6 +205,79 @@ private struct AppKitWorkspaceDialog: View {
     }
 }
 
+/// Pins use the shipping, bounded card list in a native header-anchored popover.
+/// Reading pins does not require an editable composer (channel previews too).
+@MainActor public final class AppKitPinsPresenter: NSObject, NSPopoverDelegate {
+    private let model: AppModel
+    private let media: AppKitMediaPresenter
+    private var popover: NSPopover?
+    private var restoreFocus: (() -> Void)?
+
+    public init(model: AppModel, media: AppKitMediaPresenter) {
+        self.model = model; self.media = media; super.init()
+    }
+
+    public func show(from anchor: NSView, composer: ComposerTextView) {
+        guard let window = anchor.window, model.chat.channelID != nil,
+              window.attachedSheet == nil, !model.whatsNew.workspaceModalOpen else { return }
+        if popover != nil { close(); return }
+        let context = model.chat.editingContext, root = model.chat.threadRootID
+        restoreFocus = { [weak self, weak composer, weak window] in
+            guard let self, let composer, let window, composer.window === window, composer.isEditable,
+                  self.model.chat.editingContext == context, self.model.chat.threadRootID == root,
+                  window.attachedSheet == nil, !self.model.whatsNew.workspaceModalOpen else { return }
+            window.makeFirstResponder(composer)
+        }
+        let popover = NSPopover()
+        self.popover = popover
+        popover.behavior = .transient
+        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.delegate = self
+        let host = NSHostingController(rootView: AppKitPinnedMessages(chat: model.chat, model: model) { [weak self] in self?.close() }
+            .frame(width: 470, height: 360)
+            .environment(\.mediaViewer, MediaViewerAction { [weak self] request in
+                guard let self else { return }
+                self.close()
+                self.media.showViewer(request)
+            })
+            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
+            .onExitCommand { [weak self] in self?.close() })
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+    }
+
+    public func close(restoringFocus: Bool = true) {
+        if !restoringFocus { restoreFocus = nil }
+        popover?.animates = false
+        popover?.close()
+    }
+    public func popoverShouldClose(_ popover: NSPopover) -> Bool { popover.animates = false; return true }
+    public func popoverDidClose(_ notification: Notification) {
+        guard let closed = notification.object as? NSPopover else { return }
+        closed.contentViewController = nil
+        guard popover === closed else { return }
+        popover = nil
+        let restore = restoreFocus; restoreFocus = nil
+        restore?()
+    }
+}
+
+private struct AppKitPinnedMessages: View {
+    @Bindable var chat: ChatModel
+    let model: AppModel
+    let close: () -> Void
+
+    var body: some View {
+        PinnedMessagesView(chat: chat, model: model, close: close)
+            // The shared card's Forward actions must have a real presenter,
+            // even before the native timeline gains its own forwarding cards.
+            .sheet(item: $chat.forwardTarget) { message in ForwardPickerView(chat: chat, message: message) }
+            .sheet(item: $chat.forwardConversationTarget) { message in ForwardConversationView(chat: chat, messageID: message.id) }
+            .onChange(of: model.whatsNew.workspaceModalOpen) { _, open in if open { close() } }
+    }
+}
+
 /// On-demand profile surfaces shared with the shipping Mac app. The workspace,
 /// timeline and main composer remain AppKit; no hosting view exists until open.
 @MainActor public final class AppKitProfilePresenter: NSObject, NSPopoverDelegate {
@@ -372,9 +445,13 @@ private struct AppKitWorkspaceDialog: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .environment(\.mediaViewer, MediaViewerAction { [weak self] request in
-                self?.show { close in MediaViewer(request: request, close: close) }
+                self?.showViewer(request)
             })
         }
+    }
+
+    fileprivate func showViewer(_ request: MediaViewerRequest) {
+        show { close in MediaViewer(request: request, close: close) }
     }
 
     public func pendingMessage(_ pending: PendingMessage) -> AppKitAttachmentSurface {
