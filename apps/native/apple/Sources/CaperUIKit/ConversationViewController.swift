@@ -801,7 +801,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let ready = isLive && chat.canInteract && !model.previewingChannel
         renderDirectBar()
         composer.configure(prompt: isLive && (direct || model.visit?.direct == true) ? "Message \(chat.channelName)" : "Message #\(name.lowercased())", enabled: ready,
-                           canSend: chat.canPressSend(inThread: false),
+                           canSend: chat.canPressSend(inThread: false), sending: chat.sending,
                            canAttach: chat.canAttach,
                            attachReason: chat.canAttach ? nil : chat.attachUnavailableReason,
                            canPickExpressions: ready)

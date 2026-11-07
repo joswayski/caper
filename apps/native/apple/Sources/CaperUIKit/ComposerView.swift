@@ -204,12 +204,13 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(prompt: String, enabled: Bool, canSend: Bool, canAttach: Bool, attachReason: String?, canPickExpressions: Bool) {
+    func configure(prompt: String, enabled: Bool, canSend: Bool, sending: Bool, canAttach: Bool, attachReason: String?, canPickExpressions: Bool) {
         placeholder.text = prompt
         textView.accessibilityLabel = prompt
         textView.isEditable = enabled
         if !enabled { suggestions.show(nil); textView.hideEmojiName() }
         send.isEnabled = enabled && canSend
+        send.accessibilityValue = sending ? "Sending" : nil
         // Disabled steps back to raised neutral chrome (below), not IconButton's fade.
         send.alpha = 1
         // Eggshell when there is something to send; otherwise the raised

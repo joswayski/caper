@@ -353,7 +353,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         // Reply in thread, or Reply while the thread is open, raises the keyboard.
         composer.claimFocus(chat, inThread: true)
         let ready = chat.threadRootID != nil && chat.canInteract && !chat.isPreview
-        composer.configure(prompt: "Reply to thread…", enabled: ready, canSend: chat.canPressSend(inThread: true),
+        composer.configure(prompt: "Reply to thread…", enabled: ready, canSend: chat.canPressSend(inThread: true), sending: chat.sending,
                            canAttach: chat.canAttach, attachReason: chat.canAttach ? nil : chat.attachUnavailableReason,
                            canPickExpressions: ready)
         composer.show(draft: chat.threadDraft)
