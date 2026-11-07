@@ -24,6 +24,7 @@ import CaperCore
     private let timelineObservation = NativeObservation()
     private let composerObservation = NativeObservation()
     private let attachmentObservation = NativeObservation()
+    private let forwardingObservation = NativeObservation()
     private lazy var navigation = NavigationSidebar(model: model)
     private lazy var dialogs = AppKitWorkspacePresenter(model: model)
     private lazy var media = AppKitMediaPresenter(model: model, parent: presentationParent)
@@ -31,6 +32,7 @@ import CaperCore
     private lazy var picker = AppKitComposerPicker(model: model, inThread: inThread)
     private lazy var members = MemberPanel(model: model)
     private lazy var profiles = AppKitProfilePresenter(model: model)
+    private lazy var reactionTooltip = AppKitReactionTooltipPresenter(model: model)
     private var membersPreference: Bool?
     private lazy var pinsButton: NativeButton = NativeButton.icon("Pins", symbol: "pin") { [weak self] in
         guard let self else { return }
@@ -242,6 +244,11 @@ import CaperCore
         }
         timeline.messageMenu = { [weak self] message, anchor in self?.messageMenu(message, anchor: anchor) }
         timeline.messageAction = { [weak self] message, action, anchor in self?.messageAction(message, action: action, anchor: anchor) }
+        timeline.hoverReaction = { [weak self] message, emoji, entered, anchor in
+            guard let self else { return }
+            self.reactionTooltip.hover(message, emoji: emoji, entered: entered, from: anchor, in: self.stage)
+        }
+        timeline.dismissHover = { [weak self] in self?.reactionTooltip.close() }
         timeline.react = { [weak self] id, emoji in
             guard let self,
                   let message = self.model.chat.displayedMessages.first(where: { $0.id == id }) else { return }
@@ -318,6 +325,18 @@ import CaperCore
             threadObservation.start(reading: { [weak self] in self?.model.chat.threadRootID }, update: { [weak self] root in
                 self?.updateThreadPane(root)
             })
+            forwardingObservation.start(reading: { [weak self] in
+                (self?.model.chat.forwardTarget?.id, self?.model.chat.forwardConversationTarget?.id)
+            }, update: { [weak self] targets in
+                guard let self else { return }
+                if targets.0 != nil || targets.1 != nil {
+                    self.picker.close(restoringFocus: false)
+                    self.threadPane?.picker.close(restoringFocus: false)
+                    self.pins.close()
+                    self.threadPane?.pins.close()
+                }
+                self.dialogs.presentForwarding(in: self)
+            })
         }
     }
 
@@ -325,6 +344,7 @@ import CaperCore
         super.viewDidDisappear()
         picker.close(restoringFocus: false)
         pins.close(restoringFocus: false)
+        reactionTooltip.close()
     }
 
     private func updateThreadPane(_ root: String?) {
@@ -376,6 +396,7 @@ import CaperCore
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        let previousStage = stage.frame
         let width = view.bounds.width, height = view.bounds.height
         let visible = !inThread && threadPane == nil && (membersPreference ?? (width >= 1100)) && model.selectedDirectMessageID == nil
         let docked = width >= 1100
@@ -397,6 +418,7 @@ import CaperCore
             members.frame = NSRect(x: width - 220, y: docked ? 0 : 48, width: 220, height: height - (docked ? 0 : 48))
             members.setVisible(visible)
         }
+        if stage.frame != previousStage || stage.isHidden { reactionTooltip.close() }
         let center = stage.bounds.width
         back.frame = NSRect(x: center - 170, y: 10, width: 150, height: 28)
         membersToggle.frame = NSRect(x: center - 48, y: 8, width: 32, height: 32)
@@ -582,6 +604,7 @@ import CaperCore
     }
 
     private func messageMenu(_ message: ChatMessage, anchor: NSView) -> NSMenu? {
+        reactionTooltip.close()
         let chat = model.chat, context = dialogs.messageContext
         let root = chat.threadRootID
         guard let current = dialogs.currentMessage(message) else { return nil }
@@ -619,6 +642,11 @@ import CaperCore
         for (title, action) in [("Reply", MessageAction.reply), ("Reply in thread", MessageAction.replyInThread)] {
             items.append(NavigationMenuItem(title, enabled: chat.canInteract && chat.pendingMessage == nil, action: perform { [weak self, weak anchor] in
                 guard let self, let anchor else { return }; self.messageAction($0, action: action, anchor: anchor)
+            }))
+        }
+        if chat.canForward {
+            items.append(NavigationMenuItem("Forward message", action: perform {
+                guard chat.canForward, !$0.isDeleted else { return }; chat.forwardTarget = $0
             }))
         }
         items.append(.separator())

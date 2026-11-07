@@ -46,9 +46,9 @@ import XCTest
 
     private nonisolated static func resetFixture() async throws { try await control(["reset": true]) }
 
-    private nonisolated static func fixtureGET(_ path: String) async throws -> [String: Any] {
+    private nonisolated static func fixtureGET(_ path: String, bearer: String = "fixture-owner-token") async throws -> [String: Any] {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:3001\(path)")!)
-        request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -57,6 +57,376 @@ import XCTest
     private func messageMenuItem(_ title: String, app: XCUIApplication, body: XCUIElement) -> XCUIElement {
         let item = app.menuItems[title]
         return item.exists ? item : body.menuItems[title]
+    }
+
+    func testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let sourceID = "chan00000001m02"
+        let sourceChannel = "chan00000001", firstChannel = "chan00000002", secondChannel = "chan00000003"
+        let channels = [sourceChannel, firstChannel, secondChannel]
+        let drafts = ["TEST FIXTURE — source draft", "TEST FIXTURE — design draft", "TEST FIXTURE — planning draft"]
+        var cursors: [String: String] = [:]
+        for channel in channels {
+            let history = try await Self.fixtureGET("/api/chat/channels/\(channel)/messages")
+            cursors[channel] = try XCTUnwrap(history["cursor"] as? String)
+        }
+        let destinations = try await Self.fixtureGET("/api/chat/forward-destinations")
+        let sorted = try XCTUnwrap(destinations["destinations"] as? [[String: Any]]).sorted {
+            "\($0["spaceName"] as? String ?? "") \($0["name"] as? String ?? "")" < "\($1["spaceName"] as? String ?? "") \($1["name"] as? String ?? "")"
+        }
+        XCTAssertEqual(sorted.compactMap { $0["id"] as? String }.filter { [firstChannel, secondChannel].contains($0) },
+            [firstChannel, secondChannel], "Fail the second selected destination in the picker's sorted submission order")
+        func forwards(in channel: String) async throws -> [[String: Any]] {
+            let history = try await Self.fixtureGET("/api/chat/channels/\(channel)/messages")
+            return try XCTUnwrap(history["messages"] as? [[String: Any]]).filter { $0["forward"] != nil }
+        }
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        for (channel, draft) in zip(channels, drafts) {
+            app.buttons["channel-\(channel)"].click()
+            XCTAssertTrue(app.textViews["message-\(channel)m01"].waitForExistence(timeout: 10))
+            composer.click(); composer.typeText(draft)
+            XCTAssertEqual(composer.value as? String, draft)
+        }
+        app.buttons["channel-\(sourceChannel)"].click()
+        let timeline = app.scrollViews["message-timeline"]
+        let body = timeline.textViews["message-\(sourceID)"]
+        XCTAssertTrue(body.waitForExistence(timeout: 10)); XCTAssertEqual(composer.value as? String, drafts[0])
+        let search = app.textFields["Find a space, channel or DM"]
+        let note = app.textViews["forward-note"]
+        let first = app.buttons["forward-destination-\(firstChannel)"]
+        let second = app.buttons["forward-destination-\(secondChannel)"]
+        func replace(_ field: XCUIElement, with text: String) {
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+            field.click(); field.typeKey("a", modifierFlags: .command); field.typeKey("v", modifierFlags: .command)
+            XCTAssertEqual(field.value as? String, text)
+        }
+        func openForward(options: Bool) {
+            if options {
+                timeline.descendants(matching: .any)["message-row-\(sourceID)"].hover()
+                timeline.buttons["add-reaction-\(sourceID)"].hover()
+                let button = timeline.buttons["message-options-\(sourceID)"]
+                button.hover(); button.click()
+            } else { body.rightClick() }
+            let forward = messageMenuItem("Forward message", app: app, body: body)
+            XCTAssertTrue(forward.waitForExistence(timeout: 5)); XCTAssertTrue(forward.isEnabled); forward.click()
+            XCTAssertTrue(note.waitForExistence(timeout: 5))
+            XCTAssertFalse(composer.exists); XCTAssertFalse(timeline.exists)
+            XCTAssertFalse(app.buttons["channel-\(sourceChannel)"].exists, "The workspace modal must isolate navigation as well as the composer")
+            let window = app.windows["Caper — AppKit development (not feature complete)"]
+            XCTAssertTrue(window.frame.contains(search.frame)); XCTAssertTrue(window.frame.contains(app.buttons["Close"].frame))
+            XCTAssertGreaterThan(search.frame.width, 300); XCTAssertLessThanOrEqual(search.frame.width, 460)
+        }
+        openForward(options: true)
+        XCTAssertTrue(first.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Forward (0)"].isEnabled)
+        first.hover(); second.hover(); first.click()
+        XCTAssertEqual(first.value as? String, "Selected")
+        replace(note, with: "TEST FIXTURE — cancel this note, not the channel draft")
+        XCTAssertTrue(app.buttons["Forward (1)"].isEnabled)
+        capture("forward picker cancel wide", app: app)
+        app.buttons["Close"].click()
+        XCTAssertTrue(note.waitForNonExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, drafts[0])
+        for channel in channels {
+            let history = try await Self.fixtureGET("/api/chat/channels/\(channel)/messages")
+            XCTAssertEqual(history["cursor"] as? String, cursors[channel], "Closing the picker must not send to any destination")
+            let rows = try await forwards(in: channel)
+            XCTAssertTrue(rows.isEmpty)
+        }
+
+        try await Self.control(["failure": ["path": "/api/chat/forward-destinations", "method": "GET", "status": 503,
+            "error": "TEST FIXTURE: destinations unavailable."]])
+        openForward(options: false)
+        let retryLoading = app.buttons["Retry loading"]
+        XCTAssertTrue(retryLoading.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE: destinations unavailable."].exists)
+        XCTAssertFalse(first.exists); XCTAssertFalse(app.buttons["Forward (0)"].isEnabled)
+        XCTAssertEqual(note.value as? String, "", "A cancelled note must not leak into a new forwarding intent")
+        let rawNote = " \nTEST FIXTURE — shared note α\n "
+        let trimmedNote = rawNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        replace(note, with: rawNote)
+        capture("forward destinations load failure wide", app: app)
+        retryLoading.hover(); app.buttons["Close"].hover(); retryLoading.click()
+        XCTAssertTrue(first.waitForExistence(timeout: 10)); XCTAssertFalse(retryLoading.exists)
+        XCTAssertEqual(note.value as? String, rawNote, "Destination loading must not reset the optional note")
+        replace(search, with: "no-such-forward-destination")
+        XCTAssertTrue(app.staticTexts["No matching destinations."].waitForExistence(timeout: 5))
+        XCTAssertFalse(first.exists); XCTAssertFalse(second.exists)
+        replace(search, with: " fixture #DeSiGn ")
+        XCTAssertTrue(first.waitForExistence(timeout: 5)); XCTAssertFalse(second.exists); first.click()
+        replace(search, with: "fixture #planning")
+        XCTAssertTrue(second.waitForExistence(timeout: 5)); XCTAssertFalse(first.exists); second.click()
+        XCTAssertTrue(app.buttons["Forward (2)"].exists, "Filtering must retain selections hidden by the search")
+        replace(search, with: "")
+        XCTAssertEqual(first.value as? String, "Selected"); XCTAssertEqual(second.value as? String, "Selected")
+        replace(note, with: String(repeating: "e\u{301}", count: 2000) + "🚀")
+        XCTAssertFalse(app.buttons["Forward (2)"].isEnabled, "Forward notes use the 4,000 Unicode-scalar limit")
+        replace(note, with: rawNote)
+        resize(app, width: 900)
+        capture("forward filtered selection and note narrow", app: app)
+        try await Self.control(["failure": ["path": "/api/chat/channels/\(secondChannel)/forwards", "method": "POST", "status": 503]])
+        app.buttons["Forward (2)"].click()
+        let retry = app.buttons["Retry forwards (1)"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Forwarded to 1 destination.")).firstMatch.exists)
+        XCTAssertFalse(search.isEnabled); XCTAssertFalse(first.isEnabled); XCTAssertFalse(second.isEnabled)
+        XCTAssertEqual(first.value as? String, "Not selected"); XCTAssertEqual(second.value as? String, "Selected")
+        XCTAssertEqual(note.value as? String, rawNote)
+        let accepted = try await forwards(in: firstChannel)
+        let missing = try await forwards(in: secondChannel)
+        XCTAssertEqual(accepted.count, 1); XCTAssertTrue(missing.isEmpty, "The second POST failed before persistence, independently of picker state")
+        let acceptedID = try XCTUnwrap(accepted.first?["id"] as? String)
+        let acceptedKey = try XCTUnwrap(accepted.first?["clientMessageId"] as? String)
+        XCTAssertEqual((accepted.first?["content"] as? [String: Any])?["text"] as? String, trimmedNote)
+        let acceptedOriginal = try XCTUnwrap((accepted.first?["forward"] as? [String: Any])?["message"] as? [String: Any])
+        XCTAssertEqual(acceptedOriginal["id"] as? String, sourceID); XCTAssertEqual(acceptedOriginal["channelId"] as? String, sourceChannel)
+        capture("forward partial delivery retains only failed destination narrow", app: app)
+        retry.hover(); app.buttons["Close"].hover(); retry.click()
+        XCTAssertTrue(note.waitForNonExistence(timeout: 10)); XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, drafts[0])
+        let firstAfterRetry = try await forwards(in: firstChannel)
+        XCTAssertEqual(firstAfterRetry.compactMap { $0["id"] as? String }, [acceptedID], "Retry must never duplicate the already confirmed destination")
+        XCTAssertEqual(firstAfterRetry.first?["clientMessageId"] as? String, acceptedKey)
+        for channel in [firstChannel, secondChannel] {
+            let rows = try await forwards(in: channel)
+            XCTAssertEqual(rows.count, 1)
+            let wrapper = try XCTUnwrap(rows.first)
+            XCTAssertEqual((wrapper["content"] as? [String: Any])?["text"] as? String, trimmedNote)
+            let original = try XCTUnwrap((wrapper["forward"] as? [String: Any])?["message"] as? [String: Any])
+            XCTAssertEqual(original["id"] as? String, sourceID); XCTAssertEqual(original["channelId"] as? String, sourceChannel)
+        }
+        let sourceAfter = try await Self.fixtureGET("/api/chat/channels/\(sourceChannel)/messages")
+        XCTAssertEqual(sourceAfter["cursor"] as? String, cursors[sourceChannel], "Forwarding must not post the source draft")
+        for (channel, draft) in zip(channels, drafts) {
+            app.buttons["channel-\(channel)"].click()
+            XCTAssertTrue(app.textViews["message-\(channel)m01"].waitForExistence(timeout: 10))
+            XCTAssertEqual(composer.value as? String, draft, "Forwarding must not consume or replace destination drafts")
+        }
+
+        // Signed-in previews cannot react or compose, but can share a readable original.
+        app.buttons["channel-options-\(firstChannel)"].click(); app.menuItems["Leave channel"].click()
+        XCTAssertTrue(app.staticTexts["Leave #design?"].waitForExistence(timeout: 5))
+        app.windows.firstMatch.buttons["Leave channel"].click()
+        XCTAssertTrue(app.buttons["channel-\(firstChannel)"].waitForNonExistence(timeout: 10))
+        app.buttons["selected-space-name"].click(); app.menuItems["Browse channels"].click()
+        let browse = app.searchFields["browse-channels-search"]
+        XCTAssertTrue(browse.waitForExistence(timeout: 5)); browse.click(); browse.typeText("design")
+        app.buttons["browse-channel-\(firstChannel)"].click()
+        XCTAssertTrue(app.buttons["join-channel"].waitForExistence(timeout: 10)); XCTAssertFalse(composer.exists)
+        let previewBody = app.textViews["message-\(firstChannel)m01"]
+        XCTAssertTrue(previewBody.waitForExistence(timeout: 5)); previewBody.rightClick()
+        XCTAssertFalse(messageMenuItem("Add reaction…", app: app, body: previewBody).isEnabled)
+        let previewForward = messageMenuItem("Forward message", app: app, body: previewBody)
+        XCTAssertTrue(previewForward.waitForExistence(timeout: 5)); XCTAssertTrue(previewForward.isEnabled); previewForward.click()
+        XCTAssertTrue(note.waitForExistence(timeout: 5)); XCTAssertFalse(app.buttons["join-channel"].exists)
+        XCTAssertTrue(second.waitForExistence(timeout: 10)); XCTAssertFalse(first.exists, "An unjoined source is not a writable destination")
+        capture("forward from read-only preview narrow", app: app)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(note.waitForNonExistence(timeout: 5)); XCTAssertTrue(app.buttons["join-channel"].waitForExistence(timeout: 5))
+        XCTAssertFalse(composer.exists)
+        let afterPreview = try await forwards(in: firstChannel)
+        XCTAssertEqual(afterPreview.compactMap { $0["id"] as? String }, [acceptedID], "ESC must dismiss without another forward")
+    }
+
+    func testForwardCardsFollowOriginalUpdatesNavigateReforwardAndHandoffFromPins() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let sourceChannel = "chan00000003", destinationChannel = "chan00000002", nextChannel = "chan00000001"
+        let sourceID = "chan00000003m02"
+        let originalText = "TEST FIXTURE — original shared conversation"
+        try await Self.control(["incomingEdit": ["channelId": sourceChannel, "messageId": sourceID, "text": originalText]])
+        try await Self.control(["incomingPin": ["channelId": sourceChannel, "messageId": sourceID, "userId": "owner0000001"]])
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15)); resize(app, width: 1280)
+        let sourceDraft = "TEST FIXTURE — keep source draft during original navigation"
+        let destinationDraft = "TEST FIXTURE — keep destination draft during re-forward"
+        app.buttons["channel-\(sourceChannel)"].click()
+        XCTAssertTrue(app.textViews["message-\(sourceID)"].waitForExistence(timeout: 10))
+        composer.click(); composer.typeText(sourceDraft)
+        app.buttons["channel-\(destinationChannel)"].click()
+        XCTAssertTrue(app.textViews["message-\(destinationChannel)m01"].waitForExistence(timeout: 10))
+        composer.click(); composer.typeText(destinationDraft)
+        app.buttons["channel-\(sourceChannel)"].click()
+        XCTAssertTrue(app.textViews["message-\(sourceID)"].waitForExistence(timeout: 10))
+        app.buttons["toggle-members"].hover(); app.buttons["channel-pins"].hover(); app.buttons["channel-pins"].click()
+        let pins = app.descendants(matching: .any)["pinned-messages"]
+        let pinned = pins.descendants(matching: .any)["pinned-message-\(sourceID)"]
+        XCTAssertTrue(pinned.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, sourceDraft)
+        let pinBody = pinned.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", originalText, originalText)).firstMatch
+        XCTAssertTrue(pinBody.waitForExistence(timeout: 5))
+        pinBody.hover(); pins.buttons["go-to-message-\(sourceID)"].hover(); pinBody.rightClick()
+        let pinForward = app.menuItems["Forward message"]
+        XCTAssertTrue(pinForward.waitForExistence(timeout: 5)); XCTAssertTrue(pinForward.isEnabled); pinForward.click()
+        let note = app.textViews["forward-note"]
+        XCTAssertTrue(note.waitForExistence(timeout: 5))
+        XCTAssertTrue(pins.waitForNonExistence(timeout: 5), "Pins must hand off to a workspace-owned modal, not retain a picker in a closing popover")
+        XCTAssertFalse(composer.exists); XCTAssertFalse(app.buttons["channel-pins"].exists)
+        let destination = app.buttons["forward-destination-\(destinationChannel)"]
+        XCTAssertTrue(destination.waitForExistence(timeout: 10)); destination.click()
+        let wrapperNote = "TEST FIXTURE — first forwarder's note, not the original"
+        note.click(); note.typeText(wrapperNote)
+        capture("pins to workspace forwarding handoff wide", app: app)
+        app.buttons["Forward (1)"].click()
+        XCTAssertTrue(note.waitForNonExistence(timeout: 10)); XCTAssertFalse(pins.exists)
+        XCTAssertEqual(composer.value as? String, sourceDraft)
+        let delivered = try await Self.fixtureGET("/api/chat/channels/\(destinationChannel)/messages")
+        let wrappers = try XCTUnwrap(delivered["messages"] as? [[String: Any]]).filter { $0["forward"] != nil }
+        XCTAssertEqual(wrappers.count, 1)
+        let wrapper = try XCTUnwrap(wrappers.first)
+        let wrapperID = try XCTUnwrap(wrapper["id"] as? String)
+        XCTAssertEqual((wrapper["content"] as? [String: Any])?["text"] as? String, wrapperNote)
+        let original = try XCTUnwrap((wrapper["forward"] as? [String: Any])?["message"] as? [String: Any])
+        XCTAssertEqual(original["id"] as? String, sourceID); XCTAssertEqual(original["channelId"] as? String, sourceChannel)
+        app.buttons["channel-\(destinationChannel)"].click()
+        let timeline = app.scrollViews["message-timeline"]
+        let wrapperBody = timeline.textViews["message-\(wrapperID)"]
+        XCTAssertTrue(wrapperBody.waitForExistence(timeout: 10)); XCTAssertEqual(wrapperBody.value as? String, wrapperNote)
+        XCTAssertEqual(composer.value as? String, destinationDraft)
+        let card = timeline.descendants(matching: .any)["forward-card-\(wrapperID)"]
+        let open = card.buttons["open-forward-\(wrapperID)"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5)); XCTAssertTrue(open.waitForExistence(timeout: 5))
+        XCTAssertTrue(card.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", originalText, originalText)).firstMatch.exists)
+        XCTAssertFalse(card.staticTexts[wrapperNote].exists, "The wrapper note is rendered outside the original card")
+        capture("delivered forward original and separate note wide", app: app)
+
+        let editedText = "TEST FIXTURE — the original changed live\nThe forwarder's note must stay untouched."
+        try await Self.control(["incomingEdit": ["channelId": sourceChannel, "messageId": sourceID, "text": editedText]])
+        let edited = card.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", editedText, editedText)).firstMatch
+        XCTAssertTrue(edited.waitForExistence(timeout: 10)); XCTAssertEqual(wrapperBody.value as? String, wrapperNote)
+        try await Self.control(["incomingReaction": ["channelId": sourceChannel, "messageId": sourceID, "emoji": "👍", "userId": "member000002"]])
+        XCTAssertTrue(card.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "👍, 1 reactions")).firstMatch.waitForExistence(timeout: 10))
+        try await Self.control(["incomingReply": ["rootId": sourceID, "text": "A live reply to the forwarded original"]])
+        let replyCount = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "1 reply · View conversation"), object: open)
+        XCTAssertEqual(XCTWaiter.wait(for: [replyCount], timeout: 10), .completed)
+        XCTAssertEqual(wrapperBody.value as? String, wrapperNote); XCTAssertEqual(composer.value as? String, destinationDraft)
+        let projected = try await Self.fixtureGET("/api/chat/channels/\(destinationChannel)/messages")
+        let live = try XCTUnwrap((projected["messages"] as? [[String: Any]])?.first { $0["id"] as? String == wrapperID })
+        let liveOriginal = try XCTUnwrap((live["forward"] as? [String: Any])?["message"] as? [String: Any])
+        XCTAssertEqual((liveOriginal["content"] as? [String: Any])?["text"] as? String, editedText)
+        XCTAssertEqual((liveOriginal["thread"] as? [String: Any])?["replyCount"] as? Int, 1)
+        let reactions = try XCTUnwrap(liveOriginal["reactions"] as? [[String: Any]])
+        XCTAssertEqual(reactions.first?["emoji"] as? String, "👍"); XCTAssertEqual(reactions.first?["authorIds"] as? [String], ["member000002"])
+        XCTAssertEqual((live["content"] as? [String: Any])?["text"] as? String, wrapperNote)
+        capture("forward card live edit reaction and reply wide", app: app)
+
+        let conversationPath = "/api/chat/channels/\(destinationChannel)/forwards/\(wrapperID)/thread"
+        let conversation = try await Self.fixtureGET(conversationPath)
+        let reply = try XCTUnwrap((conversation["messages"] as? [[String: Any]])?.first)
+        let replyID = try XCTUnwrap(reply["id"] as? String)
+        XCTAssertEqual((conversation["root"] as? [String: Any])?["id"] as? String, sourceID)
+        XCTAssertNotNil(conversation["source"] as? [String: Any], "This fixture account can navigate to the original, rather than needing the read-only reader")
+        try await Self.control(["failure": ["path": conversationPath, "method": "GET", "status": 503]])
+        wrapperBody.hover(); open.hover(); open.click()
+        let navigationError = app.staticTexts["conversation-error"]
+        XCTAssertTrue(navigationError.waitForExistence(timeout: 10))
+        XCTAssertEqual(navigationError.value as? String, "Couldn’t open the conversation. Try again.")
+        XCTAssertTrue(card.exists); XCTAssertEqual(composer.value as? String, destinationDraft)
+        capture("forward original navigation failure wide", app: app)
+        open.click()
+        let thread = app.scrollViews["thread-timeline"]
+        let root = thread.textViews["message-\(sourceID)"]
+        XCTAssertTrue(root.waitForExistence(timeout: 10)); XCTAssertEqual(root.value as? String, editedText)
+        XCTAssertTrue(thread.textViews["message-\(replyID)"].waitForExistence(timeout: 10))
+        XCTAssertEqual(thread.textViews["message-\(replyID)"].value as? String, (reply["content"] as? [String: Any])?["text"] as? String)
+        XCTAssertTrue(root.isHittable); XCTAssertTrue(thread.frame.intersects(root.frame))
+        XCTAssertTrue(app.staticTexts["# planning"].exists)
+        XCTAssertEqual(composer.value as? String, sourceDraft); XCTAssertEqual(app.textViews["thread-composer"].value as? String, "")
+        capture("forward opened original conversation and live reply wide", app: app)
+        app.buttons["close-thread"].click()
+        XCTAssertTrue(thread.waitForNonExistence(timeout: 5))
+        app.buttons["channel-\(destinationChannel)"].click()
+        XCTAssertTrue(wrapperBody.waitForExistence(timeout: 10)); XCTAssertEqual(composer.value as? String, destinationDraft)
+        resize(app, width: 900)
+        wrapperBody.rightClick()
+        let reforward = messageMenuItem("Forward message", app: app, body: wrapperBody)
+        XCTAssertTrue(reforward.waitForExistence(timeout: 5)); XCTAssertTrue(reforward.isEnabled); reforward.click()
+        XCTAssertTrue(note.waitForExistence(timeout: 5)); XCTAssertEqual(note.value as? String, "")
+        XCTAssertFalse(composer.exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", editedText, editedText)).firstMatch.exists)
+        XCTAssertFalse(app.staticTexts[wrapperNote].exists, "Re-forward previews the original, never the previous wrapper's note")
+        let next = app.buttons["forward-destination-\(nextChannel)"]
+        XCTAssertTrue(next.waitForExistence(timeout: 10)); next.click()
+        let nextNote = "TEST FIXTURE — a fresh note on the same original"
+        note.click(); note.typeText(nextNote)
+        capture("re-forward original without previous wrapper note narrow", app: app)
+        app.buttons["Forward (1)"].click()
+        XCTAssertTrue(note.waitForNonExistence(timeout: 10)); XCTAssertEqual(composer.value as? String, destinationDraft)
+        let nextHistory = try await Self.fixtureGET("/api/chat/channels/\(nextChannel)/messages")
+        let nextWrappers = try XCTUnwrap(nextHistory["messages"] as? [[String: Any]]).filter { $0["forward"] != nil }
+        XCTAssertEqual(nextWrappers.count, 1)
+        let nextWrapper = try XCTUnwrap(nextWrappers.first)
+        let nextID = try XCTUnwrap(nextWrapper["id"] as? String)
+        XCTAssertNotEqual(nextID, wrapperID)
+        XCTAssertEqual((nextWrapper["content"] as? [String: Any])?["text"] as? String, nextNote)
+        let nextOriginal = try XCTUnwrap((nextWrapper["forward"] as? [String: Any])?["message"] as? [String: Any])
+        XCTAssertEqual(nextOriginal["id"] as? String, sourceID); XCTAssertNotEqual(nextOriginal["id"] as? String, wrapperID)
+        XCTAssertEqual(nextOriginal["channelId"] as? String, sourceChannel)
+        XCTAssertEqual((nextOriginal["content"] as? [String: Any])?["text"] as? String, editedText)
+        XCTAssertNil(nextOriginal["forward"], "Re-forwarding must flatten to the original conversation")
+        app.buttons["channel-\(nextChannel)"].click()
+        XCTAssertTrue(timeline.textViews["message-\(nextID)"].waitForExistence(timeout: 10))
+        XCTAssertEqual(timeline.textViews["message-\(nextID)"].value as? String, nextNote)
+        XCTAssertTrue(timeline.descendants(matching: .any)["forward-card-\(nextID)"].waitForExistence(timeout: 5))
+        XCTAssertTrue(timeline.buttons["open-forward-\(nextID)"].exists)
+        capture("delivered re-forward card narrow", app: app)
+
+        // Alex can read #general, but has no grant to private #planning. Existing
+        // fixture identities and reply controls exercise the real reader, not a
+        // fabricated response with its source pointer removed.
+        for index in 1...50 {
+            try await Self.control(["incomingReply": ["rootId": sourceID, "text": "Forward reader page distance \(index)"]])
+        }
+        let readerPath = "/api/chat/channels/\(nextChannel)/forwards/\(nextID)/thread"
+        let readerHistory = try await Self.fixtureGET(readerPath, bearer: "fixture-other-token")
+        XCTAssertTrue(readerHistory["source"] is NSNull)
+        XCTAssertEqual((readerHistory["root"] as? [String: Any])?["id"] as? String, sourceID)
+        XCTAssertEqual(readerHistory["hasMore"] as? Bool, true)
+        let newestReplies = try XCTUnwrap(readerHistory["messages"] as? [[String: Any]])
+        XCTAssertEqual(newestReplies.count, 50); XCTAssertFalse(newestReplies.contains { $0["id"] as? String == replyID })
+        let olderHistory = try await Self.fixtureGET("\(readerPath)?before=\(try XCTUnwrap(newestReplies.first?["seq"] as? String))", bearer: "fixture-other-token")
+        XCTAssertEqual((olderHistory["messages"] as? [[String: Any]])?.compactMap { $0["id"] as? String }, [replyID])
+        app.terminate()
+        app.launchEnvironment["CAPER_TEST_BEARER"] = "fixture-other-token"
+        app.launchArguments += ["-caper.space-landing.member000002", ""]
+        app.launch()
+        XCTAssertTrue(composer.waitForExistence(timeout: 15)); resize(app, width: 900)
+        XCTAssertFalse(app.buttons["channel-\(sourceChannel)"].exists, "The shared original does not grant membership in its private channel")
+        let readerDraft = "TEST FIXTURE — retain the reader's destination draft"
+        composer.click(); composer.typeText(readerDraft)
+        let readerOpen = timeline.buttons["open-forward-\(nextID)"]
+        XCTAssertTrue(readerOpen.waitForExistence(timeout: 10)); readerOpen.hover(); readerOpen.click()
+        let readerTitle = app.staticTexts["Forwarded conversation"]
+        XCTAssertTrue(readerTitle.waitForExistence(timeout: 10))
+        XCTAssertFalse(composer.exists); XCTAssertFalse(timeline.exists); XCTAssertFalse(app.textViews["thread-composer"].exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", editedText, editedText)).firstMatch.exists)
+        let oldestText = try XCTUnwrap((reply["content"] as? [String: Any])?["text"] as? String)
+        let oldestReply = app.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", oldestText, oldestText)).firstMatch
+        XCTAssertFalse(oldestReply.exists, "The oldest reply starts outside the initial reader page")
+        let loadOlder = app.buttons["Load older replies"]
+        XCTAssertTrue(loadOlder.waitForExistence(timeout: 10))
+        capture("private original shared through read-only reader narrow", app: app)
+        try await Self.control(["failure": ["path": readerPath, "method": "GET", "status": 503,
+            "error": "TEST FIXTURE: older forwarded replies unavailable."]])
+        loadOlder.hover(); app.buttons["Close"].hover(); loadOlder.click()
+        let readerRetry = app.buttons["Retry"]
+        XCTAssertTrue(readerRetry.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE: older forwarded replies unavailable."].exists)
+        XCTAssertFalse(composer.exists); XCTAssertFalse(oldestReply.exists)
+        capture("forward reader page failure narrow", app: app)
+        readerRetry.click()
+        XCTAssertTrue(oldestReply.waitForExistence(timeout: 10)); XCTAssertFalse(readerRetry.exists)
+        XCTAssertFalse(loadOlder.exists, "Retry must finish both requested pages, not silently reset to the newest 50 replies")
+        capture("forward reader older page recovered narrow", app: app)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(readerTitle.waitForNonExistence(timeout: 5)); XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, readerDraft)
+        XCTAssertTrue(timeline.buttons["open-forward-\(nextID)"].exists)
     }
 
     func testNativePinsRollbackRetryDismissAndLiveAuthorIdentityPreserveDraft() async throws {
@@ -297,7 +667,7 @@ import XCTest
         try await Self.control(["incomingReaction": ["channelId": "chan00000001", "messageId": id,
             "emoji": "❤️", "userId": "member000002"]])
         try await Self.control(["failure": ["path": path, "method": "GET", "status": 503,
-            "error": "TEST FIXTURE: reaction names unavailable."]])
+            "persistent": true, "error": "TEST FIXTURE: reaction names unavailable."]])
         let app = launch()
         defer { app.terminate() }
         let composer = app.textViews["message-composer"]
@@ -316,6 +686,9 @@ import XCTest
         XCTAssertTrue(app.staticTexts["Couldn’t load reactions"].exists)
         XCTAssertFalse(composer.exists, "Only the modal's controls belong in accessibility while it is open")
         capture("who reacted load failure wide", app: app)
+        // Hover now shares this request/cache; it must not consume a one-shot
+        // failure before the details sheet reaches its own error state.
+        try await Self.control(["clearFailures": true])
         retry.click()
         let maya = sheet.descendants(matching: .any)["reactor-row-member000001"]
         let alex = sheet.descendants(matching: .any)["reactor-row-member000002"]
@@ -359,6 +732,131 @@ import XCTest
         XCTAssertTrue(sheet.waitForNonExistence(timeout: 10), "Removing the final reaction closes the native-hosted dialog")
         XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, draft)
         XCTAssertFalse(thumb.exists); XCTAssertFalse(heart.exists)
+    }
+
+    func testReactionHoverRetryLiveNamesAndPinnerProfileRetainFocusAndDrafts() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let channel = "chan00000001", id = "chan00000001m01"
+        // The API names this resource /reactions, not /reactors. Seed self last
+        // so a self-first summary cannot pass by simply echoing fixture order.
+        let path = "/api/chat/channels/\(channel)/messages/\(id)/reactions"
+        for person in ["member000001", "owner0000001"] {
+            try await Self.control(["incomingReaction": ["channelId": channel, "messageId": id, "emoji": "👍", "userId": person]])
+        }
+        try await Self.control(["incomingPin": ["channelId": channel, "messageId": id, "userId": "member000001"]])
+        try await Self.control(["failure": ["path": path, "method": "GET", "status": 503, "persistent": true]])
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15)); resize(app, width: 1280)
+        let draft = "TEST FIXTURE — retain composer focus under hover"
+        composer.click(); composer.typeText(draft)
+        let timeline = app.scrollViews["message-timeline"]
+        let thumb = timeline.buttons["reaction-\(id)-👍"]
+        let tooltip = app.descendants(matching: .any)["reaction-tooltip"]
+        let profileClose = app.buttons["mention-card-close"]
+        let quick = timeline.buttons["quick-reaction-\(id)-❤️"]
+        func summary(_ prefix: String) {
+            let named = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH %@", prefix), object: tooltip)
+            XCTAssertEqual(XCTWaiter.wait(for: [named], timeout: 10), .completed)
+        }
+        XCTAssertTrue(thumb.waitForExistence(timeout: 5)); thumb.hover()
+        try await Task.sleep(for: .milliseconds(500)) // Dwell beyond the shared 400ms delay with the real pointer.
+        XCTAssertTrue(tooltip.waitForExistence(timeout: 5)); summary("2 people reacted with ")
+        XCTAssertTrue(composer.exists); XCTAssertFalse(profileClose.exists)
+        app.typeText(" — still focused")
+        let retainedDraft = draft + " — still focused"
+        XCTAssertEqual(composer.value as? String, retainedDraft, "The bubble must not become a key window or steal the native first responder")
+        capture("reaction hover count fallback and composer focus wide", app: app)
+        quick.hover()
+        XCTAssertTrue(tooltip.waitForNonExistence(timeout: 5))
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertFalse(tooltip.exists); XCTAssertFalse(profileClose.exists, "Neighbor quick reactions do not open a profile or names bubble")
+        try await Self.control(["clearFailures": true])
+        thumb.hover(); XCTAssertTrue(tooltip.waitForExistence(timeout: 5)); summary("You and Maya reacted with ")
+        capture("reaction hover reentry retries names self first wide", app: app)
+
+        // Exercise real profile.updated delivery while the pointer stays on the
+        // chip; changing the reaction is not needed to refresh a cached name.
+        var rename = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/account/profile")!)
+        rename.httpMethod = "POST"
+        rename.setValue("Bearer fixture-member-token", forHTTPHeaderField: "Authorization")
+        rename.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        rename.httpBody = try JSONSerialization.data(withJSONObject: ["username": "maya", "displayName": "Maya Live"])
+        let (_, renamed) = try await URLSession.shared.data(for: rename)
+        XCTAssertEqual((renamed as? HTTPURLResponse)?.statusCode, 200)
+        summary("You and Maya Live reacted with ")
+        try await Self.control(["incomingReaction": ["channelId": channel, "messageId": id, "emoji": "👍", "userId": "member000002"]])
+        summary("You, Maya Live and Alex reacted with ")
+        XCTAssertEqual(thumb.label, "👍 3")
+        try await Self.control(["incomingReaction": ["channelId": channel, "messageId": id, "emoji": "👍", "userId": "member000002", "active": false]])
+        summary("You and Maya Live reacted with ")
+        XCTAssertEqual(thumb.label, "👍 2")
+        capture("reaction hover live names and membership wide", app: app)
+        composer.hover(); XCTAssertTrue(tooltip.waitForNonExistence(timeout: 5))
+        resize(app, width: 900)
+        thumb.hover(); XCTAssertTrue(tooltip.waitForExistence(timeout: 5)); summary("You and Maya Live reacted with ")
+        XCTAssertGreaterThanOrEqual(tooltip.frame.minX, timeline.frame.minX)
+        XCTAssertLessThanOrEqual(tooltip.frame.maxX, timeline.frame.maxX)
+        XCTAssertLessThanOrEqual(tooltip.frame.width, 280)
+        XCTAssertEqual(composer.value as? String, retainedDraft)
+        capture("reaction hover bounded inside narrow conversation", app: app)
+        let beforeDetails = try await Self.fixtureGET("/api/chat/channels/\(channel)/messages")
+        thumb.rightClick()
+        let show = app.menuItems["Show who reacted"]
+        XCTAssertTrue(show.waitForExistence(timeout: 5)); show.click()
+        let sheet = app.descendants(matching: .any)["reactors-sheet"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5)); XCTAssertTrue(tooltip.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(sheet.descendants(matching: .any)["reactor-row-member000001"].waitForExistence(timeout: 10))
+        XCTAssertTrue(sheet.descendants(matching: .any)["reactor-row-owner0000001"].exists)
+        let afterDetails = try await Self.fixtureGET("/api/chat/channels/\(channel)/messages")
+        XCTAssertEqual(afterDetails["cursor"] as? String, beforeDetails["cursor"] as? String, "Right-click details must not toggle a reaction under the hover overlay")
+        let listed = try await Self.fixtureGET(path)
+        let thumbs = try XCTUnwrap((listed["reactions"] as? [[String: Any]])?.first { $0["emoji"] as? String == "👍" })
+        XCTAssertEqual(Set(try XCTUnwrap(thumbs["authors"] as? [[String: Any]]).compactMap { $0["id"] as? String }),
+            ["member000001", "owner0000001"])
+        app.buttons["Done"].click(); XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
+        thumb.hover(); XCTAssertTrue(tooltip.waitForExistence(timeout: 5)); thumb.click()
+        let toggled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "👍 1"), object: thumb)
+        XCTAssertEqual(XCTWaiter.wait(for: [toggled], timeout: 10), .completed, "The bubble must not intercept an ordinary chip click")
+        composer.hover(); XCTAssertTrue(tooltip.waitForNonExistence(timeout: 5))
+
+        resize(app, width: 1280)
+        // Only the pinner auto-opens. Author, avatar and member controls keep
+        // click-to-open behavior; these captures are for Mac hover-wash review.
+        for identifier in ["profile-author-chan00000001m02", "profile-avatar-chan00000001m02", "profile-member-member000001"] {
+            let person = app.buttons[identifier]
+            XCTAssertTrue(person.waitForExistence(timeout: 5)); person.hover()
+            try await Task.sleep(for: .milliseconds(500))
+            XCTAssertFalse(profileClose.exists); XCTAssertFalse(tooltip.exists)
+            capture("native person hover wash \(identifier) wide", app: app)
+        }
+        let badge = timeline.buttons["pinned-by-\(id)"]
+        XCTAssertTrue(badge.waitForExistence(timeout: 5)); XCTAssertEqual(badge.label, "Open profile for Maya Live")
+        quick.hover(); badge.hover()
+        let profileDraft = app.textViews["mention-card-composer"]
+        XCTAssertTrue(profileDraft.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["mention-card-username"].label, "@maya", "Hover must open the pinner, not the message's owner")
+        let privateDraft = "TEST FIXTURE — retain the pinner's profile draft"
+        profileDraft.click(); profileDraft.typeText(privateDraft)
+        capture("pinner hover opens profile with independent draft wide", app: app)
+        timeline.buttons["add-reaction-\(id)"].hover(); timeline.buttons["message-options-\(id)"].hover()
+        app.buttons["profile-author-chan00000001m04"].hover()
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(app.staticTexts["mention-card-username"].label, "@maya", "Neighbor controls and ordinary authors must not replace the open pinner profile")
+        XCTAssertEqual(profileDraft.value as? String, privateDraft)
+        badge.hover(); badge.click()
+        XCTAssertEqual(profileDraft.value as? String, privateDraft, "Leaving/reentering and clicking the same pinner must not recreate its presenter draft")
+        XCTAssertEqual(composer.value as? String, retainedDraft)
+        capture("same pinner reentry and click retain both drafts wide", app: app)
+        profileClose.click(); XCTAssertTrue(profileDraft.waitForNonExistence(timeout: 5))
+        quick.hover(); try await Task.sleep(for: .milliseconds(500))
+        XCTAssertFalse(profileClose.exists); XCTAssertFalse(tooltip.exists)
+        badge.hover(); XCTAssertTrue(profileDraft.waitForExistence(timeout: 5))
+        XCTAssertEqual(profileDraft.value as? String, privateDraft, "An explicit close also preserves the existing account-scoped profile draft")
+        profileClose.click(); XCTAssertTrue(profileDraft.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, retainedDraft)
     }
 
     func testMessageReplyQuoteCancelSendAndOriginalNavigation() async throws {
@@ -759,7 +1257,7 @@ import XCTest
         }
         XCTAssertFalse(item("Message history").exists, "An unedited message has no history action")
         XCTAssertFalse(app.buttons["message-history-\(id)"].exists)
-        for title in ["Forward message", "Forward…"] {
+        for title in ["Forward…"] {
             XCTAssertFalse(item(title).exists, "Unimplemented actions must not appear as placeholders")
         }
         capture("own message options wide", app: app)
@@ -853,7 +1351,7 @@ import XCTest
         XCTAssertTrue(item("Copy message ID").waitForExistence(timeout: 5))
         let tombstoneMenu = app.menus.containing(.menuItem, identifier: "Copy message ID").firstMatch
         XCTAssertEqual(tombstoneMenu.menuItems.allElementsBoundByIndex.map(\.label), ["Copy message ID"])
-        for title in ["Add reaction…", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message", "Pin message", "Unpin message"] {
+        for title in ["Add reaction…", "Forward message", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message", "Pin message", "Unpin message"] {
             XCTAssertFalse(item(title).exists, "A tombstone only offers Copy message ID")
         }
         capture("tombstone options menu narrow", app: app)
@@ -863,7 +1361,7 @@ import XCTest
         XCTAssertTrue(item("Copy message ID").waitForExistence(timeout: 5))
         // Native text-selection commands may remain for the placeholder. Only
         // message actions are restricted; they must not resurrect deleted text.
-        for title in ["Add reaction…", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message", "Pin message", "Unpin message"] {
+        for title in ["Add reaction…", "Forward message", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message", "Pin message", "Unpin message"] {
             XCTAssertFalse(item(title).exists, "Right-click must not restore actions on deleted content")
         }
         app.typeKey(.escape, modifierFlags: [])
@@ -1535,7 +2033,18 @@ import XCTest
         XCTAssertFalse(app.textViews["message-composer"].exists, "A preview cannot send")
         capture("channel preview", app: app)
         let previewMessage = app.textViews["message-chan00000002m01"]
-        XCTAssertTrue(previewMessage.waitForExistence(timeout: 5)); previewMessage.rightClick()
+        XCTAssertTrue(previewMessage.waitForExistence(timeout: 5))
+        let previewChip = app.buttons["reaction-chan00000002m01-🍅"]
+        let previewTooltip = app.descendants(matching: .any)["reaction-tooltip"]
+        XCTAssertTrue(previewChip.waitForExistence(timeout: 5)); XCTAssertFalse(previewChip.isEnabled)
+        previewChip.hover(); try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(previewTooltip.waitForExistence(timeout: 5), "Disabled preview chips still expose the read-only hover summary")
+        let previewNames = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH %@", "Maya reacted with "), object: previewTooltip)
+        XCTAssertEqual(XCTWaiter.wait(for: [previewNames], timeout: 10), .completed)
+        capture("disabled reaction chip hover in read-only preview", app: app)
+        app.buttons["join-channel"].hover(); XCTAssertTrue(previewTooltip.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(previewChip.label, "🍅 1")
+        previewMessage.rightClick()
         let details = messageMenuItem("View reactions", app: app, body: previewMessage)
         XCTAssertTrue(details.waitForExistence(timeout: 5)); XCTAssertTrue(details.isEnabled)
         XCTAssertFalse(messageMenuItem("Add reaction…", app: app, body: previewMessage).isEnabled)
@@ -1722,8 +2231,10 @@ import XCTest
         XCTAssertEqual(composer.value as? String, "**format me**", "A formatting toggle is one native undoable edit")
         composer.typeKey(.rightArrow, modifierFlags: [])
         composer.typeText(" and _italic_")
-        let styled = "**format me** and _italic_"
-        XCTAssertEqual(composer.value as? String, styled, "Typing after hidden closing delimiters preserves both pairs")
+        // The web ProseMirror composer keeps the style across typed whitespace;
+        // the shared Rust bridge must do the same through the focused native editor.
+        let styled = "**format me** **and** **_italic_**"
+        XCTAssertEqual(composer.value as? String, styled, "Continuous typing reopens bold after spaces and nests the typed italic span")
         composer.typeKey("a", modifierFlags: .command); composer.typeKey("c", modifierFlags: .command)
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), "format me and italic", "Copy excludes hidden delimiters")
         composer.typeKey("x", modifierFlags: .command)
@@ -1740,12 +2251,19 @@ import XCTest
         XCTAssertEqual(composer.value as? String, "_**menu style**_", "The Edit menu formats the same native selection")
         composer.typeKey(.rightArrow, modifierFlags: [])
         composer.typeText(" tail")
-        XCTAssertEqual(composer.value as? String, "_**menu style**_ tail")
+        XCTAssertEqual(composer.value as? String, "**_menu style_** **_tail_**", "Both styles continue across whitespace, as in web")
         capture("draft formatting menus", app: app)
         app.buttons["send-message"].click()
         XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value == %@", "menu style tail")).firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(composer.value as? String, "")
-        composer.click(); composer.typeText("**bold** _italic_ @maya @feedback https://example.com/a_b 🙂")
+        composer.click(); composer.typeText("**bold** ")
+        XCTAssertEqual(composer.value as? String, "**bold** ")
+        composer.typeKey(.leftArrow, modifierFlags: [])
+        composer.typeKey(.rightArrow, modifierFlags: [])
+        composer.typeText("a")
+        XCTAssertEqual(composer.value as? String, "**bold** a", "Moving the caret away and back ends the pending style; typing alone must not")
+        composer.typeKey("a", modifierFlags: .command)
+        composer.typeText("**bold** _italic_ @maya @feedback https://example.com/a_b 🙂")
         XCTAssertEqual(composer.value as? String, "**bold** _italic_ @maya @feedback https://example.com/a_b 🙂")
         capture("draft style mentions and link", app: app)
         let window = app.windows["Caper — AppKit development (not feature complete)"]
