@@ -27,14 +27,15 @@ test("landing selects a joined channel; explicit preview performs reads without 
   });
   assert.equal((await createSpaceNavigation().take(space.id)).channelId, joined.id);
   assert.equal((await createSpaceNavigation().take(space.id, preview.id)).channelId, preview.id);
-  // A visit starts the unread snapshot beside the history, not after it.
+  // A visit starts the unread snapshot beside the history, not after it, and
+  // a known channel's history is requested beside the space detail.
   assert.deepEqual(paths, [
     `/api/spaces/${space.id}`,
     "/api/spaces/unread",
     `/api/chat/channels/${joined.id}/messages`,
+    `/api/chat/channels/${preview.id}/messages`,
     `/api/spaces/${space.id}`,
     "/api/spaces/unread",
-    `/api/chat/channels/${preview.id}/messages`,
   ]);
 });
 
@@ -89,7 +90,13 @@ for (const cached of [false, true]) {
       assert.equal(error.message, "This channel is no longer accessible.");
       return true;
     });
-    assert.deepEqual(paths, [`/api/spaces/${space.id}`], "do not load another channel's messages");
+    // An uncached explicit channel's history may be requested beside the
+    // detail, but it is dropped once the detail denies the channel.
+    assert.deepEqual(
+      paths,
+      [...(cached ? [] : [`/api/chat/channels/${preview.id}/messages`]), `/api/spaces/${space.id}`],
+      "do not load another channel's messages",
+    );
     assert.equal(navigation.peek(space.id, preview.id), undefined);
 
     accessible = true;
@@ -97,8 +104,8 @@ for (const cached of [false, true]) {
     assert.equal(retry.channelId, preview.id);
     assert.equal(retry.history?.channel.id, preview.id);
     assert.deepEqual(
-      paths.slice(1),
-      [`/api/spaces/${space.id}`, `/api/chat/channels/${preview.id}/messages`],
+      paths.slice(cached ? 1 : 2),
+      [`/api/chat/channels/${preview.id}/messages`, `/api/spaces/${space.id}`],
       "retry rechecks access and fetches fresh history",
     );
   });

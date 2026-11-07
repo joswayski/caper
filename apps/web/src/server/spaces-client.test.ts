@@ -283,6 +283,7 @@ test("hover and click share one read, wait for history, and consume the snapshot
     const path = String(input);
     if (path !== "/api/spaces/unread") paths.push(path);
     if (path === "/api/spaces/space1234567") return Response.json(spaceDetail);
+    if (path === "/api/spaces/unread") return Response.json({ spaces: [] });
     return new Promise<Response>((resolve) => {
       release = resolve;
     });
@@ -296,7 +297,11 @@ test("hover and click share one read, wait for history, and consume the snapshot
   });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(settled, false, "a channel list alone must not replace the visible space");
-  assert.deepEqual(paths, ["/api/spaces/space1234567", "/api/chat/channels/other1234567/messages"]);
+  assert.deepEqual(
+    paths,
+    ["/api/chat/channels/other1234567/messages", "/api/spaces/space1234567"],
+    "the requested channel's history is fetched beside its space detail",
+  );
   release(Response.json(history("other1234567")));
   assert.equal((await hover).channelId, "other1234567");
   const again = navigation.take("space1234567", "other1234567");

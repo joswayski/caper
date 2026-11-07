@@ -198,6 +198,17 @@ export function createSpaceNavigation() {
       return cached.result;
     }
     const result = (async () => {
+      // The landing channel is usually known before the space detail returns
+      // (the requested, last visited, or saved landing channel), so its first
+      // page is requested beside the detail. It is used only when the detail
+      // confirms that channel; otherwise it is dropped.
+      const known = peek(spaceId, channelId);
+      const guess = channelId ?? known?.channelId ?? preferredChannelId;
+      const early =
+        guess && known?.history?.channel.id !== guess
+          ? { channelId: guess, history: loadChatHistory(guess) }
+          : undefined;
+      void early?.history.catch(() => undefined);
       const detail = await getSpace(spaceId);
       const previous = peek(spaceId, channelId);
       const requestedChannel = channelId ?? previous?.channelId;
@@ -221,7 +232,7 @@ export function createSpaceNavigation() {
           channel && previous?.history?.channel.id === channel.id
             ? previous.history
             : channel
-              ? await loadChatHistory(channel.id)
+              ? await (early?.channelId === channel.id ? early.history : loadChatHistory(channel.id))
               : undefined;
       } catch (error) {
         if (error instanceof ChatHistoryError && [401, 403, 404].includes(error.status)) throw error;
