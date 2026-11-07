@@ -1719,6 +1719,7 @@ impl App {
             .default_width(420)
             .resizable(false)
             .build();
+        close_on_escape(&window);
         window.add_css_class("caper");
         window.add_css_class("dialog");
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -5665,6 +5666,24 @@ fn badge(count: u64, mention: bool) -> gtk::Label {
 }
 
 /// Shows `popover` from `anchor`, and detaches it once it closes.
+/// Escape closes a dialog window, as desktop's modals, unless the window
+/// can't be closed (a required first-run step).
+pub fn close_on_escape(window: &gtk::Window) {
+    let keys = gtk::EventControllerKey::new();
+    let weak = window.downgrade();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape
+            && let Some(window) = weak.upgrade()
+            && window.is_deletable()
+        {
+            window.close();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    window.add_controller(keys);
+}
+
 pub fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {
     let popover = popover.as_ref();
     popover.set_has_arrow(false);

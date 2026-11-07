@@ -87,6 +87,7 @@ impl App {
             .resizable(false)
             .deletable(!setup)
             .build();
+        crate::app::close_on_escape(&window);
         window.add_css_class("caper");
         window.add_css_class("dialog");
         let root = gtk::Box::new(gtk::Orientation::Vertical, 8);

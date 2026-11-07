@@ -192,6 +192,7 @@ impl App {
             .default_width(480)
             .default_height(560)
             .build();
+        crate::app::close_on_escape(&window);
         window.add_css_class("caper");
         window.add_css_class("dialog");
         let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -479,6 +480,7 @@ impl App {
                 .default_width(452)
                 .resizable(false)
                 .build();
+            crate::app::close_on_escape(&window);
             window.add_css_class("caper");
             window.add_css_class("dialog");
             let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
