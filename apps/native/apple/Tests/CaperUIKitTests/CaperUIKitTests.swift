@@ -463,7 +463,7 @@ final class CaperUIKitTests: XCTestCase {
         app.buttons["Save changes"].tap()
         let edited = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "message-edited-")).firstMatch
         XCTAssertTrue(edited.waitForExistence(timeout: 10), "An edited row shows (edited) as a button")
-        XCTAssertEqual(edited.label, "Edited")
+        XCTAssertEqual(edited.label, "Edited, version 2")
         edited.tap()
         XCTAssertTrue(app.staticTexts["Message history"].waitForExistence(timeout: 10), "(edited) opens the history")
         screenshot("uikit-message-history")

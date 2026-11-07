@@ -26,6 +26,8 @@ struct MessageRowState: Equatable {
     var continued: Bool
     var mentionsViewer: Bool
     var edited: Bool
+    /// The edit history's version count, read with "(edited)".
+    var revision = 1
     var deleted: Bool
     /// Files, a GIF, link cards or a forward, drawn by CaperCore's SwiftUI leaves.
     var extras: ChatMessage?
@@ -85,6 +87,7 @@ struct MessageRowState: Equatable {
         self.continued = continued
         mentionsViewer = NativePresentation.mentionsViewer(message, viewerID: viewerID)
         edited = message.forward == nil && !message.isDeleted && (message.revision ?? 1) > 1
+        revision = message.revision ?? 1
         deleted = message.isDeleted
         extras = UIKitMessageExtras.shows(message) ? message : nil
         pendingContent = nil
@@ -349,7 +352,6 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         }
         pinBadge.accessibilityTraits = .button
         edited.isAccessibilityElement = true
-        edited.accessibilityLabel = "Edited"
         edited.accessibilityHint = "Opens message history"
         edited.accessibilityTraits = .button
         // The avatar and name open the author's card; pills open theirs.
@@ -468,6 +470,8 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         let timeText = row.inPins ? Self.fullDate(row.createdAt) : NativePresentation.time(row.createdAt)
         time.text = row.pending ? (row.pendingError == nil ? "Sending…" : "") : timeText
         edited.isHidden = !row.edited
+        // SwiftUI reads "Message history, version N"; this also says it was edited.
+        edited.accessibilityLabel = "Edited, version \(row.revision)"
         edited.accessibilityIdentifier = "message-edited-\(row.messageID)"
         adminBadge.isHidden = !row.admin
         guestBadge.isHidden = !row.guest
