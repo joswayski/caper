@@ -285,8 +285,9 @@ fn repair(previous: &str, next: &str, start: usize, end: usize) -> (String, usiz
         .zip(after[prefix..].iter().rev())
         .take_while(|(a, b)| a == b)
         .count();
-    let new_hidden = hidden(next);
-    let mut removed = vec![false; after.len()];
+    // Map old markers once. Re-diffing after a removal could mistake a newly
+    // typed '*' or '_' for another marker from the original prefix/suffix.
+    let mut inherited = vec![false; after.len()];
     for (index, old_hidden) in old_hidden.into_iter().enumerate() {
         if !old_hidden {
             continue;
@@ -298,18 +299,68 @@ fn repair(previous: &str, next: &str, start: usize, end: usize) -> (String, usiz
         } else {
             continue;
         };
-        if !new_hidden[mapped] {
-            removed[mapped] = true;
+        inherited[mapped] = true;
+    }
+    let (mut text, mut start, mut end) = (next.to_owned(), start, end);
+    loop {
+        let removed: Vec<bool> = inherited
+            .iter()
+            .zip(hidden(&text))
+            .map(|(old, hidden)| *old && !hidden)
+            .collect();
+        if !removed.contains(&true) {
+            return (text, start, end);
+        }
+        let offset =
+            |value: usize| value - removed[..value].iter().filter(|removed| **removed).count();
+        (start, end) = (offset(start), offset(end));
+        text = text
+            .chars()
+            .zip(&removed)
+            .filter_map(|(c, removed)| (!*removed).then_some(c))
+            .collect();
+        // Removing one pair may orphan another; keep its original provenance.
+        inherited = inherited
+            .into_iter()
+            .zip(removed)
+            .filter_map(|(old, removed)| (!removed).then_some(old))
+            .collect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacements_strip_old_orphans_without_consuming_new_literals() {
+        for (before, next, start, end, text, expected_start, expected_end) in [
+            ("**bold** a", "**x", 3, 3, "x", 1, 1),
+            ("**bold** a", "**", 2, 2, "", 0, 0),
+            ("", "*", 1, 1, "*", 1, 1),
+            // Replacing the visible draft leaves its old hidden opening pair.
+            ("**bold** a", "***", 3, 3, "*", 1, 1),
+            // The corresponding case with an old closing pair instead.
+            ("a **bold**", "***", 1, 1, "*", 1, 1),
+            ("_italic_ a", "__", 2, 2, "_", 1, 1),
+            ("**_bold_** a", "**_*", 4, 4, "*", 1, 1),
+            ("🙂 **bold** a", "🙂 ***", 5, 1, "🙂 *", 3, 1),
+            // Removing invalid bold exposes both old italic markers next to 'a'.
+            ("a**_b_!**", "a**_b_ **", 7, 4, "ab ", 3, 1),
+            // Still-valid formatting and an unchanged source are not orphans.
+            ("**old** a", "**new**", 5, 5, "**new**", 5, 5),
+            ("**old**", "**old**", 7, 2, "**old**", 7, 2),
+        ] {
+            assert_eq!(
+                edit(before, next, start, end, -1),
+                Edited {
+                    text: text.into(),
+                    start: expected_start,
+                    end: expected_end,
+                    pending: -1,
+                },
+                "{before:?} -> {next:?} at {start}..{end}"
+            );
         }
     }
-    if !removed.contains(&true) {
-        return (next.into(), start, end);
-    }
-    let offset = |value: usize| value - removed[..value].iter().filter(|removed| **removed).count();
-    let repaired: String = after
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, c)| (!removed[index]).then_some(c))
-        .collect();
-    repair(previous, &repaired, offset(start), offset(end))
 }
