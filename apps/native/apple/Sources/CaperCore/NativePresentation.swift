@@ -64,6 +64,16 @@ public enum NativePresentation {
 
     public static let quickReactions = MessageQuickReactions.emoji
 
+    /// Both Mac hosts show the same names, self-first ordering and count fallback.
+    @MainActor static func reactionSummary(_ message: ChatMessage, emoji: String, chat: ChatModel, viewerID: String?) -> String {
+        let name = EmojiArtwork.name(for: emoji)
+        if case .loaded(let people) = chat.reactorsState(for: message, emoji: emoji, viewerID: viewerID), !people.isEmpty {
+            return ReactionSummary.text(authors: people, selfID: viewerID, emojiName: name, emoji: emoji)
+        }
+        let ids = message.reactions?.first(where: { $0.emoji == emoji })?.authorIds ?? []
+        return ReactionSummary.fallback(authorIDs: ids, selfID: viewerID, emojiName: name, emoji: emoji)
+    }
+
     public static func emojiImage(_ emoji: String) -> CGImage? {
         EmojiArtwork.entry(for: emoji).flatMap(EmojiArtwork.image(for:))
     }
