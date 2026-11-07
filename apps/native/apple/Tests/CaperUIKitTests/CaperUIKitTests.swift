@@ -267,6 +267,9 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(design.waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["selected-space-name"].exists)
         XCTAssertEqual(app.buttons["channel-chan00000001"].value as? String, "Selected")
+        // The lock is hidden from VoiceOver, so a private channel's name says it (SwiftUI's row, hosted).
+        XCTAssertEqual(app.buttons["channel-chan00000003"].label, "planning, private")
+        XCTAssertEqual(design.label, "design")
         screenshot("uikit-browse")
         design.tap()
         let title = app.buttons["channel-title-menu"]
