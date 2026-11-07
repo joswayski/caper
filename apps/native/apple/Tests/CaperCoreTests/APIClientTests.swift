@@ -2092,6 +2092,45 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testChannelOpenRequestsUnreadSnapshotBesideHistory() async throws {
+        let model = AppModel(api: client(), landingDefaults: UserDefaults(suiteName: "caper.tests.\(UUID().uuidString)")!)
+        model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")
+        let space = Space(id: "Space1234567", name: "S", ownerId: "owner0000001", demo: nil)
+        let first = Channel(id: "chan00000001", spaceId: space.id, name: "one", private: false)
+        let second = Channel(id: "chan00000002", spaceId: space.id, name: "two", private: false)
+        let detail = SpaceDetail(space: space, channels: [first, second], members: [])
+        model.detail = detail
+        let historyStarted = expectation(description: "history pending")
+        var heldHistory: MockURLProtocol?
+        var paths: [String] = []
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/chat/channels/chan00000002/messages" else { return false }
+            heldHistory = request; historyStarted.fulfill(); return true
+        }
+        MockURLProtocol.handler = { request in
+            let path = request.url!.path
+            paths.append(path)
+            switch path {
+            case "/api/spaces/Space1234567": return (200, try JSONEncoder().encode(detail))
+            case "/api/spaces/unread":
+                return (200, Data(#"{"spaces":[{"id":"Space1234567","channels":[{"id":"chan00000002","lastSeq":"3","readSeq":"1"}]}],"feedbackWaiting":0}"#.utf8))
+            case "/api/chat/session":
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"owner0000001","name":"Owner","isGuest":false}}"#.utf8))
+            default: return (204, Data())
+            }
+        }
+        let opening = Task { await model.select(channel: second) }
+        await fulfillment(of: [historyStarted], timeout: 2)
+        await waitUntil { paths.contains("/api/spaces/unread") }
+        heldHistory?.respond(status: 200, data: chatHistory(second.id, sequences: [1, 2, 3], cursor: 3, hasMore: false))
+        await opening.value
+        await waitUntil { model.channelNewMessagesDividerID() != nil }
+        XCTAssertEqual(model.channelNewMessagesDividerID(), "m2", "the snapshot taken beside the history places the divider")
+        XCTAssertEqual(paths.filter { $0 == "/api/spaces/unread" }.count, 1, "the visit uses the snapshot navigation started")
+        await model.logout()
+    }
+
+    @MainActor
     func testRepeatChannelSelectionPreservesDraftAndCancelsPendingNavigation() async throws {
         let model = AppModel(api: client())
         let first = Channel(id: "chan00000001", spaceId: "space0000001", name: "one", private: false)
