@@ -63,6 +63,13 @@ import SwiftUI
         show(AppKitWorkspaceDialogState(item: .history(message)), in: parent)
     }
 
+    public func reactions(_ message: ChatMessage, emoji: String, in parent: NSViewController) {
+        guard let current = currentMessage(message), !current.isDeleted,
+              current.reactions?.contains(where: { $0.emoji == emoji }) == true else { return }
+        // Listing people uses read access, even when adding a reaction is disabled.
+        show(AppKitWorkspaceDialogState(item: .reactions(current, emoji)), in: parent)
+    }
+
     public func deleteMessage(_ message: ChatMessage, in parent: NSViewController) {
         guard canDelete(message) else { return }
         show(AppKitWorkspaceDialogState(item: .delete(message)), in: parent)
@@ -100,6 +107,7 @@ import SwiftUI
 private enum AppKitWorkspaceDialogItem {
     case workspace(WorkspaceSheet), leaveChannel(Channel)
     case edit(ChatMessage), history(ChatMessage), delete(ChatMessage)
+    case reactions(ChatMessage, String)
     var id: String {
         switch self {
         case .workspace(let item): item.id
@@ -107,11 +115,12 @@ private enum AppKitWorkspaceDialogItem {
         case .edit(let message): "edit-\(message.id)"
         case .history(let message): "history-\(message.id)"
         case .delete(let message): "delete-\(message.id)"
+        case .reactions(let message, let emoji): "reactions-\(message.id)-\(emoji)"
         }
     }
     var messageID: String? {
         switch self {
-        case .edit(let message), .history(let message), .delete(let message): message.id
+        case .edit(let message), .history(let message), .delete(let message), .reactions(let message, _): message.id
         default: nil
         }
     }
@@ -185,6 +194,8 @@ private struct AppKitWorkspaceDialog: View {
         case .delete(let message):
             ConfirmationSheet(title: MessageDeletion.confirmTitle, detail: MessageDeletion.confirmMessage,
                 action: "Delete", pendingLabel: "Deleting…", close: dismiss) { await model.chat.deleteMessage(message) }
+        case .reactions(let message, let emoji):
+            ReactorsSheet(chat: model.chat, messageID: message.id, emoji: emoji, viewerID: model.chat.viewerID, close: dismiss)
         }
     }
 

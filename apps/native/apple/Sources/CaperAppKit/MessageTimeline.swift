@@ -1,7 +1,7 @@
 import AppKit
 import CaperCore
 
-enum MessageAction { case reaction(String), addReaction, retryReaction, dismissReaction, history, reply, replyInThread, openThread }
+enum MessageAction { case reaction(String), reactors(String), addReaction, retryReaction, dismissReaction, history, reply, replyInThread, openThread }
 
 /// A scroll document with only realized native text views. Unlike NSTableView,
 /// it never manufactures an AX row for every message in the loaded history.
@@ -510,6 +510,12 @@ enum MessageAction { case reaction(String), addReaction, retryReaction, dismissR
             button.setAccessibilityLabel(button.title)
             button.isEnabled = canInteract
             button.setAccessibilityIdentifier(id)
+            let showPeople = { [weak self, weak button] in
+                guard let self, let button, let message = self.message else { return }
+                self.messageAction?(message, .reactors(reaction.emoji), button)
+            }
+            button.menu = NavigationMenus.menu([NavigationMenuItem("Show who reacted", action: showPeople)])
+            button.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Show who reacted") { showPeople(); return true }])
             let selected = viewerID.map { reaction.authorIds.contains($0) } ?? false
             button.state = selected ? .on : .off
             button.layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : NativeStyle.composer).cgColor
