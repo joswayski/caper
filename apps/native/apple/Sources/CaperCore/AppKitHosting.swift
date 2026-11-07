@@ -244,6 +244,10 @@ private struct AppKitWorkspaceDialog: View {
                 .onExitCommand(perform: requestClose)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // Native hosting focus does not establish a focused SwiftUI view for
+        // onExitCommand. Use the same cancel-action route as SheetHeader,
+        // retaining the profile/pending guards even when no child is focused.
+        .background(Button("Close dialog", action: requestClose).keyboardShortcut(.cancelAction).hidden())
         .onChange(of: state.item.id) { _, _ in state.dismissDisabled = false; state.profileDismissAction = nil }
         .onChange(of: model.chat.editingContext) { _, _ in if state.item.messageID != nil { dismiss() } }
         .onChange(of: model.account?.id) { _, _ in dismiss() }
