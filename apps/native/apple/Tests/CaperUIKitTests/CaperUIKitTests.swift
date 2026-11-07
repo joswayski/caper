@@ -30,9 +30,10 @@ final class CaperUIKitTests: XCTestCase {
         control(["reset": true])
     }
 
-    private func launch(signedIn: Bool = true, cache: Bool = false, openURL: String? = nil) -> XCUIApplication {
+    private func launch(signedIn: Bool = true, cache: Bool = false, openURL: String? = nil, fixture: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         if let openURL { app.launchEnvironment["CAPER_TEST_OPEN_URL"] = openURL }
+        if let fixture { app.launchEnvironment["CAPER_UI_FIXTURE"] = fixture }
         app.launchArguments += ["-caper.space-landing.owner0000001", ""]
         // Browse's Channels/DMs split starts even in every run.
         app.launchArguments += ["-caper.channelSidebarChannelsShare", "0.5"]
@@ -94,6 +95,28 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(error.waitForExistence(timeout: 10))
         XCTAssertTrue(error.label.contains("ncorrect"), error.label)
         screenshot("uikit-login-error")
+    }
+
+    /// A new account's profile is SwiftUI's page: Finish setup waits for a
+    /// valid username, the server's refusal shows, and Log out leaves.
+    func testOnboardingValidatesAndLogsOut() {
+        let app = launch(fixture: "profile-validation")
+        let username = app.textFields["Username"]
+        let submit = app.buttons["profile-continue"]
+        XCTAssertTrue(username.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["Choose how you show up."].exists)
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE — username already taken. Choose another username."].exists)
+        XCTAssertFalse(submit.isEnabled)
+        username.tap()
+        username.typeText("ab\n")
+        app.textFields["Display name"].typeText("Fixture Name")
+        XCTAssertFalse(submit.isEnabled, "Two-letter usernames can't finish")
+        screenshot("uikit-onboarding")
+        username.tap()
+        username.typeText("_user")
+        XCTAssertTrue(submit.isEnabled)
+        app.buttons["Log out"].tap()
+        XCTAssertTrue(app.textFields["login-email"].waitForExistence(timeout: 10), "Log out returns to sign-in")
     }
 
     func testConversationOpensAtLatestAndSends() {

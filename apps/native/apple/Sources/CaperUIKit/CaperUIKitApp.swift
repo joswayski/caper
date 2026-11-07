@@ -100,7 +100,8 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
         if CaperUIKitLaunch.parityFixture, let raw = ProcessInfo.processInfo.environment["CAPER_TEST_OPEN_URL"], let url = URL(string: raw) {
             model.openInviteLink(url)
         }
-        Task { await model.start() }
+        // A UI fixture can open on a phase of its own (onboarding), as SwiftUI's root allows.
+        if model.phase == .loading { Task { await model.start() } }
     }
 
     private let notifications = NotificationTaps()
