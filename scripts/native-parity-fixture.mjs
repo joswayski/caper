@@ -768,6 +768,17 @@ export async function startFixture({
       message.forward = { message: null, seq: "0" };
       message.forwardSeq = message.editSeq;
     }
+    // Like deletion::persist_delete, old replay rows must not restore a
+    // deleted wrapper's grant or a deleted original's shared content.
+    for (const channelId of state.messages.keys())
+      for (const event of channelEvents(channelId)) {
+        if (event.message?.id === message.id) {
+          event.message.content = clone(message.content);
+          if (message.forward) event.message.forward = { message: null, seq: "0" };
+        }
+        if (state.forwardSources.get(event.message?.id) === message.id)
+          event.message.forward = { message: null, seq: "0" };
+      }
     for (const reply of state.messages.get(channel.id) ?? [])
       if (reply.replyTo?.id === message.id) {
         delete reply.replyTo.fullText;
@@ -838,6 +849,18 @@ export async function startFixture({
     response.end(status === 204 ? undefined : JSON.stringify(body));
   };
   const reject = (response, status, error) => json(response, status, { error });
+  const takeFailure = (path, method, afterPersist = false) => {
+    const index = state.failures.findIndex(
+      (failure) =>
+        failure.path === path &&
+        (!failure.method || failure.method === method) &&
+        !!failure.afterPersist === afterPersist,
+    );
+    if (index < 0) return;
+    const failure = state.failures[index];
+    if (!failure.persistent) state.failures.splice(index, 1);
+    return failure;
+  };
 
   const serve = async (request, response) => {
     try {
@@ -981,7 +1004,21 @@ export async function startFixture({
           state.multipartPartBytes = body.multipartPartBytes;
         if (Number.isSafeInteger(body.failPart) && body.failPart > 0) state.failParts.push(body.failPart);
         if (body.clearFailures) state.failures = [];
-        if (body.failure) state.failures.push(body.failure);
+        if (body.failure) {
+          // GET destination/history errors use the existing exact-path control.
+          // A POST /channels/:destination/forwards with `afterPersist: true`
+          // loses only its acknowledgement, once, after storage and fanout.
+          // Other destinations, rejected requests and idempotent retries do
+          // not consume it. clearFailures/reset clear it with ordinary errors.
+          if (
+            body.failure.afterPersist &&
+            (body.failure.method !== "POST" ||
+              !/^\/api\/chat\/channels\/[^/]+\/forwards$/.test(body.failure.path) ||
+              body.failure.persistent)
+          )
+            return reject(response, 400, "afterPersist requires a one-shot forward POST failure.");
+          state.failures.push(body.failure);
+        }
         if (body.disconnect) for (const client of sockets) client.socket.destroy();
         if (body.typing)
           broadcast("chat", body.typing.channelId ?? ids.general, {
@@ -1356,14 +1393,8 @@ export async function startFixture({
         });
         if (response.destroyed) return;
       }
-      const failureIndex = state.failures.findIndex(
-        (failure) => failure.path === path && (!failure.method || failure.method === method),
-      );
-      if (failureIndex >= 0) {
-        const failure = state.failures[failureIndex];
-        if (!failure.persistent) state.failures.splice(failureIndex, 1);
-        return reject(response, failure.status, failure.error ?? "TEST FIXTURE: requested failure.");
-      }
+      const failure = takeFailure(path, method);
+      if (failure) return reject(response, failure.status, failure.error ?? "TEST FIXTURE: requested failure.");
       const user = identity(request);
       if (path === "/api/assets/usage")
         return user && state.uploadsEnabled
@@ -2187,6 +2218,7 @@ export async function startFixture({
             .map((channel) => ({
               id: channel.id,
               name: channel.name,
+              ...(!channel.direct ? { spaceId: channel.spaceId } : {}),
               spaceName: spaceFor(channel.spaceId).name,
               direct: !!channel.direct,
             })),
@@ -2198,11 +2230,13 @@ export async function startFixture({
         if (!canRead(channel, user)) return reject(response, 404, "resource not found");
         if (method === "GET" && forwardPath[2]) {
           const wrapper = state.messages.get(channel.id)?.find((message) => message.id === forwardPath[2]);
-          const source = wrapper && messageFor(state.forwardSources.get(wrapper.id));
+          const original = wrapper && messageFor(state.forwardSources.get(wrapper.id));
+          const source = original && !original.deletedAt && channelFor(original.channelId) ? original : null;
           if (!wrapper || wrapper.deletedAt || !state.forwardSources.has(wrapper.id))
             return reject(response, 404, "Forward not found.");
           const before = url.searchParams.get("before");
-          if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, "invalid cursor");
+          if (before !== null && (!/^(0|[1-9]\d*)$/.test(before) || BigInt(before) > 9223372036854775807n))
+            return reject(response, 400, "invalid cursor");
           const replies = source
             ? state.messages
                 .get(source.channelId)
@@ -2229,16 +2263,24 @@ export async function startFixture({
           if (!canParticipate(channel, user) || !canRead(channelFor(body.sourceChannelId), user))
             return reject(response, 404, "resource not found");
           const who = state.chatSessions.get(request.headers["x-caper-chat-token"]);
-          if (!who || who.isGuest) return reject(response, 401, "Messaging session required.");
+          if (!who || who.isGuest || who.id !== user?.id) return reject(response, 401, "Messaging session required.");
           const selected = state.messages
             .get(body.sourceChannelId)
             ?.find((message) => message.id === body.sourceMessageId);
           const source = selected && messageFor(state.forwardSources.get(selected.id) ?? selected.id);
-          if (!source || source.deletedAt || selected.deletedAt) return reject(response, 404, "Original not found.");
+          if (!source || source.deletedAt || selected.deletedAt || !channelFor(source.channelId))
+            return reject(response, 404, "Original not found.");
+          const text = body.text === undefined ? "" : body.text;
           if (
+            Object.keys(body).some(
+              (key) => !["sourceChannelId", "sourceMessageId", "clientMessageId", "text"].includes(key),
+            ) ||
             typeof body.clientMessageId !== "string" ||
-            typeof (body.text ?? "") !== "string" ||
-            [...(body.text ?? "")].length > 4000
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientMessageId) ||
+            typeof text !== "string" ||
+            (text !== "" && !text.trim()) ||
+            [...text].length > 4000 ||
+            /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(text)
           )
             return reject(response, 400, "Invalid forward.");
           // Forwards are sends: blocks and message requests gate them the same way.
@@ -2246,11 +2288,12 @@ export async function startFixture({
           if (conversation && state.blocks.includes(conversation.peer.id))
             return json(response, 403, { error: "Unblock this person to message them.", code: "dm_blocked" });
           if (conversation?.status === "incoming") Object.assign(conversation, { status: "accepted", declined: false });
-          const key = `${channel.id}:${body.clientMessageId}`;
+          const clientMessageId = body.clientMessageId.toLowerCase();
+          const key = `${channel.id}:${clientMessageId}`;
           const previous = state.sendKeys.get(key);
           if (previous)
             return previous.token === request.headers["x-caper-chat-token"] &&
-              previous.text === (body.text ?? "") &&
+              previous.text === text &&
               previous.source === source.id
               ? json(response, 200, {
                   ...previous.message,
@@ -2258,14 +2301,15 @@ export async function startFixture({
                 })
               : reject(response, 409, "Message ID already used.");
           const seq = String(BigInt(channelHead(channel.id)) + 1n);
+          const mentions = mentionsFor(channel, text);
           const wrapper = {
             id: randomUUID().replaceAll("-", "").slice(0, 15),
             channelId: channel.id,
             seq,
             author: who,
-            content: { version: 1, type: "text", text: body.text ?? "" },
+            content: { version: 1, type: "text", text, ...(mentions.length ? { mentions } : {}) },
             createdAt: new Date().toISOString(),
-            clientMessageId: body.clientMessageId,
+            clientMessageId,
             forward: snapshot(source),
             forwardSeq: seq,
           };
@@ -2273,11 +2317,14 @@ export async function startFixture({
           state.forwardSources.set(wrapper.id, source.id);
           state.sendKeys.set(key, {
             token: request.headers["x-caper-chat-token"],
-            text: body.text ?? "",
+            text,
             source: source.id,
             message: wrapper,
           });
           created(wrapper);
+          const uncertain = takeFailure(path, method, true);
+          if (uncertain)
+            return reject(response, uncertain.status, uncertain.error ?? "TEST FIXTURE: requested failure.");
           return json(response, 200, wrapper);
         }
       }
@@ -2618,6 +2665,7 @@ export async function startFixture({
           state.sendKeys.set(key, { token: request.headers["x-caper-chat-token"], text: body.text, message });
           if (body.suppressEmbeds === true) message.content.suppressEmbeds = true;
           created(message);
+          projectForwards(message);
           transcribe(message);
           unfurl(message);
           return json(response, 200, message);
