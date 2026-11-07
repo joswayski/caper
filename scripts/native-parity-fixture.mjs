@@ -559,6 +559,8 @@ export async function startFixture({
   const heldUploads = new Set();
   let holdAvatarRegeneration = false;
   const heldAvatarRegenerations = new Set();
+  let holdChannelLeaves = false;
+  const heldChannelLeaves = new Set();
   const identity = (request) =>
     request.headers.authorization === "Bearer fixture-owner-token" ||
     /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? "")
@@ -1045,6 +1047,10 @@ export async function startFixture({
           holdAvatarRegeneration = !body.reset && body.holdAvatarRegeneration;
           if (!holdAvatarRegeneration) for (const release of heldAvatarRegenerations) release();
         }
+        if (body.reset || typeof body.holdChannelLeaves === "boolean") {
+          holdChannelLeaves = !body.reset && body.holdChannelLeaves;
+          if (!holdChannelLeaves) for (const release of heldChannelLeaves) release();
+        }
         if (body.pushPlatforms !== undefined) {
           if (
             !Array.isArray(body.pushPlatforms) ||
@@ -1504,7 +1510,26 @@ export async function startFixture({
           fixture: true,
           heldSends: heldSends.size,
           heldAvatarRegenerations: heldAvatarRegenerations.size,
+          heldChannelLeaves: heldChannelLeaves.size,
         });
+      }
+      // Keep a real destructive confirmation pending until its test releases
+      // the request. Other methods, reads and failure injection stay independent.
+      if (
+        holdChannelLeaves &&
+        method === "DELETE" &&
+        /^\/api\/spaces\/[^/]+\/channels\/[^/]+\/membership$/.test(path)
+      ) {
+        await new Promise((resolve) => {
+          const release = () => {
+            heldChannelLeaves.delete(release);
+            response.off("close", release);
+            resolve();
+          };
+          heldChannelLeaves.add(release);
+          response.once("close", release);
+        });
+        if (response.destroyed) return;
       }
       if (path === "/api/assets" && method === "POST" && holdUploads) {
         await new Promise((resolve) => {

@@ -3058,6 +3058,53 @@ import XCTest
         XCTAssertTrue(design.exists)
     }
 
+    func testPendingChannelLeaveRejectsEscapeAndBackdropUntilFailure() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let path = "/api/spaces/space0000001/channels/chan00000002/membership"
+        try await Self.control(["holdChannelLeaves": true,
+            "failure": ["path": path, "method": "DELETE", "status": 503, "error": "TEST FIXTURE: leave unavailable."]])
+        let app = launch()
+        defer { app.terminate() }
+        let design = app.buttons["channel-chan00000002"]
+        XCTAssertTrue(design.waitForExistence(timeout: 15))
+        app.buttons["channel-options-chan00000002"].click(); app.menuItems["Leave channel"].click()
+        let title = app.staticTexts["Leave #design?"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        let leave = app.buttons["confirm-destructive-action"]
+        leave.hover(); app.buttons["Cancel"].hover(); leave.click()
+        // Observe an actual suspended HTTP request, not merely a disabled frame
+        // before the operation starts. Reads/control remain usable while held.
+        var held = 0
+        for _ in 0..<50 {
+            held = (try await Self.fixturePOST("/__fixture/control", body: [:]))["heldChannelLeaves"] as? Int ?? 0
+            if held == 1 { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(held, 1)
+        XCTAssertEqual(leave.label, "Leaving…"); XCTAssertFalse(leave.isEnabled)
+        XCTAssertFalse(app.buttons["Cancel"].isEnabled)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(title.exists); XCTAssertFalse(leave.isEnabled)
+        let window = app.windows["Caper — AppKit development (not feature complete)"]
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.8)).click()
+        XCTAssertTrue(title.exists); XCTAssertFalse(leave.isEnabled)
+        XCTAssertFalse(design.exists, "The pending modal must retain background AX isolation")
+        let stillHeld = try await Self.fixturePOST("/__fixture/control", body: [:])
+        XCTAssertEqual(stillHeld["heldChannelLeaves"] as? Int, 1)
+        capture("pending leave retained after Escape and backdrop", app: app)
+        try await Self.control(["holdChannelLeaves": false])
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE: leave unavailable."].waitForExistence(timeout: 5))
+        XCTAssertTrue(leave.isEnabled); XCTAssertTrue(app.buttons["Cancel"].isEnabled)
+        capture("failed leave before cancel shortcut", app: app)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(title.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(design.waitForExistence(timeout: 5))
+        let detail = try await Self.fixtureGET("/api/spaces/space0000001")
+        let channels = try XCTUnwrap(detail["channels"] as? [[String: Any]])
+        XCTAssertEqual(channels.first { $0["id"] as? String == "chan00000002" }?["joined"] as? Bool, true)
+    }
+
     func testAccountDialogsProtectProfileAndRestoreComposerFocus() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
@@ -3075,6 +3122,15 @@ import XCTest
         XCTAssertTrue(confirmation.buttons["Keep editing"].waitForExistence(timeout: 5))
         confirmation.buttons["Keep editing"].click()
         XCTAssertEqual(name.value as? String, "Unsaved native profile")
+        // Backdrop dismissal enters the host's requestClose, not the focused
+        // field's command handler or the profile header's own shortcut.
+        app.windows["Caper — AppKit development (not feature complete)"]
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.8)).click()
+        XCTAssertTrue(confirmation.buttons["Keep editing"].waitForExistence(timeout: 5))
+        confirmation.buttons["Keep editing"].click()
+        XCTAssertEqual(name.value as? String, "Unsaved native profile")
+        XCTAssertFalse(composer.exists)
+        capture("unsaved profile retained after Escape and backdrop", app: app)
         app.buttons["Close profile"].click(); confirmation.buttons["Discard"].click()
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         app.typeText(" after closing")

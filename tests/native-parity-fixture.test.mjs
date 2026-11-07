@@ -564,6 +564,34 @@ test("send is idempotent, conflicts on changed payload, and history uses stable 
   assert.equal((await request(`/api/chat/channels/${ids.demo}/messages?before=-1`)).response.status, 400);
 });
 
+test("held channel leaves preserve membership until release and still apply injected failures", async (t) => {
+  const { request } = await setup(t);
+  const path = `/api/spaces/${ids.space}/channels/${ids.design}/membership`;
+  const joined = async () =>
+    (await request(`/api/spaces/${ids.space}`, { auth: true })).value.channels.find((c) => c.id === ids.design).joined;
+  await request("/__fixture/control", { method: "POST", body: { holdChannelLeaves: true } });
+  // A hold on DELETE must not block joining or reads.
+  assert.equal((await request(path, { method: "POST", auth: true })).response.status, 200);
+  for (const fail of [true, false]) {
+    if (fail) {
+      await request("/__fixture/control", {
+        method: "POST",
+        body: { failure: { path, method: "DELETE", status: 503 } },
+      });
+    }
+    await request("/__fixture/control", { method: "POST", body: { holdChannelLeaves: true } });
+    const leaving = request(path, { method: "DELETE", auth: true });
+    await vi.waitFor(async () => {
+      assert.equal((await request("/__fixture/control", { method: "POST", body: {} })).value.heldChannelLeaves, 1);
+    });
+    assert.equal(await joined(), true);
+    await request("/__fixture/control", { method: "POST", body: { holdChannelLeaves: false } });
+    assert.equal((await leaving).response.status, fail ? 503 : 204);
+    assert.equal(await joined(), fail);
+    assert.equal((await request("/__fixture/control", { method: "POST", body: {} })).value.heldChannelLeaves, 0);
+  }
+});
+
 test("held sends remain absent from history and gateway until released, then confirm once", async (t) => {
   const { fixture, request } = await setup(t);
   const path = `/api/chat/channels/${ids.demo}/messages`;
