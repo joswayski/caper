@@ -1403,23 +1403,24 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(text.exists)
         let collapsedHeight = text.frame.height
         XCTAssertGreaterThan(collapsedHeight, 0)
-        XCTAssertGreaterThanOrEqual(expand.frame.minY, text.frame.maxY)
+        // iOS 26+ reports the selectable text's frame about 3.5 points past its
+        // last visible line (the captures show ~19 points of clear space above
+        // the toggle); #743's overlap was whole lines, so 4 points still catch it.
+        let overhang: CGFloat = 4
+        XCTAssertGreaterThanOrEqual(expand.frame.minY, text.frame.maxY - overhang)
         capture("voice-transcript-collapsed", app: app)
         // Repeated expansion must not leave stale text sizing or lose the toggle.
         for index in 0..<3 {
             expand.tap()
             let collapse = try require(row.buttons["Hide transcript"], timeout: 5, "Missing collapse toggle")
             XCTAssertGreaterThan(text.frame.height, collapsedHeight + 10)
-            // Expanded, iOS 26+ reports the selectable text's frame about 3.5 points
-            // past its last line (the capture shows ~19 points of clear space); #743's
-            // overlap was whole lines, so a 4-point allowance still catches it.
-            XCTAssertGreaterThanOrEqual(collapse.frame.minY, text.frame.maxY - 4,
+            XCTAssertGreaterThanOrEqual(collapse.frame.minY, text.frame.maxY - overhang,
                                        "The toggle must never occupy the transcript's text bounds")
             if index == 0 { capture("voice-transcript-expanded", app: app) }
             collapse.tap()
             XCTAssertTrue(expand.waitForExistence(timeout: 5))
             XCTAssertEqual(text.frame.height, collapsedHeight, accuracy: 1)
-            XCTAssertGreaterThanOrEqual(expand.frame.minY, text.frame.maxY)
+            XCTAssertGreaterThanOrEqual(expand.frame.minY, text.frame.maxY - overhang)
         }
     }
 
