@@ -1,0 +1,184 @@
+diff --git a/apps/native/apple/Sources/CaperCore/AppKitHosting.swift b/apps/native/apple/Sources/CaperCore/AppKitHosting.swift
+index d293006c44c1e1a224d9472f97aeeca7d2d4e5ab..d2621f43ae4b6fca7d790e02b988cf0d7331d91e 100644
+--- a/apps/native/apple/Sources/CaperCore/AppKitHosting.swift
++++ b/apps/native/apple/Sources/CaperCore/AppKitHosting.swift
+@@ -28,6 +28,7 @@ import SwiftUI
+     private var host: NSHostingController<AppKitWorkspaceDialog>?
+     private weak var previousResponder: NSResponder?
+     private var previousContext: String?
++    private var escapeProbe: Any?
+     private var focusContext: String { [model.chat.editingContext, model.chat.threadRootID ?? "channel"].joined(separator: ":") }
+ 
+     public init(model: AppModel) { self.model = model }
+@@ -137,10 +138,37 @@ import SwiftUI
+         container.dialogView = host.view
+         parent.view.window?.makeFirstResponder(host.view)
+         model.whatsNew.workspaceModalOpen = true
++        if ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity" {
++            traceEscapeBoundary("presented")
++            // App-level pre-dispatch observation only. This cannot prove that
++            // NSHostingView.keyDown/doCommand received or consumed the event.
++            escapeProbe = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
++                if event.keyCode == 53 {
++                    self?.traceEscapeBoundary("event type=\(event.type.rawValue) eventTime=\(event.timestamp) eventWindow=\(event.windowNumber) flags=\(event.modifierFlags.rawValue) repeat=\(event.isARepeat)")
++                }
++                return event
++            }
++        }
++    }
++
++    private func traceEscapeBoundary(_ phase: String) {
++        guard let host, let window = host.view.window else { return }
++        let state = host.rootView.state
++        print("CAPER_ESCAPE_BOUNDARY time=\(ProcessInfo.processInfo.systemUptime) phase=\(phase) item=\(state.item.id) window=\(window.windowNumber) key=\(window.isKeyWindow) keyWindow=\(NSApp.keyWindow?.windowNumber ?? -1) sheet=\(window.attachedSheet != nil) hostIsFirst=\(window.firstResponder === host.view) hostClass=\(NSStringFromClass(type(of: host.view))) hostAXEnabled=\(host.view.isAccessibilityEnabled()) dismissDisabled=\(state.dismissDisabled) profileGuard=\(state.profileDismissAction != nil)")
++        var responder = window.firstResponder
++        var seen = Set<ObjectIdentifier>()
++        var index = 0
++        while let current = responder, index < 20, seen.insert(ObjectIdentifier(current)).inserted {
++            let view = current as? NSView
++            print("CAPER_ESCAPE_CHAIN index=\(index) class=\(NSStringFromClass(type(of: current))) host=\(current === host.view) acceptsFirst=\(current.acceptsFirstResponder) viewAXEnabled=\(String(describing: view?.isAccessibilityEnabled())) hidden=\(String(describing: view?.isHiddenOrHasHiddenAncestor))")
++            responder = current.nextResponder
++            index += 1
++        }
+     }
+ 
+     private func close() {
+         guard let host else { return }
++        if let escapeProbe { NSEvent.removeMonitor(escapeProbe); self.escapeProbe = nil }
+         let item = host.rootView.state.item
+         let window = host.view.window
+         let parent = host.parent
+@@ -220,6 +248,8 @@ private struct AppKitWorkspaceDialog: View {
+     let model: AppModel
+     @Bindable var state: AppKitWorkspaceDialogState
+     let dismiss: () -> Void
++    @Environment(\.isEnabled) private var probeEnabled
++    @Environment(\.isFocused) private var probeAncestorFocused
+ 
+     var body: some View {
+         GeometryReader { geometry in
+@@ -246,6 +276,9 @@ private struct AppKitWorkspaceDialog: View {
+         // The hosting root is first responder until a dialog field takes focus.
+         // Escape must still use the pending/unsaved-edit guards in that state.
+         .onExitCommand(perform: requestClose)
++        .onAppear { traceEnvironment("appear") }
++        .onChange(of: probeEnabled) { _, _ in traceEnvironment("enabled-change") }
++        .onChange(of: probeAncestorFocused) { _, _ in traceEnvironment("ancestor-focus-change") }
+         .onChange(of: state.item.id) { _, _ in state.dismissDisabled = false; state.profileDismissAction = nil }
+         .onChange(of: model.chat.editingContext) { _, _ in if state.item.messageID != nil { dismiss() } }
+         .onChange(of: model.account?.id) { _, _ in dismiss() }
+@@ -290,7 +323,15 @@ private struct AppKitWorkspaceDialog: View {
+         }
+     }
+ 
++    private func traceEnvironment(_ phase: String) {
++        guard ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity" else { return }
++        // isFocused describes the nearest focusable ancestor, not whether any
++        // descendant text field is focused. No new focus binding is installed.
++        print("CAPER_ESCAPE_ENV time=\(ProcessInfo.processInfo.systemUptime) phase=\(phase) item=\(state.item.id) enabled=\(probeEnabled) ancestorFocused=\(probeAncestorFocused) dismissDisabled=\(state.dismissDisabled) profileGuard=\(state.profileDismissAction != nil)")
++    }
++
+     private func requestClose() {
++        traceEnvironment("requestClose")
+         if state.item.id == "profile" { state.profileDismissAction?.action() }
+         else if !state.dismissDisabled { dismiss() }
+     }
+diff --git a/apps/native/apple/Sources/CaperCore/CaperView.swift b/apps/native/apple/Sources/CaperCore/CaperView.swift
+index 24f6671c34701bdb1866cd0ad7271daaf58e37e0..cda7fd19ebcf70b1f0272a62bf73fd36ce78b2db 100644
+--- a/apps/native/apple/Sources/CaperCore/CaperView.swift
++++ b/apps/native/apple/Sources/CaperCore/CaperView.swift
+@@ -9520,6 +9520,11 @@ private struct ProfileSheet: View {
+             .background(Button("Close profile", action: requestClose).keyboardShortcut(.cancelAction).hidden())
+             #else
+             .onExitCommand(perform: requestClose)
++            .onChange(of: displayNameFocused) { _, value in
++                if ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity" {
++                    print("CAPER_ESCAPE_PROFILE time=\(ProcessInfo.processInfo.systemUptime) phase=focus-change displayNameFocused=\(value)")
++                }
++            }
+             #endif
+             .alert("Discard profile changes?", isPresented: $confirmingDiscard) {
+                 Button("Keep editing", role: .cancel) {}
+@@ -9585,6 +9590,11 @@ private struct ProfileSheet: View {
+     }
+ 
+     private func requestClose() {
++        #if os(macOS)
++        if ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity" {
++            print("CAPER_ESCAPE_PROFILE time=\(ProcessInfo.processInfo.systemUptime) phase=requestClose displayNameFocused=\(displayNameFocused) saving=\(saving) pictureBusy=\(pictureBusy) hasChanges=\(draft?.hasChanges == true)")
++        }
++        #endif
+         guard !saving else { return }
+         if pictureBusy { confirmingDiscard = true; return }
+         switch draft?.closeDecision ?? .close {
+diff --git a/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift b/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
+index 09032eb1bbb7ce452bb7f4c843ae55e3c0194813..b3410d4d2d77620911e01ee75aeb4939119d3e5c 100644
+--- a/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
++++ b/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
+@@ -1,4 +1,5 @@
+ import AppKit
++import ApplicationServices
+ import XCTest
+ 
+ @MainActor final class CaperAppKitTests: XCTestCase {
+@@ -19,6 +20,28 @@ import XCTest
+         return app
+     }
+ 
++    private func traceFocusedAX(_ phase: String) {
++        // Never request an accessibility grant or substitute false for an
++        // unsupported/failed read. These are observations, not new assertions.
++        let trusted = AXIsProcessTrusted()
++        print("CAPER_ESCAPE_AX time=\(ProcessInfo.processInfo.systemUptime) phase=\(phase) trusted=\(trusted)")
++        guard trusted, let process = NSRunningApplication.runningApplications(withBundleIdentifier: "chat.caper.appkit-development").first else { return }
++        let application = AXUIElementCreateApplication(process.processIdentifier)
++        var focused: CFTypeRef?
++        let focusStatus = AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute as CFString, &focused)
++        print("CAPER_ESCAPE_AX phase=\(phase) focusedStatus=\(focusStatus.rawValue)")
++        guard focusStatus == .success, let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return }
++        let element = focused as! AXUIElement
++        var names: CFArray?
++        let namesStatus = AXUIElementCopyAttributeNames(element, &names)
++        print("CAPER_ESCAPE_AX phase=\(phase) namesStatus=\(namesStatus.rawValue) enabledSupported=\(String(describing: (names as? [String])?.contains(kAXEnabledAttribute as String)))")
++        for attribute in [kAXRoleAttribute, kAXEnabledAttribute, kAXFocusedAttribute] {
++            var value: CFTypeRef?
++            let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
++            print("CAPER_ESCAPE_AX phase=\(phase) attribute=\(attribute) status=\(status.rawValue) value=\(String(describing: value))")
++        }
++    }
++
+     private func capture(_ name: String, app: XCUIApplication) {
+         let screenshot = XCTAttachment(screenshot: app.windows["Caper — AppKit development (not feature complete)"].screenshot())
+         screenshot.name = "AppKit \(name) — local fixture"
+@@ -755,6 +778,7 @@ import XCTest
+         XCTAssertTrue(note.waitForExistence(timeout: 5)); XCTAssertFalse(app.buttons["join-channel"].exists)
+         XCTAssertTrue(second.waitForExistence(timeout: 10)); XCTAssertFalse(first.exists, "An unjoined source is not a writable destination")
+         capture("forward from read-only preview narrow", app: app)
++        traceFocusedAX("preview-before-Escape")
+         app.typeKey(.escape, modifierFlags: [])
+         XCTAssertTrue(note.waitForNonExistence(timeout: 5)); XCTAssertTrue(app.buttons["join-channel"].waitForExistence(timeout: 5))
+         XCTAssertFalse(composer.exists)
+@@ -3070,6 +3094,7 @@ import XCTest
+         let name = app.textFields["Display name"]
+         XCTAssertTrue(name.waitForExistence(timeout: 5))
+         name.click(); name.typeKey("a", modifierFlags: .command); name.typeText("Unsaved native profile")
++        traceFocusedAX("unsaved-profile-before-Escape")
+         app.typeKey(.escape, modifierFlags: [])
+         let confirmation = app.sheets.containing(.staticText, identifier: "Discard profile changes?").firstMatch
+         XCTAssertTrue(confirmation.buttons["Keep editing"].waitForExistence(timeout: 5))
+@@ -3086,6 +3111,7 @@ import XCTest
+         app.buttons["account-settings-menu"].click(); app.menuItems["Notifications"].click()
+         XCTAssertTrue(app.staticTexts["Notifications"].waitForExistence(timeout: 5))
+         capture("notifications", app: app)
++        traceFocusedAX("settings-before-Escape")
+         app.typeKey(.escape, modifierFlags: [])
+         XCTAssertTrue(composer.waitForExistence(timeout: 5))
+         XCTAssertEqual(composer.value as? String, "Keep this draft after closing")
+@@ -3117,6 +3143,7 @@ import XCTest
+                 XCTAssertTrue(control.isHittable); XCTAssertTrue(dialog.frame.contains(control.frame))
+             }
+             capture(width == 1280 ? "activity inbox bounded modal and AX isolation wide" : "activity inbox bounded modal and AX isolation narrow", app: app)
++            traceFocusedAX("inbox-before-close-width-\(width)")
+             if width == 1280 { done.hover(); app.buttons["activity-filter-invitations"].hover(); done.click() }
+             else { app.typeKey(.escape, modifierFlags: []) }
+             XCTAssertTrue(dialog.waitForNonExistence(timeout: 5)); XCTAssertTrue(composer.waitForExistence(timeout: 5))
