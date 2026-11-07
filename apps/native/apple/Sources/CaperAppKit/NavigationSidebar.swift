@@ -49,6 +49,15 @@ import CaperCore
     private lazy var newMessage = NativeButton("New message") { [weak self] in self?.show?(.newDirectMessage) }
     private lazy var directAdd = NativeButton.icon("New direct message", symbol: "plus") { [weak self] in self?.show?(.newDirectMessage) }
     private lazy var directHeading = NativeSidebarHeading(title: NativeStyle.label("Direct messages", size: 12, bold: true), actions: [directAdd], hoverActions: true)
+    private var refreshingDirects = false
+    private lazy var directFailure = NativeDirectFailure { [weak self] in
+        guard let self, !self.refreshingDirects else { return }
+        self.refreshingDirects = true; self.render()
+        Task {
+            await self.model.refreshDirectMessages()
+            self.refreshingDirects = false; self.render()
+        }
+    }
     private lazy var requests = NativeButton("") { [weak self] in
         guard let self else { return }; self.model.showingMessageRequests.toggle()
     }
@@ -100,6 +109,7 @@ import CaperCore
         newMessage.layer?.backgroundColor = NSColor.clear.cgColor
         newMessage.setAccessibilityIdentifier("new-message")
         directAdd.setAccessibilityIdentifier("new-direct-message")
+        selfNotes.open.toolTip = "Your private notes"
         search.placeholderString = "Search channels"
         search.font = NativeStyle.font(13)
         search.delegate = self
@@ -304,6 +314,10 @@ import CaperCore
         }
         directRows = nextDirects
         directs.append(newMessage, height: 28)
+        if let failure = model.directMessagesError {
+            directFailure.update(failure, pending: refreshingDirects)
+            directs.append(directFailure)
+        }
         requestButtons = nextRequests
         accountName.stringValue = model.account?.displayName ?? ""
         account.setAccessibilityLabel("Edit profile for \(model.account?.displayName ?? "your account")")
@@ -322,7 +336,7 @@ import CaperCore
         deafen.setAccessibilityValue(model.voice.deafened ? "Deafened" : "On")
         deafen.contentTintColor = model.voice.deafened ? NSColor(CaperTheme.voiceOff) : NativeStyle.muted
         outputOptions.contentTintColor = deafen.contentTintColor
-        error.stringValue = model.voice.error ?? model.notificationError ?? model.error ?? model.directMessagesError ?? ""
+        error.stringValue = model.voice.error ?? model.notificationError ?? model.error ?? ""
         if !error.stringValue.isEmpty { channels.append(error, height: 30) }
         channels.endUpdates(); directs.endUpdates()
         needsLayout = true
@@ -468,7 +482,8 @@ private final class NativeSidebarList: NSScrollView {
         let width = max(0, contentSize.width - 32)
         var y: CGFloat = 6
         for (child, fallback) in items {
-            let height = (child as? NativeVoiceCard)?.height(width: width) ?? fallback
+            let height = (child as? NativeVoiceCard)?.height(width: width)
+                ?? (child as? NativeDirectFailure)?.height(width: width) ?? fallback
             child.frame = NSRect(x: 16, y: y, width: width, height: height)
             y += height + 3
         }
@@ -476,6 +491,40 @@ private final class NativeSidebarList: NSScrollView {
         if rows.frame.size != size { rows.setFrameSize(size) }
         contentView.scroll(to: NSPoint(x: 0, y: min(max(0, origin.y), max(0, size.height - contentSize.height))))
         reflectScrolledClipView(contentView)
+    }
+}
+
+/// Recovery belongs to the DM list and only reloads it; it never creates a
+/// conversation, accepts a request or retries a message send.
+private final class NativeDirectFailure: NativeView {
+    private let message = NativeStyle.label("", size: 11)
+    private let retry: NativeButton
+    init(action: @escaping () -> Void) {
+        retry = NativeButton("Retry direct messages", action: action)
+        super.init()
+        message.lineBreakMode = .byWordWrapping; message.maximumNumberOfLines = 0
+        message.textColor = NSColor(CaperTheme.error)
+        message.setAccessibilityIdentifier("direct-messages-error")
+        retry.font = NativeStyle.font(11, bold: true)
+        retry.setAccessibilityIdentifier("retry-direct-messages")
+        addSubview(message); addSubview(retry)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func update(_ error: String, pending: Bool) {
+        message.stringValue = error
+        retry.isEnabled = !pending
+        needsLayout = true
+    }
+    private func messageHeight(width: CGFloat) -> CGFloat {
+        NativePresentation.textHeight(NSAttributedString(string: message.stringValue,
+            attributes: [.font: NativeStyle.font(11)]), width: max(1, width - 4)) + 4
+    }
+    func height(width: CGFloat) -> CGFloat { messageHeight(width: width) + 36 }
+    override func layout() {
+        super.layout()
+        let height = messageHeight(width: bounds.width)
+        message.frame = NSRect(x: 0, y: 0, width: bounds.width, height: height)
+        retry.frame = NSRect(x: 0, y: height + 4, width: bounds.width, height: 28)
     }
 }
 

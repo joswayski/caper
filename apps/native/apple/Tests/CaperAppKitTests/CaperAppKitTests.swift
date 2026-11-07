@@ -2712,6 +2712,182 @@ import XCTest
         }
     }
 
+    func testDirectListRetryStaysInItsSectionWithoutNavigatingOrAcceptingRequests() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        addTeardownBlock { try await Self.resetFixture() }
+        _ = try await Self.fixturePOST("/api/dms", body: ["username": "maya"])
+        try await Self.control(["messageRequest": ["text": "TEST FIXTURE — retrying the list is not consent"],
+            "failure": ["path": "/api/dms", "method": "GET", "status": 503, "persistent": true,
+                "error": "TEST FIXTURE — Direct messages could not load. Your conversation and unsent draft stay open."]])
+        let before = try await Self.fixtureGET("/api/chat/channels/chan00000001/messages")
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        let draft = "TEST FIXTURE — retain this draft while the DM list recovers"
+        composer.click(); composer.typeText(draft)
+        let channels = app.scrollViews["sidebar-channels-scroll"]
+        let directs = app.scrollViews["sidebar-direct-scroll"]
+        let failure = directs.staticTexts["direct-messages-error"]
+        let retry = directs.buttons["retry-direct-messages"]
+        XCTAssertTrue(failure.waitForExistence(timeout: 10)); XCTAssertTrue(retry.exists)
+        XCTAssertFalse(channels.staticTexts["direct-messages-error"].exists)
+        XCTAssertFalse(channels.buttons["retry-direct-messages"].exists)
+        for width in [CGFloat(1280), 900] {
+            resize(app, width: width)
+            revealSidebar(retry, in: directs)
+            XCTAssertTrue(directs.frame.contains(failure.frame))
+            XCTAssertGreaterThan(failure.frame.height, 18, "The full failure wraps rather than truncating to one line")
+            XCTAssertLessThanOrEqual(failure.frame.maxY, retry.frame.minY)
+            XCTAssertEqual(composer.value as? String, draft)
+            directs.buttons["new-message"].hover(); retry.hover()
+            capture("DM list failure belongs to direct section \(Int(width))", app: app)
+        }
+        let repeatedFailure = "TEST FIXTURE — Retry still unavailable; keep the current channel open."
+        try await Self.control(["clearFailures": true, "failure": ["path": "/api/dms", "method": "GET",
+            "status": 503, "persistent": true, "error": repeatedFailure]])
+        retry.click()
+        let failedAgain = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", repeatedFailure), object: failure)
+        XCTAssertEqual(XCTWaiter.wait(for: [failedAgain], timeout: 10), .completed)
+        let retryEnabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: retry)
+        XCTAssertEqual(XCTWaiter.wait(for: [retryEnabled], timeout: 5), .completed)
+        XCTAssertEqual(composer.value as? String, draft)
+        XCTAssertTrue(app.staticTexts["# general"].exists)
+        try await Self.control(["clearFailures": true])
+        retry.hover(); retry.click()
+        XCTAssertTrue(failure.waitForNonExistence(timeout: 10))
+        XCTAssertFalse(retry.exists)
+        XCTAssertTrue(directs.buttons["dm-dm0000000004"].waitForExistence(timeout: 5))
+        XCTAssertEqual(directs.buttons["message-requests"].value as? String, "1 request, Collapsed")
+        XCTAssertFalse(directs.buttons["dm-dm0000000003"].exists)
+        XCTAssertEqual(composer.value as? String, draft)
+        XCTAssertTrue(app.staticTexts["# general"].exists)
+        let recovered = try await Self.fixtureGET("/api/dms")
+        let conversations = try XCTUnwrap(recovered["conversations"] as? [[String: Any]])
+        XCTAssertEqual(conversations.count, 2, "Retry lists existing DMs; it never creates self-notes or another conversation")
+        XCTAssertEqual(conversations.first { $0["id"] as? String == "dm0000000003" }?["status"] as? String, "incoming")
+        let after = try await Self.fixtureGET("/api/chat/channels/chan00000001/messages")
+        XCTAssertEqual(after["cursor"] as? String, before["cursor"] as? String)
+        capture("DM list recovered without changing channel draft or request consent", app: app)
+    }
+
+    func testSelfNotesAndBothNewMessageEntrypointsPreserveDraftsAndExplicitConsent() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        addTeardownBlock { try await Self.resetFixture() }
+        let path = "/api/chat/channels/chan00000001/messages"
+        let before = try await Self.fixtureGET(path)
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        let draft = "TEST FIXTURE — keep the channel draft across private notes and new-DM dialogs"
+        composer.click(); composer.typeText(draft)
+        let directs = app.scrollViews["sidebar-direct-scroll"]
+        let channels = app.scrollViews["sidebar-channels-scroll"]
+        let notes = directs.buttons["dm-self"]
+        let general = channels.buttons["channel-chan00000001"]
+        revealSidebar(notes, in: directs)
+        XCTAssertEqual(notes.label, "Fixture Owner, you")
+        try await Self.control(["failure": ["path": "/api/dms", "method": "POST", "status": 503,
+            "error": "TEST FIXTURE — private notes could not open."]])
+        notes.hover(); notes.click()
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE — private notes could not open."].waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, draft); XCTAssertTrue(app.staticTexts["# general"].exists)
+        XCTAssertTrue(notes.isEnabled)
+        notes.click()
+        XCTAssertTrue(app.staticTexts["Fixture Owner"].waitForExistence(timeout: 10))
+        XCTAssertTrue((notes.value as? String ?? "").contains("Selected"))
+        XCTAssertEqual(composer.value as? String, "")
+        let note = "TEST FIXTURE — a private note, not a channel post"
+        composer.click(); composer.typeText(note); app.buttons["send-message"].click()
+        let noteHistory = try await Self.fixtureEventually("/api/chat/channels/dm0000000002/messages") {
+            ($0["messages"] as? [[String: Any]])?.contains { ($0["content"] as? [String: Any])?["text"] as? String == note } == true
+        }
+        let noteRows = try XCTUnwrap(noteHistory["messages"] as? [[String: Any]])
+        XCTAssertEqual(noteRows.count, 1)
+        let noteID = try XCTUnwrap(noteRows.first?["id"] as? String)
+        XCTAssertTrue(app.textViews["message-\(noteID)"].waitForExistence(timeout: 10))
+        capture("self notes create and send through their own conversation", app: app)
+        revealSidebar(general, in: channels); general.click()
+        XCTAssertTrue(app.staticTexts["# general"].waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, draft)
+        // Reopening existing notes must not depend on another create request.
+        try await Self.control(["failure": ["path": "/api/dms", "method": "POST", "status": 503, "persistent": true,
+            "error": "TEST FIXTURE — existing notes must not be recreated."]])
+        revealSidebar(notes, in: directs); notes.click()
+        XCTAssertTrue(app.textViews["message-\(noteID)"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["TEST FIXTURE — existing notes must not be recreated."].exists)
+        let notesDraft = "TEST FIXTURE — unsent notes stay separate"
+        composer.click(); composer.typeText(notesDraft)
+        revealSidebar(general, in: channels); general.click()
+        XCTAssertTrue(app.staticTexts["# general"].waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, draft)
+        try await Self.control(["clearFailures": true])
+
+        let newMessage = directs.buttons["new-message"]
+        revealSidebar(newMessage, in: directs); newMessage.hover(); newMessage.click()
+        let username = app.textFields["dm-username"]
+        let submit = app.buttons["dm-create-submit"]
+        XCTAssertTrue(username.waitForExistence(timeout: 5)); XCTAssertFalse(submit.isEnabled)
+        XCTAssertFalse(composer.exists, "The new-DM dialog owns accessibility while open")
+        username.click(); username.typeText("ma")
+        let maya = app.buttons["person-suggestion-maya"]
+        XCTAssertTrue(maya.waitForExistence(timeout: 5)); maya.hover(); maya.click()
+        XCTAssertEqual(username.value as? String, "maya")
+        XCTAssertFalse(maya.exists); XCTAssertEqual(submit.label, "Open conversation")
+        let selected = try await Self.fixtureGET("/api/dms")
+        let beforeCancel = try XCTUnwrap(selected["conversations"] as? [[String: Any]])
+        XCTAssertEqual(beforeCancel.count, 1, "Picking a suggestion fills the form; it is not permission to create a DM")
+        capture("New message suggestion selected without creating a conversation", app: app)
+        app.buttons["Close"].hover(); app.buttons["Close"].click()
+        XCTAssertTrue(username.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, draft)
+
+        resize(app, width: 900)
+        directs.scroll(byDeltaX: 0, deltaY: 10000)
+        directs.staticTexts["Direct messages"].hover()
+        let add = directs.buttons["new-direct-message"]
+        XCTAssertTrue(add.isHittable); add.hover(); add.click()
+        XCTAssertTrue(username.waitForExistence(timeout: 5))
+        XCTAssertEqual(username.value as? String, "", "Each entrypoint opens a fresh form, not the discarded recipient")
+        username.click(); username.typeText("fixture_alex")
+        XCTAssertEqual(submit.label, "Find person")
+        submit.click()
+        let resolved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Open conversation"), object: submit)
+        XCTAssertEqual(XCTWaiter.wait(for: [resolved], timeout: 10), .completed)
+        let lookedUp = try await Self.fixtureGET("/api/dms")
+        let beforeOpen = try XCTUnwrap(lookedUp["conversations"] as? [[String: Any]])
+        XCTAssertEqual(beforeOpen.count, 1, "Exact-username lookup does not create or accept a conversation")
+        try await Self.control(["failure": ["path": "/api/dms", "method": "POST", "status": 403,
+            "error": "TEST FIXTURE — this person is not accepting direct messages."]])
+        submit.click()
+        let refusal = app.staticTexts["dm-create-error"]
+        XCTAssertTrue(refusal.waitForExistence(timeout: 10))
+        XCTAssertEqual(username.value as? String, "fixture_alex")
+        XCTAssertTrue(submit.isEnabled); XCTAssertFalse(composer.exists)
+        capture("heading plus exact lookup and retryable refusal preserve channel draft", app: app)
+        submit.hover(); submit.click()
+        XCTAssertTrue(username.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE Alex"].waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, "")
+        XCTAssertTrue(directs.buttons["dm-dm0000000001"].exists)
+        let opened = try await Self.fixtureGET("/api/dms")
+        let conversations = try XCTUnwrap(opened["conversations"] as? [[String: Any]])
+        XCTAssertEqual(Set(conversations.compactMap { $0["id"] as? String }), ["dm0000000001", "dm0000000002"])
+        revealSidebar(notes, in: directs); notes.click()
+        XCTAssertTrue(app.staticTexts["Fixture Owner"].waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, notesDraft)
+        revealSidebar(general, in: channels); general.click()
+        XCTAssertTrue(app.staticTexts["# general"].waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, draft)
+        let after = try await Self.fixtureGET(path)
+        XCTAssertEqual(after["cursor"] as? String, before["cursor"] as? String, "No entrypoint may submit the preserved channel draft")
+        capture("direct entrypoints complete with channel draft unchanged", app: app)
+    }
+
     func testOwnerNavigationDialogsRetryAndCreateChannel() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
