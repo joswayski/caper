@@ -241,9 +241,11 @@ private struct AppKitWorkspaceDialog: View {
                 .accessibilityAddTraits(.isModal)
                 .onPreferenceChange(DialogDismissDisabled.self) { state.dismissDisabled = $0 }
                 .onPreferenceChange(ProfileDismissPreference.self) { state.profileDismissAction = $0 }
-                .onExitCommand(perform: requestClose)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // The hosting root is first responder until a dialog field takes focus.
+        // Escape must still use the pending/unsaved-edit guards in that state.
+        .onExitCommand(perform: requestClose)
         .onChange(of: state.item.id) { _, _ in state.dismissDisabled = false; state.profileDismissAction = nil }
         .onChange(of: model.chat.editingContext) { _, _ in if state.item.messageID != nil { dismiss() } }
         .onChange(of: model.account?.id) { _, _ in dismiss() }
