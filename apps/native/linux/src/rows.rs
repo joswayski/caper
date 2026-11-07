@@ -77,8 +77,10 @@ pub struct Row {
     /// A thread reply also sent to the channel, in the main list: "Replied
     /// to a thread · View thread" above it.
     pub broadcast: bool,
-    /// It mentions you or replies to you: a terracotta-tinted row.
+    /// It mentions you: a terracotta-tinted row, as desktop.
     pub mentioned: bool,
+    /// Someone replied to you: the same row, tinted a little deeper.
+    pub replied: bool,
     /// The message opened from elsewhere (a forward's original): highlighted.
     pub focused: bool,
     /// The first message that was unread when you opened the conversation:
@@ -276,6 +278,7 @@ impl Row {
             replies: None,
             broadcast: false,
             mentioned: false,
+            replied: false,
             focused: false,
             unread: false,
             beginning: false,
@@ -636,12 +639,13 @@ pub fn build<'a>(
             beginning: false,
             mentioned: !deleted
                 && message.pin.is_none()
-                && (replies_to_me
-                    || caper_client::mentions::mentions_me(
-                        &message.content.mentions,
-                        &message.author.id,
-                        viewer.me,
-                    )),
+                && !replies_to_me
+                && caper_client::mentions::mentions_me(
+                    &message.content.mentions,
+                    &message.author.id,
+                    viewer.me,
+                ),
+            replied: !deleted && message.pin.is_none() && replies_to_me,
             team_notice: !deleted
                 && caper_client::mentions::notifies_team(&message.content.mentions),
             content: if deleted {
@@ -718,6 +722,7 @@ pub fn build<'a>(
             replies: None,
             broadcast: false,
             mentioned: false,
+            replied: false,
             focused: false,
             unread: false,
             beginning: false,
@@ -1065,15 +1070,20 @@ fn build_widgets(images: &Images) -> Widgets {
     root.append(&blocked);
     root.append(&day_row);
     root.append(&unread);
-    root.append(&reply);
+    // The message itself, below any day rule or divider: what a mention or
+    // focus wash covers, edge to edge as desktop.
+    let message = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    message.add_css_class("body");
+    message.append(&reply);
     let quote_more = gtk::Button::with_label("Show more");
     quote_more.add_css_class("flat");
     quote_more.add_css_class("quote-more");
     quote_more.set_halign(gtk::Align::Start);
     quote_more.set_visible(false);
-    root.append(&quote_more);
-    root.append(&thread_context);
-    root.append(&overlay);
+    message.append(&quote_more);
+    message.append(&thread_context);
+    message.append(&overlay);
+    root.append(&message);
     Widgets {
         blocked,
         blocked_label,
@@ -1240,6 +1250,20 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     if row.blocked {
         classes.push("blocked");
     }
+    // The wash: the focused message wins, as desktop.
+    if row.blocked_run.is_none() {
+        if row.focused {
+            classes.push("focused");
+        } else if row.replied {
+            classes.push("replied");
+        } else if row.mentioned {
+            classes.push("mentioned");
+        }
+    }
+    // Nothing above the message: the wash reaches into the row's top padding.
+    if !row.beginning && !row.unread && row.day.is_none() {
+        classes.push("flush");
+    }
     widgets.root.set_css_classes(&classes);
     widgets.beginning.set_visible(row.beginning);
     widgets.blocked.set_visible(row.blocked_run.is_some());
@@ -1253,16 +1277,6 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
         widgets.reply.set_visible(false);
         widgets.quote_more.set_visible(false);
         return;
-    }
-    if row.mentioned {
-        widgets.card.add_css_class("mentioned");
-    } else {
-        widgets.card.remove_css_class("mentioned");
-    }
-    if row.focused {
-        widgets.card.add_css_class("focused");
-    } else {
-        widgets.card.remove_css_class("focused");
     }
     widgets.notice.set_visible(row.team_notice);
     widgets.unread.set_visible(row.unread);
@@ -1470,6 +1484,7 @@ mod tests {
             replies: None,
             broadcast: false,
             mentioned: false,
+            replied: false,
             focused: false,
             unread: false,
             beginning: false,

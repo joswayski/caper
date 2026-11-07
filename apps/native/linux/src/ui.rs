@@ -13,8 +13,8 @@ pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
     label
 }
 
-/// A message field: a `GtkTextView` with a placeholder, and a send button
-/// drawn with Lucide's `send`.
+/// A message field: a `GtkTextView` with a placeholder. As desktop and web on
+/// a keyboard, Enter sends; there is no Send button.
 pub struct Composer {
     pub root: gtk::Box,
     /// The files staged in it (`crate::uploads`).
@@ -22,7 +22,6 @@ pub struct Composer {
     pub attach: gtk::Button,
     pub view: gtk::TextView,
     pub placeholder: gtk::Label,
-    pub send: gtk::Button,
     /// "Send a GIF", shown while GIFs are on.
     pub gif: gtk::Button,
     /// A thread reply's "Also send to #channel" (hidden in the channel's
@@ -196,7 +195,7 @@ impl Composer {
         attach.set_tooltip_text(Some("Attach files"));
         attach.set_valign(gtk::Align::End);
         attach.add_css_class("flat");
-        attach.add_css_class("send");
+        attach.add_css_class("composer-tool");
         line.append(&attach);
         let view: gtk::TextView = crate::app::named("GtkTextView", "Message");
         view.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -221,11 +220,13 @@ impl Composer {
         let gif: gtk::Button = crate::app::named("GtkButton", "Send a GIF");
         let badge = gtk::Label::new(Some("GIF"));
         badge.add_css_class("gif-badge");
+        badge.set_halign(gtk::Align::Center);
+        badge.set_valign(gtk::Align::Center);
         gif.set_child(Some(&badge));
         gif.set_tooltip_text(Some("Send a GIF"));
         gif.set_valign(gtk::Align::End);
         gif.add_css_class("flat");
-        gif.add_css_class("send");
+        gif.add_css_class("composer-tool");
         gif.set_visible(false);
         line.append(&gif);
         let emoji: gtk::Button = crate::app::named("GtkButton", "Insert emoji");
@@ -233,22 +234,15 @@ impl Composer {
         emoji.set_tooltip_text(Some("Insert emoji"));
         emoji.set_valign(gtk::Align::End);
         emoji.add_css_class("flat");
-        emoji.add_css_class("send");
+        emoji.add_css_class("composer-tool");
         line.append(&emoji);
         let mic: gtk::Button = crate::app::named("GtkButton", "Dictate");
         mic.set_child(Some(&images.icon_image(Icon::Mic, "#b9bcbe", 18)));
         mic.set_tooltip_text(Some("Dictate"));
         mic.set_valign(gtk::Align::End);
         mic.add_css_class("flat");
-        mic.add_css_class("send");
+        mic.add_css_class("composer-tool");
         line.append(&mic);
-        let send: gtk::Button = crate::app::named("GtkButton", "Send message");
-        send.set_child(Some(&images.icon_image(Icon::Send, "#b9bcbe", 18)));
-        send.set_tooltip_text(Some("Send"));
-        send.set_valign(gtk::Align::End);
-        send.add_css_class("flat");
-        send.add_css_class("send");
-        line.append(&send);
         let empty = placeholder.clone();
         view.buffer()
             .connect_changed(move |buffer| empty.set_visible(buffer.char_count() == 0));
@@ -263,7 +257,6 @@ impl Composer {
             attach,
             view,
             placeholder,
-            send,
             gif,
             broadcast,
             preview,

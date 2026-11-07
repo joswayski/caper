@@ -292,11 +292,41 @@ listview.messages > row:hover {
   padding-top: 2px;
 }
 
-/* Messages that mention or reply to you: an 8% terracotta wash with a 2px
-   edge, as desktop draws them. */
-.message .mentioned {
-  background: alpha(@caper_terracotta, 0.08);
+/* Washes, as desktop: 8% for a mention of you, 12% for a reply to you, 14%
+   for the message opened from elsewhere, each with a 2px edge. They span the
+   row edge to edge, and its top padding when nothing sits above. */
+.message.mentioned > .body,
+.message.replied > .body,
+.message.focused > .body {
+  margin: 0 -18px -10px;
+  padding: 0 18px 10px;
   box-shadow: inset 2px 0 @caper_terracotta;
+}
+
+.message.flush.mentioned > .body,
+.message.flush.replied > .body,
+.message.flush.focused > .body {
+  margin-top: -10px;
+  padding-top: 10px;
+}
+
+.message.grouped.flush.mentioned > .body,
+.message.grouped.flush.replied > .body,
+.message.grouped.flush.focused > .body {
+  margin-top: -2px;
+  padding-top: 2px;
+}
+
+.message.mentioned > .body {
+  background: alpha(@caper_terracotta, 0.08);
+}
+
+.message.replied > .body {
+  background: alpha(@caper_terracotta, 0.12);
+}
+
+.message.focused > .body {
+  background: alpha(@caper_terracotta, 0.14);
 }
 
 .notice {
@@ -552,12 +582,18 @@ button.send:not(:disabled) {
   background: @caper_surface_raised;
 }
 
+/* As desktop: one 40px line, flat 28px tools, a terracotta edge while
+   typing. */
 .composer {
   background: @caper_surface_composer;
   border: 1px solid @caper_border;
   border-radius: 8px;
-  margin: 4px 20px 16px;
-  padding: 6px 6px 6px 12px;
+  margin: 4px 18px 17px;
+  padding: 5px 8px 5px 6px;
+}
+
+.composer:focus-within {
+  border-color: @caper_terracotta;
 }
 
 .composer textview,
@@ -567,11 +603,18 @@ button.send:not(:disabled) {
 }
 
 .composer textview {
-  padding: 6px 0;
+  padding: 4px 0;
 }
 
 .composer .placeholder {
-  padding: 6px 0;
+  padding: 4px 0;
+}
+
+button.composer-tool {
+  min-width: 18px;
+  min-height: 18px;
+  padding: 5px;
+  border-radius: 6px;
 }
 
 .composer-error {
@@ -1445,12 +1488,6 @@ popover.editor-text > contents {
   padding: 4px;
 }
 
-/* The message opened from elsewhere, such as a forward's original. */
-.message .focused {
-  background: alpha(@caper_terracotta, 0.14);
-  box-shadow: inset 2px 0 @caper_terracotta;
-}
-
 /* A space's custom icon: a rounded square, in the rail and Manage space. */
 .space-icon .avatar {
   border-radius: 16px;
@@ -2065,4 +2102,8 @@ button.history-button {
   margin-right: 6px;
   border-radius: 9999px;
   background: @caper_terracotta_bright;
+}
+
+.composer scrolledwindow scrollbar.vertical slider {
+  min-height: 8px;
 }

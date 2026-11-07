@@ -1027,10 +1027,6 @@ impl App {
             composer.view.add_controller(keys);
             let app = self.clone();
             composer
-                .send
-                .connect_clicked(move |_| app.send_message(thread));
-            let app = self.clone();
-            composer
                 .attach
                 .connect_clicked(move |button| app.attach_menu(thread, button.upcast_ref()));
             let app = self.clone();
@@ -4763,7 +4759,6 @@ impl App {
             .root
             .set_visible(joined && state.channel.is_some());
         ui.composer.view.set_sensitive(can_send);
-        ui.composer.send.set_sensitive(can_send);
         let attach = Self::can_attach(&state);
         let editing = matches!(state.compose, Some(Compose::Edit { .. }));
         ui.composer.attach.set_sensitive(attach && !editing);
@@ -4823,7 +4818,6 @@ impl App {
                 && ui.members_toggle.is_visible(),
         );
         ui.thread_composer.view.set_sensitive(can_send && joined);
-        ui.thread_composer.send.set_sensitive(can_send && joined);
         ui.thread_composer.placeholder.set_label("Reply in thread");
         let send_error = state.send_error.as_deref().unwrap_or_default();
         let in_thread = state

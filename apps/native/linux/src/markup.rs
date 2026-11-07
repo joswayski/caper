@@ -7,9 +7,10 @@ use caper_client::model::Mention;
 use gtk::glib;
 use std::ops::Range;
 
-/// Mention pills: a terracotta wash with bright text.
-const MENTION: &str =
-    "background=\"#3a2620\" foreground=\"#f3a58f\" weight=\"bold\" underline=\"none\"";
+/// Mention pills, as desktop: one weight bolder, primary text on a 24%
+/// terracotta wash.
+const MENTION: &str = "background=\"#b64d32\" bgalpha=\"24%\" foreground=\"#f3f4f5\" \
+     weight=\"500\" underline=\"none\"";
 
 /// The link scheme of a person's mention pill: `caper-person:<account id>`.
 pub const PERSON: &str = "caper-person:";
