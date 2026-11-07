@@ -1,0 +1,719 @@
+{
+  "description": "Typing in the formatted composer, generated from web's composer (apps/web/src/chat/rich-text.ts in ProseMirror), one key at a time. `caret` is a visible UTF-16 offset. Each step types `key` at the caret; `placed` steps first place the caret where it is (a tap or click), which drops the style web carries between keys. After each step the composer holds `text` with the caret at visible offset `caret`, and `pending` is the style the next key typed at this caret takes (1 bold, 2 italic), or -1 for the style around the caret. Clients pass the previous step's `pending` as `continuing` when a key types at the caret the previous one left, and -1 after a placed caret. Every client's composer wrapper must produce exactly these steps, with its own caret mapping; see shared/messages/composer.rs.",
+  "cases": [
+    {
+      "note": "a space typed at the end of bold moves after its markers",
+      "text": "**bold**",
+      "caret": 4,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**bold** ",
+          "caret": 5,
+          "pending": 1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**bold** **a**",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**bold** **an**",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**bold** **and**",
+          "caret": 8,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a space typed at the end of bold moves after its markers (caret placed before each key)",
+      "text": "**bold**",
+      "caret": 4,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**bold** ",
+          "caret": 5,
+          "pending": 1
+        },
+        {
+          "key": "a",
+          "placed": true,
+          "text": "**bold** a",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": true,
+          "text": "**bold** an",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": true,
+          "text": "**bold** and",
+          "caret": 8,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "letters typed at the end of bold extend it",
+      "text": "**bold**",
+      "caret": 4,
+      "steps": [
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**bolde**",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**bolder**",
+          "caret": 6,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "letters typed at the end of bold extend it (caret placed before each key)",
+      "text": "**bold**",
+      "caret": 4,
+      "steps": [
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**bolde**",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": true,
+          "text": "**bolder**",
+          "caret": 6,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "italic, and a newline at its end",
+      "text": "_it_",
+      "caret": 2,
+      "steps": [
+        {
+          "key": "\n",
+          "placed": false,
+          "text": "_it_\n",
+          "caret": 3,
+          "pending": 2
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "_it_\n_x_",
+          "caret": 4,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "italic, and a newline at its end (caret placed before each key)",
+      "text": "_it_",
+      "caret": 2,
+      "steps": [
+        {
+          "key": "\n",
+          "placed": false,
+          "text": "_it_\n",
+          "caret": 3,
+          "pending": 2
+        },
+        {
+          "key": "x",
+          "placed": true,
+          "text": "_it_\nx",
+          "caret": 4,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "bold and italic together",
+      "text": "**_bi_**",
+      "caret": 2,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**_bi_** ",
+          "caret": 3,
+          "pending": 3
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "**_bi_** **_x_**",
+          "caret": 4,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "bold and italic together (caret placed before each key)",
+      "text": "**_bi_**",
+      "caret": 2,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**_bi_** ",
+          "caret": 3,
+          "pending": 3
+        },
+        {
+          "key": "x",
+          "placed": true,
+          "text": "**_bi_** x",
+          "caret": 4,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "mid-draft, before plain text",
+      "text": "**bold** rest",
+      "caret": 4,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**bold**  rest",
+          "caret": 5,
+          "pending": 1
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "**bold** **x** rest",
+          "caret": 6,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "mid-draft, before plain text (caret placed before each key)",
+      "text": "**bold** rest",
+      "caret": 4,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**bold**  rest",
+          "caret": 5,
+          "pending": 1
+        },
+        {
+          "key": "x",
+          "placed": true,
+          "text": "**bold** x rest",
+          "caret": 6,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "at the start of a style the style is the next character's",
+      "text": "**bold**",
+      "caret": 0,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": " **bold**",
+          "caret": 1,
+          "pending": 1
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": " **xbold**",
+          "caret": 2,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "at the start of a style the style is the next character's (caret placed before each key)",
+      "text": "**bold**",
+      "caret": 0,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": " **bold**",
+          "caret": 1,
+          "pending": 1
+        },
+        {
+          "key": "x",
+          "placed": true,
+          "text": " x**bold**",
+          "caret": 2,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "two spaces keep the style pending",
+      "text": "**bold**",
+      "caret": 4,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**bold** ",
+          "caret": 5,
+          "pending": 1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**bold**  ",
+          "caret": 6,
+          "pending": 1
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "**bold**  **x**",
+          "caret": 7,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "two spaces keep the style pending (caret placed before each key)",
+      "text": "**bold**",
+      "caret": 4,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**bold** ",
+          "caret": 5,
+          "pending": 1
+        },
+        {
+          "key": " ",
+          "placed": true,
+          "text": "**bold**  ",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "x",
+          "placed": true,
+          "text": "**bold**  x",
+          "caret": 7,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "after plain whitespace the caret's own style applies",
+      "text": "**bold** ",
+      "caret": 5,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**bold**  ",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "**bold**  x",
+          "caret": 7,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "after plain whitespace the caret's own style applies (caret placed before each key)",
+      "text": "**bold** ",
+      "caret": 5,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**bold**  ",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "x",
+          "placed": true,
+          "text": "**bold**  x",
+          "caret": 7,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "inside a styled word",
+      "text": "**bold**",
+      "caret": 2,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**bo ld**",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "**bo xld**",
+          "caret": 4,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "inside a styled word (caret placed before each key)",
+      "text": "**bold**",
+      "caret": 2,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**bo ld**",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "x",
+          "placed": true,
+          "text": "**bo xld**",
+          "caret": 4,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "before an adjacent style",
+      "text": "**a**_b_",
+      "caret": 1,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**a** _b_",
+          "caret": 2,
+          "pending": 1
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "**a** **x**_b_",
+          "caret": 3,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "before an adjacent style (caret placed before each key)",
+      "text": "**a**_b_",
+      "caret": 1,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**a** _b_",
+          "caret": 2,
+          "pending": 1
+        },
+        {
+          "key": "x",
+          "placed": true,
+          "text": "**a** xb",
+          "caret": 3,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "an empty draft",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "a",
+          "placed": false,
+          "text": "a",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "ab",
+          "caret": 2,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "an empty draft (caret placed before each key)",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "a",
+          "placed": false,
+          "text": "a",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": true,
+          "text": "ab",
+          "caret": 2,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "an emoji typed after a space",
+      "text": "**ok**",
+      "caret": 2,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**ok** ",
+          "caret": 3,
+          "pending": 1
+        },
+        {
+          "key": "🙂",
+          "placed": false,
+          "text": "**ok** **🙂**",
+          "caret": 5,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "an emoji typed after a space (caret placed before each key)",
+      "text": "**ok**",
+      "caret": 2,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**ok** ",
+          "caret": 3,
+          "pending": 1
+        },
+        {
+          "key": "🙂",
+          "placed": true,
+          "text": "**ok** 🙂",
+          "caret": 5,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a typed closing marker makes a style",
+      "text": "a *b",
+      "caret": 4,
+      "steps": [
+        {
+          "key": "*",
+          "placed": false,
+          "text": "a *b*",
+          "caret": 5,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "an underscore typed inside an italic word",
+      "text": "_c d_",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "b",
+          "placed": false,
+          "text": "_bc d_",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "_b_c d_",
+          "caret": 2,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "an underscore typed inside an italic word (caret placed before each key)",
+      "text": "_c d_",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "b",
+          "placed": false,
+          "text": "_bc d_",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": true,
+          "text": "_b_c d_",
+          "caret": 2,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "typing at the end of a styled link extends it",
+      "text": "**https://caper.chat**",
+      "caret": 18,
+      "steps": [
+        {
+          "key": "/",
+          "placed": false,
+          "text": "**https://caper.chat/**",
+          "caret": 19,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**https://caper.chat/a**",
+          "caret": 20,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "typing at the end of a styled link extends it (caret placed before each key)",
+      "text": "**https://caper.chat**",
+      "caret": 18,
+      "steps": [
+        {
+          "key": "/",
+          "placed": false,
+          "text": "**https://caper.chat/**",
+          "caret": 19,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": true,
+          "text": "**https://caper.chat/a**",
+          "caret": 20,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "plain text after a link",
+      "text": "see https://caper.chat",
+      "caret": 22,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "see https://caper.chat ",
+          "caret": 23,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "see https://caper.chat n",
+          "caret": 24,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "see https://caper.chat no",
+          "caret": 25,
+          "pending": -1
+        },
+        {
+          "key": "w",
+          "placed": false,
+          "text": "see https://caper.chat now",
+          "caret": 26,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "plain text after a link (caret placed before each key)",
+      "text": "see https://caper.chat",
+      "caret": 22,
+      "steps": [
+        {
+          "key": " ",
+          "placed": false,
+          "text": "see https://caper.chat ",
+          "caret": 23,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": true,
+          "text": "see https://caper.chat n",
+          "caret": 24,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": true,
+          "text": "see https://caper.chat no",
+          "caret": 25,
+          "pending": -1
+        },
+        {
+          "key": "w",
+          "placed": true,
+          "text": "see https://caper.chat now",
+          "caret": 26,
+          "pending": -1
+        }
+      ]
+    }
+  ]
+}

@@ -11,8 +11,12 @@
 //! - Android: JNI functions for `chat.caper.android.data.CaperMobile`
 //!   (feature `jni`), built per ABI by cargo-ndk from Gradle.
 
+/// Composer edits as web makes them; it finds the grammar as `super::parser`.
+#[path = "../../../../shared/messages/composer.rs"]
+pub mod composer;
 #[path = "../../../../shared/messages/formatting.rs"]
 pub mod formatting;
+use formatting as parser;
 #[path = "../../../../shared/messages/history_diff.rs"]
 pub mod history_diff;
 #[path = "../../../../shared/messages/links.rs"]
@@ -160,6 +164,49 @@ pub fn history_diff_spans(before: &str, after: &str, utf8: bool) -> Vec<i32> {
     out
 }
 
+/// The scalar offset of UTF-16 offset `unit` in `text` (a split surrogate
+/// pair counts as its scalar's start).
+fn scalar(text: &str, unit: usize) -> usize {
+    let mut units = 0;
+    text.chars()
+        .take_while(|c| {
+            units += c.len_utf16();
+            units <= unit
+        })
+        .count()
+}
+
+fn utf16(text: &str, scalar: usize) -> usize {
+    text.chars().take(scalar).map(char::len_utf16).sum()
+}
+
+/// One composer edit (`composer::edit`) with UTF-16 selection offsets into
+/// `next`: `[start, end, pending, ...]` followed by the edited text's UTF-16
+/// code units.
+pub fn composer_edit(
+    previous: &str,
+    next: &str,
+    start: i32,
+    end: i32,
+    continuing: i32,
+) -> Vec<i32> {
+    let unit = |value: i32| usize::try_from(value).unwrap_or_default();
+    let edited = composer::edit(
+        previous,
+        next,
+        scalar(next, unit(start)),
+        scalar(next, unit(end)),
+        continuing,
+    );
+    let mut out = vec![
+        offset(utf16(&edited.text, edited.start)),
+        offset(utf16(&edited.text, edited.end)),
+        edited.pending,
+    ];
+    out.extend(edited.text.encode_utf16().map(i32::from));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +247,86 @@ mod tests {
                     }
                 }
                 assert_eq!(runs, expected, "{text}");
+            }
+        }
+    }
+
+    /// Hosts type each step at their own caret mapping; every shared case agrees.
+    #[test]
+    fn composer_edits_follow_the_shared_cases() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../shared/messages/composer-cases.json"
+        ))
+        .unwrap();
+        let cases = cases["cases"].as_array().unwrap();
+        assert!(cases.len() > 20);
+        // The visible offset's source offset, keeping a trailing caret inside
+        // closing delimiters (Android) or after them (Apple).
+        let source = |text: &str, visible: usize, inside: bool| -> usize {
+            let spans = format_spans(text, false);
+            let indices: Vec<usize> = spans
+                .chunks(3)
+                .flat_map(|span| span[0] as usize..span[1] as usize)
+                .collect();
+            indices.get(visible).copied().unwrap_or(if inside {
+                indices.last().map_or(0, |index| index + 1)
+            } else {
+                text.encode_utf16().count()
+            })
+        };
+        let displayed = |text: &str, caret: usize| -> usize {
+            format_spans(text, false)
+                .chunks(3)
+                .map(|span| {
+                    (span[1] as usize)
+                        .min(caret)
+                        .saturating_sub(span[0] as usize)
+                })
+                .sum()
+        };
+        for case in cases {
+            for inside in [true, false] {
+                let mut text = case["text"].as_str().unwrap().to_owned();
+                let mut caret = source(&text, case["caret"].as_u64().unwrap() as usize, inside);
+                let mut pending = -1;
+                for step in case["steps"].as_array().unwrap() {
+                    if step["placed"].as_bool().unwrap() {
+                        caret = source(&text, displayed(&text, caret), inside);
+                        pending = -1;
+                    }
+                    let key = step["key"].as_str().unwrap();
+                    let units: Vec<u16> = text.encode_utf16().collect();
+                    let next = String::from_utf16(
+                        &[
+                            &units[..caret],
+                            &key.encode_utf16().collect::<Vec<_>>(),
+                            &units[caret..],
+                        ]
+                        .concat(),
+                    )
+                    .unwrap();
+                    let at = (caret + key.encode_utf16().count()) as i32;
+                    let result = composer_edit(&text, &next, at, at, pending);
+                    text = String::from_utf16(
+                        &result[3..]
+                            .iter()
+                            .map(|unit| *unit as u16)
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap();
+                    caret = result[0] as usize;
+                    pending = result[2];
+                    assert_eq!(
+                        (text.as_str(), displayed(&text, caret), pending),
+                        (
+                            step["text"].as_str().unwrap(),
+                            step["caret"].as_u64().unwrap() as usize,
+                            step["pending"].as_i64().unwrap() as i32
+                        ),
+                        "{} (inside {inside})",
+                        case["note"]
+                    );
+                }
             }
         }
     }

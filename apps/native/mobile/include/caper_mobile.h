@@ -26,6 +26,12 @@ CaperMobileInts caper_mobile_mention_spans(const uint8_t *utf8, size_t len);
 // end), before spans first.
 CaperMobileInts caper_mobile_history_diff_spans(const uint8_t *before, size_t before_len, const uint8_t *after,
                                                 size_t after_len);
+// One composer edit (shared/messages/composer.rs). start and end are UTF-16
+// offsets into next; continuing is the previous edit's pending style when this
+// edit types at the caret it left, else -1. Returns the UTF-16 start, end and
+// pending style, then the edited text's UTF-16 code units.
+CaperMobileInts caper_mobile_composer_edit(const uint8_t *previous, size_t previous_len, const uint8_t *next,
+                                           size_t next_len, int32_t start, int32_t end, int32_t continuing);
 void caper_mobile_ints_free(CaperMobileInts ints);
 // Whether a display or space name holds a character names may not.
 bool caper_mobile_name_has_hidden(const uint8_t *utf8, size_t len);

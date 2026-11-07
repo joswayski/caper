@@ -82,6 +82,27 @@ pub unsafe extern "C" fn caper_mobile_history_diff_spans(
     crate::history_diff_spans(before, after, true).into()
 }
 
+/// `crate::composer_edit(previous, next, start, end, continuing)`: the UTF-16
+/// selection and pending style, then the edited text's UTF-16 code units.
+///
+/// # Safety
+/// `previous` and `next` must point to `previous_len` and `next_len` bytes of
+/// UTF-8, or may be null when their length is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_composer_edit(
+    previous: *const u8,
+    previous_len: usize,
+    next: *const u8,
+    next_len: usize,
+    start: i32,
+    end: i32,
+    continuing: i32,
+) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    let (previous, next) = unsafe { (text(previous, previous_len), text(next, next_len)) };
+    crate::composer_edit(previous, next, start, end, continuing).into()
+}
+
 /// `crate::names::has_hidden(text)`: whether a display or space name holds a
 /// character names may not.
 ///

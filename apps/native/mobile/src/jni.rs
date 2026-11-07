@@ -119,6 +119,34 @@ pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_historyDi
     }
 }
 
+/// `CaperMobile.composerEdit(previous, next, start, end, continuing)`:
+/// `crate::composer_edit`.
+///
+/// # Safety
+/// Called by the JVM with its environment and two live strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_composerEdit(
+    env: *mut JNIEnv,
+    _class: jclass,
+    previous: jstring,
+    next: jstring,
+    start: jint,
+    end: jint,
+    continuing: jint,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    match unsafe { (string(env, previous), string(env, next)) } {
+        // SAFETY: forwarded from the JVM's call.
+        (Some(previous), Some(next)) => unsafe {
+            int_array(
+                env,
+                &crate::composer_edit(&previous, &next, start, end, continuing),
+            )
+        },
+        _ => std::ptr::null_mut(),
+    }
+}
+
 /// `CaperMobile.nameHasHidden(text)`: `crate::names::has_hidden(text)`.
 ///
 /// # Safety
