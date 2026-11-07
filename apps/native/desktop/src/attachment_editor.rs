@@ -606,31 +606,39 @@ impl Editor {
         let edge = layout.map_or(1.0, |layout| layout.edge / self.zoom.scale);
         let ready = self.picture.is_some();
 
-        // Top bar: Close, the name, Open in default app, Undo, Redo, Reset
-        // and Done, the same in every state.
+        // Keep every action in narrow windows, with less space between them
+        // so the editor title still fits beside the controls.
+        let compact = rect.width() < NARROW;
+        let inset = if compact { 8.0 } else { 16.0 };
+        let gap = if compact { 4.0 } else { 8.0 };
         let painter = ui.painter_at(rect);
         painter.line_segment(
             [top.left_bottom(), top.right_bottom()],
             Stroke::new(1.0_f32, BORDER),
         );
         let close = Rect::from_center_size(
-            egui::pos2(top.left() + 16.0 + 18.0, top.center().y),
+            egui::pos2(top.left() + inset + 18.0, top.center().y),
             egui::vec2(36.0, 36.0),
         );
         if icon_button(ui, close, NavIcon::Close, CLOSE, "Cancel", true).clicked() {
             return Outcome::Cancel;
         }
-        let mut right = top.right() - 16.0;
+        let mut right = top.right() - inset;
         let mut place = |width: f32| {
             right -= width;
             let rect = Rect::from_min_size(
                 egui::pos2(right, top.center().y - 18.0),
                 egui::vec2(width, 36.0),
             );
-            right -= 8.0;
+            right -= gap;
             rect
         };
-        let done = place(if profile_picture { 112.0 } else { 64.0 });
+        let done = place(match (profile_picture, compact) {
+            (true, true) => 96.0,
+            (true, false) => 112.0,
+            (false, true) => 56.0,
+            (false, false) => 64.0,
+        });
         // With nothing changed, Done just closes.
         let can_finish = ready || !picture_target;
         let finish_label = if profile_picture {
@@ -654,7 +662,7 @@ impl Editor {
                 Outcome::Save((fin.is_edited() || picture_target).then_some(fin))
             };
         }
-        let reset = place(64.0);
+        let reset = place(if compact { 48.0 } else { 64.0 });
         let can_reset = ready && self.current().is_edited();
         if text_button(ui, reset, "Reset", can_reset).clicked() {
             self.field = None;
@@ -715,8 +723,9 @@ impl Editor {
         }
         // As web: the title, with the file name small and muted under it
         // unless the window is narrow.
-        let title_left = close.right() + 12.0;
-        let width = (title_right - 12.0 - title_left).max(0.0);
+        let title_gap = if compact { 8.0 } else { 12.0 };
+        let title_left = close.right() + title_gap;
+        let width = (title_right - title_gap - title_left).max(0.0);
         let line = |text: &str, size: f32, family: egui::FontFamily, color| {
             let mut job = egui::text::LayoutJob::simple_singleline(
                 text.to_owned(),
