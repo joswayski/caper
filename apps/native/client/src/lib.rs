@@ -54,6 +54,7 @@ pub mod state;
 pub mod updates;
 pub mod uploads;
 pub mod voice;
+pub mod voice_note;
 // Voice media, shared with the voice spike (where it is `crate::media`), whose
 // controls are built only through `new`.
 #[allow(clippy::new_without_default)]

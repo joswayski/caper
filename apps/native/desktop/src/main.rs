@@ -28628,7 +28628,10 @@ impl CaperApp {
                 self.voice.preferences.input.clone(),
                 self.voice.preferences.input_percent,
                 self.voice.preferences.processing_strength,
-                context.clone(),
+                {
+                    let context = context.clone();
+                    move || context.request_repaint()
+                },
             )
         })
     }
