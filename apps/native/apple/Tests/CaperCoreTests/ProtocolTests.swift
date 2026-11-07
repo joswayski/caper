@@ -260,6 +260,42 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(CaperRuntime.isAudioPreview("audio-recorded", environment: environment))
     }
 
+    func testFixtureServerIsLoopbackOnlyUnlessABenchBuildAllowsPrivateLAN() {
+        func resolve(_ url: String?, mode: String? = "parity", lan: Bool) -> Result<URL, FixtureServer.Rejection> {
+            var environment: [String: String] = [:]
+            environment["CAPER_TEST_MODE"] = mode
+            environment["CAPER_API_BASE_URL"] = url
+            return FixtureServer.resolve(environment, privateNetwork: lan)
+        }
+        for lan in [false, true] {
+            XCTAssertEqual(try? resolve("http://127.0.0.1:3001", lan: lan).get(), URL(string: "http://127.0.0.1:3001"))
+            XCTAssertEqual(resolve("http://127.0.0.1:3001", mode: nil, lan: lan), .failure(.notParity))
+            XCTAssertEqual(resolve(nil, lan: lan), .failure(.missingURL))
+            XCTAssertEqual(resolve("https://caper.chat", lan: lan), .failure(.notFixtureHost("caper.chat")))
+        }
+        // Shipping builds never accept a LAN fixture.
+        XCTAssertEqual(resolve("http://192.168.1.20:3001", lan: false), .failure(.notFixtureHost("192.168.1.20")))
+        for accepted in ["http://192.168.1.20:3001", "http://10.0.0.5:3001/", "http://172.16.0.1:3001", "http://172.31.255.255:3001"] {
+            XCTAssertEqual(try? resolve(accepted, lan: true).get(), URL(string: accepted), accepted)
+        }
+        for host in ["172.32.0.1", "172.15.0.1", "192.169.0.1", "8.8.8.8", "192.168.1.20.nip.io", "010.0.0.1",
+                     "192.168.1.256", "192.168.1", "mac.local"] {
+            XCTAssertEqual(resolve("http://\(host):3001", lan: true), .failure(.notFixtureHost(host)), host)
+        }
+        for raw in ["https://192.168.1.20:3001", "http://user@192.168.1.20:3001", "http://192.168.1.20:3001/api",
+                    "http://192.168.1.20:3001?x=1", "not a url"] {
+            XCTAssertEqual(resolve(raw, lan: true), .failure(.invalidURL(raw)), raw)
+        }
+    }
+
+    @MainActor
+    func testShippingModelUsesCaperChatUnlessTheFixtureIsLoopback() {
+        let lan = ["CAPER_TEST_MODE": "parity", "CAPER_API_BASE_URL": "http://192.168.1.20:3001"]
+        XCTAssertEqual(CaperRuntime.makeModel(environment: lan).api.baseURL, URL(string: "https://caper.chat"))
+        XCTAssertEqual(CaperRuntime.makeModel(environment: lan.merging(["CAPER_API_BASE_URL": "http://127.0.0.1:3001"]) { _, new in new }).api.baseURL,
+                       URL(string: "http://127.0.0.1:3001"))
+    }
+
     @MainActor
     func testActiveRosterPreviewRequiresLoopbackFixture() async throws {
         let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))

@@ -1,4 +1,4 @@
-/** Loopback-only, disposable UI fixture. Never proxies to Caper or an SFU. */
+/** Disposable UI fixture, on loopback unless CAPER_FIXTURE_HOST names a private-LAN address. Never proxies to Caper or an SFU. */
 /* oxlint-disable no-control-regex -- Mirror the API's rejection of control characters in message text. */
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -123,6 +123,78 @@ function benchMessages(count, people) {
   }
   return rows;
 }
+// Device bench runs (CAPER_BENCH_FORMATTED_MESSAGES=N): a #bench-formatting channel of N
+// long messages dense with bold/italic, links and mentions. Off by default.
+const formattedCount = Number(process.env.CAPER_BENCH_FORMATTED_MESSAGES ?? 0);
+export const benchFormattingChannel = "chan00000070";
+/** Deterministic (fixed-seed) multi-paragraph rows, about 0.5-2.5k characters each. */
+function formattedMessages(count, people) {
+  let seed = 0x85ebca6b;
+  const rnd = (n) => {
+    seed ^= seed << 13;
+    seed >>>= 0;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    seed >>>= 0;
+    return seed % n;
+  };
+  const pick = (list) => list[rnd(list.length)];
+  const phrases = [
+    "the release notes for the voice beta",
+    "invite links on narrow screens",
+    "history loading when you scroll up quickly",
+    "reaction chips that wrap onto a second line",
+    "the composer height with the keyboard open",
+    "link previews for long documentation pages",
+    "unread markers after reconnecting",
+    "thread replies that quote a formatted message",
+  ];
+  const links = [
+    () =>
+      `https://example.com/docs/${rnd(900)}/release-notes?tab=${pick(["voice", "text", "invites"])}#section-${rnd(40)}`,
+    () => `www.example.org/specs/${rnd(500)}`,
+    () => `<https://example.net/no-card/${rnd(700)}>`,
+    () => `(see https://example.com/wiki/Caper_(app)/${rnd(80)})`,
+    () => `https://example.com/a/very/long/path/${"segment-".repeat(1 + rnd(4))}${rnd(10000)}.html.`,
+  ];
+  const span = () => {
+    const r = rnd(10);
+    return r < 3
+      ? `**${pick(phrases)}**`
+      : r < 5
+        ? `_${pick(phrases)}_`
+        : r < 6
+          ? `**${pick(phrases)} _${pick(phrases)}_**`
+          : r < 7
+            ? `*${pick(phrases)}*`
+            : pick(phrases);
+  };
+  return Array.from({ length: count }, (_, i) => {
+    const speaker = people[rnd(people.length)];
+    const mentions = [];
+    const paragraphs = Array.from({ length: 2 + rnd(3) }, () =>
+      Array.from({ length: 2 + rnd(3) }, () => {
+        let sentence = `${span()} ${pick(links)()} and ${span()}`;
+        if (rnd(4) === 0) {
+          const person = people[rnd(people.length)];
+          sentence += ` @${person.username}`;
+          if (!mentions.some((m) => m.id === person.id))
+            mentions.push({ type: "user", id: person.id, username: person.username });
+        }
+        return `${sentence} ${pick(["🎉", "👍", "🚀", "🤔", "✨"])}`;
+      }).join(". "),
+    );
+    return {
+      id: `f${String(i + 1).padStart(14, "0")}`,
+      channelId: benchFormattingChannel,
+      seq: String(i + 1),
+      author: author(speaker),
+      content: { version: 1, type: "text", text: paragraphs.join("\n\n"), ...(mentions.length ? { mentions } : {}) },
+      clientMessageId: `00000000-0000-4000-a000-${String(i + 1).padStart(12, "0")}`,
+      createdAt: new Date(Date.UTC(2026, 9, 2, 9, 0) + i * 7 * 60000).toISOString(),
+    };
+  });
+}
 // Shares no space with the owner, so a DM with Jordan is a message request.
 const stranger = { id: ids.stranger, username: "jordan", displayName: "Jordan", avatarId: 412 };
 const author = (member) => ({
@@ -170,7 +242,7 @@ function historyWindow(messages, url) {
   };
 }
 
-function initialState() {
+function initialState(formatted = 0) {
   const account = clone(initialAccount);
   const space = { id: ids.space, name: "Fixture Studio", ownerId: ids.owner };
   const channels = ["general", "design", "planning"].map((name, index) => ({
@@ -179,6 +251,8 @@ function initialState() {
     name,
     private: index === 2,
   }));
+  if (formatted > 0)
+    channels.push({ id: benchFormattingChannel, spaceId: space.id, name: "bench-formatting", private: false });
   const messages = new Map(
     [demoChannel, ...channels].map((channel) => [
       channel.id,
@@ -206,6 +280,7 @@ function initialState() {
   );
   const spaceMembers = clone([...members, ...benchMembers]);
   if (benchCount > 0) messages.set(ids.general, benchMessages(benchCount, spaceMembers));
+  if (formatted > 0) messages.set(benchFormattingChannel, formattedMessages(formatted, spaceMembers));
   return {
     spaces: [{ space, channels, members: spaceMembers }],
     messages,
@@ -362,8 +437,28 @@ function socketFrame(value, opcode = 1) {
   return Buffer.concat([header, body]);
 }
 
-export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
-  let state = initialState();
+/**
+ * Where the fixture listens and the origin its absolute URLs use. Loopback by
+ * default; a private-LAN IPv4 address (10/8, 172.16/12, 192.168/16) only when
+ * explicitly configured, for the bench apps on a physical iPhone.
+ */
+export function fixtureHost(value = "127.0.0.1") {
+  const octets = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(value)?.slice(1);
+  const valid = octets?.every((octet) => (octet === "0" || !octet.startsWith("0")) && Number(octet) <= 255);
+  const [a, b] = (octets ?? []).map(Number);
+  if (valid && (a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168))) return value;
+  throw new Error(`TEST FIXTURE: ${value} is not a loopback or private-LAN IPv4 address`);
+}
+
+export async function startFixture({
+  port = 3001,
+  gatewayPort = 3002,
+  host = "127.0.0.1",
+  formatted = formattedCount,
+} = {}) {
+  host = fixtureHost(host);
+  const advertised = (localPort) => `http://${host}:${localPort}`;
+  let state = initialState(formatted);
   const sockets = new Set();
   let holdSends = false;
   const heldSends = new Set();
@@ -603,7 +698,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       {
         type: "images",
         thumbnail: true,
-        items: [{ url: `http://127.0.0.1:${port}/__fixture/embed.svg`, width: 160, height: 160 }],
+        items: [{ url: `${advertised(port)}/__fixture/embed.svg`, width: 160, height: 160 }],
       },
     ],
   });
@@ -766,7 +861,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (path === "/__fixture/channel-reads" && method === "GET")
         return json(response, 200, { reads: state.channelReads ?? null, log: state.channelReadLog ?? [] });
       if (path === "/__fixture/control" && method === "POST") {
-        if (body.reset) state = initialState();
+        if (body.reset) state = initialState(formatted);
         if (typeof body.admin === "boolean") state.account.admin = body.admin;
         // Opt-in channel read state: `{ channelReads: { [channelId]: readSeq } }`.
         if (body.channelReads !== undefined) {
@@ -1286,7 +1381,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             ? {
                 width: body.width,
                 height: body.height,
-                url: `http://127.0.0.1:${request.socket.localPort}/api/assets/${id}/fixture-file`,
+                url: `${advertised(request.socket.localPort)}/api/assets/${id}/fixture-file`,
               }
             : {}),
           ...(voice ? { voice, durationMs: body.durationMs, waveform: body.waveform } : {}),
@@ -1300,7 +1395,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             .split(",")[0]
             .trim();
         const origin = `${first(request.headers["x-forwarded-proto"]) || "http"}://${
-          first(request.headers["x-forwarded-host"]) || request.headers.host || `127.0.0.1:${request.socket.localPort}`
+          first(request.headers["x-forwarded-host"]) || request.headers.host || `${host}:${request.socket.localPort}`
         }`;
         const asset = state.assets.get(id);
         asset.origin = origin;
@@ -1328,7 +1423,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           upload: {
             method: "PUT",
             url: avatar
-              ? `http://127.0.0.1:${request.socket.localPort}/api/assets/${id}/fixture-upload`
+              ? `${advertised(request.socket.localPort)}/api/assets/${id}/fixture-upload`
               : `${origin}/api/assets/${id}/fixture-upload`,
             headers: {},
           },
@@ -1488,7 +1583,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               transcript: { status: "pending" },
               // Straight to the fixture, like a signed storage URL: Vite's dev
               // server answers media requests (Sec-Fetch-Dest: audio) itself.
-              url: `http://127.0.0.1:${request.socket.localPort}/api/assets/${assetComplete[1]}/fixture-file`,
+              url: `${advertised(request.socket.localPort)}/api/assets/${assetComplete[1]}/fixture-file`,
             }
           : asset.image
             ? {
@@ -3000,10 +3095,11 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     servers[index].on("upgrade", upgrade);
     await new Promise((resolve, reject) => {
       servers[index].once("error", reject);
-      servers[index].listen(index === 0 ? port : gatewayPort, "127.0.0.1", resolve);
+      servers[index].listen(index === 0 ? port : gatewayPort, host, resolve);
     });
   }
   return {
+    host,
     port: servers[0].address().port,
     gatewayPort: servers.at(-1).address().port,
     async close() {
@@ -3020,8 +3116,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const fixture = await startFixture({
     port: Number(process.env.CAPER_FIXTURE_PORT ?? 3001),
     gatewayPort: Number(process.env.CAPER_FIXTURE_GATEWAY_PORT ?? 3002),
+    host: process.env.CAPER_FIXTURE_HOST || undefined,
   });
-  console.log(`TEST FIXTURE ONLY: local mock API on port ${fixture.port}; code ABC234; no real email or SFU.`);
+  console.log(
+    `TEST FIXTURE ONLY: local mock API on ${fixture.host}:${fixture.port}; code ABC234; no real email or SFU.`,
+  );
   for (const signal of ["SIGINT", "SIGTERM"])
     process.on(signal, () => void fixture.close().then(() => process.exit(0)));
 }

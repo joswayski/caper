@@ -1,0 +1,149 @@
+# Device benchmark apps (bench.sh): the UIKit client and the shipping SwiftUI
+# app built against the TEST FIXTURE only. CaperCore is compiled with
+# CAPER_DEVICE_FIXTURE here, so a launch without a valid loopback or
+# private-LAN fixture stops instead of reaching caper.chat. The apps use
+# chat.caper.bench.* IDs with no URL schemes, associated domains, push or
+# extensions, so they never replace or impersonate chat.caper.ios. Release,
+# TestFlight and build.sh keep using CaperApple.xcodeproj; nothing here ships.
+include: project.yml
+name: CaperBench
+targets:
+  CaperCoreIOS:
+    settings:
+      base:
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) CAPER_DEVICE_FIXTURE"
+  CaperBenchUIKit:
+    type: application
+    platform: iOS
+    sources:
+      - Sources/CaperUIKit
+      - path: Resources
+        buildPhase: resources
+    dependencies:
+      - target: CaperCoreIOS
+      - target: CaperRTCBridgeIOS
+        embed: true
+      - package: WebRTC
+        product: WebRTC
+        link: true
+    info:
+      path: Configuration/BenchUIKit-Info.plist
+      properties:
+        CFBundleDisplayName: Bench UIKit
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CaperSourceRevision: $(CAPER_SOURCE_REVISION)
+        NSMicrophoneUsageDescription: TEST FIXTURE bench app. Caper uses your microphone when you join a voice channel or record a voice message.
+        NSCameraUsageDescription: TEST FIXTURE bench app. Caper uses your camera when you take a photo or video to attach to a message.
+        NSPhotoLibraryAddUsageDescription: TEST FIXTURE bench app. Caper saves photos and videos you choose to your library.
+        NSPhotoLibraryUsageDescription: TEST FIXTURE bench app. Caper shows your recent photos and videos so you can attach them to messages.
+        PHPhotoLibraryPreventAutomaticLimitedAccessAlert: true
+        # Plain HTTP to the bench fixture on the Mac's private-LAN address.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: This TEST FIXTURE bench app talks only to the Caper bench fixture on your local network.
+        ITSAppUsesNonExemptEncryption: false
+        UIAppFonts: [Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf]
+        UILaunchScreen:
+          UIColorName: ""
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIUserInterfaceStyle: Dark
+        UIViewControllerBasedStatusBarAppearance: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.bench.uikit
+        PRODUCT_NAME: CaperBenchUIKit
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+  CaperBenchSwiftUI:
+    type: application
+    platform: iOS
+    sources:
+      - Sources/CaperIOS
+      - path: Resources
+        buildPhase: resources
+    dependencies:
+      - target: CaperCoreIOS
+      - target: CaperRTCBridgeIOS
+        embed: true
+      - package: WebRTC
+        product: WebRTC
+        link: true
+    info:
+      path: Configuration/BenchSwiftUI-Info.plist
+      properties:
+        CFBundleDisplayName: Bench SwiftUI
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CaperSourceRevision: $(CAPER_SOURCE_REVISION)
+        NSCameraUsageDescription: TEST FIXTURE bench app. Caper uses your camera when you take a photo or video to attach to a message.
+        NSMicrophoneUsageDescription: TEST FIXTURE bench app. Caper uses your microphone when you join a voice channel or record a voice message.
+        NSPhotoLibraryAddUsageDescription: TEST FIXTURE bench app. Caper saves photos and videos you choose to your library.
+        NSPhotoLibraryUsageDescription: TEST FIXTURE bench app. Caper shows your recent photos and videos so you can attach them to messages.
+        PHPhotoLibraryPreventAutomaticLimitedAccessAlert: true
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: This TEST FIXTURE bench app talks only to the Caper bench fixture on your local network.
+        ITSAppUsesNonExemptEncryption: false
+        UIAppFonts: [Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf]
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.bench.swiftui
+        PRODUCT_NAME: CaperBenchSwiftUI
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+  CaperBenchUIKitTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: Tests/CaperBenchTests
+    dependencies:
+      - target: CaperBenchUIKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.bench.uikit.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+  CaperBenchSwiftUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: Tests/CaperBenchTests
+    dependencies:
+      - target: CaperBenchSwiftUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.bench.swiftui.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+schemes:
+  CaperBenchUIKit:
+    build:
+      targets:
+        CaperBenchUIKit: all
+        CaperBenchUIKitTests: [test]
+    run:
+      config: Release
+    test:
+      config: Release
+      targets: [CaperBenchUIKitTests]
+    profile:
+      config: Release
+  CaperBenchSwiftUI:
+    build:
+      targets:
+        CaperBenchSwiftUI: all
+        CaperBenchSwiftUITests: [test]
+    run:
+      config: Release
+    test:
+      config: Release
+      targets: [CaperBenchSwiftUITests]
+    profile:
+      config: Release
