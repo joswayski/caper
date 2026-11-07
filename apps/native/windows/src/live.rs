@@ -291,6 +291,12 @@ pub struct Live {
     unread_pending: bool,
     visit: u64,
     visit_channel: Option<String>,
+    /// The last visit id handed out.
+    next_visit: u64,
+    /// The unread snapshot a navigation started beside its history: its
+    /// navigation, the visit id it was requested under, and once it
+    /// arrived each channel's unread range.
+    prefetch: Option<(u64, u64, Option<HashMap<String, (u64, u64)>>)>,
     reads: HashMap<String, String>,
     foreground: bool,
     /// Who reacted, per message, for the chips' cards (the shared cache).
@@ -454,6 +460,8 @@ impl Live {
             unread_pending: false,
             visit: 0,
             visit_channel: None,
+            next_visit: 0,
+            prefetch: None,
             reads: HashMap::new(),
             foreground: false,
             reactors: HashMap::new(),
@@ -897,7 +905,7 @@ impl Live {
         });
         self.token = Some(token);
         self.check_klipy();
-        self.load_directs();
+        // The DM list arrives with the account (`SignedInDirects`).
         // Blocked people's DMs show the blocked bar; muted ones their bell.
         self.load_blocks();
         self.load_notifications();
@@ -1376,6 +1384,13 @@ impl Live {
     /// or a channel. The open conversation stays until the new one loads.
     pub fn navigate(&mut self, space: Option<String>, channel: Option<String>) {
         self.navigation += 1;
+        // A visit's unread snapshot loads beside its history, not after it.
+        self.prefetch = None;
+        if self.token.is_some() {
+            self.next_visit += 1;
+            self.prefetch = Some((self.navigation, self.next_visit, None));
+            self.load_unread(Some(self.next_visit));
+        }
         self.worker.send(Command::PrepareNavigation {
             generation: self.generation,
             navigation: self.navigation,
@@ -1975,20 +1990,47 @@ impl Live {
 
     /// A new visit to the open channel: its unread range loads before
     /// anything is marked read, as in the egui client.
+    /// Takes this navigation's prefetched snapshot when there is one.
     fn begin_visit(&mut self) {
-        self.visit += 1;
         self.visit_channel = self.channel.clone();
         self.unread = None;
         self.unread_pending = false;
-        if self.token.is_some() {
+        let prefetch = self
+            .prefetch
+            .take()
+            .filter(|(navigation, ..)| *navigation == self.navigation);
+        if let Some((_, visit, ranges)) = prefetch {
+            self.visit = visit;
             self.unread_pending = true;
-            self.refresh_unread();
+            if let Some(ranges) = ranges {
+                self.apply_visit(&ranges);
+            }
+        } else if self.token.is_some() {
+            self.next_visit += 1;
+            self.visit = self.next_visit;
+            self.unread_pending = true;
+            self.load_unread(Some(self.visit));
         }
+    }
+
+    /// The visit's snapshot arrived: its "New messages" range; the
+    /// channel may be marked read from now on.
+    fn apply_visit(&mut self, ranges: &HashMap<String, (u64, u64)>) {
+        self.unread_pending = false;
+        self.unread = self
+            .visit_channel
+            .as_ref()
+            .and_then(|c| ranges.get(c).copied());
     }
 
     /// Reads the account's unread state again (the badges); while a visit
     /// waits for its snapshot, this is that snapshot too.
     pub fn refresh_unread(&mut self) {
+        self.load_unread(self.unread_pending.then_some(self.visit));
+    }
+
+    /// Reads the unread state, as the snapshot of `visit` when given.
+    fn load_unread(&mut self, visit: Option<u64>) {
         self.unread_due = None;
         self.check_klipy();
         self.load_directs();
@@ -1999,7 +2041,7 @@ impl Live {
         self.worker.send(Command::LoadUnread {
             epoch: 0,
             revision: self.unread_revision,
-            visit: self.unread_pending.then_some(self.visit),
+            visit,
             token,
         });
     }
@@ -2424,21 +2466,29 @@ impl Live {
                 ..
             } => {
                 // The visit's snapshot, taken as the channel opened, so the
-                // divider marks what was new then even as reads move on.
-                if visit.is_some_and(|v| v == self.visit) && self.unread_pending {
-                    self.unread_pending = false;
-                    if let Ok(unread) = &result {
-                        self.unread = unread
-                            .spaces
-                            .iter()
-                            .flat_map(|space| &space.channels)
-                            .find(|c| self.visit_channel.as_ref() == Some(&c.id))
-                            .and_then(|c| {
-                                let read = core::sequence(c.read_seq.as_deref()?).ok()?;
-                                let last = core::sequence(&c.last_seq).ok()?;
-                                (read < last).then_some((read, last))
-                            });
-                    }
+                // divider marks what was new then even as reads move on. A
+                // prefetched one waits for its history.
+                let ranges = || -> HashMap<String, (u64, u64)> {
+                    let Ok(unread) = &result else {
+                        return HashMap::new();
+                    };
+                    unread
+                        .spaces
+                        .iter()
+                        .flat_map(|space| &space.channels)
+                        .filter_map(|c| {
+                            let read = core::sequence(c.read_seq.as_deref()?).ok()?;
+                            let last = core::sequence(&c.last_seq).ok()?;
+                            (read < last).then(|| (c.id.clone(), (read, last)))
+                        })
+                        .collect()
+                };
+                if let Some((_, id, stored @ None)) = &mut self.prefetch
+                    && visit == Some(*id)
+                {
+                    *stored = Some(ranges());
+                } else if visit.is_some_and(|v| v == self.visit) && self.unread_pending {
+                    self.apply_visit(&ranges());
                     if let Some(id) = self.unread_row() {
                         out.push(Update::Unread(id));
                     }
@@ -2674,28 +2724,13 @@ impl Live {
             Event::DirectsLoaded {
                 result: Ok(directs),
                 ..
-            } if self.token.is_some() => {
-                // A read acknowledged here is never undone by an older list.
-                let reads: HashMap<String, String> = self
-                    .directs
-                    .iter()
-                    .map(|d| (d.id.clone(), d.read_seq.clone()))
-                    .collect();
-                self.directs = directs;
-                for d in &mut self.directs {
-                    if let Some(read) = reads.get(&d.id)
-                        && core::sequence(read).unwrap_or(0)
-                            > core::sequence(&d.read_seq).unwrap_or(0)
-                    {
-                        d.read_seq.clone_from(read);
-                    }
-                }
-                out.push(Update::Badges);
-                if self.direct.is_some() {
-                    // The header and empty note follow the list.
-                    out.push(Update::DirectHead);
-                }
-            }
+            } if self.token.is_some() => self.set_directs(directs, out),
+            // Fetched with the account at sign-in; a failure waits for the
+            // next unread refresh, as the list is not needed to sign in.
+            Event::SignedInDirects {
+                token,
+                result: Ok(directs),
+            } if self.token.as_ref() == Some(&token) => self.set_directs(directs, out),
             Event::DirectCreated {
                 navigation, result, ..
             } => match result {
@@ -2853,6 +2888,31 @@ impl Live {
             // Everything else (reactions, edits, threads, voice...) is not
             // shown by this client yet.
             _ => {}
+        }
+    }
+}
+
+impl Live {
+    /// A fresh DM list; a read acknowledged here is never undone by an
+    /// older list.
+    fn set_directs(&mut self, directs: Vec<core::DirectConversation>, out: &mut Vec<Update>) {
+        let reads: HashMap<String, String> = self
+            .directs
+            .iter()
+            .map(|d| (d.id.clone(), d.read_seq.clone()))
+            .collect();
+        self.directs = directs;
+        for d in &mut self.directs {
+            if let Some(read) = reads.get(&d.id)
+                && core::sequence(read).unwrap_or(0) > core::sequence(&d.read_seq).unwrap_or(0)
+            {
+                d.read_seq.clone_from(read);
+            }
+        }
+        out.push(Update::Badges);
+        if self.direct.is_some() {
+            // The header and empty note follow the list.
+            out.push(Update::DirectHead);
         }
     }
 }
