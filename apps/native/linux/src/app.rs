@@ -259,6 +259,9 @@ struct State {
     unread_boundary: Option<(u64, u64)>,
     /// The visit's read snapshot is on its way; marking read waits for it.
     unread_visit_pending: bool,
+    /// The read snapshot a navigation requested beside its history, by
+    /// navigation, with its answer once it came; the visit adopts it.
+    unread_snapshot: Option<(u64, Option<caper_client::model::UnreadSpaces>)>,
     /// Thread roots in the open channel with unread replies, and the first
     /// unread reply's seq (`ThreadUnread`). One request is in flight at a
     /// time; `dirty` asks for a fresh snapshot after it.
@@ -1292,6 +1295,17 @@ impl App {
         state.unread_visit_pending = false;
         state.thread_unread.clear();
         state.thread_unread_dirty = true;
+        // The read snapshot goes out with the history, not after it.
+        state.unread_snapshot = None;
+        if let Some(token) = state.token.clone() {
+            state.unread_snapshot = Some((state.navigation, None));
+            self.worker.send(Command::LoadUnread {
+                epoch: state.epoch,
+                revision: state.unread_revision,
+                visit: Some(state.navigation),
+                token,
+            });
+        }
         state.restore_draft = Some(
             channel
                 .as_ref()
@@ -3385,19 +3399,15 @@ impl App {
                 result,
                 ..
             } if epoch == state.epoch => {
-                if visit == state.navigation && state.unread_visit_pending {
+                if matches!(&state.unread_snapshot, Some((navigation, None)) if *navigation == visit)
+                {
+                    // Its visit takes it once the history is in; after a
+                    // failure the visit asks again.
+                    state.unread_snapshot = result.ok().map(|unread| (visit, Some(unread)));
+                } else if visit == state.navigation && state.unread_visit_pending {
                     state.unread_visit_pending = false;
-                    if let Ok(unread) = &result {
-                        state.unread_boundary = unread
-                            .spaces
-                            .iter()
-                            .flat_map(|space| &space.channels)
-                            .find(|channel| Some(&channel.id) == state.channel.as_ref())
-                            .and_then(|channel| {
-                                let read = channel.read_seq.as_deref()?.parse::<u64>().ok()?;
-                                let last = channel.last_seq.parse::<u64>().ok()?;
-                                (read < last).then_some((read, last))
-                            });
+                    if let (Ok(unread), Some(channel)) = (&result, &state.channel) {
+                        state.unread_boundary = unread.boundary(channel);
                     }
                     if state.joined() {
                         self.mark_read(state);
@@ -3871,16 +3881,31 @@ impl App {
                         self.follow.set(true);
                         self.connect_gateway(state, history.channel.id);
                         self.worker.showing(state.channel.as_deref());
+                        let snapshot = state.unread_snapshot.take();
                         if state.direct.is_none()
                             && let Some(token) = state.token.clone()
                         {
                             state.unread_visit_pending = true;
-                            self.worker.send(Command::LoadUnread {
-                                epoch: state.epoch,
-                                revision: state.unread_revision,
-                                visit: Some(state.navigation),
-                                token,
-                            });
+                            match snapshot {
+                                // Asked for beside the history.
+                                Some((navigation, Some(unread)))
+                                    if navigation == state.navigation =>
+                                {
+                                    state.unread_boundary = state
+                                        .channel
+                                        .as_deref()
+                                        .and_then(|channel| unread.boundary(channel));
+                                    state.unread_visit_pending = false;
+                                }
+                                // Still on its way: it lands through the visit fence.
+                                Some((navigation, None)) if navigation == state.navigation => {}
+                                _ => self.worker.send(Command::LoadUnread {
+                                    epoch: state.epoch,
+                                    revision: state.unread_revision,
+                                    visit: Some(state.navigation),
+                                    token,
+                                }),
+                            }
                         }
                         if state.joined() {
                             self.mark_read(state);
