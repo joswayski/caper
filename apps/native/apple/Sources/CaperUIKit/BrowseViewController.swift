@@ -1182,7 +1182,8 @@ final class BrowseResultCell: UICollectionViewListCell {
         // VoiceOver: the row opens the channel; Manage is its own button.
         isAccessibilityElement = false
         contentView.accessibilityElements = owner ? [name, manage] : [name]
-        name.accessibilityLabel = "\(channel.name), \(state.text ?? "")"
+        // The lock is hidden from VoiceOver, so the name says it, as on web.
+        name.accessibilityLabel = "\(channel.name)\(channel.private ? ", private" : ""), \(state.text ?? "")"
         name.accessibilityValue = unread ? "Unread activity" : ""
         name.accessibilityTraits = .button
         accessibilityIdentifier = "browse-channel-\(channel.name)"

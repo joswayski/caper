@@ -1497,6 +1497,7 @@ private struct ChannelSidebar: View {
                         #endif
                         .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover())
+                        .accessibilityLabel("\(channel.name)\(channel.private ? ", private" : ""), \(channel.joined ? "Joined" : "Read-only preview")")
                         .accessibilityValue(unread ? "Unread activity" : "")
                     // Web's owner-only Manage button, also for channels you haven't joined.
                     if model.isOwner {
@@ -1922,6 +1923,8 @@ struct ChannelSidebarItem: View {
                 .modifier(NavigationPrefetchModifier(wash: false) {
                     if let space = model.detail?.space { model.prefetch(space: space, channelID: channel.id) }
                 })
+                // The lock is hidden from VoiceOver, so the name says it, as on web.
+                .accessibilityLabel(channel.private ? "\(channel.name), private" : channel.name)
                 .accessibilityIdentifier("channel-\(channel.id)")
                 .accessibilityValue(rowState)
             mark()
