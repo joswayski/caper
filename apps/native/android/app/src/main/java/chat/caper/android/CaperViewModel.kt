@@ -25,6 +25,7 @@ import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -769,6 +770,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val since = profileEventCount
+                // The landing channel is usually known before the space's channel list arrives: fetch its
+                // history beside the detail. It is used only if the detail lands there, so access is still
+                // decided by the detail first.
+                val guess = (preferredChannelId ?: lastChannelBySpace[id])?.takeIf { it !in conversationHistories && pendingFocus?.channelId != it }
+                val guessedHistory = guess?.let { channel -> async { runCatching { api.history(accountToken, channel) } } }
                 val detail = api.space(requireAccountToken(), id)
                 if (request != generation) return@launch
                 val landing = spaceLandingChannel(detail.channels, preferredChannelId, lastChannelBySpace[id])
@@ -777,7 +783,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     restoring = mutable.value.restoring && landing != null)
                 // Before a cached conversation of this space opens.
                 repairProfiles(detail.members.map { it.profile() }, since)
-                landing?.let(::selectChannel)
+                landing?.let { selectChannel(it, guessedHistory?.takeIf { _ -> it.id == guess }) }
                 notice?.let { mutable.value = mutable.value.copy(error = it) }
             } catch (error: Throwable) {
                 if (request == generation) {
@@ -805,7 +811,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** Web's Retry opening: repeats the space selection that failed. */
     fun retryOpening() { retryOpen?.invoke() }
 
-    fun selectChannel(channel: Channel) {
+    /** [prefetched]: this channel's history, already requested (see [selectSpace]); a failed one is fetched again. */
+    fun selectChannel(channel: Channel, prefetched: Deferred<Result<ChatHistory>>? = null) {
         if (openingConversationId == channel.id) return
         cancelConversationOpening()
         // Choosing the conversation already shown keeps it, with its draft, scroll and live connection.
@@ -835,7 +842,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 } else null
                 val report = pendingFocus?.takeIf { it.channelId == channel.id }
                 val history = if (report != null) api.history(accountToken, channel.id, around = report.thread)
-                    else conversationHistories[channel.id] ?: api.history(accountToken, channel.id)
+                    else conversationHistories[channel.id] ?: prefetched?.await()?.getOrNull() ?: api.history(accountToken, channel.id)
                 val visitUnread = visitUnreadRequest?.await()?.getOrElse { if (it is CancellationException) throw it else null }
                 if (request != generation || accountRequest != accountGeneration || navigation != conversationOpeningRevision) return@launch
                 require(history.channel?.id == channel.id && history.space?.id == channel.spaceId) { "Caper returned another conversation." }
