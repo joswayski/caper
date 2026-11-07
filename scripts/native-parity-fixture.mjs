@@ -1,5 +1,6 @@
 /** Loopback-only, disposable UI fixture. Never proxies to Caper or an SFU. */
 /* oxlint-disable no-control-regex -- Mirror the API's rejection of control characters in message text. */
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -979,6 +980,60 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
                       ? { status: "pending" }
                       : { status: "ready", text: fixtureTranscript },
                   url,
+                },
+              ],
+            },
+            clientMessageId: randomUUID(),
+            createdAt: new Date().toISOString(),
+          };
+          messages.push(message);
+          state.messages.set(channelId, messages);
+          created(message);
+        }
+        if (body.videoMessage) {
+          // Maya posts the MP4 at `file` (and its `poster` still) in #general:
+          // `{ file, poster?, width?, height?, durationMs?, animated? }`. The
+          // fixture never encodes video itself, so tests supply the clip.
+          const video = body.videoMessage;
+          const data = readFileSync(video.file);
+          const id = `video${String(state.assets.size).padStart(7, "0")}`;
+          const url = `http://127.0.0.1:${port}/api/assets/${id}/fixture-file`;
+          state.assets.set(id, {
+            ownerId: ids.member,
+            purpose: "attachment",
+            contentType: "video/mp4",
+            size: data.length,
+            data,
+            url,
+            ...(video.poster
+              ? { preview: { contentType: "image/jpeg" }, previewData: readFileSync(video.poster) }
+              : {}),
+          });
+          const channelId = ids.general;
+          const messages = state.messages.get(channelId) ?? [];
+          const message = {
+            id: `fixture${String(messages.length + 1).padStart(8, "0")}`,
+            channelId,
+            seq: String(BigInt(channelHead(channelId)) + 1n),
+            author: author(members[1]),
+            content: {
+              version: 1,
+              type: "text",
+              text: "",
+              attachments: [
+                {
+                  id,
+                  name: video.animated ? "animation.mp4" : "clip.mp4",
+                  contentType: "video/mp4",
+                  size: data.length,
+                  kind: "video",
+                  status: "ready",
+                  width: video.width ?? 640,
+                  height: video.height ?? 360,
+                  durationMs: video.durationMs ?? 4000,
+                  ...(video.animated ? { animated: true } : {}),
+                  url,
+                  ...(video.poster ? { previewUrl: url.replace(/fixture-file$/, "fixture-preview") } : {}),
                 },
               ],
             },
