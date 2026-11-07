@@ -111,6 +111,7 @@ count=$(( $(wc -w <<<"$configs") + 1 ))
 say "Performance: $RUNS runs of each scenario per renderer (hands off the mouse and keyboard)"
 echo "Each run opens Caper, waits for #general, then scrolls, types or idles by itself."
 read -r -p "Press Enter to start (about $((RUNS * 4 * count * 15 / 60)) minutes)." _
+log ""
 log "## Performance"
 log ""
 log "One JSON line per run (the Windows bench's metrics). The label is the client, GDK_BACKEND and GSK_RENDERER."
