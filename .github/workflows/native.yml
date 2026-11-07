@@ -282,6 +282,10 @@ jobs:
             done
           fi
           xcrun simctl list devices available | grep '^ *iPhone 16 ('
+      # prepare.sh builds CaperMobile.xcframework, the shared Rust library.
+      - uses: ./.github/actions/mobile-rust
+        with:
+          platform: apple
       - name: Build and package Apple development client
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -375,6 +379,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: ./.github/actions/mobile-rust
+        with:
+          platform: apple
       - name: Prepare the isolated native project
         run: |
           bash apps/native/apple/prepare.sh
@@ -438,6 +445,9 @@ jobs:
             done
           fi
           xcrun simctl list devices available | grep '^ *iPhone 16 ('
+      - uses: ./.github/actions/mobile-rust
+        with:
+          platform: apple
       - name: Build and UI-test the UIKit client against the bench fixture
         run: bash apps/native/apple/uikit.sh test
       - uses: actions/upload-artifact@v4
