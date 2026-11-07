@@ -46,6 +46,8 @@ targets:
       - Sources/CaperAppKit/NativeAvatar.swift
       - Sources/CaperAppKit/NavigationSidebar.swift
       - Sources/CaperAppKit/NavigationMenus.swift
+      - Sources/CaperAppKit/NativeVoiceCard.swift
+      - Sources/CaperAppKit/NativeVoicePanels.swift
     dependencies:
       - target: CaperCoreMacOS
       - target: CaperRTCBridge
