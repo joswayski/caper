@@ -291,7 +291,7 @@ pub struct UnreadSpace {
     pub channels: Vec<UnreadChannel>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct UnreadSpaces {
     pub spaces: Vec<UnreadSpace>,
     #[serde(default, rename = "feedbackWaiting")]
@@ -299,6 +299,22 @@ pub struct UnreadSpaces {
     /// Authoritative messages plus pending invitations/requests. Old servers omit it.
     #[serde(default, rename = "badgeCount")]
     pub badge_count: Option<u64>,
+}
+
+impl UnreadSpaces {
+    /// `channel`'s read and last sequences while it has unread messages:
+    /// where a visit's "New messages" divider goes.
+    pub fn boundary(&self, channel: &str) -> Option<(u64, u64)> {
+        self.spaces
+            .iter()
+            .flat_map(|space| &space.channels)
+            .find(|entry| entry.id == channel)
+            .and_then(|entry| {
+                let read = sequence(entry.read_seq.as_deref()?).ok()?;
+                let last = sequence(&entry.last_seq).ok()?;
+                (read < last).then_some((read, last))
+            })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

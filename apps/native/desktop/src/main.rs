@@ -1158,6 +1158,9 @@ struct CaperApp {
     unread_visit: Option<String>,
     unread_visit_pending: bool,
     unread_boundary: Option<(u64, u64)>,
+    /// The read snapshot a navigation requested beside its history, by
+    /// navigation, with its answer once it came; the visit adopts it.
+    unread_snapshot: Option<(u64, Option<model::UnreadSpaces>)>,
     channel_reads: BTreeMap<String, String>,
     /// `GET /api/people` for DM `@` suggestions and the space invite and new
     /// DM username fields; kept while it refreshes.
@@ -1578,6 +1581,7 @@ impl CaperApp {
             unread_visit: None,
             unread_visit_pending: false,
             unread_boundary: None,
+            unread_snapshot: None,
             channel_reads: BTreeMap::new(),
             people: None,
             account_epoch: 0,
@@ -4446,7 +4450,17 @@ impl CaperApp {
                     visit,
                     result,
                 } if epoch == self.account_epoch => {
-                    if visit == Some(self.navigation)
+                    let early = matches!(
+                        &self.unread_snapshot,
+                        Some((navigation, None)) if Some(*navigation) == visit
+                    );
+                    if early {
+                        // Its visit takes it once the history is in; after a
+                        // failure the visit asks again.
+                        self.unread_snapshot = visit
+                            .zip(result.as_ref().ok())
+                            .map(|(navigation, unread)| (navigation, Some(unread.clone())));
+                    } else if visit == Some(self.navigation)
                         && self.unread_visit_pending
                         && let Ok(unread) = &result
                     {
@@ -6652,18 +6666,37 @@ impl CaperApp {
         self.unread_visit = self.selected_channel.clone();
         self.unread_boundary = None;
         self.unread_visit_pending = false;
+        let snapshot = self.unread_snapshot.take();
         if self.selected_direct.is_none()
             && self.selected_space.is_some()
             && let Some(token) = self.token.clone()
         {
             self.unread_visit_pending = true;
-            self.worker.send(Command::LoadUnread {
-                epoch: self.account_epoch,
-                revision: self.unread_revision,
-                visit: Some(self.navigation),
-                token,
-            });
+            match snapshot {
+                // Navigation asked beside the history.
+                Some((navigation, Some(unread))) if navigation == self.navigation => {
+                    self.unread_boundary = self
+                        .unread_visit
+                        .as_deref()
+                        .and_then(|channel| unread.boundary(channel));
+                    self.unread_visit_pending = false;
+                }
+                // Still on its way: it lands through the visit fence.
+                Some((navigation, None)) if navigation == self.navigation => {}
+                _ => self.request_unread_snapshot(token),
+            }
         }
+    }
+
+    /// Where the open visit's "New messages" divider goes, read before
+    /// it acknowledges anything.
+    fn request_unread_snapshot(&self, token: String) {
+        self.worker.send(Command::LoadUnread {
+            epoch: self.account_epoch,
+            revision: self.unread_revision,
+            visit: Some(self.navigation),
+            token,
+        });
     }
 
     fn mark_selected_channel_read(&mut self) {
@@ -6935,6 +6968,15 @@ impl CaperApp {
         }
         self.remember_conversation();
         self.navigation += 1;
+        // A space channel's read snapshot goes out with its history, not
+        // after it.
+        self.unread_snapshot = None;
+        if target.space.is_some()
+            && let Some(token) = self.token.clone()
+        {
+            self.unread_snapshot = Some((self.navigation, None));
+            self.request_unread_snapshot(token);
+        }
         self.opening = true;
         self.navigation_error = None;
         self.navigation_target = Some(target);
@@ -8165,6 +8207,7 @@ impl CaperApp {
         self.unread_visit = None;
         self.unread_visit_pending = false;
         self.unread_boundary = None;
+        self.unread_snapshot = None;
         self.session = None;
         self.session_error = None;
         self.loading_older = false;
