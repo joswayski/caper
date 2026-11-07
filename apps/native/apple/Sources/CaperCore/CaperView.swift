@@ -10880,6 +10880,8 @@ private struct CaperDevicePicker: View {
                         #endif
                 }.padding(16).frame(width: 280).background(CaperTheme.surface)
             }
+            // Escape belongs to the open choices, not the dialog around them.
+            .preference(key: DialogDismissDisabled.self, value: showingDevices)
     }
 
     private func choice(id: String, name: String, icon: String) -> some View {
@@ -10911,6 +10913,7 @@ private struct AudioPreferencesView: View {
     var debugEnabled = false
     let close: () -> Void
     @State private var controlsHeight: CGFloat = 500
+    @State private var choosingDevice = false
     @State private var speakerTest = SpeakerTest()
     @State private var meter = Array(repeating: Float(0), count: 40)
     #if os(macOS)
@@ -10930,12 +10933,14 @@ private struct AudioPreferencesView: View {
                 .buttonStyle(SidebarIconButton())
                 .accessibilityLabel("Close audio settings")
                 .accessibilityIdentifier("close-audio-preferences")
-                .keyboardShortcut(.cancelAction)
+                // macOS 15 also delivers a device picker's Escape here, closing the dialog under it.
+                .keyboardShortcut(choosingDevice ? nil : .cancelAction)
             }
             ScrollView {
                 controls.fixedSize(horizontal: false, vertical: true)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { controlsHeight = $0 }
             }
+            .onPreferenceChange(DialogDismissDisabled.self) { choosingDevice = $0 }
             .accessibilityIdentifier("audio-preferences-controls")
             #if os(macOS)
             .frame(maxHeight: min(controlsHeight, 560))
