@@ -3577,6 +3577,48 @@ it. Windows/Linux show collapsed, expandable release notes; macOS keeps its AppK
 alert. If an installed updater cannot update itself, run the newer Windows Setup
 over the existing installation (do not uninstall). Never reuse a build number.
 
+### Desktop patch updates
+
+Each platform in `latest.json` keeps its full archive (`url`, `sha256`, `size`,
+which every updater uses) and may add `patches`: `{from_build, url, sha256,
+size}` for the newest earlier builds. Updaters that predate patches ignore the
+field. A patch (`<archive>-<from>-to-<to>.caperpatch` on `native-latest`, format
+in `apps/native/updater/src/delta.rs`) lists every folder, file (path, mode,
+size, SHA-256) and link of the new archive as it unpacks. Each file is copied
+from the installed app, rebuilt from the installed file with a bzip2 bsdiff
+patch, or carried whole (bzip2). Comparing uncompressed files is what makes
+patches small: every Mac Mach-O and signature file changes each release, but
+their binary patches are a few KB.
+
+`check` reports `download_size` (the patch from the installed build, else the
+full archive) and `patch`; the update reviews show it. `apply` downloads the
+patch, checks its signed SHA-256 and size, verifies every installed file it
+reads against the hashes in the patch, and rebuilds the release in the private
+stage. It then rereads the stage: exactly the listed entries, modes and links,
+with every file's size and SHA-256. On Mac it also runs the usual
+`codesign --verify --deep --strict` and team check, so the notarized bundle is
+byte-identical to the signed release. A missing, mismatched or failing patch is
+logged and the same attempt downloads the full archive.
+
+Release tooling: the `patches` jobs in `release.yml` (and `publish-intel` for
+Intel) run `.github/actions/update-patches`, which builds `caper-updater` and
+runs `scripts/native_update_patches.py generate`. That runs
+`caper-updater delta` from each of the six newest retained builds; `delta`
+rebuilds the target from the unpacked base exactly as a client does before
+writing a patch. Patches larger than half the full archive are dropped.
+`publish` lists them with `native_update_patches.py add`; the manifest stays
+under 64 KiB by dropping the oldest changelog entries. After the manifest is
+live, `scripts/native-update-retain.sh` removes unlisted patches and uploads the
+build's full archives as `<build>-<archive>` to the `native-update-bases` draft
+release, keeping six builds per archive. Patch steps never fail a release;
+without bases, clients download full archives.
+
+Check a patch by hand:
+`caper-updater rebuild --platform macos-arm64 --patch FILE --from-build N
+--to-build M --install /Applications/Caper.app --output /tmp/stage` rebuilds and
+verifies into `/tmp/stage` (with the Mac signature check) without swapping
+anything.
+
 ### Native distribution and acceptance
 
 The [native clients](../apps/native/README.md) are separately implemented,

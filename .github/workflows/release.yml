@@ -10,6 +10,9 @@ name: Native release
 # and uploads the iPhone app to TestFlight. The Mac, Windows and Linux apps update
 # themselves from latest.json (signed with the caper_update key) using
 # apps/native/updater; each release's build number is this workflow's run number.
+# latest.json also lists patch updates from the last few builds (only what
+# changed, rebuilt and verified by the updater), made from full archives kept on
+# the native-update-bases draft release; clients fall back to the full archive.
 #
 # Runs by itself on every push to main that changes the native apps: main is
 # production. One release runs at a time and GitHub keeps only the newest waiting
@@ -36,6 +39,8 @@ on:
       - scripts/native_fonts.py
       - scripts/native_artifacts.py
       - scripts/native_changelog.py
+      - scripts/native_update_patches.py
+      - scripts/native-update-retain.sh
       - scripts/play-upload.py
       - scripts/testflight-distribute.py
       - scripts/vectorize-avatars.py
@@ -43,6 +48,7 @@ on:
       - uv.lock
       - .github/workflows/release.yml
       - .github/actions/wait-for-servers/**
+      - .github/actions/update-patches/**
   workflow_dispatch:
     inputs:
       git_sha:
@@ -614,6 +620,50 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  patches:
+    name: Update patches / ${{ matrix.platform }}
+    # Alongside the highlights, while publish waits for the servers. A failure
+    # only means full downloads: publish does not require it.
+    needs: [resolve, macos, desktop]
+    if: needs.resolve.outputs.update_public_key != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            artifact: release-macos-Apple-Silicon
+            archive: Caper-macOS-Apple-Silicon.zip
+          - platform: windows-x64
+            artifact: release-desktop-windows-x64
+            archive: Caper-Windows-x64.zip
+          - platform: linux-x64
+            artifact: release-desktop-linux-x64
+            archive: Caper-Linux-x64.tar.gz
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      # Reading the native-update-bases draft release needs write access.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/target
+      - uses: ./.github/actions/update-patches
+        with:
+          platform: ${{ matrix.platform }}
+          archive: ${{ runner.temp }}/target/${{ matrix.archive }}
+          build: ${{ github.run_number }}
+          output: ${{ runner.temp }}/patches
+          github-token: ${{ github.token }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-patches-${{ matrix.platform }}
+          path: ${{ runner.temp }}/patches/
+          if-no-files-found: ignore
+          retention-days: 7
+
   whats-new-draft:
     name: Draft release highlights
     # Writes the words while the apps build, so publishing them later adds no wait.
@@ -646,12 +696,12 @@ jobs:
 
   publish:
     name: Publish native-latest
-    needs: [resolve, macos, android, desktop, whats-new]
+    needs: [resolve, macos, android, desktop, whats-new, patches]
     # Wait for Android's artifacts, but keep its build/Play failures visible
     # without blocking desktop. Apple Silicon and every desktop target must pass.
     if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.macos.result == 'success' && needs.desktop.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: write
@@ -749,20 +799,21 @@ jobs:
             previous_args=(--previous "$previous_dir/latest.json")
           fi
           base="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
-          artifact() {
-            jq -n --arg url "$base/$1" --arg sha256 "$(sha256sum "$1" | cut -d' ' -f1)" \
-              --argjson size "$(stat -c %s "$1")" '{url: $url, sha256: $sha256, size: $size}'
-          }
           jq -n \
             --argjson build "$CAPER_BUILD_NUMBER" \
             --arg version "0.1.$CAPER_BUILD_NUMBER" \
             --arg commit "$RELEASE_SHA" \
-            --argjson macos_arm64 "$(artifact Caper-macOS-Apple-Silicon.zip)" \
-            --argjson windows_x64 "$(artifact Caper-Windows-x64.zip)" \
-            --argjson linux_x64 "$(artifact Caper-Linux-x64.tar.gz)" \
-            '{schema: 1, build: $build, version: $version, commit: $commit,
-              platforms: {"macos-arm64": $macos_arm64,
-                "windows-x64": $windows_x64, "linux-x64": $linux_x64}}' >latest.json
+            '{schema: 1, build: $build, version: $version, commit: $commit, platforms: {}}' >latest.json
+          # Each full archive, plus any patches the patches job made to it.
+          for platform_archive in macos-arm64:Caper-macOS-Apple-Silicon.zip windows-x64:Caper-Windows-x64.zip \
+            linux-x64:Caper-Linux-x64.tar.gz; do
+            platform="${platform_archive%%:*}"
+            python3 "$GITHUB_WORKSPACE/scripts/native_update_patches.py" add --manifest latest.json \
+              --platform "$platform" --archive "${platform_archive#*:}" --base-url "$base" \
+              --patches "patches-$platform.json"
+          done
+          mapfile -t patch_files < <(jq -r '.platforms[].patches[]?.url | sub(".*/"; "")' latest.json)
+          for patch in "${patch_files[@]}"; do test -s "$patch"; done
           python3 "$GITHUB_WORKSPACE/scripts/native_changelog.py" latest.json "${previous_args[@]}"
           key="$RUNNER_TEMP/update-key.pem"
           umask 077
@@ -776,7 +827,7 @@ jobs:
           openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/update-public.der" \
             -in latest.json -sigfile "$RUNNER_TEMP/latest.sig.bin"
           cat latest.json
-          echo "RELEASE_ASSETS=$RELEASE_ASSETS latest.json latest.json.sig" >>"$GITHUB_ENV"
+          echo "RELEASE_ASSETS=$RELEASE_ASSETS ${patch_files[*]} latest.json latest.json.sig" >>"$GITHUB_ENV"
       - name: Replace the native-latest release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -803,6 +854,17 @@ jobs:
             gh release create "$RELEASE_TAG" --verify-tag --prerelease --target "$RELEASE_SHA" \
               --title "Caper apps (latest)" --notes-file notes.md "${files[@]}"
           fi
+      - name: Keep this build for future patches
+        if: needs.resolve.outputs.update_public_key != ''
+        # Only later patches depend on this; never fail a published release.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd release
+          bash "$GITHUB_WORKSPACE/scripts/native-update-retain.sh" latest.json "$CAPER_BUILD_NUMBER" \
+            Caper-macOS-Apple-Silicon.zip Caper-Windows-x64.zip Caper-Linux-x64.tar.gz
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/update-key.pem"
@@ -811,15 +873,26 @@ jobs:
     name: Add Intel Mac to native-latest
     needs: [resolve, macos-intel, publish]
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: write
       id-token: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: release-macos-Intel
           path: release
+      - uses: ./.github/actions/update-patches
+        if: needs.resolve.outputs.update_public_key != ''
+        # Only means full downloads for Intel Macs.
+        continue-on-error: true
+        with:
+          platform: macos-x64
+          archive: release/Caper-macOS-Intel.zip
+          build: ${{ github.run_number }}
+          output: release
+          github-token: ${{ github.token }}
       - uses: aws-actions/configure-aws-credentials@v6.2.3
         if: needs.resolve.outputs.update_public_key != ''
         with:
@@ -852,11 +925,12 @@ jobs:
           openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/update-public.der" \
             -in latest.json -sigfile "$RUNNER_TEMP/current.sig.bin"
           [[ "$(jq -r .commit latest.json)" == "$RELEASE_SHA" ]]
-          jq --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/Caper-macOS-Intel.zip" \
-            --arg sha256 "$(sha256sum Caper-macOS-Intel.zip | cut -d' ' -f1)" \
-            --argjson size "$(stat -c %s Caper-macOS-Intel.zip)" \
-            '.platforms["macos-x64"] = {url: $url, sha256: $sha256, size: $size}' latest.json >latest.json.new
-          mv latest.json.new latest.json
+          python3 "$GITHUB_WORKSPACE/scripts/native_update_patches.py" add --manifest latest.json \
+            --platform macos-x64 --archive Caper-macOS-Intel.zip \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG" \
+            --patches patches-macos-x64.json
+          mapfile -t intel_patches < <(jq -r '.platforms["macos-x64"].patches[]?.url | sub(".*/"; "")' latest.json)
+          if ((${#intel_patches[@]})); then gh release upload "$RELEASE_TAG" --clobber "${intel_patches[@]}"; fi
           key="$RUNNER_TEMP/update-key.pem"
           umask 077
           aws secretsmanager get-secret-value --secret-id production/signing/release \
@@ -868,6 +942,15 @@ jobs:
             -in latest.json -sigfile "$RUNNER_TEMP/latest.sig.bin"
           cat latest.json
           gh release upload "$RELEASE_TAG" --clobber latest.json latest.json.sig
+      - name: Keep this build for future patches
+        if: needs.resolve.outputs.update_public_key != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd release
+          bash "$GITHUB_WORKSPACE/scripts/native-update-retain.sh" latest.json "$CAPER_BUILD_NUMBER" Caper-macOS-Intel.zip
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/update-key.pem"
