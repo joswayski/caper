@@ -177,6 +177,67 @@ impl Dialog {
                 .is_some_and(|ip| self.name_text().trim() != ip.saved)
     }
 
+    /// The removal's confirmation, in web's words: its title and what it
+    /// means.
+    pub fn removal(&self) -> Option<(String, String)> {
+        let ip = self.inviting.as_deref()?;
+        if ip.deleting {
+            return Some((
+                self.delete_label().into(),
+                self.deletion_line(crate::invite_people::DELETION),
+            ));
+        }
+        let id = ip.removing.as_ref()?;
+        let name = ip
+            .members
+            .iter()
+            .find(|m| m.id == *id)
+            .map_or("", |m| m.display_name.as_str());
+        Some(match ip.channel() {
+            Some(_) => (
+                format!("Remove {name} from #{}?", ip.saved),
+                "They\u{2019}ll lose access to this private channel. You can add them again later."
+                    .into(),
+            ),
+            None => (
+                format!("Remove {name}?"),
+                format!(
+                    "They\u{2019}ll lose access to {} and its channels and can\u{2019}t rejoin with an invite link. You can invite them again by username later.",
+                    ip.space_name
+                ),
+            ),
+        })
+    }
+
+    /// The danger zone's button, and its confirmation's title.
+    pub fn delete_label(&self) -> &'static str {
+        if self.settings_channel().is_some() {
+            "Delete channel"
+        } else {
+            "Delete space"
+        }
+    }
+
+    /// The danger zone's line, or what deleting means (web's words).
+    pub fn deletion_line(&self, k: u8) -> String {
+        let Some(ip) = self.inviting.as_deref() else {
+            return String::new();
+        };
+        let channel = ip.channel().is_some();
+        match (k == crate::invite_people::DELETION, channel) {
+            (false, true) => "Delete this channel for everyone in the space.".into(),
+            (false, false) => "Delete this space and all its channels for every member.".into(),
+            (true, true) => format!(
+                "Delete #{} for everyone? This channel and its messages will disappear from the space. This cannot be undone.",
+                ip.saved
+            ),
+            (true, false) => format!(
+                "Delete {} for everyone? All its channels and their messages will disappear from the space. This cannot be undone.",
+                ip.space_name
+            ),
+        }
+    }
+
     /// Member `k`'s row, as web shows it.
     pub fn member_name(&self, k: usize) -> String {
         self.inviting
@@ -260,22 +321,31 @@ impl Dialog {
     /// The members' rows, from `y`.
     pub(crate) fn relayout_members(
         &self,
+        g: &Gfx,
         inner: f32,
         mut y: f32,
         parts: &mut Vec<(Part, Rect)>,
-    ) -> f32 {
+    ) -> Result<f32> {
         let Some(ip) = self.inviting.as_deref() else {
-            return y;
+            return Ok(y);
         };
         if ip.manage.is_none() || self.members_loading() || ip.members.is_empty() {
-            return y;
+            return Ok(y);
         }
+        // Everyone but the owner has Remove, as on web.
+        let rw = width(&layout(g, "Remove", &g.formats.button, 1e6)?) + 24.0;
         y += 12.0;
-        for k in 0..ip.members.len() {
-            parts.push((Part::Member(k), (0.0, y, inner, ROW_H)));
+        for (k, m) in ip.members.iter().enumerate() {
+            if m.owner {
+                parts.push((Part::Member(k), (0.0, y, inner, ROW_H)));
+            } else {
+                parts.push((Part::Member(k), (0.0, y, inner - rw - 12.0, ROW_H)));
+                let by = y + (ROW_H - 32.0) / 2.0;
+                parts.push((Part::RemoveMember(k), (inner - rw, by, rw, 32.0)));
+            }
             y += ROW_H;
         }
-        y
+        Ok(y)
     }
 
     /// The save bar from `top`: what it says, Reset and Save changes.
@@ -349,6 +419,17 @@ impl Dialog {
                 text::draw(dc, &l, x, ty, &g.brushes.text);
             }
             Part::Reset => self.button(g, dc, part, "Reset", (x, y, w, h), Tone::Secondary)?,
+            Part::RemoveMember(_) => {
+                self.button(g, dc, part, "Remove", (x, y, w, h), Tone::Secondary)?
+            }
+            Part::DeleteOpen => self.button(
+                g,
+                dc,
+                part,
+                self.delete_label(),
+                (x, y, w, h),
+                Tone::DangerOutline,
+            )?,
             Part::SaveChanges => self.button(
                 g,
                 dc,
@@ -418,6 +499,12 @@ impl Dialog {
         let Some(ip) = self.inviting.as_deref_mut() else {
             return false;
         };
+        // A removal's failure shows in its confirmation, as web's.
+        if busy && (ip.removing.is_some() || ip.deleting) {
+            self.busy = false;
+            self.error = Some(error.to_owned());
+            return true;
+        }
         let loading = matches!(&ip.manage, Some(Manage::Channel(c)) if !c.loaded);
         if ip.saving {
             ip.saving = false;
@@ -461,6 +548,13 @@ impl Dialog {
                     c.private = saved.private;
                 }
             }
+            Answer::SpaceRemoved(member) if channel.is_none() => {
+                ip.members.retain(|m| m.id != member);
+                if ip.removing.as_ref() == Some(&member) {
+                    ip.removing = None;
+                    self.busy = false;
+                }
+            }
             Answer::Members {
                 channel: id,
                 members,
@@ -483,6 +577,9 @@ impl Dialog {
                 member,
             } if Some(&id) == channel.as_ref() => {
                 ip.members.retain(|m| m.id != member);
+                if ip.removing.as_ref() == Some(&member) {
+                    ip.removing = None;
+                }
                 self.invite_answer(Answer::Cancelled(member));
             }
             _ => {}
@@ -697,6 +794,86 @@ mod tests {
             member: member("u2", "sam", false),
         });
         assert_eq!(d.invitee_name(0), "SAM @sam \u{b7} Invited");
+    }
+
+    #[test]
+    fn removing_a_member_is_confirmed_in_web_s_words_and_says_why_it_failed() {
+        let mut d = Dialog::manage(base().manage_space());
+        d.inviting.as_mut().unwrap().removing = Some("u1".into());
+        assert!(d.confirming());
+        assert_eq!(d.title(), "Remove MAYA?");
+        assert_eq!(
+            d.invite_line(crate::invite_people::REMOVAL),
+            "They\u{2019}ll lose access to Studio and its channels and can\u{2019}t rejoin with an invite link. You can invite them again by username later."
+        );
+        assert_eq!(d.primary_label(), "Remove");
+        // While it's removing, Escape doesn't close it; a failure shows in it.
+        d.busy = true;
+        assert_eq!(d.primary_label(), "Removing\u{2026}");
+        d.invite_back();
+        assert!(d.confirming());
+        assert!(d.manage_failed("Member not found."));
+        assert!(!d.busy && d.confirming());
+        assert_eq!(d.error.as_deref(), Some("Member not found."));
+        // Removed: the confirmation closes on the settings, without the row.
+        d.busy = true;
+        d.manage_answer(Answer::SpaceRemoved("u1".into()));
+        assert!(!d.busy && !d.confirming());
+        assert_eq!(
+            (d.member_name(0).as_str(), d.member_name(1).as_str()),
+            ("OWNER @owner \u{b7} Owner", "")
+        );
+        // A channel's is worded for the channel.
+        let ip = base().channel_settings("c9".into(), "design", true, "u0".into());
+        let mut d = Dialog::manage(ip);
+        d.manage_answer(Answer::Members {
+            channel: "c9".into(),
+            members: vec![member("u1", "maya", false)],
+            invitations: Vec::new(),
+        });
+        d.inviting.as_mut().unwrap().removing = Some("u1".into());
+        assert_eq!(d.title(), "Remove MAYA from #design?");
+        d.busy = true;
+        d.manage_answer(Answer::ChannelRemoved {
+            channel: "c9".into(),
+            member: "u1".into(),
+        });
+        assert!(!d.busy && !d.confirming());
+        assert!(d.inviting.as_ref().unwrap().members.is_empty());
+    }
+
+    #[test]
+    fn deleting_is_confirmed_in_web_s_words_and_failures_stay_in_it() {
+        let mut d = Dialog::manage(base().manage_space());
+        assert_eq!(d.delete_label(), "Delete space");
+        assert_eq!(
+            d.invite_line(crate::invite_people::DANGER_NOTE),
+            "Delete this space and all its channels for every member."
+        );
+        d.inviting.as_mut().unwrap().deleting = true;
+        assert_eq!(
+            (d.title().as_str(), d.primary_label()),
+            ("Delete space", "Delete space")
+        );
+        assert_eq!(
+            d.invite_line(crate::invite_people::DELETION),
+            "Delete Studio for everyone? All its channels and their messages will disappear from the space. This cannot be undone."
+        );
+        d.busy = true;
+        assert_eq!(d.primary_label(), "Deleting\u{2026}");
+        assert!(d.manage_failed("resource not found"));
+        assert!(!d.busy && d.confirming());
+        // Escape goes back to the settings.
+        d.invite_back();
+        assert!(!d.confirming() && d.error.is_none());
+        let ip = base().channel_settings("c9".into(), "design", false, "u0".into());
+        let mut d = Dialog::manage(ip);
+        d.inviting.as_mut().unwrap().deleting = true;
+        assert_eq!(d.title(), "Delete channel");
+        assert_eq!(
+            d.invite_line(crate::invite_people::DELETION),
+            "Delete #design for everyone? This channel and its messages will disappear from the space. This cannot be undone."
+        );
     }
 
     fn typed_field(d: &mut Dialog, text: &str) {

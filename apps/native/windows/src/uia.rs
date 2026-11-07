@@ -222,15 +222,19 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             if a.reply.is_some() {
                 out.extend([Id::Reply, Id::ReplyCancel]);
             }
-            out.extend(a.box_parts().into_iter().map(Id::BoxPart));
+            if a.c.has_conversation() {
+                out.extend(a.box_parts().into_iter().map(Id::BoxPart));
+            }
             if a.dm_bar().is_some() {
                 out.extend(a.bar_parts().into_iter().map(|(p, _)| Id::Bar(p)));
             } else if a.rec().is_some() {
                 out.extend(a.rec_parts().into_iter().map(|(p, _)| Id::Rec(p)));
-            } else {
+            } else if a.c.has_conversation() {
                 out.push(Id::Composer);
             }
-            out.push(Id::Members);
+            if a.members_w() > 0.0 {
+                out.push(Id::Members);
+            }
             out.extend(a.voice_parts().into_iter().map(Id::Voice));
             if a.foot_shown() {
                 out.push(Id::Gear);
@@ -367,6 +371,8 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Channel(i) => i < a.c.channels.len(),
         Id::ChannelOptions(i) => a.channel_scope(i).is_some(),
         Id::SpaceOptions => a.space_scope().is_some(),
+        Id::Composer => a.c.has_conversation() && a.signin.is_none() && a.dialog.is_none(),
+        Id::Members => a.members_w() > 0.0 && a.signin.is_none() && a.dialog.is_none(),
         Id::Voice(crate::call::VPart::Join(i)) => a.join_action(i).is_some(),
         Id::Voice(p) => a.voice_parts().contains(&p),
         Id::Directs | Id::NewDirect => !a.direct_rows().is_empty(),
@@ -411,7 +417,12 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Original(i) => a.dialog.is_none() && a.quote_link_rect(i).is_some(),
         Id::Edited(i) => a.dialog.is_none() && a.edited_rect(i).is_some(),
         Id::File(i, k) => a.dialog.is_none() && a.file_rect(i, k).is_some(),
-        Id::BoxPart(p) => a.dialog.is_none() && a.signin.is_none() && a.box_parts().contains(&p),
+        Id::BoxPart(p) => {
+            a.c.has_conversation()
+                && a.dialog.is_none()
+                && a.signin.is_none()
+                && a.box_parts().contains(&p)
+        }
         Id::Embed(i, k) => a.dialog.is_none() && a.embed_rect(i, k).is_some(),
         Id::Thread => a.thread.is_some() && a.dialog.is_none() && a.signin.is_none(),
         Id::ThreadPart(p) => {
@@ -441,7 +452,10 @@ fn name(a: &App, id: Id) -> String {
             }
             n
         }
-        Id::Channels => format!("Channels in {}", c.spaces[c.space].name),
+        Id::Channels => c
+            .spaces
+            .get(c.space)
+            .map_or_else(|| "Channels".into(), |s| format!("Channels in {}", s.name)),
         Id::Channel(i) => format!(
             "{}{}{}{}",
             c.channels[i].name,
@@ -497,6 +511,10 @@ fn name(a: &App, id: Id) -> String {
             .direct_rows()
             .get(k)
             .map_or_else(String::new, crate::directs::Row::label),
+        Id::History if !c.has_conversation() => {
+            let (title, note) = c.empty_text();
+            format!("{}. {note}", title.unwrap_or_default())
+        }
         Id::History => format!("Messages in {}", c.place()),
         Id::Row(i) => row_name(c, i, a.rows.row(i).map(|r| r.plain.clone())),
         // Each chip as the egui client labels it.
@@ -584,6 +602,8 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Reset => "Reset".into(),
                 DPart::SaveChanges => d.save_changes_label().into(),
                 DPart::ManageRow(k) => d.browse_manage_name(k),
+                DPart::RemoveMember(_) => "Remove".into(),
+                DPart::DeleteOpen => d.delete_label().into(),
                 DPart::Field | DPart::Label
                     if matches!(d.kind, Kind::CreateSpace | Kind::CreateChannel) =>
                 {
@@ -1169,7 +1189,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 | DPart::SaveName
                 | DPart::Reset
                 | DPart::SaveChanges
-                | DPart::ManageRow(_),
+                | DPart::ManageRow(_)
+                | DPart::RemoveMember(_)
+                | DPart::DeleteOpen,
             ) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
                 pattern == UIA_InvokePatternId

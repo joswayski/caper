@@ -1419,7 +1419,7 @@ impl App {
 
     /// The members column's width: none in a DM, as in egui.
     pub fn members_w(&self) -> f32 {
-        if self.c.direct.is_some() {
+        if self.c.direct.is_some() || !self.c.has_conversation() {
             0.0
         } else {
             MEMBERS_W
