@@ -841,7 +841,10 @@ private struct WorkspaceView: View {
             let hasMembers = model.selectedDirectMessageID == nil && model.visit == nil
             // Keep the same conversation subtree when folding, rotating or
             // resizing. Switching branches recreates ChatView's scroll/picker state.
-            let layout = narrow ? AnyLayout(ZStackLayout(alignment: .leading)) : AnyLayout(HStackLayout(spacing: 0))
+            // Top-aligned: with the keyboard up, Browse stays full height while the
+            // conversation is only as tall as the space above the keyboard; centred,
+            // the conversation and its composer would sit behind the keyboard.
+            let layout = narrow ? AnyLayout(ZStackLayout(alignment: .topLeading)) : AnyLayout(HStackLayout(spacing: 0))
             let statusColumn = StatusColumn(geometry.safeAreaInsets)
             VStack(spacing: 0) {
                 if let error = model.navigationError {
