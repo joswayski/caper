@@ -245,6 +245,11 @@ pub enum Kind {
     StartDirect,
     /// "Block {name}?", confirming a block.
     Block,
+    /// "Leave {space}?" and "Leave #{channel}?", from their menus.
+    LeaveSpace,
+    LeaveChannel,
+    /// Browse channels: the open space's channels under a search.
+    Browse,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -271,6 +276,8 @@ pub enum Part {
     Older,
     /// The New DM field's suggested person `k`.
     Suggest(usize),
+    /// Browse's shown channel `k`.
+    Channel(usize),
 }
 
 impl Part {
@@ -293,6 +300,7 @@ impl Part {
             Self::Column(k) => 16 + k as usize,
             Self::Version(k) => 32 + k,
             Self::Suggest(k) => 10_000 + k,
+            Self::Channel(k) => 20_000 + k,
         }
     }
 
@@ -312,6 +320,16 @@ const DIRECT_FIELD_H: f32 = 42.0;
 /// A suggested person's row, and the highlighted row's fill (egui's).
 const SUGGEST_H: f32 = 44.0;
 const SUGGEST_SELECTED: u32 = 0x43241E;
+
+/// What a Leave dialog leaves: a space, or one of its channels; its name,
+/// and whether leaving loses access (a private channel you don't own).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Leave {
+    pub space: String,
+    pub channel: Option<String>,
+    pub name: String,
+    pub private: bool,
+}
 
 pub struct Dialog {
     pub kind: Kind,
@@ -347,6 +365,10 @@ pub struct Dialog {
     pub hidden: bool,
     /// Whom the Block dialog blocks, and the request it declines.
     pub block: Option<(core::BlockedAccount, Option<String>)>,
+    /// What the Leave dialog leaves.
+    pub leave: Option<Leave>,
+    /// What Browse channels lists.
+    pub browse: Option<Box<crate::browse::Browse>>,
     pub(crate) parts: Vec<(Part, Rect)>,
     pub(crate) card: Rect,
 }
@@ -382,6 +404,17 @@ impl Dialog {
         d
     }
 
+    pub fn leave(leave: Leave) -> Self {
+        let kind = if leave.channel.is_some() {
+            Kind::LeaveChannel
+        } else {
+            Kind::LeaveSpace
+        };
+        let mut d = Self::new(kind, None, Composer::default());
+        d.leave = Some(leave);
+        d
+    }
+
     pub(crate) fn new(kind: Kind, message: Option<core::Message>, field: Composer) -> Self {
         Self {
             kind,
@@ -403,6 +436,8 @@ impl Dialog {
             selected: 0,
             hidden: false,
             block: None,
+            leave: None,
+            browse: None,
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -424,6 +459,15 @@ impl Dialog {
                     .as_ref()
                     .map_or("", |(a, _)| a.display_name.as_str())
             ),
+            Kind::Browse => "Browse channels".into(),
+            Kind::LeaveSpace | Kind::LeaveChannel => {
+                let name = self.leave.as_ref().map_or("", |l| l.name.as_str());
+                if self.kind == Kind::LeaveChannel {
+                    format!("Leave #{name}?")
+                } else {
+                    format!("Leave {name}?")
+                }
+            }
         }
     }
 
@@ -441,6 +485,15 @@ impl Dialog {
             ),
             Kind::StartDirect => "Enter an exact username.".into(),
             Kind::Block => "You won't see their messages unless you choose to, and they can't send you DMs or requests.".into(),
+            Kind::Browse => format!(
+                "Find conversations in {}. Previewing a channel doesn\u{2019}t join it.",
+                self.browse.as_ref().map_or("", |b| b.space_name.as_str())
+            ),
+            Kind::LeaveSpace => "You will lose access to its channels and conversations. An owner can add you again later.".into(),
+            Kind::LeaveChannel if self.leave.as_ref().is_some_and(|l| l.private) => {
+                "You\u{2019}ll lose access and need another invitation to return. You\u{2019}ll disconnect from this channel\u{2019}s voice call.".into()
+            }
+            Kind::LeaveChannel => "It will leave your sidebar. You can preview and rejoin from Browse channels. You\u{2019}ll disconnect from this channel\u{2019}s voice call.".into(),
         }
     }
 
@@ -516,6 +569,10 @@ impl Dialog {
             (Kind::StartDirect, false) => "Find person",
             (Kind::Block, false) => "Block",
             (Kind::Block, true) => "Blocking\u{2026}",
+            (Kind::Browse, _) => "Close",
+            (Kind::LeaveSpace, false) => "Leave space",
+            (Kind::LeaveChannel, false) => "Leave channel",
+            (Kind::LeaveSpace | Kind::LeaveChannel, true) => "Leaving\u{2026}",
         }
     }
 
@@ -535,12 +592,14 @@ impl Dialog {
                 !self.busy
                     && match self.kind {
                         Kind::Edit => caper_client::edits::valid_text(&self.draft()),
-                        Kind::Delete | Kind::Block => true,
-                        Kind::History => false,
+                        Kind::Delete | Kind::Block | Kind::LeaveSpace | Kind::LeaveChannel => true,
+                        Kind::History | Kind::Browse => false,
                         Kind::StartDirect => self.draft().len() >= 3,
                     }
             }
-            Part::Cancel | Part::Reload | Part::Field | Part::Suggest(_) => !self.busy,
+            Part::Cancel | Part::Reload | Part::Field | Part::Suggest(_) | Part::Channel(_) => {
+                !self.busy
+            }
             Part::Retry | Part::Older => self.history.as_ref().is_some_and(|v| !v.loading),
             Part::Title
             | Part::Note
@@ -579,8 +638,13 @@ impl Dialog {
                         | Part::Retry
                         | Part::Older
                         | Part::Suggest(_)
+                        | Part::Channel(_)
                 ) && contains(*r, x, y)
-                    && (self.kind != Kind::History || !p.in_body() || contains(self.body, x, y))
+                    && match self.kind {
+                        Kind::History => !p.in_body() || contains(self.body, x, y),
+                        Kind::Browse => !matches!(p, Part::Channel(_)) || contains(self.body, x, y),
+                        _ => true,
+                    }
             })
             .map(|(p, _)| *p)
     }
@@ -608,6 +672,9 @@ impl Dialog {
     pub fn relayout(&mut self, g: &Gfx, w: f32, h: f32) -> Result<()> {
         if self.kind == Kind::History {
             return self.relayout_history(g, w, h);
+        }
+        if self.kind == Kind::Browse {
+            return self.relayout_browse(g, w, h);
         }
         let card_w = match self.kind {
             Kind::Edit => 500.0_f32,
@@ -713,6 +780,9 @@ impl Dialog {
             if self.kind == Kind::History {
                 return self.draw_history(g, dc);
             }
+            if self.kind == Kind::Browse {
+                return self.draw_browse(g, dc);
+            }
             for (part, (x, y, pw, ph)) in &self.parts {
                 let (x, y, pw, ph) = (*x, *y, *pw, *ph);
                 match part {
@@ -806,7 +876,8 @@ impl Dialog {
                     }
                     Part::Primary => {
                         let tone = match self.kind {
-                            Kind::Delete | Kind::Block => Tone::Danger,
+                            // Leaving a channel is neutral, as on web.
+                            Kind::Delete | Kind::Block | Kind::LeaveSpace => Tone::Danger,
                             _ => Tone::Primary,
                         };
                         self.button(g, dc, *part, self.primary_label(), (x, y, pw, ph), tone)?;
@@ -1032,7 +1103,7 @@ impl App {
 
     pub(crate) fn open_dialog(&mut self, d: Dialog) {
         self.set_composer_focus(false);
-        let editing = matches!(d.kind, Kind::Edit | Kind::StartDirect);
+        let editing = matches!(d.kind, Kind::Edit | Kind::StartDirect | Kind::Browse);
         self.dialog = Some(d);
         if editing {
             unsafe {
@@ -1112,6 +1183,7 @@ impl App {
                 d.choose(k, self.live.as_ref());
                 self.events |= EV_FOCUS;
             }
+            Part::Channel(k) => return self.browse_open(k),
             Part::Primary if d.kind == Kind::StartDirect => {
                 let Some(live) = &mut self.live else { return };
                 d.busy = true;
@@ -1133,6 +1205,14 @@ impl App {
                 d.busy = true;
                 d.error = None;
                 live.block(account, request);
+            }
+            Part::Primary if matches!(d.kind, Kind::LeaveSpace | Kind::LeaveChannel) => {
+                let (Some(live), Some(leave)) = (&mut self.live, d.leave.clone()) else {
+                    return;
+                };
+                d.busy = true;
+                d.error = None;
+                live.leave(&leave);
             }
             Part::Primary | Part::Reload => {
                 let Some(live) = &mut self.live else { return };
@@ -1257,6 +1337,26 @@ impl App {
             .dialog
             .as_mut()
             .filter(|d| d.kind == Kind::Block && d.busy)
+        else {
+            return;
+        };
+        match error {
+            None => return self.close_dialog(),
+            Some(e) => {
+                d.busy = false;
+                d.error = Some(e);
+            }
+        }
+        self.dialog_changed();
+    }
+
+    /// The Leave dialog's leave finished: it closes (the app has moved
+    /// on), or says why not.
+    pub fn left(&mut self, error: Option<String>) {
+        let Some(d) = self
+            .dialog
+            .as_mut()
+            .filter(|d| matches!(d.kind, Kind::LeaveSpace | Kind::LeaveChannel) && d.busy)
         else {
             return;
         };
@@ -1426,7 +1526,7 @@ impl App {
                 }
                 done
             }
-            WM_MOUSEWHEEL if d.kind == Kind::History => {
+            WM_MOUSEWHEEL if matches!(d.kind, Kind::History | Kind::Browse) => {
                 let notches = (wp.0 >> 16) as u16 as i16 as f32 / 120.0;
                 d.scroll -= notches * 3.0 * LINE;
                 self.dialog_changed();
@@ -1508,7 +1608,7 @@ impl App {
             }
             WM_CHAR => {
                 let c = wp.0 as u16;
-                if matches!(d.kind, Kind::Edit | Kind::StartDirect)
+                if matches!(d.kind, Kind::Edit | Kind::StartDirect | Kind::Browse)
                     && d.field.focused
                     && !d.busy
                     && !ctrl

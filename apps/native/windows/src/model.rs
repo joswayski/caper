@@ -130,6 +130,9 @@ pub struct Conversation {
     /// A DM instead of a channel: `channel` is then past `channels` (no
     /// channel row is selected) and there is no member list.
     pub direct: Option<Direct>,
+    /// A channel you haven't joined, open from Browse (a read-only
+    /// preview): `channel` is then past `channels`.
+    pub preview: Option<Channel>,
     demo: Option<Demo>,
 }
 
@@ -158,15 +161,17 @@ impl Conversation {
             presence: false,
             messages,
             direct: None,
+            preview: None,
             demo: None,
         }
     }
 
     /// The header's title: the channel's name, or the DM peer's.
     pub fn title(&self) -> String {
-        match &self.direct {
-            Some(d) => d.name.clone(),
-            None => self
+        match (&self.direct, &self.preview) {
+            (Some(d), _) => d.name.clone(),
+            (None, Some(p)) => p.name.clone(),
+            (None, None) => self
                 .channels
                 .get(self.channel)
                 .map_or_else(String::new, |c| c.name.clone()),
@@ -484,6 +489,7 @@ impl Conversation {
             presence: true,
             messages: Vec::with_capacity(count + 512),
             direct: None,
+            preview: None,
             demo: Some(demo),
         };
         for _ in 0..count {

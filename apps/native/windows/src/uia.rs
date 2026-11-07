@@ -539,6 +539,9 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Title => d.title(),
                 DPart::Note => d.note(),
                 DPart::Field if d.kind == Kind::StartDirect => "Username".into(),
+                DPart::Field if d.kind == Kind::Browse => "Search channels".into(),
+                DPart::Hint if d.kind == Kind::Browse => d.browse_empty().into(),
+                DPart::Channel(k) => d.browse_row_name(k),
                 DPart::Field => "Message".into(),
                 DPart::Hint if d.kind == Kind::StartDirect => {
                     d.recipient_label().unwrap_or_default()
@@ -1019,7 +1022,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 crate::directs::BarPart::Accept
                 | crate::directs::BarPart::Decline
                 | crate::directs::BarPart::Block
-                | crate::directs::BarPart::Unblock,
+                | crate::directs::BarPart::Unblock
+                | crate::directs::BarPart::Join,
             )
             | Id::MenuClose
             | Id::Tool(..)
@@ -1062,7 +1066,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 | DPart::Version(_)
                 | DPart::Retry
                 | DPart::Older
-                | DPart::Suggest(_),
+                | DPart::Suggest(_)
+                | DPart::Channel(_),
             ) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
                 pattern == UIA_InvokePatternId
@@ -1147,6 +1152,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                                 | crate::directs::BarPart::Decline
                                 | crate::directs::BarPart::Block
                                 | crate::directs::BarPart::Unblock
+                                | crate::directs::BarPart::Join
                         )
                         | Id::MenuItem(_)
                         | Id::Pick(PPart::Search)
@@ -1165,7 +1171,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     (Id::BoxPart(crate::uploads::Part::Mic), _) => a.mic_blocked().is_none(),
                     (Id::DmItem(k), _) => {
                         let (on, items) = a.dm_menu_items();
-                        on && items.get(k).is_some_and(crate::directs::MenuItem::action)
+                        items.get(k).is_some_and(|i| i.usable(on))
                     }
                     (Id::MenuItem(k), _) => a
                         .menu
@@ -2051,7 +2057,9 @@ fn editable() -> Id {
             a.thread.as_ref().is_some_and(|t| t.composer.focused),
         )
     }) {
-        Some((Some(Kind::Edit | Kind::StartDirect), _, _, _, _)) => Id::Dialog(DPart::Field),
+        Some((Some(Kind::Edit | Kind::StartDirect | Kind::Browse), _, _, _, _)) => {
+            Id::Dialog(DPart::Field)
+        }
         Some((_, true, _, _, _)) => Id::Sign(Part::Field),
         Some((_, _, true, _, _)) => Id::Pick(PPart::Search),
         Some((_, _, _, true, _)) => Id::Gif(GPart::Search),

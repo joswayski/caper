@@ -70,6 +70,11 @@ pub enum MenuItem {
     Unmute(&'static str),
     /// Text only: when the mute ends, "Loading…", or an error (true).
     Note(String, bool),
+    /// The menu's last item: "Leave space…" (true, in red) or "Leave
+    /// channel", opening its confirmation.
+    Leave(bool),
+    /// The space menu's first item: "Browse channels".
+    Browse,
 }
 
 impl MenuItem {
@@ -90,6 +95,9 @@ impl MenuItem {
                 .into(),
             Self::Unmute(noun) => format!("Unmute {noun}"),
             Self::Note(text, _) => text.clone(),
+            Self::Leave(true) => "Leave space\u{2026}".into(),
+            Self::Leave(false) => "Leave channel".into(),
+            Self::Browse => "Browse channels".into(),
         }
     }
 
@@ -97,8 +105,20 @@ impl MenuItem {
     pub fn action(&self) -> bool {
         matches!(
             self,
-            Self::Toggle(_) | Self::Mute(_) | Self::Unmute(_) | Self::Voice(..) | Self::Level(..)
+            Self::Toggle(_)
+                | Self::Mute(_)
+                | Self::Unmute(_)
+                | Self::Voice(..)
+                | Self::Level(..)
+                | Self::Leave(_)
+                | Self::Browse
         )
+    }
+
+    /// Whether it can be chosen now: the notification choices once the
+    /// settings are ready (`enabled`), Browse and Leave always.
+    pub fn usable(&self, enabled: bool) -> bool {
+        self.action() && (enabled || matches!(self, Self::Leave(_) | Self::Browse))
     }
 
     /// Whether it is one of a heading's choices (indented under it).
@@ -560,6 +580,8 @@ pub enum BarKind {
     Request,
     /// You blocked the other person: Unblock.
     Blocked,
+    /// A channel you haven't joined, open from Browse: Join channel.
+    Preview,
 }
 
 /// What replaces the composer in a DM, as egui's `request_bar` and
@@ -587,6 +609,7 @@ pub enum BarPart {
     Error,
     Block,
     Unblock,
+    Join,
 }
 
 impl BarPart {
@@ -610,6 +633,9 @@ impl Bar {
                 self.name, self.username
             ),
             BarKind::Blocked => format!("You blocked @{}.", self.username),
+            BarKind::Preview => {
+                format!("Preview\nJoin #{} to interact with people here", self.name)
+            }
         }
     }
 
@@ -625,6 +651,8 @@ impl Bar {
             BarPart::Block => "Block".into(),
             BarPart::Unblock if self.unblocking => "Unblocking\u{2026}".into(),
             BarPart::Unblock => "Unblock".into(),
+            BarPart::Join if self.busy.is_some() => "Joining\u{2026}".into(),
+            BarPart::Join => "Join channel".into(),
             BarPart::Error => self.error.clone().unwrap_or_default(),
         }
     }
@@ -640,6 +668,25 @@ impl Bar {
             unsafe {
                 l.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range)?;
                 l.SetDrawingEffect(&g.brushes.text, range)?;
+            }
+        }
+        if self.kind == BarKind::Preview {
+            // "Preview" and the channel's name stand out, as on web.
+            let name = gfx::wide(&format!("#{}", self.name)).len() as u32;
+            for range in [
+                DWRITE_TEXT_RANGE {
+                    startPosition: 0,
+                    length: 7,
+                },
+                DWRITE_TEXT_RANGE {
+                    startPosition: 13,
+                    length: name,
+                },
+            ] {
+                unsafe {
+                    l.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range)?;
+                    l.SetDrawingEffect(&g.brushes.text, range)?;
+                }
             }
         }
         crate::emoji::apply(&l, &text, 13.0, 1.0)?;
@@ -658,6 +705,13 @@ impl Bar {
         let mut parts = Vec::new();
         let mut y;
         match self.kind {
+            BarKind::Preview => {
+                parts.push((BarPart::Text, (0.0, 0.0, w, m.height)));
+                y = m.height + 8.0;
+                let bw = self.button_w(g, BarPart::Join)?;
+                parts.push((BarPart::Join, (0.0, y, bw, BAR_BUTTON_H)));
+                y += BAR_BUTTON_H;
+            }
             BarKind::Request => {
                 parts.push((BarPart::Text, (0.0, 0.0, w, m.height)));
                 y = m.height + 8.0;
@@ -703,7 +757,9 @@ impl Bar {
 
     pub fn enabled(&self, part: BarPart) -> bool {
         match part {
-            BarPart::Accept | BarPart::Decline | BarPart::Block => self.busy.is_none(),
+            BarPart::Accept | BarPart::Decline | BarPart::Block | BarPart::Join => {
+                self.busy.is_none()
+            }
             BarPart::Unblock => !self.unblocking,
             BarPart::Text | BarPart::Error => true,
         }
@@ -740,7 +796,7 @@ impl Bar {
                     } else {
                         1
                     };
-                    let tone = if part == BarPart::Accept {
+                    let tone = if matches!(part, BarPart::Accept | BarPart::Join) {
                         Tone::Primary
                     } else {
                         Tone::Secondary
@@ -851,6 +907,7 @@ impl App {
                 BarPart::Accept => live.answer_request(true),
                 BarPart::Decline => live.answer_request(false),
                 BarPart::Unblock => live.unblock_open(),
+                BarPart::Join => live.join_channel(),
                 BarPart::Block | BarPart::Text | BarPart::Error => return,
             }
         }
@@ -959,10 +1016,21 @@ impl App {
 
     /// The open menu's items and whether they can change now.
     pub fn dm_menu_items(&self) -> (bool, Vec<MenuItem>) {
-        match (&self.dm_menu, &self.live) {
-            (Some(m), Some(live)) => live.notify_menu(&m.scope),
-            _ => (false, Vec::new()),
+        let (Some(m), Some(live)) = (&self.dm_menu, &self.live) else {
+            return (false, Vec::new());
+        };
+        let (enabled, mut items) = live.notify_menu(&m.scope);
+        // The space's opens with Browse channels and ends with leaving it,
+        // as egui's (an owner can't leave a space).
+        if let Scope::Space(_) = &m.scope {
+            items.insert(0, MenuItem::Browse);
         }
+        match &m.scope {
+            Scope::Channel { .. } => items.push(MenuItem::Leave(false)),
+            Scope::Space(_) if live.can_leave_space() => items.push(MenuItem::Leave(true)),
+            _ => {}
+        }
+        (enabled, items)
     }
 
     /// The menu (client DIPs), beside its row, kept in the window.
@@ -1102,12 +1170,25 @@ impl App {
     /// Chooses item `k`; the menu closes, as egui's does.
     pub fn dm_menu_activate(&mut self, k: usize) {
         let (enabled, items) = self.dm_menu_items();
-        let Some(item) = items.get(k).filter(|i| enabled && i.action()) else {
+        let Some(item) = items.get(k).filter(|i| i.usable(enabled)) else {
             return;
         };
         let Some(scope) = self.dm_menu.as_ref().map(|m| m.scope.clone()) else {
             return;
         };
+        if *item == MenuItem::Browse {
+            self.dm_menu = None;
+            self.dm_menu_changed();
+            return self.open_browse();
+        }
+        if let MenuItem::Leave(_) = item {
+            self.dm_menu = None;
+            self.dm_menu_changed();
+            if let Some(leave) = self.live.as_ref().and_then(|l| l.leave_target(&scope)) {
+                self.open_dialog(crate::overlay::Dialog::leave(leave));
+            }
+            return;
+        }
         if let Some(live) = &mut self.live {
             live.menu_choose(&scope, item);
         }
@@ -1127,7 +1208,7 @@ impl App {
         let (enabled, items) = self.dm_menu_items();
         let hit = (0..items.len())
             .find(|&k| contains(self.dm_item_rect(k), x, y))
-            .filter(|&k| enabled && items[k].action());
+            .filter(|&k| items[k].usable(enabled));
         let inside = contains(self.dm_menu_rect(), x, y);
         // The open row's own button only closes it.
         let own = self.on_menu_button(x, y);
@@ -1213,7 +1294,7 @@ impl App {
             stroke_round(dc, r, RADIUS, &g.brushes.border);
             for (k, item) in items.iter().enumerate() {
                 let (x, y, w, h) = (6.0, 6.0 + k as f32 * MENU_ITEM_H, mw - 12.0, MENU_ITEM_H);
-                let live = enabled && item.action();
+                let live = item.usable(enabled);
                 if live && hover == Some(k) {
                     fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
                 }
@@ -1235,7 +1316,7 @@ impl App {
                 )?;
                 let lm = gfx::metrics(&l);
                 let brush = match item {
-                    MenuItem::Note(_, true) => &g.brushes.error,
+                    MenuItem::Note(_, true) | MenuItem::Leave(true) => &g.brushes.error,
                     _ if !live => &g.brushes.muted,
                     _ => &g.brushes.text,
                 };

@@ -12,7 +12,9 @@ use caper_client::reactions::{
 };
 use caper_client::state::{CallContext, Phase};
 use caper_client::voice::{Voice, VoiceOperation};
-use caper_client::worker::{AccountOperation, AccountResult, Command, Event, Worker};
+use caper_client::worker::{
+    AccountOperation, AccountResult, AdminOperation, AdminResult, Command, Event, Worker,
+};
 use caper_client::{Host, api::Api, gateway, grouping, model as core};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -135,6 +137,11 @@ pub enum Update {
     /// A block asked for in the Block dialog finished: None once blocked,
     /// else why not.
     Blocked(Option<String>),
+    /// A leave asked for in the Leave dialog finished: None once left
+    /// (another space or channel is opening), else why not.
+    Left(Option<String>),
+    /// Joining the previewed channel failed: its bar shows why.
+    Joining,
     /// The open thread's messages or state changed (or it closed): the
     /// pane rebuilds from `Live::thread_view`.
     Thread,
@@ -402,6 +409,9 @@ pub struct Live {
     others: Option<(u64, Vec<String>)>,
     /// What voice last showed, so only changes redraw.
     voice_seen: String,
+    /// A previewed channel's Join in flight, and why the last one failed.
+    pub joining: bool,
+    pub join_error: Option<String>,
 }
 
 /// What a channel's voice offers now (egui's `VoiceAction`).
@@ -612,6 +622,8 @@ impl Live {
             announced: None,
             others: None,
             voice_seen: String::new(),
+            joining: false,
+            join_error: None,
         }
     }
 
@@ -1130,6 +1142,17 @@ impl Live {
     /// or a blocked person's.
     pub fn dm_bar(&self) -> Option<crate::directs::Bar> {
         use crate::directs::{Bar, BarKind};
+        if let Some(c) = self.open_preview() {
+            return Some(Bar {
+                kind: BarKind::Preview,
+                name: c.name.clone(),
+                username: String::new(),
+                busy: self.joining.then_some(false),
+                unblocking: false,
+                protected: true,
+                error: self.join_error.clone(),
+            });
+        }
         let d = self.open_direct_conversation()?;
         let kind = if d.status == core::DirectStatus::Incoming {
             BarKind::Request
@@ -1147,7 +1170,7 @@ impl Live {
             protected: self.protected(&d.peer.id),
             error: match kind {
                 BarKind::Request => self.answer_error.clone(),
-                BarKind::Blocked => self.block_error.clone(),
+                BarKind::Blocked | BarKind::Preview => self.block_error.clone(),
             },
         })
     }
@@ -1591,6 +1614,7 @@ impl Live {
     /// or a channel. The open conversation stays until the new one loads.
     pub fn navigate(&mut self, space: Option<String>, channel: Option<String>) {
         self.navigation += 1;
+        self.join_error = None;
         // A visit's unread snapshot loads beside its history, not after it.
         self.prefetch = None;
         if self.token.is_some() {
@@ -2386,6 +2410,162 @@ impl Live {
     fn own_call(&self, id: &str) -> bool {
         self.voice.state.active_channel() == Some(id)
             && !matches!(self.voice.state.phase, Phase::Failed(_))
+    }
+
+    /// The open channel when you haven't joined it (a preview from Browse).
+    fn open_preview(&self) -> Option<&core::Channel> {
+        if self.direct.is_some() {
+            return None;
+        }
+        let channel = self.channel.as_ref()?;
+        self.detail
+            .as_ref()?
+            .channels
+            .iter()
+            .find(|c| c.id == *channel && !c.joined)
+    }
+
+    /// Browse channels for the open space: every channel, joined or
+    /// not, with the unread dot of one with something new.
+    pub fn browse(&self) -> Option<crate::browse::Browse> {
+        let detail = self.detail.as_ref()?;
+        let unread = |id: &str| {
+            self.unread_spaces
+                .iter()
+                .any(|s| s.channels.iter().any(|c| c.id == id))
+        };
+        Some(crate::browse::Browse {
+            space: detail.space.id.clone(),
+            space_name: detail.space.name.clone(),
+            rows: detail
+                .channels
+                .iter()
+                .map(|c| crate::browse::Row {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    private: c.private,
+                    joined: c.joined,
+                    unread: unread(&c.id),
+                })
+                .collect(),
+        })
+    }
+
+    /// Joins the previewed channel; it opens joined once the server
+    /// answers.
+    pub fn join_channel(&mut self) {
+        let (Some(token), Some(space), Some(channel)) = (
+            self.token.clone(),
+            self.space.clone(),
+            self.open_preview().map(|c| c.id.clone()),
+        ) else {
+            return;
+        };
+        self.joining = true;
+        self.join_error = None;
+        self.worker.send(Command::Admin {
+            generation: self.account_epoch,
+            token,
+            operation: AdminOperation::JoinChannel { space, channel },
+        });
+    }
+
+    /// Whether you can leave the open space: it is someone else's (an
+    /// owner manages or deletes theirs), as in egui.
+    pub fn can_leave_space(&self) -> bool {
+        self.detail.as_ref().is_some_and(|d| {
+            !d.space.demo && self.account_id.as_deref() != Some(d.space.owner_id.as_str())
+        })
+    }
+
+    /// What leaving a menu's space or channel leaves, named for its
+    /// dialog.
+    pub fn leave_target(&self, scope: &Scope) -> Option<crate::overlay::Leave> {
+        let detail = self.detail.as_ref()?;
+        let owner = self.account_id.as_deref() == Some(detail.space.owner_id.as_str());
+        match scope {
+            Scope::Space(space) if *space == detail.space.id => Some(crate::overlay::Leave {
+                space: space.clone(),
+                channel: None,
+                name: detail.space.name.clone(),
+                private: false,
+            }),
+            Scope::Channel { space, channel } if *space == detail.space.id => {
+                let c = detail.channels.iter().find(|c| c.id == *channel)?;
+                Some(crate::overlay::Leave {
+                    space: space.clone(),
+                    channel: Some(channel.clone()),
+                    name: c.name.clone(),
+                    private: c.private && !owner,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Leaves a space or channel; `Update::Left` answers.
+    pub fn leave(&mut self, leave: &crate::overlay::Leave) {
+        let (Some(token), Some(member)) = (self.token.clone(), self.account_id.clone()) else {
+            return;
+        };
+        let operation = match &leave.channel {
+            Some(channel) => AdminOperation::LeaveChannel {
+                space: leave.space.clone(),
+                channel: channel.clone(),
+            },
+            None => AdminOperation::LeaveSpace {
+                space: leave.space.clone(),
+                member,
+            },
+        };
+        self.worker.send(Command::Admin {
+            generation: self.account_epoch,
+            token,
+            operation,
+        });
+    }
+
+    /// Another space or channel opens after one was left: the next
+    /// account space, else a DM (egui's `forget_open_space`).
+    fn left(&mut self, result: AdminResult, out: &mut Vec<Update>) {
+        match result {
+            AdminResult::SpaceLeft(id) => {
+                self.voice.revoke_space(&id);
+                if let Some(s) = &mut self.spaces {
+                    s.spaces.retain(|s| s.id != id);
+                }
+                let next = self
+                    .spaces
+                    .as_ref()
+                    .and_then(|s| s.spaces.iter().find(|s| !s.demo))
+                    .map(|s| s.id.clone());
+                let direct = self.directs.first().map(|d| d.id.clone());
+                match (next, direct) {
+                    (Some(space), _) => self.navigate(Some(space), None),
+                    (None, Some(direct)) => self.navigate(None, Some(direct)),
+                    (None, None) => out.push(Update::Failed("This account has no spaces.".into())),
+                }
+            }
+            AdminResult::ChannelLeft(channel) => {
+                self.voice.revoke_channel(&channel);
+                // The space reloads without it; another channel opens
+                // only when it was the open one.
+                let open = self.channel.clone().filter(|c| *c != channel);
+                self.navigate(self.space.clone(), open);
+            }
+            AdminResult::ChannelMembership {
+                detail,
+                channel,
+                joined: true,
+            } => {
+                // It opens again, now in the sidebar with its composer.
+                self.joining = false;
+                self.navigate(Some(detail.space.id.clone()), Some(channel));
+                return;
+            }
+            _ => return,
+        }
+        out.push(Update::Left(None));
     }
 
     /// Whether a call is under way anywhere.
@@ -3593,6 +3773,16 @@ impl Live {
             Event::Dictated { key, result } if key == self.dictations => {
                 out.push(Update::Dictated { key, result });
             }
+            Event::Admin { generation, result } if generation == self.account_epoch => match result
+            {
+                Ok(result) => self.left(result, out),
+                Err(e) if self.joining => {
+                    self.joining = false;
+                    self.join_error = Some(e);
+                    out.push(Update::Joining);
+                }
+                Err(e) => out.push(Update::Left(Some(e))),
+            },
             Event::Klipy { token, config } if self.token.as_ref() == Some(&token) => {
                 self.klipy = config;
                 out.push(Update::Drafts);
@@ -3827,7 +4017,17 @@ pub fn conversation(
         })
         .collect();
     ids.open = Some(channel.to_owned());
-    let selected = if direct.is_some() {
+    // A channel open from Browse that you haven't joined: no row is
+    // selected and the header names it.
+    let preview = detail
+        .channels
+        .iter()
+        .find(|c| direct.is_none() && c.id == channel && !c.joined)
+        .map(|c| model::Channel {
+            name: c.name.clone(),
+            private: c.private,
+        });
+    let selected = if direct.is_some() || preview.is_some() {
         joined.len()
     } else {
         joined.iter().position(|c| c.id == channel).unwrap_or(0)
@@ -3847,6 +4047,7 @@ pub fn conversation(
     let mut c = Conversation::live(spaces, space, channels, selected, members, out);
     c.listed_members = listed;
     c.direct = direct;
+    c.preview = preview;
     (c, ids)
 }
 

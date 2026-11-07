@@ -15,6 +15,7 @@
 
 mod actions;
 mod bench;
+mod browse;
 mod call;
 mod card;
 mod composer;
@@ -690,6 +691,8 @@ impl App {
                 }
                 live::Update::DirectFound { request, result } => self.direct_found(request, result),
                 live::Update::Blocked(error) => self.blocked(error),
+                live::Update::Left(error) => self.left(error),
+                live::Update::Joining => self.bar_changed(),
                 live::Update::Settings => {
                     if self.settings.is_some() {
                         self.settings_changed();
