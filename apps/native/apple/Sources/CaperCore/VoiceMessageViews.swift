@@ -286,6 +286,8 @@ struct VoiceTarget {
     /// Without both, a tap or click records a voice message.
     var transcribe: (@MainActor (VoiceRecording) async throws -> String)? = nil
     var insert: (@MainActor (String) -> Bool)? = nil
+    /// Embedded native composers can disappear before the start task runs.
+    var isCurrent: (@MainActor () -> Bool)? = nil
 
     var dictates: Bool { transcribe != nil && insert != nil }
 
@@ -433,6 +435,7 @@ struct VoiceRecordButton: View {
         guard enabled else { return }
         let target = target
         Task {
+            guard target.isCurrent?() != false else { return }
             await VoiceMessageRecorder.shared.start(for: target.owner, handsFree: handsFree, dictating: target.dictates) {
                 // 10:00: stop, then stage or send, on every platform.
                 Task { @MainActor in await VoiceTarget.finish(target) }

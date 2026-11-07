@@ -1323,6 +1323,21 @@ import XCTest
         XCTAssertTrue(loadError.waitForNonExistence(timeout: 5))
         XCTAssertEqual(seedBody.value as? String, seedText)
         XCTAssertTrue(composer.isHittable); XCTAssertTrue(editor.isHittable)
+        let channelMicrophone = app.buttons["composer-voice-record"]
+        let threadMicrophone = app.buttons["thread-voice-record"]
+        XCTAssertTrue(channelMicrophone.waitForExistence(timeout: 5))
+        XCTAssertTrue(threadMicrophone.waitForExistence(timeout: 5))
+        XCTAssertEqual(channelMicrophone.label, "Dictate")
+        XCTAssertEqual(threadMicrophone.label, "Dictate")
+        XCTAssertTrue(channelMicrophone.isHittable); XCTAssertTrue(threadMicrophone.isHittable)
+        // Inspect the native entrypoints without requesting microphone access
+        // or recording the Mac's surroundings during fixture UI flows.
+        app.buttons["composer-emoji"].hover(); channelMicrophone.hover()
+        app.buttons["send-message"].hover(); threadMicrophone.hover(); send.hover()
+        XCTAssertLessThanOrEqual(channelMicrophone.frame.maxX, app.buttons["send-message"].frame.minX)
+        XCTAssertLessThanOrEqual(threadMicrophone.frame.maxX, send.frame.minX)
+        XCTAssertEqual(composer.value as? String, channelDraft)
+        capture("dictation entrypoints and independent composers wide", app: app)
         XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX, "Wide windows show both timelines without overlap")
         let divider = app.sliders["thread-panel-resize"]
         XCTAssertTrue(divider.exists); XCTAssertEqual(divider.value as? String, "340 pixels")
@@ -1377,11 +1392,17 @@ import XCTest
         resize(app, width: 900)
         XCTAssertTrue(editor.isHittable)
         XCTAssertFalse(composer.exists); XCTAssertFalse(channel.exists, "Narrow windows expose only the thread, not covered channel controls")
+        XCTAssertFalse(channelMicrophone.exists, "The folded channel's microphone must leave accessibility too")
+        XCTAssertTrue(threadMicrophone.isHittable)
+        XCTAssertGreaterThanOrEqual(threadMicrophone.frame.minX, pane.frame.minX)
+        XCTAssertLessThanOrEqual(threadMicrophone.frame.maxX, send.frame.minX)
         XCTAssertEqual(back.label, "Back to channel")
         capture("thread quote narrow", app: app)
         back.click()
         XCTAssertTrue(pane.waitForNonExistence(timeout: 5))
         XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, channelDraft)
+        XCTAssertTrue(channelMicrophone.waitForExistence(timeout: 5)); XCTAssertTrue(channelMicrophone.isHittable)
+        XCTAssertFalse(threadMicrophone.exists)
         openOtherRoot()
         XCTAssertEqual(editor.value as? String, ""); XCTAssertFalse(pane.buttons["Cancel reply"].exists)
         editor.click(); editor.typeText(otherDraft)
@@ -1842,6 +1863,10 @@ import XCTest
         XCTAssertTrue(app.buttons["composer-gif"].waitForExistence(timeout: 10))
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: emoji)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        let microphone = app.buttons["composer-voice-record"]
+        XCTAssertTrue(microphone.waitForExistence(timeout: 5)); XCTAssertTrue(microphone.isHittable)
+        XCTAssertLessThanOrEqual(emoji.frame.maxX, microphone.frame.minX)
+        XCTAssertLessThanOrEqual(microphone.frame.maxX, app.buttons["send-message"].frame.minX)
         capture("composer accessories", app: app)
         func replaceDraft(_ text: String) {
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
@@ -2362,6 +2387,7 @@ import XCTest
         result.click()
         XCTAssertTrue(app.buttons["join-channel"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.textViews["message-composer"].exists, "A preview cannot send")
+        XCTAssertFalse(app.buttons["composer-voice-record"].exists, "A preview cannot start dictation or a voice note")
         capture("channel preview", app: app)
         let previewMessage = app.textViews["message-chan00000002m01"]
         XCTAssertTrue(previewMessage.waitForExistence(timeout: 5))

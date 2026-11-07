@@ -46,6 +46,8 @@ import CaperCore
     private lazy var media = AppKitMediaPresenter(model: model, parent: presentationParent)
     private lazy var pins = AppKitPinsPresenter(model: model, media: media)
     private lazy var picker = AppKitComposerPicker(model: model, inThread: inThread)
+    private lazy var voiceComposer = AppKitVoiceComposer(chat: model.chat, inThread: inThread, editor: composer)
+    private var wasRecording = false
     private lazy var members = MemberPanel(model: model)
     private lazy var profiles = AppKitProfilePresenter(model: model)
     private lazy var reactionTooltip = AppKitReactionTooltipPresenter(model: model)
@@ -158,7 +160,7 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, header, pinsButton, membersToggle, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, header, pinsButton, membersToggle, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
         pinsButton.setAccessibilityIdentifier("channel-pins")
         pinsButton.isHidden = inThread
         timeline.inThread = inThread
@@ -342,8 +344,9 @@ import CaperCore
             guard let self else { return false }
             let chat = self.model.chat
             return !self.model.previewingChannel && (self.model.selectedDirectMessage.map { $0.status != .incoming && !$0.blocked } ?? true)
-                && (self.inThread ? !chat.threadAttachmentDrafts.isEmpty || chat.threadAttachmentNotice != nil
-                    : !chat.attachmentDrafts.isEmpty || chat.attachmentNotice != nil)
+                && !self.voiceComposer.isRecording
+                && (self.voiceComposer.hasNotice || (self.inThread ? !chat.threadAttachmentDrafts.isEmpty || chat.threadAttachmentNotice != nil
+                    : !chat.attachmentDrafts.isEmpty || chat.attachmentNotice != nil))
         }, update: { [weak self] visible in
             guard let self else { return }
             if visible, self.attachmentTray == nil {
@@ -384,9 +387,15 @@ import CaperCore
 
     override func viewDidDisappear() {
         super.viewDidDisappear()
+        voiceComposer.synchronize(visible: false)
         picker.close(restoringFocus: false)
         pins.close(restoringFocus: false)
         reactionTooltip.close()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        updateComposer()
     }
 
     private func updateThreadPane(_ root: String?) {
@@ -404,10 +413,12 @@ import CaperCore
             }
         } else if root == nil, let pane = threadPane {
             let returnFocus = (view.window?.firstResponder as? NSView).map { $0.isDescendant(of: pane.view) } == true
+            pane.voiceComposer.synchronize(visible: false)
             pane.picker.close(restoringFocus: false)
             pane.view.removeFromSuperview(); pane.removeFromParent()
             threadPane = nil
             stage.isHidden = false
+            updateComposer()
             model.threadVisibilityChanged(rootID: nil, seq: nil)
             if returnFocus { view.window?.makeFirstResponder(composer) }
         }
@@ -439,6 +450,7 @@ import CaperCore
     override func viewDidLayout() {
         super.viewDidLayout()
         let previousStage = stage.frame
+        let wasHidden = stage.isHidden
         let width = view.bounds.width, height = view.bounds.height
         let navigationWidth = self.navigationWidth
         let docked = width > 760 && width - navigationWidth >= 540
@@ -472,6 +484,10 @@ import CaperCore
             membersResize.frame = NSRect(x: members.frame.minX, y: members.frame.minY, width: 8, height: members.frame.height)
             membersResize.update(width: memberWidth, maximum: maximum)
         }
+        if stage.isHidden != wasHidden {
+            // Ending a recording publishes model state, never during layout.
+            DispatchQueue.main.async { [weak self] in self?.updateComposer() }
+        }
         if stage.frame != previousStage || stage.isHidden { reactionTooltip.close() }
         let center = stage.bounds.width
         back.frame = NSRect(x: center - 170, y: 10, width: 150, height: 28)
@@ -502,7 +518,9 @@ import CaperCore
         directBar.frame = NSRect(x: 20, y: status.frame.maxY, width: center - 40, height: max(0, height - status.frame.maxY - 8))
         attach.frame = NSRect(x: 16, y: base - 72, width: 38, height: 42)
         send.frame = NSRect(x: center - 56, y: base - 70, width: 36, height: 38)
-        emoji.frame = NSRect(x: send.frame.minX - 40, y: base - 72, width: 32, height: 42)
+        voiceComposer.button.frame = NSRect(x: send.frame.minX - 42, y: base - 72, width: 36, height: 42)
+        voiceComposer.bar.frame = NSRect(x: 20, y: base - 72, width: max(0, center - 40), height: 42)
+        emoji.frame = NSRect(x: voiceComposer.button.frame.minX - 40, y: base - 72, width: 32, height: 42)
         gif.frame = NSRect(x: emoji.frame.minX - 40, y: base - 72, width: 32, height: 42)
         let editorRight = (gif.isHidden ? emoji.frame.minX : gif.frame.minX) - 12
         composerScroll.frame = NSRect(x: compact ? 20 : 58, y: composerTop, width: compact ? center - 40 : editorRight - 58, height: 70)
@@ -522,6 +540,7 @@ import CaperCore
         if inThread { directBar.isHidden = true } else { directBar.update() }
         let root = inThread ? chat.threadRootID : nil
         let identity = [dialogs.messageContext, root ?? "channel"].joined(separator: ":")
+        let sameComposer = composerIdentity == identity
         if composerIdentity != identity {
             picker.close(restoringFocus: false)
             pins.close(restoringFocus: false)
@@ -539,14 +558,23 @@ import CaperCore
         }
         composer.placeholder = inThread ? "Reply to thread…" : "Message \(model.selectedDirectMessage?.peer.displayName ?? "#\(chat.channelName)")"
         let ready = !inThread || (root != nil && !chat.threadLoading)
+        let hidden = model.previewingChannel || !directBar.isHidden
+        voiceComposer.synchronize(visible: ready && !hidden && chat.canInteract && view.window != nil && !stage.isHiddenOrHasHiddenAncestor)
+        let recording = voiceComposer.isRecording
+        let restoreFocus = wasRecording && !recording && sameComposer
+            && (view.window?.firstResponder as? NSView).map { $0 === voiceComposer.bar || $0.isDescendant(of: voiceComposer.bar) } == true
+        let startedRecording = recording && !wasRecording
+        wasRecording = recording
         pinsButton.isEnabled = pins.isAvailable
-        composer.isEditable = ready && directBar.isHidden && chat.canInteract && !chat.sending && !chat.sendRejected && chat.pendingMessage == nil
-        send.isEnabled = ready && directBar.isHidden && chat.canInteract && chat.canPressSend(inThread: inThread)
+        composer.isEditable = !recording && ready && directBar.isHidden && chat.canInteract && !chat.sending && !chat.sendRejected && chat.pendingMessage == nil
+        send.isEnabled = !recording && ready && directBar.isHidden && chat.canInteract && chat.canPressSend(inThread: inThread)
         send.title = chat.sending ? "Sending…" : inThread ? "Send reply" : "Send"
         send.setAccessibilityLabel(send.title); send.toolTip = send.title
         send.layer?.backgroundColor = (send.isEnabled ? NSColor(CaperTheme.action) : NativeStyle.composer).cgColor
         send.contentTintColor = send.isEnabled ? NativeStyle.blackout : NativeStyle.muted
-        composerScroll.isHidden = model.previewingChannel || !directBar.isHidden
+        composerScroll.isHidden = hidden || recording
+        voiceComposer.button.isHidden = hidden
+        voiceComposer.bar.isHidden = !recording
         send.isHidden = composerScroll.isHidden
         attach.isHidden = composerScroll.isHidden
         attach.isEnabled = chat.canAttach && composer.isEditable
@@ -565,11 +593,11 @@ import CaperCore
         join.isHidden = inThread || !model.previewingChannel
         join.isEnabled = joiningChannelID == nil
         join.title = joiningChannelID == model.selectedChannelID ? "Joining…" : "Join channel"
-        broadcast.isHidden = !inThread || composerScroll.isHidden
+        broadcast.isHidden = !inThread || hidden
         broadcast.title = "Also send to \(model.selectedDirectMessage?.peer.displayName ?? "#\(chat.channelName)")"
         broadcast.setAccessibilityLabel(broadcast.title)
         broadcast.state = chat.threadBroadcast ? .on : .off
-        broadcast.isEnabled = ready && chat.canInteract && chat.pendingMessage == nil
+        broadcast.isEnabled = !recording && ready && chat.canInteract && chat.pendingMessage == nil
         let hasQuote = !composerScroll.isHidden && chat.replyTargets[root ?? "channel"] != nil
         if hasQuote, replyDraft == nil {
             let banner = media.replyDraft(inThread: inThread)
@@ -599,6 +627,17 @@ import CaperCore
         _ = chat.composerFocusRequest(inThread: inThread)
         view.needsLayout = true
         refreshSuggestions()
+        if startedRecording {
+            typing.end()
+            picker.close(restoringFocus: false)
+            if !dialogs.isPresenting, let window = view.window, window.isKeyWindow, window.attachedSheet == nil {
+                window.makeFirstResponder(voiceComposer.bar)
+            }
+        }
+        if restoreFocus, composer.isEditable, !stage.isHiddenOrHasHiddenAncestor, !dialogs.isPresenting,
+           let window = view.window, window.isKeyWindow, window.attachedSheet == nil {
+            window.makeFirstResponder(composer)
+        }
     }
 
     private func showAttachMenu() {
