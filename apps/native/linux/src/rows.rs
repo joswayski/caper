@@ -845,7 +845,6 @@ struct Widgets {
     quote_text: gtk::Label,
     quote_more: gtk::Button,
     avatar: AvatarView,
-    gap: gtk::Box,
     header: gtk::Box,
     author: gtk::Label,
     time: gtk::Label,
@@ -898,6 +897,19 @@ fn group(name: &str) -> gtk::Box {
     group
 }
 
+/// A row's fixed tooltip, filled in when it first shows. GTK 4.8's
+/// `set_tooltip_text` also sets an accessible description, and doing that
+/// for every row's controls cost more than building the rest of the row.
+/// These controls already carry the same text as their name.
+fn tooltip(widget: &impl IsA<gtk::Widget>, text: &str) {
+    let text = text.to_owned();
+    widget.set_has_tooltip(true);
+    widget.connect_query_tooltip(move |_, _, _, _, tooltip| {
+        tooltip.set_text(Some(&text));
+        true
+    });
+}
+
 fn tool(images: &Images, icon: Icon, label: &str) -> gtk::Button {
     let button = crate::app::named::<gtk::Button>("GtkButton", label);
     // At its own size: a filled 28px button would scale it up.
@@ -905,7 +917,7 @@ fn tool(images: &Images, icon: Icon, label: &str) -> gtk::Button {
     image.set_halign(gtk::Align::Center);
     image.set_valign(gtk::Align::Center);
     button.set_child(Some(&image));
-    button.set_tooltip_text(Some(label));
+    tooltip(&button, label);
     button.add_css_class("flat");
     button.add_css_class("tool");
     button
@@ -971,7 +983,7 @@ fn build_widgets(images: &Images) -> Widgets {
     let reply = gtk::Box::new(gtk::Orientation::Vertical, 4);
     reply.add_css_class("quote");
     let quote_heading = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    quote_heading.set_tooltip_text(Some("View original message"));
+    tooltip(&quote_heading, "View original message");
     let quote_avatar = AvatarView::new(16, false);
     quote_heading.append(&quote_avatar.root);
     let quote_author = gtk::Label::builder()
@@ -1009,13 +1021,14 @@ fn build_widgets(images: &Images) -> Widgets {
         .css_classes(["history-start"])
         .visible(false)
         .build();
-    // As desktop: a 34px avatar, 10px from the text.
-    let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    // As desktop: a 34px avatar, 10px from the text. The avatar overlays
+    // the text's margin rather than sitting beside it in a horizontal box:
+    // GTK 4.8 measures a horizontal box's wrapping text by searching its
+    // width for each height, which made every new page of rows stall.
     let avatar = AvatarView::new(34, false);
-    let gap = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    gap.set_size_request(34, 1);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.set_hexpand(true);
+    content.set_margin_start(44);
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let label = |class: &str| {
         gtk::Label::builder()
@@ -1028,7 +1041,7 @@ fn build_widgets(images: &Images) -> Widgets {
     let marker = || {
         let button: gtk::Button = crate::app::named("GtkButton", "Message history");
         button.set_label("(edited)");
-        button.set_tooltip_text(Some("Message history"));
+        tooltip(&button, "Message history");
         button.add_css_class("flat");
         button.add_css_class("edited");
         button
@@ -1088,9 +1101,6 @@ fn build_widgets(images: &Images) -> Widgets {
     content.append(&reactions);
     content.append(&reaction_error);
     content.append(&replies);
-    line.append(&avatar.root);
-    line.append(&gap);
-    line.append(&content);
 
     // Web's group, "Actions for {author}'s message" (named per message in
     // `fill`), so a screen reader hears whose tools these are.
@@ -1106,7 +1116,7 @@ fn build_widgets(images: &Images) -> Widgets {
                 crate::app::named::<gtk::Button>("GtkButton", &format!("React with {emoji}"));
             // A child label, not `set_label`, which would rename the button.
             button.set_child(Some(&gtk::Label::new(Some(emoji))));
-            button.set_tooltip_text(Some(&format!("React with {emoji}")));
+            tooltip(&button, &format!("React with {emoji}"));
             button.add_css_class("flat");
             button.add_css_class("tool");
             button.add_css_class("quick");
@@ -1127,7 +1137,8 @@ fn build_widgets(images: &Images) -> Widgets {
         tools.append(button);
     }
     let overlay = gtk::Overlay::new();
-    overlay.set_child(Some(&line));
+    overlay.set_child(Some(&content));
+    overlay.add_overlay(&avatar.root);
     overlay.add_overlay(&slot);
     let blocked = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     blocked.add_css_class("blocked-run");
@@ -1185,7 +1196,6 @@ fn build_widgets(images: &Images) -> Widgets {
         quote_text,
         quote_more,
         avatar,
-        gap,
         header,
         author,
         time,
@@ -1468,7 +1478,6 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
         .set_label(row.footer.as_deref().unwrap_or_default());
     widgets.header.set_visible(!row.grouped);
     widgets.avatar.root.set_visible(!row.grouped);
-    widgets.gap.set_visible(row.grouped);
     if !row.grouped {
         widgets.avatar.set(images, &row.avatar);
     }

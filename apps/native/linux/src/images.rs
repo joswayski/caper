@@ -247,15 +247,8 @@ impl Images {
             let start = (row * SHEET_EDGE + x) * 4;
             cell.extend_from_slice(&sheet[start..start + EMOJI_EDGE * 4]);
         }
-        // `download` writes GDK's default format.
-        let texture: gdk::Texture = gdk::MemoryTexture::new(
-            EMOJI_EDGE as i32,
-            EMOJI_EDGE as i32,
-            gdk::MemoryFormat::B8g8r8a8Premultiplied,
-            &glib::Bytes::from_owned(cell),
-            EMOJI_EDGE * 4,
-        )
-        .into();
+        // `download` writes GDK's default format, premultiplied BGRA.
+        let texture = straight_texture(EMOJI_EDGE, EMOJI_EDGE, cell, gdk::MemoryFormat::B8g8r8a8);
         self.emoji
             .borrow_mut()
             .insert(entry.id.clone(), texture.clone());
@@ -390,17 +383,40 @@ fn render_svg(svg: &[u8], edge: u32) -> Option<gdk::Texture> {
         ),
         &mut pixmap.as_mut(),
     );
-    let bytes = glib::Bytes::from_owned(pixmap.take());
-    Some(
-        gdk::MemoryTexture::new(
-            edge as i32,
-            edge as i32,
-            gdk::MemoryFormat::R8g8b8a8Premultiplied,
-            &bytes,
-            edge as usize * 4,
-        )
-        .into(),
+    Some(straight_texture(
+        edge as usize,
+        edge as usize,
+        pixmap.take(),
+        gdk::MemoryFormat::R8g8b8a8,
+    ))
+}
+
+/// A texture from premultiplied pixels, stored with straight alpha in
+/// `format`'s channel order. GTK 4.8's cairo renderer converts a texture
+/// to its own format on every frame it draws, and only from straight
+/// alpha without going through floats per pixel.
+fn straight_texture(
+    width: usize,
+    height: usize,
+    mut pixels: Vec<u8>,
+    format: gdk::MemoryFormat,
+) -> gdk::Texture {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        let alpha = u16::from(pixel[3]);
+        if alpha > 0 && alpha < 255 {
+            for channel in &mut pixel[..3] {
+                *channel = ((u16::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
+            }
+        }
+    }
+    gdk::MemoryTexture::new(
+        width as i32,
+        height as i32,
+        format,
+        &glib::Bytes::from_owned(pixels),
+        width * 4,
     )
+    .into()
 }
 
 /// The Caper wordmark at `width`×`height` pixels.
@@ -432,17 +448,12 @@ fn svg_texture(svg: &[u8], width: u32, height: u32) -> Option<gdk::Texture> {
         ),
         &mut pixmap.as_mut(),
     );
-    let bytes = glib::Bytes::from_owned(pixmap.take());
-    Some(
-        gdk::MemoryTexture::new(
-            width as i32,
-            height as i32,
-            gdk::MemoryFormat::R8g8b8a8Premultiplied,
-            &bytes,
-            width as usize * 4,
-        )
-        .into(),
-    )
+    Some(straight_texture(
+        width as usize,
+        height as usize,
+        pixmap.take(),
+        gdk::MemoryFormat::R8g8b8a8,
+    ))
 }
 
 /// An animated picture's frames and how long each shows.
