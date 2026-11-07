@@ -26,36 +26,6 @@ pub struct Composer {
     /// Room before the text inside the box, left and top (the main
     /// composer's Attach files button and staged files).
     pub inset: (f32, f32),
-    /// The style web carries from one typed key to the next.
-    pub typing: Typing,
-}
-
-/// `formatting::edit`'s `pending` from the last key, with the caret
-/// (UTF-16; `usize::MAX` for a selection) and the text it left.
-pub struct Typing {
-    pending: i32,
-    caret: usize,
-    text: Vec<u16>,
-}
-
-impl Default for Typing {
-    fn default() -> Self {
-        Self {
-            pending: -1,
-            caret: usize::MAX,
-            text: Vec::new(),
-        }
-    }
-}
-
-/// The scalar offset of UTF-16 offset `i` in `text`.
-fn scalars(text: &[u16], i: usize) -> usize {
-    char::decode_utf16(text[..i.min(text.len())].iter().copied()).count()
-}
-
-/// The UTF-16 offset of scalar offset `i` in `text`.
-fn units(text: &str, i: usize) -> usize {
-    text.chars().take(i).map(char::len_utf16).sum()
 }
 
 fn is_word(c: u16) -> bool {
@@ -169,58 +139,7 @@ impl Composer {
         i
     }
 
-    /// A key edited the text, which was `previous`: the edit is repaired as
-    /// web's composer makes it (`caper_client::formatting::edit`), and a
-    /// key typed at the caret the last one left, in the text it left,
-    /// takes the style that key carried. A key that only moved the caret
-    /// ends that style.
-    pub fn typed(&mut self, previous: &[u16]) {
-        if self.text == previous {
-            if self.caret != self.anchor || self.caret != self.typing.caret {
-                self.end_typing();
-            }
-            return;
-        }
-        let t = &self.typing;
-        let typed = self.text.len().checked_sub(previous.len());
-        let continuing = if self.caret == self.anchor
-            && typed.and_then(|n| self.caret.checked_sub(n)) == Some(t.caret)
-            && previous == t.text
-        {
-            t.pending
-        } else {
-            -1
-        };
-        let edited = caper_client::formatting::edit(
-            &String::from_utf16_lossy(previous),
-            &String::from_utf16_lossy(&self.text),
-            scalars(&self.text, self.caret),
-            scalars(&self.text, self.anchor),
-            continuing,
-        );
-        self.caret = units(&edited.text, edited.start);
-        self.anchor = units(&edited.text, edited.end);
-        self.text = edited.text.encode_utf16().collect();
-        self.typing = Typing {
-            pending: edited.pending,
-            caret: if self.caret == self.anchor {
-                self.caret
-            } else {
-                usize::MAX
-            },
-            text: self.text.clone(),
-        };
-    }
-
-    /// The next key types in the style around the caret: the caret was
-    /// placed, the field gained or lost focus, an IME composed, or the
-    /// draft was replaced.
-    pub fn end_typing(&mut self) {
-        self.typing.pending = -1;
-    }
-
     pub fn move_to(&mut self, i: usize, extend: bool) {
-        self.end_typing();
         self.caret = i.min(self.text.len());
         if !extend {
             self.anchor = self.caret;
@@ -461,107 +380,36 @@ impl Composer {
 mod tests {
     use super::*;
 
-    /// Typing through the composer follows every shared case web generated,
-    /// with a placed caret after the closing delimiters, where End leaves it.
+    /// The composer edits raw Markdown, so markers typed or pasted by hand
+    /// stay exactly as written, with the caret after the last key. (The
+    /// shared `formatting::edit` repair assumes hidden delimiters and must
+    /// not run on this buffer.)
     #[test]
-    fn typing_follows_the_shared_composer_cases() {
-        let cases: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../shared/messages/composer-cases.json"
-        ))
-        .unwrap();
-        let cases = cases["cases"].as_array().unwrap();
-        assert!(cases.len() > 20);
-        // The source UTF-16 offset of visible UTF-16 offset `visible`.
-        let source = |text: &str, visible: usize| -> usize {
-            let (shown, indices) = caper_client::formatting::projection(text);
-            let mut at = 0;
-            let scalar = shown
-                .chars()
-                .zip(&indices)
-                .find_map(|(c, index)| {
-                    let here = at;
-                    at += c.len_utf16();
-                    (here >= visible).then_some(*index)
-                })
-                .unwrap_or_else(|| text.chars().count());
-            units(text, scalar)
-        };
-        // The visible UTF-16 offset of source UTF-16 offset `caret`.
-        let displayed = |text: &[u16], caret: usize| -> usize {
-            let source = String::from_utf16(text).unwrap();
-            let (shown, indices) = caper_client::formatting::projection(&source);
-            let caret = scalars(text, caret);
-            shown
-                .chars()
-                .zip(&indices)
-                .filter(|(_, index)| **index < caret)
-                .map(|(c, _)| c.len_utf16())
-                .sum()
-        };
-        for case in cases {
-            let text = case["text"].as_str().unwrap();
-            let mut c = Composer {
-                text: text.encode_utf16().collect(),
-                ..Composer::default()
-            };
-            c.move_to(
-                source(text, case["caret"].as_u64().unwrap() as usize),
-                false,
-            );
-            for step in case["steps"].as_array().unwrap() {
-                if step["placed"].as_bool().unwrap() {
-                    let shown = displayed(&c.text, c.caret);
-                    let at = source(&String::from_utf16(&c.text).unwrap(), shown);
-                    c.move_to(at, false);
-                }
-                let key: Vec<u16> = step["key"].as_str().unwrap().encode_utf16().collect();
-                let previous = c.text.clone();
-                c.insert(&key);
-                c.typed(&previous);
-                assert_eq!(
-                    (
-                        String::from_utf16(&c.text).unwrap(),
-                        displayed(&c.text, c.caret),
-                        c.typing.pending
-                    ),
-                    (
-                        step["text"].as_str().unwrap().to_owned(),
-                        step["caret"].as_u64().unwrap() as usize,
-                        step["pending"].as_i64().unwrap() as i32
-                    ),
-                    "{}",
-                    case["note"]
-                );
+    fn typed_and_pasted_markdown_stays_as_written() {
+        for input in [
+            "**bold**",
+            "**bold**!",
+            "*a* and _b_",
+            "_under_score_",
+            "`code` ``",
+            "a ** b",
+            "~~s~~",
+        ] {
+            let mut c = Composer::default();
+            for ch in input.chars() {
+                c.insert(&ch.to_string().encode_utf16().collect::<Vec<_>>());
             }
+            let typed = (String::from_utf16(&c.text).unwrap(), c.caret);
+            assert_eq!(typed, (input.to_owned(), input.len()), "typed {input:?}");
+            let mut c = Composer::default();
+            c.insert(&input.encode_utf16().collect::<Vec<_>>());
+            let pasted = (String::from_utf16(&c.text).unwrap(), c.caret);
+            assert_eq!(pasted, (input.to_owned(), input.len()), "pasted {input:?}");
         }
-    }
-
-    /// Only a key typed where the last one left the caret, in the text it
-    /// left, continues its style: arrow keys there and back end it.
-    #[test]
-    fn a_moved_caret_ends_the_carried_style() {
-        let mut c = Composer {
-            text: "**bold**".encode_utf16().collect(),
-            ..Composer::default()
-        };
-        let type_key = |c: &mut Composer, key: &str| {
-            let previous = c.text.clone();
-            c.insert(&key.encode_utf16().collect::<Vec<_>>());
-            c.typed(&previous);
-        };
-        c.move_to(8, false);
-        type_key(&mut c, " ");
-        type_key(&mut c, "a");
-        assert_eq!(String::from_utf16(&c.text).unwrap(), "**bold** **a**");
-        c.text = "**bold**".encode_utf16().collect();
-        c.move_to(8, false);
-        type_key(&mut c, " ");
-        let previous = c.text.clone();
-        c.move_to(0, false);
-        c.typed(&previous);
-        c.move_to(9, false);
-        c.typed(&previous);
-        type_key(&mut c, "a");
-        assert_eq!(String::from_utf16(&c.text).unwrap(), "**bold** a");
+        // Backspace removes one character, even a closing marker's.
+        let mut c = Composer::default();
+        c.insert(&"**bold**".encode_utf16().collect::<Vec<_>>());
+        c.backspace(false);
+        assert_eq!(String::from_utf16(&c.text).unwrap(), "**bold*");
     }
 }
