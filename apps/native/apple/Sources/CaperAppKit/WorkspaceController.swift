@@ -32,6 +32,10 @@ import CaperCore
     private let suggestions = ComposerSuggestions()
     private var suggestionsDismissed = false
     private var formattingDraft = false
+    /// The style web carries between typed keys (shared/messages/composer.rs).
+    private var typing = ComposerTyping()
+    /// The conversation the composer shows; another one starts typing afresh.
+    private var composerChannel: String?
     private lazy var send = NativeButton("Send", primary: true) { [weak self] in self?.submit() }
     private var joiningChannelID: String?
     private lazy var join = NativeButton("Join channel", primary: true) { [weak self] in
@@ -225,7 +229,12 @@ import CaperCore
     private func updateComposer() {
         let chat = model.chat
         directBar.update()
+        if composerChannel != chat.channelID {
+            composerChannel = chat.channelID
+            typing.end()
+        }
         if composer.string != chat.draft, !composer.hasMarkedText() {
+            typing.end()
             composer.string = chat.draft
             composer.setSelectedRange(NSRange(location: composer.string.utf16.count, length: 0))
             composer.needsDisplay = true
@@ -275,8 +284,8 @@ import CaperCore
         guard !formattingDraft, !view.hasMarkedText(), let replacement = replacementString,
               view.undoManager?.isUndoing != true, view.undoManager?.isRedoing != true else { return true }
         let proposed = (view.string as NSString).replacingCharacters(in: affectedCharRange, with: replacement)
-        let result = MessageFormatting.repairEdit(view.string, text: proposed,
-            selection: NSRange(location: affectedCharRange.location + replacement.utf16.count, length: 0))
+        let result = typing.repairEdit(view.string, text: proposed,
+            selection: NSRange(location: affectedCharRange.location + replacement.utf16.count, length: 0), replacing: affectedCharRange)
         guard result.text != proposed else { return true }
         formattingDraft = true
         view.insertText(result.text, replacementRange: NSRange(location: 0, length: view.string.utf16.count))
@@ -297,8 +306,13 @@ import CaperCore
         suggestionsDismissed = false
         refreshSuggestions()
     }
+    func textDidEndEditing(_ notification: Notification) {
+        if notification.object as? NSTextView === composer { typing.end() }
+    }
+
     func textViewDidChangeSelection(_ notification: Notification) {
         guard !formattingDraft else { return }
+        typing.observe(composer.string, selection: composer.selectedRange())
         suggestionsDismissed = false
         refreshSuggestions()
     }
