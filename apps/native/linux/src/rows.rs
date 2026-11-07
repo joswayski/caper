@@ -860,7 +860,11 @@ struct Widgets {
     dismiss_reaction: gtk::Button,
     replies: gtk::Button,
     thread_context: gtk::Button,
+    /// Holds `group`, the toolbar: hover shows it, `offers` hides it.
     tools: gtk::Box,
+    /// Web's "Actions for {author}'s message" group, renamed (replaced) in
+    /// `fill`; its widget name keeps the name it was given.
+    group: RefCell<gtk::Box>,
     quick: Vec<gtk::Button>,
     pick: gtk::Button,
     reply_button: gtk::Button,
@@ -871,6 +875,21 @@ struct Widgets {
     blocked_label: gtk::Label,
     blocked_toggle: gtk::Button,
     row: RefCell<Option<Row>>,
+}
+
+/// The toolbar as an accessible group named `name`. GTK 4.8 can't rename
+/// one safely, so `fill` builds another when the author changes.
+fn group(name: &str) -> gtk::Box {
+    let xml = format!(
+        "<interface><object class=\"GtkBox\" id=\"widget\"><property name=\"accessible-role\">group</property><accessibility><property name=\"label\">{}</property></accessibility></object></interface>",
+        glib::markup_escape_text(name)
+    );
+    let group: gtk::Box = gtk::Builder::from_string(&xml)
+        .object("widget")
+        .expect("a GTK box");
+    group.add_css_class("tools");
+    group.set_widget_name(name);
+    group
 }
 
 fn tool(images: &Images, icon: Icon, label: &str) -> gtk::Button {
@@ -1067,15 +1086,21 @@ fn build_widgets(images: &Images) -> Widgets {
     line.append(&gap);
     line.append(&content);
 
-    let tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    tools.add_css_class("tools");
-    tools.set_halign(gtk::Align::End);
-    tools.set_valign(gtk::Align::Start);
+    // Web's group, "Actions for {author}'s message" (named per message in
+    // `fill`), so a screen reader hears whose tools these are.
+    let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    slot.set_halign(gtk::Align::End);
+    slot.set_valign(gtk::Align::Start);
+    let tools = group("Message actions");
+    slot.append(&tools);
     let quick: Vec<gtk::Button> = QUICK_REACTIONS
         .iter()
         .map(|emoji| {
-            let button = crate::app::named::<gtk::Button>("GtkButton", &format!("React {emoji}"));
-            button.set_label(emoji);
+            let button =
+                crate::app::named::<gtk::Button>("GtkButton", &format!("React with {emoji}"));
+            // A child label, not `set_label`, which would rename the button.
+            button.set_child(Some(&gtk::Label::new(Some(emoji))));
+            button.set_tooltip_text(Some(&format!("React with {emoji}")));
             button.add_css_class("flat");
             button.add_css_class("tool");
             button.add_css_class("quick");
@@ -1097,7 +1122,7 @@ fn build_widgets(images: &Images) -> Widgets {
     }
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&line));
-    overlay.add_overlay(&tools);
+    overlay.add_overlay(&slot);
     let blocked = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     blocked.add_css_class("blocked-run");
     let blocked_label = gtk::Label::builder()
@@ -1171,7 +1196,8 @@ fn build_widgets(images: &Images) -> Widgets {
         dismiss_reaction,
         replies,
         thread_context,
-        tools,
+        tools: slot,
+        group: RefCell::new(tools),
         quick,
         pick,
         reply_button,
@@ -1565,6 +1591,34 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
         .and_then(|child| child.downcast::<gtk::Label>().ok())
     {
         label.set_markup(row.replies.as_deref().unwrap_or_default());
+    }
+    // Web's labels, per message (rows are recycled, so set at each fill).
+    // GTK 4.8 has no safe way to rename an accessible, but a button's
+    // `set_label` names it; its icon goes back in afterwards.
+    let author = &row.author;
+    let name = format!("Actions for {author}'s message");
+    let old = widgets.group.borrow().clone();
+    if old.widget_name() != name {
+        let new = group(&name);
+        while let Some(child) = old.first_child() {
+            old.remove(&child);
+            new.append(&child);
+        }
+        widgets.tools.remove(&old);
+        widgets.tools.append(&new);
+        *widgets.group.borrow_mut() = new;
+    }
+    for (button, text) in [
+        (
+            &widgets.thread_button,
+            format!("Reply in thread to {author}"),
+        ),
+        (&widgets.reply_button, format!("Reply to {author}")),
+        (&widgets.more, format!("Message actions for {author}")),
+    ] {
+        let icon = button.child();
+        button.set_label(&text);
+        button.set_child(icon.as_ref());
     }
     let offers = row.offers;
     widgets.tools.set_visible(offers.act);
