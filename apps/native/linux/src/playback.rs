@@ -11,10 +11,12 @@ use crate::ui::label;
 use caper_client::media_proxy::MediaProxy;
 use caper_client::model::{Attachment, TranscriptView};
 use caper_client::player::{Player, State};
+use caper_client::uploads::{Prepared, Scratch};
 use caper_client::voice_note;
 use gtk::{cairo, glib, pango, prelude::*};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Waveform bars: 3 px wide, 5 px apart, as on the desktop.
@@ -31,7 +33,37 @@ struct Current {
     player: Option<Player>,
     /// Its loopback route, removed when it stops.
     local: Option<String>,
+    /// A staged recording's file, kept while it plays.
+    _scratch: Option<Arc<Scratch>>,
     error: Option<String>,
+}
+
+/// What a voice player plays: a sent message, or a recording staged in a
+/// composer (from its own bytes: it may not have finished uploading).
+pub enum Source<'a> {
+    Sent(&'a Attachment),
+    Staged(&'a Arc<Prepared>),
+}
+
+impl Source<'_> {
+    fn id(&self) -> String {
+        match self {
+            Source::Sent(attachment) => attachment.id.clone(),
+            Source::Staged(prepared) => staged_id(prepared),
+        }
+    }
+
+    fn duration_ms(&self) -> Option<u64> {
+        match self {
+            Source::Sent(attachment) => attachment.duration_ms,
+            Source::Staged(prepared) => prepared.duration_ms,
+        }
+    }
+}
+
+/// A staged recording's player id: stable while it stays staged.
+fn staged_id(prepared: &Arc<Prepared>) -> String {
+    format!("staged-voice-{:p}", Arc::as_ptr(prepared))
 }
 
 /// A card on screen, updated as playback moves.
@@ -42,7 +74,8 @@ struct Card {
     pause: glib::WeakRef<gtk::Button>,
     wave: glib::WeakRef<gtk::DrawingArea>,
     time: glib::WeakRef<gtk::Label>,
-    error: glib::WeakRef<gtk::Label>,
+    /// Where a sent message shows why it can't play (chips show none).
+    error: Option<glib::WeakRef<gtk::Label>>,
     /// How much has played (0–1), as the waveform draws it.
     played: Rc<Cell<f32>>,
     /// A drag in progress, shown instead of the player's position.
@@ -89,14 +122,15 @@ impl Voice {
         }
     }
 
-    /// Plays or pauses `attachment` (or plays it from `at` ms), stopping any
+    /// Plays or pauses `source` (or plays it from `at` ms), stopping any
     /// other voice message first.
-    pub fn play(self: &Rc<Self>, attachment: &Attachment, at: Option<u64>) {
+    pub fn play(self: &Rc<Self>, source: &Source, at: Option<u64>) {
+        let id = source.id();
         {
             let mut current = self.current.borrow_mut();
             if let Some(player) = current
                 .as_mut()
-                .filter(|current| current.id == attachment.id)
+                .filter(|current| current.id == id)
                 .and_then(|current| current.player.as_mut())
             {
                 match at {
@@ -111,28 +145,42 @@ impl Voice {
         }
         self.stop();
         let failed = |message: &str| Current {
-            id: attachment.id.clone(),
+            id: id.clone(),
             player: None,
             local: None,
+            _scratch: None,
             error: Some(message.into()),
         };
         let started = (|| {
             let binary = caper_client::ffmpeg::binary()
                 .ok_or("Voice playback needs the FFmpeg that ships with Caper.")?;
-            let local = attachment
-                .url
-                .as_deref()
-                .and_then(|url| self.streams.route(url))
-                .ok_or("This voice message can’t be played here.")?;
-            let mut player = Player::audio(binary, local.clone(), attachment.duration_ms);
+            let (input, local, scratch) = match source {
+                Source::Sent(attachment) => {
+                    let local = attachment
+                        .url
+                        .as_deref()
+                        .and_then(|url| self.streams.route(url))
+                        .ok_or("This voice message can’t be played here.")?;
+                    (local.clone(), Some(local), None)
+                }
+                Source::Staged(prepared) => {
+                    let scratch = prepared
+                        .on_disk()
+                        .map_err(|_| "This recording can’t be played here.")?;
+                    let input = scratch.path().to_string_lossy().into_owned();
+                    (input, None, Some(scratch))
+                }
+            };
+            let mut player = Player::audio(binary, input, source.duration_ms());
             match at {
                 Some(ms) => player.seek(ms, true),
                 None => player.play(),
             }
             Ok::<_, &str>(Current {
-                id: attachment.id.clone(),
+                id: id.clone(),
                 player: Some(player),
-                local: Some(local),
+                local,
+                _scratch: scratch,
                 error: None,
             })
         })();
@@ -230,12 +278,11 @@ impl Voice {
         cards.retain(|card| card.wave.upgrade().is_some());
         for card in cards.iter() {
             let (playing, position, error) = self.state_of(&card.id);
-            let (Some(play), Some(pause), Some(wave), Some(time), Some(error_label)) = (
+            let (Some(play), Some(pause), Some(wave), Some(time)) = (
                 card.play.upgrade(),
                 card.pause.upgrade(),
                 card.wave.upgrade(),
                 card.time.upgrade(),
-                card.error.upgrade(),
             ) else {
                 continue;
             };
@@ -262,9 +309,11 @@ impl Voice {
             if time.label() != text {
                 time.set_label(&text);
             }
-            error_label.set_label(error.as_deref().unwrap_or_default());
-            error_label.set_tooltip_text(error.as_deref());
-            error_label.set_visible(error.is_some());
+            if let Some(error_label) = card.error.as_ref().and_then(glib::WeakRef::upgrade) {
+                error_label.set_label(error.as_deref().unwrap_or_default());
+                error_label.set_tooltip_text(error.as_deref());
+                error_label.set_visible(error.is_some());
+            }
         }
     }
 }
@@ -327,7 +376,7 @@ pub fn card(images: &Images, attachment: &Attachment) -> gtk::Box {
         let (voice, attachment) = (Rc::downgrade(&voice), attachment.clone());
         button.connect_clicked(move |_| {
             if let Some(voice) = voice.upgrade() {
-                voice.play(&attachment, None);
+                voice.play(&Source::Sent(&attachment), None);
             }
         });
     }
@@ -355,7 +404,10 @@ pub fn card(images: &Images, attachment: &Attachment) -> gtk::Box {
         if let (Some(voice), Some(at)) = (voice_ref.upgrade(), fraction(drag, offset_x))
             && duration > 0
         {
-            voice.play(&attachment_ref, Some((at * duration as f32) as u64));
+            voice.play(
+                &Source::Sent(&attachment_ref),
+                Some((at * duration as f32) as u64),
+            );
         }
     });
     wave.add_controller(drag);
@@ -367,9 +419,127 @@ pub fn card(images: &Images, attachment: &Attachment) -> gtk::Box {
         pause: pause.downgrade(),
         wave: wave.downgrade(),
         time: time.downgrade(),
-        error: error.downgrade(),
+        error: Some(error.downgrade()),
         played,
         scrub,
+    });
+    voice.render();
+    root
+}
+
+/// A recording staged in a composer, as on the desktop: Play or Pause, its
+/// waveform and length (what remains once started), the upload's progress
+/// or "Retry upload", and Remove.
+pub fn chip(
+    images: &Images,
+    prepared: &Arc<Prepared>,
+    progress: Option<f32>,
+    error: Option<&str>,
+    remove: impl Fn() + 'static,
+    retry: impl Fn() + 'static,
+) -> gtk::Box {
+    let voice = images.voice.clone();
+    let duration = prepared.duration_ms.unwrap_or(0);
+    let summary = format!(
+        "Voice message, {}{}",
+        voice_note::duration_label(duration),
+        match (error, progress) {
+            (Some(error), _) => format!(", {error}"),
+            (None, Some(_)) => ", uploading".into(),
+            (None, None) => String::new(),
+        }
+    );
+    let root: gtk::Box = crate::app::named("GtkBox", &summary);
+    root.set_orientation(gtk::Orientation::Horizontal);
+    root.set_spacing(8);
+    root.add_css_class("voice-chip");
+    if error.is_some() {
+        root.add_css_class("failed");
+    }
+    root.set_size_request(236, 52);
+    // Its waveform expands within the chip, not the chip along the row.
+    root.set_hexpand(false);
+    let play: gtk::Button = crate::app::named("GtkButton", "Play voice message");
+    let pause: gtk::Button = crate::app::named("GtkButton", "Pause voice message");
+    for (button, icon) in [(&play, Icon::Play), (&pause, Icon::Pause)] {
+        let glyph = images.icon_image(icon, "#0c0d0f", 12);
+        glyph.set_halign(gtk::Align::Center);
+        glyph.set_valign(gtk::Align::Center);
+        button.set_child(Some(&glyph));
+        button.add_css_class("voice-play");
+        button.add_css_class("small");
+        button.set_valign(gtk::Align::Center);
+        root.append(button);
+    }
+    pause.add_css_class("pause");
+    pause.set_visible(false);
+    let middle = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    middle.set_hexpand(true);
+    middle.set_valign(gtk::Align::Center);
+    let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let played = Rc::new(Cell::new(0.0_f32));
+    let wave = gtk::DrawingArea::new();
+    wave.set_hexpand(true);
+    wave.set_content_height(16);
+    let peaks = prepared
+        .voice
+        .as_ref()
+        .and_then(|voice| voice.waveform.clone());
+    let shown = played.clone();
+    wave.set_draw_func(move |_, cr, width, height| {
+        draw_wave(cr, width, height, peaks.as_deref(), shown.get());
+    });
+    top.append(&wave);
+    let time = label(&voice_note::duration_label(duration), &["muted", "tiny"]);
+    time.set_width_chars(4);
+    time.set_xalign(1.0);
+    top.append(&time);
+    middle.append(&top);
+    // Upload state along the bottom: progress, then nothing once uploaded.
+    match (error, progress) {
+        (Some(_), _) => {
+            let again = gtk::Button::with_label("Retry upload");
+            again.add_css_class("flat");
+            again.add_css_class("chip-retry");
+            again.set_halign(gtk::Align::Start);
+            again.connect_clicked(move |_| retry());
+            middle.append(&again);
+        }
+        (None, Some(progress)) => {
+            let bar = gtk::ProgressBar::new();
+            bar.add_css_class("chip-progress");
+            bar.set_fraction(f64::from(progress.clamp(0.0, 1.0)));
+            middle.append(&bar);
+        }
+        (None, None) => {}
+    }
+    root.append(&middle);
+    let close: gtk::Button = crate::app::named("GtkButton", "Remove voice message");
+    close.set_child(Some(&images.icon_image(Icon::Close, "#b9bcbe", 14)));
+    close.set_tooltip_text(Some("Remove voice message"));
+    close.add_css_class("flat");
+    close.add_css_class("chip-remove");
+    close.set_valign(gtk::Align::Center);
+    close.connect_clicked(move |_| remove());
+    root.append(&close);
+    for button in [&play, &pause] {
+        let (voice, prepared) = (Rc::downgrade(&voice), prepared.clone());
+        button.connect_clicked(move |_| {
+            if let Some(voice) = voice.upgrade() {
+                voice.play(&Source::Staged(&prepared), None);
+            }
+        });
+    }
+    voice.cards.borrow_mut().push(Card {
+        id: staged_id(prepared),
+        duration,
+        play: play.downgrade(),
+        pause: pause.downgrade(),
+        wave: wave.downgrade(),
+        time: time.downgrade(),
+        error: None,
+        played,
+        scrub: Rc::new(Cell::new(None)),
     });
     voice.render();
     root

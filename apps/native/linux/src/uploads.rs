@@ -61,6 +61,21 @@ impl DraftFile {
         }
     }
 
+    /// A recording kept as a voice message: prepared already, and not yet
+    /// uploading (`restart` starts it).
+    pub fn recorded(
+        key: u64,
+        channel: String,
+        root: Option<String>,
+        prepared: Arc<caper_client::uploads::Prepared>,
+    ) -> Self {
+        Self {
+            upload: Upload::recorded(key, channel, root, prepared),
+            thumbnail: None,
+            editable: None,
+        }
+    }
+
     /// Stops its upload; the worker cancels the reservation.
     pub fn stop(&self) {
         self.upload.abandon();
@@ -116,6 +131,23 @@ pub fn chips(
         container.remove(&child);
     }
     for file in files {
+        // A staged recording: a compact voice chip beside the files.
+        if let Some(prepared) = file.voice() {
+            let key = file.key;
+            let uploading = file.attachment.is_none() && file.error.is_none();
+            let (remove, retry) = (handler.clone(), handler.clone());
+            let chip = crate::playback::chip(
+                images,
+                prepared,
+                uploading.then_some(file.progress),
+                file.error.as_deref(),
+                move || remove(ChipAction::Remove(key)),
+                move || retry(ChipAction::Retry(key)),
+            );
+            chip.set_valign(gtk::Align::Start);
+            container.append(&chip);
+            continue;
+        }
         let chip = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         chip.add_css_class("chip");
         chip.set_valign(gtk::Align::Start);

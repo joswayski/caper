@@ -31,6 +31,127 @@ pub struct Composer {
     /// The draft's link preview card, with "Remove link preview" (main
     /// composer only).
     pub preview: gtk::Box,
+    /// The input row, which the recording bar replaces while recording.
+    pub line: gtk::Box,
+    /// The microphone: it dictates (`app::recording`).
+    pub mic: gtk::Button,
+    pub recording: RecordingBar,
+    /// Transcribing (Cancel), or failed (Retry, Keep as voice note,
+    /// Discard), above the input.
+    pub dictation: DictationRow,
+}
+
+/// `[trash] ● 0:07 ▁▃▅▇▅ [Voice note] [done]` in the input row's place.
+pub struct RecordingBar {
+    pub root: gtk::Box,
+    pub discard: gtk::Button,
+    pub dot: gtk::Box,
+    pub timer: gtk::Label,
+    /// The live input meter (`app::recording` draws it).
+    pub meter: gtk::DrawingArea,
+    /// "Starting microphone…", "Transcribing…" or "Adding to your
+    /// message…" over the meter.
+    pub note: gtk::Label,
+    pub voice_note: gtk::Button,
+    pub done: gtk::Button,
+}
+
+pub struct DictationRow {
+    pub root: gtk::Box,
+    pub spinner: gtk::Spinner,
+    pub text: gtk::Label,
+    pub retry: gtk::Button,
+    pub keep: gtk::Button,
+    /// Cancel while transcribing, Discard once it failed.
+    pub drop: gtk::Button,
+}
+
+impl RecordingBar {
+    fn new(images: &Images) -> Self {
+        // Named for the recording; the timer's text reads its length.
+        let root: gtk::Box = crate::app::named("GtkBox", "Recording voice message");
+        root.set_orientation(gtk::Orientation::Horizontal);
+        root.set_spacing(8);
+        root.add_css_class("recording-bar");
+        root.set_visible(false);
+        let discard: gtk::Button = crate::app::named("GtkButton", "Discard dictation");
+        discard.set_child(Some(&images.icon_image(Icon::Trash, "#b9bcbe", 18)));
+        discard.set_tooltip_text(Some("Discard dictation"));
+        discard.add_css_class("flat");
+        discard.set_valign(gtk::Align::Center);
+        root.append(&discard);
+        let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        dot.add_css_class("recording-dot");
+        dot.set_valign(gtk::Align::Center);
+        dot.set_halign(gtk::Align::Center);
+        root.append(&dot);
+        let timer = label("0:00", &["recording-timer"]);
+        root.append(&timer);
+        let meter = gtk::DrawingArea::new();
+        meter.set_hexpand(true);
+        let note = label("", &["muted", "small"]);
+        note.set_xalign(0.0);
+        note.set_valign(gtk::Align::Center);
+        let stage = gtk::Overlay::new();
+        stage.set_child(Some(&meter));
+        stage.add_overlay(&note);
+        stage.set_hexpand(true);
+        root.append(&stage);
+        let voice_note: gtk::Button = crate::app::named("GtkButton", "Voice note");
+        voice_note.set_label("Voice note");
+        voice_note.add_css_class("voice-note");
+        voice_note.set_valign(gtk::Align::Center);
+        root.append(&voice_note);
+        let done: gtk::Button = crate::app::named("GtkButton", "Done, insert text");
+        done.set_child(Some(&images.icon_image(Icon::Check, "#f3f4f5", 16)));
+        done.set_tooltip_text(Some("Done, insert text"));
+        done.add_css_class("recording-done");
+        done.set_valign(gtk::Align::Center);
+        root.append(&done);
+        Self {
+            root,
+            discard,
+            dot,
+            timer,
+            meter,
+            note,
+            voice_note,
+            done,
+        }
+    }
+}
+
+impl DictationRow {
+    fn new() -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        root.add_css_class("dictation-row");
+        root.set_visible(false);
+        let spinner = gtk::Spinner::new();
+        spinner.set_size_request(12, 12);
+        root.append(&spinner);
+        let text = label("", &["small"]);
+        text.set_wrap(true);
+        text.set_xalign(0.0);
+        root.append(&text);
+        let small = |name: &str| {
+            let button = gtk::Button::with_label(name);
+            button.add_css_class("small-button");
+            button.set_valign(gtk::Align::Center);
+            root.append(&button);
+            button
+        };
+        let retry = small("Retry");
+        let keep = small("Keep as voice note");
+        let drop = small("Cancel");
+        Self {
+            root,
+            spinner,
+            text,
+            retry,
+            keep,
+            drop,
+        }
+    }
 }
 
 impl Composer {
@@ -56,8 +177,12 @@ impl Composer {
         preview.set_halign(gtk::Align::Start);
         preview.set_visible(false);
         root.append(&preview);
+        let dictation = DictationRow::new();
+        root.append(&dictation.root);
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         root.append(&line);
+        let recording = RecordingBar::new(images);
+        root.append(&recording.root);
         let attach: gtk::Button = crate::app::named("GtkButton", "Attach files");
         attach.set_child(Some(&images.icon_image(Icon::Plus, "#b9bcbe", 18)));
         attach.set_tooltip_text(Some("Attach files"));
@@ -95,6 +220,13 @@ impl Composer {
         gif.add_css_class("send");
         gif.set_visible(false);
         line.append(&gif);
+        let mic: gtk::Button = crate::app::named("GtkButton", "Dictate");
+        mic.set_child(Some(&images.icon_image(Icon::Mic, "#b9bcbe", 18)));
+        mic.set_tooltip_text(Some("Dictate"));
+        mic.set_valign(gtk::Align::End);
+        mic.add_css_class("flat");
+        mic.add_css_class("send");
+        line.append(&mic);
         let send: gtk::Button = crate::app::named("GtkButton", "Send message");
         send.set_child(Some(&images.icon_image(Icon::Send, "#b9bcbe", 18)));
         send.set_tooltip_text(Some("Send"));
@@ -120,6 +252,10 @@ impl Composer {
             gif,
             broadcast,
             preview,
+            line,
+            mic,
+            recording,
+            dictation,
         }
     }
 

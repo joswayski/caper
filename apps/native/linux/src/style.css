@@ -1807,3 +1807,138 @@ button.inline-link label {
 button.inline-link {
   font-size: inherit;
 }
+
+/* A composer's voice recording, in place of its input row: discard, the
+   live dot and timer, the input meter, "Voice note" and Done. */
+.recording-bar {
+  min-height: 40px;
+  padding: 0 0 0 0;
+}
+
+.recording-dot {
+  min-width: 10px;
+  min-height: 10px;
+  border-radius: 999px;
+  background: @caper_text_muted;
+}
+
+.recording-dot.live {
+  background: @caper_terracotta_bright;
+}
+
+.recording-timer {
+  color: @caper_text;
+  font-size: 13px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
+button.voice-note {
+  min-height: 32px;
+  min-width: 88px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid @caper_border;
+  background: transparent;
+  box-shadow: none;
+  color: @caper_text;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+button.voice-note:hover {
+  background: @caper_surface_hover;
+}
+
+/* Done: terracotta while live, with a ring that grows and fades each
+   second (still when animations are off). */
+@keyframes recording-ring {
+  from {
+    box-shadow: 0 0 0 0 alpha(@caper_terracotta_bright, 0.55);
+  }
+  to {
+    box-shadow: 0 0 0 7px alpha(@caper_terracotta_bright, 0);
+  }
+}
+
+button.recording-done {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 8px;
+  border: none;
+  background: @caper_terracotta_bright;
+}
+
+button.recording-done:not(:disabled) {
+  animation: recording-ring 1s cubic-bezier(0.33, 1, 0.68, 1) infinite;
+}
+
+button.recording-done:active {
+  background: @caper_terracotta;
+}
+
+button.recording-done:disabled {
+  background: @caper_surface_raised;
+}
+
+/* Transcribing, or what went wrong, above the input. */
+.dictation-row {
+  padding: 2px 0 6px;
+}
+
+button.small-button {
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+/* A recording staged in a composer. */
+.voice-chip {
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 0 4px 0 12px;
+}
+
+.voice-chip.failed {
+  border-color: alpha(@caper_error_text, 0.6);
+}
+
+button.voice-play.small {
+  min-width: 28px;
+  min-height: 28px;
+}
+
+button.chip-retry {
+  min-height: 0;
+  padding: 0;
+  color: @caper_error_text;
+  font-size: 11px;
+}
+
+progressbar.chip-progress trough,
+progressbar.chip-progress progress {
+  min-height: 2px;
+  border-radius: 1px;
+}
+
+progressbar.chip-progress trough {
+  background: @caper_border;
+}
+
+progressbar.chip-progress progress {
+  background: @caper_action;
+}
+
+button.chip-remove {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.tiny {
+  font-size: 11px;
+}

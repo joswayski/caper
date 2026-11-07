@@ -61,6 +61,8 @@ mod picture;
 mod profile;
 #[path = "reactors.rs"]
 mod reactors;
+#[path = "recording.rs"]
+mod recording;
 #[path = "requests.rs"]
 mod requests;
 #[path = "settings.rs"]
@@ -506,6 +508,11 @@ pub struct App {
     editor: RefCell<Option<editor::EditorWindow>>,
     /// Edited files opened in another app, kept until quit.
     opened: RefCell<Vec<std::sync::Arc<caper_client::uploads::Scratch>>>,
+    /// The microphone recording from a composer, and a dictation being
+    /// transcribed (`recording`).
+    recording: RefCell<Option<recording::Recording>>,
+    dictation: RefCell<Option<recording::Dictation>>,
+    recording_ticking: Cell<bool>,
 }
 
 struct PinsView {
@@ -583,6 +590,9 @@ pub fn start(application: &gtk::Application, base: &str) {
         report: RefCell::default(),
         editor: RefCell::default(),
         opened: RefCell::default(),
+        recording: RefCell::default(),
+        dictation: RefCell::default(),
+        recording_ticking: Cell::new(false),
         images,
         worker: Worker::new(api.clone(), Wakes(sender.clone())),
         state: RefCell::new(State::default()),
@@ -655,6 +665,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.connect_drop();
     app.connect_requests();
     app.connect_gifs();
+    app.connect_recording();
     app.connect_inbox();
     app.start_updates();
     app.install_actions();
@@ -1176,6 +1187,7 @@ impl App {
     /// it on the server, and return to sign-in.
     fn sign_out(self: &Rc<Self>) {
         self.close_audio();
+        self.clear_recording();
         if let Some(report) = self.report.borrow_mut().take() {
             report.window.destroy();
         }
@@ -3065,7 +3077,8 @@ impl App {
                     | Event::AvatarHistory { .. }
                     | Event::Picture { .. }
                     | Event::OpenNotification { .. }
-                    | Event::ActivityRead { .. }) => deferred.push(event),
+                    | Event::ActivityRead { .. }
+                    | Event::Dictated { .. }) => deferred.push(event),
                     event => self.handle(&mut state, event),
                 }
             }
@@ -3077,6 +3090,7 @@ impl App {
         for event in deferred {
             match event {
                 Event::Profiled { generation, result } => self.profiled(generation, result),
+                Event::Dictated { key, result } => self.dictated(key, result),
                 Event::InvitationLoaded {
                     space,
                     channel,
@@ -4398,6 +4412,7 @@ impl App {
         self.render_typing();
         self.render_reactors();
         self.render_history();
+        self.render_recording();
         let ui = &self.ui;
         let mut state = self.state.borrow_mut();
         let first_space = state.page() == Page::Chat && state.needs_first_space();
