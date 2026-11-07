@@ -319,7 +319,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
         Column(
             // Filled before the insets, so the bar and keyboard areas aren't left showing the dimmed scrim.
             Modifier.fillMaxSize().swipeCancelsPresses().entrance(MOTION_BASE, dy = 12.dp).background(Blackout).systemBarsPadding().imePadding()
-                .semantics { paneTitle = if (kind == "video") "Edit video" else "Edit image" }
+                .semantics { paneTitle = if (pictureMode) "Adjust picture" else if (kind == "video") "Edit video" else "Edit image" }
                 // Hardware keyboards: Ctrl+Z undoes, Ctrl+Shift+Z or Ctrl+Y redoes, Escape closes the field or the
                 // editor, and while cropping (with nothing else focused) arrows move the frame, Shift+arrows resize it.
                 .onPreviewKeyEvent { event ->
@@ -350,7 +350,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
         ) {
             // The same bar with or without a tool chosen.
             Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(cancel, Modifier.semantics { contentDescription = "Close" }) {
+                IconButton(cancel, Modifier.semantics { contentDescription = "Cancel editing" }) {
                     Icon(painterResource(R.drawable.lucide_x), null, tint = Text)
                 }
                 Text(name, Modifier.weight(1f).padding(horizontal = 4.dp).semantics { heading() }, color = Text, fontSize = 14.sp,

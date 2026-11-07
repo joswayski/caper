@@ -108,6 +108,18 @@ class AttachmentUiTest {
         }
     }
 
+    @Test fun editorIsNamedLikeWeb() {
+        val picture = mutableStateOf(false)
+        compose.setContent { CaperTheme { key(picture.value) {
+            AttachmentEditor("file:///missing.png", "image", "photo.png", null, cancel = {}, save = { _, _ -> }, pictureMode = picture.value)
+        } } }
+        val pane = { title: String -> androidx.compose.ui.test.SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.PaneTitle, title) }
+        compose.onNodeWithContentDescription("Cancel editing").assertExists()
+        compose.onNode(pane("Edit image")).assertExists()
+        compose.runOnIdle { picture.value = true }
+        compose.onNode(pane("Adjust picture")).assertExists()
+    }
+
     @Test fun viewerHideClosesAndConcealsTheOriginatingAttachment() {
         val file = ChatAttachment("viewer-spoiler", "image", "image/png", "secret.png", 10,
             spoiler = true, width = 240, height = 180, url = "https://cdn.invalid/secret")
