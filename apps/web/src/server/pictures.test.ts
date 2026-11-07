@@ -27,10 +27,12 @@ import Picture from "../components/Picture.tsx";
 import SpaceIcon from "../components/SpaceIcon.tsx";
 
 /** A GIF header (signature plus logical screen size); enough for the client's checks. */
-function gif(width: number, height: number, signature = "GIF89a", size = 32) {
+/** A header-only GIF: no colour table or frames, then the trailer. */
+function gif(width: number, height: number, signature = "GIF89a", size = 14) {
   const bytes = new Uint8Array(size);
   bytes.set([...signature].map((char) => char.charCodeAt(0)));
   bytes.set([width & 0xff, width >> 8, height & 0xff, height >> 8], 6);
+  bytes[13] = 0x3b;
   return bytes;
 }
 
@@ -289,12 +291,12 @@ test("a space icon reserves with its purpose and space, PUTs the signed headers,
     spaceId: "space1234567",
     filename: "space-icon.gif",
     contentType: "image/gif",
-    byteSize: 32,
+    byteSize: 14,
     width: 64,
     height: 64,
   });
   assert.deepEqual(fake.puts, [
-    { url: "https://r2.test/put", headers: { "content-type": "image/gif", "content-disposition": "inline" }, size: 32 },
+    { url: "https://r2.test/put", headers: { "content-type": "image/gif", "content-disposition": "inline" }, size: 14 },
   ]);
   assert.equal(fake.calls.filter((call) => call.path.endsWith("/complete")).length, 2);
   assert.equal((body.space as { iconAsset: string }).iconAsset, "asset123");

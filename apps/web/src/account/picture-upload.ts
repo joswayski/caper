@@ -4,6 +4,7 @@
 import { cropPixels, loadEditFont, paintEdit, type AttachmentEdit } from "../chat/edit.ts";
 import { encode, surface, type Context2D, type Surface } from "../chat/prepare.ts";
 import { decodeBitmap } from "../chat/heic.ts";
+import { cleanMetadata, MetadataRefused } from "../chat/metadata.ts";
 import {
   browserTransport,
   cancelUpload,
@@ -188,6 +189,10 @@ export async function uploadPicture(
   transport: UploadTransport = browserTransport,
   signal: AbortSignal = new AbortController().signal,
 ): Promise<Record<string, unknown>> {
+  // An unchanged GIF can carry comments and XMP; the server does not clean uploads.
+  const blob = await cleanMetadata(picture.blob, picture.contentType).catch((error: unknown) => {
+    throw error instanceof MetadataRefused ? new PictureError(pictureMessages.invalid) : error;
+  });
   const created = await transport.fetch("/api/assets", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -198,7 +203,7 @@ export async function uploadPicture(
       ...(target.purpose === "spaceIcon" ? { spaceId: target.spaceId } : {}),
       filename: pictureFilename(target.purpose, picture.contentType),
       contentType: picture.contentType,
-      byteSize: picture.blob.size,
+      byteSize: blob.size,
       width: picture.width,
       height: picture.height,
     }),
@@ -211,7 +216,7 @@ export async function uploadPicture(
   const id = reservation.id;
   try {
     if (typeof reservation.upload?.url !== "string") throw new PictureError(pictureMessages.failed);
-    await transport.put(reservation.upload.url, reservation.upload.headers ?? {}, picture.blob, progress, signal);
+    await transport.put(reservation.upload.url, reservation.upload.headers ?? {}, blob, progress, signal);
     const path = `/api/assets/${encodeURIComponent(id)}/complete${target.purpose === "avatar" && target.draft ? "?draft=true" : ""}`;
     for (let attempt = 0; ; attempt++) {
       const completed = await transport.fetch(path, { method: "POST", credentials: "same-origin", signal });
