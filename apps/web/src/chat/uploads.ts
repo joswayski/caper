@@ -7,9 +7,11 @@ import {
   type CompressionSettings,
   type PreparedFile,
 } from "./prepare.ts";
+import { MetadataRefused } from "./metadata.ts";
 import { voiceFilename, type VoiceRecording } from "./voice.ts";
 
 export const MAX_ATTACHMENTS = 10;
+export const METADATA_REFUSED = "Caper can’t remove hidden details like location from this file, so it can’t be sent.";
 /** Allow a queued batch of ten files (two minutes per original/preview) to finish cleaning. */
 export const COMPLETE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, ...Array<number>(240).fill(5_000)];
 /** Parts of a large file in flight at once, and part URLs asked for at a time.
@@ -204,7 +206,12 @@ export class AttachmentUpload {
     } catch (error) {
       if (!signal.aborted)
         this.update({
-          error: error instanceof UploadError || error instanceof EditFailed ? error.message : "Failed to upload.",
+          error:
+            error instanceof MetadataRefused
+              ? METADATA_REFUSED
+              : error instanceof UploadError || error instanceof EditFailed
+                ? error.message
+                : "Failed to upload.",
         });
       throw error;
     }

@@ -335,9 +335,11 @@ test("retained drafts coalesce focus and Send, renew after 23 hours, and retry t
 test("an edit cancels the earlier upload and never falls back to the unedited original", async () => {
   const t = transport([ready, ready]);
   const states: Array<string | undefined> = [];
+  // The smallest JPEG shape the metadata cleaner accepts: SOI, a scan, EOI.
+  const photo = Uint8Array.from([0xff, 0xd8, 0xff, 0xda, 0, 2, ...Buffer.from("TEST FIXTURE photo"), 0xff, 0xd9]);
   const upload = new AttachmentUpload(
     "c1",
-    new File(["TEST FIXTURE photo"], "photo.jpg", { type: "image/jpeg" }),
+    new File([photo], "photo.jpg", { type: "image/jpeg" }),
     DEFAULT_COMPRESSION,
     (state) => states.push(state.error),
     t.value,
@@ -361,7 +363,7 @@ test("an edit cancels the earlier upload and never falls back to the unedited or
   await upload.setEdit(undefined);
   assert.equal(upload.state.error, undefined);
   assert.equal(t.puts.length, 2);
-  assert.equal(await t.puts[1].body.text(), "TEST FIXTURE photo");
+  assert.deepEqual(new Uint8Array(await t.puts[1].body.arrayBuffer()), photo);
   assert.equal(upload.source?.name, "photo.jpg", "the original stays available to the editor");
 });
 
