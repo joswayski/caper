@@ -550,6 +550,11 @@ impl Live {
         }
     }
 
+    /// How long until the earliest timed mute ends.
+    pub fn next_mute_expiry(&self) -> Option<Duration> {
+        self.notifications.next_expiry(chrono::Utc::now())
+    }
+
     /// A DM's bell-slash label while it is muted.
     pub fn direct_muted(&self, id: &str) -> Option<String> {
         self.notifications

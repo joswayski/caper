@@ -95,6 +95,8 @@ const TIMER_UNREAD: usize = 6;
 /// The GIF picker's search, once typing pauses, and its next GIF frame.
 pub(crate) const TIMER_GIFS: usize = 8;
 pub(crate) const TIMER_GIF_FRAMES: usize = 9;
+/// Redraws the DM rows when the earliest timed mute ends, as egui does.
+const TIMER_MUTE: usize = 10;
 pub(crate) const WHEEL_STEP: f64 = 48.0;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
@@ -659,11 +661,7 @@ impl App {
                     if self.settings.is_some() {
                         self.settings_changed();
                     }
-                    // Mutes and failed changes show in the DM rows and menu.
-                    self.dirty.sidebar = true;
-                    self.dirty.dm_menu = true;
-                    self.events |= EV_ROWS;
-                    self.need = true;
+                    self.mutes_changed();
                 }
                 live::Update::DirectCreated(error) => self.direct_created(error),
                 live::Update::Badges => {
@@ -981,6 +979,32 @@ impl App {
     }
 
     /// Runs the spinner and countdown timer only while one is shown.
+    /// Mutes and failed changes show in the DM rows and menu; the rows
+    /// redraw again when the earliest timed mute ends.
+    fn mutes_changed(&mut self) {
+        self.dirty.sidebar = true;
+        self.dirty.dm_menu = true;
+        self.events |= EV_ROWS;
+        self.need = true;
+        let wait = self.live.as_ref().and_then(|l| l.next_mute_expiry());
+        unsafe {
+            match wait {
+                // Rounded up, so the mute has ended when it fires.
+                Some(wait) => {
+                    SetTimer(
+                        Some(self.hwnd),
+                        TIMER_MUTE,
+                        (wait.as_millis() + 1).min(u32::MAX as u128) as u32,
+                        None,
+                    );
+                }
+                None => {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_MUTE);
+                }
+            }
+        }
+    }
+
     fn arm_signin_timer(&mut self) {
         let Some(s) = &self.signin else { return };
         // The spinner turns and the countdown ticks only while shown.
@@ -1454,6 +1478,7 @@ impl App {
                 }
                 TIMER_CARD => self.show_card(),
                 TIMER_MEDIA => self.next_gif_frame(),
+                TIMER_MUTE => self.mutes_changed(),
                 TIMER_GIFS => self.gifs_tick(),
                 TIMER_GIF_FRAMES => self.next_picker_frame(),
                 TIMER_UNREAD => {
