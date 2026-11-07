@@ -1749,7 +1749,7 @@ impl CaperApp {
             persist_preferences: fixture.is_none(),
             connection_copy_status: "",
             diagnostics_copied: false,
-            updates: updates::Updates::start(context, fixture.is_none()),
+            updates: updates::start(context, fixture.is_none()),
             whats_new,
             uploads: None,
             klipy: None,
@@ -9798,7 +9798,7 @@ impl CaperApp {
         if !self.persist_preferences {
             return;
         }
-        self.whats_new.restore(storage);
+        whats_new::restore(&mut self.whats_new, storage);
         if let Some(json) = storage.get_string(navigation::SpaceLandings::STORAGE_KEY) {
             self.space_landings = navigation::SpaceLandings::restore(&json);
         }
@@ -9903,7 +9903,7 @@ impl eframe::App for CaperApp {
             if let Some(json) = self.space_landings.to_json() {
                 storage.set_string(navigation::SpaceLandings::STORAGE_KEY, json);
             }
-            self.whats_new.save(storage);
+            whats_new::save(&self.whats_new, storage);
         }
         if self.persist_preferences
             && let Ok(json) = serde_json::to_string(&self.voice.preferences)
@@ -10012,7 +10012,7 @@ impl eframe::App for CaperApp {
         if self.persist_preferences
             && let Some(storage) = frame.storage_mut()
         {
-            self.whats_new.save(storage);
+            whats_new::save(&self.whats_new, storage);
         }
         // A mouse close leaves focus alone, as `:focus-visible` would.
         let from_settings_menu = matches!(

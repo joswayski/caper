@@ -51,6 +51,7 @@ pub mod sign_in;
 pub mod startup;
 #[path = "../../desktop/voice-spike/src/state.rs"]
 pub mod state;
+pub mod updates;
 pub mod uploads;
 pub mod voice;
 // Voice media, shared with the voice spike (where it is `crate::media`), whose
