@@ -19,6 +19,20 @@ use std::path::Path;
 /// An edit that could not be applied fails the upload rather than sending the
 /// unedited original: people crop to hide things.
 pub const FAILED: &str = "Couldn’t apply your edits.";
+/// The editor bar's X, as web names it; its tooltip is "Cancel".
+pub const CANCEL_EDITING: &str = "Cancel editing";
+/// At this window width or less, the bar shows only its title, not the
+/// file name under it (web's 420px breakpoint).
+pub const NAME_HIDES_AT: f32 = 420.0;
+
+/// The editor bar's title, as web: a profile picture is adjusted, a file edited.
+pub fn title(kind: Kind, profile_picture: bool) -> &'static str {
+    match (profile_picture, kind) {
+        (true, _) => "Adjust picture",
+        (false, Kind::Video) => "Edit video",
+        (false, Kind::Image) => "Edit image",
+    }
+}
 /// Markup colours offered before the custom picker; the first is the default.
 pub const COLORS: [[u8; 3]; 6] = [
     [0xE5, 0x48, 0x4D],
