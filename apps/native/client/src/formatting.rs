@@ -2,6 +2,9 @@
 //! source characters show, and edits that keep its delimiters balanced.
 //! Positions are Unicode scalars unless a range says bytes.
 
+/// Composer edits as web makes them (`composer::edit`).
+#[path = "../../../../shared/messages/composer.rs"]
+pub mod composer;
 #[path = "../../../../shared/messages/formatting.rs"]
 pub mod parser;
 use crate::links;
@@ -65,60 +68,13 @@ pub fn projection(text: &str) -> (String, Vec<usize>) {
     (visible, indices)
 }
 
-/// Strip only old hidden delimiters that a normal edit has made visible/orphaned.
+pub use composer::{Edited, edit};
+
+/// One composer edit without a style carried from the previous key
+/// (`composer::edit` with `continuing` -1).
 pub fn repair_edit(previous: &str, next: &str, start: usize, end: usize) -> (String, usize, usize) {
-    let hidden = |text: &str| -> Vec<bool> {
-        source_runs(text)
-            .iter()
-            .flat_map(|run| {
-                std::iter::repeat_n(run.hidden, text[run.range.clone()].chars().count())
-            })
-            .collect()
-    };
-    let before: Vec<char> = previous.chars().collect();
-    let after: Vec<char> = next.chars().collect();
-    let old_hidden = hidden(previous);
-    if previous == next || !old_hidden.contains(&true) {
-        return (next.into(), start, end);
-    }
-    let prefix = before
-        .iter()
-        .zip(&after)
-        .take_while(|(a, b)| a == b)
-        .count();
-    let suffix = before[prefix..]
-        .iter()
-        .rev()
-        .zip(after[prefix..].iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-    let new_hidden = hidden(next);
-    let mut removed = vec![false; after.len()];
-    for (index, old_hidden) in old_hidden.into_iter().enumerate() {
-        if !old_hidden {
-            continue;
-        }
-        let mapped = if index < prefix {
-            index
-        } else if index >= before.len() - suffix {
-            after.len() - (before.len() - index)
-        } else {
-            continue;
-        };
-        if !new_hidden[mapped] {
-            removed[mapped] = true;
-        }
-    }
-    if !removed.contains(&true) {
-        return (next.into(), start, end);
-    }
-    let offset = |value: usize| value - removed[..value].iter().filter(|removed| **removed).count();
-    let repaired: String = after
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, c)| (!removed[index]).then_some(c))
-        .collect();
-    repair_edit(previous, &repaired, offset(start), offset(end))
+    let edited = edit(previous, next, start, end, -1);
+    (edited.text, edited.start, edited.end)
 }
 
 /// Selection offsets are Unicode scalar positions, as used by egui.

@@ -2,7 +2,7 @@
 use crate::egui;
 #[cfg(test)]
 use caper_client::formatting::parser;
-pub use caper_client::formatting::{projection, repair_edit, runs, source_runs, toggle};
+pub use caper_client::formatting::{edit, projection, runs, source_runs, toggle};
 
 /// The source position for a visible caret: just before the next visible character,
 /// or the end of the source (after any closing delimiters) past the last one, so
@@ -203,6 +203,22 @@ pub fn keep_selection(ui: &egui::Ui, text: &str, output: &mut egui::text_edit::T
 }
 
 /// Small selection toolbar; the draft retains wire markers, hidden by its layouter.
+/// Ends the style `controls` carries between keys when the field `id` shows
+/// another conversation, even one with an identical draft.
+pub fn typing_in(
+    ui: &egui::Ui,
+    id: egui::Id,
+    conversation: impl std::hash::Hash + std::fmt::Debug,
+) {
+    let (key, conversation) = (id.with("format-conversation"), id.with(conversation));
+    ui.data_mut(|data| {
+        if data.get_temp::<egui::Id>(key) != Some(conversation) {
+            data.remove::<(i32, usize, String)>(id.with("format-pending"));
+            data.insert_temp(key, conversation);
+        }
+    });
+}
+
 pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response, enabled: bool) {
     if !enabled || !response.enabled() {
         return;
@@ -219,20 +235,40 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
     let native_transaction = ui.data_mut(|data| data.get_temp::<bool>(response.id.with("format-ime")).unwrap_or(false)) || ui.input(|input| input.raw.events.iter().any(|event| {
         matches!(event, egui::Event::Ime(_)) || matches!(event, egui::Event::Key { key: egui::Key::Z | egui::Key::Y, modifiers, .. } if modifiers.command)
     }));
+    // The style web carries to a key typed at the caret the last key left, in
+    // the text it left (an edit made elsewhere, such as an IME's, ends it).
+    let pending_id = response.id.with("format-pending");
+    let (mut pending, left, left_text) = ui
+        .data(|data| data.get_temp::<(i32, usize, String)>(pending_id))
+        .unwrap_or((-1, usize::MAX, String::new()));
     if response.changed()
         && !native_transaction
         && let Some(previous) = previous
     {
-        let (repaired, primary, secondary) = repair_edit(
+        let typed = text.chars().count().checked_sub(previous.chars().count());
+        let continuing = if range.primary == range.secondary
+            && typed.and_then(|count| range.primary.index.0.checked_sub(count)) == Some(left)
+            && previous == left_text
+        {
+            pending
+        } else {
+            -1
+        };
+        let edited = edit(
             &previous,
             text,
             range.primary.index.0,
             range.secondary.index.0,
+            continuing,
         );
-        if repaired != *text {
-            *text = repaired;
-            range.primary.index = primary.into();
-            range.secondary.index = secondary.into();
+        pending = edited.pending;
+        if edited.text != *text
+            || edited.start != range.primary.index.0
+            || edited.end != range.secondary.index.0
+        {
+            *text = edited.text;
+            range.primary.index = edited.start.into();
+            range.secondary.index = edited.end.into();
             state.cursor.set_char_range(Some(range));
             state.clone().store(ui.ctx(), response.id);
             ui.ctx().request_repaint();
@@ -243,6 +279,19 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
         state.cursor.set_char_range(Some(range));
         state.clone().store(ui.ctx(), response.id);
     }
+    let caret = if range.primary == range.secondary {
+        range.primary.index.0
+    } else {
+        usize::MAX
+    };
+    // A moved caret, undo, redo, an IME, another draft or leaving the field ends it.
+    if !response.has_focus()
+        || native_transaction
+        || !response.changed() && (caret != left || *text != left_text)
+    {
+        pending = -1;
+    }
+    ui.data_mut(|data| data.insert_temp(pending_id, (pending, caret, text.clone())));
     let [start, end] = range.sorted_cursors().map(|c| c.index.0);
     let mut chosen = None;
     if response.has_focus() && !native_transaction {
@@ -395,6 +444,7 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
 mod tests {
     use super::*;
     use crate::TestPass as _;
+    use caper_client::formatting::repair_edit;
     #[test]
     fn visible_navigation_clipboard_and_link_edges() {
         let text = "**a👩‍💻b**";
@@ -517,6 +567,88 @@ mod tests {
             frame(&mut text, key(egui::Key::Backspace, egui::Modifiers::NONE));
             assert_eq!(text, "");
         }
+    }
+
+    /// The style web carries to the next key continues only while the field
+    /// shows what typing left: a moved caret, undo and redo, or another
+    /// conversation with an identical draft type plain again.
+    #[test]
+    fn composer_typing_ends_when_the_field_changes_under_it() {
+        let context = egui::Context::default();
+        crate::configure(&context);
+        let id = egui::Id::unique("typing-lifecycle-test");
+        let frame = |text: &mut String, conversation: u8, events| {
+            context.test_pass(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    ctx.root_ui(|root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            typing_in(ui, id, conversation);
+                            prepare(ui, text, id, true);
+                            let mut output = egui::TextEdit::multiline(text).id(id).show(ui);
+                            composer_controls(ui, text, &mut output, true);
+                            output.response.request_focus();
+                        })
+                    });
+                },
+            );
+        };
+        let caret = |at: usize| {
+            let mut state = egui::TextEdit::load_state(&context, id).unwrap();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(at),
+                )));
+            state.store(&context, id);
+        };
+        let key = |key| {
+            vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }]
+        };
+        let typed = |key: &str| vec![egui::Event::Text(key.into())];
+        let start = |text: &mut String, conversation| {
+            *text = "**bold**".into();
+            frame(text, conversation, vec![]);
+            caret(8);
+            frame(text, conversation, vec![]);
+            frame(text, conversation, typed(" "));
+            frame(text, conversation, vec![]);
+            assert_eq!(text, "**bold** ");
+        };
+        let mut text = String::new();
+        start(&mut text, 0);
+        frame(&mut text, 0, typed("a"));
+        assert_eq!(text, "**bold** **a**", "continuous typing");
+        start(&mut text, 1);
+        caret(0);
+        frame(&mut text, 1, vec![]);
+        caret(9);
+        frame(&mut text, 1, vec![]);
+        frame(&mut text, 1, typed("a"));
+        assert_eq!(text, "**bold** a", "caret moved away and back");
+        start(&mut text, 2);
+        frame(&mut text, 2, key(egui::Key::Z));
+        frame(&mut text, 2, key(egui::Key::Y));
+        caret(9);
+        frame(&mut text, 2, vec![]);
+        frame(&mut text, 2, typed("a"));
+        assert_eq!(text, "**bold** a", "undo then redo");
+        start(&mut text, 3);
+        frame(&mut text, 4, vec![]);
+        frame(&mut text, 4, typed("a"));
+        assert_eq!(
+            text, "**bold** a",
+            "identical draft in another conversation"
+        );
     }
 
     #[test]

@@ -17138,6 +17138,7 @@ impl CaperApp {
                         format!("Message #{}", self.channel_name())
                     };
                     let composer_id = egui::Id::unique("message-composer");
+                    formatting::typing_in(ui, composer_id, (&self.selected_direct, &self.selected_channel));
                     if attach && ui.is_enabled() && ui.memory(|memory| memory.has_focus(composer_id))
                         && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Paste(_)))) {
                         match profile_dm::paste_files() {
