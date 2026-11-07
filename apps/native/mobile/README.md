@@ -7,8 +7,8 @@ workspace, so mobile builds never compile the desktop client's media stack.
 
 | Module | Sources | Android | Apple |
 | --- | --- | --- | --- |
-| Bold/italic formatting | `shared/messages/formatting.rs` | `data/Formatting.kt` | |
-| Links | `shared/messages/links.rs` | `data/Links.kt` | |
+| Bold/italic formatting | `shared/messages/formatting.rs` | `data/Formatting.kt` | `MessageFormatting.swift` |
+| Links | `shared/messages/links.rs` | `data/Links.kt` | `MessageLinks.swift` |
 
 The host code keeps its own types and editing helpers and calls Rust for the
 parse. Results are flat `i32` arrays of offsets into the caller's string
