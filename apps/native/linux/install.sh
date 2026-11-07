@@ -30,7 +30,22 @@ mkdir -p "$lib" "$(dirname "$bin")" "$(dirname "$desktop")" "$(dirname "$icon")"
 # FFmpeg and ONNX Runtime stay beside the binary, where it looks for them.
 install -m 0755 "$here/lib/caper-linux" "$here/lib/ffmpeg" "$here/lib/libonnxruntime.so.1.23.2" "$lib/"
 ln -sf "$lib/caper-linux" "$bin"
-sed "s|^Exec=caper-linux|Exec=$lib/caper-linux|" "$here/share/chat.caper.linux.desktop" >"$desktop"
+# Desktop entries unescape strings before parsing the quoted command. Keep
+# prefixes with spaces and reserved characters as one literal executable.
+exec_path=${lib//\\/\\\\\\\\}/caper-linux
+exec_path=${exec_path//\"/\\\\\"}
+exec_path=${exec_path//\$/\\\\\$}
+exec_path=${exec_path//\`/\\\\\`}
+exec_path=${exec_path//%/%%}
+while IFS= read -r line; do
+  if [[ "$line" == Exec=* ]]; then
+    # GIO checks the executable before expanding %%; env keeps a percent
+    # in the install path in an argument, which is expanded before launch.
+    printf 'Exec=env "%s"\n' "$exec_path"
+  else
+    printf '%s\n' "$line"
+  fi
+done <"$here/share/chat.caper.linux.desktop" >"$desktop"
 install -m 0644 "$here/share/chat.caper.linux.svg" "$icon"
 rm -rf "$lib/licenses"
 cp -R "$here/licenses" "$lib/licenses"

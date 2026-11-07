@@ -5,7 +5,7 @@
 # backend against the local fixture (and the egui desktop for comparison),
 # then walks through the manual checks, saving everything to one report.
 set -u
-cd "$(dirname "$0")/../../.."
+cd "$(dirname "$0")/../../.." || exit 1
 REPO=$PWD
 STAMP=$(date +%Y%m%d-%H%M%S)
 REPORT=${REPORT:-$HOME/caper-hardware-check-$STAMP.md}

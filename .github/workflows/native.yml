@@ -156,7 +156,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential clang-21 lld-21 libglib2.0-dev libpulse0 libasound2t64 libasound2-dev \
             pkg-config libssl-dev libdbus-1-dev libgtk-4-dev \
-            xvfb xdotool dbus-x11 at-spi2-core python3-gi gir1.2-atspi-2.0 gnome-keyring
+            xvfb xdotool dbus-x11 at-spi2-core python3-gi gir1.2-atspi-2.0 gnome-keyring desktop-file-utils
       - name: Format, lint and test caper-linux
         env:
           CARGO_BUILD_JOBS: '2'
@@ -180,6 +180,7 @@ jobs:
           CC: clang-21
           CXX: clang++-21
         run: |
+          python3 tests/test_linux_install.py -v
           export LK_CUSTOM_WEBRTC="$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux)"
           cargo build --manifest-path apps/native/desktop/Cargo.toml --locked --release --package caper-linux
           apps/native/linux/package.sh apps/native/desktop/target/release/caper-linux "$RUNNER_TEMP/tester"
