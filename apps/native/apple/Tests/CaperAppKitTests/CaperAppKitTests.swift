@@ -628,7 +628,10 @@ import XCTest
         let second = app.buttons["forward-destination-\(secondChannel)"]
         func replace(_ field: XCUIElement, with text: String) {
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
-            field.click(); field.typeKey("a", modifierFlags: .command); field.typeKey("v", modifierFlags: .command)
+            field.click(); field.typeKey("a", modifierFlags: .command)
+            // Pasting an empty string is a no-op in an AppKit field editor.
+            if text.isEmpty { field.typeKey(.delete, modifierFlags: []) }
+            else { field.typeKey("v", modifierFlags: .command) }
             XCTAssertEqual(field.value as? String, text)
         }
         func openForward(options: Bool) {
@@ -2335,7 +2338,19 @@ import XCTest
         XCTAssertFalse(app.buttons["send-message"].isEnabled)
         resize(app, width: 900)
         capture("composer counter over limit narrow", app: app)
-        XCTAssertLessThanOrEqual(composer.frame.maxX, app.buttons["composer-gif"].frame.minX)
+        let viewports = app.scrollViews.containing(.textView, identifier: "message-composer")
+        XCTAssertEqual(viewports.count, 1)
+        let viewport = viewports.firstMatch.frame
+        let window = app.windows["Caper — AppKit development (not feature complete)"].frame
+        XCTAssertGreaterThan(viewport.width, 0); XCTAssertGreaterThan(viewport.height, 0)
+        XCTAssertTrue(window.contains(viewport))
+        // Compact composers place accessories below the editor, not beside it.
+        // Measure its viewport, not the long NSTextView document scrolled inside.
+        for button in [app.buttons["composer-gif"], emoji, app.buttons["send-message"]] {
+            XCTAssertTrue(window.contains(button.frame))
+            XCTAssertTrue(viewport.maxX <= button.frame.minX || viewport.maxY <= button.frame.minY,
+                "Composer accessories must sit beside or below the editor without overlap")
+        }
         XCTAssertLessThanOrEqual(app.buttons["composer-gif"].frame.maxX, emoji.frame.minX)
         XCTAssertLessThanOrEqual(emoji.frame.maxX, app.buttons["send-message"].frame.minX)
     }
