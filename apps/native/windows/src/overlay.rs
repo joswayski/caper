@@ -1487,7 +1487,9 @@ impl App {
                         self.dialog_activate(Part::Primary)
                     }
                     VK_RETURN if d.kind == Kind::Edit && d.field.focused && !d.busy => {
+                        let previous = d.field.text.clone();
                         d.field.insert(&['\n' as u16]);
+                        d.field.typed(&previous);
                         self.dialog_changed();
                     }
                     _ if ctrl && vk == VIRTUAL_KEY('C' as u16) => {
@@ -1496,9 +1498,15 @@ impl App {
                             crate::set_clipboard(hwnd, &d.field.text[a..b]);
                         }
                     }
-                    _ if d.field.focused
-                        && !d.busy
-                        && d.field.edit_key(hwnd, vk, ctrl, shift, true) =>
+                    _ if d.field.focused && !d.busy && {
+                        let previous = d.field.text.clone();
+                        let edited = d.field.edit_key(hwnd, vk, ctrl, shift, true);
+                        // The message's Markdown repairs as the composer's does.
+                        if edited && d.kind == Kind::Edit {
+                            d.field.typed(&previous);
+                        }
+                        edited
+                    } =>
                     {
                         self.dialog_changed();
                     }
@@ -1515,7 +1523,11 @@ impl App {
                     && c >= 0x20
                     && c != 0x7f
                 {
+                    let previous = d.field.text.clone();
                     d.field.insert(&[c]);
+                    if d.kind == Kind::Edit {
+                        d.field.typed(&previous);
+                    }
                     self.dialog_changed();
                 }
                 done

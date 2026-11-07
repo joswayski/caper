@@ -725,6 +725,7 @@ impl App {
             return;
         };
         t.composer.focused = focused;
+        t.composer.end_typing();
         t.composer.caret_on = true;
         unsafe {
             if focused {
@@ -941,6 +942,7 @@ impl App {
                     }
                     return done;
                 }
+                let previous = t.composer.text.clone();
                 match vk {
                     VK_RETURN if shift => t.composer.insert(&['\n' as u16]),
                     VK_RETURN => {
@@ -954,13 +956,17 @@ impl App {
                     _ if t.composer.edit_key(hwnd, vk, ctrl, shift, true) => {}
                     _ => return Some(None),
                 }
+                t.composer.typed(&previous);
                 self.thread_composer_changed();
                 done
             }
             WM_CHAR if focused => {
                 let c = wp.0 as u16;
                 if !ctrl && c >= 0x20 && c != 0x7f {
-                    self.thread.as_mut()?.composer.insert(&[c]);
+                    let composer = &mut self.thread.as_mut()?.composer;
+                    let previous = composer.text.clone();
+                    composer.insert(&[c]);
+                    composer.typed(&previous);
                     self.thread_composer_changed();
                 }
                 done

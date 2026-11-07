@@ -657,6 +657,7 @@ impl App {
                     self.composer.caret = self.composer.text.len();
                     self.composer.anchor = self.composer.caret;
                     self.composer.comp.clear();
+                    self.composer.end_typing();
                     self.composer_changed();
                     self.bar_changed();
                 }
@@ -1005,6 +1006,7 @@ impl App {
             return;
         }
         self.composer.focused = focused;
+        self.composer.end_typing();
         self.composer.caret_on = true;
         unsafe {
             if focused {
@@ -1816,7 +1818,9 @@ impl App {
             WM_CHAR => {
                 let c = wp.0 as u16;
                 if self.composer.focused && !ctrl && c >= 0x20 && c != 0x7f {
+                    let previous = self.composer.text.clone();
                     self.composer.insert(&[c]);
+                    self.composer.typed(&previous);
                     self.composer_changed();
                 }
                 return Some(LRESULT(0));
@@ -1832,6 +1836,7 @@ impl App {
             WM_IME_ENDCOMPOSITION if self.focused_field().is_some() => {
                 if let Some(f) = self.focused_field_mut() {
                     f.comp.clear();
+                    f.end_typing();
                 }
                 self.field_changed(false);
                 return Some(LRESULT(0));
@@ -2226,6 +2231,7 @@ impl App {
             }
             return true;
         }
+        let previous = self.composer.text.clone();
         match vk {
             VK_RETURN if shift => self.composer.insert(&['\n' as u16]),
             VK_RETURN => {
@@ -2243,6 +2249,7 @@ impl App {
             _ if self.composer.edit_key(self.hwnd, vk, ctrl, shift, true) => {}
             _ => return false,
         }
+        self.composer.typed(&previous);
         self.composer_changed();
         true
     }
