@@ -1,0 +1,174 @@
+{
+  "description": "@mention tokens in message text (shared/messages/mentions.rs; the API resolves the same grammar in apps/api/src/mentions.rs). Every client must find exactly these tokens, in order, with these lowercase names. Clients resolve formatted text after removing its ** and _ delimiters; these cases are the raw grammar. See docs/media.md#scope-and-architecture.",
+  "cases": [
+    {
+      "note": "at the start",
+      "text": "@alice hi",
+      "tokens": [
+        {
+          "text": "@alice",
+          "name": "alice"
+        }
+      ]
+    },
+    {
+      "note": "after a space, tab and newline",
+      "text": "hi @bob\t@carol\n@dave",
+      "tokens": [
+        {
+          "text": "@bob",
+          "name": "bob"
+        },
+        {
+          "text": "@carol",
+          "name": "carol"
+        },
+        {
+          "text": "@dave",
+          "name": "dave"
+        }
+      ]
+    },
+    {
+      "note": "after opening brackets",
+      "text": "(@a) [@b] {@c}",
+      "tokens": [
+        {
+          "text": "@a",
+          "name": "a"
+        },
+        {
+          "text": "@b",
+          "name": "b"
+        },
+        {
+          "text": "@c",
+          "name": "c"
+        }
+      ]
+    },
+    {
+      "note": "names are lowercased; digits and underscores count",
+      "text": "@Alice_2 @BOB",
+      "tokens": [
+        {
+          "text": "@Alice_2",
+          "name": "alice_2"
+        },
+        {
+          "text": "@BOB",
+          "name": "bob"
+        }
+      ]
+    },
+    {
+      "note": "not inside a word or an email address",
+      "text": "a@b mail me at x@example.com",
+      "tokens": []
+    },
+    {
+      "note": "not after punctuation other than an opening bracket",
+      "text": ".@a ,@b \"@c '@d *@e _@f",
+      "tokens": []
+    },
+    {
+      "note": "a lone @ is no token",
+      "text": "@ and @@ and @.",
+      "tokens": []
+    },
+    {
+      "note": "a second @ directly after a name is not a start",
+      "text": "@a@b",
+      "tokens": [
+        {
+          "text": "@a",
+          "name": "a"
+        }
+      ]
+    },
+    {
+      "note": "32 name characters is the longest token",
+      "text": "@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tokens": [
+        {
+          "text": "@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "note": "33 characters are plain text, and so is the rest of the run",
+      "text": "@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa @ok",
+      "tokens": [
+        {
+          "text": "@ok",
+          "name": "ok"
+        }
+      ]
+    },
+    {
+      "note": "a name ends at the first other character",
+      "text": "@jos\u00e9 @ann-marie @x.y",
+      "tokens": [
+        {
+          "text": "@jos",
+          "name": "jos"
+        },
+        {
+          "text": "@ann",
+          "name": "ann"
+        },
+        {
+          "text": "@x",
+          "name": "x"
+        }
+      ]
+    },
+    {
+      "note": "Unicode whitespace starts a token",
+      "text": "a\u00a0@nbsp b\u3000@ideographic c\u2028@line",
+      "tokens": [
+        {
+          "text": "@nbsp",
+          "name": "nbsp"
+        },
+        {
+          "text": "@ideographic",
+          "name": "ideographic"
+        },
+        {
+          "text": "@line",
+          "name": "line"
+        }
+      ]
+    },
+    {
+      "note": "emoji and other symbols before @ do not",
+      "text": "\ud83d\ude00@x \u00e9@y",
+      "tokens": []
+    },
+    {
+      "note": "specials and team names follow the same grammar",
+      "text": "@everyone @here @feedback",
+      "tokens": [
+        {
+          "text": "@everyone",
+          "name": "everyone"
+        },
+        {
+          "text": "@here",
+          "name": "here"
+        },
+        {
+          "text": "@feedback",
+          "name": "feedback"
+        }
+      ]
+    },
+    {
+      "note": "delimiters stay in raw text",
+      "text": "**@bold** _@it_",
+      "tokens": []
+    }
+  ]
+}

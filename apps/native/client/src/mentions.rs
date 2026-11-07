@@ -7,71 +7,15 @@
 use crate::model::{Author, DirectConversation, Member, Mention, Person as KnownPerson};
 use std::ops::Range;
 
-/// Longer runs after `@` are plain text.
-pub const MAX_NAME: usize = 32;
-
-pub fn name_character(value: char) -> bool {
-    value.is_ascii_alphanumeric() || value == '_'
-}
-
-/// Same start rule as `:` emoji: text start, whitespace, `(`, `[` or `{`.
-pub fn starts_token(previous: Option<char>) -> bool {
-    previous.is_none_or(|value| value.is_whitespace() || matches!(value, '(' | '[' | '{'))
-}
+/// The token grammar, shared with Android and Apple.
+#[path = "../../../../shared/messages/mentions.rs"]
+mod grammar;
+pub use grammar::{FEEDBACK_ALIASES, MAX_NAME, name_character, starts_token, tokens};
 
 /// The team suggestion's secondary label.
 pub const FEEDBACK_LABEL: &str = "Notify the Caper team";
 /// Under a message that asked the team.
 pub const FEEDBACK_NOTICE: &str = "Caper team has been notified 🫡";
-/// The server's reserved team names, in suggestion order. Every one
-/// resolves to the message's `feedback` entry.
-pub const FEEDBACK_ALIASES: [&str; 17] = [
-    "feedback",
-    "caper",
-    "capers",
-    "caperchat",
-    "caper_feedback",
-    "caper_support",
-    "support",
-    "team",
-    "staff",
-    "admin",
-    "admins",
-    "administrator",
-    "administrators",
-    "mod",
-    "mods",
-    "moderator",
-    "moderators",
-];
-
-/// Every mention token in sent text, as UTF-8 byte ranges with lowercase names.
-pub fn tokens(text: &str) -> Vec<(Range<usize>, String)> {
-    let mut found = Vec::new();
-    let mut previous = None;
-    let mut chars = text.char_indices().peekable();
-    while let Some((index, character)) = chars.next() {
-        let starts = character == '@' && starts_token(previous);
-        previous = Some(character);
-        if !starts {
-            continue;
-        }
-        let mut end = index + 1;
-        while let Some(&(next_index, next)) = chars.peek() {
-            if !name_character(next) {
-                break;
-            }
-            end = next_index + next.len_utf8();
-            previous = Some(next);
-            chars.next();
-        }
-        // Name characters are ASCII, so bytes equal characters.
-        if (1..=MAX_NAME).contains(&(end - index - 1)) {
-            found.push((index..end, text[index + 1..end].to_ascii_lowercase()));
-        }
-    }
-    found
-}
 
 /// The server entry backing a token's lowercase name. Unresolved names, and
 /// `everyone`/`here` without their entry (as in DMs), stay plain. One
