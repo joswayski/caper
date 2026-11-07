@@ -562,6 +562,19 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Field if d.kind == Kind::StartDirect => "Username".into(),
                 DPart::Field if d.kind == Kind::Browse => "Search channels".into(),
                 DPart::Field if d.kind == Kind::JoinInvite => "Invite link".into(),
+                DPart::Field if d.kind == Kind::InvitePeople => "Exact username".into(),
+                DPart::Heading(k) => d.invite_heading(k),
+                DPart::Line(k) => d.invite_line(k),
+                DPart::Link => d.invite_link_name(),
+                DPart::Copy => d.copy_label().into(),
+                DPart::More => "More invite options".into(),
+                DPart::LinkAction(k) => crate::overlay::Dialog::link_action_label(k).into(),
+                DPart::Invitee(k) => d.invitee_name(k),
+                DPart::CancelInvite(_) => "Cancel invite".into(),
+                DPart::Loading if d.kind == Kind::InvitePeople => {
+                    "Preparing invite link\u{2026}".into()
+                }
+                DPart::Retry if d.kind == Kind::InvitePeople => d.retry_label().into(),
                 DPart::Field | DPart::Label
                     if matches!(d.kind, Kind::CreateSpace | Kind::CreateChannel) =>
                 {
@@ -585,6 +598,8 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Reload => "Discard draft and load latest".into(),
                 DPart::Cancel => d.cancel_label().into(),
                 DPart::Primary => d.primary_label().into(),
+                // web's Dialog names its X "Close {title}".
+                DPart::Close if d.kind != Kind::History => format!("Close {}", d.title()),
                 DPart::Suggest(k) => d.suggestion_name(k),
                 DPart::Version(k) if d.version_selected(k) => {
                     format!("{}, selected", d.history_text(p))
@@ -723,7 +738,11 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
             | DPart::Loading
             | DPart::Preview
             | DPart::Label
-            | DPart::Guide,
+            | DPart::Guide
+            | DPart::Heading(_)
+            | DPart::Line(_)
+            | DPart::Link
+            | DPart::Invitee(_),
         ) => UIA_TextControlTypeId,
         Id::Dialog(DPart::Toggle) => UIA_CheckBoxControlTypeId,
         Id::Dialog(_) => UIA_ButtonControlTypeId,
@@ -1113,7 +1132,11 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 | DPart::Retry
                 | DPart::Older
                 | DPart::Suggest(_)
-                | DPart::Channel(_),
+                | DPart::Channel(_)
+                | DPart::Copy
+                | DPart::More
+                | DPart::LinkAction(_)
+                | DPart::CancelInvite(_),
             ) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
                 pattern == UIA_InvokePatternId

@@ -75,6 +75,9 @@ pub enum MenuItem {
     Leave(bool),
     /// The space menu's first item: "Browse channels".
     Browse,
+    /// "Invite people…", for the open space's owner (the space's menu
+    /// and its public channels').
+    Invite,
 }
 
 impl MenuItem {
@@ -98,6 +101,7 @@ impl MenuItem {
             Self::Leave(true) => "Leave space\u{2026}".into(),
             Self::Leave(false) => "Leave channel".into(),
             Self::Browse => "Browse channels".into(),
+            Self::Invite => "Invite people\u{2026}".into(),
         }
     }
 
@@ -112,13 +116,14 @@ impl MenuItem {
                 | Self::Level(..)
                 | Self::Leave(_)
                 | Self::Browse
+                | Self::Invite
         )
     }
 
     /// Whether it can be chosen now: the notification choices once the
     /// settings are ready (`enabled`), Browse and Leave always.
     pub fn usable(&self, enabled: bool) -> bool {
-        self.action() && (enabled || matches!(self, Self::Leave(_) | Self::Browse))
+        self.action() && (enabled || matches!(self, Self::Leave(_) | Self::Browse | Self::Invite))
     }
 
     /// Whether it is one of a heading's choices (indented under it).
@@ -1025,6 +1030,12 @@ impl App {
         // as egui's (an owner can't leave a space).
         if let Scope::Space(_) = &m.scope {
             items.insert(0, MenuItem::Browse);
+            if live.can_invite(&m.scope) {
+                items.insert(1, MenuItem::Invite);
+            }
+        }
+        if matches!(m.scope, Scope::Channel { .. }) && live.can_invite(&m.scope) {
+            items.push(MenuItem::Invite);
         }
         match &m.scope {
             Scope::Channel { .. } => items.push(MenuItem::Leave(false)),
@@ -1181,6 +1192,15 @@ impl App {
             self.dm_menu = None;
             self.dm_menu_changed();
             return self.open_browse();
+        }
+        if *item == MenuItem::Invite {
+            self.dm_menu = None;
+            self.dm_menu_changed();
+            let channel = match scope {
+                Scope::Channel { channel, .. } => Some(channel),
+                _ => None,
+            };
+            return self.open_invite_people(channel);
         }
         if let MenuItem::Leave(_) = item {
             self.dm_menu = None;

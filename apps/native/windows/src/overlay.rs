@@ -20,7 +20,7 @@ fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
     px >= x && px < x + w && py >= y && py < y + h
 }
 
-fn layout(
+pub(crate) fn layout(
     g: &Gfx,
     text: &str,
     format: &IDWriteTextFormat,
@@ -31,11 +31,11 @@ fn layout(
     Ok(l)
 }
 
-fn height(l: &IDWriteTextLayout) -> f32 {
+pub(crate) fn height(l: &IDWriteTextLayout) -> f32 {
     gfx::metrics(l).height
 }
 
-fn width(l: &IDWriteTextLayout) -> f32 {
+pub(crate) fn width(l: &IDWriteTextLayout) -> f32 {
     gfx::metrics(l).widthIncludingTrailingWhitespace
 }
 
@@ -259,6 +259,8 @@ pub enum Kind {
     /// channel's privacy.
     CreateSpace,
     CreateChannel,
+    /// "Invite people to {space}": its invite link and invitations.
+    InvitePeople,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -294,6 +296,18 @@ pub enum Part {
     Label,
     Guide,
     Toggle,
+    /// Invite people's section headings and lines (`invite_people`'s
+    /// numbers), the read-only link with Copy and More invite options,
+    /// that menu's items, and pending invitation `k` with its Cancel
+    /// invite.
+    Heading(u8),
+    Line(u8),
+    Link,
+    Copy,
+    More,
+    LinkAction(u8),
+    Invitee(usize),
+    CancelInvite(usize),
 }
 
 impl Part {
@@ -321,11 +335,20 @@ impl Part {
             Self::Version(k) => 32 + k,
             Self::Suggest(k) => 10_000 + k,
             Self::Channel(k) => 20_000 + k,
+            Self::Heading(k) => 30_000 + k as usize,
+            Self::Line(k) => 30_100 + k as usize,
+            Self::Link => 30_200,
+            Self::Copy => 30_201,
+            Self::More => 30_202,
+            Self::LinkAction(k) => 30_300 + k as usize,
+            Self::Invitee(k) => 40_000 + k,
+            Self::CancelInvite(k) => 50_000 + k,
         }
     }
 
-    /// Whether the part scrolls with the history's body (all but its head).
-    fn in_body(self) -> bool {
+    /// Whether the part scrolls with the history's or Invite people's
+    /// body (all but its head).
+    pub(crate) fn in_body(self) -> bool {
         !matches!(self, Self::Title | Self::Note | Self::Close)
     }
 }
@@ -397,6 +420,8 @@ pub struct Dialog {
     /// Create a channel's privacy, and the space it is created in.
     pub private: bool,
     pub space_name: String,
+    /// Invite people's space, links and invitations.
+    pub inviting: Option<Box<crate::invite_people::InvitePeople>>,
     pub(crate) parts: Vec<(Part, Rect)>,
     pub(crate) card: Rect,
 }
@@ -471,6 +496,7 @@ impl Dialog {
             declining: false,
             private: false,
             space_name: String::new(),
+            inviting: None,
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -496,6 +522,7 @@ impl Dialog {
             Kind::JoinInvite | Kind::Invitation => self.invite_title().into(),
             Kind::CreateSpace => "Create a space".into(),
             Kind::CreateChannel => "Create a channel".into(),
+            Kind::InvitePeople => self.invite_people_title(),
             Kind::LeaveSpace | Kind::LeaveChannel => {
                 let name = self.leave.as_ref().map_or("", |l| l.name.as_str());
                 if self.kind == Kind::LeaveChannel {
@@ -527,6 +554,7 @@ impl Dialog {
             ),
             Kind::JoinInvite | Kind::Invitation => self.invite_note(),
             Kind::CreateSpace | Kind::CreateChannel => String::new(),
+            Kind::InvitePeople => self.invite_people_note(),
             Kind::LeaveSpace => "You will lose access to its channels and conversations. An owner can add you again later.".into(),
             Kind::LeaveChannel if self.leave.as_ref().is_some_and(|l| l.private) => {
                 "You\u{2019}ll lose access and need another invitation to return. You\u{2019}ll disconnect from this channel\u{2019}s voice call.".into()
@@ -555,6 +583,9 @@ impl Dialog {
         if name != self.resolved {
             self.recipient = live.and_then(|l| l.person_named(&name)).cloned();
             self.error = None;
+            if let Some(ip) = self.inviting.as_deref_mut() {
+                ip.status = None;
+            }
             self.selected = 0;
             self.hidden = false;
             self.resolved = name;
@@ -563,14 +594,41 @@ impl Dialog {
         // nothing is in flight.
         self.suggestions = match live {
             Some(live) if self.field.focused && !self.hidden && !self.busy => {
-                let people: Vec<_> = live
-                    .people()
-                    .iter()
-                    .map(caper_client::mentions::Person::from)
-                    .collect();
+                // Invite people's: known people outside the space, then
+                // pending invitees (egui's and web's `invitees`).
+                let people: Vec<_> = match self.inviting.as_deref() {
+                    Some(ip) => caper_client::mentions::invitees(
+                        live.people(),
+                        &ip.members,
+                        &ip.invitations,
+                    ),
+                    None => live
+                        .people()
+                        .iter()
+                        .map(caper_client::mentions::Person::from)
+                        .collect(),
+                };
+                let invited = self
+                    .inviting
+                    .as_deref()
+                    .map_or(&[][..], |ip| &ip.invitations);
                 caper_client::mentions::field_suggestions(&people, &self.resolved)
                     .into_iter()
-                    .filter_map(|p| live.person_named(&p.username).cloned())
+                    .filter_map(|p| {
+                        live.person_named(&p.username).cloned().or_else(|| {
+                            invited.iter().find(|m| m.username == p.username).map(|m| {
+                                core::Person {
+                                    admin: m.admin,
+                                    id: m.id.clone(),
+                                    username: m.username.clone(),
+                                    display_name: m.display_name.clone(),
+                                    avatar_id: m.avatar_id,
+                                    avatar_asset: m.avatar_asset.clone(),
+                                    avatar_url: m.avatar_url.clone(),
+                                }
+                            })
+                        })
+                    })
                     .collect()
             }
             _ => Vec::new(),
@@ -615,6 +673,7 @@ impl Dialog {
             (Kind::CreateSpace, false) => "Create space",
             (Kind::CreateChannel, false) => "Create channel",
             (Kind::CreateSpace | Kind::CreateChannel, true) => "Creating\u{2026}",
+            (Kind::InvitePeople, _) => self.invite_people_primary(),
         }
     }
 
@@ -642,8 +701,12 @@ impl Dialog {
                         }
                         Kind::Invitation => true,
                         Kind::CreateSpace | Kind::CreateChannel => !self.create_name().is_empty(),
+                        Kind::InvitePeople => self.invite_enabled(part),
                     }
             }
+            Part::Copy | Part::More => self.invite_enabled(part),
+            Part::Retry if self.kind == Kind::InvitePeople => self.invite_enabled(part),
+            Part::CancelInvite(_) => !self.busy,
             Part::Cancel
             | Part::Reload
             | Part::Field
@@ -662,7 +725,12 @@ impl Dialog {
             | Part::Loading
             | Part::Preview
             | Part::Label
-            | Part::Guide => true,
+            | Part::Guide
+            | Part::Heading(_)
+            | Part::Line(_)
+            | Part::Link
+            | Part::LinkAction(_)
+            | Part::Invitee(_) => true,
         }
     }
 
@@ -693,9 +761,15 @@ impl Dialog {
                         | Part::Suggest(_)
                         | Part::Channel(_)
                         | Part::Toggle
+                        | Part::Copy
+                        | Part::More
+                        | Part::LinkAction(_)
+                        | Part::CancelInvite(_)
                 ) && contains(*r, x, y)
                     && match self.kind {
-                        Kind::History => !p.in_body() || contains(self.body, x, y),
+                        Kind::History | Kind::InvitePeople => {
+                            !p.in_body() || contains(self.body, x, y)
+                        }
                         Kind::Browse => !matches!(p, Part::Channel(_)) || contains(self.body, x, y),
                         _ => true,
                     }
@@ -729,6 +803,9 @@ impl Dialog {
         }
         if self.kind == Kind::Browse {
             return self.relayout_browse(g, w, h);
+        }
+        if self.kind == Kind::InvitePeople {
+            return self.relayout_invite(g, w, h);
         }
         let card_w = match self.kind {
             Kind::Edit => 500.0_f32,
@@ -874,6 +951,9 @@ impl Dialog {
             if self.kind == Kind::Browse {
                 return self.draw_browse(g, dc);
             }
+            if self.kind == Kind::InvitePeople {
+                return self.draw_invite(g, dc);
+            }
             for (part, (x, y, pw, ph)) in &self.parts {
                 let (x, y, pw, ph) = (*x, *y, *pw, *ph);
                 match part {
@@ -900,48 +980,7 @@ impl Dialog {
                         self.draw_suggestion(g, dc, *k, (x, y, pw, ph))?;
                     }
                     Part::Field => {
-                        let body = rect(x, y, x + pw, y + ph);
-                        let stroke = if self.field.focused {
-                            g.solid(TERRACOTTA)
-                        } else if self.hover == Some(Part::Field) {
-                            g.solid(TERRACOTTA_BRIGHT)
-                        } else {
-                            g.brushes.border.clone()
-                        };
-                        fill_round(dc, body, 7.0, &g.brushes.composer);
-                        stroke_round(dc, body, 7.0, &stroke);
-                        dc.PushAxisAlignedClip(
-                            &rect(x + 2.0, y + 2.0, x + pw - 2.0, y + ph - 2.0),
-                            D2D1_ANTIALIAS_MODE_ALIASED,
-                        );
-                        let (ox, oy) = self.text_origin();
-                        let hint = match self.kind {
-                            Kind::StartDirect => {
-                                Some(layout(g, "Username", &g.formats.composer, 1e6)?)
-                            }
-                            Kind::CreateSpace => {
-                                Some(layout(g, "Gaming nights", &g.formats.composer, 1e6)?)
-                            }
-                            Kind::CreateChannel => {
-                                Some(layout(g, "project-updates", &g.formats.composer, 1e6)?)
-                            }
-                            // web's and egui's example under an empty field.
-                            Kind::JoinInvite => Some(layout(
-                                g,
-                                "it looks like \u{2192} caper.chat/invite/AbCdE12345",
-                                &g.formats.composer,
-                                1e6,
-                            )?),
-                            _ => None,
-                        };
-                        self.field.draw_text(
-                            g,
-                            dc,
-                            ox,
-                            oy,
-                            hint.as_ref().map(|l| (l, &g.brushes.muted)),
-                        );
-                        dc.PopAxisAlignedClip();
+                        self.draw_field(g, dc, (x, y, pw, ph))?;
                         if self.kind == Kind::CreateChannel {
                             self.draw_channel_icon(dc, (x, y, pw, ph));
                         }
@@ -1013,9 +1052,52 @@ impl Dialog {
         Ok(())
     }
 
+    /// The one-line or edit field's box, its text and caret, or its
+    /// placeholder while empty.
+    pub(crate) fn draw_field(
+        &self,
+        g: &Gfx,
+        dc: &ID2D1DeviceContext,
+        (x, y, pw, ph): Rect,
+    ) -> Result<()> {
+        let body = rect(x, y, x + pw, y + ph);
+        let stroke = if self.field.focused {
+            g.solid(TERRACOTTA)
+        } else if self.hover == Some(Part::Field) {
+            g.solid(TERRACOTTA_BRIGHT)
+        } else {
+            g.brushes.border.clone()
+        };
+        fill_round(dc, body, 7.0, &g.brushes.composer);
+        stroke_round(dc, body, 7.0, &stroke);
+        unsafe {
+            dc.PushAxisAlignedClip(
+                &rect(x + 2.0, y + 2.0, x + pw - 2.0, y + ph - 2.0),
+                D2D1_ANTIALIAS_MODE_ALIASED,
+            );
+        }
+        let (ox, oy) = self.text_origin();
+        let hint = match self.kind {
+            Kind::StartDirect => Some("Username"),
+            Kind::CreateSpace => Some("Gaming nights"),
+            Kind::CreateChannel => Some("project-updates"),
+            Kind::InvitePeople => Some("Exact username"),
+            // web's and egui's example under an empty field.
+            Kind::JoinInvite => Some("it looks like \u{2192} caper.chat/invite/AbCdE12345"),
+            _ => None,
+        };
+        let hint = hint
+            .map(|h| layout(g, h, &g.formats.composer, 1e6))
+            .transpose()?;
+        self.field
+            .draw_text(g, dc, ox, oy, hint.as_ref().map(|l| (l, &g.brushes.muted)));
+        unsafe { dc.PopAxisAlignedClip() };
+        Ok(())
+    }
+
     /// Suggested person `k`: highlighted or hovered, a 24-DIP avatar, the
     /// name over a muted @username.
-    fn draw_suggestion(
+    pub(crate) fn draw_suggestion(
         &self,
         g: &Gfx,
         dc: &ID2D1DeviceContext,
@@ -1055,15 +1137,25 @@ impl Dialog {
         let tw = (w - (tx - x) - 8.0).max(1.0);
         let name = layout(g, &p.display_name, &g.formats.direct_name, tw)?;
         crate::text::draw(dc, &name, tx, y + 5.0, &g.brushes.text);
-        let user = layout(g, &format!("@{}", p.username), &g.formats.direct_note, tw)?;
+        let user = layout(g, &self.suggestion_note(p), &g.formats.direct_note, tw)?;
         crate::text::draw(dc, &user, tx, y + 24.0, &g.brushes.muted);
         Ok(())
+    }
+
+    /// Under a suggestion's name: its @username, and whether it is
+    /// already invited (Invite people), as egui says.
+    fn suggestion_note(&self, p: &core::Person) -> String {
+        if self.already_invited(&p.username) {
+            format!("@{} \u{b7} Already invited", p.username)
+        } else {
+            format!("@{}", p.username)
+        }
     }
 
     /// Suggestion `k`'s accessible name.
     pub fn suggestion_name(&self, k: usize) -> String {
         self.suggestions.get(k).map_or_else(String::new, |p| {
-            format!("{} @{}", p.display_name, p.username)
+            format!("{} {}", p.display_name, self.suggestion_note(p))
         })
     }
 
@@ -1235,6 +1327,7 @@ impl App {
                 | Kind::JoinInvite
                 | Kind::CreateSpace
                 | Kind::CreateChannel
+                | Kind::InvitePeople
         );
         self.dialog = Some(d);
         if editing {
@@ -1271,7 +1364,7 @@ impl App {
     pub fn dialog_changed(&mut self) {
         let (g, w, h) = (&self.g, self.w, self.h);
         if let Some(d) = &mut self.dialog {
-            if d.kind == Kind::StartDirect {
+            if matches!(d.kind, Kind::StartDirect | Kind::InvitePeople) {
                 d.username_changed(self.live.as_ref());
             }
             // Editing the link clears why the last one failed.
@@ -1304,6 +1397,11 @@ impl App {
         let Some(d) = &mut self.dialog else { return };
         if !d.enabled(part) {
             return;
+        }
+        if d.kind == Kind::InvitePeople
+            && !matches!(part, Part::Field | Part::Suggest(_) | Part::Close)
+        {
+            return self.invite_people_activate(part);
         }
         match part {
             Part::Primary | Part::Cancel if d.kind == Kind::Invitation => {
@@ -1433,7 +1531,15 @@ impl App {
             | Part::Loading
             | Part::Preview
             | Part::Label
-            | Part::Guide => {}
+            | Part::Guide
+            | Part::Heading(_)
+            | Part::Line(_)
+            | Part::Link
+            | Part::Copy
+            | Part::More
+            | Part::LinkAction(_)
+            | Part::Invitee(_)
+            | Part::CancelInvite(_) => {}
         }
         self.dialog_changed();
         if let Err(e) = self.drain_live() {
@@ -1555,6 +1661,18 @@ impl App {
     /// The Leave or invitation dialog's request finished: it closes (the
     /// app has moved on), or says why not.
     pub fn left(&mut self, error: Option<String>) {
+        // Invite people's invite or Cancel invite failed: it says why,
+        // in web's words.
+        if let (Some(d), Some(e)) = (
+            self.dialog
+                .as_mut()
+                .filter(|d| d.kind == Kind::InvitePeople && d.busy),
+            &error,
+        ) {
+            d.busy = false;
+            d.error = Some(caper_client::invites::admin_error(e.clone()));
+            return self.dialog_changed();
+        }
         let Some(d) = self.dialog.as_mut().filter(|d| {
             matches!(
                 d.kind,
@@ -1706,6 +1824,18 @@ impl App {
                     SetCapture(hwnd);
                 }
                 let part = d.hit(x, y);
+                // A click off More invite options closes it, and one off
+                // the card closes a confirmation, before anything else.
+                if d.kind == Kind::InvitePeople
+                    && d.invite_layered()
+                    && (d.inviting.as_ref().is_some_and(|ip| ip.menu)
+                        && !matches!(part, Some(Part::LinkAction(_) | Part::More))
+                        || part.is_none() && !d.on_card(x, y))
+                {
+                    d.invite_back();
+                    self.dialog_changed();
+                    return done;
+                }
                 d.pressed = part;
                 if part == Some(Part::Field) && !d.busy {
                     let p = d.field_hit(x, y);
@@ -1734,7 +1864,9 @@ impl App {
                 }
                 done
             }
-            WM_MOUSEWHEEL if matches!(d.kind, Kind::History | Kind::Browse) => {
+            WM_MOUSEWHEEL
+                if matches!(d.kind, Kind::History | Kind::Browse | Kind::InvitePeople) =>
+            {
                 let notches = (wp.0 >> 16) as u16 as i16 as f32 / 120.0;
                 d.scroll -= notches * 3.0 * LINE;
                 self.dialog_changed();
@@ -1758,7 +1890,9 @@ impl App {
                     // An open people list takes its keys first; Escape hides
                     // it, not the dialog.
                     VK_DOWN | VK_UP | VK_RETURN | VK_ESCAPE
-                        if d.kind == Kind::StartDirect && !d.suggestions.is_empty() && !ctrl =>
+                        if matches!(d.kind, Kind::StartDirect | Kind::InvitePeople)
+                            && !d.suggestions.is_empty()
+                            && !ctrl =>
                     {
                         let n = d.suggestions.len();
                         match vk {
@@ -1773,7 +1907,17 @@ impl App {
                         }
                         self.dialog_changed();
                     }
+                    VK_ESCAPE if d.kind == Kind::InvitePeople && d.invite_layered() => {
+                        d.invite_back();
+                        self.dialog_changed();
+                    }
                     VK_ESCAPE if !d.busy => self.close_dialog(),
+                    // Enter invites the typed username.
+                    VK_RETURN if d.kind == Kind::InvitePeople => {
+                        if d.field.focused {
+                            self.dialog_activate(Part::Primary);
+                        }
+                    }
                     // The history's body scrolls from the keyboard too.
                     VK_UP | VK_DOWN | VK_PRIOR | VK_NEXT | VK_HOME | VK_END
                         if d.kind == Kind::History =>
@@ -1834,6 +1978,7 @@ impl App {
                         | Kind::JoinInvite
                         | Kind::CreateSpace
                         | Kind::CreateChannel
+                        | Kind::InvitePeople
                 ) && d.field.focused
                     && !d.busy
                     && !ctrl

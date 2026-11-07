@@ -152,6 +152,8 @@ pub enum Update {
     },
     /// A notification opened an invitation: its dialog shows.
     Invitation(Invitation),
+    /// Invite people's link or invitation answer.
+    InvitePeople(Box<crate::invite_people::Answer>),
     /// Your space or channel invitations changed: the rail and sidebar
     /// redraw.
     Invitations,
@@ -190,6 +192,10 @@ pub enum Update {
     /// The gateway's state while not live ("Connecting…"); None once live.
     Connection(Option<String>),
     Failed(String),
+}
+
+fn invite_answer(answer: crate::invite_people::Answer) -> Update {
+    Update::InvitePeople(Box::new(answer))
 }
 
 /// An invitation to answer: to a space, or to one of its private
@@ -696,7 +702,7 @@ impl Live {
         Live::fresh(worker, media, media_ready, host, generation, voice, effects)
     }
 
-    fn account(&self, operation: AccountOperation) {
+    pub fn account(&self, operation: AccountOperation) {
         if let Some(token) = &self.token {
             self.worker.send(Command::Account {
                 epoch: 0,
@@ -1006,6 +1012,44 @@ impl Live {
             }
             AccountResult::NotificationsSaved { scope, result } => {
                 self.notifications.finish_save(&scope, result);
+            }
+            AccountResult::DefaultInviteLink {
+                space,
+                request,
+                result,
+            } => {
+                out.push(invite_answer(crate::invite_people::Answer::Default {
+                    space,
+                    request,
+                    result,
+                }));
+                return;
+            }
+            AccountResult::InviteLinks {
+                space,
+                request,
+                result,
+            } => {
+                out.push(invite_answer(crate::invite_people::Answer::Links {
+                    space,
+                    request,
+                    result,
+                }));
+                return;
+            }
+            AccountResult::InviteLinkRevoked {
+                space,
+                request,
+                code,
+                result,
+            } => {
+                out.push(invite_answer(crate::invite_people::Answer::Revoked {
+                    space,
+                    request,
+                    code,
+                    result,
+                }));
+                return;
             }
             AccountResult::InvitePreview { request, result } => {
                 if request == self.invite_request {
@@ -2540,6 +2584,57 @@ impl Live {
         });
     }
 
+    /// Invite people for the open space you own, from its menu or a
+    /// public channel's (whose link then opens in that channel).
+    pub fn invite_people(
+        &self,
+        channel: Option<String>,
+    ) -> Option<crate::invite_people::InvitePeople> {
+        let d = self.detail.as_ref().filter(|_| self.owns_space())?;
+        let prefix = caper_client::invites::invite_url(self.media.api()?.base(), "");
+        let public: Vec<_> = d
+            .channels
+            .iter()
+            .filter(|c| !c.private)
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect();
+        let channel = channel.filter(|id| public.iter().any(|(p, _)| p == id));
+        Some(crate::invite_people::InvitePeople::new(
+            d.space.id.clone(),
+            d.space.name.clone(),
+            channel,
+            public,
+            prefix,
+            d.members.clone(),
+        ))
+    }
+
+    /// Whether a menu offers Invite people: the open space you own, or
+    /// one of its public channels (egui's).
+    pub fn can_invite(&self, scope: &Scope) -> bool {
+        let Some(d) = self.detail.as_ref().filter(|_| self.owns_space()) else {
+            return false;
+        };
+        match scope {
+            Scope::Space(space) => *space == d.space.id,
+            Scope::Channel { space, channel } => {
+                *space == d.space.id && d.channels.iter().any(|c| c.id == *channel && !c.private)
+            }
+            _ => false,
+        }
+    }
+
+    /// Sends an owner's space or member change.
+    pub fn admin(&self, operation: AdminOperation) {
+        if let Some(token) = self.token.clone() {
+            self.worker.send(Command::Admin {
+                generation: self.account_epoch,
+                token,
+                operation,
+            });
+        }
+    }
+
     /// Whether you own the open space (its owner manages it).
     pub fn owns_space(&self) -> bool {
         self.detail.as_ref().is_some_and(|d| {
@@ -2901,6 +2996,20 @@ impl Live {
             AdminResult::InvitationDeclined(space) => {
                 self.invitations.retain(|s| s.id != space);
                 out.push(Update::Invitations);
+            }
+            AdminResult::Invitations(members) => {
+                out.push(invite_answer(crate::invite_people::Answer::Invitations(
+                    members,
+                )));
+                return;
+            }
+            AdminResult::InvitationCreated(member) => {
+                out.push(invite_answer(crate::invite_people::Answer::Invited(member)));
+                return;
+            }
+            AdminResult::InvitationCancelled(user) => {
+                out.push(invite_answer(crate::invite_people::Answer::Cancelled(user)));
+                return;
             }
             AdminResult::ChannelInvitationDeclined(channel) => {
                 if let Some(d) = &mut self.detail {

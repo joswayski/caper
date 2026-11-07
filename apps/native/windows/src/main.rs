@@ -24,6 +24,7 @@ mod embeds;
 mod emoji;
 mod files;
 mod gifs;
+mod invite_people;
 mod invites;
 mod manage;
 mod overlay;
@@ -704,6 +705,7 @@ impl App {
                     self.open_dialog(overlay::Dialog::invitation(invitation));
                 }
                 live::Update::Invitations => self.invitations_changed(),
+                live::Update::InvitePeople(answer) => self.invite_people_answer(*answer),
                 live::Update::Settings => {
                     if self.settings.is_some() {
                         self.settings_changed();
@@ -1582,6 +1584,7 @@ impl App {
                     self.need = true;
                 }
                 TIMER_CARD => self.show_card(),
+                invite_people::TIMER_COPIED => self.copied_tick(),
                 TIMER_MEDIA => self.next_gif_frame(),
                 TIMER_MUTE => self.mutes_changed(),
                 // The call's running time.
