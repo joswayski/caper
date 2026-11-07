@@ -221,6 +221,7 @@ final class KlipyPickerModel {
 struct KlipyPicker: View {
     let select: (ChatGif, String) -> Void
     var embeddedKind: ChatGif.Kind? = nil
+    private let close: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var model: KlipyPickerModel
     #if os(macOS)
@@ -229,9 +230,11 @@ struct KlipyPicker: View {
     private let columns = 2
     #endif
 
-    init(configuration: KlipyConfiguration, embeddedKind: ChatGif.Kind? = nil, select: @escaping (ChatGif, String) -> Void) {
+    init(configuration: KlipyConfiguration, embeddedKind: ChatGif.Kind? = nil, close: (() -> Void)? = nil,
+         select: @escaping (ChatGif, String) -> Void) {
         self.select = select
         self.embeddedKind = embeddedKind
+        self.close = close
         _model = State(initialValue: KlipyPickerModel(client: KlipyClient(configuration: configuration), kind: embeddedKind ?? .gif))
     }
 
@@ -241,7 +244,7 @@ struct KlipyPicker: View {
             HStack {
                 Text("GIFs").font(CaperTheme.font(14, weight: .bold))
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { if let close { close() } else { dismiss() } }
                     .keyboardShortcut(.cancelAction)
             }.padding(.horizontal, 12).padding(.top, 12)
             content

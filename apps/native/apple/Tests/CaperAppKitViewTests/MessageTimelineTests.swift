@@ -40,6 +40,34 @@ import XCTest
         XCTAssertTrue(timeline.documentView?.subviews.flatMap(\.subviews).allSatisfy { !($0 is AppKitAttachmentSurface) } == true)
     }
 
+    func testGifOnlyChangesRefreshMediaAndKeepTheCaptionSelection() throws {
+        _ = NSApplication.shared
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let parent = NSViewController()
+        let media = AppKitMediaPresenter(model: model, parent: parent)
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        timeline.makeAttachments = { media.messageAttachments($0) }
+        var value = message(0)
+        timeline.update([value], conversationID: "channel")
+        let body = try XCTUnwrap(bodies(in: timeline).first)
+        body.setSelectedRange(NSRange(location: 0, length: 3))
+        func surfaces() -> [AppKitAttachmentSurface] {
+            timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? AppKitAttachmentSurface } } ?? []
+        }
+        XCTAssertTrue(surfaces().isEmpty)
+        value.content.gif = ChatGif(kind: .sticker, slug: "fixture", title: "TEST FIXTURE sticker", width: 96, height: 64,
+            gif: "https://static.klipy.com/caper-fixture/sticker.gif")
+        timeline.update([value], conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(surfaces().count, 1, "A GIF-only update must create its visible media, even with no attachment array")
+        XCTAssertGreaterThan(try XCTUnwrap(surfaces().first).frame.height, 0)
+        XCTAssertEqual(body.selectedRange(), NSRange(location: 0, length: 3))
+        value.content.gif = nil
+        timeline.update([value], conversationID: "channel")
+        XCTAssertTrue(surfaces().isEmpty, "Removing only content.gif must tear down its animation host")
+        XCTAssertEqual(body.string, value.content.text)
+    }
+
     func testBlockedRunsRevealIndependentlyWithoutRealizingTheirWholeHistory() throws {
         let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         let history = [message(0, author: "blocked"), message(1, author: "blocked"),
