@@ -24,6 +24,10 @@ import CaperCore
     private var rowHeights: [CGFloat] = []
     private var rowOrder: [NSView] = []
     private var requestButtons: [String: NativeButton] = [:]
+    private var channelCards: [String: NativeVoiceCard] = [:]
+    private var externalCards: [String: NativeVoiceCard] = [:]
+    private var externalOrder: [NativeVoiceCard] = []
+    private lazy var voicePanels = NativeVoicePanels(model: model)
     private lazy var requests = NativeButton("") { [weak self] in
         guard let self else { return }; self.model.showingMessageRequests.toggle()
     }
@@ -43,10 +47,16 @@ import CaperCore
     private let accountName = NativeStyle.label("", size: 13)
     private lazy var account = NativeButton("") { [weak self] in self?.show?(.profile) }
     private lazy var mute = NativeButton.icon("Mute microphone", symbol: "mic") { [weak self] in
-        guard let self else { return }; Task { await self.model.voice.setMuted(!self.model.voice.muted) }
+        guard let self else { return }; VoicePresentation.toggleMute(self.model.voice)
     }
     private lazy var deafen = NativeButton.icon("Deafen audio", symbol: "headphones") { [weak self] in
-        guard let self else { return }; Task { await self.model.voice.setDeafened(!self.model.voice.deafened) }
+        guard let self else { return }; VoicePresentation.toggleDeafen(self.model.voice)
+    }
+    private lazy var inputOptions = NativeButton.icon("Microphone options", symbol: "chevron.down") { [weak self] in
+        guard let self else { return }; self.voicePanels.audio(input: true, from: self.inputOptions)
+    }
+    private lazy var outputOptions = NativeButton.icon("Audio output options", symbol: "chevron.down") { [weak self] in
+        guard let self else { return }; self.voicePanels.audio(input: false, from: self.outputOptions)
     }
     private lazy var settings = NativeButton.icon("Account settings", symbol: "gearshape") { [weak self] in self?.openAccountMenu() }
 
@@ -55,7 +65,7 @@ import CaperCore
         super.init()
         [railScroll, sidebar].forEach { addSubview($0) }
         railScroll.documentView = rail; railScroll.drawsBackground = false
-        [space, heading, create, options, search, scroll, error, accountAvatar, accountName, account, mute, deafen, settings].forEach { sidebar.addSubview($0) }
+        [space, heading, create, options, search, scroll, error, accountAvatar, accountName, account, mute, inputOptions, deafen, outputOptions, settings].forEach { sidebar.addSubview($0) }
         accountName.setAccessibilityElement(false)
         scroll.documentView = rows
         scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
@@ -78,11 +88,18 @@ import CaperCore
         createSpace.setAccessibilityIdentifier("create-space")
         mute.setAccessibilityIdentifier("microphone-toggle")
         deafen.setAccessibilityIdentifier("deafen-toggle")
+        inputOptions.setAccessibilityIdentifier("microphone-options")
+        outputOptions.setAccessibilityIdentifier("output-options")
         settings.setAccessibilityIdentifier("account-settings-menu")
         error.textColor = NSColor(CaperTheme.error)
         observation.start { [weak self] in self?.render() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { voicePanels.close() }
+    }
 
     override func layout() {
         super.layout()
@@ -92,26 +109,35 @@ import CaperCore
         sidebar.frame = NSRect(x: 64, y: 0, width: bounds.width - 64, height: bounds.height)
         let width = sidebar.bounds.width
         space.frame = NSRect(x: 16, y: 8, width: width - 32, height: 34)
-        heading.frame = NSRect(x: 16, y: 54, width: width - 88, height: 32)
-        create.frame = NSRect(x: width - 72, y: 54, width: 28, height: 32)
-        options.frame = NSRect(x: width - 42, y: 54, width: 28, height: 32)
+        var externalHeight: CGFloat = 0
+        for card in externalOrder {
+            let height = card.height(width: width - 32)
+            card.frame = NSRect(x: 16, y: 50 + externalHeight, width: width - 32, height: height)
+            externalHeight += height + 8
+        }
+        heading.frame = NSRect(x: 16, y: 54 + externalHeight, width: width - 88, height: 32)
+        create.frame = NSRect(x: width - 72, y: 54 + externalHeight, width: 28, height: 32)
+        options.frame = NSRect(x: width - 42, y: 54 + externalHeight, width: 28, height: 32)
         search.isHidden = !browsing
-        search.frame = NSRect(x: 16, y: 94, width: width - 32, height: 30)
-        let top: CGFloat = browsing ? 132 : 94
+        search.frame = NSRect(x: 16, y: 94 + externalHeight, width: width - 32, height: 30)
+        let top: CGFloat = (browsing ? 132 : 94) + externalHeight
         let footer = bounds.height - 62
         scroll.frame = NSRect(x: 0, y: top, width: width, height: max(0, footer - top - (error.stringValue.isEmpty ? 0 : 30)))
         error.frame = NSRect(x: 16, y: footer - 30, width: width - 32, height: 28)
         var y: CGFloat = 0
-        for (child, height) in zip(rowOrder, rowHeights) {
+        for (child, defaultHeight) in zip(rowOrder, rowHeights) {
+            let height = (child as? NativeVoiceCard)?.height(width: scroll.contentSize.width - 32) ?? defaultHeight
             child.frame = NSRect(x: 16, y: y, width: scroll.contentSize.width - 32, height: height)
             y += height + 3
         }
         rows.frame.size = NSSize(width: scroll.contentSize.width, height: y + 8)
-        account.frame = NSRect(x: 16, y: footer + 8, width: width - 128, height: 36)
+        account.frame = NSRect(x: 16, y: footer + 8, width: width - 156, height: 36)
         accountAvatar.frame = NSRect(x: 16, y: footer + 11, width: 30, height: 30)
-        accountName.frame = NSRect(x: 53, y: footer + 17, width: width - 165, height: 20)
-        mute.frame = NSRect(x: width - 106, y: footer + 10, width: 28, height: 32)
-        deafen.frame = NSRect(x: width - 76, y: footer + 10, width: 28, height: 32)
+        accountName.frame = NSRect(x: 53, y: footer + 17, width: max(0, width - 197), height: 20)
+        mute.frame = NSRect(x: width - 138, y: footer + 10, width: 28, height: 32)
+        inputOptions.frame = NSRect(x: width - 110, y: footer + 10, width: 16, height: 32)
+        deafen.frame = NSRect(x: width - 92, y: footer + 10, width: 28, height: 32)
+        outputOptions.frame = NSRect(x: width - 64, y: footer + 10, width: 16, height: 32)
         settings.frame = NSRect(x: width - 46, y: footer + 10, width: 28, height: 32)
     }
 
@@ -159,7 +185,9 @@ import CaperCore
         create.isEnabled = model.canCreateChannel
         create.toolTip = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
         rowOrder = []; rowHeights = []
-        if expanded { joined.forEach { addChannel($0) } }
+        updateExternalVoice(joined: joined)
+        channelCards = channelCards.filter { id, _ in joined.contains { $0.id == id } }
+        LiveNow.listed(joined, expanded: expanded) { VoicePresentation.isLive(model, $0) }.forEach { addChannel($0) }
         if browsing {
             let query = String(search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).drop(while: { $0 == "#" }))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -250,7 +278,7 @@ import CaperCore
         deafen.image = NSImage(systemSymbolName: model.voice.deafened ? "speaker.slash" : "headphones", accessibilityDescription: nil)
         deafen.setAccessibilityLabel(model.voice.deafened ? "Undeafen audio" : "Deafen audio")
         deafen.setAccessibilityValue(model.voice.deafened ? "Deafened" : "On")
-        error.stringValue = model.notificationError ?? model.error ?? model.directMessagesError ?? ""
+        error.stringValue = model.voice.error ?? model.notificationError ?? model.error ?? model.directMessagesError ?? ""
         needsLayout = true
     }
 
@@ -260,9 +288,14 @@ import CaperCore
     }
 
     private func addChannel(_ channel: Channel, browsing: Bool = false) {
-        let row = NavigationRow(channel.name, symbol: channel.private ? "lock" : "number", selected: model.selectedChannelID == channel.id,
+        let row = (!browsing ? channelCards[channel.id]?.heading as? NavigationRow : nil) ?? NavigationRow(channel.name, symbol: channel.private ? "lock" : "number", selected: model.selectedChannelID == channel.id,
             unread: model.channelUnread(channel.id), muted: model.notificationsMuted(.channel(spaceID: channel.spaceId, channelID: channel.id)),
-            open: { [weak self] in guard let self else { return }; Task { await self.model.select(channel: channel) } })
+            open: { [weak self, id = channel.id] in
+                guard let self, let channel = self.model.detail?.channels.first(where: { $0.id == id }) else { return }
+                Task { await self.model.select(channel: channel) }
+            })
+        row.update(channel.name, symbol: channel.private ? "lock" : "number", selected: model.selectedChannelID == channel.id,
+            unread: model.channelUnread(channel.id), muted: model.notificationsMuted(.channel(spaceID: channel.spaceId, channelID: channel.id)))
         row.open.setAccessibilityIdentifier("\(browsing ? "browse-channel" : "channel")-\(channel.id)")
         if browsing {
             row.detail.stringValue = channel.joined ? "Joined" : "Read-only preview"
@@ -288,7 +321,47 @@ import CaperCore
             }
             self.popup(items, at: row.options)
         }
-        addRow(row)
+        if browsing { addRow(row) }
+        else {
+            let card = channelCards[channel.id] ?? NativeVoiceCard(model: model, channelID: channel.id, heading: row, panels: voicePanels) { [weak self, id = channel.id] in
+                guard let self, let channel = self.model.detail?.channels.first(where: { $0.id == id }) else { return }
+                Task { await self.model.select(channel: channel) }
+            }
+            card.changed = { [weak self] in self?.needsLayout = true }
+            channelCards[channel.id] = card
+            addRow(card)
+        }
+    }
+
+    private func updateExternalVoice(joined: [Channel]) {
+        var next: [String: NativeVoiceCard] = [:]
+        externalOrder = []
+        func add(id: String, title: String, open: @escaping () -> Void) {
+            let button = externalCards[id]?.heading as? NativeButton ?? NativeButton(title, action: open)
+            button.title = title; button.setAccessibilityLabel(title)
+            button.setAccessibilityIdentifier("voice-call-channel")
+            button.alignment = .left; button.font = NativeStyle.font(13, bold: true)
+            button.layer?.backgroundColor = NSColor.clear.cgColor
+            let card = externalCards[id] ?? NativeVoiceCard(model: model, channelID: id, heading: button, panels: voicePanels, openChat: open)
+            card.changed = { [weak self] in self?.needsLayout = true }
+            next[id] = card; externalOrder.append(card)
+            if card.superview == nil { sidebar.addSubview(card) }
+        }
+        if VoicePresentation.active(model.voice), let context = model.voice.context,
+           !LiveNow.hasRow(context.channelID, rows: joined.map(\.id)) {
+            add(id: context.channelID, title: "#\(context.channelName) · \(context.spaceName)") { [weak self] in
+                guard let self else { return }; Task { await self.model.openVoiceContext() }
+            }
+        }
+        if let channel = model.visitChannel, VoicePresentation.isVisit(model, channel), !model.voice.isActive(channelID: channel.id),
+           !VoicePresentation.occupants(model, channelID: channel.id).isEmpty {
+            add(id: channel.id, title: "#\(channel.name) · \(model.visit?.spaceName ?? "")") { [weak self] in
+                // The visited chat is already open; this matches its shipping card.
+                self?.model.navigationOpen = false
+            }
+        }
+        for card in externalCards.values where !next.values.contains(where: { $0 === card }) { card.removeFromSuperview() }
+        externalCards = next
     }
 
     private func openSpaceMenu() {
@@ -336,23 +409,31 @@ private final class NavigationRow: NativeView {
         open = NativeButton(name + (unread ? "  •" : ""), action: action)
         super.init(selected ? NativeStyle.accent.withAlphaComponent(0.16) : .clear)
         layer?.cornerRadius = 6
-        open.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         open.imagePosition = .imageLeft
-        open.alignment = .left; open.font = NativeStyle.font(13, bold: unread)
+        open.alignment = .left
         open.layer?.backgroundColor = NSColor.clear.cgColor
-        open.contentTintColor = selected || unread ? NativeStyle.text : NativeStyle.muted
-        open.setAccessibilityLabel(name)
-        open.setAccessibilityValue([selected ? "Selected" : "", unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", "))
         bell.image = NSImage(systemSymbolName: "bell.slash", accessibilityDescription: nil)
         bell.contentTintColor = NativeStyle.muted
-        bell.isHidden = !muted; bell.setAccessibilityElement(false)
+        bell.setAccessibilityElement(false)
         detail.textColor = NativeStyle.muted
         detail.setAccessibilityElement(false)
         options.target = self; options.action = #selector(showMenu)
         addSubview(open); addSubview(bell); addSubview(detail); addSubview(options)
+        update(name, symbol: symbol, selected: selected, unread: unread, muted: muted)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func showMenu() { openMenu?() }
+    func update(_ name: String, symbol: String, selected: Bool, unread: Bool, muted: Bool) {
+        layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : .clear).cgColor
+        open.title = name + (unread ? "  •" : "")
+        open.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        open.font = NativeStyle.font(13, bold: unread)
+        open.contentTintColor = selected || unread ? NativeStyle.text : NativeStyle.muted
+        open.setAccessibilityLabel(name)
+        open.setAccessibilityValue([selected ? "Selected" : "", unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", "))
+        bell.isHidden = !muted
+        needsLayout = true
+    }
     override func layout() {
         super.layout()
         let detailWidth = detail.stringValue.isEmpty ? 0 : detail.cell?.cellSize.width ?? 0

@@ -27,6 +27,7 @@ import CaperCore
     private let attachmentScroll = NSScrollView()
     private var attachmentTray: AppKitAttachmentSurface?
     private var uploadConversationID: String?
+    private var voicePreviewChecked = false
     private lazy var attach = NativeButton.icon("Attach files", symbol: "plus") { [weak self] in self?.showAttachMenu() }
     private lazy var directBar = DirectConversationBar(model: model)
     private let suggestions = ComposerSuggestions()
@@ -155,6 +156,13 @@ import CaperCore
         navigationObservation.start { [weak self] in
             guard let self else { return }
             self.header.stringValue = self.model.selectedDirectMessage?.peer.displayName ?? "# \(self.model.chat.channelName)"
+            if !self.voicePreviewChecked, self.model.detail != nil {
+                self.voicePreviewChecked = true
+                // The runtime guard permits explicitly labelled loopback fixtures only.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }; CaperRuntime.showVoiceRosterPreview(self.model)
+                }
+            }
             let conversationID = self.model.selectedDirectMessageID ?? self.model.selectedChannelID
             if self.uploadConversationID != conversationID {
                 self.uploadConversationID = conversationID
