@@ -12,7 +12,7 @@ import org.junit.runner.RunWith
 import org.junit.runners.Parameterized
 
 /**
- * Cold start, opening the long conversation, scrolling its history and typing, each without
+ * Cold and warm start, opening the long conversation, scrolling its history and typing, each without
  * ahead-of-time compilation ("before") and with the Baseline Profile ("after"). Run on a phone with
  * `./gradlew :benchmark:connectedBenchmarkReleaseAndroidTest`; see ../README.md.
  */
@@ -28,6 +28,12 @@ class CaperBenchmarks(private val compilation: CompilationMode) {
     /** Time to first frame, and to the restored conversation (`ReportDrawnWhen` in the app). */
     @Test fun coldStart() = rule.measureRepeated(
         PACKAGE, listOf(StartupTimingMetric()), compilation, startupMode = StartupMode.COLD, iterations = 10,
+        setupBlock = { pressHome(); startActivityAndWait(); signIn(); openChannel(LONG_CHANNEL); pressHome() },
+    ) { startActivityAndWait() }
+
+    /** Returning to the app with its process still alive: the activity and its UI are recreated. */
+    @Test fun warmStart() = rule.measureRepeated(
+        PACKAGE, listOf(StartupTimingMetric()), compilation, startupMode = StartupMode.WARM, iterations = 10,
         setupBlock = { pressHome(); startActivityAndWait(); signIn(); openChannel(LONG_CHANNEL); pressHome() },
     ) { startActivityAndWait() }
 

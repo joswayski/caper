@@ -109,9 +109,9 @@ Extra fixture controls: `POST /__fixture/control {"messageRequest":{}}` adds an 
 
 ## Performance: Baseline Profile and macrobenchmarks
 
-`:benchmark` holds Macrobenchmarks for cold start, opening the 3,000-message `#general`, scrolling back through its history and typing, each run without ahead-of-time compilation (`None`) and with the Baseline Profile (`Partial`). Its `BaselineProfileGenerator` walks the same journey to produce the app's Baseline Profile; `profileinstaller` installs it (and Compose's own profiles) on sideloaded APKs. Cold start reports both first frame and "fully drawn" (`ReportDrawnWhen`: past the brand screen and the first history page).
+`:benchmark` holds Macrobenchmarks for cold and warm start, opening the 3,000-message `#general`, scrolling back through its history and typing, each run without ahead-of-time compilation (`None`) and with the Baseline Profile (`Partial`). Its `BaselineProfileGenerator` walks the same journey to produce the app's Baseline Profile; `profileinstaller` installs it (and Compose's own profiles) on sideloaded APKs. Cold start reports both first frame and "fully drawn" (`ReportDrawnWhen`: past the brand screen and the first history page).
 
-They run on a physical phone (API 28+; API 33+ to generate the profile without root) against the app's `benchmarkRelease` build: release code and R8, debug-signed, installed beside the shipped app as `chat.caper.android.benchmark`, talking to `http://localhost:3001`.
+They run on a physical phone or an arm64 emulator (API 28+; API 33+ to generate the profile without root) against the app's `benchmarkRelease` build: release code and R8, debug-signed, installed beside the shipped app as `chat.caper.android.benchmark`, talking to `http://localhost:3001`.
 
 ```bash
 # Terminal 1, from the repository root:
@@ -123,6 +123,8 @@ cd apps/native/android
 ./gradlew :benchmark:connectedBenchmarkReleaseAndroidTest   # results in benchmark/build/outputs/connected_android_test_additional_output/
 ./gradlew :app:generateBaselineProfile                       # writes app/src/release/generated/baselineProfiles/; commit it
 ```
+
+On an emulator, add `-Pandroid.testInstrumentationRunnerArguments.androidx.benchmark.suppressErrors=EMULATOR`; its numbers compare runs on the same emulator, not phones.
 
 Builds never regenerate the profile; regenerate and commit it after large UI changes.
 
