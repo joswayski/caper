@@ -24,6 +24,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private var revealed: Set<String> = []
     private var shownRoot: String?
     private var followingTail = true
+    /// Nil until the first render, so a thread opened on a focused reply centres it.
+    private var lastFocusRevision: Int?
     private let observer = ModelObserver()
     private let composerObserver = ModelObserver()
     private let presentations = UIKitPresentations()
@@ -295,6 +297,13 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             }
         }
         firstLoad = chat.threadLoading && replies.isEmpty
+        // Go to message on a reply, as SwiftUI's thread: reveal it if its author
+        // is blocked, stop following the newest replies, and centre it.
+        let focusChanged = chat.focusRevision != lastFocusRevision
+        let target = focusChanged ? chat.focusedMessageID.flatMap { id in replies.first { $0.id == id } } : nil
+        // A reply still loading keeps the jump pending until it arrives.
+        if target != nil || !chat.threadLoading { lastFocusRevision = chat.focusRevision }
+        if let target { revealed.insert(target.id) }
         if firstLoad || chat.threadError != nil || chat.threadHasMore { items.append(.edge) }
         let built = TimelineRows.build(replies, pending: pending, author: chat.currentAuthor, viewerID: viewer,
                                        focusedID: chat.focusedMessageID, chat: chat, error: chat.error,
@@ -332,9 +341,17 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         runs = built.runs
         shownRoot = rootID
         if switched { followingTail = true }
+        if target != nil { followingTail = false }
         let follow = followingTail
+        let targetItem = target.map { Item.row($0.clientMessageId) }
         dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
-            guard let self, follow else { return }
+            guard let self else { return }
+            if let targetItem, let path = self.dataSource.indexPath(for: targetItem) {
+                self.collection.layoutIfNeeded()
+                self.collection.scrollToItem(at: path, at: .centeredVertically, animated: false)
+                return
+            }
+            guard follow else { return }
             self.collection.layoutIfNeeded()
             let bottom = max(-self.collection.adjustedContentInset.top,
                              self.collection.contentSize.height + self.collection.adjustedContentInset.bottom - self.collection.bounds.height)

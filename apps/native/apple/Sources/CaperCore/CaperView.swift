@@ -61,7 +61,6 @@ public enum CaperTheme {
 
 @MainActor public struct CaperRootView: View {
     @State private var model: AppModel
-    @State private var announcedVoice = false
     @Environment(\.scenePhase) private var scenePhase
     public init(model: AppModel? = nil) { _model = State(initialValue: model ?? CaperRuntime.makeModel()) }
 
@@ -87,31 +86,44 @@ public enum CaperTheme {
         .onChange(of: scenePhase, initial: true) { _, phase in model.applicationActivityChanged(active: phase == .active) }
         .task {
             CaperFontLoader.register()
-            CaperEffects.shared.preload()
             if model.phase == .loading { await model.start() }
         }
-        .task(id: model.voice.phase) {
-            while !Task.isCancelled && model.voice.phase == .connected {
-                await model.voice.sampleSpeaking()
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
+        .modifier(VoiceCallEffects(model: model))
+    }
+}
+
+/// The call's speaking rings and chimes: samples who is speaking while
+/// connected, and plays join and leave. SwiftUI's root and the UIKit client's
+/// root host both apply it.
+struct VoiceCallEffects: ViewModifier {
+    let model: AppModel
+    @State private var announcedVoice = false
+
+    func body(content: Content) -> some View {
+        content
+            .task { CaperEffects.shared.preload() }
+            .task(id: model.voice.phase) {
+                while !Task.isCancelled && model.voice.phase == .connected {
+                    await model.voice.sampleSpeaking()
+                    do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
+                }
+                model.voice.clearSpeaking()
             }
-            model.voice.clearSpeaking()
-        }
-        .onChange(of: model.voice.participants.map(\.id)) { old, new in
-            // Web chimes when someone else joins or leaves the call you are in.
-            guard model.voice.phase == .connected,
-                  let me = old.first(where: { model.voice.isSelf(participantID: $0) }), new.contains(me) else { return }
-            let before = Set(old).subtracting([me]), after = Set(new).subtracting([me])
-            if !before.subtracting(after).isEmpty { CaperEffects.shared.play(.leave) }
-            else if !after.subtracting(before).isEmpty { CaperEffects.shared.play(.join) }
-        }
-        .onChange(of: model.voice.phase) { _, new in
-            if new == .idle || new == .failed || new == .joining { announcedVoice = false }
-            if new == .connected, !announcedVoice {
-                announcedVoice = true
-                CaperEffects.shared.play(.join)
+            .onChange(of: model.voice.participants.map(\.id)) { old, new in
+                // Web chimes when someone else joins or leaves the call you are in.
+                guard model.voice.phase == .connected,
+                      let me = old.first(where: { model.voice.isSelf(participantID: $0) }), new.contains(me) else { return }
+                let before = Set(old).subtracting([me]), after = Set(new).subtracting([me])
+                if !before.subtracting(after).isEmpty { CaperEffects.shared.play(.leave) }
+                else if !after.subtracting(before).isEmpty { CaperEffects.shared.play(.join) }
             }
-        }
+            .onChange(of: model.voice.phase) { _, new in
+                if new == .idle || new == .failed || new == .joining { announcedVoice = false }
+                if new == .connected, !announcedVoice {
+                    announcedVoice = true
+                    CaperEffects.shared.play(.join)
+                }
+            }
     }
 }
 
@@ -8208,7 +8220,7 @@ struct PendingMessageRow: View {
     }
 }
 
-private struct ProfileView: View {
+struct ProfileView: View {
     @Bindable var model: AppModel
     @State private var username = ""
     @State private var displayName = ""
