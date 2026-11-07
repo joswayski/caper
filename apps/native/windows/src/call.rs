@@ -233,6 +233,7 @@ impl App {
                 let _ = KillTimer(Some(self.hwnd), TIMER_CALL);
             }
         }
+        self.audio_changed();
     }
 
     /// Tracks the pointer over voice's controls; nearing a Join prepares

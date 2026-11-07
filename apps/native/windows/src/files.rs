@@ -100,6 +100,9 @@ pub struct File {
     /// A card's name and detail lines.
     pub name: Option<IDWriteTextLayout>,
     pub detail: Option<IDWriteTextLayout>,
+    /// A voice message's player card (`playback`) and its transcript.
+    pub voice: bool,
+    pub transcript: Option<crate::playback::Transcript>,
 }
 
 /// A row's attachments: their places, the gallery's bounds (whose outer
@@ -194,7 +197,13 @@ pub fn build(g: &Gfx, attachments: &[Attachment]) -> Result<Files> {
     let mut list = Vec::new();
     for (index, a) in attachments.iter().enumerate() {
         let tile = media_kind(a);
-        let (name, detail) = if tile {
+        let voice = crate::playback::is_voice(a);
+        let transcript = if voice {
+            crate::playback::transcript(g, a)?
+        } else {
+            None
+        };
+        let (name, detail) = if tile || voice {
             (None, None)
         } else {
             (
@@ -208,6 +217,8 @@ pub fn build(g: &Gfx, attachments: &[Attachment]) -> Result<Files> {
             rect: rect(0.0, 0.0, 0.0, 0.0),
             name,
             detail,
+            voice,
+            transcript,
         });
     }
     // Media tiles first, then cards, as egui orders them.
@@ -253,8 +264,13 @@ pub fn place(
     let mut any = false;
     for f in files.list.iter_mut().filter(|f| !f.tile) {
         any = true;
-        let (w, h) = if hidden(&attachments[f.index], revealed) {
+        let a = &attachments[f.index];
+        let (w, h) = if hidden(a, revealed) {
             (COVER.0.min(width), COVER.1)
+        } else if f.voice {
+            let w = crate::playback::card_width(width);
+            let open = revealed.contains(&crate::playback::expanded_key(&a.id));
+            (w, crate::playback::place(f, w, open))
         } else {
             (card_w, CARD_H)
         };
@@ -304,6 +320,8 @@ pub struct Ctx<'a> {
     pub next: Option<Duration>,
     /// Rows whose GIFs play, to redraw when the next frame is due.
     pub animated: Vec<usize>,
+    /// The voice message loaded, as its card shows it.
+    pub voice: Option<crate::playback::View>,
 }
 
 impl<'a> Ctx<'a> {
@@ -318,6 +336,7 @@ impl<'a> Ctx<'a> {
                 .map_or(0, |d| d.as_secs() as i64),
             next: None,
             animated: Vec::new(),
+            voice: None,
         }
     }
 }
@@ -704,6 +723,10 @@ fn card(
     if hidden(a, revealed) {
         return covered(g, dc, a, ctx, r, RADIUS);
     }
+    if f.voice {
+        let view = ctx.as_deref().and_then(|c| c.voice.as_ref());
+        return crate::playback::draw(g, dc, f, a, view, revealed, r);
+    }
     fill_round(dc, r, RADIUS, &g.brushes.surface);
     stroke_round(dc, r, RADIUS, &g.brushes.border);
     let failed = !a.unavailable && a.status == AttachmentStatus::Failed;
@@ -832,6 +855,20 @@ impl App {
     }
 
     pub fn file_label(&self, i: usize, k: usize) -> String {
+        if let Some(a) = self.c.messages.get(i).and_then(|m| m.attachments.get(k))
+            && crate::playback::is_voice(a)
+        {
+            let playing = self
+                .playback
+                .view()
+                .is_some_and(|v| v.id == a.id && v.playing);
+            return if playing {
+                "Pause voice message"
+            } else {
+                "Play voice message"
+            }
+            .into();
+        }
         self.c
             .messages
             .get(i)
@@ -864,6 +901,10 @@ impl App {
             self.events |= crate::EV_ROWS;
             self.need = true;
             return;
+        }
+        // A voice message plays in place; it never opens elsewhere.
+        if crate::playback::is_voice(&a) {
+            return self.voice_message_activate(i, k, crate::playback::Part::Play);
         }
         if !clickable(&a) {
             return;

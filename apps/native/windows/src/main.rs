@@ -24,6 +24,8 @@ mod emoji;
 mod files;
 mod gifs;
 mod overlay;
+mod playback;
+mod recording;
 mod settings;
 // The message grammar every client shares.
 #[allow(dead_code)]
@@ -267,6 +269,8 @@ pub struct App {
     redraw: Vec<usize>,
     /// Rows whose GIFs play, redrawn when their next frame is due.
     gif_rows: Vec<usize>,
+    /// The voice message playing or paused.
+    playback: playback::Playback,
     dirty: Dirty,
     need: bool,
     box_h: f32,
@@ -297,6 +301,10 @@ pub struct App {
     /// The composer's GIF picker.
     pub gifs: Option<gifs::Picker>,
     gifs_p: Panel,
+    /// Dictation or a voice note in the composer's place, and its hovered
+    /// button.
+    pub rec: Option<recording::Rec>,
+    pub rec_hover: Option<recording::RPart>,
     /// An empty conversation's "No messages yet." and what it last drew.
     empty_p: Panel,
     empty_drawn: Option<((Option<&'static str>, String), f32, f32)>,
@@ -468,6 +476,7 @@ impl App {
                 composer_drag: false,
                 redraw: Vec::new(),
                 gif_rows: Vec::new(),
+                playback: playback::Playback::default(),
                 dirty: Dirty::all(),
                 need: true,
                 box_h: 0.0,
@@ -490,6 +499,8 @@ impl App {
                 picker_p,
                 gifs: None,
                 gifs_p,
+                rec: None,
+                rec_hover: None,
                 empty_p,
                 empty_drawn: None,
                 reply: None,
@@ -524,6 +535,9 @@ impl App {
         let (channels, members) = side_layouts(&self.g, &c)?;
         self.rows = Rows::new(c.messages.len());
         self.c = c;
+        self.playback.scrub = None;
+        self.playback_follow();
+        self.rec_follow();
         self.channel_layouts = channels;
         self.member_layouts = members;
         self.sel = None;
@@ -746,6 +760,7 @@ impl App {
                 live::Update::Deleted(request, error) => self.deleted(request, error),
                 live::Update::Media => self.media_changed(),
                 live::Update::Drafts => self.drafts_changed(),
+                live::Update::Dictated { key, result } => self.dictated(key, result),
                 live::Update::Open(url) => open_link(&url),
                 live::Update::Versions {
                     request,
@@ -967,7 +982,7 @@ impl App {
 
     pub fn set_composer_focus(&mut self, focused: bool) {
         // A request's bar stands in for the composer.
-        let focused = focused && self.dm_bar().is_none();
+        let focused = focused && self.dm_bar().is_none() && self.rec().is_none();
         // One text field has focus: the reply box in the thread gives it up.
         if focused
             && let Some(t) = &mut self.thread
@@ -1356,6 +1371,7 @@ impl App {
             self.need = true;
         }
         self.track_bar_hover();
+        self.track_rec_hover();
         self.track_voice_hover();
         let gear = self.pointer.is_some_and(|(x, y)| self.on_gear(x, y));
         if gear != self.gear_hover {
@@ -1539,6 +1555,9 @@ impl App {
                     self.need = true;
                 }
                 settings::TIMER_INBOX => self.inbox_tick(),
+                settings::audio::TIMER_AUDIO => self.audio_tick(),
+                playback::TIMER_PLAYBACK => self.playback_tick(),
+                recording::TIMER_RECORDING => self.recording_tick(),
                 TIMER_GIFS => self.gifs_tick(),
                 TIMER_GIF_FRAMES => self.next_picker_frame(),
                 TIMER_UNREAD => {
@@ -1568,7 +1587,9 @@ impl App {
                 self.track_head_hover();
                 self.track_foot_hover();
                 self.track_card();
-                if self.composer_drag {
+                if self.playback.scrub.is_some() {
+                    self.voice_message_scrub(x, false);
+                } else if self.composer_drag {
                     let (tx, ty) = self.composer_text_origin();
                     let p = self.composer.hit(x - tx, y - ty - self.composer.scroll());
                     if p != self.composer.caret {
@@ -1600,7 +1621,9 @@ impl App {
                     self.bar_pressed = Some(part);
                     self.dirty.composer = true;
                     self.need = true;
-                } else if self.dm_bar().is_some() && self.in_box(x, y) {
+                } else if let Some(part) = self.rec_at(x, y) {
+                    self.rec_activate(part);
+                } else if (self.dm_bar().is_some() || self.rec().is_some()) && self.in_box(x, y) {
                     self.set_composer_focus(false);
                 } else if let Some(part) = self.box_part_at(x, y) {
                     self.box_activate(part);
@@ -1631,7 +1654,19 @@ impl App {
                         self.view_original_of(i);
                     } else if let Some(i) = self.edited_at(x, y) {
                         self.open_history_of(i);
-                    } else if let Some((i, k, hide)) = self.file_at(x, y) {
+                    } else if let Some((i, k, part)) = self.voice_message_at(x, y) {
+                        if let playback::Part::Seek(at) = part {
+                            self.playback.scrub = Some((i, k, at));
+                            self.voice_message_scrub(x, false);
+                        } else {
+                            self.voice_message_activate(i, k, part);
+                        }
+                    } else if let Some((i, k, hide)) = self.file_at(x, y)
+                        && !self.c.messages[i]
+                            .attachments
+                            .get(k)
+                            .is_some_and(playback::is_voice)
+                    {
                         self.file_activate(i, k, hide);
                     } else if let Some((i, k)) = self.embed_at(x, y) {
                         self.embed_activate(i, k);
@@ -1694,6 +1729,9 @@ impl App {
                 let clicked = self.selecting && self.sel.is_none_or(|(a, b)| a == b);
                 self.selecting = false;
                 self.composer_drag = false;
+                if self.playback.scrub.is_some() {
+                    self.voice_message_scrub(x, true);
+                }
                 if let Some(part) = self.bar_pressed.take() {
                     self.dirty.composer = true;
                     self.need = true;
@@ -1720,9 +1758,11 @@ impl App {
                     return None;
                 }
                 let part = self.pointer.is_some_and(|(x, y)| {
-                    self.box_part_at(x, y).is_some() || self.bar_at(x, y).is_some()
+                    self.box_part_at(x, y).is_some()
+                        || self.bar_at(x, y).is_some()
+                        || self.rec_at(x, y).is_some()
                 });
-                let bar = self.dm_bar().is_some();
+                let bar = self.dm_bar().is_some() || self.rec().is_some();
                 let beam = !part
                     && self
                         .pointer
@@ -2167,6 +2207,10 @@ impl App {
         if self.history_key(vk, shift) {
             return true;
         }
+        // The recording bar: Escape discards and Enter finishes.
+        if (vk == VK_ESCAPE || vk == VK_RETURN) && self.rec_key(vk == VK_RETURN) {
+            return true;
+        }
         if !self.composer.focused {
             let page = self.vh() as f64 * 0.9;
             match vk {
@@ -2435,12 +2479,13 @@ impl App {
             .as_ref()
             .and_then(|id| self.ids.rows.get(id).copied());
         let kb = self.kb_control();
+        let voice = self.voice_message_view();
         let (g, c, rows) = (&self.g, &self.c, &mut self.rows);
         let mut tex = files::D2d(g.dc.clone());
-        let mut media = self
-            .live
-            .as_mut()
-            .map(|l| files::Ctx::new(&mut l.media, &mut tex));
+        let mut media = self.live.as_mut().map(|l| files::Ctx {
+            voice,
+            ..files::Ctx::new(&mut l.media, &mut tex)
+        });
         let result = gfx::draw_local(&self.vs, r, s, |dc| unsafe {
             dc.Clear(Some(&gfx::color(SURFACE_CONVERSATION, 1.0)));
             if let Some((y, state)) = head {
@@ -3059,6 +3104,8 @@ impl App {
             let gif = self.gif_shown().then_some((bw, self.gifs.is_some()));
             let live = self.live.as_ref();
             let bar = self.dm_bar();
+            let rec = self.rec().is_some();
+            let mic = (bw, self.mic_blocked().is_none());
             let (bar_hover, bar_pressed) = (self.bar_hover, self.bar_pressed);
             if let Some((note, _)) = &self.note {
                 self.note_p.draw(s, |dc| Self::draw_note(g, dc, note, bw))?;
@@ -3066,6 +3113,9 @@ impl App {
             self.composer_p.draw(s, |dc| {
                 if let Some(bar) = &bar {
                     return bar.draw(g, dc, bw, bar_hover, bar_pressed);
+                }
+                if rec {
+                    return self.draw_rec(g, dc, bw);
                 }
                 comp.draw(g, dc, bw, bh, &placeholder)?;
                 match live {
@@ -3078,6 +3128,7 @@ impl App {
                         notice.as_deref(),
                         live.can_attach(),
                         gif,
+                        mic,
                     ),
                     None => Ok(()),
                 }

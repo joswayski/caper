@@ -10,11 +10,13 @@
 //! the filters, Unread only with the count, each notification (opening it
 //! closes the inbox over its conversation; its check marks it read), and
 //! Load more. The shared `caper_client::activity::Inbox` keeps its state.
+//! And the Audio test (`audio`).
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::overlay::{Rect, Tone};
 use crate::theme::*;
 use crate::{App, EV_FOCUS, EV_SCREEN, text};
+use audio::Mic;
 use caper_client::activity::Filter;
 use caper_client::model::{DELETE_ACCOUNT_URL, DM_PRIVACY, NotificationLevel};
 use caper_client::notifications::{Change, Scope, account_level_label};
@@ -25,6 +27,8 @@ use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
+
+pub mod audio;
 
 const CARD_W: f32 = 560.0;
 const PAD: f32 = 24.0;
@@ -49,7 +53,7 @@ pub const LEVELS: [NotificationLevel; 3] = [
 pub const FOOT_H: f32 = 52.0;
 const MENU_W: f32 = 232.0;
 const MENU_ITEM_H: f32 = 32.0;
-pub const MENU_ITEMS: [&str; 2] = ["Settings\u{2026}", "Log out"];
+pub const MENU_ITEMS: [&str; 3] = ["Settings\u{2026}", "Audio test", "Log out"];
 
 fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
     px >= x && px < x + w && py >= y && py < y + h
@@ -78,6 +82,20 @@ pub enum SPart {
     MarkRead(usize),
     LoadMore,
     RetryInbox,
+    /// The Audio test: a microphone or speaker choice (the system
+    /// default first), Refresh devices, the three sliders, Test
+    /// speakers, Test microphone, the input meter and a sample's Play.
+    Input(usize),
+    Output(usize),
+    RefreshDevices,
+    MicVolume,
+    SpeakerVolume,
+    Enhancement,
+    SpeakerTest,
+    MicTest,
+    Meter,
+    /// The natural (false) or enhanced sample.
+    Sample(bool),
 }
 
 impl SPart {
@@ -98,6 +116,16 @@ impl SPart {
             Self::UnreadOnly => 30,
             Self::LoadMore => 31,
             Self::RetryInbox => 32,
+            Self::RefreshDevices => 33,
+            Self::MicVolume => 34,
+            Self::SpeakerVolume => 35,
+            Self::Enhancement => 36,
+            Self::SpeakerTest => 37,
+            Self::MicTest => 38,
+            Self::Meter => 39,
+            Self::Sample(e) => 40 + usize::from(e),
+            Self::Input(k) => 2000 + k,
+            Self::Output(k) => 3000 + k,
             Self::Text(k) => 100 + k,
             Self::Unblock(k) => 1000 + k,
             Self::Open(k) => 1_000_000 + 2 * k,
@@ -106,7 +134,17 @@ impl SPart {
     }
 
     pub fn is_radio(self) -> bool {
-        matches!(self, Self::Level(_) | Self::Privacy(_) | Self::Filter(_))
+        matches!(
+            self,
+            Self::Level(_) | Self::Privacy(_) | Self::Filter(_) | Self::Input(_) | Self::Output(_)
+        )
+    }
+
+    pub fn is_slider(self) -> bool {
+        matches!(
+            self,
+            Self::MicVolume | Self::SpeakerVolume | Self::Enhancement
+        )
     }
 
     pub fn is_toggle(self) -> bool {
@@ -123,6 +161,10 @@ impl SPart {
                 | Self::Unblock(_)
                 | Self::LoadMore
                 | Self::RetryInbox
+                | Self::RefreshDevices
+                | Self::SpeakerTest
+                | Self::MicTest
+                | Self::Sample(_)
         )
     }
 }
@@ -170,6 +212,8 @@ pub struct Snapshot {
     pub block_error: Option<String>,
     /// The inbox page's state.
     pub inbox: Option<InboxSnap>,
+    /// The Audio test's state.
+    pub audio: Option<audio::AudioSnap>,
 }
 
 /// What the inbox shows (`Live::inbox_snapshot`).
@@ -211,12 +255,15 @@ pub struct InboxRow {
 pub enum Page {
     Settings,
     Inbox,
+    Audio,
 }
 
 pub struct Settings {
     pub page: Page,
     items: Vec<Item>,
     separators: Vec<f32>,
+    /// Boxes behind parts of the body (body-local) and their borders.
+    frames: Vec<(Rect, u32)>,
     pub snap: Snapshot,
     pub scroll: f32,
     content_h: f32,
@@ -237,6 +284,7 @@ impl Settings {
             page: Page::Settings,
             items: Vec::new(),
             separators: Vec::new(),
+            frames: Vec::new(),
             snap: Snapshot::default(),
             scroll: 0.0,
             content_h: 0.0,
@@ -260,6 +308,7 @@ impl Settings {
     pub fn enabled(&self, part: SPart) -> bool {
         let s = &self.snap;
         let inbox = s.inbox.as_ref();
+        let audio = s.audio.as_ref();
         match part {
             SPart::Launch => s.launch.is_some(),
             SPart::Level(_) | SPart::VoiceStarted => s.level.is_some() && !s.notify_saving,
@@ -271,6 +320,16 @@ impl Settings {
             SPart::MarkRead(_) => inbox.is_some_and(|i| !i.stale),
             SPart::LoadMore => inbox.is_some_and(|i| !i.loading),
             SPart::RetryInbox => inbox.is_some_and(|i| i.retry),
+            SPart::Input(_) | SPart::Output(_) => audio.is_some_and(|a| a.mic == Mic::Idle),
+            SPart::RefreshDevices => audio.is_some_and(|a| !a.refreshing),
+            SPart::Enhancement => audio.is_some_and(|a| a.mic != Mic::Recording),
+            SPart::MicTest => {
+                audio.is_some_and(|a| !matches!(a.mic, Mic::Preparing | Mic::Processing))
+            }
+            SPart::Sample(e) => {
+                audio.is_some_and(|a| a.mic == Mic::Ready || a.mic == Mic::Playing(e))
+            }
+            SPart::Meter => false,
             _ => true,
         }
     }
@@ -285,6 +344,8 @@ impl Settings {
             SPart::Privacy(k) => s.privacy.as_deref() == Some(DM_PRIVACY[k].0),
             SPart::Filter(k) => s.inbox.as_ref().is_some_and(|i| i.filter == k),
             SPart::UnreadOnly => s.inbox.as_ref().is_some_and(|i| i.unread_only),
+            SPart::Input(k) => s.audio.as_ref().is_some_and(|a| a.input == Some(k)),
+            SPart::Output(k) => s.audio.as_ref().is_some_and(|a| a.output == Some(k)),
             _ => false,
         }
     }
@@ -300,6 +361,7 @@ impl Settings {
     pub fn name(&self, part: SPart) -> String {
         match part {
             SPart::Close if self.page == Page::Inbox => "Close notifications".into(),
+            SPart::Close if self.page == Page::Audio => "Close audio test".into(),
             SPart::Close => "Close settings".into(),
             _ => self
                 .items
@@ -340,7 +402,7 @@ impl Settings {
         self.items
             .iter()
             .rev()
-            .filter(|i| !matches!(i.part, SPart::Text(_)) && self.enabled(i.part))
+            .filter(|i| !matches!(i.part, SPart::Text(_) | SPart::Meter) && self.enabled(i.part))
             .find(|i| contains(self.client(i.rect), x, y))
             .map(|i| i.part)
     }
@@ -367,10 +429,13 @@ impl Settings {
             y: 0.0,
             items: Vec::new(),
             separators: Vec::new(),
+            frames: Vec::new(),
             texts: 0,
         };
         if let (Page::Inbox, Some(inbox)) = (self.page, &snap.inbox) {
             b.inbox(inbox)?;
+        } else if let (Page::Audio, Some(a)) = (self.page, &snap.audio) {
+            b.audio(a)?;
         } else if self.page == Page::Settings {
             b.settings(&snap)?;
         }
@@ -384,6 +449,7 @@ impl Settings {
         self.body = (cx, cy + HEAD_H, card_w, card_h - HEAD_H - PAD);
         self.items = b.items;
         self.separators = b.separators;
+        self.frames = b.frames;
         self.content_h = content_h;
         self.snap = snap;
         self.scroll = self.scroll.clamp(0.0, self.max_scroll());
@@ -610,6 +676,7 @@ impl Settings {
             let heading = match self.page {
                 Page::Settings => "Settings",
                 Page::Inbox => "Notifications",
+                Page::Audio => "Audio test",
             };
             let title = g.layout(&gfx::wide(heading), &g.formats.dialog_title, 1e6)?;
             text::draw(dc, &title, cx + PAD, cy + 22.0, &g.brushes.text);
@@ -635,6 +702,7 @@ impl Settings {
                     &g.brushes.border,
                 );
             }
+            self.draw_frames(g, dc);
             for item in &self.items {
                 let r = self.client(item.rect);
                 if r.1 + r.3 < by || r.1 > by + bh {
@@ -790,7 +858,13 @@ impl Settings {
                     1.0,
                 );
             }
-            SPart::Level(_) | SPart::Privacy(_) | SPart::VoiceStarted => {
+            p if p.is_slider() => self.draw_slider(g, dc, item, r)?,
+            SPart::Meter => self.draw_meter(g, dc, r)?,
+            SPart::Level(_)
+            | SPart::Privacy(_)
+            | SPart::VoiceStarted
+            | SPart::Input(_)
+            | SPart::Output(_) => {
                 let (mx, my) = (x + 8.0, y + h / 2.0);
                 let ring = if !enabled {
                     BORDER
@@ -858,7 +932,12 @@ impl Settings {
                 } else {
                     1
                 };
-                crate::overlay::draw_button(g, dc, &item.text, r, Tone::Secondary, state)?;
+                let (label, tone) = match part {
+                    SPart::Sample(e) => (self.sample_label(e), Tone::Secondary),
+                    SPart::MicTest => (item.text.as_str(), Tone::Primary),
+                    _ => (item.text.as_str(), Tone::Secondary),
+                };
+                crate::overlay::draw_button(g, dc, label, r, tone, state)?;
             }
             _ => {}
         }
@@ -907,6 +986,7 @@ struct Builder<'a> {
     y: f32,
     items: Vec<Item>,
     separators: Vec<f32>,
+    frames: Vec<(Rect, u32)>,
     texts: usize,
 }
 
@@ -1104,6 +1184,9 @@ impl App {
 
     pub fn close_settings(&mut self) {
         if let Some(s) = self.settings.take() {
+            if s.page == Page::Audio {
+                self.audio_closed();
+            }
             if s.page == Page::Inbox {
                 if let Some(live) = &mut self.live {
                     live.close_activity();
@@ -1131,6 +1214,9 @@ impl App {
             if s.is_some_and(|s| s.page == Page::Inbox) {
                 snap.inbox = Some(live.inbox_snapshot());
             }
+            if s.is_some_and(|s| s.page == Page::Audio) {
+                snap.audio = Some(audio::snapshot(&live.voice));
+            }
         }
         snap
     }
@@ -1143,6 +1229,14 @@ impl App {
             && let Err(e) = s.relayout(g, snap, w, h)
         {
             eprintln!("settings layout failed: {e:?}");
+        }
+        if let Some(s) = self.settings.as_ref().filter(|s| s.page == Page::Audio) {
+            self.arm_audio_timer(
+                s.snap
+                    .audio
+                    .as_ref()
+                    .is_some_and(|a| a.mic == Mic::Recording),
+            );
         }
         self.dirty.settings = true;
         self.events |= EV_SCREEN;
@@ -1157,6 +1251,14 @@ impl App {
         }
         match part {
             SPart::Close => return self.close_settings(),
+            SPart::Input(_)
+            | SPart::Output(_)
+            | SPart::RefreshDevices
+            | SPart::SpeakerTest
+            | SPart::MicTest
+            | SPart::Sample(_) => return self.audio_activate(part),
+            // Sliders move by dragging or RangeValue.
+            p if p.is_slider() => return,
             SPart::Launch => {
                 let wanted = !s.launch;
                 match caper_client::startup::set_enabled(wanted) {
@@ -1215,6 +1317,12 @@ impl App {
         match msg {
             WM_MOUSEMOVE => {
                 self.pointer = Some((x, y));
+                if let Some(p) = s.pressed.filter(|p| p.is_slider()) {
+                    if let Some(v) = s.gauge_at(p, x) {
+                        self.set_gauge(p, v, false);
+                    }
+                    return done;
+                }
                 let hover = s.hit(x, y);
                 if hover != s.hover {
                     s.hover = hover;
@@ -1226,6 +1334,14 @@ impl App {
             WM_LBUTTONDOWN => {
                 let part = s.hit(x, y);
                 s.pressed = part;
+                // A slider follows the pointer until it lets go.
+                if let Some(p) = part.filter(|p| p.is_slider()) {
+                    unsafe { SetCapture(self.hwnd) };
+                    if let Some(v) = s.gauge_at(p, x) {
+                        self.set_gauge(p, v, false);
+                    }
+                    return done;
+                }
                 if part.is_none() && !s.on_card(x, y) {
                     self.close_settings();
                 } else {
@@ -1236,6 +1352,15 @@ impl App {
             }
             WM_LBUTTONUP => {
                 let pressed = s.pressed.take();
+                if let Some(p) = pressed.filter(|p| p.is_slider()) {
+                    unsafe {
+                        let _ = ReleaseCapture();
+                    }
+                    if let Some(v) = s.gauge_at(p, x) {
+                        self.set_gauge(p, v, true);
+                    }
+                    return done;
+                }
                 self.dirty.settings = true;
                 self.need = true;
                 if let Some(p) = pressed.filter(|p| s.hit(x, y) == Some(*p)) {
@@ -1344,7 +1469,8 @@ impl App {
         self.need = true;
         match k {
             0 => self.open_settings(),
-            1 => self.logout(),
+            1 => self.open_audio(),
+            2 => self.logout(),
             _ => {}
         }
     }

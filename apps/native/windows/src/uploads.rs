@@ -37,6 +37,8 @@ const GAP: f32 = 8.0;
 pub const ATTACH_W: f32 = 30.0;
 /// The text's room before the GIF button, while GIFs are available.
 pub const GIF_W: f32 = 36.0;
+/// The text's room before Dictate, the line's last button.
+pub const MIC_W: f32 = 36.0;
 const NOTICE_H: f32 = 18.0;
 /// A corner button's circle, its inset from the tile's edges and its target.
 const CORNER_R: f32 = 11.0;
@@ -90,6 +92,8 @@ pub enum Part {
     Attach,
     /// Send a GIF: opens the picker.
     Gif,
+    /// Dictate: records in the composer's place.
+    Mic,
     /// The open channel's file `k`: its tile (preview), spoiler toggle,
     /// Remove and Retry.
     Open(usize),
@@ -127,8 +131,14 @@ pub fn attach_rect(top: f32) -> D2D_RECT_F {
     rect(8.0, cy - 14.0, 36.0, cy + 14.0)
 }
 
-/// Send a GIF, at the end of the first line in a box `bw` wide.
+/// Send a GIF, before Dictate on the first line in a box `bw` wide.
 pub fn gif_rect(top: f32, bw: f32) -> D2D_RECT_F {
+    let m = mic_rect(top, bw);
+    rect(m.left - GIF_W, m.top, m.right - MIC_W, m.bottom)
+}
+
+/// Dictate, at the end of the first line in a box `bw` wide.
+pub fn mic_rect(top: f32, bw: f32) -> D2D_RECT_F {
     let cy = top + PAD + composer::LINE / 2.0;
     rect(bw - 36.0, cy - 14.0, bw - 8.0, cy + 14.0)
 }
@@ -218,7 +228,7 @@ pub fn part_rect(tiles: &[D2D_RECT_F], top: f32, part: Part) -> Option<D2D_RECT_
     Some(match part {
         Part::Attach => attach_rect(top),
         // Placed by the box's width (`App::box_part_rect`).
-        Part::Gif => return None,
+        Part::Gif | Part::Mic => return None,
         Part::Open(k) => *tiles.get(k)?,
         Part::Spoiler(k) => spoiler_rect(*tiles.get(k)?),
         Part::Remove(k) => remove_rect(*tiles.get(k)?),
@@ -357,8 +367,9 @@ fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Result<()
     Ok(())
 }
 
-/// Draws the box's files, notice, Attach files and, in a box `gif` wide
-/// while GIFs are available, Send a GIF (bright while its picker is open).
+/// Draws the box's files, notice, Attach files, Dictate (`mic`: the box's
+/// width and whether it can record) and, while GIFs are available, Send
+/// a GIF (bright while its picker is open).
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     g: &Gfx,
@@ -369,7 +380,18 @@ pub fn draw(
     notice: Option<&str>,
     can_attach: bool,
     gif: Option<(f32, bool)>,
+    mic: (f32, bool),
 ) -> Result<()> {
+    let (bw, recordable) = mic;
+    let m = mic_rect(top, bw);
+    centered_icon(
+        dc,
+        Icon::Mic,
+        (m.left + m.right) / 2.0,
+        (m.top + m.bottom) / 2.0,
+        16.0,
+        if recordable { TEXT_MUTED } else { BORDER },
+    );
     if let Some((bw, open)) = gif {
         gif_button(
             g,
@@ -565,13 +587,20 @@ impl App {
         if let Some(bar) = self.dm_bar() {
             return Ok(bar.layout(&self.g, bw)?.1);
         }
+        if self.rec().is_some() {
+            return Ok(crate::recording::BAR_H);
+        }
         let top = if self.live.is_some() {
             self.box_files(bw).2
         } else {
             0.0
         };
         let left = if self.live.is_some() { ATTACH_W } else { 0.0 };
-        let right = if self.gif_shown() { GIF_W } else { 0.0 };
+        let right = match (self.live.is_some(), self.gif_shown()) {
+            (true, true) => MIC_W + GIF_W,
+            (true, false) => MIC_W,
+            _ => 0.0,
+        };
         self.composer.inset = (left, top);
         Ok(top
             + self
@@ -586,11 +615,18 @@ impl App {
 
     /// The composer box's control under client point (x, y).
     pub fn box_part_at(&self, x: f32, y: f32) -> Option<Part> {
-        if self.live.is_none() || !self.in_box(x, y) || self.dm_bar().is_some() {
+        if self.live.is_none()
+            || !self.in_box(x, y)
+            || self.dm_bar().is_some()
+            || self.rec().is_some()
+        {
             return None;
         }
         let (bx, by, bw, _) = self.box_rect();
         let (drafts, tiles, top, _) = self.box_files(bw);
+        if inside(mic_rect(top, bw), x - bx, y - by) {
+            return Some(Part::Mic);
+        }
         if self.gif_shown() && inside(gif_rect(top, bw), x - bx, y - by) {
             return Some(Part::Gif);
         }
@@ -599,7 +635,7 @@ impl App {
 
     /// The composer box's controls, in reading order (for UI Automation).
     pub fn box_parts(&self) -> Vec<Part> {
-        if self.live.is_none() || self.dm_bar().is_some() {
+        if self.live.is_none() || self.dm_bar().is_some() || self.rec().is_some() {
             return Vec::new();
         }
         let (_, _, bw, _) = self.box_rect();
@@ -618,6 +654,7 @@ impl App {
         if self.gif_shown() {
             out.push(Part::Gif);
         }
+        out.push(Part::Mic);
         out
     }
 
@@ -626,6 +663,7 @@ impl App {
         let (_, tiles, top, _) = self.box_files(bw);
         let r = match part {
             Part::Gif => gif_rect(top, bw),
+            Part::Mic => mic_rect(top, bw),
             _ => part_rect(&tiles, top, part)?,
         };
         Some((bx + r.left, by + r.top, r.right - r.left, r.bottom - r.top))
@@ -642,6 +680,7 @@ impl App {
                 None => String::new(),
             },
             Part::Gif => "Send a GIF".into(),
+            Part::Mic => "Dictate".into(),
             Part::Open(k) => file(k).map_or_else(String::new, |(s, _)| format!("Preview {s}")),
             Part::Spoiler(k) => file(k).map_or_else(String::new, |(_, d)| {
                 if d.upload.spoiler {
@@ -662,13 +701,14 @@ impl App {
         match part {
             Part::Attach => return self.pick_files(),
             Part::Gif => return self.toggle_gifs(),
+            Part::Mic => return self.start_recording(),
             _ => {}
         }
         let (_, _, bw, _) = self.box_rect();
         let (drafts, ..) = self.box_files(bw);
         let k = match part {
             Part::Open(k) | Part::Spoiler(k) | Part::Remove(k) | Part::Retry(k) => k,
-            Part::Attach | Part::Gif => return,
+            Part::Attach | Part::Gif | Part::Mic => return,
         };
         let Some(d) = drafts.get(k) else { return };
         let key = d.upload.key;
@@ -693,7 +733,7 @@ impl App {
                 self.attach_error = None;
             }
             Part::Retry(_) => live.retry_draft(key),
-            Part::Attach | Part::Gif => {}
+            Part::Attach | Part::Gif | Part::Mic => {}
         }
         self.drafts_changed();
     }

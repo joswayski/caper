@@ -45,6 +45,7 @@ icons! {
     PhoneOff => "phone-off.svg",
     Pin => "pin.svg",
     PinOff => "pin-off.svg",
+    Pause => "pause.svg",
     Play => "play.svg",
     Plus => "plus.svg",
     Reply => "reply.svg",

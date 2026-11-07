@@ -39,6 +39,8 @@ pub enum Id {
     NewDirect,
     /// The request or blocked bar in place of the composer, and its parts.
     Bar(crate::directs::BarPart),
+    /// The recording bar in place of the composer, and its parts.
+    Rec(crate::recording::RPart),
     /// "Waiting for @x to accept" above the composer.
     Waiting,
     /// A part of Settings, which replaces the tree while shown.
@@ -217,6 +219,8 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             out.extend(a.box_parts().into_iter().map(Id::BoxPart));
             if a.dm_bar().is_some() {
                 out.extend(a.bar_parts().into_iter().map(|(p, _)| Id::Bar(p)));
+            } else if a.rec().is_some() {
+                out.extend(a.rec_parts().into_iter().map(|(p, _)| Id::Rec(p)));
             } else {
                 out.push(Id::Composer);
             }
@@ -345,6 +349,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Voice(p) => a.voice_parts().contains(&p),
         Id::Directs | Id::NewDirect => !a.direct_rows().is_empty(),
         Id::Bar(p) => a.bar_parts().iter().any(|(q, _)| *q == p),
+        Id::Rec(p) => a.rec_parts().iter().any(|(q, _)| *q == p),
         Id::Waiting => a.note.is_some(),
         Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.parts().contains(&p)),
         Id::Gear => a.foot_shown(),
@@ -430,6 +435,7 @@ fn name(a: &App, id: Id) -> String {
         Id::Directs => "Direct messages".into(),
         Id::NewDirect => "New direct message".into(),
         Id::Bar(p) => a.dm_bar().map_or_else(String::new, |b| b.label(p)),
+        Id::Rec(p) => a.rec_label(p),
         Id::Waiting => a.note.as_ref().map_or_else(String::new, |(t, _)| t.clone()),
         Id::Settings(p) => a.settings.as_ref().map_or_else(String::new, |s| s.name(p)),
         Id::Gear | Id::AccountMenu => "User Settings".into(),
@@ -636,7 +642,12 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
             UIA_TextControlTypeId
         }
         Id::Bar(_) => UIA_ButtonControlTypeId,
-        Id::Settings(crate::settings::SPart::Text(_)) => UIA_TextControlTypeId,
+        Id::Rec(crate::recording::RPart::Status) => UIA_TextControlTypeId,
+        Id::Rec(_) => UIA_ButtonControlTypeId,
+        Id::Settings(crate::settings::SPart::Text(_) | crate::settings::SPart::Meter) => {
+            UIA_TextControlTypeId
+        }
+        Id::Settings(p) if p.is_slider() => UIA_SliderControlTypeId,
         Id::Settings(crate::settings::SPart::Delete) => UIA_HyperlinkControlTypeId,
         Id::Settings(p) if p.is_radio() => UIA_RadioButtonControlTypeId,
         Id::Settings(p) if p.is_toggle() => UIA_CheckBoxControlTypeId,
@@ -679,6 +690,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Direct(k) => (35, k),
         Id::NewDirect => (36, 0),
         Id::Bar(p) => (37, p.index()),
+        Id::Rec(p) => (49, p.index()),
         Id::Settings(p) => (38, p.index()),
         Id::Gear => (39, 0),
         Id::AccountMenu => (40, 0),
@@ -744,6 +756,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
                 crate::uploads::Part::Attach => 0,
                 // Past every file's controls (at most ten files).
                 crate::uploads::Part::Gif => 999,
+                crate::uploads::Part::Mic => 1000,
                 crate::uploads::Part::Open(k) => 1 + 4 * k,
                 crate::uploads::Part::Spoiler(k) => 2 + 4 * k,
                 crate::uploads::Part::Remove(k) => 3 + 4 * k,
@@ -788,6 +801,11 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::NewDirect => a.new_direct_rect(),
         Id::Bar(p) => a
             .bar_parts()
+            .into_iter()
+            .find(|(q, _)| *q == p)
+            .map_or((0.0, 0.0, 0.0, 0.0), |(_, r)| r),
+        Id::Rec(p) => a
+            .rec_parts()
             .into_iter()
             .find(|(q, _)| *q == p)
             .map_or((0.0, 0.0, 0.0, 0.0), |(_, r)| r),
@@ -940,6 +958,7 @@ fn safe_array_unknown(v: &[IUnknown]) -> *mut SAFEARRAY {
     ISelectionItemProvider,
     IValueProvider,
     IToggleProvider,
+    IRangeValueProvider,
     ITextProvider,
     ITextProvider2
 )]
@@ -969,7 +988,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 pattern == UIA_InvokePatternId || pattern == UIA_SelectionItemPatternId
             }
             Id::Settings(p) if p.is_toggle() => pattern == UIA_TogglePatternId,
-            Id::Settings(crate::settings::SPart::Text(_)) => false,
+            Id::Settings(p) if p.is_slider() => pattern == UIA_RangeValuePatternId,
+            Id::Settings(crate::settings::SPart::Text(_) | crate::settings::SPart::Meter) => false,
             Id::Voice(crate::call::VPart::Status) => false,
             Id::Settings(_)
             | Id::Voice(_)
@@ -980,6 +1000,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             | Id::ChannelOptions(_)
             | Id::DmItem(_) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Title | Part::Message) => false,
+            Id::Rec(p) => p.button() && pattern == UIA_InvokePatternId,
             Id::MenuItem(_)
             | Id::NewDirect
             | Id::Bar(
@@ -1128,6 +1149,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     (Id::Dialog(p), _) => a.dialog.as_ref().is_some_and(|d| d.enabled(p)),
                     (Id::Settings(p), _) => a.settings.as_ref().is_some_and(|s| s.enabled(p)),
                     (Id::Voice(p), _) => a.voice_enabled(p),
+                    (Id::Rec(p), _) => a.rec_enabled(p),
+                    (Id::BoxPart(crate::uploads::Part::Mic), _) => a.mic_blocked().is_none(),
                     (Id::DmItem(k), _) => {
                         let (on, items) = a.dm_menu_items();
                         on && items.get(k).is_some_and(crate::directs::MenuItem::action)
@@ -1283,6 +1306,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Direct(k) => a.open_direct_row(k),
                 Id::NewDirect => a.open_start_direct(),
                 Id::Bar(p) => a.bar_activate(p),
+                Id::Rec(p) => a.rec_activate(p),
                 Id::Settings(p) => a.settings_activate(p),
                 Id::Voice(p) => a.voice_activate(p),
                 Id::Gear => a.toggle_account_menu(),
@@ -1407,6 +1431,65 @@ impl IToggleProvider_Impl for Node_Impl {
             Ok(if on { ToggleState_On } else { ToggleState_Off })
         })
     }
+}
+
+/// The Audio test's sliders.
+impl IRangeValueProvider_Impl for Node_Impl {
+    fn SetValue(&self, val: f64) -> Result<()> {
+        let id = self.id;
+        with(|a| {
+            let Id::Settings(p) = id else {
+                return Ok(());
+            };
+            if !a.settings.as_ref().is_some_and(|s| s.enabled(p)) {
+                return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
+            }
+            let max = gauge(a, id).map_or(0.0, |g| f64::from(g.1));
+            if !(0.0..=max).contains(&val) {
+                return Err(E_INVALIDARG.into());
+            }
+            a.set_gauge(p, val.round() as u16, true);
+            Ok(())
+        })
+    }
+
+    fn Value(&self) -> Result<f64> {
+        let id = self.id;
+        with(|a| Ok(gauge(a, id).map_or(0.0, |g| f64::from(g.0))))
+    }
+
+    fn IsReadOnly(&self) -> Result<BOOL> {
+        let id = self.id;
+        with(|a| {
+            Ok(match id {
+                Id::Settings(p) => !a.settings.as_ref().is_some_and(|s| s.enabled(p)),
+                _ => true,
+            }
+            .into())
+        })
+    }
+
+    fn Maximum(&self) -> Result<f64> {
+        let id = self.id;
+        with(|a| Ok(gauge(a, id).map_or(0.0, |g| f64::from(g.1))))
+    }
+
+    fn Minimum(&self) -> Result<f64> {
+        Ok(0.0)
+    }
+
+    fn LargeChange(&self) -> Result<f64> {
+        Ok(10.0)
+    }
+
+    fn SmallChange(&self) -> Result<f64> {
+        Ok(1.0)
+    }
+}
+
+fn gauge(a: &App, id: Id) -> Option<(u16, u16, u16)> {
+    let Id::Settings(p) = id else { return None };
+    a.settings.as_ref()?.gauge(p)
 }
 
 // ---------------------------------------------------------------------------

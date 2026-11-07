@@ -121,6 +121,11 @@ pub enum Update {
     /// The notification inbox's rows, filters or unread count changed, or
     /// it closed to open one of its notifications.
     Inbox,
+    /// Dictation `key`'s words, or the HTTP status of its failure.
+    Dictated {
+        key: u64,
+        result: Result<String, Option<u16>>,
+    },
     /// Voice changed: who is in a channel's voice, whether a channel can be
     /// joined, or your call's state.
     Voice,
@@ -319,6 +324,8 @@ pub struct Live {
     /// and own decoded images to show for sent attachments.
     pub drafts: Vec<crate::uploads::Draft>,
     draft_keys: u64,
+    /// The last dictation sent, so only its answer is used.
+    dictations: u64,
     pub uploads: Option<caper_client::compress::Compression>,
     pub uploads_checked: bool,
     local: Vec<(String, caper_client::Rgba)>,
@@ -375,7 +382,7 @@ pub struct Live {
     rosters: HashMap<String, (Vec<core::VoiceOccupant>, Option<u64>)>,
     /// Your call (the shared engine, as egui's `voice`) and its sounds.
     pub voice: Voice,
-    effects: Effects,
+    pub effects: Effects,
     /// Whether each channel's voice can be joined, as the server said for
     /// this account (egui's `media_availability`), and which were asked.
     availability: HashMap<String, bool>,
@@ -481,13 +488,16 @@ pub fn start(hwnd: HWND) -> Option<Live> {
         })
     });
     // Voice wakes the window like the worker does.
-    let voice = Voice::new(api.base().clone(), {
+    let mut voice = Voice::new(api.base().clone(), {
         let host = host.clone();
         caper_client::voice::Repaint::new(move |delay| match delay {
             None => host.wake(),
             Some(delay) => host.wake_after(delay),
         })
     });
+    if let Some(saved) = crate::settings::audio::restore_preferences() {
+        voice.preferences = saved;
+    }
     let worker = Worker::new(api, host.clone());
     let generation = 1;
     worker.send(Command::Restore { generation });
@@ -556,6 +566,7 @@ impl Live {
             unread_revision: 0,
             drafts: Vec::new(),
             draft_keys: 0,
+            dictations: 0,
             uploads: None,
             uploads_checked: false,
             local: Vec::new(),
@@ -1391,6 +1402,53 @@ impl Live {
             self.drafts.push(crate::uploads::Draft::new(upload));
         }
         error
+    }
+
+    /// Why a recording can't become a voice message here: one per
+    /// message, within the attachment limit (egui's `voice_note_blocked`).
+    pub fn voice_note_blocked(&self) -> Option<&'static str> {
+        let drafts = self.open_drafts();
+        (drafts.iter().any(|d| d.upload.voice().is_some())
+            || drafts.len() >= caper_client::uploads::MAX_ATTACHMENTS)
+            .then_some("Remove the voice message to record another")
+    }
+
+    /// Stages a stopped recording in the open channel's composer: it
+    /// uploads now (so transcription starts) and goes with the next Send.
+    pub fn stage_voice(
+        &mut self,
+        prepared: Arc<caper_client::uploads::Prepared>,
+    ) -> Result<(), String> {
+        let (Some(token), Some(settings), Some(channel)) = (
+            self.token.clone(),
+            self.uploads.clone(),
+            self.channel.clone(),
+        ) else {
+            return Err(self.attach_unavailable().into());
+        };
+        if let Some(blocked) = self.voice_note_blocked() {
+            return Err(blocked.into());
+        }
+        self.draft_keys += 1;
+        let upload =
+            caper_client::drafts::Upload::recorded(self.draft_keys, channel, None, prepared);
+        self.worker.send(upload.command(token, settings));
+        self.drafts.push(crate::uploads::Draft::new(upload));
+        Ok(())
+    }
+
+    /// Transcribes a recording (`POST /api/dictation`); its key, or None
+    /// when signed out.
+    pub fn dictate(&mut self, audio: Arc<[u8]>, content_type: String) -> Option<u64> {
+        let token = self.token.clone()?;
+        self.dictations += 1;
+        self.worker.send(Command::Dictate {
+            token,
+            key: self.dictations,
+            audio,
+            content_type,
+        });
+        Some(self.dictations)
     }
 
     /// Removes a composer file, stopping its upload and giving up the
@@ -2543,8 +2601,10 @@ impl Live {
         } else {
             self.others = None;
         }
+        // And what the Audio test shows.
+        let v = &self.voice;
         let seen = format!(
-            "{:?}{:?}{:?}{:?}{:?}",
+            "{:?}{:?}{:?}{:?}{:?}{:?}",
             self.voice.state.phase,
             self.voice.state.audio,
             self.voice
@@ -2554,6 +2614,12 @@ impl Live {
                 .collect::<Vec<_>>(),
             self.voice.error,
             self.pending_join,
+            (
+                (&v.microphone, &v.microphone_error, v.speaker_testing),
+                (v.speaker_failed, &v.inputs, &v.outputs, &v.preferences),
+                (&v.default_input, &v.default_output, &v.device_error),
+                v.refreshing_devices,
+            ),
         );
         if seen == self.voice_seen {
             return false;
@@ -3478,6 +3544,9 @@ impl Live {
                 ..
             } if generation == current && request == self.lookup => {
                 out.push(Update::DirectFound { request, result });
+            }
+            Event::Dictated { key, result } if key == self.dictations => {
+                out.push(Update::Dictated { key, result });
             }
             Event::Klipy { token, config } if self.token.as_ref() == Some(&token) => {
                 self.klipy = config;
