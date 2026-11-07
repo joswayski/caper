@@ -300,7 +300,7 @@ import CaperCore
         let hideGif = composerScroll.isHidden || chat.klipy == nil
         if gif.isHidden != hideGif { gif.isHidden = hideGif; view.needsLayout = true }
         gif.isEnabled = composer.isEditable && chat.canSendGif()
-        if !composer.isEditable || model.whatsNew.workspaceModalOpen { picker.close(restoringFocus: false) }
+        picker.closeIfUnavailable(composer: composer)
         let count = chat.draft.unicodeScalars.count
         counter.isHidden = composerScroll.isHidden || count < 3000
         counter.stringValue = "\(count.formatted()) / 4,000"
