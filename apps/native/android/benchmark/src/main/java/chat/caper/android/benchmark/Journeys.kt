@@ -57,6 +57,15 @@ internal fun MacrobenchmarkScope.scrollHistory(pages: Int = 4) {
     device.waitForIdle()
 }
 
+/** A bold, italic and link-heavy draft of 3,575 characters, near the 4,000-character limit. */
+internal val LONG_DRAFT = "**Release** notes for _today_, see https://example.com/notes and ".repeat(55)
+
+/** Puts [text] in the open channel's composer in one edit, as a paste would. */
+internal fun MacrobenchmarkScope.enterDraft(text: String) {
+    device.findObject(By.clazz("android.widget.EditText")).text = text
+    device.waitForIdle()
+}
+
 /** Types into the open channel's composer one key at a time, then clears the draft. */
 internal fun MacrobenchmarkScope.typeMessage(text: String = "the release notes look great, shipping after lunch") {
     val field = device.findObject(By.clazz("android.widget.EditText"))

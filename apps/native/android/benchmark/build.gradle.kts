@@ -7,7 +7,8 @@ plugins {
 }
 
 android {
-    namespace = "chat.caper.android.benchmark"
+    // Also the test APK's ID, so it must differ from the measured app's (chat.caper.android + ".benchmark").
+    namespace = "chat.caper.android.macrobenchmark"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
 

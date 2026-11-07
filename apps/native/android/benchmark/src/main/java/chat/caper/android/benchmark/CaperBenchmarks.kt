@@ -12,9 +12,9 @@ import org.junit.runner.RunWith
 import org.junit.runners.Parameterized
 
 /**
- * Cold and warm start, opening the long conversation, scrolling its history and typing, each without
- * ahead-of-time compilation ("before") and with the Baseline Profile ("after"). Run on a phone with
- * `./gradlew :benchmark:connectedBenchmarkReleaseAndroidTest`; see ../README.md.
+ * Cold and warm start, opening the long conversation, scrolling its history, typing, and typing into a
+ * long formatted draft, each without ahead-of-time compilation ("before") and with the Baseline Profile
+ * ("after"). Run on a phone or an arm64 emulator with `./gradlew :benchmark:connectedBenchmarkReleaseAndroidTest`; see ../README.md.
  */
 @RunWith(Parameterized::class)
 class CaperBenchmarks(private val compilation: CompilationMode) {
@@ -53,5 +53,11 @@ class CaperBenchmarks(private val compilation: CompilationMode) {
     @Test fun typing() = rule.measureRepeated(
         PACKAGE, listOf(FrameTimingMetric()), compilation, startupMode = StartupMode.WARM, iterations = 10,
         setupBlock = { startActivityAndWait(); signIn(); openChannel(LONG_CHANNEL) },
+    ) { typeMessage() }
+
+    /** Typing into [LONG_DRAFT]: the composer formats and finds links in the whole draft on every key. */
+    @Test fun typingLongDraft() = rule.measureRepeated(
+        PACKAGE, listOf(FrameTimingMetric()), compilation, startupMode = StartupMode.WARM, iterations = 5,
+        setupBlock = { startActivityAndWait(); signIn(); openChannel(LONG_CHANNEL); enterDraft(LONG_DRAFT) },
     ) { typeMessage() }
 }
