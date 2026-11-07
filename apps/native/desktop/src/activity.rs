@@ -148,8 +148,28 @@ impl crate::CaperApp {
         });
     }
 
+    /// `filter`'s first page, loaded ahead into its window.
+    fn prefetch_activity(&mut self, filter: Filter) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        let Some(request) = self.activity.prefetch(filter) else {
+            return;
+        };
+        self.worker.send(crate::worker::Command::LoadActivity {
+            epoch: self.account_epoch,
+            request,
+            token,
+            more: false,
+            filter,
+            unread: self.activity.unread_only,
+            cursor: None,
+            through: None,
+        });
+    }
+
     pub(crate) fn open_activity_item(&mut self, item: Item) {
-        self.activity.shown = false;
+        self.activity.close();
         self.navigation_open = false;
         if item.kind == "space.invitation" || item.kind == "channel.invitation" {
             if let (Some(token), Some(space)) = (self.token.clone(), item.space_id) {
@@ -208,17 +228,25 @@ impl crate::CaperApp {
             ui.horizontal(|ui| {
                 ui.heading("Notifications");
                 if ui.button("Done").clicked() {
-                    self.activity.shown = false;
+                    self.activity.close();
                 }
             });
             let mut changed = false;
+            let mut ahead = None;
             ui.horizontal_wrapped(|ui| {
                 for filter in Filter::ALL {
-                    changed |= ui
-                        .selectable_value(&mut self.activity.filter, filter, filter.label())
-                        .changed();
+                    let tab =
+                        ui.selectable_value(&mut self.activity.filter, filter, filter.label());
+                    changed |= tab.changed();
+                    // As web, a hovered or focused filter loads ahead.
+                    if tab.hovered() || tab.has_focus() {
+                        ahead = Some(filter);
+                    }
                 }
             });
+            if let Some(filter) = ahead {
+                self.prefetch_activity(filter);
+            }
             changed |= ui
                 .scope(|ui| {
                     ui.set_max_width(210.0);
@@ -231,7 +259,7 @@ impl crate::CaperApp {
                     .changed()
                 })
                 .inner;
-            if changed {
+            if changed && self.activity.switched() {
                 self.load_activity(false);
             }
             if let Some(error) = &self.activity.error {
@@ -481,7 +509,7 @@ impl crate::CaperApp {
             && self.profile_picker.is_none()
             && self.voice_recording.is_none()
         {
-            self.activity.shown = false;
+            self.activity.close();
         }
         if !self.activity.shown {
             self.activity.gif_picker = None;

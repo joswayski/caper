@@ -100,7 +100,7 @@ pub struct Read {
     pub unread_count: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Filter {
     #[default]
     All,
@@ -176,7 +176,31 @@ pub struct Inbox {
     pub targets: HashMap<String, Item>,
     pub reacting: Option<Item>,
     pub reaction_request: u64,
+    /// Each filter's loaded window, as web keeps them while the inbox is
+    /// open: choosing that filter again shows it at once.
+    windows: HashMap<(Filter, bool), Window>,
+    /// First pages loading ahead for a hovered or focused filter, by request.
+    prefetching: HashMap<u64, (Filter, bool)>,
+    /// The prefetch the current filter waits for instead of its own load.
+    adopted: Option<u64>,
+    prefetched: u64,
 }
+
+/// A filter's rows and paging, and when they were loaded.
+#[derive(Clone)]
+struct Window {
+    items: Vec<Item>,
+    cursor: Option<String>,
+    unread_count: u64,
+    at: Instant,
+}
+
+/// How long a filter's window is shown without refreshing it, as the
+/// open inbox's poll.
+const FRESH: Duration = Duration::from_secs(15);
+/// Prefetch requests count up from here, apart from the current filter's.
+const PREFETCH: u64 = 1 << 63;
+
 impl Default for Inbox {
     fn default() -> Self {
         Self {
@@ -197,6 +221,10 @@ impl Default for Inbox {
             targets: HashMap::new(),
             reacting: None,
             reaction_request: 0,
+            windows: HashMap::new(),
+            prefetching: HashMap::new(),
+            adopted: None,
+            prefetched: 0,
         }
     }
 }
@@ -218,9 +246,75 @@ impl Inbox {
             && !self.loading
             && self.reads.is_empty()
             && self.opening.is_none()
-            && self
-                .refreshed
-                .is_none_or(|at| at.elapsed() >= Duration::from_secs(15))
+            && self.refreshed.is_none_or(|at| at.elapsed() >= FRESH)
+    }
+    fn key(&self) -> (Filter, bool) {
+        (self.filter, self.unread_only)
+    }
+    /// After `filter` or `unread_only` changed: shows that filter's loaded
+    /// window at once (`due` then refreshes it once it is 15 seconds old)
+    /// or waits for its prefetch. Returns whether the client must load it,
+    /// keeping the previous rows dimmed meanwhile.
+    pub fn switched(&mut self) -> bool {
+        let key = self.key();
+        // Whatever the previous filter was waiting for no longer applies.
+        self.request += 1;
+        self.adopted = None;
+        self.error = None;
+        if let Some(window) = self.windows.get(&key).cloned() {
+            self.items = window.items;
+            self.cursor = window.cursor;
+            self.unread_count = window.unread_count;
+            self.refreshed = Some(window.at);
+            self.loading = false;
+            self.stale = false;
+            return false;
+        }
+        if let Some((&request, _)) = self
+            .prefetching
+            .iter()
+            .find(|(_, pending)| **pending == key)
+        {
+            self.adopted = Some(request);
+            self.loading = true;
+            self.stale = !self.items.is_empty();
+            self.refreshed = Some(Instant::now());
+            return false;
+        }
+        true
+    }
+    /// A first page for `filter` (with the current Unread only) to load ahead,
+    /// when it has none loaded or loading and nothing is being marked read
+    /// or opened. Returns its request; its page arrives through `finish`.
+    pub fn prefetch(&mut self, filter: Filter) -> Option<u64> {
+        let key = (filter, self.unread_only);
+        if key == self.key()
+            || !self.reads.is_empty()
+            || self.opening.is_some()
+            || self.windows.contains_key(&key)
+            || self.prefetching.values().any(|pending| *pending == key)
+        {
+            return None;
+        }
+        self.prefetched += 1;
+        let request = PREFETCH + self.prefetched;
+        self.prefetching.insert(request, key);
+        Some(request)
+    }
+    /// Reads change what every filter shows, so loaded windows and prefetches
+    /// are dropped (the current rows stay).
+    fn forget(&mut self) {
+        self.windows.clear();
+        let adopted = self.adopted;
+        self.prefetching
+            .retain(|request, _| Some(*request) == adopted);
+    }
+    /// The inbox closed: it starts afresh next time.
+    pub fn close(&mut self) {
+        self.shown = false;
+        self.forget();
+        self.prefetching.clear();
+        self.adopted = None;
     }
     fn set_read(&mut self, id: &str) {
         for row in self.items.iter_mut().chain(self.expanded.values_mut()) {
@@ -237,6 +331,7 @@ impl Inbox {
         if !item.unread {
             return;
         }
+        self.forget();
         let index = self.items.iter().position(|row| row.id == item.id);
         self.reads.push((item.id.clone(), index));
         self.set_read(&item.id);
@@ -244,6 +339,7 @@ impl Inbox {
     }
     /// `item` is the row as it was when acted on. Returns whether the read succeeded.
     pub fn read_finished(&mut self, item: &Item, result: Result<Read, String>) -> bool {
+        self.forget();
         let pending = item
             .unread
             .then(|| self.reads.iter().position(|(id, _)| *id == item.id))
@@ -276,6 +372,26 @@ impl Inbox {
         }
     }
     pub fn finish(&mut self, request: u64, more: bool, result: Result<Page, String>) {
+        let mut request = request;
+        if let Some(key) = self.prefetching.remove(&request) {
+            if self.adopted != Some(request) {
+                if let Ok(page) = result {
+                    self.windows.insert(
+                        key,
+                        Window {
+                            items: page.items,
+                            cursor: page.next_cursor,
+                            unread_count: page.unread_count,
+                            at: Instant::now(),
+                        },
+                    );
+                }
+                return;
+            }
+            // The current filter waited for this page: it is its own.
+            self.adopted = None;
+            request = self.request;
+        }
         if request != self.request {
             return;
         }
@@ -293,6 +409,13 @@ impl Inbox {
                 }
                 self.cursor = page.next_cursor;
                 self.unread_count = page.unread_count;
+                let window = Window {
+                    items: self.items.clone(),
+                    cursor: self.cursor.clone(),
+                    unread_count: self.unread_count,
+                    at: Instant::now(),
+                };
+                self.windows.insert(self.key(), window);
             }
             Err(error) => {
                 // Rows kept from the previous filter must not stand in for this one.
@@ -446,6 +569,88 @@ mod tests {
         assert!(!inbox.loading && !inbox.stale);
         assert!(inbox.items.is_empty() && inbox.cursor.is_none());
         assert_eq!(inbox.error.as_deref(), Some("offline"));
+    }
+
+    fn page(ids: &[&str], unread: u64) -> Result<Page, String> {
+        Ok(Page {
+            items: ids.iter().map(|id| item(id)).collect(),
+            next_cursor: None,
+            unread_count: unread,
+        })
+    }
+
+    fn ids(inbox: &Inbox) -> Vec<&str> {
+        inbox.items.iter().map(|item| item.id.as_str()).collect()
+    }
+
+    #[test]
+    fn filters_keep_their_windows_and_prefetches_until_a_read() {
+        let mut inbox = Inbox {
+            shown: true,
+            ..Default::default()
+        };
+        inbox.request = 1;
+        inbox.finish(1, false, page(&["all"], 4));
+        // Mentions has nothing loaded: the client loads it (rows stay dimmed).
+        inbox.filter = Filter::Mentions;
+        assert!(inbox.switched());
+        inbox.request += 1;
+        let abandoned = inbox.request;
+        // Back to All before Mentions answers: shown at once, not reloaded,
+        // and the late Mentions page doesn't replace it.
+        inbox.filter = Filter::All;
+        assert!(!inbox.switched());
+        assert!(!inbox.loading && !inbox.stale && !inbox.due());
+        inbox.finish(abandoned, false, page(&["mention"], 9));
+        assert_eq!(ids(&inbox), ["all"]);
+        assert_eq!(inbox.unread_count, 4);
+
+        // A hovered tab loads ahead, once; its page waits in its window.
+        let dms = inbox.prefetch(Filter::Dms).unwrap();
+        assert_eq!(inbox.prefetch(Filter::Dms), None);
+        assert_eq!(inbox.prefetch(Filter::All), None, "the current filter");
+        inbox.finish(dms, false, page(&["dm"], 4));
+        assert_eq!(ids(&inbox), ["all"], "a prefetch never replaces the rows");
+        inbox.filter = Filter::Dms;
+        assert!(!inbox.switched());
+        assert_eq!(ids(&inbox), ["dm"]);
+
+        // Choosing a tab whose prefetch is still loading waits for it.
+        let threads = inbox.prefetch(Filter::Threads).unwrap();
+        inbox.filter = Filter::Threads;
+        assert!(!inbox.switched());
+        assert!(inbox.loading && inbox.stale);
+        inbox.finish(threads, false, page(&["thread"], 4));
+        assert!(!inbox.loading && !inbox.stale);
+        assert_eq!(ids(&inbox), ["thread"]);
+
+        // A read changes every filter: windows are dropped, so All loads again.
+        let thread = inbox.items[0].clone();
+        inbox.mark_read(&thread);
+        inbox.filter = Filter::All;
+        assert!(inbox.switched());
+    }
+
+    #[test]
+    fn an_old_window_shows_and_then_refreshes() {
+        let mut inbox = Inbox {
+            shown: true,
+            ..Default::default()
+        };
+        inbox.finish(0, false, page(&["all"], 1));
+        inbox.windows.get_mut(&(Filter::All, true)).unwrap().at -= FRESH;
+        inbox.filter = Filter::Dms;
+        assert!(inbox.switched());
+        inbox.filter = Filter::All;
+        assert!(!inbox.switched());
+        assert_eq!(ids(&inbox), ["all"]);
+        assert!(inbox.due(), "a 15-second-old window refreshes in place");
+        inbox.close();
+        inbox.shown = true;
+        inbox.filter = Filter::Dms;
+        inbox.switched();
+        inbox.filter = Filter::All;
+        assert!(inbox.switched(), "closing forgets the windows");
     }
 
     #[test]
