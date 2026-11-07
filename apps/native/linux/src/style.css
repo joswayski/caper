@@ -285,7 +285,7 @@ listview.messages > row:hover {
 }
 
 .message {
-  padding: 8px 20px 2px 20px;
+  padding: 10px 18px;
 }
 
 .message.grouped {
@@ -308,11 +308,18 @@ listview.messages > row:hover {
   opacity: 0.6;
 }
 
+.day-row {
+  margin: 12px 18px 6px;
+}
+
+.day-row separator {
+  background: @caper_border;
+  min-height: 1px;
+}
+
 .day {
   color: @caper_text_muted;
-  font-size: 12px;
-  font-weight: 700;
-  margin: 12px 0 6px;
+  font-size: 10px;
 }
 
 .author {

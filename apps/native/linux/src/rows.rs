@@ -813,6 +813,8 @@ pub type Handler = Rc<dyn Fn(Action)>;
 struct Widgets {
     root: gtk::Box,
     day: gtk::Label,
+    /// The day's centered label between two rules.
+    day_row: gtk::Box,
     unread: gtk::Box,
     beginning: gtk::Label,
     reply: gtk::Label,
@@ -905,10 +907,19 @@ impl Standalone {
 
 fn build_widgets(images: &Images) -> Widgets {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let day = gtk::Label::builder()
-        .xalign(0.0)
-        .css_classes(["day"])
-        .build();
+    // As desktop: the date centered between two rules.
+    let day = gtk::Label::builder().css_classes(["day"]).build();
+    let day_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    day_row.add_css_class("day-row");
+    for (index, _) in [(), ()].iter().enumerate() {
+        let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+        rule.set_hexpand(true);
+        rule.set_valign(gtk::Align::Center);
+        day_row.append(&rule);
+        if index == 0 {
+            day_row.append(&day);
+        }
+    }
     let reply = gtk::Label::builder()
         .xalign(0.0)
         .ellipsize(pango::EllipsizeMode::End)
@@ -1052,7 +1063,7 @@ fn build_widgets(images: &Images) -> Widgets {
     blocked.append(&blocked_toggle);
     root.append(&beginning);
     root.append(&blocked);
-    root.append(&day);
+    root.append(&day_row);
     root.append(&unread);
     root.append(&reply);
     let quote_more = gtk::Button::with_label("Show more");
@@ -1071,6 +1082,7 @@ fn build_widgets(images: &Images) -> Widgets {
         card: overlay.clone(),
         root,
         day,
+        day_row,
         unread,
         beginning,
         reply,
@@ -1237,7 +1249,7 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
         widgets
             .blocked_toggle
             .set_label(if *shown { "Hide" } else { "Show" });
-        widgets.day.set_visible(false);
+        widgets.day_row.set_visible(false);
         widgets.reply.set_visible(false);
         widgets.quote_more.set_visible(false);
         return;
@@ -1254,7 +1266,7 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     }
     widgets.notice.set_visible(row.team_notice);
     widgets.unread.set_visible(row.unread);
-    widgets.day.set_visible(row.day.is_some());
+    widgets.day_row.set_visible(row.day.is_some());
     widgets
         .day
         .set_label(row.day.as_deref().unwrap_or_default());
