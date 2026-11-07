@@ -27,10 +27,13 @@ test("landing selects a joined channel; explicit preview performs reads without 
   });
   assert.equal((await createSpaceNavigation().take(space.id)).channelId, joined.id);
   assert.equal((await createSpaceNavigation().take(space.id, preview.id)).channelId, preview.id);
+  // A visit starts the unread snapshot beside the history, not after it.
   assert.deepEqual(paths, [
     `/api/spaces/${space.id}`,
+    "/api/spaces/unread",
     `/api/chat/channels/${joined.id}/messages`,
     `/api/spaces/${space.id}`,
+    "/api/spaces/unread",
     `/api/chat/channels/${preview.id}/messages`,
   ]);
 });
@@ -71,7 +74,7 @@ for (const cached of [false, true]) {
     let accessible = false;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
       const path = String(input);
-      paths.push(path);
+      if (path !== "/api/spaces/unread") paths.push(path);
       return Response.json(
         path.startsWith("/api/spaces/")
           ? { ...detail, channels: accessible ? [preview, joined] : [joined] }

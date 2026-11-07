@@ -82,7 +82,7 @@ import { mentionCardPerson, type MentionCandidate } from "./mentions.ts";
 import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedAuthor, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
-import { listUnreadSpaces, type Space, type UnreadSpace } from "../spaces/client.ts";
+import { takeChannelUnread, type Space, type UnreadSpace } from "../spaces/client.ts";
 import { klipyConfig, shareKlipy, type ChatGif } from "./klipy.ts";
 import "./chat.css";
 
@@ -704,7 +704,7 @@ export default function Chat({
     if (!trackChannelVisit || !accountId || !channelId) return;
     let cancelled = false;
     // Resolve once per visit, before acknowledgements erase the saved read position.
-    void listUnreadSpaces()
+    void takeChannelUnread(channelId)
       .then((snapshot) => {
         if (!cancelled)
           setUnreadVisit({

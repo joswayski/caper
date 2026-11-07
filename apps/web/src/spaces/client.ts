@@ -182,6 +182,23 @@ export function listUnreadSpaces() {
   return request<{ spaces: UnreadSpace[]; feedbackWaiting?: number; badgeCount?: number }>("/api/spaces/unread");
 }
 
+let unreadPrefetch: { channelId: string; expires: number; result: ReturnType<typeof listUnreadSpaces> } | undefined;
+
+/** Starts a channel visit's unread snapshot beside its history instead of after it. */
+export function prefetchChannelUnread(channelId: string) {
+  const result = listUnreadSpaces();
+  result.catch(() => undefined);
+  unreadPrefetch = { channelId, expires: Date.now() + 5_000, result };
+}
+
+/** The prefetched snapshot for this channel, used once, or a fresh read. */
+export function takeChannelUnread(channelId: string) {
+  const prefetched = unreadPrefetch;
+  if (prefetched?.channelId !== channelId || prefetched.expires <= Date.now()) return listUnreadSpaces();
+  unreadPrefetch = undefined;
+  return prefetched.result;
+}
+
 export type InboxFilter = "all" | "dms" | "mentions" | "threads" | "reactions" | "invitations";
 
 export interface InboxItem {

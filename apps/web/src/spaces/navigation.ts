@@ -1,5 +1,5 @@
 import { ChatHistoryError, loadChatHistory } from "../chat/client.ts";
-import { getSpace, SpacesApiError, type SpaceDetail } from "./client.ts";
+import { getSpace, prefetchChannelUnread, SpacesApiError, type SpaceDetail } from "./client.ts";
 import { attachmentsOf, attachmentView, type GeneralChatHistory } from "../chat/types.ts";
 import { friendlyError } from "./errors.ts";
 
@@ -184,10 +184,19 @@ export function createSpaceNavigation() {
     for (const key of visited.keys()) if (key.startsWith(`${spaceId}:`)) visited.delete(key);
     for (const key of entries.keys()) if (key.startsWith(`${spaceId}:`)) entries.delete(key);
   };
-  const prepare = (spaceId: string, channelId?: string, preferredChannelId?: string) => {
+  // A visit (not a hover prefetch) also starts the channel's unread snapshot,
+  // beside its history when it is fetched fresh.
+  const prepare = (spaceId: string, channelId?: string, preferredChannelId?: string, visit = false) => {
     const key = `${spaceId}:${channelId ?? ""}`;
     const cached = entries.get(key);
-    if (cached && cached.expires > Date.now()) return cached.result;
+    if (cached && cached.expires > Date.now()) {
+      if (visit)
+        void cached.result.then(
+          (view) => view.channelId && prefetchChannelUnread(view.channelId),
+          () => undefined,
+        );
+      return cached.result;
+    }
     const result = (async () => {
       const detail = await getSpace(spaceId);
       const previous = peek(spaceId, channelId);
@@ -204,6 +213,7 @@ export function createSpaceNavigation() {
         detail.channels.find((item) => item.joined !== false);
       let history: GeneralChatHistory | undefined;
       let historyError: string | undefined;
+      if (visit && channel) prefetchChannelUnread(channel.id);
       try {
         // Visited channels resume live replay from their saved cursor. Keep
         // their messages on screen instead of fetching the first page again.
@@ -245,7 +255,7 @@ export function createSpaceNavigation() {
       if (view) remember({ ...view, history, historyError: undefined });
     },
     take(spaceId: string, channelId?: string, preferredChannelId?: string) {
-      const result = prepare(spaceId, channelId, preferredChannelId);
+      const result = prepare(spaceId, channelId, preferredChannelId, true);
       // Speculation is single use; visited snapshots live separately. Each
       // return still rechecks space/channel access before trusting metadata.
       entries.delete(`${spaceId}:${channelId ?? ""}`);

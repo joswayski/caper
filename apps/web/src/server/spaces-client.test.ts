@@ -281,7 +281,7 @@ test("hover and click share one read, wait for history, and consume the snapshot
   let release!: (response: Response) => void;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     const path = String(input);
-    paths.push(path);
+    if (path !== "/api/spaces/unread") paths.push(path);
     if (path === "/api/spaces/space1234567") return Response.json(spaceDetail);
     return new Promise<Response>((resolve) => {
       release = resolve;
@@ -365,7 +365,7 @@ test("returning restores each channel snapshot, rechecks access, and forgets rev
   let denied = false;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: string | URL | Request) => {
     const path = String(input);
-    paths.push(path);
+    if (path !== "/api/spaces/unread") paths.push(path);
     if (path.startsWith("/api/spaces/"))
       return denied ? Response.json({ error: "Access removed" }, { status: 404 }) : Response.json(spaceDetail);
     return Response.json(history(path.includes("other") ? "other1234567" : "first1234567"));
