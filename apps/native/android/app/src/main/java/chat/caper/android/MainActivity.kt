@@ -3563,7 +3563,7 @@ internal const val DELETED_REPLY = "Original message was deleted."
             else if (text.isNotEmpty() || inlineEdited) {
                 // Pending messages have emphasis but no mention or link actions.
                 val links = remember(text, mentions, pending) { if (pending) emptyList() else linkRanges(text, mentions.map { it.start until it.end }) }
-                if (mentions.isEmpty() && links.isEmpty() && !inlineEdited) Text(messageText(text, emptyList()), color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+                if (mentions.isEmpty() && links.isEmpty() && !inlineEdited) Text(remember(text) { messageText(text, emptyList()) }, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
                 else {
                     // Pills and links are link annotations: their tap is consumed before the row's long-press handler sees it.
                     val open by rememberUpdatedState(openMention)
