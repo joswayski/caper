@@ -59,6 +59,80 @@ import XCTest
         return item.exists ? item : body.menuItems[title]
     }
 
+    func testWhoReactedRetriesSwitchesEmojiAndFollowsLiveChangesWithoutToggling() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let id = "chan00000001m01"
+        let path = "/api/chat/channels/chan00000001/messages/\(id)/reactions"
+        try await Self.control(["incomingReaction": ["channelId": "chan00000001", "messageId": id,
+            "emoji": "👍", "userId": "member000001"]])
+        try await Self.control(["incomingReaction": ["channelId": "chan00000001", "messageId": id,
+            "emoji": "❤️", "userId": "member000002"]])
+        try await Self.control(["failure": ["path": path, "method": "GET", "status": 503,
+            "error": "TEST FIXTURE: reaction names unavailable."]])
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        let draft = "TEST FIXTURE — keep my draft while reading reactions"
+        composer.click(); composer.typeText(draft)
+        let thumb = app.buttons["reaction-\(id)-👍"]
+        let heart = app.buttons["reaction-\(id)-❤️"]
+        XCTAssertTrue(thumb.waitForExistence(timeout: 5)); heart.hover(); thumb.hover(); thumb.rightClick()
+        let show = app.menuItems["Show who reacted"]
+        XCTAssertTrue(show.waitForExistence(timeout: 5)); show.click()
+        let sheet = app.descendants(matching: .any)["reactors-sheet"]
+        let retry = app.buttons["reactors-retry"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5)); XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Couldn’t load reactions"].exists)
+        XCTAssertFalse(composer.exists, "Only the modal's controls belong in accessibility while it is open")
+        capture("who reacted load failure wide", app: app)
+        retry.click()
+        let maya = sheet.descendants(matching: .any)["reactor-row-member000001"]
+        let alex = sheet.descendants(matching: .any)["reactor-row-member000002"]
+        let own = sheet.descendants(matching: .any)["reactor-row-owner0000001"]
+        XCTAssertTrue(maya.waitForExistence(timeout: 10)); XCTAssertTrue(maya.label.contains("Maya"))
+        XCTAssertFalse(alex.exists); XCTAssertFalse(own.exists, "Opening details must not add the current account's reaction")
+        capture("who reacted names wide", app: app)
+        sheet.buttons["reactors-tab-❤️"].click()
+        XCTAssertTrue(alex.waitForExistence(timeout: 5)); XCTAssertTrue(alex.label.contains("Alex"))
+        XCTAssertFalse(maya.exists)
+        resize(app, width: 900)
+        capture("who reacted second emoji narrow", app: app)
+        app.buttons["Done"].click()
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, draft)
+        XCTAssertEqual(thumb.label, "👍 1"); XCTAssertEqual(heart.label, "❤️ 1")
+
+        thumb.click()
+        let toggled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "👍 2"), object: thumb)
+        XCTAssertEqual(XCTWaiter.wait(for: [toggled], timeout: 10), .completed, "Ordinary click still toggles the reaction")
+        let body = app.textViews["message-\(id)"]
+        body.rightClick()
+        let view = messageMenuItem("View reactions", app: app, body: body)
+        XCTAssertTrue(view.waitForExistence(timeout: 5)); view.click()
+        XCTAssertTrue(maya.waitForExistence(timeout: 10)); XCTAssertTrue(own.waitForExistence(timeout: 10))
+        let stored = try await Self.fixtureGET(path)
+        let groups = try XCTUnwrap(stored["reactions"] as? [[String: Any]])
+        let thumbs = try XCTUnwrap(groups.first { $0["emoji"] as? String == "👍" })
+        XCTAssertEqual(Set(try XCTUnwrap(thumbs["authors"] as? [[String: Any]]).compactMap { $0["id"] as? String }),
+            ["member000001", "owner0000001"])
+        for user in ["member000001", "owner0000001"] {
+            try await Self.control(["incomingReaction": ["channelId": "chan00000001", "messageId": id,
+                "emoji": "👍", "userId": user, "active": false]])
+        }
+        XCTAssertTrue(sheet.buttons["reactors-tab-👍"].waitForNonExistence(timeout: 10))
+        XCTAssertTrue(alex.waitForExistence(timeout: 10), "Removing the selected emoji switches to the surviving tab")
+        XCTAssertFalse(own.exists)
+        capture("who reacted live tab removal narrow", app: app)
+        try await Self.control(["incomingReaction": ["channelId": "chan00000001", "messageId": id,
+            "emoji": "❤️", "userId": "member000002", "active": false]])
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 10), "Removing the final reaction closes the native-hosted dialog")
+        XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, draft)
+        XCTAssertFalse(thumb.exists); XCTAssertFalse(heart.exists)
+    }
+
     func testMessageReplyQuoteCancelSendAndOriginalNavigation() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
@@ -1177,6 +1251,8 @@ import XCTest
     func testChannelMenuMuteBrowseLeaveAndRejoin() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
+        try await Self.control(["incomingReaction": ["channelId": "chan00000002", "messageId": "chan00000002m01",
+            "emoji": "🍅", "userId": "member000001"]])
         let app = launch()
         defer { app.terminate() }
         let design = app.buttons["channel-chan00000002"]
@@ -1209,6 +1285,17 @@ import XCTest
         XCTAssertTrue(app.buttons["join-channel"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.textViews["message-composer"].exists, "A preview cannot send")
         capture("channel preview", app: app)
+        let previewMessage = app.textViews["message-chan00000002m01"]
+        XCTAssertTrue(previewMessage.waitForExistence(timeout: 5)); previewMessage.rightClick()
+        let details = messageMenuItem("View reactions", app: app, body: previewMessage)
+        XCTAssertTrue(details.waitForExistence(timeout: 5)); XCTAssertTrue(details.isEnabled)
+        XCTAssertFalse(messageMenuItem("Add reaction…", app: app, body: previewMessage).isEnabled)
+        details.click()
+        let people = app.descendants(matching: .any)["reactor-row-member000001"]
+        XCTAssertTrue(people.waitForExistence(timeout: 10), "Reading names does not require joining or a chat session")
+        capture("who reacted in a read-only channel preview", app: app)
+        app.buttons["Done"].click()
+        XCTAssertTrue(app.buttons["join-channel"].waitForExistence(timeout: 5))
         app.buttons["join-channel"].click()
         XCTAssertTrue(app.textViews["message-composer"].waitForExistence(timeout: 10))
         XCTAssertTrue(design.exists)
