@@ -226,7 +226,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
             guard let self, case let .channelInvitation(id) = item, let invitation = self.channelInvitations[id] else { return }
             cell.show(icon: "lock", text: invitation.channel.name, highlighted: true, count: "Invite", countStyle: .neutral)
             cell.isAccessibilityElement = true
-            cell.accessibilityLabel = "Invitation to private channel \(invitation.channel.name) from \(invitation.inviter.displayName)"
+            cell.accessibilityLabel = "Invitation to private channel \(invitation.channel.name) from \(invitation.inviter.displayName), @\(invitation.inviter.username)"
             cell.accessibilityTraits = .button
             cell.accessibilityIdentifier = "channel-invitation-\(invitation.id)"
         }
