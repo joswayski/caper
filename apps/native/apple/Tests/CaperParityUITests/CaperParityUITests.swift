@@ -1451,8 +1451,11 @@ final class CaperParityUITests: XCTestCase {
         // iOS asks once; any of its "allow" choices lets the drawer read the library.
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let allow = springboard.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Full Access' OR label BEGINSWITH[c] 'Allow'")).firstMatch
-        if allow.waitForExistence(timeout: 5) { allow.tap() }
         let tiles = app.buttons.matching(identifier: "attach-drawer-tile")
+        // A hosted simulator can take 10 s to show the prompt: wait for it or the tiles.
+        let asked = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in allow.exists || tiles.firstMatch.exists }, object: nil)
+        _ = XCTWaiter.wait(for: [asked], timeout: 20)
+        if allow.exists { allow.tap() }
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 10), "The simulator's sample photos must appear")
         XCTAssertFalse(app.descendants(matching: .any)["attach-drawer-capacity"].exists, "Below the limit the drawer shows no count")
         let drawer = try require(app.otherElements["attach-drawer"], timeout: 5, "Missing attachment drawer")
