@@ -1063,6 +1063,19 @@ import XCTest
         XCTAssertEqual(composer.value as? String, channelDraft, "Reply inside a thread must not target the channel composer")
         capture("thread quote and independent channel draft wide", app: app)
 
+        let sidebar = app.sliders["channel-sidebar-resize"]
+        sidebar.click(); sidebar.typeKey(.end, modifierFlags: [])
+        XCTAssertFalse(channel.exists, "Widening navigation can fold the channel without changing window size")
+        XCTAssertTrue(editor.isHittable); XCTAssertEqual(editor.value as? String, threadDraft)
+        XCTAssertFalse(app.sliders["members-panel-resize"].exists)
+        capture("wide sidebar folds channel beside thread", app: app)
+        sidebar.typeKey(.home, modifierFlags: [])
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, channelDraft)
+        XCTAssertEqual(editor.value as? String, threadDraft)
+        XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX)
+        sidebar.doubleClick()
+
         resize(app, width: 900)
         XCTAssertTrue(editor.isHittable)
         XCTAssertFalse(composer.exists); XCTAssertFalse(channel.exists, "Narrow windows expose only the thread, not covered channel controls")
@@ -2439,6 +2452,78 @@ import XCTest
         XCTAssertTrue(app.buttons["mention-card-close"].waitForNonExistence(timeout: 5))
         XCTAssertEqual(app.textViews["message-composer"].value as? String, "")
         capture("profile message delivered", app: app)
+    }
+
+    func testSidebarWidthDragKeyboardAndRelaunchKeepChannelsAndComposerUsable() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        let window = app.windows["Caper — AppKit development (not feature complete)"]
+        let handle = app.sliders["channel-sidebar-resize"]
+        let timeline = app.scrollViews["message-timeline"]
+        let members = app.scrollViews["member-list"]
+        func sidebarWidth() -> CGFloat { timeline.frame.minX - window.frame.minX - 60 }
+        XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        XCTAssertEqual(handle.value as? String, "280 pixels")
+        XCTAssertEqual(sidebarWidth(), 280, accuracy: 2)
+        composer.click(); composer.typeText("TEST FIXTURE — sidebar resize keeps this draft")
+        app.buttons["create-channel"].hover(); app.buttons["channel-options"].hover(); handle.hover()
+        let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 67, dy: 0)))
+        XCTAssertEqual(sidebarWidth(), 347, accuracy: 3)
+        let draggedWidth = sidebarWidth()
+        handle.click(); handle.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(), draggedWidth - 10, accuracy: 1)
+        handle.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(), draggedWidth, accuracy: 1)
+        capture("sidebar drag and keyboard resize", app: app)
+        handle.typeKey(.home, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(), 220, accuracy: 2)
+        XCTAssertTrue(app.buttons["microphone-toggle"].isHittable)
+        XCTAssertTrue(app.buttons["account-settings-menu"].isHittable)
+        capture("minimum sidebar with account controls", app: app)
+        handle.typeKey(.end, modifierFlags: [])
+        XCTAssertEqual(sidebarWidth(), 440, accuracy: 2)
+        resize(app, width: 900)
+        XCTAssertTrue(members.waitForNonExistence(timeout: 5), "Docking depends on space left after navigation")
+        XCTAssertGreaterThanOrEqual(timeline.frame.width, 320)
+        handle.click(); handle.typeKey(.home, modifierFlags: [])
+        XCTAssertTrue(members.waitForExistence(timeout: 5), "Narrowing navigation can dock members without changing the window")
+        XCTAssertGreaterThanOrEqual(timeline.frame.width, 320)
+        capture("narrow sidebar docks members at intermediate window", app: app)
+        resize(app, width: 840)
+        handle.click(); handle.typeKey(.end, modifierFlags: [])
+        XCTAssertFalse(members.exists)
+        XCTAssertGreaterThanOrEqual(timeline.frame.width, 320)
+        XCTAssertTrue(composer.isHittable)
+        capture("maximum sidebar in minimum window", app: app)
+        handle.doubleClick()
+        XCTAssertEqual(sidebarWidth(), 280, accuracy: 2)
+        resize(app, width: 1280)
+        let reset = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        reset.press(forDuration: 0.1, thenDragTo: reset.withOffset(CGVector(dx: 47, dy: 0)))
+        XCTAssertEqual(sidebarWidth(), 327, accuracy: 3)
+        let saved = handle.value as? String
+        app.buttons["channel-chan00000002"].click()
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        app.buttons["channel-chan00000001"].click()
+        let restoredDraft = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "TEST FIXTURE — sidebar resize keeps this draft"), object: composer)
+        XCTAssertEqual(XCTWaiter.wait(for: [restoredDraft], timeout: 10), .completed)
+        XCTAssertEqual(handle.value as? String, saved)
+        app.terminate()
+        let relaunched = launch(preservePanelWidths: true)
+        defer { relaunched.terminate() }
+        let restored = relaunched.sliders["channel-sidebar-resize"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 15))
+        resize(relaunched, width: 1280)
+        XCTAssertEqual(restored.value as? String, saved)
+        XCTAssertTrue(relaunched.textViews["message-composer"].isHittable)
+        capture("sidebar preference restored after relaunch", app: relaunched)
+        restored.doubleClick()
     }
 
     func testMemberWidthDragKeyboardOverlayAndRelaunchPreservePreferenceAndDraft() async throws {

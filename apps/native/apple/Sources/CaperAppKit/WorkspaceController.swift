@@ -10,7 +10,7 @@ import CaperCore
     private var preferredThreadWidth = CGFloat(UserDefaults.standard.object(forKey: "caper.threadPanelWidth") as? Double ?? 340)
     private lazy var threadDivider = NativeThreadDivider { [weak self] delta in
         guard let self else { return }
-        let maximum = min(600, self.view.bounds.width - 344 - 300)
+        let maximum = min(600, self.view.bounds.width - self.navigationWidth - 300)
         self.preferredThreadWidth = min(maximum, max(300, self.preferredThreadWidth + delta))
         UserDefaults.standard.set(Double(self.preferredThreadWidth), forKey: "caper.threadPanelWidth")
         self.view.needsLayout = true
@@ -26,6 +26,19 @@ import CaperCore
     private let attachmentObservation = NativeObservation()
     private let forwardingObservation = NativeObservation()
     private lazy var navigation = NavigationSidebar(model: model)
+    private var preferredSidebarWidth = CGFloat(UserDefaults.standard.object(forKey: "caper.channelSidebarWidth") as? Double ?? 280)
+    private var sidebarDragWidth: CGFloat?
+    private var sidebarMaximum: CGFloat { max(220, min(440, view.bounds.width - NavigationSidebar.railWidth - 320)) }
+    private var navigationWidth: CGFloat { NavigationSidebar.railWidth + min(sidebarMaximum, max(220, sidebarDragWidth ?? preferredSidebarWidth)) }
+    private lazy var sidebarResize = NativePanelResizeHandle("Channel sidebar width", identifier: "channel-sidebar-resize", defaultWidth: 280, widensToLeft: false) { [weak self] width, commit in
+        guard let self else { return }
+        if commit {
+            self.preferredSidebarWidth = width; self.sidebarDragWidth = nil
+            UserDefaults.standard.set(Double(width), forKey: "caper.channelSidebarWidth")
+        } else { self.sidebarDragWidth = width }
+        self.view.needsLayout = true
+        self.view.layoutSubtreeIfNeeded()
+    }
     private lazy var dialogs = AppKitWorkspacePresenter(model: model)
     private lazy var media = AppKitMediaPresenter(model: model, parent: presentationParent)
     private lazy var pins = AppKitPinsPresenter(model: model, media: media)
@@ -140,7 +153,7 @@ import CaperCore
     override func viewDidLoad() {
         super.viewDidLoad()
         if inThread { view.addSubview(stage) }
-        else { [navigation, stage, members, threadDivider, membersResize].forEach { view.addSubview($0) } }
+        else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
         [timeline, header, pinsButton, membersToggle, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
         pinsButton.setAccessibilityIdentifier("channel-pins")
@@ -409,7 +422,7 @@ import CaperCore
         super.viewDidLayout()
         let previousStage = stage.frame
         let width = view.bounds.width, height = view.bounds.height
-        let navigationWidth: CGFloat = 344
+        let navigationWidth = self.navigationWidth
         let docked = width > 760 && width - navigationWidth >= 540
         let hasMembers = !inThread && threadPane == nil && model.selectedDirectMessageID == nil && model.visit == nil
         let visible = hasMembers && (membersPreference ?? docked)
@@ -420,6 +433,8 @@ import CaperCore
         if inThread { stage.frame = view.bounds }
         else {
             navigation.frame = NSRect(x: 0, y: 0, width: navigationWidth, height: height)
+            sidebarResize.frame = NSRect(x: navigationWidth - 8, y: 0, width: 8, height: height)
+            sidebarResize.update(width: navigationWidth - NavigationSidebar.railWidth, maximum: sidebarMaximum)
             // Narrow windows keep the editor width and show one conversation
             // at a time; the native channel timeline retains its scroll anchor.
             let available = max(0, width - navigationWidth - (visible && docked ? memberWidth : 0))
