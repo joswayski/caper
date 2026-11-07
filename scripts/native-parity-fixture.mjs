@@ -871,6 +871,9 @@ export async function startFixture({
         return json(response, 200, { devices: state.pushDevices, requests: state.pushRequests });
       if (path === "/__fixture/channel-reads" && method === "GET")
         return json(response, 200, { reads: state.channelReads ?? null, log: state.channelReadLog ?? [] });
+      // The inbox pages asked for, in order: `{ requests: [{ filter, unread }] }`.
+      if (path === "/__fixture/inbox-requests" && method === "GET")
+        return json(response, 200, { requests: state.inboxRequests ?? [] });
       if (path === "/__fixture/control" && method === "POST") {
         if (body.reset) state = initialState(formatted);
         if (typeof body.admin === "boolean") state.account.admin = body.admin;
@@ -881,6 +884,8 @@ export async function startFixture({
         }
         // With it, `{ channelMentions: { [channelId]: count } }` adds mention counts.
         if (body.channelMentions !== undefined) state.channelMentions = body.channelMentions;
+        // Opt-in: `{ inboxDelayMs: n }` answers inbox pages n ms late.
+        if (typeof body.inboxDelayMs === "number") state.inboxDelayMs = body.inboxDelayMs;
         if (body.reset || typeof body.holdSends === "boolean") {
           holdSends = !body.reset && body.holdSends;
           if (!holdSends) for (const release of heldSends) release();
@@ -1807,8 +1812,10 @@ export async function startFixture({
           invitations: (item) => ["space.invitation", "channel.invitation", "direct.request"].includes(item.kind),
         }[filter];
         if (!matches) return reject(response, 400, "invalid inbox filter");
-        const mine = user.id === ids.owner ? state.inbox : [];
         const unreadOnly = url.searchParams.get("unread") === "true";
+        (state.inboxRequests ??= []).push({ filter, unread: unreadOnly });
+        if (state.inboxDelayMs) await new Promise((resolve) => setTimeout(resolve, state.inboxDelayMs));
+        const mine = user.id === ids.owner ? state.inbox : [];
         return json(response, 200, {
           items: mine.filter((item) => matches(item) && (!unreadOnly || item.unread)),
           nextCursor: null,
