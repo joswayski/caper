@@ -604,17 +604,22 @@ public final class AppModel {
         await voicePresence.stop()
         clearNavigationCache()
         let attempt = generation
+        // The space and DM lists need only the stored session: they are asked
+        // for beside the account, and used only once it is known and ready.
+        let prefetch = await api.isSignedIn ? prefetchWorkspace() : nil
         do {
             let account = try await api.account()
-            guard generation == attempt else { return }
+            guard generation == attempt else { prefetch?.cancel(); return }
             self.account = account
             let next: Phase = account == nil ? .signedOut : needsProfile ? .onboarding : .ready
             if next == .ready { restoringWorkspace = true }
             phase = next
             // A push tapped while signed out never opens for whoever signs in next.
             if account == nil { pendingNotificationRoute = nil }
-            if phase == .ready { await openWorkspace(generation: attempt) }
+            if phase == .ready { await openWorkspace(generation: attempt, prefetch: prefetch) }
+            else { prefetch?.cancel() }
         } catch {
+            prefetch?.cancel()
             guard generation == attempt else { return }
             self.error = FriendlyError.message(for: error); phase = .signedOut
         }
@@ -736,8 +741,9 @@ public final class AppModel {
     /// A request whose result lists people's current profiles. They become
     /// the newest known state for those IDs, repairing any missed
     /// `profile.updated`, unless an event for someone arrived meanwhile.
-    private func fetchingProfiles<T>(_ request: () async throws -> T, people: (T) -> [Person]) async throws -> T {
-        let mark = profileUpdates.mark
+    private func fetchingProfiles<T>(since started: ProfileDirectory.Mark? = nil, _ request: () async throws -> T,
+                                     people: (T) -> [Person]) async throws -> T {
+        let mark = started ?? profileUpdates.mark
         let value = try await request()
         var next = profileUpdates
         next.recordFetched(people(value), since: mark)
@@ -917,28 +923,50 @@ public final class AppModel {
         do { try await revoke } catch { self.error = FriendlyError.message(for: error) }
     }
 
-    /// The first space list and its landing conversation, behind the loading screen.
-    private func openWorkspace(generation attempt: Int) async {
+    /// The launch's space and DM list requests, started together.
+    private struct WorkspacePrefetch: Sendable {
+        let spaces: Task<SpacesResponse, Error>
+        let directMessages: Task<[DirectMessageConversation], Error>
+        /// Profiles known when the DM list was requested.
+        let mark: ProfileDirectory.Mark
+        func cancel() { spaces.cancel(); directMessages.cancel() }
+    }
+
+    private func prefetchWorkspace() -> WorkspacePrefetch {
+        let api = api
+        return WorkspacePrefetch(spaces: Task { try await api.spaces() },
+                                 directMessages: Task { try await api.directMessages() },
+                                 mark: profileUpdates.mark)
+    }
+
+    /// The first space list and its landing conversation, behind the loading
+    /// screen. The DM list loads alongside instead of after the channel opens.
+    private func openWorkspace(generation attempt: Int, prefetch: WorkspacePrefetch? = nil) async {
+        let requests = prefetch ?? prefetchWorkspace()
         let limit = Task { [weak self] in
             try? await Task.sleep(for: Self.restoreLimit)
             guard !Task.isCancelled, let self, self.generation == attempt else { return }
             self.restoringWorkspace = false
         }
-        await loadSpaces()
+        await loadSpaces(prefetched: requests.spaces)
         limit.cancel()
-        guard generation == attempt, account != nil else { return }
+        guard generation == attempt, account != nil else { requests.cancel(); return }
         restoringWorkspace = false
-        startDirectMessageRefresh()
+        startDirectMessageRefresh(prefetched: requests)
     }
 
-    public func loadSpaces() async {
-        guard account != nil else { return }
+    public func loadSpaces() async { await loadSpaces(prefetched: nil) }
+
+    private func loadSpaces(prefetched: Task<SpacesResponse, Error>?) async {
+        guard account != nil else { prefetched?.cancel(); return }
         let attempt = generation
         spacesError = nil
         await work(generation: attempt) {
             let response: SpacesResponse
-            do { response = try await self.api.spaces() }
-            catch {
+            do {
+                if let prefetched { response = try await prefetched.value }
+                else { response = try await self.api.spaces() }
+            } catch {
                 if self.generation == attempt { self.spacesError = FriendlyError.message(for: error) }
                 throw error
             }
@@ -1004,11 +1032,16 @@ public final class AppModel {
         await navigate(space: space, channelID: channel.id)
     }
 
-    public func refreshDirectMessages() async {
+    public func refreshDirectMessages() async { await refreshDirectMessages(prefetched: nil) }
+
+    private func refreshDirectMessages(prefetched: WorkspacePrefetch?) async {
         guard account != nil else { return }
         let attempt = generation
         do {
-            let conversations = try await fetchingProfiles({ try await api.directMessages() }, people: { $0.map(\.peer.profile) })
+            let conversations = try await fetchingProfiles(since: prefetched?.mark, { () async throws -> [DirectMessageConversation] in
+                if let prefetched { return try await prefetched.directMessages.value }
+                return try await api.directMessages()
+            }, people: { $0.map(\.peer.profile) })
             guard generation == attempt, account != nil else { return }
             let wasRequest = selectedDirectMessage?.status == .incoming
             directMessages = conversations
@@ -1728,7 +1761,7 @@ public final class AppModel {
         await setPushEnabled?(enabled)
     }
 
-    private func startDirectMessageRefresh() {
+    private func startDirectMessageRefresh(prefetched: WorkspacePrefetch? = nil) {
         #if os(macOS)
         desktopNotifications.start()
         #endif
@@ -1742,9 +1775,17 @@ public final class AppModel {
         directMessageRefreshTask = Task { [weak self] in
             // Sign-in has just loaded the spaces; membership waits for the next pass.
             var reconcile = false
+            var launch = prefetched
             while !Task.isCancelled {
-                await self?.refreshVoiceActivity()
-                await self?.refreshDirectMessages()
+                // The launch's DM list is already in flight: show it first.
+                if let first = launch {
+                    launch = nil
+                    await self?.refreshDirectMessages(prefetched: first)
+                    await self?.refreshVoiceActivity()
+                } else {
+                    await self?.refreshVoiceActivity()
+                    await self?.refreshDirectMessages()
+                }
                 await self?.refreshUnreadSpaces()
                 if reconcile { self?.refreshMembership() }
                 reconcile = true

@@ -1278,6 +1278,8 @@ final class APIClientTests: XCTestCase {
             case "/api/account/me":
                 return (200, Data(#"{"id":"old","username":"old","displayName":"Old"}"#.utf8))
             case "/api/auth/logout": return (204, Data())
+            // Requested beside the account at launch, not a signed-in service.
+            case "/api/dms": return (200, Data(#"{"conversations":[]}"#.utf8))
             default:
                 staleServices.fulfill()
                 return (503, Data())
@@ -1299,6 +1301,60 @@ final class APIClientTests: XCTestCase {
         XCTAssertFalse(model.restoringWorkspace)
         XCTAssertFalse(model.spacesLoaded)
         await model.logout()
+    }
+
+    /// Launch with `/api/account/me` held: the space and DM lists are
+    /// requested meanwhile, and the account's answer decides what shows.
+    @MainActor
+    private func launchWithHeldAccount(answering status: Int) async -> (AppModel, requested: () -> [String]) {
+        let accountStarted = expectation(description: "account pending")
+        var delayedAccount: MockURLProtocol?
+        var paths: [String] = []
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/account/me" else { return false }
+            delayedAccount = request; accountStarted.fulfill(); return true
+        }
+        MockURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            paths.append(path)
+            switch path {
+            case "/api/spaces": return (200, Data(#"{"spaces":[],"invitations":[]}"#.utf8))
+            case "/api/dms": return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"peer","displayName":"Peer"},"lastSeq":"1","readSeq":"1"}]}"#.utf8))
+            default: return (503, Data())
+            }
+        }
+        let model = AppModel(api: client())
+        let start = Task { await model.start() }
+        await fulfillment(of: [accountStarted], timeout: 1)
+        await waitUntil { paths.contains("/api/spaces") && paths.contains("/api/dms") }
+        XCTAssertFalse(model.spacesLoaded, "the lists wait for the account before they show")
+        XCTAssertTrue(model.directMessages.isEmpty)
+        delayedAccount?.respond(status: status, data: Data(#"{"id":"me","username":"me","displayName":"Me"}"#.utf8))
+        await start.value
+        return (model, { paths })
+    }
+
+    @MainActor
+    func testLaunchUsesSpacesAndDirectMessagesRequestedBesideTheAccount() async {
+        let (model, requested) = await launchWithHeldAccount(answering: 200)
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertTrue(model.spacesLoaded)
+        await waitUntil { !model.directMessages.isEmpty }
+        XCTAssertEqual(model.directMessages.map(\.id), ["dm0000000001"])
+        let paths = requested()
+        XCTAssertEqual(paths.filter { $0 == "/api/spaces" }.count, 1, "launch reuses the prefetched space list")
+        XCTAssertEqual(paths.filter { $0 == "/api/dms" }.count, 1, "launch reuses the prefetched DM list")
+        await model.logout()
+    }
+
+    @MainActor
+    func testRefusedSessionIgnoresListsRequestedBesideTheAccount() async {
+        let (model, _) = await launchWithHeldAccount(answering: 401)
+        XCTAssertEqual(model.phase, .signedOut)
+        XCTAssertNil(model.account)
+        XCTAssertNil(model.error)
+        XCTAssertFalse(model.spacesLoaded)
+        XCTAssertTrue(model.directMessages.isEmpty)
     }
 
     @MainActor
