@@ -59,6 +59,38 @@ class InlineLinkComposerUiTest {
         assertTrue(preview.height > 0f && preview.top > frame.top && preview.bottom <= frame.bottom)
     }
 
+    /** Whole drafts typed one key at a time, closing markers and the spaces after them included
+     *  (shared/messages/composer-cases.json, "a whole draft typed"): each ends exactly as typed. */
+    @Test fun typingWholeDraftsKeyByKeyKeepsThemExactly() {
+        val drafts = listOf("**hello** world", "_soft_ and more", "**both _builds_** and after", "**a** _b_ **c** d",
+            "**Done**, then _this_: ok.", "**_both_** plain", "**see** https://caper.chat/x and on",
+            "~~struck~~ and **b** ~~x~~ y", "*star* and **bold** after", "**café** ☕ ok",
+            "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and " +
+                "www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? " +
+                "**Done** when _history loading_ and **link previews** look right.")
+        val value = mutableStateOf(TextFieldValue(""))
+        val key = mutableStateOf(0)
+        compose.setContent {
+            CaperTheme {
+                androidx.compose.runtime.key(key.value) {
+                    EmojiTextField(value.value, { value.value = it }, Modifier.testTag("draft"))
+                }
+            }
+        }
+        for (draft in drafts) {
+            compose.runOnIdle { value.value = TextFieldValue(""); key.value++ }
+            val editor = compose.onNodeWithTag("draft")
+            editor.performClick()
+            var at = 0
+            while (at < draft.length) {
+                val next = at + Character.charCount(draft.codePointAt(at))
+                editor.performTextInput(draft.substring(at, next))
+                at = next
+            }
+            compose.runOnIdle { assertEquals(draft, value.value.text) }
+        }
+    }
+
     @Test fun defaultTransformationKeepsFormattingAndNativeUndoAtUrlBoundary() {
         val source = "**https://a.co** www.b.org"
         val value = mutableStateOf(TextFieldValue(source))
