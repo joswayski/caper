@@ -499,12 +499,16 @@ impl ReplyBar {
 
 impl App {
     /// The row the toolbar shows on: the one whose menu or picker is open,
-    /// else the hovered one.
+    /// else the hovered one. A thread row's or a composer's picker belongs
+    /// to no channel row.
     pub fn bar_row(&self) -> Option<usize> {
         self.menu
             .as_ref()
             .map(|m| m.row)
-            .or_else(|| self.picker.as_ref().map(|p| p.row))
+            .or_else(|| {
+                let row = self.picker.as_ref()?.row;
+                (row < self.c.messages.len()).then_some(row)
+            })
             .or(self.hover_row)
     }
 
