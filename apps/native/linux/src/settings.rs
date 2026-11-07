@@ -6,30 +6,16 @@
 use super::{App, State};
 use crate::ui::label;
 use caper_client::effects::{Effect, Effects};
-use caper_client::model::NotificationLevel;
+use caper_client::model::{DELETE_ACCOUNT_URL, DM_PRIVACY, NotificationLevel};
 use caper_client::notifications::{self, Change, Scope};
 use caper_client::worker::AccountOperation;
 use gtk::{glib, prelude::*};
 use std::rc::Rc;
 
-const DELETE_ACCOUNT_URL: &str = "https://caper.chat/privacy#delete-account";
 const LEVELS: [NotificationLevel; 3] = [
     NotificationLevel::All,
     NotificationLevel::Mentions,
     NotificationLevel::Nothing,
-];
-const PRIVACY: [(&str, &str, Option<&str>); 3] = [
-    (
-        "anyone",
-        "Anyone",
-        Some("People outside your spaces send a message request first."),
-    ),
-    ("spaces", "People in my spaces", None),
-    (
-        "nobody",
-        "No one new",
-        Some("Conversations you already have stay open."),
-    ),
 ];
 
 /// Account settings kept in the app's state.
@@ -199,7 +185,7 @@ impl App {
             section(&root, "Privacy", false);
             root.append(&label("Who can start a DM with you", &["field"]));
             let mut group: Option<gtk::CheckButton> = None;
-            for (value, title, detail) in PRIVACY {
+            for (value, title, detail) in DM_PRIVACY {
                 let check = gtk::CheckButton::with_label(title);
                 check.set_group(group.as_ref());
                 group.get_or_insert_with(|| check.clone());
