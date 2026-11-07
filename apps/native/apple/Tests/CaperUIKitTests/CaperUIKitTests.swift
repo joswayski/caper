@@ -117,6 +117,18 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertEqual((composer.value as? String) ?? "", "")
     }
 
+    /// Formatted text typed through the keyboard stays exactly as
+    /// typed: closing a style and typing on must not carry it onto later words.
+    func testTypingFormattedTextKeepsItExactly() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let composer = app.textViews["message-composer"]
+        composer.tap()
+        let draft = "**Release check** for _the voice beta_: see **both _builds_** and **Done** when"
+        composer.typeText(draft)
+        XCTAssertEqual(composer.value as? String, draft, "A closed style must not spread onto the words typed after it")
+    }
+
     /// SwiftUI's pending row: an unknown outcome offers Retry send; a rejected
     /// send offers Edit (back to the composer) and Dismiss.
     func testFailedSendsRetryEditAndDismiss() {

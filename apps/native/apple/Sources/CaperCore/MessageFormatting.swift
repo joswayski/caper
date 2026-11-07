@@ -21,16 +21,23 @@ public struct ComposerTyping {
     public mutating func repairEdit(_ previous: String, text: String, selection: NSRange, replacing range: NSRange) -> (text: String, selection: NSRange) {
         let continuing = range.length == 0 && left?.caret == range.location && left?.text == previous ? pending : -1
         let result = MessageFormatting.edit(previous, text: text, selection: selection, continuing: continuing)
+        // The caret the composer shows: every composer normalizes it past a
+        // closed style's delimiters (and lets the system place it there when
+        // the text is unchanged), so the next key arrives at this one.
+        let shown = MessageFormatting.normalizedSelection(result.text, selection: result.selection)
         pending = result.pending
-        left = result.selection.length == 0 ? (result.text, result.selection.location) : nil
-        return (result.text, result.selection)
+        left = shown.length == 0 ? (result.text, shown.location) : nil
+        return (result.text, shown)
     }
 
     /// Call on every selection change: the style ends unless the composer still
     /// shows the text and caret the last edit left (typing's own notifications
     /// do), so a moved caret, undo, redo or an input method ends it.
+    /// The system reports its own caret before the composer moves it off
+    /// hidden delimiters, so this compares the caret the composer will show.
     public mutating func observe(_ text: String, selection: NSRange) {
-        guard let left, left.text == text, selection.length == 0, selection.location == left.caret else { return end() }
+        guard let left, left.text == text, selection.length == 0,
+              MessageFormatting.normalizedSelection(text, selection: selection).location == left.caret else { return end() }
     }
 
     /// Ends the style: when the composer loses focus or shows another draft or

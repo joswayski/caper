@@ -156,6 +156,64 @@ final class MessageFormattingTests: XCTestCase {
         }
     }
 
+    /// The bench's formatted draft, typed key by key through the editor's own
+    /// delegate as the system delivers keys. When a key closes a style (the
+    /// second `*` of `**Release check**`) the text is unchanged, so the system
+    /// applies it and places the caret after the markers; the style typing
+    /// carries must survive that, or the next space reopens bold on every word.
+    @MainActor func testEditorCoordinatorTypesAFormattedDraftExactly() {
+        let draft = "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 "
+            + "and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? "
+            + "**Done** when _history loading_ and **link previews** look right."
+        let coordinator = NativeMessageTextEditor.Coordinator(
+            NativeMessageTextEditor(text: .constant(""), placeholder: "Message", controller: ComposerAutocompleteController(),
+                                    mentions: .empty, submit: {}, conversation: "1:channel"))
+        #if os(macOS)
+        let view = ComposerTextView()
+        view.delegate = coordinator; coordinator.view = view
+        for key in draft.map(String.init) {
+            let range = view.selectedRange()
+            guard coordinator.textView(view, shouldChangeTextIn: range, replacementString: key) else { continue }
+            view.string = (view.string as NSString).replacingCharacters(in: range, with: key)
+            view.setSelectedRange(NSRange(location: range.location + key.utf16.count, length: 0))
+            coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view))
+        }
+        XCTAssertEqual(view.string, draft)
+        #else
+        let view = ComposerTextView(frame: .zero, textContainer: nil)
+        view.delegate = coordinator; coordinator.view = view
+        for key in draft.map(String.init) {
+            let range = view.selectedRange
+            guard coordinator.textView(view, shouldChangeTextIn: range, replacementText: key) else { continue }
+            view.text = (view.text as NSString).replacingCharacters(in: range, with: key)
+            view.selectedRange = NSRange(location: range.location + key.utf16.count, length: 0)
+            coordinator.textViewDidChangeSelection(view)
+            coordinator.textViewDidChange(view)
+        }
+        XCTAssertEqual(view.text, draft)
+        #endif
+    }
+
+    /// The same, for any composer: the caret repairEdit returns is the one the
+    /// composer shows, so a key the system applies itself keeps the chain.
+    func testComposerTypingKeepsTheChainWhenTheSystemAppliesAKey() {
+        for draft in ["**hello** world", "**Release check** for _the voice beta_: see", "**both _builds_** and _soft_ too"] {
+            var typing = ComposerTyping(), text = "", caret = 0
+            for key in draft.map(String.init) {
+                let range = NSRange(location: caret, length: 0)
+                let proposed = (text as NSString).replacingCharacters(in: range, with: key)
+                let typed = NSRange(location: caret + key.utf16.count, length: 0)
+                let result = typing.repairEdit(text, text: proposed, selection: typed, replacing: range)
+                text = result.text
+                // An unchanged edit is the system's own: it reports the typed caret, then the composer normalizes it.
+                let reported = text == proposed ? typed : result.selection
+                typing.observe(text, selection: reported)
+                caret = MessageFormatting.normalizedSelection(text, selection: reported).location
+            }
+            XCTAssertEqual(text, draft)
+        }
+    }
+
     /// Types one character at a time the way both native composers do: each
     /// edit goes through repairEdit, then the caret through normalizedSelection.
     /// Closing a style at the end of the draft leaves the caret after it, so
