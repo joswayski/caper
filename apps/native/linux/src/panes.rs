@@ -51,7 +51,8 @@ impl App {
                 return;
             };
             let total = split.width();
-            if total <= 0 {
+            // A narrow window's Browse fills the split; its width isn't one.
+            if total <= 0 || app.is_narrow() {
                 return;
             }
             let position = split.position();
@@ -81,7 +82,11 @@ impl App {
                 return;
             };
             let total = content.width();
-            if total <= 0 || !app.ui.members_panel.is_visible() || !app.panes_placed.get() {
+            if total <= 0
+                || app.is_narrow()
+                || !app.ui.members_panel.is_visible()
+                || !app.panes_placed.get()
+            {
                 return;
             }
             let width = total - content.position() - LINE;
@@ -120,7 +125,20 @@ impl App {
         self.place_members();
     }
 
-    fn place_members(self: &Rc<Self>) {
+    /// Puts the sidebar back at its saved width, as a window widens past
+    /// the narrow layout.
+    /// It waits a frame, for the split's wide width.
+    pub(super) fn place_sidebar(self: &Rc<Self>) {
+        let app = Rc::downgrade(self);
+        self.ui.split.add_tick_callback(move |split, _| {
+            if let Some(app) = app.upgrade() {
+                split.set_position(saved(&app, SIDEBAR_KEY, SIDEBAR));
+            }
+            glib::ControlFlow::Break
+        });
+    }
+
+    pub(super) fn place_members(self: &Rc<Self>) {
         self.panes_placed.set(false);
         let app = Rc::downgrade(self);
         self.ui.content_split.add_tick_callback(move |content, _| {

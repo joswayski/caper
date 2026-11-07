@@ -98,6 +98,7 @@ icons! {
     AudioLines => "audio-lines",
     Speech => "speech",
     Crop => "crop",
+    Menu => "menu",
     Brush => "brush",
     Type => "type",
     Undo => "undo-2",

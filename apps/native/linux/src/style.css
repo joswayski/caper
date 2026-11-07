@@ -1954,3 +1954,13 @@ button.chip-remove {
 .tiny {
   font-size: 11px;
 }
+
+/* Narrow windows: the member list's drawer over the conversation. */
+.members-drawer .members {
+  border-left: 1px solid @caper_border;
+  box-shadow: -8px 0 24px alpha(black, 0.35);
+}
+
+.drawer-backdrop {
+  background: alpha(black, 0.25);
+}

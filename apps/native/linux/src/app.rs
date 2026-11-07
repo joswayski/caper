@@ -53,6 +53,8 @@ mod history;
 mod inbox;
 #[path = "members.rs"]
 mod members;
+#[path = "narrow.rs"]
+mod narrow;
 #[path = "notify.rs"]
 mod notify;
 #[path = "panes.rs"]
@@ -536,6 +538,11 @@ pub struct App {
     voice_send_rows: RefCell<[String; 2]>,
     /// The member list's saved width is placed (`panes`).
     panes_placed: Cell<bool>,
+    /// The window is 760 px or less, Browse is open there, and whether a
+    /// wide window showed the member list (`narrow`).
+    narrow: Cell<bool>,
+    browsing: Cell<bool>,
+    wide_members: Cell<bool>,
 }
 
 struct PinsView {
@@ -618,6 +625,9 @@ pub fn start(application: &gtk::Application, base: &str) {
         recording_ticking: Cell::new(false),
         voice_send_rows: RefCell::default(),
         panes_placed: Cell::new(false),
+        narrow: Cell::new(false),
+        browsing: Cell::new(false),
+        wide_members: Cell::new(true),
         images,
         worker: Worker::new(api.clone(), Wakes(sender.clone())),
         state: RefCell::new(State::default()),
@@ -692,6 +702,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.connect_gifs();
     app.connect_recording();
     app.connect_panes();
+    app.connect_narrow();
     app.connect_inbox();
     app.start_updates();
     app.install_actions();
@@ -826,6 +837,8 @@ impl App {
                     let space = state.space.clone();
                     app.navigate(&mut state, space, Some(id));
                 }
+                // The open channel too: narrow Browse goes back to it.
+                app.browsing.set(false);
                 drop(state);
                 app.render();
             }
@@ -1302,6 +1315,10 @@ impl App {
             state.channel_name = name;
         }
         state.channel.clone_from(&channel);
+        // Choosing a channel leaves narrow Browse; a space alone keeps it.
+        if channel.is_some() {
+            self.browsing.set(false);
+        }
         // As desktop: snapshot the read position fresh on arrival, before
         // this visit marks anything read, so the divider stays put.
         state.unread_boundary = None;
@@ -1332,6 +1349,9 @@ impl App {
         {
             let mut state = self.state.borrow_mut();
             if state.channel.as_deref() == Some(&id) {
+                // Narrow Browse goes back to the open DM.
+                drop(state);
+                self.set_browsing(false);
                 return;
             }
             self.enter_direct(&mut state, id);
@@ -1349,6 +1369,7 @@ impl App {
             .unwrap_or_default();
         state.channel = Some(id.clone());
         state.direct = Some(id.clone());
+        self.browsing.set(false);
         state.restore_draft = Some(state.drafts.remove(&id).unwrap_or_default());
         self.load_people(state);
         self.prepare(state, None, Some(id));
@@ -4624,17 +4645,20 @@ impl App {
         ui.thread_error.set_label(send_error);
         ui.thread_error
             .set_visible(!send_error.is_empty() && thread_open && in_thread);
-        if let Some((draft, thread)) = state.returned_draft.take() {
+        let returned = state.returned_draft.take();
+        let shown = (state.channel.is_some(), thread_open);
+        drop(state);
+        if let Some((draft, thread)) = returned {
             let buffer = if thread {
                 ui.thread_composer.view.buffer()
             } else {
                 ui.composer.view.buffer()
             };
             if buffer.char_count() == 0 {
-                drop(state);
                 buffer.set_text(&draft);
             }
         }
+        self.render_narrow(shown);
     }
 
     fn render_resend(self: &Rc<Self>, state: &State) {

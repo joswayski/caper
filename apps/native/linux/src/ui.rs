@@ -325,6 +325,13 @@ pub struct Ui {
     /// "Notifications" on the first-space page.
     pub first_inbox: gtk::Button,
     pub rail: gtk::Box,
+    pub sidebar: gtk::Box,
+    /// Narrow windows: Browse in the conversation header, Close navigation
+    /// in Browse, and the member list's drawer (`app::narrow`).
+    pub browse: gtk::Button,
+    pub browse_close: gtk::Button,
+    pub members_drawer: gtk::Revealer,
+    pub members_backdrop: gtk::Box,
     pub space_name: gtk::Label,
     pub space_header: gtk::Button,
     pub new_channel: gtk::Button,
@@ -589,7 +596,18 @@ impl Ui {
         header_line.append(&space_name);
         header_line.append(&images.icon_image(Icon::ChevronDown, "#b9bcbe", 16));
         space_header.set_child(Some(&header_line));
-        sidebar.append(&space_header);
+        space_header.set_hexpand(true);
+        // Narrow windows: back to the conversation (`app::narrow`).
+        let browse_close: gtk::Button = crate::app::named("GtkButton", "Close navigation");
+        browse_close.set_child(Some(&images.icon_image(Icon::Close, "#b9bcbe", 18)));
+        browse_close.set_tooltip_text(Some("Close navigation"));
+        browse_close.add_css_class("flat");
+        browse_close.set_valign(gtk::Align::Center);
+        browse_close.set_visible(false);
+        let space_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        space_row.append(&space_header);
+        space_row.append(&browse_close);
+        sidebar.append(&space_row);
         let lists = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let channel_header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let channels_toggle: gtk::Button = crate::app::named("GtkButton", "Toggle channels");
@@ -713,6 +731,14 @@ impl Ui {
         conversation.set_hexpand(true);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         header.add_css_class("header");
+        // Narrow windows: Browse opens the spaces and channels.
+        let browse: gtk::Button = crate::app::named("GtkButton", "Browse");
+        browse.set_child(Some(&images.icon_image(Icon::Menu, "#b9bcbe", 18)));
+        browse.set_tooltip_text(Some("Browse"));
+        browse.add_css_class("flat");
+        browse.set_valign(gtk::Align::Center);
+        browse.set_visible(false);
+        header.append(&browse);
         let channel_title = label("", &["channel-title"]);
         header.append(&channel_title);
         let status = label("", &["muted", "status"]);
@@ -847,6 +873,19 @@ impl Ui {
         drop_card.append(&drop_detail);
         drop.append(&drop_card);
         stage.add_overlay(&drop);
+        // Narrow windows: the member list slides over the conversation below
+        // its header, over a backdrop that closes it (`app::narrow`).
+        let members_backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        members_backdrop.add_css_class("drawer-backdrop");
+        members_backdrop.set_margin_top(53);
+        members_backdrop.set_visible(false);
+        stage.add_overlay(&members_backdrop);
+        let members_drawer = gtk::Revealer::new();
+        members_drawer.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
+        members_drawer.set_halign(gtk::Align::End);
+        members_drawer.set_margin_top(53);
+        members_drawer.add_css_class("members-drawer");
+        stage.add_overlay(&members_drawer);
 
         let members_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
         members_panel.add_css_class("members");
@@ -932,7 +971,17 @@ impl Ui {
         thread_panel.append(&thread_composer.root);
         thread_panel.set_visible(false);
         chat.append(&thread_panel);
-        pages.add_named(&chat, Some("chat"));
+        // The wide layout must not set the window's minimum width, or a
+        // window could never shrink to the narrow one (`crate::narrow`).
+        let chat_viewport = gtk::Viewport::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+        chat_viewport.set_scroll_to_focus(false);
+        chat_viewport.set_child(Some(&chat));
+        let chat_width = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::External)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .child(&chat_viewport)
+            .build();
+        pages.add_named(&chat_width, Some("chat"));
         let root = gtk::Overlay::new();
         root.set_child(Some(&pages));
         let zoom_notice = label("", &["zoom-notice"]);
@@ -964,6 +1013,11 @@ impl Ui {
             first_logout,
             first_inbox,
             rail,
+            sidebar,
+            browse,
+            browse_close,
+            members_drawer,
+            members_backdrop,
             space_name,
             space_header,
             new_channel,
