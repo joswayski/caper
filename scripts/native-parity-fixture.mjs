@@ -1035,7 +1035,7 @@ export async function startFixture({
             wav.writeInt16LE(Math.round(Math.sin((index / rate) * 2 * Math.PI * 330) * 8000 * swell), 44 + index * 2);
           }
           const id = "voice0000001";
-          const url = `http://127.0.0.1:${port}/api/assets/${id}/fixture-file`;
+          const url = `${advertised(port)}/api/assets/${id}/fixture-file`;
           const peaks = Buffer.from(
             Array.from({ length: 64 }, (_, bar) => Math.round(60 + 190 * Math.abs(Math.sin(bar / 6)))),
           );
