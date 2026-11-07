@@ -736,7 +736,8 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         }
         switch item { case .directHeading, .searchEmpty, .listError: return; default: break }
         cell.isAccessibilityElement = true
-        cell.accessibilityTraits = cell.accessibilityValue?.hasPrefix("Selected") == true ? [.button, .selected] : .button
+        // The value already says "Selected", as SwiftUI's; a selected trait would repeat it.
+        cell.accessibilityTraits = .button
     }
 
     private func newDirectMessage() {
@@ -1102,6 +1103,8 @@ final class SearchFieldCell: UICollectionViewListCell, UITextFieldDelegate {
     override init(frame: CGRect) {
         super.init(frame: frame)
         field.placeholder = "Search channels"
+        // Its name once text replaces the placeholder.
+        field.accessibilityLabel = "Search channels"
         field.font = UIKitStyle.font(14)
         field.textColor = UIKitStyle.text
         field.backgroundColor = UIKitStyle.raised

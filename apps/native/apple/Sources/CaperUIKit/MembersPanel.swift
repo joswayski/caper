@@ -53,6 +53,8 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         panel.layer.shadowOffset = CGSize(width: -12, height: 0)
         panel.translatesAutoresizingMaskIntoConstraints = false
         panel.accessibilityViewIsModal = true
+        // Modal among the conversation's views too, not only beside the dimming.
+        accessibilityViewIsModal = true
         panel.accessibilityIdentifier = "members-panel"
         addSubview(panel)
         let swipe = UIPanGestureRecognizer(target: self, action: #selector(swiped(_:)))
@@ -114,6 +116,8 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
                 if group == "channel" { background.backgroundColor = UIKitStyle.sidebarRaised }
             case let .note(text):
                 content.text = text
+                cell.accessibilityTraits = .staticText
+                cell.accessibilityLabel = text
                 content.textProperties.font = UIKitStyle.font(11)
                 content.textProperties.color = UIKitStyle.muted
                 content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
@@ -160,6 +164,13 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     // MARK: Presentation
+
+    /// VoiceOver's two-finger scrub closes the panel, not the conversation.
+    override func accessibilityPerformEscape() -> Bool {
+        guard isOpen else { return false }
+        close()
+        return true
+    }
 
     func open() {
         guard !isOpen else { return }

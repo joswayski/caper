@@ -672,6 +672,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // The heading has no view of its own; VoiceOver skips a zero-size element.
+        heading.accessibilityFrameInContainerSpace = titleMenu.frame
         pinTailIfFollowing()
         layoutStatusColumn()
     }

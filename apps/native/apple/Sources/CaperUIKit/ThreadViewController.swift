@@ -76,7 +76,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
 
         let header = UIView()
         header.translatesAutoresizingMaskIntoConstraints = false
-        let back = IconButton(icon: "arrow-left", label: "Back to channel", size: 20) { [weak self] in self?.close() }
+        let back = IconButton(icon: "arrow-left", label: direct ? "Back to conversation" : "Back to channel", size: 20) { [weak self] in self?.close() }
         back.tintColor = UIKitStyle.muted
         back.accessibilityIdentifier = "thread-back"
         let title = UIKitStyle.label("Thread", size: 15, weight: .bold)
@@ -379,7 +379,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         broadcast.isEnabled = chat.pendingMessage == nil
         broadcast.accessibilityLabel = "Also send to \(target)"
         broadcast.accessibilityValue = on ? "1" : "0"
-        broadcast.accessibilityTraits = .button
+        // A toggle, as SwiftUI's; set traits replace UIKit's automatic disabled state.
+        broadcast.accessibilityTraits = broadcast.isEnabled ? [.button, .toggleButton] : [.button, .toggleButton, .notEnabled]
     }
 
     private func send() {
