@@ -61,7 +61,11 @@ import SwiftUI
         show(AppKitWorkspaceDialogState(item: .leaveChannel(channel)), in: parent)
     }
 
+    /// A reload changes editingContext's generation, but remains in this
+    /// account/conversation. Native timeline anchors use this stable identity.
+    public var conversationContext: String { "\(model.chat.channelID ?? ""):\(model.chat.viewerID ?? "")" }
     public var messageContext: String { model.chat.editingContext }
+    public var isPresenting: Bool { model.whatsNew.workspaceModalOpen }
     public func currentMessage(_ message: ChatMessage) -> ChatMessage? {
         guard message.channelId == model.chat.channelID else { return nil }
         return model.chat.displayedMessages.first { $0.id == message.id }
@@ -302,8 +306,10 @@ private struct AppKitWorkspaceDialog: View {
         self.model = model; self.media = media; super.init()
     }
 
+    public var isAvailable: Bool { model.chat.channelID != nil }
+
     public func show(from anchor: NSView, composer: ComposerTextView) {
-        guard let window = anchor.window, model.chat.channelID != nil,
+        guard let window = anchor.window, isAvailable,
               window.attachedSheet == nil, !model.whatsNew.workspaceModalOpen else { return }
         if popover != nil { close(); return }
         let context = model.chat.editingContext, root = model.chat.threadRootID
@@ -728,6 +734,7 @@ private struct AppKitComposerAttachments: View {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            VoiceComposerNotice(chat: chat, inThread: inThread)
             AttachmentDraftsView(chat: chat, inThread: inThread)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
