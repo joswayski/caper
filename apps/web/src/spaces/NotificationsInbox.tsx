@@ -17,6 +17,9 @@ const filters: [InboxFilter, string][] = [
   ["invitations", "Invitations"],
 ];
 
+type InboxPage = Awaited<ReturnType<typeof listInbox>>;
+const freshness = 15_000;
+
 function description(item: InboxItem) {
   switch (item.kind) {
     case "reaction":
@@ -67,6 +70,39 @@ export default function NotificationsInbox({
   const busy = useRef(0);
   const countRef = useRef<number>(undefined);
   const opening = useRef(false);
+  // This component is keyed by account and discarded when the inbox closes.
+  const cache = useRef(new Map<string, InboxPage & { loadedAt: number }>());
+  const pending = useRef(new Map<string, Promise<InboxPage>>());
+  const key = `${filter}:${unread}`;
+  const firstPage = useCallback((type: InboxFilter, unreadOnly: boolean, remember = true) => {
+    const key = `${type}:${unreadOnly}`;
+    const existing = pending.current.get(key);
+    if (existing) return existing;
+    const request = listInbox(type, unreadOnly).then(
+      (result) => {
+        if (pending.current.get(key) === request) {
+          pending.current.delete(key);
+          // A background refresh commits only after the entire loaded window
+          // succeeds; do not replace its older pages with just this first page.
+          if (remember && !cache.current.has(key)) cache.current.set(key, { ...result, loadedAt: Date.now() });
+        }
+        return result;
+      },
+      (error: unknown) => {
+        if (pending.current.get(key) === request) pending.current.delete(key);
+        throw error;
+      },
+    );
+    pending.current.set(key, request);
+    return request;
+  }, []);
+  const prefetch = (type: InboxFilter) => {
+    if (busy.current > 0) return;
+    const cached = cache.current.get(`${type}:${unread}`);
+    // Keep a previously loaded window (including pagination) until selected.
+    if (cached) return;
+    void firstPage(type, unread).catch(() => {});
+  };
   const updateCount = useCallback(
     (value: number) => {
       countRef.current = value;
@@ -85,7 +121,7 @@ export default function NotificationsInbox({
       if (!background) setLoading(true);
       setError(undefined);
       try {
-        let result = await listInbox(filter, unread, after);
+        let result = after ? await listInbox(filter, unread, after) : await firstPage(filter, unread, !background);
         const rows = [...result.items];
         const oldest = background ? loadedItems.current.at(-1) : undefined;
         // Revalidate the loaded window, not just its first page. New arrivals
@@ -111,6 +147,7 @@ export default function NotificationsInbox({
         });
         setItems(loadedItems.current);
         setCursor(result.nextCursor);
+        cache.current.set(key, { ...result, items: loadedItems.current, loadedAt: Date.now() });
         updateCount(result.unreadCount);
       } catch (reason) {
         if (!mounted.current || request !== revision.current) return;
@@ -129,7 +166,7 @@ export default function NotificationsInbox({
         }
       }
     },
-    [filter, unread, updateCount],
+    [filter, unread, key, firstPage, updateCount],
   );
 
   useEffect(() => {
@@ -140,21 +177,40 @@ export default function NotificationsInbox({
     };
   }, []);
   useEffect(() => {
-    setStale(loadedItems.current.length > 0);
-    void load();
+    fetching.current = false;
+    const cached = cache.current.get(key);
+    setError(undefined);
+    if (cached) {
+      loadedItems.current = cached.items;
+      setItems(cached.items);
+      setCursor(cached.nextCursor);
+      setStale(false);
+      setLoading(false);
+      if (countRef.current === undefined) updateCount(cached.unreadCount);
+      if (Date.now() - cached.loadedAt >= freshness) void load(undefined, true);
+    } else {
+      setCursor(undefined);
+      setStale(loadedItems.current.length > 0);
+      void load();
+    }
     const refresh = () => {
       if (document.visibilityState === "visible") void load(undefined, true);
     };
-    const timer = setInterval(refresh, 15_000);
+    const invalidate = () => {
+      cache.current.clear();
+      pending.current.clear();
+      refresh();
+    };
+    const timer = setInterval(refresh, freshness);
     window.addEventListener("focus", refresh);
-    window.addEventListener(UNREAD_CHANGED, refresh);
+    window.addEventListener(UNREAD_CHANGED, invalidate);
     return () => {
       revision.current++;
       clearInterval(timer);
       window.removeEventListener("focus", refresh);
-      window.removeEventListener(UNREAD_CHANGED, refresh);
+      window.removeEventListener(UNREAD_CHANGED, invalidate);
     };
-  }, [load]);
+  }, [key, load, updateCount]);
 
   // Marking read updates the row and count at once and puts them back if the save fails,
   // so the rest of the list never waits on (or dims for) the request.
@@ -165,6 +221,8 @@ export default function NotificationsInbox({
       setSaving(item.id);
     }
     busy.current++;
+    cache.current.clear();
+    pending.current.clear();
     setError(undefined);
     revision.current++;
     fetching.current = false;
@@ -205,6 +263,8 @@ export default function NotificationsInbox({
       if (mounted.current) setError(reason instanceof Error ? reason.message : "That notification couldn’t open.");
     } finally {
       busy.current--;
+      cache.current.clear();
+      pending.current.clear();
       if (open) {
         opening.current = false;
         if (mounted.current) setSaving(undefined);
@@ -233,6 +293,8 @@ export default function NotificationsInbox({
               key={value}
               aria-pressed={filter === value}
               disabled={composerBusy}
+              onMouseEnter={() => prefetch(value)}
+              onFocus={() => prefetch(value)}
               onClick={() => {
                 setExpanded(undefined);
                 setFilter(value);
@@ -259,99 +321,110 @@ export default function NotificationsInbox({
             <span aria-live="polite">{count === undefined ? "" : `(${count})`}</span>
           </label>
         </div>
-        {error && (
-          <p className="inbox-error" role="alert">
-            {error}{" "}
-            <button type="button" disabled={loading || !!saving} onClick={() => void load(undefined, items.length > 0)}>
-              Retry
-            </button>
-          </p>
-        )}
-        <ul
-          className="inbox-list"
-          aria-label="Notifications"
-          aria-busy={loading}
-          data-stale={stale || undefined}
-          inert={stale}
-        >
-          {visibleItems.map((item) => (
-            <li key={item.id} data-unread={item.unread || undefined}>
+        <div className="inbox-results">
+          {error && (
+            <p className="inbox-error" role="alert">
+              {error}{" "}
               <button
                 type="button"
-                className="inbox-open"
-                disabled={saving === item.id || composerBusy}
-                onClick={() => void act(item, true)}
+                disabled={loading || !!saving}
+                onClick={() => void load(undefined, items.length > 0)}
               >
-                <span className="inbox-avatar">
-                  <Avatar name={item.actorName} person={{ id: item.actorId, avatarId: item.avatarId }} />
-                </span>
-                <span className="inbox-content">
-                  <span className="inbox-line">
-                    <strong>{item.actorName}</strong>
-                    {item.unread && <span className="inbox-dot" aria-label="Unread" />}
-                  </span>
-                  {description(item) && <span className="inbox-description">{description(item)}</span>}
-                  {item.body && <span className="inbox-preview">{item.body}</span>}
-                  <small>
-                    {item.spaceName
-                      ? `${item.channelName ? `#${item.channelName} · ` : ""}${item.spaceName}`
-                      : "Direct message"}
-                  </small>
-                </span>
+                Retry
               </button>
-              <div className="inbox-meta">
-                <time dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString()}>
-                  {new Date(item.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                </time>
-                {item.unread && (
-                  <Tooltip content="Mark read without opening">
-                    <button
-                      type="button"
-                      className="inbox-read"
-                      aria-label={`Mark notification from ${item.actorName} read`}
-                      onClick={() => void act(item, false)}
-                    >
-                      <Check aria-hidden="true" />
-                    </button>
-                  </Tooltip>
-                )}
-              </div>
-              {item.messageId &&
-                (item.channelId || item.conversationId) &&
-                ["message", "mention", "reply", "reaction"].includes(item.kind) && (
-                  <NotificationActions
-                    accountId={accountId}
-                    item={item}
-                    expanded={expanded?.id === item.id}
-                    disabled={composerBusy}
-                    onExpand={() => setExpanded(expanded?.id === item.id ? undefined : item)}
-                    onStateChange={composerState}
-                  />
-                )}
-            </li>
-          ))}
-        </ul>
-        {loading && !visibleItems.length && (
-          <p className="inbox-status" role="status">
-            Loading notifications…
-          </p>
-        )}
-        {!loading && !error && !visibleItems.length && !cursor && (
-          <div className="inbox-empty">
-            <Bell aria-hidden="true" />
-            <strong>{unread ? "You’re all caught up" : "No notifications here yet"}</strong>
-            <p>
-              {unread
-                ? "No unread notifications in this view."
-                : "Messages, mentions, replies and reactions will appear here."}
             </p>
-          </div>
-        )}
-        {cursor && (
-          <button type="button" className="inbox-more" disabled={loading || !!saving} onClick={() => void load(cursor)}>
-            Load more
-          </button>
-        )}
+          )}
+          <ul
+            className="inbox-list"
+            aria-label="Notifications"
+            aria-busy={loading}
+            data-stale={stale || undefined}
+            inert={stale}
+          >
+            {visibleItems.map((item) => (
+              <li key={item.id} data-unread={item.unread || undefined}>
+                <button
+                  type="button"
+                  className="inbox-open"
+                  disabled={saving === item.id || composerBusy}
+                  onClick={() => void act(item, true)}
+                >
+                  <span className="inbox-avatar">
+                    <Avatar name={item.actorName} person={{ id: item.actorId, avatarId: item.avatarId }} />
+                  </span>
+                  <span className="inbox-content">
+                    <span className="inbox-line">
+                      <strong>{item.actorName}</strong>
+                      {item.unread && <span className="inbox-dot" aria-label="Unread" />}
+                    </span>
+                    {description(item) && <span className="inbox-description">{description(item)}</span>}
+                    {item.body && <span className="inbox-preview">{item.body}</span>}
+                    <small>
+                      {item.spaceName
+                        ? `${item.channelName ? `#${item.channelName} · ` : ""}${item.spaceName}`
+                        : "Direct message"}
+                    </small>
+                  </span>
+                </button>
+                <div className="inbox-meta">
+                  <time dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString()}>
+                    {new Date(item.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                  </time>
+                  {item.unread && (
+                    <Tooltip content="Mark read without opening">
+                      <button
+                        type="button"
+                        className="inbox-read"
+                        aria-label={`Mark notification from ${item.actorName} read`}
+                        onClick={() => void act(item, false)}
+                      >
+                        <Check aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                  )}
+                </div>
+                {item.messageId &&
+                  (item.channelId || item.conversationId) &&
+                  ["message", "mention", "reply", "reaction"].includes(item.kind) && (
+                    <NotificationActions
+                      accountId={accountId}
+                      item={item}
+                      expanded={expanded?.id === item.id}
+                      disabled={composerBusy}
+                      onExpand={() => setExpanded(expanded?.id === item.id ? undefined : item)}
+                      onStateChange={composerState}
+                    />
+                  )}
+              </li>
+            ))}
+          </ul>
+          {loading && !visibleItems.length && (
+            <p className="inbox-status" role="status">
+              Loading notifications…
+            </p>
+          )}
+          {!loading && !error && !visibleItems.length && !cursor && (
+            <div className="inbox-empty">
+              <Bell aria-hidden="true" />
+              <strong>{unread ? "You’re all caught up" : "No notifications here yet"}</strong>
+              <p>
+                {unread
+                  ? "No unread notifications in this view."
+                  : "Messages, mentions, replies and reactions will appear here."}
+              </p>
+            </div>
+          )}
+          {cursor && (
+            <button
+              type="button"
+              className="inbox-more"
+              disabled={loading || !!saving}
+              onClick={() => void load(cursor)}
+            >
+              Load more
+            </button>
+          )}
+        </div>
       </div>
     </Dialog>
   );

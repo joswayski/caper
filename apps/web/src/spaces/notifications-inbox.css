@@ -1,5 +1,7 @@
 .space-dialog:has(.notifications-inbox) {
   width: min(760px, calc(100vw - 32px));
+  height: min(620px, calc(100dvh - var(--dialog-top) - 16px));
+  overflow: hidden;
 }
 .space-dialog:has(.notifications-inbox) > header h2 {
   display: flex;
@@ -7,10 +9,21 @@
   gap: 10px;
 }
 .notifications-inbox {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   padding: 0 24px 24px;
+}
+.inbox-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 .inbox-filters {
   display: flex;
+  flex-shrink: 0;
   gap: 4px;
   overflow-x: auto;
   border-bottom: 1px solid var(--border);
@@ -30,6 +43,7 @@
 }
 .inbox-toolbar {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 12px;
   padding: 16px 0;
@@ -282,11 +296,20 @@
 }
 .inbox-empty {
   display: flex;
+  min-height: 100%;
+  justify-content: center;
   flex-direction: column;
   align-items: center;
   text-align: center;
   padding: 40px 16px;
   gap: 12px;
+}
+.inbox-status {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  margin: 0;
+  color: var(--text-muted);
 }
 .inbox-empty > svg {
   color: var(--text-muted);

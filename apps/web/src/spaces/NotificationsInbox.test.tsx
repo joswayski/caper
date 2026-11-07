@@ -5,7 +5,86 @@ import { expect, test, vi } from "vitest";
 import NotificationsInbox from "./NotificationsInbox";
 import type { InboxItem } from "./client";
 import { rememberSavedAccount } from "../account/client";
+import { UNREAD_CHANGED } from "../account/app-badge";
 import type { ComposerInput } from "../chat/MentionTextarea";
+
+test("tabs reuse empty results, share hover/focus requests, and refresh stale views without loading screens", async () => {
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  let now = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  const requests: { key: string; finish: (fail?: boolean) => void }[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    (input) =>
+      new Promise((resolve) => {
+        const query = new URL(String(input), "http://localhost").searchParams;
+        requests.push({
+          key: `${query.get("filter")}:${query.get("unread")}`,
+          finish: (fail) =>
+            resolve(
+              fail
+                ? Response.json({ error: "Offline" }, { status: 503 })
+                : Response.json({ items: [], nextCursor: null, unreadCount: 0 }),
+            ),
+        });
+      }),
+  );
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const tab = (label: string) =>
+    Array.from(container.querySelectorAll<HTMLButtonElement>(".inbox-filters button")).find(
+      (node) => node.textContent === label,
+    )!;
+  const click = async (label: string) => act(async () => tab(label).click());
+  try {
+    await act(async () =>
+      root.render(
+        <NotificationsInbox accountId="self00000001" onClose={() => {}} onCount={() => {}} onOpen={() => {}} />,
+      ),
+    );
+    expect(container.textContent).toContain("Loading notifications");
+    await act(async () => requests[0].finish());
+    await act(async () => tab("Threads").dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    await act(async () => tab("Threads").focus());
+    await click("Threads");
+    expect(requests.map((request) => request.key)).toEqual(["all:true", "threads:true"]);
+    // Return to an empty cached tab while Threads is still in flight.
+    await click("All");
+    expect(container.textContent).toContain("You’re all caught up");
+    expect(container.textContent).not.toContain("Loading notifications");
+    await act(async () => requests[1].finish());
+    await click("Threads");
+    expect(requests).toHaveLength(2);
+    expect(container.textContent).toContain("You’re all caught up");
+
+    await act(async () => container.querySelector<HTMLInputElement>('[role="switch"]')!.click());
+    expect(requests[2].key).toBe("threads:false");
+    await act(async () => requests[2].finish());
+    expect(container.textContent).toContain("No notifications here yet");
+    await act(async () => container.querySelector<HTMLInputElement>('[role="switch"]')!.click());
+    expect(requests).toHaveLength(3);
+    expect(container.textContent).toContain("You’re all caught up");
+
+    now = 15_001;
+    await click("All");
+    expect(requests[3].key).toBe("all:true");
+    expect(container.textContent).toContain("You’re all caught up");
+    expect(container.textContent).not.toContain("Loading notifications");
+    await act(async () => requests[3].finish(true));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Offline");
+    await act(async () => window.dispatchEvent(new Event(UNREAD_CHANGED)));
+    await act(async () => requests[4].finish());
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await click("Threads");
+    expect(requests[5].key).toBe("threads:true");
+    await act(async () => requests[5].finish());
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  }
+});
 
 test("inbox lists without reading, preserves failed reads, filters history and opens the exact reply", async () => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -76,6 +155,9 @@ test("inbox lists without reading, preserves failed reads, filters history and o
     expect(container.querySelector('[aria-label="Refresh notifications"]')).toBeNull();
     expect(rows.every((row) => row.unread)).toBe(true);
     expect(document.title).toBe("(2) Caper");
+    await click(button("Reactions"));
+    expect(container.querySelectorAll(".inbox-list li")).toHaveLength(1);
+    await click(button("All"));
     await click(container.querySelector<HTMLButtonElement>('[aria-label="Mark notification from Kai read"]')!);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t save");
     expect(container.querySelectorAll(".inbox-list li")).toHaveLength(2);
@@ -147,10 +229,21 @@ test("automatic updates revalidate older pages without gaps, even when the oldes
     );
     await act(async () => container.querySelector<HTMLButtonElement>(".inbox-more")!.click());
     expect(previews()).toEqual(["Message 4", "Message 3", "Message 2", "Message 1"]);
+    const tab = (label: string) =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>(".inbox-filters button")).find(
+        (node) => node.textContent === label,
+      )!;
+    await act(async () => tab("DMs").click());
+    expect(previews()).toEqual(["Message 4", "Message 3"]);
+    await act(async () => tab("All").click());
+    expect(previews()).toEqual(["Message 4", "Message 3", "Message 2", "Message 1"]);
     rows = [6, 5, 4, 2, 0].map(make); // New arrivals, removed 3, acknowledged oldest 1.
     failContinuation = true;
     await act(async () => vi.advanceTimersByTimeAsync(15_000));
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Offline");
+    expect(previews()).toEqual(["Message 4", "Message 3", "Message 2", "Message 1"]);
+    await act(async () => tab("DMs").click());
+    await act(async () => tab("All").click());
     expect(previews()).toEqual(["Message 4", "Message 3", "Message 2", "Message 1"]);
     failContinuation = false;
     await act(async () => vi.advanceTimersByTimeAsync(15_000));
