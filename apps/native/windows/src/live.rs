@@ -112,6 +112,9 @@ pub enum Update {
     DirectCreated(Option<String>),
     /// Settings' account choices loaded, saved or failed.
     Settings,
+    /// A block asked for in the Block dialog finished: None once blocked,
+    /// else why not.
+    Blocked(Option<String>),
     /// The open thread's messages or state changed (or it closed): the
     /// pane rebuilds from `Live::thread_view`.
     Thread,
@@ -564,9 +567,20 @@ impl Live {
 
     /// Unblocks the `k`th blocked account.
     pub fn unblock(&mut self, k: usize) {
-        let Some(account) = self.blocks.as_ref().and_then(|b| b.get(k)).cloned() else {
-            return;
-        };
+        if let Some(account) = self.blocks.as_ref().and_then(|b| b.get(k)).cloned() {
+            self.unblock_account(account);
+        }
+    }
+
+    /// Unblocks the open DM's other person (its blocked bar's Unblock).
+    pub fn unblock_open(&mut self) {
+        if let Some(d) = self.open_direct_conversation() {
+            let account = (&d.peer).into();
+            self.unblock_account(account);
+        }
+    }
+
+    fn unblock_account(&mut self, account: core::BlockedAccount) {
         self.block_busy = true;
         self.block_error = None;
         self.account(AccountOperation::SetBlock {
@@ -616,12 +630,17 @@ impl Live {
             AccountResult::Block {
                 account,
                 blocked,
+                request,
                 result,
-                ..
             } => {
                 self.block_busy = false;
                 match result {
-                    Err(e) => self.block_error = Some(e),
+                    Err(e) => {
+                        if blocked {
+                            out.push(Update::Blocked(Some(e.clone())));
+                        }
+                        self.block_error = Some(e);
+                    }
                     Ok(()) => {
                         self.block_error = None;
                         let blocks = self.blocks.get_or_insert_with(Vec::new);
@@ -633,6 +652,23 @@ impl Live {
                             if d.peer.id == account.id {
                                 d.blocked = blocked;
                             }
+                        }
+                        if blocked {
+                            // Blocking also declines their pending request.
+                            let mut requests: Vec<String> = self
+                                .directs
+                                .iter()
+                                .filter(|d| {
+                                    d.peer.id == account.id
+                                        && d.status == core::DirectStatus::Incoming
+                                })
+                                .map(|d| d.id.clone())
+                                .collect();
+                            requests.extend(request.filter(|r| !requests.contains(r)));
+                            for id in requests {
+                                self.leave_request(&id);
+                            }
+                            out.push(Update::Blocked(None));
                         }
                         out.extend([Update::Badges, Update::DirectHead]);
                     }
@@ -738,6 +774,8 @@ impl Live {
         self.token = Some(token);
         self.check_klipy();
         self.load_directs();
+        // Blocked people's DMs show the blocked bar.
+        self.load_blocks();
         self.spaces = Some(spaces);
         self.navigate(Some(space), None);
     }
@@ -798,17 +836,96 @@ impl Live {
         });
     }
 
-    /// The open DM's request bar while it is an incoming request.
-    pub fn request_bar(&self) -> Option<crate::directs::Bar> {
-        let d = self.directs.iter().find(|d| {
-            self.direct.as_ref() == Some(&d.id) && d.status == core::DirectStatus::Incoming
-        })?;
-        Some(crate::directs::Bar {
+    /// The open DM, unless it is your own.
+    fn open_direct_conversation(&self) -> Option<&core::DirectConversation> {
+        let id = self.direct.as_ref()?;
+        self.directs
+            .iter()
+            .find(|d| &d.id == id && Some(&d.peer.id) != self.account_id.as_ref())
+    }
+
+    pub fn is_blocked(&self, account: &str) -> bool {
+        self.blocks
+            .as_ref()
+            .is_some_and(|b| b.iter().any(|a| a.id == account))
+    }
+
+    /// Server-stamped Caper identities, which can't be blocked (egui's
+    /// `protected_account`).
+    fn protected(&self, id: &str) -> bool {
+        self.directs
+            .iter()
+            .any(|d| d.peer.id == id && (d.peer.admin || d.peer.team))
+            || self.people.iter().any(|p| p.id == id && p.admin)
+            || self
+                .detail
+                .iter()
+                .flat_map(|d| &d.members)
+                .any(|m| m.id == id && m.admin)
+    }
+
+    /// The bar replacing the open DM's composer: an incoming request's,
+    /// or a blocked person's.
+    pub fn dm_bar(&self) -> Option<crate::directs::Bar> {
+        use crate::directs::{Bar, BarKind};
+        let d = self.open_direct_conversation()?;
+        let kind = if d.status == core::DirectStatus::Incoming {
+            BarKind::Request
+        } else if d.blocked || self.is_blocked(&d.peer.id) {
+            BarKind::Blocked
+        } else {
+            return None;
+        };
+        Some(Bar {
+            kind,
             name: d.peer.display_name.clone(),
             username: d.peer.username.clone(),
             busy: self.answer,
-            error: self.answer_error.clone(),
+            unblocking: self.block_busy,
+            protected: self.protected(&d.peer.id),
+            error: match kind {
+                BarKind::Request => self.answer_error.clone(),
+                BarKind::Blocked => self.block_error.clone(),
+            },
         })
+    }
+
+    /// Above your own request's composer, until they accept.
+    pub fn waiting_note(&self) -> Option<String> {
+        let d = self.open_direct_conversation()?;
+        (d.status == core::DirectStatus::Outgoing && !d.blocked && !self.is_blocked(&d.peer.id))
+            .then(|| {
+                format!(
+                    "Waiting for @{} to accept. They'll see your messages when they do.",
+                    d.peer.username
+                )
+            })
+    }
+
+    /// Whom the open DM's Block would block, and the request it declines.
+    pub fn block_target(&self) -> Option<(core::BlockedAccount, Option<String>)> {
+        let d = self.open_direct_conversation()?;
+        (!self.protected(&d.peer.id)).then(|| {
+            (
+                (&d.peer).into(),
+                (d.status == core::DirectStatus::Incoming).then(|| d.id.clone()),
+            )
+        })
+    }
+
+    /// Blocks `account` (the Block dialog's confirmation), declining
+    /// `request` too.
+    pub fn block(&mut self, account: core::BlockedAccount, request: Option<String>) {
+        if self.protected(&account.id) {
+            return;
+        }
+        self.block_busy = true;
+        self.block_error = None;
+        self.account(AccountOperation::SetBlock {
+            account,
+            blocked: true,
+            request,
+        });
     }
 
     /// Accepts or declines the open request.

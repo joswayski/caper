@@ -243,6 +243,8 @@ pub enum Kind {
     History,
     /// "New direct message": an exact username, found, then opened.
     StartDirect,
+    /// "Block {name}?", confirming a block.
+    Block,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -331,6 +333,8 @@ pub struct Dialog {
     pub recipient: Option<core::Person>,
     pub resolved: String,
     pub creating: bool,
+    /// Whom the Block dialog blocks, and the request it declines.
+    pub block: Option<(core::BlockedAccount, Option<String>)>,
     pub(crate) parts: Vec<(Part, Rect)>,
     pub(crate) card: Rect,
 }
@@ -360,6 +364,12 @@ impl Dialog {
         Self::new(Kind::StartDirect, None, field)
     }
 
+    pub fn block(account: core::BlockedAccount, request: Option<String>) -> Self {
+        let mut d = Self::new(Kind::Block, None, Composer::default());
+        d.block = Some((account, request));
+        d
+    }
+
     pub(crate) fn new(kind: Kind, message: Option<core::Message>, field: Composer) -> Self {
         Self {
             kind,
@@ -377,6 +387,7 @@ impl Dialog {
             recipient: None,
             resolved: String::new(),
             creating: false,
+            block: None,
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -386,12 +397,18 @@ impl Dialog {
         String::from_utf16_lossy(&self.field.text)
     }
 
-    pub fn title(&self) -> &'static str {
+    pub fn title(&self) -> String {
         match self.kind {
-            Kind::Edit => "Edit message",
-            Kind::Delete => "Delete message?",
-            Kind::History => "Message history",
-            Kind::StartDirect => "New direct message",
+            Kind::Edit => "Edit message".into(),
+            Kind::Delete => "Delete message?".into(),
+            Kind::History => "Message history".into(),
+            Kind::StartDirect => "New direct message".into(),
+            Kind::Block => format!(
+                "Block {}?",
+                self.block
+                    .as_ref()
+                    .map_or("", |(a, _)| a.display_name.as_str())
+            ),
         }
     }
 
@@ -408,6 +425,7 @@ impl Dialog {
                 self.message.as_ref().map_or("", |m| m.author.name.as_str())
             ),
             Kind::StartDirect => "Enter an exact username.".into(),
+            Kind::Block => "You won't see their messages unless you choose to, and they can't send you DMs or requests.".into(),
         }
     }
 
@@ -446,6 +464,8 @@ impl Dialog {
             (Kind::StartDirect, true) => "Finding\u{2026}",
             (Kind::StartDirect, false) if self.recipient.is_some() => "Open conversation",
             (Kind::StartDirect, false) => "Find person",
+            (Kind::Block, false) => "Block",
+            (Kind::Block, true) => "Blocking\u{2026}",
         }
     }
 
@@ -465,7 +485,7 @@ impl Dialog {
                 !self.busy
                     && match self.kind {
                         Kind::Edit => caper_client::edits::valid_text(&self.draft()),
-                        Kind::Delete => true,
+                        Kind::Delete | Kind::Block => true,
                         Kind::History => false,
                         Kind::StartDirect => self.draft().len() >= 3,
                     }
@@ -547,7 +567,7 @@ impl Dialog {
         let inner = card_w - 2.0 * CARD_PAD;
         let mut parts = Vec::new();
         let mut y = 0.0;
-        let title = layout(g, self.title(), &g.formats.dialog_title, inner)?;
+        let title = layout(g, &self.title(), &g.formats.dialog_title, inner)?;
         parts.push((Part::Title, (0.0, y, inner, height(&title))));
         y += height(&title) + 4.0;
         let note_format = match self.kind {
@@ -637,7 +657,7 @@ impl Dialog {
                 let (x, y, pw, ph) = (*x, *y, *pw, *ph);
                 match part {
                     Part::Title => {
-                        let l = layout(g, self.title(), &g.formats.dialog_title, pw)?;
+                        let l = layout(g, &self.title(), &g.formats.dialog_title, pw)?;
                         crate::text::draw(dc, &l, x, y, &g.brushes.text);
                     }
                     Part::Note => {
@@ -716,7 +736,7 @@ impl Dialog {
                     }
                     Part::Primary => {
                         let tone = match self.kind {
-                            Kind::Delete => Tone::Danger,
+                            Kind::Delete | Kind::Block => Tone::Danger,
                             _ => Tone::Primary,
                         };
                         self.button(g, dc, *part, self.primary_label(), (x, y, pw, ph), tone)?;
@@ -977,6 +997,15 @@ impl App {
                     None => d.request = live.lookup_direct(d.draft()),
                 }
             }
+            Part::Primary if d.kind == Kind::Block => {
+                let (Some(live), Some((account, request))) = (&mut self.live, d.block.clone())
+                else {
+                    return;
+                };
+                d.busy = true;
+                d.error = None;
+                live.block(account, request);
+            }
             Part::Primary | Part::Reload => {
                 let Some(live) = &mut self.live else { return };
                 d.busy = true;
@@ -1092,6 +1121,25 @@ impl App {
             }
             (None, None) => {}
         }
+    }
+
+    /// The Block dialog's block finished: it closes, or says why not.
+    pub fn blocked(&mut self, error: Option<String>) {
+        let Some(d) = self
+            .dialog
+            .as_mut()
+            .filter(|d| d.kind == Kind::Block && d.busy)
+        else {
+            return;
+        };
+        match error {
+            None => return self.close_dialog(),
+            Some(e) => {
+                d.busy = false;
+                d.error = Some(e);
+            }
+        }
+        self.dialog_changed();
     }
 
     pub fn deleted(&mut self, request: u64, error: Option<String>) {

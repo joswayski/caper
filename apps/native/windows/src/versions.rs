@@ -221,7 +221,7 @@ impl Dialog {
         let close = layout(g, "Close", &g.formats.button, 1e6)?;
         let cw = width(&close) + 24.0;
         parts.push((Part::Close, (inner - cw, 0.0, cw, CLOSE_H)));
-        let title = layout(g, self.title(), &g.formats.dialog_title, inner - cw - 8.0)?;
+        let title = layout(g, &self.title(), &g.formats.dialog_title, inner - cw - 8.0)?;
         parts.push((Part::Title, (0.0, 0.0, inner - cw - 8.0, height(&title))));
         let mut y = height(&title).max(CLOSE_H) + 2.0;
         let note = layout(g, &self.note(), &g.formats.dialog_note, inner)?;
@@ -327,7 +327,7 @@ impl Dialog {
             let (x, y, w, _) = *r;
             match part {
                 Part::Title => {
-                    let l = layout(g, self.title(), &g.formats.dialog_title, w)?;
+                    let l = layout(g, &self.title(), &g.formats.dialog_title, w)?;
                     crate::text::draw(dc, &l, x, y, &g.brushes.text);
                 }
                 Part::Note => {

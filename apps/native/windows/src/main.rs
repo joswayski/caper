@@ -287,6 +287,10 @@ pub struct App {
     empty_drawn: Option<((Option<&'static str>, String), f32, f32)>,
     pub reply: Option<actions::ReplyBar>,
     reply_p: Panel,
+    /// "Waiting for @x to accept" above your own request's composer: its
+    /// text and height.
+    pub note: Option<(String, f32)>,
+    note_p: Panel,
     tool_hover: Option<usize>,
     bar_drawn: Option<actions::BarKey>,
     /// The history's head needs drawing; the pointer is on its button;
@@ -351,6 +355,7 @@ impl App {
             let gifs_p = Panel::new(&g)?;
             let empty_p = Panel::new(&g)?;
             let reply_p = Panel::new(&g)?;
+            let note_p = Panel::new(&g)?;
             let thread_p = Panel::new(&g)?;
             let thread_box_p = Panel::new(&g)?;
             let card_p = Panel::new(&g)?;
@@ -376,6 +381,7 @@ impl App {
                 &empty_p.visual,
                 &composer_p.visual,
                 &reply_p.visual,
+                &note_p.visual,
                 &thread_p.visual,
                 &thread_box_p.visual,
                 &members.visual,
@@ -466,6 +472,8 @@ impl App {
                 empty_drawn: None,
                 reply: None,
                 reply_p,
+                note: None,
+                note_p,
                 tool_hover: None,
                 bar_drawn: None,
                 redraw_head: false,
@@ -636,6 +644,7 @@ impl App {
                     self.bar_changed();
                 }
                 live::Update::DirectFound { request, result } => self.direct_found(request, result),
+                live::Update::Blocked(error) => self.blocked(error),
                 live::Update::Settings => {
                     if self.settings.is_some() {
                         self.settings_changed();
@@ -822,7 +831,7 @@ impl App {
 
     /// Height of the visible history.
     pub fn vh(&self) -> f32 {
-        (self.box_rect().1 - 10.0 - HEADER_H - self.reply_h()).max(0.0)
+        (self.box_rect().1 - 10.0 - HEADER_H - self.reply_h() - self.note_h()).max(0.0)
     }
 
     pub fn visible_rows(&self) -> Range<usize> {
@@ -2191,6 +2200,14 @@ impl App {
         self.dirty.composer = true;
         self.relayout_reply();
         self.dirty.reply = true;
+        self.layout_note(bw)?;
+        match self.note_rect() {
+            Some((nx, ny, nw, nh)) => {
+                self.note_p.ensure(&self.g, px(nw), px(nh))?;
+                self.note_p.offset((nx * s).round(), (ny * s).round())?;
+            }
+            None => self.note_p.offset(-10_000.0, 0.0)?,
+        }
         let vh = self.vh();
         unsafe {
             self.history_clip.SetOffsetX2((lx * s).round())?;
@@ -2797,6 +2814,9 @@ impl App {
             let live = self.live.as_ref();
             let bar = self.dm_bar();
             let (bar_hover, bar_pressed) = (self.bar_hover, self.bar_pressed);
+            if let Some((note, _)) = &self.note {
+                self.note_p.draw(s, |dc| Self::draw_note(g, dc, note, bw))?;
+            }
             self.composer_p.draw(s, |dc| {
                 if let Some(bar) = &bar {
                     return bar.draw(g, dc, bw, bar_hover, bar_pressed);

@@ -3,9 +3,10 @@
 //! to the requests, then your own DM, then each conversation with its
 //! avatar, unread count or dot and its Blocked / Request sent note),
 //! opening a DM in place of the channel (no member list), what an empty
-//! conversation says, and the bar that replaces the composer in a request
-//! (Accept or Decline). The row rules are the shared
-//! `caper_client::model::DirectConversation` ones.
+//! conversation says, the bar that replaces the composer in a request
+//! (Accept, Decline or Block) or a DM you blocked (Unblock), and the
+//! "Waiting for @x to accept" note above your own request's composer. The
+//! row rules are the shared `caper_client::model::DirectConversation` ones.
 use crate::gfx::{self, Gfx, fill_round, rect};
 use crate::live::Live;
 use crate::overlay::{Rect, Tone};
@@ -20,6 +21,8 @@ use windows::core::*;
 /// A row and its pitch, egui's 28 + 2.
 const ROW_H: f32 = 28.0;
 const PITCH: f32 = 30.0;
+/// The gap between the waiting note and what is under it.
+const NOTE_GAP: f32 = 6.0;
 /// The gap above the section and its label's height.
 const GAP: f32 = 14.0;
 const LABEL_H: f32 = 28.0;
@@ -341,15 +344,29 @@ fn draw_requests(
     Ok(())
 }
 
-/// What replaces the composer in an incoming request, as egui's
-/// `request_bar`: who it is, then Accept and Decline, and why the last
+/// Which bar replaces the composer in a DM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BarKind {
+    /// An incoming request: Accept, Decline or Block.
+    Request,
+    /// You blocked the other person: Unblock.
+    Blocked,
+}
+
+/// What replaces the composer in a DM, as egui's `request_bar` and
+/// `blocked_composer`: who it is, the bar's buttons, and why the last
 /// answer failed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bar {
+    pub kind: BarKind,
     pub name: String,
     pub username: String,
     /// The answer in flight: Some(true) while declining.
     pub busy: Option<bool>,
+    /// An unblock in flight.
+    pub unblocking: bool,
+    /// Caper's own accounts can't be blocked: no Block button.
+    pub protected: bool,
     pub error: Option<String>,
 }
 
@@ -359,11 +376,18 @@ pub enum BarPart {
     Accept,
     Decline,
     Error,
+    Block,
+    Unblock,
 }
 
 impl BarPart {
     pub fn index(self) -> usize {
         self as usize
+    }
+
+    /// Whether the part is one of the bar's buttons.
+    pub fn button(self) -> bool {
+        !matches!(self, Self::Text | Self::Error)
     }
 }
 
@@ -371,10 +395,13 @@ const BAR_BUTTON_H: f32 = 36.0;
 
 impl Bar {
     pub fn text(&self) -> String {
-        format!(
-            "{} (@{}) wants to message you. You don't share a space.",
-            self.name, self.username
-        )
+        match self.kind {
+            BarKind::Request => format!(
+                "{} (@{}) wants to message you. You don't share a space.",
+                self.name, self.username
+            ),
+            BarKind::Blocked => format!("You blocked @{}.", self.username),
+        }
     }
 
     /// Each part's accessible name (a button's label as drawn).
@@ -386,6 +413,9 @@ impl Bar {
             BarPart::Accept => "Accept".into(),
             BarPart::Decline if self.busy == Some(true) => "Declining\u{2026}".into(),
             BarPart::Decline => "Decline".into(),
+            BarPart::Block => "Block".into(),
+            BarPart::Unblock if self.unblocking => "Unblocking\u{2026}".into(),
+            BarPart::Unblock => "Unblock".into(),
             BarPart::Error => self.error.clone().unwrap_or_default(),
         }
     }
@@ -393,33 +423,65 @@ impl Bar {
     fn layout_text(&self, g: &Gfx, w: f32) -> Result<IDWriteTextLayout> {
         let text = self.text();
         let l = g.layout(&gfx::wide(&text), &g.formats.dialog_note, w)?;
-        let range = DWRITE_TEXT_RANGE {
-            startPosition: 0,
-            length: gfx::wide(&self.name).len() as u32,
-        };
-        unsafe {
-            l.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range)?;
-            l.SetDrawingEffect(&g.brushes.text, range)?;
+        if self.kind == BarKind::Request {
+            let range = DWRITE_TEXT_RANGE {
+                startPosition: 0,
+                length: gfx::wide(&self.name).len() as u32,
+            };
+            unsafe {
+                l.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range)?;
+                l.SetDrawingEffect(&g.brushes.text, range)?;
+            }
         }
         crate::emoji::apply(&l, &text, 13.0, 1.0)?;
         Ok(l)
     }
 
+    fn button_w(&self, g: &Gfx, part: BarPart) -> Result<f32> {
+        let l = g.layout(&gfx::wide(&self.label(part)), &g.formats.button, 1e6)?;
+        Ok((gfx::metrics(&l).widthIncludingTrailingWhitespace + 24.0).max(88.0))
+    }
+
     /// The parts' rectangles from the bar's origin for a bar `w` wide, and
     /// its height.
     pub fn layout(&self, g: &Gfx, w: f32) -> Result<(Vec<(BarPart, Rect)>, f32)> {
-        let text = self.layout_text(g, w)?;
-        let th = gfx::metrics(&text).height;
-        let mut parts = vec![(BarPart::Text, (0.0, 0.0, w, th))];
-        let mut y = th + 8.0;
-        let mut x = 0.0;
-        for part in [BarPart::Accept, BarPart::Decline] {
-            let l = g.layout(&gfx::wide(&self.label(part)), &g.formats.button, 1e6)?;
-            let bw = (gfx::metrics(&l).widthIncludingTrailingWhitespace + 24.0).max(88.0);
-            parts.push((part, (x, y, bw, BAR_BUTTON_H)));
-            x += bw + 8.0;
+        let m = gfx::metrics(&self.layout_text(g, w)?);
+        let mut parts = Vec::new();
+        let mut y;
+        match self.kind {
+            BarKind::Request => {
+                parts.push((BarPart::Text, (0.0, 0.0, w, m.height)));
+                y = m.height + 8.0;
+                let mut x = 0.0;
+                let mut buttons = vec![BarPart::Accept, BarPart::Decline];
+                if !self.protected {
+                    buttons.push(BarPart::Block);
+                }
+                for part in buttons {
+                    let bw = self.button_w(g, part)?;
+                    parts.push((part, (x, y, bw, BAR_BUTTON_H)));
+                    x += bw + 8.0;
+                }
+                y += BAR_BUTTON_H;
+            }
+            BarKind::Blocked => {
+                // The note and Unblock on one line, as egui's row, unless
+                // the bar is too narrow.
+                let tw = m.widthIncludingTrailingWhitespace.ceil() + 1.0;
+                let bw = self.button_w(g, BarPart::Unblock)?;
+                if tw + 8.0 + bw <= w {
+                    let ty = (BAR_BUTTON_H - m.height) / 2.0;
+                    parts.push((BarPart::Text, (0.0, ty, tw, m.height)));
+                    parts.push((BarPart::Unblock, (tw + 8.0, 0.0, bw, BAR_BUTTON_H)));
+                    y = BAR_BUTTON_H;
+                } else {
+                    parts.push((BarPart::Text, (0.0, 0.0, w, m.height)));
+                    y = m.height + 8.0;
+                    parts.push((BarPart::Unblock, (0.0, y, bw, BAR_BUTTON_H)));
+                    y += BAR_BUTTON_H;
+                }
+            }
         }
-        y += BAR_BUTTON_H;
         if let Some(e) = &self.error {
             y += 6.0;
             let l = g.layout(&gfx::wide(e), &g.formats.error, w)?;
@@ -431,7 +493,11 @@ impl Bar {
     }
 
     pub fn enabled(&self, part: BarPart) -> bool {
-        !matches!(part, BarPart::Accept | BarPart::Decline) || self.busy.is_none()
+        match part {
+            BarPart::Accept | BarPart::Decline | BarPart::Block => self.busy.is_none(),
+            BarPart::Unblock => !self.unblocking,
+            BarPart::Text | BarPart::Error => true,
+        }
     }
 
     /// Draws the bar `w` wide (bar-local DIPs) over a clear surface.
@@ -455,7 +521,7 @@ impl Bar {
                     let l = g.layout(&gfx::wide(&self.label(part)), &g.formats.error, pw)?;
                     text::draw(dc, &l, x, y, &g.brushes.error);
                 }
-                BarPart::Accept | BarPart::Decline => {
+                _ => {
                     let state = if !self.enabled(part) {
                         0
                     } else if pressed == Some(part) && hover == Some(part) {
@@ -486,12 +552,49 @@ impl Bar {
 }
 
 impl App {
-    /// The open request's bar, which replaces the composer.
+    /// The open DM's bar, which replaces the composer.
     pub fn dm_bar(&self) -> Option<Bar> {
-        self.live
+        self.live.as_ref().filter(|_| self.c.is_live())?.dm_bar()
+    }
+
+    /// Lays out the waiting note for the composer `bw` wide: its text and
+    /// height, or None without one.
+    pub fn layout_note(&mut self, bw: f32) -> Result<()> {
+        self.note = match self
+            .live
             .as_ref()
-            .filter(|_| self.c.is_live())?
-            .request_bar()
+            .filter(|_| self.c.is_live())
+            .and_then(Live::waiting_note)
+        {
+            Some(t) => {
+                let l = self
+                    .g
+                    .layout(&gfx::wide(&t), &self.g.formats.dialog_note, bw)?;
+                Some((t, gfx::metrics(&l).height))
+            }
+            None => None,
+        };
+        Ok(())
+    }
+
+    /// The note's height and the gap under it; 0 without a note.
+    pub fn note_h(&self) -> f32 {
+        self.note.as_ref().map_or(0.0, |(_, h)| h + NOTE_GAP)
+    }
+
+    /// The waiting note's rectangle, above the reply and the composer.
+    pub fn note_rect(&self) -> Option<Rect> {
+        let (_, h) = self.note.as_ref()?;
+        let (bx, by, bw, _) = self.box_rect();
+        Some((bx, by - self.reply_h() - NOTE_GAP - h, bw, *h))
+    }
+
+    /// Draws the waiting note `w` wide over a clear surface.
+    pub fn draw_note(g: &Gfx, dc: &ID2D1DeviceContext, note: &str, w: f32) -> Result<()> {
+        unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
+        let l = g.layout(&gfx::wide(note), &g.formats.dialog_note, w)?;
+        text::draw(dc, &l, 0.0, 0.0, &g.brushes.muted);
+        Ok(())
     }
 
     /// The bar's parts in client DIPs.
@@ -517,26 +620,29 @@ impl App {
         self.bar_parts()
             .into_iter()
             .find(|(p, (l, t, w, h))| {
-                matches!(p, BarPart::Accept | BarPart::Decline)
-                    && bar.enabled(*p)
-                    && x >= *l
-                    && x < l + w
-                    && y >= *t
-                    && y < t + h
+                p.button() && bar.enabled(*p) && x >= *l && x < l + w && y >= *t && y < t + h
             })
             .map(|(p, _)| p)
     }
 
-    /// A click (or UIA Invoke) on Accept or Decline.
+    /// A click (or UIA Invoke) on one of the bar's buttons. Block asks
+    /// first, as egui's `confirm_block`.
     pub fn bar_activate(&mut self, part: BarPart) {
         if !self.dm_bar().is_some_and(|b| b.enabled(part)) {
+            return;
+        }
+        if part == BarPart::Block {
+            if let Some((account, request)) = self.live.as_ref().and_then(Live::block_target) {
+                self.open_dialog(crate::overlay::Dialog::block(account, request));
+            }
             return;
         }
         if let Some(live) = &mut self.live {
             match part {
                 BarPart::Accept => live.answer_request(true),
                 BarPart::Decline => live.answer_request(false),
-                BarPart::Text | BarPart::Error => return,
+                BarPart::Unblock => live.unblock_open(),
+                BarPart::Block | BarPart::Text | BarPart::Error => return,
             }
         }
         self.bar_changed();

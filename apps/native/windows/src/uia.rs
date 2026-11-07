@@ -37,8 +37,10 @@ pub enum Id {
     Direct(usize),
     /// The section heading's "New direct message".
     NewDirect,
-    /// The request bar in place of the composer, and its parts.
+    /// The request or blocked bar in place of the composer, and its parts.
     Bar(crate::directs::BarPart),
+    /// "Waiting for @x to accept" above the composer.
+    Waiting,
     /// A part of Settings, which replaces the tree while shown.
     Settings(crate::settings::SPart),
     /// The account footer's gear, its menu and the menu's items.
@@ -195,6 +197,9 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             }
             out.push(Id::History);
             out.extend(a.thread.as_ref().map(|_| Id::Thread));
+            if a.note.is_some() {
+                out.push(Id::Waiting);
+            }
             if a.reply.is_some() {
                 out.extend([Id::Reply, Id::ReplyCancel]);
             }
@@ -304,6 +309,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Channel(i) => i < a.c.channels.len(),
         Id::Directs | Id::NewDirect => !a.direct_rows().is_empty(),
         Id::Bar(p) => a.bar_parts().iter().any(|(q, _)| *q == p),
+        Id::Waiting => a.note.is_some(),
         Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.parts().contains(&p)),
         Id::Gear => a.foot_shown(),
         Id::AccountMenu => a.account_menu.is_some(),
@@ -380,6 +386,7 @@ fn name(a: &App, id: Id) -> String {
         Id::Directs => "Direct messages".into(),
         Id::NewDirect => "New direct message".into(),
         Id::Bar(p) => a.dm_bar().map_or_else(String::new, |b| b.label(p)),
+        Id::Waiting => a.note.as_ref().map_or_else(String::new, |(t, _)| t.clone()),
         Id::Settings(p) => a.settings.as_ref().map_or_else(String::new, |s| s.name(p)),
         Id::Gear | Id::AccountMenu => "User Settings".into(),
         Id::AccountItem(k) => crate::settings::MENU_ITEMS
@@ -448,7 +455,7 @@ fn name(a: &App, id: Id) -> String {
                 return String::new();
             };
             match p {
-                DPart::Title => d.title().into(),
+                DPart::Title => d.title(),
                 DPart::Note => d.note(),
                 DPart::Field if d.kind == Kind::StartDirect => "Username".into(),
                 DPart::Field => "Message".into(),
@@ -556,7 +563,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel | Id::NewDirect => {
             UIA_ButtonControlTypeId
         }
-        Id::Bar(crate::directs::BarPart::Text | crate::directs::BarPart::Error) => {
+        Id::Bar(crate::directs::BarPart::Text | crate::directs::BarPart::Error) | Id::Waiting => {
             UIA_TextControlTypeId
         }
         Id::Bar(_) => UIA_ButtonControlTypeId,
@@ -603,6 +610,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Gear => (39, 0),
         Id::AccountMenu => (40, 0),
         Id::AccountItem(k) => (41, k),
+        Id::Waiting => (42, 0),
         Id::History => (5, 0),
         Id::Row(i) => (6, i),
         Id::Members => (7, 0),
@@ -704,6 +712,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .into_iter()
             .find(|(q, _)| *q == p)
             .map_or((0.0, 0.0, 0.0, 0.0), |(_, r)| r),
+        Id::Waiting => a.note_rect().unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Settings(p) => a
             .settings
             .as_ref()
@@ -880,7 +889,12 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             Id::Sign(Part::Title | Part::Message) => false,
             Id::MenuItem(_)
             | Id::NewDirect
-            | Id::Bar(crate::directs::BarPart::Accept | crate::directs::BarPart::Decline)
+            | Id::Bar(
+                crate::directs::BarPart::Accept
+                | crate::directs::BarPart::Decline
+                | crate::directs::BarPart::Block
+                | crate::directs::BarPart::Unblock,
+            )
             | Id::MenuClose
             | Id::Tool(..)
             | Id::ReplyCancel
@@ -991,7 +1005,10 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::Gear
                         | Id::AccountItem(_)
                         | Id::Bar(
-                            crate::directs::BarPart::Accept | crate::directs::BarPart::Decline
+                            crate::directs::BarPart::Accept
+                                | crate::directs::BarPart::Decline
+                                | crate::directs::BarPart::Block
+                                | crate::directs::BarPart::Unblock
                         )
                         | Id::MenuItem(_)
                         | Id::Pick(PPart::Search)
