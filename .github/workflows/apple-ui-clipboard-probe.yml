@@ -1,0 +1,117 @@
+# Isolated half of the historical split UI coverage. Never merge this workflow.
+# The09d4 successor is deliberately absent until queue49's full views pass.
+name: Apple isolated UI clipboard probe
+on:
+  push:
+    branches: [apple-macos15-probe]
+    paths: [.github/workflows/apple-ui-clipboard-probe.yml]
+jobs:
+  clipboard-ui:
+    name: Clipboard UI / ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: forwarding-caff5dbc
+            source: caff5dbcfa65467ebab703863794936f260d9048
+          - name: frozen-77873879
+            source: 77873879bccc7e49369ffac16ce66bd6aaa34e5d
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      SOURCE_SHA: ${{ matrix.source }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: ./.github/actions/mobile-rust
+        with:
+          platform: apple
+      - name: Record exact provenance and restore pinned dependency
+        run: |
+          mkdir -p ui
+          sw_vers | tee ui/environment.txt
+          xcodebuild -version | tee -a ui/environment.txt
+          git rev-parse HEAD | tee -a ui/environment.txt
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          shasum -a 256 scripts/native-parity-fixture.mjs apps/native/apple/native-project.yml apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift > ui/source-hashes.txt
+          swift -e 'import AppKit; print("Effective AppKit Keyboard navigation: \(NSApplication.shared.isFullKeyboardAccessEnabled)")' | tee -a ui/environment.txt
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          mkdir -p apps/native/apple/.build/rnnoise
+          git show "$GITHUB_SHA:.github/probe-inputs/rnnoise-model.tar.gz" > apps/native/apple/.build/rnnoise-model.tar.gz
+          echo '0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37  apps/native/apple/.build/rnnoise-model.tar.gz' | shasum -a 256 -c -
+          curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors 'https://github.com/xiph/rnnoise/archive/70f1d256acd4b34a572f999a05c87bf00b67730d.tar.gz' -o apps/native/apple/.build/rnnoise-source.tar.gz
+          echo 'f61ee0b3f4c4cd337303e003d333357c5eaf25ef5d75a742109ee59e9a0a3932  apps/native/apple/.build/rnnoise-source.tar.gz' | shasum -a 256 -c -
+          tar -xzf apps/native/apple/.build/rnnoise-source.tar.gz -C apps/native/apple/.build/rnnoise --strip-components=1
+          tar -xzf apps/native/apple/.build/rnnoise-model.tar.gz -C apps/native/apple/.build/rnnoise src/rnnoise_data.c src/rnnoise_data.h
+      - name: Run only the twelve excluded UI tests
+        continue-on-error: true
+        run: |
+          bash apps/native/apple/prepare.sh
+          generator=(apps/native/apple/.build/xcodegen-*)
+          swift run --package-path "${generator[0]}" xcodegen --spec apps/native/apple/native-project.yml --project apps/native/apple
+          node scripts/native-parity-fixture.mjs > ui/fixture.log 2>&1 &
+          fixture=$!
+          trap 'kill "$fixture" 2>/dev/null || true' EXIT
+          for _ in {1..50}; do curl --silent --fail http://127.0.0.1:3001/health >/dev/null && break; sleep .1; done
+          curl --silent --fail http://127.0.0.1:3001/health >/dev/null
+          tests=(
+            testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts
+            testMessageReplyQuoteCancelSendAndOriginalNavigation
+            testOwnMessageActionsEditConflictHistoryAndDeleteConfirmation
+            testMessageQuickReactionsPickerAndTextSelectionStayIndependent
+            testComposerEmojiPickerSelectionUndoCancelAndScalarLimit
+            testGifPickerRecoverySendViewerAndDraftRetention
+            testImagePasteEditSpoilerSendAndDecodedViewer
+            testFilePickerUploadFailureRetryAndComposerOwnership
+            testConversationSendNavigationAndSelection
+            testDraftFormattingCopyRepairUndoMenusAndSend
+            testAutocompleteKeyboardPointerUndoAndSelection
+            testMentionClickPreservesDraggingAndProtectsUnsavedProfileEdits
+          )
+          printf '%s\n' "${tests[@]}" > ui/selected-tests.txt
+          arguments=()
+          for test in "${tests[@]}"; do arguments+=("-only-testing:CaperAppKitTests/CaperAppKitTests/$test"); done
+          set +e
+          xcodebuild -project apps/native/apple/CaperNative.xcodeproj -scheme CaperAppKitTests \
+            -destination "platform=macOS,arch=$(uname -m)" -derivedDataPath apps/native/apple/DerivedData-UI \
+            -resultBundlePath ui/UIResults.xcresult -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 \
+            "${arguments[@]}" test 2>&1 | tee ui/tests.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > ui/test-exit-code
+          exit "$status"
+      - name: Export actual results and captures
+        if: always()
+        run: |
+          if [[ -d ui/UIResults.xcresult ]]; then
+            xcrun xcresulttool get test-results summary --path ui/UIResults.xcresult > ui/summary.json
+            xcrun xcresulttool export attachments --path ui/UIResults.xcresult --output-path ui/captures
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clipboard-ui-${{ matrix.name }}
+          path: ui/
+          retention-days: 7
+      - name: Require the exact twelve tests without skips
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re
+          path = pathlib.Path('ui')
+          summary = json.loads((path / 'summary.json').read_text())
+          expected = set((path / 'selected-tests.txt').read_text().splitlines())
+          outcomes = re.findall(r"Test Case '-\[CaperAppKitTests\.CaperAppKitTests (\w+)\]' (passed|failed|skipped) \(", (path / 'tests.log').read_text())
+          assert len(expected) == 12 and len(outcomes) == 12, (expected, outcomes)
+          assert {name for name, _ in outcomes} == expected, outcomes
+          assert int((path / 'test-exit-code').read_text()) == 0, summary
+          assert summary['totalTestCount'] == 12 and summary['passedTests'] == 12, summary
+          assert summary['failedTests'] == 0 and summary['skippedTests'] == 0, summary
+          PY
