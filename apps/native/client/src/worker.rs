@@ -1073,18 +1073,30 @@ fn prepare_navigation(
     visit: bool,
     preferred: Option<&str>,
 ) -> Result<PreparedNavigation, LoadError> {
-    let detail = space
-        .map(|space| api.space(token.unwrap_or_default(), space))
-        .transpose()
-        .map_err(|error| {
-            let missing = error.status == Some(reqwest::StatusCode::NOT_FOUND);
-            let mut error = LoadError::from(error);
-            error.space_access_denied = error.access_denied;
-            if missing {
-                error.message = "This space is no longer available.".into();
-            }
-            error
-        })?;
+    // As web, the landing channel (the one asked for, else the saved
+    // landing) is usually known before the space detail returns, so its
+    // first page is asked for beside the detail; it is used only when the
+    // detail confirms that channel.
+    let guess = space.and(channel.or(preferred)).filter(|id| {
+        cached
+            .as_ref()
+            .is_none_or(|history| history.channel.id != *id)
+    });
+    let (detail, mut early) = thread::scope(|scope| {
+        let early = guess.map(|id| (id, scope.spawn(move || api.history(token, id, None))));
+        let detail = space.map(|space| api.space(token.unwrap_or_default(), space));
+        let early = early.and_then(|(id, page)| Some((id, page.join().ok()?)));
+        (detail, early)
+    });
+    let detail = detail.transpose().map_err(|error| {
+        let missing = error.status == Some(reqwest::StatusCode::NOT_FOUND);
+        let mut error = LoadError::from(error);
+        error.space_access_denied = error.access_denied;
+        if missing {
+            error.message = "This space is no longer available.".into();
+        }
+        error
+    })?;
     if let Some(detail) = &detail
         && Some(detail.space.id.as_str()) != space
     {
@@ -1129,7 +1141,10 @@ fn prepare_navigation(
                 && history.channel.id == selected.id
         }) {
             Some(history) => Some(history),
-            None => Some(api.history(token, &selected.id, None)?),
+            None => match early.take().filter(|(id, _)| *id == selected.id) {
+                Some((_, page)) => Some(page?),
+                None => Some(api.history(token, &selected.id, None)?),
+            },
         }
     } else if let Some(id) = channel.filter(|_| space.is_none()) {
         let history = match cached
@@ -2903,6 +2918,76 @@ mod tests {
             "an explicit revoked target must not fall back to the first channel"
         );
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn the_landing_channel_history_is_asked_for_beside_the_space_detail() {
+        use std::io::{BufRead, BufReader, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            let detail = r#"{"space":{"id":"s","name":"Space","ownerId":"owner"},"channels":[{"id":"first","spaceId":"s","name":"first","private":false,"joined":true},{"id":"saved","spaceId":"s","name":"saved","private":false,"joined":true}],"members":[]}"#;
+            let history = r#"{"space":{"id":"s","name":"Space"},"channel":{"id":"saved","name":"saved"},"messages":[],"cursor":"0","hasMore":false}"#;
+            // Both requests must arrive before either is answered: a client
+            // that waited for the detail first would time out here.
+            server.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut open = Vec::new();
+            while open.len() < 2 {
+                match server.accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        let mut reader = BufReader::new(stream);
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        loop {
+                            let mut header = String::new();
+                            reader.read_line(&mut header).unwrap();
+                            if header == "\r\n" {
+                                break;
+                            }
+                        }
+                        open.push((line, reader));
+                    }
+                    Err(_) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("only {} request(s) in parallel: {error}", open.len()),
+                }
+            }
+            let mut lines = Vec::new();
+            for (line, mut reader) in open {
+                let body = if line.starts_with("GET /api/spaces/s ") {
+                    detail
+                } else {
+                    history
+                };
+                write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                lines.push(line);
+            }
+            lines.sort();
+            lines
+        });
+        let prepared = super::prepare_navigation(
+            &api,
+            Some("account"),
+            Some("s"),
+            None,
+            "User",
+            None,
+            false,
+            Some("saved"),
+        )
+        .unwrap();
+        assert_eq!(prepared.conversation.unwrap().0.channel.id, "saved");
+        assert_eq!(
+            worker.join().unwrap(),
+            [
+                "GET /api/chat/channels/saved/messages HTTP/1.1\r\n",
+                "GET /api/spaces/s HTTP/1.1\r\n"
+            ]
+        );
     }
 
     /// A tiny HTTP server answering each expected request line in order.
