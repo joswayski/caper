@@ -471,6 +471,9 @@ pub struct Ui {
     pub compose_bar: gtk::Box,
     pub compose_label: gtk::Label,
     pub compose_cancel: gtk::Button,
+    /// After an edit failed (another device changed the message): its
+    /// latest text replaces the draft, as desktop's editor.
+    pub compose_reload: gtk::Button,
     pub composer: Composer,
     pub composer_error: gtk::Label,
     pub typing: gtk::Label,
@@ -1004,7 +1007,11 @@ impl Ui {
         let compose_cancel: gtk::Button = crate::app::named("GtkButton", "Cancel");
         compose_cancel.set_child(Some(&images.icon_image(Icon::Close, "#b9bcbe", 14)));
         compose_cancel.add_css_class("flat");
+        let compose_reload = gtk::Button::with_label("Discard draft and load latest");
+        compose_reload.add_css_class("flat");
+        compose_reload.set_visible(false);
         compose_bar.append(&compose_label);
+        compose_bar.append(&compose_reload);
         compose_bar.append(&compose_cancel);
         conversation.append(&compose_bar);
         let request = RequestBar::new();
@@ -1278,6 +1285,7 @@ impl Ui {
             compose_bar,
             compose_label,
             compose_cancel,
+            compose_reload,
             composer,
             composer_error,
             typing,

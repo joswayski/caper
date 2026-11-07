@@ -219,6 +219,8 @@ struct State {
     returned_draft: Option<(String, bool)>,
     compose: Option<Compose>,
     edit_request: u64,
+    /// The open edit's last save failed (`send_error` says why).
+    edit_failed: bool,
     delete_request: u64,
     reactions: caper_client::reactions::Reactions,
     joining: bool,
@@ -1019,6 +1021,9 @@ impl App {
         let app = self.clone();
         ui.compose_cancel
             .connect_clicked(move |_| app.cancel_compose());
+        let app = self.clone();
+        ui.compose_reload
+            .connect_clicked(move |_| app.reload_edit());
 
         for thread in [false, true] {
             let composer = if thread {
@@ -2816,6 +2821,7 @@ impl App {
                 });
                 state.compose = Some(Compose::Edit { original, request });
                 state.send_error = None;
+                state.edit_failed = false;
                 drop(state);
                 self.render();
                 return;
@@ -2900,6 +2906,31 @@ impl App {
         self.render();
     }
 
+    /// Desktop's "Discard draft and load latest": fetches the message as it
+    /// is now; its text replaces the draft (`Event::EditSnapshot`).
+    fn reload_edit(self: &Rc<Self>) {
+        {
+            let mut state = self.state.borrow_mut();
+            let Some(Compose::Edit { original, .. }) = state.compose.take() else {
+                return;
+            };
+            state.edit_request += 1;
+            let request = state.edit_request;
+            self.worker.send(Command::ReloadMessage {
+                generation: state.generation,
+                request,
+                token: state.token.clone(),
+                channel: original.channel_id.clone(),
+                message: original.id.clone(),
+            });
+            state.compose = Some(Compose::Edit { original, request });
+            state.send_error = None;
+            state.edit_failed = false;
+        }
+        self.ui.composer.view.grab_focus();
+        self.render();
+    }
+
     fn start_edit(self: &Rc<Self>, id: &str) {
         let text = {
             let mut state = self.state.borrow_mut();
@@ -2911,6 +2942,7 @@ impl App {
                 original: Box::new(message),
                 request: 0,
             });
+            state.edit_failed = false;
             text
         };
         self.ui.composer.view.buffer().set_text(&text);
@@ -3076,8 +3108,9 @@ impl App {
                     else {
                         return;
                     };
+                    // Cleared by `render`: the buffer's handlers read the state.
                     if matches!(state.compose, Some(Compose::Edit { .. })) {
-                        self.ui.composer.view.buffer().set_text("");
+                        state.restore_draft = Some(String::new());
                     }
                     state.compose = Some(Compose::Reply { id, author });
                 }
@@ -3973,8 +4006,8 @@ impl App {
                 request,
                 channel,
                 message,
+                reloaded,
                 result,
-                ..
             } if current(
                 generation,
                 state.generation,
@@ -3985,17 +4018,37 @@ impl App {
                 let ours = matches!(&state.compose, Some(Compose::Edit { original, request: sent })
                     if original.id == message && *sent == request);
                 match result {
+                    // The latest version replaces the draft, and the next
+                    // save expects its revision.
+                    Ok(snapshot) if ours && reloaded => {
+                        let text = snapshot.content.text.clone();
+                        state.compose = Some(Compose::Edit {
+                            original: snapshot.clone(),
+                            request: 0,
+                        });
+                        state.send_error = None;
+                        // Written by `render`, outside this borrow.
+                        state.restore_draft = Some(text);
+                        if state.timeline.merge_edit_ack(*snapshot).is_err() {
+                            self.reload(state);
+                        }
+                    }
                     Ok(snapshot) => {
                         if ours {
                             state.compose = None;
                             state.returned_draft = None;
-                            self.ui.composer.view.buffer().set_text("");
+                            // Cleared by `render`: the buffer's handlers read
+                            // the state.
+                            state.restore_draft = Some(String::new());
                         }
                         if state.timeline.merge_edit_ack(*snapshot).is_err() {
                             self.reload(state);
                         }
                     }
-                    Err(error) if ours => state.send_error = Some(error),
+                    Err(error) if ours => {
+                        state.send_error = Some(error);
+                        state.edit_failed = true;
+                    }
                     Err(_) => {}
                 }
             }
@@ -4924,6 +4977,11 @@ impl App {
             }
             None => ui.compose_bar.set_visible(false),
         }
+        ui.compose_reload.set_visible(
+            state.edit_failed
+                && state.send_error.is_some()
+                && matches!(state.compose, Some(Compose::Edit { .. })),
+        );
         // The feedback inbox takes the conversation's place, and its panes.
         let thread_open = state.thread.is_some() && !state.feedback_open;
         ui.thread_panel.set_visible(thread_open);
