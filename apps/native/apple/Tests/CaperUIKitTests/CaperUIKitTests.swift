@@ -363,8 +363,11 @@ final class CaperUIKitTests: XCTestCase {
         attach.tap()
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let allow = springboard.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Full Access' OR label BEGINSWITH[c] 'Allow'")).firstMatch
-        if allow.waitForExistence(timeout: 5) { allow.tap() }
         let tiles = app.buttons.matching(identifier: "attach-drawer-tile")
+        // A hosted simulator can take 10 s to show the prompt: wait for it or the tiles.
+        let asked = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in allow.exists || tiles.firstMatch.exists }, object: nil)
+        _ = XCTWaiter.wait(for: [asked], timeout: 20)
+        if allow.exists { allow.tap() }
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 15), "The simulator's sample photos must appear")
         tiles.firstMatch.tap()
         XCTAssertTrue(app.buttons["attach-drawer-send"].waitForExistence(timeout: 10))
