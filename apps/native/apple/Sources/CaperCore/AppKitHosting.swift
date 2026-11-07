@@ -292,12 +292,19 @@ private struct AppKitWorkspaceDialog: View {
     }
 
     public func messageAttachments(_ message: ChatMessage) -> AppKitAttachmentSurface? {
-        guard !message.isDeleted, let files = message.content.attachments, !files.isEmpty else { return nil }
+        let files = message.content.attachments ?? []
+        guard !message.isDeleted, !files.isEmpty || message.content.gif != nil else { return nil }
         let chat = model.chat
         return AppKitAttachmentSurface {
-            MessageAttachmentsView(attachments: files, chat: chat, isAvailable: {
-                chat.channelID == message.channelId && chat.messages.contains { $0.id == message.id && !$0.isDeleted }
-            })
+            VStack(alignment: .leading, spacing: 8) {
+                if let gif = message.content.gif { MessageGifView(gif: gif) }
+                if !files.isEmpty {
+                    MessageAttachmentsView(attachments: files, chat: chat, isAvailable: {
+                        chat.channelID == message.channelId && chat.messages.contains { $0.id == message.id && !$0.isDeleted }
+                    })
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .environment(\.mediaViewer, MediaViewerAction { [weak self] request in
                 self?.show { close in MediaViewer(request: request, close: close) }
             })
@@ -382,6 +389,96 @@ private struct AppKitComposerAttachments: View {
             AttachmentDraftsView(chat: chat, inThread: inThread)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+public enum AppKitComposerCounter {
+    public static func color(_ count: Int) -> NSColor { NSColor(ComposerCounter.tone(count)) }
+}
+
+/// The shipping pickers mounted only while open. AppKit owns the anchor,
+/// dismissal and saved editor selection; ChatModel still owns GIF delivery.
+@MainActor public final class AppKitComposerPicker: NSObject, NSPopoverDelegate {
+    private let model: AppModel
+    private var popover: NSPopover?
+    private var restoreFocus: (() -> Void)?
+
+    public init(model: AppModel) { self.model = model; super.init() }
+
+    public func emoji(from anchor: NSView, composer: ComposerTextView) {
+        guard composer.isEditable, !composer.hasMarkedText(), model.chat.canInteract else { return }
+        let text = composer.string, selection = composer.selectedRange()
+        let channel = model.chat.channelID, viewer = model.chat.viewerID
+        show(from: anchor, composer: composer) { close in
+            ReactionPicker(title: "Insert emoji", close: close) { [weak self, weak composer] emoji in
+                close()
+                guard let self, let composer, composer.isEditable, !composer.hasMarkedText(),
+                      self.model.chat.channelID == channel, self.model.chat.viewerID == viewer,
+                      self.model.chat.canInteract, composer.string == text,
+                      let result = EmojiAutocomplete.inserting(emoji, in: text, selection: selection) else { return }
+                // Preserve native undo and the formatter's UTF-16/limit rules.
+                composer.window?.makeFirstResponder(composer)
+                composer.breakUndoCoalescing()
+                composer.insertText(result.text, replacementRange: NSRange(location: 0, length: text.utf16.count))
+                composer.setSelectedRange(result.selection)
+                composer.breakUndoCoalescing()
+            }
+        }
+    }
+
+    public func gifs(from anchor: NSView, composer: ComposerTextView) {
+        let chat = model.chat
+        guard composer.isEditable, !composer.hasMarkedText(), chat.canSendGif(), let configuration = chat.klipy else { return }
+        let channel = chat.channelID, viewer = chat.viewerID
+        show(from: anchor, composer: composer) { close in
+            KlipyPicker(configuration: configuration, close: close) { gif, query in
+                close()
+                Task {
+                    // Navigation/account changes must not retarget a queued selection.
+                    guard chat.channelID == channel, chat.viewerID == viewer, chat.canSendGif() else { return }
+                    await chat.sendGif(gif, query: query)
+                }
+            }
+        }
+    }
+
+    private func show<Content: View>(from anchor: NSView, composer: ComposerTextView,
+                                    @ViewBuilder content: (@escaping () -> Void) -> Content) {
+        guard let window = anchor.window, window.attachedSheet == nil, !model.whatsNew.workspaceModalOpen else { return }
+        close(restoringFocus: false)
+        let channel = model.chat.channelID, viewer = model.chat.viewerID
+        restoreFocus = { [weak self, weak composer, weak window] in
+            guard let self, let composer, let window, composer.window === window, composer.isEditable,
+                  self.model.chat.channelID == channel, self.model.chat.viewerID == viewer,
+                  !self.model.whatsNew.workspaceModalOpen else { return }
+            window.makeFirstResponder(composer)
+        }
+        let popover = NSPopover()
+        self.popover = popover
+        popover.behavior = .transient
+        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.delegate = self
+        let host = NSHostingController(rootView: content { [weak self] in self?.close() }
+            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
+            .onExitCommand { [weak self] in self?.close() })
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+    }
+
+    public func close(restoringFocus: Bool = true) {
+        if !restoringFocus { restoreFocus = nil }
+        popover?.animates = false
+        popover?.close()
+    }
+    public func popoverShouldClose(_ popover: NSPopover) -> Bool { popover.animates = false; return true }
+    public func popoverDidClose(_ notification: Notification) {
+        guard let closed = notification.object as? NSPopover else { return }
+        closed.contentViewController = nil
+        guard popover === closed else { return }
+        popover = nil
+        let restore = restoreFocus; restoreFocus = nil
+        restore?()
     }
 }
 #endif

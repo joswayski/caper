@@ -28,6 +28,7 @@ public enum RedirectPolicy {
 public enum SecureSession {
     public static func make() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
+        KlipyFixtureTransport.install(into: configuration)
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
         configuration.urlCache = nil
