@@ -120,6 +120,11 @@ targets:
       - framework: .build/libavif-1.4.2/libavif.xcframework
         link: true
         embed: false
+      # Shared Rust logic (apps/native/mobile): a static XCFramework that
+      # prepare.sh builds with mobile/build-apple.sh. Imported implementation-only.
+      - framework: .build/CaperMobile.xcframework
+        link: true
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.caper.core
@@ -156,6 +161,11 @@ targets:
       # Resources/libavif-LICENSE.txt, libaom-LICENSE.txt, libaom-PATENTS.txt).
       # Imported implementation-only by CaperCore.
       - framework: .build/libavif-1.4.2/libavif.xcframework
+        link: true
+        embed: false
+      # Shared Rust logic (apps/native/mobile): a static XCFramework that
+      # prepare.sh builds with mobile/build-apple.sh. Imported implementation-only.
+      - framework: .build/CaperMobile.xcframework
         link: true
         embed: false
     settings:

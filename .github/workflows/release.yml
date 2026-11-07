@@ -49,6 +49,7 @@ on:
       - .github/workflows/release.yml
       - .github/actions/wait-for-servers/**
       - .github/actions/update-patches/**
+      - .github/actions/mobile-rust/**
   workflow_dispatch:
     inputs:
       git_sha:
@@ -222,6 +223,10 @@ jobs:
             echo "CAPER_SIGNING_KEYCHAIN=$keychain"
           } >>"$GITHUB_ENV"
           rm -f "$secret" "$RUNNER_TEMP/developer-id.p12"
+      # prepare.sh builds CaperMobile.xcframework, the shared Rust library.
+      - uses: ./.github/actions/mobile-rust
+        with:
+          platform: apple
       - name: Build and test
         run: bash apps/native/apple/build.sh macos
       - name: Sign with Developer ID, notarize and staple
@@ -308,6 +313,9 @@ jobs:
           [[ -d "$xcode" ]] || { echo "No Xcode 27.1 on this runner:" >&2; ls -d /Applications/Xcode* >&2; exit 1; }
           sudo xcode-select -s "$xcode/Contents/Developer"
           xcodebuild -version
+      - uses: ./.github/actions/mobile-rust
+        with:
+          platform: apple
       - name: Archive and upload to TestFlight
         env:
           # Unique and increasing across runs and re-runs, e.g. 12.1 then 12.2.
@@ -442,6 +450,10 @@ jobs:
           else
             echo "::warning::GOOGLE_SERVICES_JSON is not set; this release has no phone push."
           fi
+      # Gradle builds libcaper_mobile.so, the shared Rust library, with cargo-ndk.
+      - uses: ./.github/actions/mobile-rust
+        with:
+          platform: android
       - name: Test and build the signed release APK and Play bundle
         working-directory: apps/native/android
         run: |

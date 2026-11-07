@@ -1,0 +1,4 @@
+module CaperMobile {
+  header "caper_mobile.h"
+  export *
+}

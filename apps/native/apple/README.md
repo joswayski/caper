@@ -41,6 +41,8 @@ The shipping clients use SwiftUI backed by AppKit on macOS and UIKit on iPhone. 
 
 `prepare.sh` downloads libavif and the aom AV1 encoder as one static `.build/libavif-1.4.2/libavif.xcframework` (module `libavif`; macOS arm64/x86_64, iOS arm64, simulator arm64/x86_64) from a SHA-256-pinned [joswayski/libavif-apple](https://github.com/joswayski/libavif-apple) release, which builds it from pinned upstream sources (Neon on arm64, SSE/AVX on x86_64) and smoke-tests every slice. It checks that the licence files match that release. Upgrading means a new release there and a new tag and checksum here.
 
+`prepare.sh` also builds `.build/CaperMobile.xcframework` (module `CaperMobile`, imported implementation-only by CaperCore), the shared Rust logic in [`../mobile`](../mobile/README.md), as a static library for the same five slices. It needs rustup; `mobile/build-apple.sh` adds the pinned toolchain's Apple targets.
+
 The DPDFNet-8 HR model, ONNX Runtime (macOS 1.23.2; iOS uses the official static 1.23.0 XCFramework with arm64 device and arm64/x86_64 simulator slices) and the RNNoise fallback are bundled offline with their licenses; `prepare.sh` verifies source hashes.
 
 ## Build

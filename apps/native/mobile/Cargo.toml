@@ -1,0 +1,37 @@
+[package]
+name = "caper-mobile"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+description = "Shared Rust logic for the Android and Apple apps, behind a small C ABI and JNI"
+publish = false
+
+# Its own workspace: the mobile builds cross-compile only these sources, never
+# the desktop client's media stack.
+[workspace]
+
+[lib]
+# staticlib for the Apple XCFramework, cdylib for Android (and the JVM unit
+# tests), rlib for cargo test.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# JNI entry points for chat.caper.android.data.CaperMobile.
+jni = ["dep:jni-sys"]
+
+[dependencies]
+jni-sys = { version = "=0.3.0", optional = true }
+# shared/messages/formatting.rs derives Deserialize for its contract tests.
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[lints.clippy]
+all = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
