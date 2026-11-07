@@ -42,6 +42,21 @@ import XCTest
         XCTAssertTrue(model.voice.muted, "Deafen keeps the transport's mute semantics")
         XCTAssertEqual(model.selectedChannelID, text.id, "Call controls do not move the conversation")
         XCTAssertTrue(button("voice-face-person-3") === ownFace)
+        for width in [CGFloat(220), 370, 440] {
+            sidebar.frame.size.width = 60 + width
+            sidebar.layoutSubtreeIfNeeded()
+            XCTAssertTrue(window.firstResponder === deafen, "Resizing must preserve the focused call control")
+            XCTAssertTrue(button("voice-face-person-3") === ownFace)
+            XCTAssertEqual(model.selectedChannelID, text.id)
+            for control in visible(sidebar).compactMap({ $0 as? NSButton }) {
+                let frame = control.convert(control.bounds, to: sidebar)
+                XCTAssertGreaterThanOrEqual(frame.minX, 0, control.accessibilityIdentifier())
+                XCTAssertLessThanOrEqual(frame.maxX, sidebar.bounds.width, control.accessibilityIdentifier())
+                XCTAssertGreaterThan(frame.width, 0, control.accessibilityIdentifier())
+            }
+            let railButton = try XCTUnwrap(button("create-space"))
+            XCTAssertEqual(railButton.convert(railButton.bounds, to: sidebar).midX, 30, "Resizing does not stretch the 60-point space rail")
+        }
         try XCTUnwrap(button("channels-toggle")).performClick(nil)
         sidebar.layoutSubtreeIfNeeded()
         XCTAssertNil(button("channel-text"))
