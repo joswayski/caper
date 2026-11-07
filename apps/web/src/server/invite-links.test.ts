@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createMemoryHistory, createRootRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -194,4 +195,14 @@ test("expiry and max uses are free-form within the API's bounds", () => {
   assert.deepEqual(inviteMaxUses(" 7 "), { value: 7 });
   assert.deepEqual(inviteMaxUses("10000"), { value: 10_000 });
   for (const text of ["0", "10001", "2.5", "abc", "-3"]) assert.ok(inviteMaxUses(text).error, text);
+});
+
+// Generated from inviteCode; every native client replays them through
+// shared/invites/code.rs. Only the code comes back, never the link's host.
+test("invite codes follow the shared cases", () => {
+  const shared = JSON.parse(
+    readFileSync(new URL("../../../../shared/invites/invite-cases.json", import.meta.url), "utf8"),
+  ) as { cases: { input: string; code: string | null }[] };
+  assert.ok(shared.cases.some(({ input, code }) => input.includes("evil.example") && code !== null));
+  for (const { input, code } of shared.cases) assert.equal(inviteCode(input) ?? null, code, JSON.stringify(input));
 });

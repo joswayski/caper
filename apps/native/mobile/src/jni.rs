@@ -287,3 +287,21 @@ pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_spaceName
         None => std::ptr::null_mut(),
     }
 }
+
+/// `CaperMobile.inviteCode(text)`: `crate::invite_code`.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live string.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_inviteCode(
+    env: *mut JNIEnv,
+    _class: jclass,
+    text: jstring,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    match unsafe { string(env, text) } {
+        // SAFETY: forwarded from the JVM's call.
+        Some(text) => unsafe { int_array(env, &crate::invite_code(&text)) },
+        None => std::ptr::null_mut(),
+    }
+}

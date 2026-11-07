@@ -11,6 +11,7 @@ workspace, so mobile builds never compile the desktop client's media stack.
 | Composer typing | `shared/messages/composer.rs` | `data/Formatting.kt` (`composerEdit`) | `MessageFormatting.swift` (`ComposerTyping`) |
 | Edit-history highlights | `shared/messages/history_diff.rs` | `data/Edits.kt` (`messageDiff`) | `Models.swift` (`messageDiff`) |
 | Emoji autocomplete | `shared/messages/emoji.rs`, searching the catalog the app ships (`emoji_catalog`) | `EmojiAutocomplete.kt`, `ui/EmojiArtwork.kt` | `EmojiAutocomplete.swift`, `EmojiArtwork.swift` |
+| Invite codes | `shared/invites/code.rs` | `data/InviteLinks.kt` (`inviteCode`) | `InviteLinks.swift` (`code(from:)`) |
 | Links | `shared/messages/links.rs` | `data/Links.kt` | `MessageLinks.swift` |
 | Mention tokens | `shared/messages/mentions.rs` | `MentionAutocomplete.kt` (`mentionSpans`) | `MentionAutocomplete.swift` (`tokens`) |
 | Name characters | `apps/native/client/src/names.rs` | `model/Names.kt` | `Names.swift` |
@@ -31,7 +32,7 @@ through a second encoding; `src/lib.rs` documents each layout.
   library for the host so JVM unit tests run the same code.
 
 Each client's tests run the shared case files (`shared/messages/*-cases.json`,
-`shared/names/*.json`) through its bridge. Here:
+`shared/names/*.json`, `shared/invites/invite-cases.json`) through its bridge. Here:
 
 ```sh
 cargo fmt -- --check

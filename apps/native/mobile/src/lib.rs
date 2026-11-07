@@ -22,6 +22,9 @@ pub mod formatting;
 use formatting as parser;
 #[path = "../../../../shared/messages/history_diff.rs"]
 pub mod history_diff;
+/// Web's pasted-invite parser; it returns only the code.
+#[path = "../../../../shared/invites/code.rs"]
+pub mod invites;
 #[path = "../../../../shared/messages/links.rs"]
 pub mod links;
 #[path = "../../../../shared/messages/mentions.rs"]
@@ -300,6 +303,12 @@ pub fn name_error(text: &str, channel: bool) -> Vec<i32> {
 /// The space name web sends for `text` (`name.trim()`), as `slice_span`.
 pub fn space_name_span(text: &str, utf8: bool) -> Vec<i32> {
     slice_span(text, names::space_name(text), utf8)
+}
+
+/// Web's `inviteCode`: the ten-character code in a pasted or opened invite,
+/// one ASCII character per value, or nothing. Never the link's host.
+pub fn invite_code(text: &str) -> Vec<i32> {
+    invites::invite_code(text).map_or_else(Vec::new, ascii)
 }
 
 #[cfg(test)]
@@ -608,6 +617,21 @@ mod tests {
                 trimmed,
                 "{name:?}"
             );
+        }
+    }
+
+    #[test]
+    fn invite_codes_follow_the_shared_cases() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../shared/invites/invite-cases.json"))
+                .unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            let input = case["input"].as_str().unwrap();
+            let code: String = invite_code(input)
+                .into_iter()
+                .map(|c| c as u8 as char)
+                .collect();
+            assert_eq!(code, case["code"].as_str().unwrap_or(""), "{input:?}");
         }
     }
 

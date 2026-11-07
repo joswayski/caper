@@ -189,6 +189,16 @@ pub unsafe extern "C" fn caper_mobile_space_name(utf8: *const u8, len: usize) ->
     crate::space_name_span(unsafe { text(utf8, len) }, true).into()
 }
 
+/// `crate::invite_code(text)`: the code's ASCII characters, or nothing.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_invite_code(utf8: *const u8, len: usize) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    crate::invite_code(unsafe { text(utf8, len) }).into()
+}
+
 /// # Safety
 /// `ints` must come from this library and be released only once.
 #[unsafe(no_mangle)]

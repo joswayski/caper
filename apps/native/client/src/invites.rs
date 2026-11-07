@@ -51,9 +51,6 @@ pub fn admin_error(error: String) -> String {
     }
 }
 
-/// Codes are exactly ten ASCII letters or digits.
-const CODE_LENGTH: usize = 10;
-
 /// "Expire after" units; `Never` sends no expiry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExpiryUnit {
@@ -183,43 +180,15 @@ pub struct JoinedInvite {
     pub channel_id: Option<String>,
 }
 
-pub fn valid_code(code: &str) -> bool {
-    code.len() == CODE_LENGTH && code.bytes().all(|byte| byte.is_ascii_alphanumeric())
-}
+/// Web's pasted-invite parser (shared/invites/code.rs): `valid_code`, and
+/// `invite_code` for the code in a link on any host, `caper://invite/<code>`
+/// or a bare code. Only the code is used: joins go to the configured API.
+#[path = "../../../../shared/invites/code.rs"]
+mod code;
+pub use code::valid_code;
 
-/// The code in a pasted invite: a full link on any host (`/invite/<code>`,
-/// optionally with a trailing slash, query or fragment), the same without a
-/// scheme such as `caper.chat/invite/<code>`, or a bare ten-character code.
 pub fn invite_code(input: &str) -> Option<String> {
-    let input = input.trim();
-    if valid_code(input) {
-        return Some(input.into());
-    }
-    if input.is_empty() || input.chars().any(char::is_whitespace) {
-        return None;
-    }
-    let url = if input.contains("://") {
-        Url::parse(input).ok()?
-    } else {
-        Url::parse(&format!("https://{input}")).ok()?
-    };
-    if url.scheme() == "caper" {
-        // `caper://invite/<code>`, from the web invite page's "Open in the Caper app".
-        let segments: Vec<_> = url.path_segments()?.collect();
-        return match (url.host_str(), segments.as_slice()) {
-            (Some("invite"), [code] | [code, ""]) if valid_code(code) => Some((*code).into()),
-            _ => None,
-        };
-    }
-    if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none() {
-        return None;
-    }
-    let mut segments = url.path_segments()?;
-    let (Some("invite"), Some(code)) = (segments.next(), segments.next()) else {
-        return None;
-    };
-    let rest: Vec<_> = segments.collect();
-    (valid_code(code) && (rest.is_empty() || rest == [""])).then(|| code.into())
+    code::invite_code(input).map(str::to_owned)
 }
 
 /// The shareable link on the configured API origin, so production reads
@@ -296,51 +265,19 @@ fn grouped(count: u64) -> String {
 mod tests {
     use super::*;
 
+    /// Generated from web; every client runs them (shared/invites/invite-cases.json).
     #[test]
-    fn invite_codes_come_from_links_hosts_and_bare_codes() {
-        let code = Some("AbC123xYz9".to_owned());
-        for input in [
-            "AbC123xYz9",
-            "  AbC123xYz9\n",
-            "https://caper.chat/invite/AbC123xYz9",
-            "https://caper.chat/invite/AbC123xYz9/",
-            "https://caper.chat/invite/AbC123xYz9?utm=chat#top",
-            "http://localhost:3000/invite/AbC123xYz9",
-            "https://staging.example.test/invite/AbC123xYz9",
-            "caper.chat/invite/AbC123xYz9",
-            "caper.chat/invite/AbC123xYz9/",
-            "HTTPS://CAPER.CHAT/invite/AbC123xYz9",
-            "caper://invite/AbC123xYz9",
-            "caper://invite/AbC123xYz9/",
-        ] {
-            assert_eq!(invite_code(input), code, "{input:?}");
-        }
-    }
-
-    #[test]
-    fn invite_codes_reject_anything_else() {
-        for input in [
-            "",
-            "   ",
-            "AbC123xYz",
-            "AbC123xYz99",
-            "AbC-23xYz9",
-            "AbC123 xYz9",
-            "https://caper.chat/AbC123xYz9",
-            "https://caper.chat/invite/",
-            "https://caper.chat/invite/AbC123xYz",
-            "https://caper.chat/invite/AbC123xYz9/extra",
-            "https://caper.chat/spaces/invite/AbC123xYz9",
-            "https://caper.chat/invites/AbC123xYz9",
-            "ftp://caper.chat/invite/AbC123xYz9",
-            "caper.chat/invite/AbC123xYz9 now",
-            "/invite/AbC123xYz9",
-            "https://caper.chat/invite/%41bC123xYz9",
-            "caper://invite/AbC123xYz",
-            "caper://join/AbC123xYz9",
-            "caper://invite/AbC123xYz9/extra",
-        ] {
-            assert_eq!(invite_code(input), None, "{input:?}");
+    fn invite_codes_follow_the_shared_cases() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../shared/invites/invite-cases.json"))
+                .unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            let input = case["input"].as_str().unwrap();
+            assert_eq!(
+                invite_code(input).as_deref(),
+                case["code"].as_str(),
+                "{input:?}"
+            );
         }
     }
 

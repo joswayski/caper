@@ -692,7 +692,12 @@ active membership from the session, does not join or consume a use, and is
 
 The web `/invite/<code>` page previews the link and sends signed-out visitors to
 `/login?invite=<code>` (then the profile step) and back. Clients also accept a
-pasted link or bare code (web: under **Create a space**). Existing members see
+pasted link or bare code (web: under **Create a space**), parsed by web's
+`inviteCode`; the native clients run the same rule from `shared/invites/code.rs`
+and every client replays `shared/invites/invite-cases.json`, generated from web.
+Only the ten-character code is taken from a pasted link: previews and joins always
+go to the client's configured API origin, never the link's host or scheme.
+Existing members see
 **You’re already a member** and **Open space**, which uses the idempotent join
 endpoint; newcomers choose **Join space**.
 

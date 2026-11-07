@@ -1,0 +1,281 @@
+{
+  "description": "Web's inviteCode (apps/web/src/spaces/client.ts), generated from web; apps/web/src/server/invite-links.test.ts checks them. Every client runs them through shared/invites/code.rs. A parse yields only the ten-character code, never the link's host or scheme: clients join through their configured API origin.",
+  "cases": [
+    {
+      "input": "AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": " AbC123xYz9 ",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "\tAbC123xYz9\n",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "AbC123xYz",
+      "code": null
+    },
+    {
+      "input": "AbC123xYz90",
+      "code": null
+    },
+    {
+      "input": "AbC-23xYz9",
+      "code": null
+    },
+    {
+      "input": "abc123xyz9",
+      "code": "abc123xyz9"
+    },
+    {
+      "input": "0123456789",
+      "code": "0123456789"
+    },
+    {
+      "input": "https://caper.chat/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "http://caper.chat/invite/AbC123xYz9/",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "https://caper.chat/invite/AbC123xYz9?x=1",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "https://caper.chat/invite/AbC123xYz9#join",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "https://caper.chat/invite/AbC123xYz9/?x=1#y",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "caper.chat/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "localhost:3000/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "http://localhost:3000/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "HTTPS://CAPER.CHAT/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "https://evil.example/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "evil.example/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "evil.example/invite/abc",
+      "code": null
+    },
+    {
+      "input": "https://evil.example/invite/AbC123xYz9?next=https://caper.chat",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "invite/AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "ftp://x/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "javascript://x/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "h+t.p-s://x/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "1http://x/invite/AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "caper://invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "CAPER://INVITE/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "Caper://Invite/AbC123xYz9/",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "caper://invite/AbC123xYz9?from=web",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "caper://invite/AbC123xYz9#x",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "caper://invite/AbC123xYz9?a b",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "caper://invite/AbC123xYz9?a\nb",
+      "code": null
+    },
+    {
+      "input": "caper://x/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "caper://invite/AbC123xYz9/extra",
+      "code": null
+    },
+    {
+      "input": "caper:/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "caper://invite/abc",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite/AbC123xYz9/extra",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/Invite/AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/a/invite/AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/a/../invite/AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/./invite/AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "caper.chat\\invite\\AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat\\invite\\AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat//invite/AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite//AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite/AbC123xYz9//",
+      "code": null
+    },
+    {
+      "input": "https://ca per.chat/invite/AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite/AbC123xYz9?a b",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "https://caper.chat/invite/AbC123xYz9?a\nb",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite/AbC123xYz9?x\n#y",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite/AbC123xYz9#x?y",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "https://user@caper.chat/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "https://caper.chat:443/invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "https://caper.chat/invite/%41bC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite/\uff21bC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat?x=/invite/AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat#/invite/AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https:///invite/AbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "https://",
+      "code": null
+    },
+    {
+      "input": "\ufeffAbC123xYz9",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "\u0085AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "AbC123xYz9\u2028",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "\u00a0https://caper.chat/invite/AbC123xYz9\u3000",
+      "code": "AbC123xYz9"
+    },
+    {
+      "input": "Join: https://caper.chat/invite/AbC123xYz9",
+      "code": null
+    },
+    {
+      "input": "https://caper.chat/invite/AbC123xYz9 extra",
+      "code": null
+    },
+    {
+      "input": "",
+      "code": null
+    },
+    {
+      "input": "   ",
+      "code": null
+    }
+  ]
+}
