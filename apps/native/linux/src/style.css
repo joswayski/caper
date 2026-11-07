@@ -407,10 +407,33 @@ listview.messages > row:hover {
   background: @caper_border;
 }
 
+/* A reply's quote card, as desktop: a surface panel above the reply. */
 .quote {
+  background: @caper_surface;
+  border: 1px solid alpha(@caper_border, 0.7);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0 8px 49px;
+}
+
+.quote-author {
   color: @caper_text_muted;
   font-size: 12px;
-  margin: 0 0 2px 48px;
+  font-weight: 700;
+}
+
+.quote-view {
+  color: @caper_text_muted;
+  font-size: 11px;
+}
+
+.quote-text {
+  color: @caper_text_muted;
+  font-size: 12px;
+}
+
+.quote-text.deleted {
+  font-style: italic;
 }
 
 .pinned {
@@ -1780,7 +1803,6 @@ button.edited:hover {
 
 button.quote-more {
   min-height: 0;
-  margin-left: 47px;
   padding: 0;
   color: @caper_link;
   font-size: 11px;

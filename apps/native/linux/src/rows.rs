@@ -37,6 +37,20 @@ pub struct Offers {
     pub thread: bool,
 }
 
+/// A reply's quote card, as desktop: the quoted author (with their
+/// avatar) and up to three lines of their text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Quote {
+    /// "Blocked message" in place of a blocked author.
+    pub author: String,
+    /// None for a blocked author.
+    pub avatar: Option<crate::images::Avatar>,
+    /// The whole text, an attachments label, or "Message"; None once the
+    /// original is deleted, or for a blocked author.
+    pub text: Option<String>,
+    pub deleted: bool,
+}
+
 /// One message row, compared whole: an unchanged row keeps its item and
 /// widget.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,13 +74,11 @@ pub struct Row {
     pub edited: bool,
     /// "Pinned by …".
     pub pinned_by: Option<String>,
-    /// The quoted message: its author and a short plain preview.
-    pub reply: Option<(String, String)>,
+    /// The quoted message, drawn as desktop's card.
+    pub reply: Option<Quote>,
     /// The quoted message and its thread, which a click jumps to.
     pub reply_target: Option<(String, Option<String>)>,
-    /// The whole quote when the preview is shorter, for Show more, and
-    /// whether it is shown.
-    pub reply_full: Option<String>,
+    /// The quote shows in full rather than three lines.
     pub reply_expanded: bool,
     pub reactions: Vec<Chip>,
     /// Your reaction failed: shown under the row with Retry and Dismiss.
@@ -271,7 +283,6 @@ impl Row {
             pinned_by: None,
             reply: None,
             reply_target: None,
-            reply_full: None,
             reply_expanded: false,
             reactions: Vec::new(),
             reaction_error: None,
@@ -562,30 +573,30 @@ pub fn build<'a>(
                 .as_ref()
                 .filter(|reply| !viewer.blocked.contains(&reply.author.id))
                 .map(|reply| (reply.id.clone(), reply.thread_root_id.clone())),
-            reply_full: message
-                .reply_to
-                .as_ref()
-                .filter(|reply| !reply.deleted && !viewer.blocked.contains(&reply.author.id))
-                .map(|reply| {
-                    reply
-                        .full_text
-                        .clone()
-                        .unwrap_or_else(|| reply.text.clone())
-                })
-                .filter(|full| preview(full) != *full),
             reply_expanded: viewer.expanded_quotes.contains(&message.id),
             reply: message.reply_to.as_ref().map(|reply| {
                 if viewer.blocked.contains(&reply.author.id) {
-                    return ("Blocked message".to_owned(), String::new());
+                    return Quote {
+                        author: "Blocked message".to_owned(),
+                        avatar: None,
+                        text: None,
+                        deleted: reply.deleted,
+                    };
                 }
-                let text = if reply.deleted {
-                    "Original message was deleted".to_owned()
-                } else if reply.text.trim().is_empty() && reply.has_attachments {
+                let text = reply.full_text.as_deref().unwrap_or(&reply.text);
+                let text = if !text.trim().is_empty() {
+                    text.to_owned()
+                } else if reply.has_attachments {
                     caper_client::model::attachments_label(&reply.attachments).to_owned()
                 } else {
-                    preview(&reply.text)
+                    "Message".to_owned()
                 };
-                (reply.author.name.clone(), text)
+                Quote {
+                    author: reply.author.name.clone(),
+                    avatar: Some(author_avatar(&reply.author)),
+                    text: (!reply.deleted).then_some(text),
+                    deleted: reply.deleted,
+                }
             }),
             reactions: if deleted {
                 Vec::new()
@@ -715,7 +726,6 @@ pub fn build<'a>(
             pinned_by: None,
             reply: None,
             reply_target: None,
-            reply_full: None,
             reply_expanded: false,
             reactions: Vec::new(),
             reaction_error: None,
@@ -744,16 +754,6 @@ pub fn build<'a>(
         );
     }
     rows
-}
-
-/// A reply quote: the first line, at most 120 characters.
-fn preview(text: &str) -> String {
-    let line = text.lines().next().unwrap_or_default();
-    let mut short: String = line.chars().take(120).collect();
-    if short.len() < line.len() || text.lines().nth(1).is_some() {
-        short.push('…');
-    }
-    short
 }
 
 /// What a row's controls ask for.
@@ -822,7 +822,14 @@ struct Widgets {
     day_row: gtk::Box,
     unread: gtk::Box,
     beginning: gtk::Label,
-    reply: gtk::Label,
+    /// The quote card: its avatar, author and "View original" heading, its
+    /// text, and Show more/less.
+    reply: gtk::Box,
+    quote_heading: gtk::Box,
+    quote_avatar: AvatarView,
+    quote_author: gtk::Label,
+    quote_view: gtk::Label,
+    quote_text: gtk::Label,
     quote_more: gtk::Button,
     avatar: AvatarView,
     gap: gtk::Box,
@@ -925,11 +932,33 @@ fn build_widgets(images: &Images) -> Widgets {
             day_row.append(&day);
         }
     }
-    let reply = gtk::Label::builder()
+    let reply = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    reply.add_css_class("quote");
+    let quote_heading = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    quote_heading.set_tooltip_text(Some("View original message"));
+    let quote_avatar = AvatarView::new(16, false);
+    quote_heading.append(&quote_avatar.root);
+    let quote_author = gtk::Label::builder()
         .xalign(0.0)
         .ellipsize(pango::EllipsizeMode::End)
-        .css_classes(["quote"])
+        .css_classes(["quote-author"])
         .build();
+    quote_heading.append(&quote_author);
+    let quote_view = gtk::Label::builder()
+        .label("View original")
+        .hexpand(true)
+        .xalign(1.0)
+        .css_classes(["quote-view"])
+        .build();
+    quote_heading.append(&quote_view);
+    reply.append(&quote_heading);
+    let quote_text = gtk::Label::builder()
+        .xalign(0.0)
+        .wrap(true)
+        .wrap_mode(pango::WrapMode::WordChar)
+        .css_classes(["quote-text"])
+        .build();
+    reply.append(&quote_text);
     // A terracotta rule with "New messages" at its end.
     let unread = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     unread.add_css_class("new-messages");
@@ -1080,7 +1109,7 @@ fn build_widgets(images: &Images) -> Widgets {
     quote_more.add_css_class("quote-more");
     quote_more.set_halign(gtk::Align::Start);
     quote_more.set_visible(false);
-    message.append(&quote_more);
+    reply.append(&quote_more);
     message.append(&thread_context);
     message.append(&overlay);
     root.append(&message);
@@ -1096,6 +1125,11 @@ fn build_widgets(images: &Images) -> Widgets {
         unread,
         beginning,
         reply,
+        quote_heading,
+        quote_avatar,
+        quote_author,
+        quote_view,
+        quote_text,
         quote_more,
         avatar,
         gap,
@@ -1205,11 +1239,20 @@ fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
             jump(Action::Quote { id, root });
         }
     });
-    widgets.reply.add_controller(click);
-    widgets.reply.set_cursor_from_name(Some("pointer"));
-    widgets
-        .reply
-        .set_tooltip_text(Some("View original message"));
+    widgets.quote_heading.add_controller(click);
+    widgets.quote_heading.set_cursor_from_name(Some("pointer"));
+    let click = gtk::GestureClick::new();
+    let (weak, jump) = (Rc::downgrade(widgets), handler.clone());
+    click.connect_released(move |_, _, _, _| {
+        let target = weak
+            .upgrade()
+            .and_then(|widgets| widgets.row.borrow().as_ref()?.reply_target.clone());
+        if let Some((id, root)) = target {
+            jump(Action::Quote { id, root });
+        }
+    });
+    widgets.quote_text.add_controller(click);
+    widgets.quote_text.set_cursor_from_name(Some("pointer"));
     let (weak, toggle) = (Rc::downgrade(widgets), handler.clone());
     widgets.quote_more.connect_clicked(move |_| {
         if let Some(id) = weak.upgrade().and_then(|widgets| id(&widgets)) {
@@ -1237,6 +1280,86 @@ fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
             }
         });
     }
+}
+
+/// The quote card, as desktop: a deleted original names its author and says
+/// so; a blocked author's quote says only "Blocked message". Show more
+/// appears once the text runs past three lines.
+fn fill_quote(widgets: &Widgets, images: &Rc<Images>, row: &Row) {
+    let Some(quote) = &row.reply else {
+        widgets.reply.set_visible(false);
+        return;
+    };
+    widgets.reply.set_visible(true);
+    widgets
+        .quote_avatar
+        .root
+        .set_visible(quote.avatar.is_some());
+    if let Some(avatar) = &quote.avatar {
+        widgets.quote_avatar.set(images, avatar);
+    }
+    widgets.quote_author.set_label(&quote.author);
+    // Only a quote with an original to show opens it.
+    let opens = row.reply_target.is_some() && !quote.deleted;
+    widgets.quote_view.set_visible(opens);
+    widgets.quote_heading.set_sensitive(opens);
+    let text = match &quote.text {
+        Some(text) => Some(text.as_str()),
+        None if quote.deleted && quote.avatar.is_some() => Some("Original message was deleted."),
+        None => None,
+    };
+    widgets.quote_text.set_visible(text.is_some());
+    widgets.quote_text.set_label(text.unwrap_or_default());
+    if quote.deleted {
+        widgets.quote_text.add_css_class("deleted");
+    } else {
+        widgets.quote_text.remove_css_class("deleted");
+    }
+    let expanded = row.reply_expanded;
+    // Underlined as desktop draws it; GTK 4.8 ignores CSS decoration here.
+    if let Some(label) = widgets.quote_more.child().and_downcast::<gtk::Label>() {
+        label.set_markup(if expanded {
+            "<u>Show less</u>"
+        } else {
+            "<u>Show more</u>"
+        });
+    }
+    widgets.quote_more.set_visible(expanded);
+    let Some(full) = quote.text.clone().filter(|_| !expanded) else {
+        return;
+    };
+    // As desktop, three rows at most. Pango limits lines per paragraph, so
+    // the cut is measured here once the card has a width; until then it
+    // shows the first three paragraphs.
+    let start: String = full.split('\n').take(3).collect::<Vec<_>>().join("\n");
+    widgets.quote_text.set_label(&start);
+    let (label, more) = (widgets.quote_text.clone(), widgets.quote_more.clone());
+    widgets.quote_text.add_tick_callback(move |_, _| {
+        let width = label.width();
+        if width <= 0 {
+            return glib::ControlFlow::Continue;
+        }
+        // A recycled row shows another quote now.
+        if label.label() != start {
+            return glib::ControlFlow::Break;
+        }
+        let layout = label.create_pango_layout(Some(&full));
+        layout.set_width(width * pango::SCALE);
+        layout.set_wrap(pango::WrapMode::WordChar);
+        let cut = (layout.line_count() > 3)
+            .then(|| layout.line_readonly(2))
+            .flatten()
+            .and_then(|line| usize::try_from(line.start_index() + line.length()).ok());
+        match cut {
+            Some(end) => {
+                let kept = full.get(..end).unwrap_or(&full).trim_end();
+                label.set_label(&format!("{kept}…"));
+                more.set_visible(true);
+            }
+            None => label.set_label(&full),
+        }
+        glib::ControlFlow::Break
+    });
 }
 
 fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
@@ -1284,33 +1407,7 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     widgets
         .day
         .set_label(row.day.as_deref().unwrap_or_default());
-    match &row.reply {
-        Some((author, text)) => {
-            let full = row.reply_full.as_ref().filter(|_| row.reply_expanded);
-            widgets.reply.set_markup(&format!(
-                "↱ <b>{}</b>  {}",
-                glib::markup_escape_text(author),
-                glib::markup_escape_text(full.unwrap_or(text))
-            ));
-            // Expanded, the quote wraps instead of ending in "…".
-            widgets.reply.set_wrap(full.is_some());
-            widgets.reply.set_ellipsize(if full.is_some() {
-                pango::EllipsizeMode::None
-            } else {
-                pango::EllipsizeMode::End
-            });
-            widgets.reply.set_visible(true);
-        }
-        None => widgets.reply.set_visible(false),
-    }
-    widgets
-        .quote_more
-        .set_visible(row.reply.is_some() && row.reply_full.is_some());
-    widgets.quote_more.set_label(if row.reply_expanded {
-        "Show less"
-    } else {
-        "Show more"
-    });
+    fill_quote(widgets, images, row);
     widgets.header.set_visible(!row.grouped);
     widgets.avatar.root.set_visible(!row.grouped);
     widgets.gap.set_visible(row.grouped);
@@ -1477,7 +1574,6 @@ mod tests {
             pinned_by: None,
             reply: None,
             reply_target: None,
-            reply_full: None,
             reply_expanded: false,
             reactions: Vec::new(),
             reaction_error: None,
@@ -1580,12 +1676,5 @@ mod tests {
                 insert: 0..1
             }]
         );
-    }
-
-    #[test]
-    fn reply_previews_keep_one_short_line() {
-        assert_eq!(preview("short"), "short");
-        assert_eq!(preview("first\nsecond"), "first…");
-        assert_eq!(preview(&"a".repeat(130)).chars().count(), 121);
     }
 }
