@@ -291,6 +291,8 @@ public final class AppModel {
     private var unreadVisitToken = UUID()
     private var unreadVisitReady = false
     private var unreadVisit: UnreadChannel?
+    /// The entry snapshot navigate started beside the channel's history.
+    private var openingUnreadSnapshot: (channelID: String, task: Task<UnreadSpacesResponse?, Never>)?
 
     /// Resolve the entry snapshot before any automatic acknowledgement can advance it.
     private func beginChannelUnreadVisit() {
@@ -298,10 +300,19 @@ public final class AppModel {
         unreadVisitToken = token
         unreadVisitReady = false
         unreadVisit = nil
-        guard let id = selectedChannelID, account != nil else { return }
+        let started = openingUnreadSnapshot
+        openingUnreadSnapshot = nil
+        guard let id = selectedChannelID, account != nil else { started?.task.cancel(); return }
+        let request: Task<UnreadSpacesResponse?, Never>
+        if let started, started.channelID == id { request = started.task }
+        else {
+            started?.task.cancel()
+            let api = api
+            request = Task { try? await api.unreadSpaces() }
+        }
         Task { [weak self] in
             guard let self else { return }
-            let snapshot = try? await api.unreadSpaces()
+            let snapshot = await request.value
             guard generation == attempt, unreadVisitToken == token, selectedChannelID == id else { return }
             unreadVisit = snapshot?.spaces.flatMap(\.channels).first { $0.id == id }
             // A failed/old-server snapshot deliberately yields no divider, not a guessed boundary.
@@ -1968,6 +1979,15 @@ public final class AppModel {
             let restoredChannel = restoredChannelID.flatMap { id in detail.channels.first { $0.id == id } }
             let channel = channelID == nil ? (restoredChannel?.joined == true ? restoredChannel : detail.channels.first { $0.joined }) : restoredChannel
             if channelID != nil && channel == nil { throw APIError(status: 404, message: "This channel is no longer accessible.") }
+            // Opening another channel needs its unread entry snapshot: ask for
+            // it beside the history. It still resolves before any read is
+            // acknowledged (unreadVisitReady), and is never taken after one.
+            var unreadSnapshot: (channelID: String, task: Task<UnreadSpacesResponse?, Never>)?
+            if let channel, channel.id != selectedChannelID, account != nil {
+                let api = api
+                unreadSnapshot = (channel.id, Task { try? await api.unreadSpaces() })
+            }
+            defer { unreadSnapshot?.task.cancel() }
             let history: ChatHistory?
             if let channel {
                 if let contextHistory { history = contextHistory }
@@ -1987,7 +2007,11 @@ public final class AppModel {
             }
             selectedSpaceID = space.id
             selectedDirectMessageID = nil
+            // The didSet's unread visit takes the snapshot; one it didn't take is dropped.
+            openingUnreadSnapshot = unreadSnapshot
+            unreadSnapshot = nil
             selectedChannelID = channel?.id
+            openingUnreadSnapshot?.task.cancel(); openingUnreadSnapshot = nil
             visit = nil; visitReturn = nil
             self.detail = detail
             lastChannelBySpace[space.id] = channel?.id
