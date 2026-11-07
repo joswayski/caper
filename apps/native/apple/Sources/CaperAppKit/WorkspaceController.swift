@@ -18,7 +18,7 @@ import CaperCore
         self.membersPreference = self.members.isHidden
         self.view.needsLayout = true
     }
-    private let stage = NativeView(NativeStyle.conversation)
+    private lazy var stage = AppKitFileDropView(model: model)
     private let timeline = MessageTimeline(frame: .zero)
     private let header = NativeStyle.label("", size: 16, bold: true)
     private let status = NativeStyle.label("", size: 12)
@@ -107,6 +107,11 @@ import CaperCore
         composer.backgroundColor = NativeStyle.composer
         composer.isRichText = false
         composer.allowsUndo = true
+        composer.attachmentDropDestination = stage
+        stage.acceptedDrop = { [weak self] in
+            guard let self, self.composer.isEditable else { return }
+            self.view.window?.makeFirstResponder(self.composer)
+        }
         composer.updateDragTypeRegistration()
         composer.textContainerInset = NSSize(width: 12, height: 12)
         composer.isHorizontallyResizable = false
