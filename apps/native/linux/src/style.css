@@ -239,6 +239,30 @@ popover.menu .title {
   margin-top: 4px;
 }
 
+/* Desktop's name fields label in regular weight. */
+.field.plain {
+  font-weight: 400;
+}
+
+/* As desktop's Remove and Revoke: outlined and muted, red only on hover. */
+button.remove {
+  min-width: 64px;
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 400;
+  color: @caper_text_muted;
+  background: transparent;
+  border: 1px solid @caper_border;
+  box-shadow: none;
+}
+
+button.remove:hover {
+  color: #ff8c9a;
+  background: rgba(185, 54, 70, 0.12);
+  border-color: #a33b48;
+}
+
 /* Space rail */
 .rail {
   background: @caper_blackout;

@@ -11,7 +11,7 @@
 //! closes and updates them to match.
 
 use super::{App, State, clear, popup};
-use crate::images::{Avatar, AvatarView};
+use crate::images::{Avatar, AvatarView, Icon};
 use crate::people::PeopleField;
 use crate::ui::label;
 use caper_client::effects::Effect;
@@ -401,14 +401,13 @@ impl App {
     pub(super) fn install_admin_actions(self: &Rc<Self>) {
         let group = gio::SimpleActionGroup::new();
         type Run = fn(&Rc<App>, String);
-        let actions: [(&str, Run); 9] = [
+        let actions: [(&str, Run); 8] = [
             ("create-space", |app, _| app.open_create_space()),
             ("join", |app, _| app.open_join_invite()),
             ("manage-space", |app, _| app.open_manage_space()),
             ("invite", |app, channel| {
                 app.open_invite_people(Some(channel).filter(|id| !id.is_empty()))
             }),
-            ("create-channel", |app, _| app.open_create_channel()),
             ("browse", |app, _| app.open_browse()),
             ("manage-channel", |app, id| app.open_manage_channel(&id)),
             ("leave-space", |app, _| {
@@ -515,33 +514,38 @@ impl App {
         (menu.n_items() > 0).then_some(menu)
     }
 
-    /// The space name's menu: invite, settings, create channel, leave.
+    /// The space name's menu, as desktop's: Browse channels and Invite
+    /// people…, the space's notification items, then Space settings (or
+    /// Leave space… for members). Create channel is the Channels list's +.
     fn space_menu(self: &Rc<Self>, anchor: &gtk::Widget) {
         let menu = {
             let state = self.state.borrow();
             let Some(detail) = state.detail.as_ref() else {
                 return;
             };
+            let item = |text: &str, action: &str| {
+                let item = gio::MenuItem::new(Some(text), None);
+                item.set_action_and_target_value(Some(action), Some(&"".to_variant()));
+                item
+            };
             let menu = gio::Menu::new();
-            let browse = gio::MenuItem::new(Some("Browse channels"), None);
-            browse.set_action_and_target_value(Some("admin.browse"), Some(&"".to_variant()));
-            menu.append_item(&browse);
-            if let Some(admin) = Self::admin_menu(&state, &Scope::Space(detail.space.id.clone())) {
-                menu.append_section(None, &admin);
+            let top = gio::Menu::new();
+            top.append_item(&item("Browse channels", "admin.browse"));
+            if state.owner() {
+                top.append_item(&item("Invite people…", "admin.invite"));
             }
-            if state.owner() && state.can_create_channel() {
-                let item = gio::MenuItem::new(Some("Create channel"), None);
-                item.set_action_and_target_value(
-                    Some("admin.create-channel"),
-                    Some(&"".to_variant()),
-                );
-                menu.append_item(&item);
+            menu.append_section(None, &top);
+            Self::notification_sections(&state, &Scope::Space(detail.space.id.clone()), &menu);
+            let last = gio::Menu::new();
+            if state.can_leave_space() {
+                last.append_item(&item("Leave space…", "admin.leave-space"));
+            } else if state.owner() {
+                last.append_item(&item("Space settings", "admin.manage-space"));
             }
+            menu.append_section(None, &last);
             menu
         };
-        if menu.n_items() > 0 {
-            popup(&gtk::PopoverMenu::from_model(Some(&menu)), anchor);
-        }
+        popup(&gtk::PopoverMenu::from_model(Some(&menu)), anchor);
     }
 
     // ---------------------------------------------------------------------
@@ -1583,7 +1587,7 @@ impl App {
                         widgets.icon = Some(self.build_icon_row(&body, &space));
                     }
                 }
-                body.append(&label("Space name", &["field"]));
+                body.append(&label("Space name", &["field", "plain"]));
                 let name = gtk::Entry::new();
                 name.set_placeholder_text(Some("Gaming nights"));
                 name.set_max_length(80);
@@ -1633,9 +1637,13 @@ impl App {
                 widgets.name = Some(name);
             }
             Dialog::InvitePeople => {
-                body.append(&hint(
+                // Body text, as desktop's.
+                let intro = label(
                     "Anyone with this link can join. New links allow 100 joins for 30 days.",
-                ));
+                    &[],
+                );
+                intro.set_wrap(true);
+                body.append(&intro);
                 let primary = gtk::Box::new(gtk::Orientation::Vertical, 6);
                 body.append(&primary);
                 widgets.primary = Some(primary);
@@ -1671,9 +1679,13 @@ impl App {
                     _ => None,
                 };
                 let saved = channel.as_deref().and_then(|id| state.saved_channel(id));
-                body.append(&label("Channel name", &["field"]));
-                let name = gtk::Entry::new();
+                body.append(&label("Channel name", &["field", "plain"]));
+                let name: gtk::Entry = crate::app::named("GtkEntry", "Channel name");
                 name.set_placeholder_text(Some("project-updates"));
+                // Desktop's # inside the field.
+                if let Some(hash) = self.images.icon(Icon::Hash, "#b9bcbe") {
+                    name.set_primary_icon_paintable(Some(&hash));
+                }
                 if let Some((saved, _)) = &saved {
                     name.set_text(saved);
                 }
@@ -2517,10 +2529,7 @@ impl App {
             let url = invites::invite_url(self.api.base(), &link.code);
             let text = label(&url, &["monospace", "invite-url"]);
             root.append(&text);
-            root.append(&label(
-                &invites::link_meta(link, chrono::Utc::now()),
-                &["muted", "small"],
-            ));
+            root.append(&label(&invites::link_meta(link, chrono::Utc::now()), &[]));
             if links.creating {
                 root.append(&hint("Preparing invite link…"));
             }
@@ -2535,24 +2544,52 @@ impl App {
                 }
             });
             row.append(&copy);
-            for (text, regenerate) in [("Regenerate link", true), ("Deactivate link", false)] {
-                let action = button(text, "flat");
-                action.set_sensitive(!pending);
-                let weak = Rc::downgrade(self);
-                let code = link.code.clone();
-                action.connect_clicked(move |_| {
-                    if let Some(app) = weak.upgrade() {
-                        app.open_confirm(Some(Confirm::Link {
+            // The rest under More options, as desktop.
+            let options = gtk::MenuButton::builder()
+                .label("More options")
+                .sensitive(!pending)
+                .build();
+            options.add_css_class("flat");
+            let popover = gtk::Popover::new();
+            popover.add_css_class("menu");
+            popover.set_has_arrow(false);
+            let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            for (text, action) in [
+                ("Regenerate link", Some(true)),
+                ("Custom links", None),
+                ("Deactivate link", Some(false)),
+            ] {
+                let item = gtk::Button::with_label(text);
+                item.add_css_class("flat");
+                item.add_css_class("menu-item");
+                if let Some(label) = item.child().and_downcast::<gtk::Label>() {
+                    label.set_xalign(0.0);
+                }
+                let (weak, code, menu) = (Rc::downgrade(self), link.code.clone(), popover.clone());
+                item.connect_clicked(move |_| {
+                    menu.popdown();
+                    let Some(app) = weak.upgrade() else { return };
+                    match action {
+                        Some(regenerate) => app.open_confirm(Some(Confirm::Link {
                             code: code.clone(),
                             regenerate,
-                        }));
+                        })),
+                        None => {
+                            {
+                                let mut state = app.state.borrow_mut();
+                                let links = &mut state.admin.links;
+                                links.settings_open = !links.settings_open;
+                                state.admin.revision += 1;
+                            }
+                            app.update_admin();
+                        }
                     }
                 });
-                row.append(&action);
+                items.append(&item);
             }
-            let custom = custom_button("Custom links");
-            custom.set_sensitive(!pending);
-            row.append(&custom);
+            popover.set_child(Some(&items));
+            options.set_popover(Some(&popover));
+            row.append(&options);
             root.append(&row);
         } else if links.creating {
             root.append(&hint("Preparing invite link…"));
@@ -2630,10 +2667,7 @@ impl App {
                 }
             });
             let revoking = links.revoking.contains(&link.code);
-            let revoke = button(
-                if revoking { "Revoking…" } else { "Revoke" },
-                "destructive-action",
-            );
+            let revoke = button(if revoking { "Revoking…" } else { "Revoke" }, "remove");
             revoke.set_valign(gtk::Align::Center);
             revoke.set_sensitive(enabled);
             let weak = Rc::downgrade(self);
@@ -2741,7 +2775,7 @@ impl App {
             ));
             row.append(&text);
             if !member.owner {
-                let remove = button("Remove", "destructive-action");
+                let remove = button("Remove", "remove");
                 remove.set_valign(gtk::Align::Center);
                 let weak = Rc::downgrade(self);
                 let (member, channel) = (member.clone(), channel.clone());

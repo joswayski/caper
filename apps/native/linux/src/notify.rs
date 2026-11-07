@@ -126,7 +126,22 @@ impl App {
     }
 
     fn scope_menu(self: &Rc<Self>, scope: &Scope, anchor: &gtk::Widget) {
-        let state = self.state.borrow();
+        let menu = {
+            let state = self.state.borrow();
+            let menu = gio::Menu::new();
+            // Owners' and members' management items come first, as on desktop.
+            if let Some(admin) = Self::admin_menu(&state, scope) {
+                menu.append_section(None, &admin);
+            }
+            Self::notification_sections(&state, scope, &menu);
+            menu
+        };
+        popup(&gtk::PopoverMenu::from_model(Some(&menu)), anchor);
+    }
+
+    /// `scope`'s Notifications (and a space's When voice starts) and Mute
+    /// items, appended to `menu` as sections; a note while they load or save.
+    pub(super) fn notification_sections(state: &State, scope: &Scope, menu: &gio::Menu) {
         let settings = &state.settings.notifications;
         let now = chrono::Utc::now();
         let key = encode(scope);
@@ -145,11 +160,6 @@ impl App {
             );
             item
         };
-        let menu = gio::Menu::new();
-        // Owners' and members' management items come first, as on desktop.
-        if let Some(admin) = Self::admin_menu(&state, scope) {
-            menu.append_section(None, &admin);
-        }
         if !settings.ready() || settings.saving(scope) {
             let note = gio::MenuItem::new(
                 Some(settings.load_error().unwrap_or(if settings.ready() {
@@ -159,8 +169,9 @@ impl App {
                 })),
                 Some("notify.none"),
             );
-            menu.append_item(&note);
-            popup(&gtk::PopoverMenu::from_model(Some(&menu)), anchor);
+            let notes = gio::Menu::new();
+            notes.append_item(&note);
+            menu.append_section(None, &notes);
             return;
         }
         let noun = match scope {
@@ -170,6 +181,19 @@ impl App {
         };
         let level = settings.level(scope);
         let top = gio::Menu::new();
+        // A space's voice alert comes first, as on desktop.
+        if matches!(scope, Scope::Space(_)) {
+            let voice = gio::Menu::new();
+            let current = settings.voice_started(scope);
+            for (value, label, choice) in [
+                ("default", "Default (account)", None),
+                ("on", "On", Some(true)),
+                ("off", "Off", Some(false)),
+            ] {
+                voice.append_item(&item(label, "voice", value, current == choice));
+            }
+            top.append_submenu(Some("When voice starts"), &voice);
+        }
         if let Scope::Direct(_) = scope {
             let off = level == Some(NotificationLevel::Nothing);
             top.append_item(&item(
@@ -198,18 +222,6 @@ impl App {
                 levels.append_item(&item(&label, "level", level_value(choice), level == choice));
             }
             top.append_submenu(Some("Notifications"), &levels);
-        }
-        if matches!(scope, Scope::Space(_)) {
-            let voice = gio::Menu::new();
-            let current = settings.voice_started(scope);
-            for (value, label, choice) in [
-                ("default", "Default (account)", None),
-                ("on", "On", Some(true)),
-                ("off", "Off", Some(false)),
-            ] {
-                voice.append_item(&item(label, "voice", value, current == choice));
-            }
-            top.append_submenu(Some("When voice starts"), &voice);
         }
         menu.append_section(None, &top);
         let mutes = gio::Menu::new();
@@ -241,8 +253,6 @@ impl App {
             errors.append_item(&gio::MenuItem::new(Some(error), Some("notify.none")));
             menu.append_section(None, &errors);
         }
-        drop(state);
-        popup(&gtk::PopoverMenu::from_model(Some(&menu)), anchor);
     }
 
     /// The account feed: system notifications and live profile changes.

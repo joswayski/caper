@@ -673,7 +673,7 @@ impl Ui {
         first_intro.set_xalign(0.0);
         first_intro.set_max_width_chars(44);
         first.append(&first_intro);
-        let first_label = label("Space name", &["field", "first-field"]);
+        let first_label = label("Space name", &["field", "plain", "first-field"]);
         first_label.set_xalign(0.0);
         first.append(&first_label);
         let first_name = gtk::Entry::builder()
