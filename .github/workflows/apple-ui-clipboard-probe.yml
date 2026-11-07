@@ -1,5 +1,5 @@
-# Isolated half of the historical split UI coverage. Never merge this workflow.
-# The09d4 successor is deliberately absent until queue49's full views pass.
+# Focused successor diagnostic only. Never merge this workflow.
+# The full twelve-test successor gate still requires queue49's full views.
 name: Apple isolated UI clipboard probe
 on:
   push:
@@ -12,10 +12,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: forwarding-caff5dbc
-            source: caff5dbcfa65467ebab703863794936f260d9048
-          - name: frozen-77873879
-            source: 77873879bccc7e49369ffac16ce66bd6aaa34e5d
+          - name: contracts-3aebe036
+            source: 3aebe036e0796a02cfa882b34181febe697a50ed
     runs-on: macos-15-intel
     timeout-minutes: 90
     env:
@@ -68,7 +66,7 @@ jobs:
           echo 'f61ee0b3f4c4cd337303e003d333357c5eaf25ef5d75a742109ee59e9a0a3932  apps/native/apple/.build/rnnoise-source.tar.gz' | shasum -a 256 -c -
           tar -xzf apps/native/apple/.build/rnnoise-source.tar.gz -C apps/native/apple/.build/rnnoise --strip-components=1
           tar -xzf apps/native/apple/.build/rnnoise-model.tar.gz -C apps/native/apple/.build/rnnoise src/rnnoise_data.c src/rnnoise_data.h
-      - name: Run only the twelve excluded UI tests
+      - name: Run only the two corrected methods
         continue-on-error: true
         run: |
           bash apps/native/apple/prepare.sh
@@ -81,22 +79,12 @@ jobs:
           curl --silent --fail http://127.0.0.1:3001/health >/dev/null
           tests=(
             testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts
-            testMessageReplyQuoteCancelSendAndOriginalNavigation
-            testOwnMessageActionsEditConflictHistoryAndDeleteConfirmation
-            testMessageQuickReactionsPickerAndTextSelectionStayIndependent
             testComposerEmojiPickerSelectionUndoCancelAndScalarLimit
-            testGifPickerRecoverySendViewerAndDraftRetention
-            testImagePasteEditSpoilerSendAndDecodedViewer
-            testFilePickerUploadFailureRetryAndComposerOwnership
-            testConversationSendNavigationAndSelection
-            testDraftFormattingCopyRepairUndoMenusAndSend
-            testAutocompleteKeyboardPointerUndoAndSelection
-            testMentionClickPreservesDraggingAndProtectsUnsavedProfileEdits
           )
           printf '%s\n' "${tests[@]}" > ui/selected-tests.txt
           # A failed async XCTest continued into the next method in the original
           # run. Separate runner processes keep its assertions from contaminating
-          # the next result; all twelve unchanged methods still run exactly once.
+          # the next result; both approved methods run exactly once.
           arguments=(-project apps/native/apple/CaperNative.xcodeproj -scheme CaperAppKitTests
             -destination "platform=macOS,arch=$(uname -m)" -derivedDataPath apps/native/apple/DerivedData-UI)
           xcodebuild "${arguments[@]}" build-for-testing 2>&1 | tee ui/build.log
@@ -127,14 +115,17 @@ jobs:
           name: clipboard-ui-${{ matrix.name }}
           path: ui/
           retention-days: 7
-      - name: Require the exact twelve tests without skips
+      - name: Require the exact two tests without skips
         if: always()
         run: |
           python3 - <<'PY'
           import json, pathlib, re
           path = pathlib.Path('ui')
           expected = set((path / 'selected-tests.txt').read_text().splitlines())
-          assert len(expected) == 12, expected
+          assert expected == {
+              'testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts',
+              'testComposerEmojiPickerSelectionUndoCancelAndScalarLimit',
+          }, expected
           assert {p.parent.name for p in path.glob('*/summary.json')} == expected
           failures = []
           for name in sorted(expected):
