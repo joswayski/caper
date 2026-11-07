@@ -32,7 +32,6 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -60,11 +59,8 @@ private val cardShape = RoundedCornerShape(8.dp)
  * and a new seed for the motion. It never takes input.
  */
 @Composable internal fun FileDropOverlay(title: String, detail: String, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
     // System "Remove animations" shows the resting pose, without the hops or drift.
-    val still = remember {
-        android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
-    }
+    val still = reducedMotion()
     val character = remember { caperBrandingResources.random() }
     val plan = remember { FileDrop.plan(Random.nextInt()) }
     var elapsed by remember { mutableFloatStateOf(0f) }
