@@ -3,10 +3,12 @@ import CaperCore
 
 /// NSMenu owns its action items until it closes. No parallel notification state:
 /// labels, inheritance, persistence and pending guards come from CaperCore.
-final class NavigationMenuItem: NSMenuItem {
+final class NavigationMenuItem: NSMenuItem, NSMenuItemValidation {
     private let perform: () -> Void
+    private let available: Bool
     init(_ title: String, enabled: Bool = true, selected: Bool = false, action: @escaping () -> Void) {
         perform = action
+        available = enabled
         super.init(title: title, action: #selector(invoke), keyEquivalent: "")
         target = self
         isEnabled = enabled
@@ -14,6 +16,9 @@ final class NavigationMenuItem: NSMenuItem {
     }
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func invoke() { perform() }
+    // NSTextView's own menu enables items automatically. Keep permissions
+    // when these action items are appended to that native context menu.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { available }
 }
 
 @MainActor enum NavigationMenus {

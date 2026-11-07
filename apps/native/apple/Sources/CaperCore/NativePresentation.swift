@@ -29,8 +29,8 @@ public enum NativePresentation {
         return String(input.uppercased().filter { allowed.contains($0) }.prefix(6))
     }
 
-    public static func grouped(_ message: ChatMessage, after previous: ChatMessage?) -> Bool {
-        MessageGrouping.isGrouped(message, after: previous, inThread: false)
+    public static func grouped(_ message: ChatMessage, after previous: ChatMessage?, inThread: Bool = false) -> Bool {
+        MessageGrouping.isGrouped(message, after: previous, inThread: inThread)
     }
 
     public static func time(_ value: String) -> String {
@@ -61,6 +61,20 @@ public enum NativePresentation {
 
     /// The same bundled artwork as SwiftUI, without exposing a SwiftUI view.
     public static func emojiImage(for entry: EmojiCatalogEntry) -> CGImage? { EmojiArtwork.image(for: entry) }
+
+    public static let quickReactions = MessageQuickReactions.emoji
+
+    public static func emojiImage(_ emoji: String) -> CGImage? {
+        EmojiArtwork.entry(for: emoji).flatMap(EmojiArtwork.image(for:))
+    }
+
+    /// The context menu uses the same link targets as the rendered message.
+    public static func links(in text: String) -> [(text: String, url: URL)] {
+        MessageLinks.segments(in: text).compactMap { segment in
+            guard let href = segment.href, let url = URL(string: href) else { return nil }
+            return (segment.text, url)
+        }
+    }
 
     public static func resend(secondsSince sentAt: Date?, codesSent: Int, now: Date) -> (label: String, enabled: Bool, allowed: Bool) {
         let seconds = CodeResend.secondsRemaining(sentAt: sentAt, now: now)
