@@ -129,6 +129,9 @@ struct MessageRowState: Equatable {
         authorName = author?.name ?? "Guest"
         avatarID = author?.avatarId
         picture = author?.avatarPicture
+        // The author's badges show before the server confirms, as in SwiftUI.
+        admin = author?.isAdmin == true
+        guest = author?.isGuest == true
         createdAt = pending.createdAt
         text = pending.text
         mentions = []

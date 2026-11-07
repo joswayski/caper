@@ -120,6 +120,7 @@ final class CaperUIKitTests: XCTestCase {
     /// SwiftUI's pending row: an unknown outcome offers Retry send; a rejected
     /// send offers Edit (back to the composer) and Dismiss.
     func testFailedSendsRetryEditAndDismiss() {
+        control(["admin": true])
         let app = launch()
         XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
         let composer = app.textViews["message-composer"]
@@ -132,6 +133,9 @@ final class CaperUIKitTests: XCTestCase {
         let retry = app.buttons["Retry send"]
         XCTAssertTrue(retry.waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["Dismiss"].exists)
+        let pending = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-message-")).firstMatch
+        XCTAssertTrue(pending.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Admin")).firstMatch.exists,
+                      "The unsent row shows its author's Admin badge, as SwiftUI's does")
         screenshot("uikit-pending-unknown")
         retry.tap()
         let confirmed = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "TEST FIXTURE unsure")).firstMatch
@@ -1138,6 +1142,38 @@ final class CaperUIKitParityTests: XCTestCase {
             }
             app.terminate()
         }
+    }
+
+    /// Notes to self with the keyboard up: each app keeps its header in place
+    /// and the same gap between Send and the keyboard.
+    func testDirectMessageKeyboardPairs() throws {
+        try requireSwiftUI()
+        var gaps: [String: CGFloat] = [:]
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            let app = configured(bundle)
+            app.launch()
+            let back = app.buttons["Back to Browse"]
+            XCTAssertTrue(back.waitForExistence(timeout: 30), prefix)
+            back.tap()
+            let notes = app.buttons["dm-self"].firstMatch
+            XCTAssertTrue(notes.waitForExistence(timeout: 10), prefix)
+            notes.tap()
+            let composer = app.textViews["message-composer"]
+            XCTAssertTrue(composer.waitForExistence(timeout: 10), prefix)
+            sleep(1)
+            let headerY = back.frame.minY
+            composer.tap()
+            let keyboard = app.keyboards.firstMatch
+            XCTAssertTrue(keyboard.waitForExistence(timeout: 10), prefix)
+            composer.typeText("TEST FIXTURE keyboard")
+            sleep(1)
+            XCTAssertEqual(back.frame.minY, headerY, accuracy: 2, "\(prefix): the keyboard must not move the header")
+            gaps[prefix] = keyboard.frame.minY - app.buttons["Send message"].firstMatch.frame.maxY
+            capture("\(prefix)-dm-keyboard-open")
+            app.terminate()
+        }
+        XCTAssertEqual(gaps["uikit"] ?? 0, gaps["swiftui"] ?? 0, accuracy: 2, "Send sits as far above the keyboard in both apps: \(gaps)")
     }
 
     /// A thread whose replies are still loading: each app's two-row skeleton.
