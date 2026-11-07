@@ -30,7 +30,8 @@ final class CaperParityUITests: XCTestCase {
         // A persistent runner can restore closed or Settings-only windows from
         // an earlier launch. Ignore AppKit's saved window state for this test
         // process without deleting user preferences or changing normal launches.
-        // Keyboard-navigation cases must not depend on the host's preference.
+        // Prefer keyboard navigation for this process. macOS 15 still uses the
+        // system setting for native menu activation focus; see the Audio test.
         app.launchArguments += [
             "-ApplePersistenceIgnoreState", "YES", "-AppleKeyboardUIMode", "2",
             // Ignore a previous run's saved narrow frame, not just its open
@@ -2615,9 +2616,12 @@ final class CaperParityUITests: XCTestCase {
         let close = app.buttons["Close device picker"]
         XCTAssertTrue(close.waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["System default"].exists)
+        capture("audio-device-picker-open", app: app)
         app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
         XCTAssertFalse(close.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["audio-preferences-sheet"].exists, "Escape closes only the device picker")
         XCTAssertEqual(volume.value as? String, originalVolume)
+        capture("audio-device-picker-dismissed", app: app)
         device.tap()
         app.buttons["System default"].tap()
         XCTAssertFalse(close.exists)
@@ -3128,11 +3132,27 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-preferences", app: app)
         #if os(macOS)
         app.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(hasKeyboardFocus(settings), "Closing Audio test returns focus to its menu trigger")
-        app.buttons["channel-chan00000001"].hover()
-        capture("account-settings-focus", app: app)
-        app.typeKey(" ", modifierFlags: [])
-        XCTAssertTrue(app.descendants(matching: .any)["open-settings"].waitForExistence(timeout: 2), "The focused trigger opens with Space")
+        let audioClosed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+            object: app.descendants(matching: .any)["audio-preferences-sheet"])
+        XCTAssertEqual(XCTWaiter.wait(for: [audioClosed], timeout: 3), .completed)
+        XCTAssertTrue(settings.isEnabled)
+        // Native menus support activation focus only when macOS Keyboard
+        // navigation is enabled. Read the setting, never change the owner's
+        // preference. The isolated hosted gate exercises both settings.
+        let keyboardNavigation = NSApplication.shared.isFullKeyboardAccessEnabled
+        print("Audio menu keyboard navigation: \(keyboardNavigation ? "enabled" : "disabled")")
+        if keyboardNavigation {
+            XCTAssertTrue(hasKeyboardFocus(settings), "Closing Audio test returns focus to its menu trigger")
+            app.buttons["channel-chan00000001"].hover()
+            capture("account-settings-focus", app: app)
+            app.typeKey(" ", modifierFlags: [])
+            XCTAssertTrue(app.descendants(matching: .any)["open-settings"].waitForExistence(timeout: 2), "The focused trigger opens with Space")
+        } else {
+            XCTAssertTrue(settings.isHittable)
+            settings.click()
+            XCTAssertTrue(app.descendants(matching: .any)["open-settings"].waitForExistence(timeout: 2), "The menu reopens by pointer with Keyboard navigation off")
+            capture("account-settings-reopened-pointer", app: app)
+        }
         app.typeKey(.escape, modifierFlags: [])
         #endif
     }

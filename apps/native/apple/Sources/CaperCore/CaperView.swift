@@ -3423,7 +3423,8 @@ private struct AccountBar: View {
     #if os(macOS)
     @Environment(\.openSettings) private var openSettings
     @Environment(\.desktopUpdates) private var updates
-    /// Closing a dialog opened from this menu returns keyboard focus here, as on web.
+    /// Closing a dialog returns focus here when macOS Keyboard navigation is enabled.
+    /// Native menu activation keeps the system's focus policy.
     @FocusState private var settingsFocused: Bool
     #else
     @Bindable private var effects = CaperEffects.shared
