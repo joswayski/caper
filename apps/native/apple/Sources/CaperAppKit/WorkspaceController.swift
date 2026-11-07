@@ -10,6 +10,7 @@ import CaperCore
     private lazy var navigation = NavigationSidebar(model: model)
     private lazy var dialogs = AppKitWorkspacePresenter(model: model)
     private lazy var media = AppKitMediaPresenter(model: model, parent: self)
+    private lazy var picker = AppKitComposerPicker(model: model)
     private lazy var members = MemberPanel(model: model)
     private lazy var profiles = AppKitProfilePresenter(model: model)
     private var membersPreference: Bool?
@@ -29,6 +30,13 @@ import CaperCore
     private var uploadConversationID: String?
     private var voicePreviewChecked = false
     private lazy var attach = NativeButton.icon("Attach files", symbol: "plus") { [weak self] in self?.showAttachMenu() }
+    private lazy var emoji: NativeButton = NativeButton.icon("Insert emoji", symbol: "face.smiling") { [weak self] in
+        guard let self else { return }; self.picker.emoji(from: self.emoji, composer: self.composer)
+    }
+    private lazy var gif: NativeButton = NativeButton("GIF") { [weak self] in
+        guard let self else { return }; self.picker.gifs(from: self.gif, composer: self.composer)
+    }
+    private let counter = NativeStyle.label("", size: 10)
     private lazy var directBar = DirectConversationBar(model: model)
     private let suggestions = ComposerSuggestions()
     private var suggestionsDismissed = false
@@ -69,12 +77,19 @@ import CaperCore
     override func viewDidLoad() {
         super.viewDidLoad()
         [navigation, stage, members].forEach { view.addSubview($0) }
-        [timeline, header, membersToggle, status, retry, editRejected, attachmentScroll, attach, composerScroll, send, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, header, membersToggle, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
         attachmentScroll.drawsBackground = false
         attachmentScroll.hasVerticalScroller = true
         attachmentScroll.autohidesScrollers = true
         attachmentScroll.isHidden = true
         attach.setAccessibilityIdentifier("attach-files-button")
+        emoji.setAccessibilityIdentifier("composer-emoji")
+        gif.setAccessibilityIdentifier("composer-gif")
+        gif.setAccessibilityLabel("Send a GIF"); gif.toolTip = "GIFs and stickers"
+        gif.font = NativeStyle.font(11, bold: true)
+        gif.layer?.backgroundColor = NSColor.clear.cgColor
+        counter.setAccessibilityIdentifier("composer-counter")
+        counter.alignment = .center
         join.setAccessibilityIdentifier("join-channel")
         navigation.show = { [weak self] item in
             guard let self else { return }; self.dialogs.show(item, in: self)
@@ -140,6 +155,8 @@ import CaperCore
         composerScroll.backgroundColor = NativeStyle.composer
         composerScroll.wantsLayer = true; composerScroll.layer?.cornerRadius = 8
         send.setAccessibilityIdentifier("send-message")
+        send.image = NSImage(systemSymbolName: "paperplane.fill", accessibilityDescription: nil)
+        send.imagePosition = .imageOnly
         retry.setAccessibilityIdentifier("conversation-retry")
         timeline.loadOlder = { [weak self] in
             guard let self else { return }
@@ -165,8 +182,12 @@ import CaperCore
             }
             let conversationID = self.model.selectedDirectMessageID ?? self.model.selectedChannelID
             if self.uploadConversationID != conversationID {
+                self.picker.close(restoringFocus: false)
                 self.uploadConversationID = conversationID
-                Task { await self.model.chat.checkUploadAvailability() }
+                Task {
+                    await self.model.chat.checkUploadAvailability()
+                    await self.model.chat.checkKlipyAvailability()
+                }
             }
             self.view.needsLayout = true
         }
@@ -201,6 +222,11 @@ import CaperCore
         })
     }
 
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        picker.close(restoringFocus: false)
+    }
+
     override func viewDidLayout() {
         super.viewDidLayout()
         let width = view.bounds.width, height = view.bounds.height
@@ -229,10 +255,14 @@ import CaperCore
         attachmentScroll.frame = NSRect(x: 20, y: height - 110 - trayHeight, width: center - 40, height: trayHeight)
         attachmentTray?.frame = NSRect(x: 0, y: 0, width: center - 40, height: attachmentHeight)
         attach.frame = NSRect(x: 16, y: height - 72, width: 38, height: 42)
-        composerScroll.frame = NSRect(x: 58, y: height - 102, width: center - 154, height: 70)
+        send.frame = NSRect(x: center - 56, y: height - 70, width: 36, height: 38)
+        emoji.frame = NSRect(x: send.frame.minX - 40, y: height - 72, width: 32, height: 42)
+        gif.frame = NSRect(x: emoji.frame.minX - 40, y: height - 72, width: 32, height: 42)
+        let editorRight = (gif.isHidden ? emoji.frame.minX : gif.frame.minX) - 12
+        composerScroll.frame = NSRect(x: 58, y: height - 102, width: editorRight - 58, height: 70)
         composer.frame.size.width = composerScroll.contentSize.width
         composer.minSize = NSSize(width: 0, height: 70)
-        send.frame = NSRect(x: center - 84, y: height - 70, width: 64, height: 38)
+        counter.frame = NSRect(x: 20, y: height - 24, width: center - 40, height: 16)
         join.frame = NSRect(x: 20, y: height - 80, width: 140, height: 38)
         layoutSuggestions()
         retry.frame = NSRect(x: center - 84, y: height - 108, width: 64, height: 30)
@@ -256,12 +286,25 @@ import CaperCore
         composer.isEditable = directBar.isHidden && chat.canInteract && !chat.sending && !chat.sendRejected && chat.pendingMessage == nil
         send.isEnabled = directBar.isHidden && chat.canInteract && chat.canPressSend(inThread: false)
         send.title = chat.sending ? "Sending…" : "Send"
+        send.setAccessibilityLabel(send.title); send.toolTip = send.title
+        send.layer?.backgroundColor = (send.isEnabled ? NSColor(CaperTheme.action) : NativeStyle.composer).cgColor
+        send.contentTintColor = send.isEnabled ? NativeStyle.blackout : NativeStyle.muted
         composerScroll.isHidden = model.previewingChannel || !directBar.isHidden
         send.isHidden = composerScroll.isHidden
         attach.isHidden = composerScroll.isHidden
         attach.isEnabled = chat.canAttach && composer.isEditable
         attach.toolTip = chat.canAttach ? "Attach files" : chat.attachUnavailableReason
         attach.setAccessibilityValue(chat.canAttach ? "" : chat.attachUnavailableReason)
+        emoji.isHidden = composerScroll.isHidden
+        emoji.isEnabled = composer.isEditable
+        let hideGif = composerScroll.isHidden || chat.klipy == nil
+        if gif.isHidden != hideGif { gif.isHidden = hideGif; view.needsLayout = true }
+        gif.isEnabled = composer.isEditable && chat.canSendGif()
+        if !composer.isEditable || model.whatsNew.workspaceModalOpen { picker.close(restoringFocus: false) }
+        let count = chat.draft.unicodeScalars.count
+        counter.isHidden = composerScroll.isHidden || count < 3000
+        counter.stringValue = "\(count.formatted()) / 4,000"
+        counter.textColor = AppKitComposerCounter.color(count)
         join.isHidden = !model.previewingChannel
         join.isEnabled = joiningChannelID == nil
         join.title = joiningChannelID == model.selectedChannelID ? "Joining…" : "Join channel"
