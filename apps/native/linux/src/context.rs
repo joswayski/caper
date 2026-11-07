@@ -57,7 +57,7 @@ impl App {
         self.render();
     }
 
-    fn load_context(&self, state: &mut State, anchor: String, newer: bool) {
+    pub(super) fn load_context(&self, state: &mut State, anchor: String, newer: bool) {
         let Some(channel) = state.channel.clone() else {
             return;
         };

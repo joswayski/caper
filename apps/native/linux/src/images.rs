@@ -99,6 +99,8 @@ icons! {
     Speech => "speech",
     Crop => "crop",
     Menu => "menu",
+    Archive => "archive",
+    Restore => "archive-restore",
     Brush => "brush",
     Type => "type",
     Undo => "undo-2",

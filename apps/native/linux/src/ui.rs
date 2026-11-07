@@ -359,6 +359,10 @@ pub struct Ui {
     pub output_options: gtk::Button,
     /// The header's Join voice, Switch here, Joining… or Leave voice.
     pub voice_join: gtk::Button,
+    pub visit_back: gtk::Button,
+    pub feedback: gtk::ListBox,
+    pub feedback_waiting: gtk::Label,
+    pub feedback_page: gtk::Box,
     pub channel_title: gtk::Label,
     pub status: gtk::Label,
     pub pins_button: gtk::Button,
@@ -658,6 +662,20 @@ impl Ui {
         let inbox = gtk::Button::with_label("Notifications");
         inbox.add_css_class("inbox-button");
         lists.append(&inbox);
+        // The Caper team's inbox, for team members only (`app::feedback`).
+        let feedback: gtk::ListBox = crate::app::named("GtkListBox", "Feedback");
+        feedback.add_css_class("channels");
+        feedback.set_visible(false);
+        let feedback_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        feedback_line.append(&images.icon_image(Icon::Speech, "#b9bcbe", 16));
+        let feedback_name = label("Feedback", &[]);
+        feedback_name.set_hexpand(true);
+        feedback_line.append(&feedback_name);
+        let feedback_waiting = label("", &["count", "mention"]);
+        feedback_waiting.set_visible(false);
+        feedback_line.append(&feedback_waiting);
+        feedback.append(&feedback_line);
+        lists.append(&feedback);
         let requests: gtk::ListBox = crate::app::named("GtkListBox", "Message requests");
         requests.add_css_class("channels");
         requests.set_visible(false);
@@ -744,6 +762,11 @@ impl Ui {
         let status = label("", &["muted", "status"]);
         status.set_hexpand(true);
         header.append(&status);
+        // A feedback visit's way back: "Back to feedback" or "Close".
+        let visit_back = gtk::Button::with_label("Back to feedback");
+        visit_back.set_valign(gtk::Align::Center);
+        visit_back.set_visible(false);
+        header.append(&visit_back);
         let voice_join = gtk::Button::with_label("Join voice");
         voice_join.add_css_class("primary");
         voice_join.add_css_class("voice-join");
@@ -852,9 +875,17 @@ impl Ui {
         conversation.append(&join_bar);
         conversation.append(&request.root);
         // Files dragged over the conversation: the shared drop text.
+        // The feedback inbox takes the conversation's place (`app::feedback`).
+        let feedback_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        feedback_page.add_css_class("conversation");
+        feedback_page.set_hexpand(true);
+        feedback_page.set_visible(false);
+        let stage_body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        stage_body.append(&conversation);
+        stage_body.append(&feedback_page);
         let stage = gtk::Overlay::new();
         stage.set_hexpand(true);
-        stage.set_child(Some(&conversation));
+        stage.set_child(Some(&stage_body));
         let drop = gtk::Box::new(gtk::Orientation::Vertical, 6);
         drop.add_css_class("drop");
         drop.set_can_target(false);
@@ -1039,6 +1070,10 @@ impl Ui {
             input_options,
             output_options,
             voice_join,
+            visit_back,
+            feedback,
+            feedback_waiting,
+            feedback_page,
             channel_title,
             status,
             pins_button,

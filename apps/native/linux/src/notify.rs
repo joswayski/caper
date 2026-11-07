@@ -295,8 +295,9 @@ impl App {
                 }
                 self.render();
             }
-            // As desktop: reload the spaces, then show the invitation. The
-            // Caper team's report visits aren't on Linux yet.
+            // As the Caper team: at the report, and in its thread.
+            Some(Route::Visit(target)) => self.open_feedback_report(target, false),
+            // As desktop: reload the spaces, then show the invitation.
             Some(Route::Invitation { space, channel }) => {
                 let mut state = self.state.borrow_mut();
                 let Some(token) = state.token.clone() else {
@@ -311,7 +312,7 @@ impl App {
                     channel,
                 });
             }
-            Some(Route::Visit(_)) | None => {}
+            None => {}
         }
     }
 

@@ -43,6 +43,8 @@ mod call;
 mod context;
 #[path = "editor.rs"]
 mod editor;
+#[path = "feedback.rs"]
+mod feedback;
 #[path = "forward.rs"]
 mod forward;
 #[path = "gifs.rs"]
@@ -317,6 +319,18 @@ struct State {
     context_loading: bool,
     /// Reply quotes shown in full, by the replying message.
     expanded_quotes: HashSet<String>,
+    /// The Caper team's feedback inbox, whether it shows, and how many
+    /// reports wait for a reply (`app::feedback`).
+    feedback: caper_client::feedback::Inbox,
+    feedback_open: bool,
+    feedback_waiting: u64,
+    /// The open feedback visit, one on its way, and where the report is
+    /// once its conversation loads: a reported reply's thread after the
+    /// root's context, or the report in a channel the team member is in.
+    visit: Option<caper_client::feedback::Visit>,
+    visit_request: Option<caper_client::feedback::VisitRequest>,
+    report_thread: Option<(String, caper_client::feedback::ThreadFocus)>,
+    report_focus: Option<(u64, caper_client::feedback::VisitTarget)>,
     /// The notifications inbox, and each row's inline reply.
     inbox: caper_client::activity::Inbox,
     replies: HashMap<String, inbox::Reply>,
@@ -385,6 +399,48 @@ impl State {
     /// `here`; a DM offers `GET /api/people`, plus its peer.
     fn mention_people(&self) -> (Vec<mentions::Person>, mentions::Specials) {
         let me = self.account.as_ref().map(|account| account.id.as_str());
+        // A visit has no member list: its reporter and the loaded authors
+        // whose username is known.
+        if let Some(visit) = self.visiting() {
+            let authors: HashSet<&str> = self
+                .timeline
+                .messages()
+                .map(|message| message.author.id.as_str())
+                .collect();
+            let known = self
+                .people
+                .iter()
+                .flatten()
+                .filter(|person| authors.contains(person.id.as_str()))
+                .map(mentions::Person::from);
+            let reporter = visit.reporter.as_ref().map(|person| mentions::Person {
+                username: person.username.clone(),
+                display_name: person.display_name.clone(),
+                avatar_id: person.avatar_id,
+                avatar_asset: person.avatar_asset.clone(),
+                avatar_url: person.avatar_url.clone(),
+                invited: false,
+            });
+            let me = self
+                .account
+                .as_ref()
+                .and_then(|account| account.username.as_deref());
+            let mut people: Vec<mentions::Person> = Vec::new();
+            for person in reporter.into_iter().chain(known) {
+                if Some(person.username.as_str()) != me
+                    && !people.iter().any(|known| known.username == person.username)
+                {
+                    people.push(person);
+                }
+            }
+            return (
+                people,
+                mentions::Specials {
+                    channel: false,
+                    feedback: true,
+                },
+            );
+        }
         if let Some(id) = &self.direct {
             let known = self.people.as_deref().unwrap_or_default();
             let peer = self
@@ -517,6 +573,7 @@ pub struct App {
     history_window: RefCell<Option<history::HistoryWindow>>,
     gif_picker: RefCell<Option<gifs::Picker>>,
     inbox_window: RefCell<Option<inbox::InboxWindow>>,
+    feedback_page: RefCell<Option<feedback::Page>>,
     /// Background update checks, this revision's What's new, and their
     /// windows.
     updates: RefCell<caper_client::updates::Updates>,
@@ -649,6 +706,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         reactors_window: RefCell::default(),
         history_window: RefCell::default(),
         inbox_window: RefCell::default(),
+        feedback_page: RefCell::default(),
         updates: RefCell::new(caper_client::updates::Updates::start(
             {
                 let wakes = Wakes(sender.clone());
@@ -703,6 +761,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.connect_recording();
     app.connect_panes();
     app.connect_narrow();
+    app.connect_feedback();
     app.connect_inbox();
     app.start_updates();
     app.install_actions();
@@ -837,8 +896,10 @@ impl App {
                     let space = state.space.clone();
                     app.navigate(&mut state, space, Some(id));
                 }
-                // The open channel too: narrow Browse goes back to it.
+                // The open channel too: narrow Browse or the inbox goes
+                // back to it.
                 app.browsing.set(false);
+                state.feedback_open = false;
                 drop(state);
                 app.render();
             }
@@ -1299,6 +1360,8 @@ impl App {
     // Navigation.
 
     fn navigate(&self, state: &mut State, space: Option<String>, channel: Option<String>) {
+        state.visit_request = None;
+        state.feedback_open = false;
         self.leave_conversation(state);
         if state.space != space {
             state.detail = None;
@@ -1349,7 +1412,8 @@ impl App {
         {
             let mut state = self.state.borrow_mut();
             if state.channel.as_deref() == Some(&id) {
-                // Narrow Browse goes back to the open DM.
+                // Narrow Browse goes back to the open DM, as from the inbox.
+                state.feedback_open = false;
                 drop(state);
                 self.set_browsing(false);
                 return;
@@ -1360,6 +1424,8 @@ impl App {
     }
 
     fn enter_direct(&self, state: &mut State, id: String) {
+        state.visit_request = None;
+        state.feedback_open = false;
         self.leave_conversation(state);
         state.channel_name = state
             .directs
@@ -1411,6 +1477,8 @@ impl App {
         state.expanded_quotes.clear();
         state.files_revision += 1;
         state.direct = None;
+        state.visit = None;
+        state.report_thread = None;
         state.jump_to = None;
         if let Some(pins) = self.pins.borrow_mut().take() {
             pins.popover.popdown();
@@ -1428,6 +1496,12 @@ impl App {
     fn prepare(&self, state: &mut State, space: Option<String>, channel: Option<String>) {
         // A voice message sending on its own belongs to its conversation.
         self.discard_voice_sends(state, channel.as_deref());
+        // A report's conversation, read without joining it.
+        let visit = space.is_none()
+            && state
+                .visit_request
+                .as_ref()
+                .is_some_and(|request| channel.as_ref() == Some(&request.target.channel));
         self.worker.send(Command::PrepareNavigation {
             generation: state.generation,
             navigation: state.navigation,
@@ -1436,7 +1510,7 @@ impl App {
             channel,
             name: state.name(),
             cached: None,
-            visit: false,
+            visit,
             preferred: None,
         });
     }
@@ -2073,7 +2147,12 @@ impl App {
     fn mark_read(&self, state: &mut State) {
         // Reading a request must not look like engaging with it.
         // Nor does a jump's window away from the newest messages.
-        if state.unread_visit_pending || state.open_request().is_some() || state.has_newer {
+        // A feedback visit has no read marker to move.
+        if state.unread_visit_pending
+            || state.open_request().is_some()
+            || state.has_newer
+            || state.visiting().is_some()
+        {
             return;
         }
         let (Some(token), Some(channel)) = (state.token.clone(), state.channel.clone()) else {
@@ -3488,6 +3567,7 @@ impl App {
                 if let Some(count) = unread.badge_count {
                     state.inbox.unread_count = count;
                 }
+                state.feedback_waiting = unread.feedback_waiting;
                 state.layout += 1;
                 self.clear_open_unread(state);
             }
@@ -3661,6 +3741,8 @@ impl App {
                             share.send();
                         }
                         self.mark_read(state);
+                        // A reply can answer a report.
+                        self.sent_in_visit(state);
                     }
                     Err(failure) => {
                         state.send_error = Some(failure.message);
@@ -3719,8 +3801,21 @@ impl App {
                 && request == state.request
                 && state.channel.as_deref() == Some(&channel) =>
             {
-                self.accept_context(state, &anchor, newer, result)
+                self.accept_context(state, &anchor, newer, result);
+                if !newer {
+                    self.report_context_loaded(state, &anchor);
+                }
             }
+            Event::FeedbackLoaded {
+                epoch,
+                request,
+                result,
+            } if epoch == state.epoch => state.feedback.finish(request, result),
+            // Successful writes leave the other rows and older pages be.
+            Event::FeedbackArchived {
+                epoch,
+                result: Err(error),
+            } if epoch == state.epoch => self.feedback_archive_failed(state, error),
             Event::MessageVersions {
                 generation,
                 request,
@@ -3894,15 +3989,27 @@ impl App {
         state: &mut State,
         result: Result<caper_client::worker::PreparedNavigation, caper_client::worker::LoadError>,
     ) {
+        // `navigate` drops a visit for any other conversation.
+        let visit_request = state.visit_request.take();
+        let report_focus = state
+            .report_focus
+            .take()
+            .filter(|(navigation, _)| *navigation == state.navigation)
+            .map(|(_, target)| target);
         match result {
             Ok(prepared) => {
+                if let Some((history, _)) = &prepared.conversation
+                    && !self.visit_prepared(state, visit_request.clone(), history)
+                {
+                    return;
+                }
                 if let Some(detail) = prepared.detail {
                     state.detail = Some(detail);
                 }
                 match prepared.conversation {
                     Some((history, session)) => {
                         state.channel = Some(history.channel.id.clone());
-                        if state.direct.is_none() {
+                        if state.direct.is_none() || state.channel_name.is_empty() {
                             state.channel_name = history.channel.name.clone();
                         }
                         state.markup.clear();
@@ -3966,6 +4073,12 @@ impl App {
                         {
                             state.forward_thread = Some((root, focus));
                         }
+                        if let Some(target) = report_focus
+                            .or(visit_request.map(|request| request.target))
+                            .filter(|target| state.channel.as_ref() == Some(&target.channel))
+                        {
+                            self.focus_report(state, &target);
+                        }
                     }
                     None => {
                         state.channel = None;
@@ -3977,6 +4090,10 @@ impl App {
                 state.layout += 1;
             }
             Err(error) => {
+                // A report that can't open shows why, not the inbox.
+                if visit_request.is_some() {
+                    state.feedback_open = false;
+                }
                 // The last conversation's messages don't stay under the new title.
                 state.timeline = Timeline::default();
                 state.markup.clear();
@@ -4344,6 +4461,8 @@ impl App {
                     if let Some(share) = state.pending.take().and_then(|pending| pending.share) {
                         share.send();
                     }
+                    // A reply can answer a report.
+                    self.sent_in_visit(state);
                 }
                 // Their message ends their typing.
                 state.typers.remove(&message.author.id);
@@ -4548,15 +4667,18 @@ impl App {
             _ => "Retry",
         });
 
-        let direct = state.direct.is_some();
-        ui.channel_title
-            .set_label(&if state.channel_name.is_empty() {
-                String::new()
-            } else if direct {
-                format!("@ {}", state.channel_name)
-            } else {
-                format!("# {}", state.channel_name)
-            });
+        // A visit is titled "#plans · Studio", or "Alice & Bob" for a DM.
+        let visit = state.visiting();
+        let direct = state.direct.is_some() && visit.is_none_or(|visit| visit.direct);
+        ui.channel_title.set_label(&if let Some(visit) = visit {
+            visit.title.clone()
+        } else if state.channel_name.is_empty() {
+            String::new()
+        } else if direct {
+            format!("@ {}", state.channel_name)
+        } else {
+            format!("# {}", state.channel_name)
+        });
         ui.status.set_label(&state.status);
         // DMs are named after the other person, without a channel `#`.
         let destination = if direct {
@@ -4627,10 +4749,14 @@ impl App {
             }
             None => ui.compose_bar.set_visible(false),
         }
-        let thread_open = state.thread.is_some();
+        // The feedback inbox takes the conversation's place, and its panes.
+        let thread_open = state.thread.is_some() && !state.feedback_open;
         ui.thread_panel.set_visible(thread_open);
         ui.members_panel.set_visible(
-            !thread_open && ui.members_toggle.is_active() && ui.members_toggle.is_visible(),
+            !thread_open
+                && !state.feedback_open
+                && ui.members_toggle.is_active()
+                && ui.members_toggle.is_visible(),
         );
         ui.thread_composer.view.set_sensitive(can_send && joined);
         ui.thread_composer.send.set_sensitive(can_send && joined);
@@ -4646,7 +4772,8 @@ impl App {
         ui.thread_error
             .set_visible(!send_error.is_empty() && thread_open && in_thread);
         let returned = state.returned_draft.take();
-        let shown = (state.channel.is_some(), thread_open);
+        let shown = (state.channel.is_some() || state.feedback_open, thread_open);
+        self.render_feedback(&state);
         drop(state);
         if let Some((draft, thread)) = returned {
             let buffer = if thread {

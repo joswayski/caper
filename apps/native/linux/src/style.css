@@ -1964,3 +1964,56 @@ button.chip-remove {
 .drawer-backdrop {
   background: alpha(black, 0.25);
 }
+
+/* The Caper team's feedback inbox (`app::feedback`). */
+.feedback-list {
+  padding: 6px 0 12px;
+}
+
+.feedback-row {
+  margin: 0 8px;
+  padding-right: 10px;
+  border-radius: 8px;
+}
+
+.feedback-row:hover {
+  background: @caper_surface_hover;
+}
+
+button.feedback-open {
+  padding: 10px;
+  border-radius: 8px;
+}
+
+button.feedback-open:hover {
+  background: none;
+}
+
+.feedback-preview {
+  font-size: 13.5px;
+}
+
+.feedback-waiting,
+.feedback-answered {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.feedback-waiting {
+  color: @caper_terracotta_bright;
+}
+
+.feedback-answered {
+  color: @caper_text_muted;
+}
+
+.feedback-note {
+  margin: 6px 18px;
+}
+
+button.history-button {
+  margin-top: 10px;
+  min-height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+}
