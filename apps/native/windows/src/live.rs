@@ -1148,10 +1148,7 @@ impl Live {
             .or(account.username)
             .unwrap_or_default();
         self.account_name.clone_from(&self.name);
-        let Some(space) = spaces.spaces.first().map(|s| s.id.clone()) else {
-            out.push(Update::Failed("This account has no spaces.".into()));
-            return;
-        };
+        let space = spaces.spaces.first().map(|s| s.id.clone());
         // Uploads are offered once the server's usage answers.
         self.worker.send(Command::AssetUsage {
             token: token.clone(),
@@ -1174,8 +1171,22 @@ impl Live {
         self.limits = spaces.limits.clone();
         self.membership_at = Some(Instant::now());
         self.host.wake_after(MEMBERSHIP_EVERY);
+        if space.is_none() {
+            out.push(Update::Loaded(Box::new(conversation(
+                &spaces,
+                None,
+                None,
+                &[],
+                None,
+                false,
+                None,
+                None,
+            ))));
+        }
         self.spaces = Some(spaces);
-        self.navigate(Some(space), None);
+        if space.is_some() {
+            self.navigate(space, None);
+        }
     }
 
     /// Whether files can be attached to the open channel now.
@@ -2209,7 +2220,7 @@ impl Live {
 
     /// The shown history as the viewer sees it, rebuilt from the timeline.
     fn rebuilt(&self) -> Option<(Conversation, Ids)> {
-        let (detail, channel) = (self.detail.as_ref()?, self.channel.as_ref()?);
+        let channel = self.channel.as_ref()?;
         let spaces = self.spaces.clone().unwrap_or(core::Spaces {
             spaces: Vec::new(),
             invitations: Vec::new(),
@@ -2223,8 +2234,8 @@ impl Live {
             .collect();
         Some(conversation(
             &spaces,
-            detail,
-            channel,
+            self.detail.as_ref(),
+            Some(channel),
             &messages,
             self.me.as_deref(),
             false,
@@ -2289,7 +2300,7 @@ impl Live {
     /// out, as in the egui client), with the root's reply count.
     pub fn thread_view(&self) -> Option<(Conversation, Ids, Option<u64>)> {
         let t = self.thread.as_ref()?;
-        let (detail, channel) = (self.detail.as_ref()?, self.channel.as_ref()?);
+        let channel = self.channel.as_ref()?;
         let spaces = core::Spaces {
             spaces: Vec::new(),
             invitations: Vec::new(),
@@ -2310,8 +2321,8 @@ impl Live {
             .collect();
         let (c, ids) = conversation(
             &spaces,
-            detail,
-            channel,
+            self.detail.as_ref(),
+            Some(channel),
             &messages,
             self.me.as_deref(),
             true,
@@ -2982,6 +2993,40 @@ impl Live {
                 if let Some(s) = &mut self.spaces {
                     s.spaces.retain(|s| s.id != id);
                 }
+                // Fence late history/gateway responses and discard the departed
+                // conversation even when there is nothing else to navigate to.
+                self.generation += 1;
+                self.navigation += 1;
+                self.worker.send(Command::StopGateway);
+                self.detail = None;
+                self.space = None;
+                self.channel = None;
+                self.direct = None;
+                self.chat_token = None;
+                self.timeline = core::Timeline::default();
+                self.thread = None;
+                self.thread_only.clear();
+                self.window = None;
+                self.context_loading = false;
+                self.prefetch = None;
+                self.focus = None;
+                self.invite_focus = None;
+                self.has_more = false;
+                self.loading_older = false;
+                self.older_error = None;
+                self.rosters.clear();
+                if let Some(spaces) = &self.spaces {
+                    out.push(Update::Loaded(Box::new(conversation(
+                        spaces,
+                        None,
+                        None,
+                        &[],
+                        self.me.as_deref(),
+                        false,
+                        None,
+                        None,
+                    ))));
+                }
                 let next = self
                     .spaces
                     .as_ref()
@@ -2991,7 +3036,7 @@ impl Live {
                 match (next, direct) {
                     (Some(space), _) => self.navigate(Some(space), None),
                     (None, Some(direct)) => self.navigate(None, Some(direct)),
-                    (None, None) => out.push(Update::Failed("This account has no spaces.".into())),
+                    (None, None) => {}
                 }
             }
             AdminResult::ChannelLeft(channel) => {
@@ -3527,9 +3572,7 @@ impl Live {
         if !self.foreground || self.unread_pending || self.window.is_some() {
             return;
         }
-        let (Some(space), Some(channel), Some(token)) =
-            (self.space.clone(), self.channel.clone(), self.token.clone())
-        else {
+        let (Some(channel), Some(token)) = (self.channel.clone(), self.token.clone()) else {
             return;
         };
         let seq = self.timeline.cursor();
@@ -3553,6 +3596,9 @@ impl Live {
             });
             return;
         }
+        let Some(space) = self.space.clone() else {
+            return;
+        };
         let read = self
             .reads
             .get(&channel)
@@ -3642,10 +3688,8 @@ impl Live {
                     // A DM has no space of its own: the open space's
                     // channels stay beside it, as in egui.
                     let direct = prepared.detail.is_none();
-                    let (Some(detail), Some((history, session))) = (
-                        prepared.detail.or_else(|| self.detail.clone()),
-                        prepared.conversation,
-                    ) else {
+                    let detail = prepared.detail.or_else(|| self.detail.clone());
+                    let Some((history, session)) = prepared.conversation else {
                         out.push(Update::Failed("No joined channel in this space.".into()));
                         return;
                     };
@@ -3661,7 +3705,7 @@ impl Live {
                     self.window = None;
                     self.context_loading = false;
                     self.reactors.clear();
-                    self.detail = Some(detail.clone());
+                    self.detail = detail.clone();
                     let mut timeline = core::Timeline::default();
                     if let Err(e) = timeline.reset(history.messages, &history.cursor) {
                         out.push(Update::Failed(e));
@@ -3677,7 +3721,7 @@ impl Live {
                     }
                     let channel = history.channel.id.clone();
                     self.channel = Some(channel.clone());
-                    self.space = Some(detail.space.id.clone());
+                    self.space = detail.as_ref().map(|d| d.space.id.clone());
                     self.direct = direct.then(|| channel.clone());
                     self.direct_name.clone_from(&history.channel.name);
                     let messages: Vec<core::Message> = timeline.messages().cloned().collect();
@@ -3697,8 +3741,8 @@ impl Live {
                     );
                     let (conversation, ids) = conversation(
                         &spaces,
-                        &detail,
-                        &channel,
+                        detail.as_ref(),
+                        Some(&channel),
                         &messages,
                         self.me.as_deref(),
                         false,
@@ -3707,7 +3751,7 @@ impl Live {
                     );
                     // Whether each joined channel's voice can be joined,
                     // once per account (egui's `refresh_media_status`).
-                    if !direct && let Some(token) = self.token.clone() {
+                    if !direct && let (Some(token), Some(detail)) = (self.token.clone(), &detail) {
                         for c in detail.channels.iter().filter(|c| c.joined) {
                             if self.status_asked.insert(c.id.clone()) {
                                 self.worker.send(Command::MediaStatus {
@@ -3732,13 +3776,13 @@ impl Live {
                     let media = gateway::MediaWatch {
                         epoch: current,
                         channels: detail
-                            .channels
                             .iter()
-                            .filter(|c| c.joined && !quiet)
+                            .flat_map(|d| d.channels.iter().map(move |c| (d, c)))
+                            .filter(|(_, c)| c.joined && !quiet)
                             .take(gateway::MAX_MEDIA_CHANNELS)
-                            .map(|c| gateway::MediaChannel {
+                            .map(|(d, c)| gateway::MediaChannel {
                                 id: c.id.clone(),
-                                demo: detail.space.demo,
+                                demo: d.space.demo,
                             })
                             .collect(),
                     };
@@ -3747,8 +3791,8 @@ impl Live {
                         self.invite_focus.take().filter(|(n, _)| *n == navigation)
                     {
                         match detail
-                            .channel_invitations
                             .iter()
+                            .flat_map(|d| &d.channel_invitations)
                             .find(|i| i.channel.id == channel)
                         {
                             Some(i) => out.push(Update::Invitation(Invitation::Channel(i.clone()))),
@@ -3768,7 +3812,7 @@ impl Live {
                         token: self.token.clone(),
                         channel,
                         cursor,
-                        presence: (!direct).then(|| (detail.space.id.clone(), Vec::new())),
+                        presence: detail.filter(|_| !direct).map(|d| (d.space.id, Vec::new())),
                         media,
                     });
                 }
@@ -4597,8 +4641,8 @@ fn time_label(created_at: &str) -> String {
 /// The displayed conversation for one channel's history.
 pub fn conversation(
     spaces: &core::Spaces,
-    detail: &core::SpaceDetail,
-    channel: &str,
+    detail: Option<&core::SpaceDetail>,
+    channel: Option<&str>,
     messages: &[core::Message],
     me: Option<&str>,
     thread: bool,
@@ -4609,7 +4653,7 @@ pub fn conversation(
     let order = if direct.is_some() {
         Vec::new()
     } else {
-        detail.member_order(Some(channel))
+        detail.map_or_else(Vec::new, |d| d.member_order(channel))
     };
     let mut ids = Ids {
         members: order.iter().map(|m| m.id.clone()).collect(),
@@ -4642,7 +4686,11 @@ pub fn conversation(
         }
         out.push(row);
     }
-    let joined: Vec<&core::Channel> = detail.channels.iter().filter(|c| c.joined).collect();
+    let joined: Vec<&core::Channel> = detail
+        .into_iter()
+        .flat_map(|d| &d.channels)
+        .filter(|c| c.joined)
+        .collect();
     ids.channels = joined.iter().map(|c| c.id.clone()).collect();
     let channels = joined
         .iter()
@@ -4651,13 +4699,13 @@ pub fn conversation(
             private: c.private,
         })
         .collect();
-    ids.open = Some(channel.to_owned());
+    ids.open = channel.map(str::to_owned);
     // A channel open from Browse that you haven't joined: no row is
     // selected and the header names it.
     let preview = detail
-        .channels
-        .iter()
-        .find(|c| direct.is_none() && c.id == channel && !c.joined)
+        .into_iter()
+        .flat_map(|d| &d.channels)
+        .find(|c| direct.is_none() && Some(c.id.as_str()) == channel && !c.joined)
         .map(|c| model::Channel {
             name: c.name.clone(),
             private: c.private,
@@ -4665,12 +4713,15 @@ pub fn conversation(
     let selected = if direct.is_some() || preview.is_some() {
         joined.len()
     } else {
-        joined.iter().position(|c| c.id == channel).unwrap_or(0)
+        joined
+            .iter()
+            .position(|c| Some(c.id.as_str()) == channel)
+            .unwrap_or(0)
     };
     let space = spaces
         .spaces
         .iter()
-        .position(|s| s.id == detail.space.id)
+        .position(|s| Some(s.id.as_str()) == detail.map(|d| d.space.id.as_str()))
         .unwrap_or(0);
     let spaces = spaces
         .spaces
@@ -4870,6 +4921,42 @@ mod tests {
             m[k] = v.clone();
         }
         serde_json::from_value(m).unwrap()
+    }
+
+    #[test]
+    fn no_space_can_show_an_empty_account_or_a_direct_without_stale_channels() {
+        let spaces = core::Spaces {
+            spaces: Vec::new(),
+            invitations: Vec::new(),
+            limits: None,
+        };
+        let (empty, ids) = conversation(&spaces, None, None, &[], None, false, None, None);
+        assert!(empty.spaces.is_empty() && empty.channels.is_empty() && empty.members.is_empty());
+        assert!(!empty.has_conversation());
+        assert_eq!(ids.open, None);
+        assert_eq!(empty.empty_text().0, Some("Start a conversation"));
+
+        let message = core_message(serde_json::json!({ "channelId": "dm" }));
+        let (direct, ids) = conversation(
+            &spaces,
+            None,
+            Some("dm"),
+            &[message],
+            Some("owner0000001"),
+            false,
+            None,
+            Some(model::Direct {
+                name: "Alex".into(),
+                own: false,
+                note: "".into(),
+            }),
+        );
+        assert!(direct.has_conversation());
+        assert!(direct.spaces.is_empty() && direct.channels.is_empty());
+        assert_eq!(direct.listed_members, 0);
+        assert_eq!(direct.title(), "Alex");
+        assert_eq!(ids.open.as_deref(), Some("dm"));
+        assert_eq!(direct.members[direct.messages[0].author].name, "Alex");
     }
 
     #[test]

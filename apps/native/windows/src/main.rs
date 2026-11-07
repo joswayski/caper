@@ -663,6 +663,9 @@ impl App {
                     self.status = None;
                     self.close_signin()?;
                     self.set_conversation(c)?;
+                    if !self.c.has_conversation() {
+                        self.set_composer_focus(false);
+                    }
                     let new = self.ids.open.clone();
                     self.composer.text = new
                         .and_then(|id| self.drafts.remove(&id))
@@ -1005,7 +1008,8 @@ impl App {
 
     pub fn set_composer_focus(&mut self, focused: bool) {
         // A request's bar stands in for the composer.
-        let focused = focused && self.dm_bar().is_none() && self.rec().is_none();
+        let focused =
+            focused && self.c.has_conversation() && self.dm_bar().is_none() && self.rec().is_none();
         // One text field has focus: the reply box in the thread gives it up.
         if focused
             && let Some(t) = &mut self.thread
@@ -1371,7 +1375,7 @@ impl App {
 
     fn in_box(&self, x: f32, y: f32) -> bool {
         let (bx, by, bw, bh) = self.box_rect();
-        x >= bx && x < bx + bw && y >= by && y < by + bh
+        self.c.has_conversation() && x >= bx && x < bx + bw && y >= by && y < by + bh
     }
 
     fn in_history(&self, x: f32, y: f32) -> bool {
@@ -2407,7 +2411,11 @@ impl App {
         self.box_h = self.box_height(bw)?;
         let (bx, by, _, _) = self.box_rect();
         self.composer_p.ensure(&self.g, px(bw), px(self.box_h))?;
-        self.composer_p.offset((bx * s).round(), (by * s).round())?;
+        if self.c.has_conversation() {
+            self.composer_p.offset((bx * s).round(), (by * s).round())?;
+        } else {
+            self.composer_p.offset(-10_000.0, 0.0)?;
+        }
         self.dirty.composer = true;
         self.relayout_reply();
         self.dirty.reply = true;
@@ -2939,7 +2947,7 @@ impl App {
                 let dim_text = dc.CreateSolidColorBrush(&gfx::color(TEXT, 0.5), None)?;
                 let dim_muted = dc.CreateSolidColorBrush(&gfx::color(TEXT_MUTED, 0.5), None)?;
                 let t = g.layout(
-                    &gfx::wide(&c.spaces[c.space].name),
+                    &gfx::wide(c.spaces.get(c.space).map_or("Caper", |s| s.name.as_str())),
                     &g.formats.space,
                     10_000.0,
                 )?;
@@ -3087,7 +3095,7 @@ impl App {
             })?;
         }
         if d.header {
-            let (name, hashed) = (c.title(), c.direct.is_none());
+            let (name, hashed) = (c.title(), c.has_conversation() && c.direct.is_none());
             let lw = self.list_w();
             let status = self.status.as_ref().map(|(s, e)| (s.as_str(), *e));
             self.header.draw(s, |dc| unsafe {

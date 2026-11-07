@@ -142,6 +142,10 @@ impl Conversation {
         self.demo.is_none()
     }
 
+    pub fn has_conversation(&self) -> bool {
+        self.direct.is_some() || self.preview.is_some() || self.channel < self.channels.len()
+    }
+
     pub fn live(
         spaces: Vec<Space>,
         space: usize,
@@ -190,6 +194,12 @@ impl Conversation {
     /// What an empty conversation shows: "No messages yet." and its note
     /// (egui's), or your own DM's single line.
     pub fn empty_text(&self) -> (Option<&'static str>, String) {
+        if !self.has_conversation() {
+            return (
+                Some("Start a conversation"),
+                "Create a space for your people, or start a direct message.".into(),
+            );
+        }
         match &self.direct {
             Some(d) if d.own => (
                 None,
