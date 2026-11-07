@@ -30,6 +30,8 @@ pub(super) struct Picker {
     root: Option<String>,
     /// The conversation it opened in; navigating away closes it.
     channel: Option<String>,
+    /// The inbox row it answers instead of a composer.
+    activity: Option<caper_client::activity::Item>,
     kind: Kind,
     tabs: [gtk::ToggleButton; 2],
     search: gtk::SearchEntry,
@@ -91,16 +93,39 @@ impl App {
         self.ui.composer.gif.set_visible(shown && !editing);
         self.ui.thread_composer.gif.set_visible(shown);
         let stale = self.gif_picker.borrow().as_ref().is_some_and(|picker| {
-            !shown
-                || picker.channel != state.channel
-                || picker.root.as_ref().is_some_and(|root| {
-                    state
-                        .thread
-                        .as_ref()
-                        .is_none_or(|thread| thread.root != *root)
-                })
+            // The inbox's picker answers a row, not the open conversation.
+            picker.activity.is_none()
+                && (!shown
+                    || picker.channel != state.channel
+                    || picker.root.as_ref().is_some_and(|root| {
+                        state
+                            .thread
+                            .as_ref()
+                            .is_none_or(|thread| thread.root != *root)
+                    }))
         });
         if stale {
+            self.close_gif_picker();
+        }
+    }
+
+    /// The inbox reply's GIF option, answering `item`.
+    pub(super) fn open_activity_gifs(
+        self: &Rc<Self>,
+        item: caper_client::activity::Item,
+        anchor: &gtk::Widget,
+    ) {
+        self.close_gif_picker();
+        self.open_gif_picker(None, None, Some(item), anchor);
+    }
+
+    /// Closes a picker opened from the inbox.
+    pub(super) fn close_activity_gifs(&self) {
+        let inbox = self.gif_picker.try_borrow().is_ok_and(|open| {
+            open.as_ref()
+                .is_some_and(|picker| picker.activity.is_some())
+        });
+        if inbox {
             self.close_gif_picker();
         }
     }
@@ -124,11 +149,21 @@ impl App {
             .gif_picker
             .borrow()
             .as_ref()
-            .is_some_and(|picker| picker.root == root);
+            .is_some_and(|picker| picker.activity.is_none() && picker.root == root);
         self.close_gif_picker();
         if same || thread && root.is_none() {
             return;
         }
+        self.open_gif_picker(root, channel, None, anchor);
+    }
+
+    fn open_gif_picker(
+        self: &Rc<Self>,
+        root: Option<String>,
+        channel: Option<String>,
+        activity: Option<caper_client::activity::Item>,
+        anchor: &gtk::Widget,
+    ) {
         let popover: gtk::Popover = super::named("GtkPopover", "GIFs and stickers");
         popover.add_css_class("gif-picker");
         popover.set_position(gtk::PositionType::Top);
@@ -268,6 +303,7 @@ impl App {
             popover: popover.clone(),
             root,
             channel,
+            activity,
             kind: Kind::Gif,
             tabs: [gifs, stickers],
             search: search.clone(),
@@ -418,15 +454,27 @@ impl App {
     }
 
     fn choose_gif(self: &Rc<Self>, gif: Gif, kind: Kind, query: String) {
-        let Some(root) = self
+        let Some((root, activity)) = self
             .gif_picker
             .borrow()
             .as_ref()
-            .map(|picker| picker.root.clone())
+            .map(|picker| (picker.root.clone(), picker.activity.clone()))
         else {
             return;
         };
         self.close_gif_picker();
+        if let Some(item) = activity {
+            let share = self.state.borrow().klipy.clone().map(|config| Share {
+                config,
+                kind,
+                slug: gif.slug.clone(),
+                query,
+            });
+            if let Some(share) = share {
+                self.send_inbox_reply(&item, Some((gif, share)));
+            }
+            return;
+        }
         self.send_gif(root, gif, kind, query);
     }
 

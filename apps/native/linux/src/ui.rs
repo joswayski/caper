@@ -179,6 +179,8 @@ pub struct Ui {
     pub first_limit: gtk::Label,
     pub first_error: gtk::Label,
     pub first_logout: gtk::Button,
+    /// "Notifications" on the first-space page.
+    pub first_inbox: gtk::Button,
     pub rail: gtk::Box,
     pub space_name: gtk::Label,
     pub space_header: gtk::Button,
@@ -190,6 +192,8 @@ pub struct Ui {
     pub channels: gtk::ListBox,
     /// "Message requests" (its first row toggles) and the incoming requests.
     pub requests: gtk::ListBox,
+    /// "Notifications" or "Notifications · N": opens the inbox.
+    pub inbox: gtk::Button,
     pub directs: gtk::ListBox,
     pub account_avatar: AvatarView,
     pub account_name: gtk::Label,
@@ -363,6 +367,10 @@ impl Ui {
         wordmark_line.set_halign(gtk::Align::Start);
         wordmark_line.append(&wordmark);
         first.append(&wordmark_line);
+        let first_inbox = gtk::Button::with_label("Notifications");
+        first_inbox.add_css_class("inbox-button");
+        first_inbox.set_halign(gtk::Align::Start);
+        first.append(&first_inbox);
         let first_title = label("Name your space", &["first-title"]);
         first_title.set_xalign(0.0);
         first.append(&first_title);
@@ -481,6 +489,10 @@ impl Ui {
         new_direct.set_valign(gtk::Align::End);
         direct_header.append(&new_direct);
         lists.append(&direct_header);
+        // The notifications inbox, with its unread count.
+        let inbox = gtk::Button::with_label("Notifications");
+        inbox.add_css_class("inbox-button");
+        lists.append(&inbox);
         let requests: gtk::ListBox = crate::app::named("GtkListBox", "Message requests");
         requests.add_css_class("channels");
         requests.set_visible(false);
@@ -786,6 +798,7 @@ impl Ui {
             first_limit,
             first_error,
             first_logout,
+            first_inbox,
             rail,
             space_name,
             space_header,
@@ -795,6 +808,7 @@ impl Ui {
             channel_invites,
             channels,
             requests,
+            inbox,
             directs,
             account_avatar,
             account_name,

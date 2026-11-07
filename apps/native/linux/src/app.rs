@@ -49,6 +49,8 @@ mod forward;
 mod gifs;
 #[path = "history.rs"]
 mod history;
+#[path = "inbox.rs"]
+mod inbox;
 #[path = "members.rs"]
 mod members;
 #[path = "notify.rs"]
@@ -301,6 +303,14 @@ struct State {
     context_loading: bool,
     /// Reply quotes shown in full, by the replying message.
     expanded_quotes: HashSet<String>,
+    /// The notifications inbox, and each row's inline reply.
+    inbox: caper_client::activity::Inbox,
+    replies: HashMap<String, inbox::Reply>,
+    /// An inbox row's message to bring into view once its conversation
+    /// loads: the navigation, channel, message and thread root.
+    arrival: Option<(u64, String, String, Option<String>)>,
+    /// That message, ready to jump to.
+    arrival_ready: Option<(String, Option<String>)>,
     /// Privacy and notification settings.
     settings: settings::AccountSettings,
     /// Space and channel management, invites and membership.
@@ -479,6 +489,7 @@ pub struct App {
     report: RefCell<Option<audio::ReportDialog>>,
     history_window: RefCell<Option<history::HistoryWindow>>,
     gif_picker: RefCell<Option<gifs::Picker>>,
+    inbox_window: RefCell<Option<inbox::InboxWindow>>,
     /// The open View reactions window.
     reactors_window: RefCell<Option<reactors::ReactorsWindow>>,
     /// The open attachment editor.
@@ -582,6 +593,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         request_ids: RefCell::default(),
         reactors_window: RefCell::default(),
         history_window: RefCell::default(),
+        inbox_window: RefCell::default(),
         gif_picker: RefCell::default(),
         members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
@@ -620,6 +632,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.connect_drop();
     app.connect_requests();
     app.connect_gifs();
+    app.connect_inbox();
     app.install_actions();
     app.install_shortcuts();
     app.install_notification_actions();
@@ -1147,6 +1160,7 @@ impl App {
         self.close_forward();
         self.close_profile_editor();
         self.close_settings();
+        self.close_inbox();
         for window in [
             self.admin_window.borrow_mut().take().map(|w| w.window),
             self.confirm_window.borrow_mut().take().map(|w| w.window),
@@ -3010,7 +3024,8 @@ impl App {
                         result,
                     } => forwards.push((generation, request, result)),
                     Event::NotificationActivity { epoch } if epoch == state.epoch => {
-                        // Unread state changed somewhere.
+                        // Unread state changed somewhere; an open inbox refreshes.
+                        state.inbox.refreshed = None;
                         self.refresh_unread(&mut state);
                         self.load_directs(&state);
                     }
@@ -3025,7 +3040,8 @@ impl App {
                     event @ (Event::Profiled { .. }
                     | Event::AvatarHistory { .. }
                     | Event::Picture { .. }
-                    | Event::OpenNotification { .. }) => deferred.push(event),
+                    | Event::OpenNotification { .. }
+                    | Event::ActivityRead { .. }) => deferred.push(event),
                     event => self.handle(&mut state, event),
                 }
             }
@@ -3056,6 +3072,15 @@ impl App {
                 Event::OpenNotification { epoch, alert } if epoch == self.state.borrow().epoch => {
                     self.open_alert(alert)
                 }
+                Event::ActivityRead {
+                    epoch,
+                    navigation,
+                    item,
+                    open,
+                    result,
+                } if epoch == self.state.borrow().epoch => {
+                    self.inbox_read(navigation, item, open, result)
+                }
                 _ => {}
             }
         }
@@ -3066,6 +3091,10 @@ impl App {
             self.open_profile_editor();
         }
         self.follow_forward();
+        let arrived = self.state.borrow_mut().arrival_ready.take();
+        if let Some((message, root)) = arrived {
+            self.jump_to_message(message, root);
+        }
         let thread = self.state.borrow_mut().forward_thread.take();
         if let Some((root, focus)) = thread {
             self.open_thread_at(root, focus);
@@ -3086,6 +3115,7 @@ impl App {
             self.open_direct(id);
         }
         self.render_profile();
+        self.render_inbox();
         self.render_settings();
         self.render_start_direct();
         self.start_membership_refresh();
@@ -3219,6 +3249,24 @@ impl App {
             Event::Account { epoch, result } if epoch == state.epoch => {
                 self.account_result(state, result);
             }
+            Event::ActivityLoaded {
+                epoch,
+                request,
+                more,
+                result,
+            } if epoch == state.epoch => state.inbox.finish(request, more, result),
+            Event::ActivitySent {
+                epoch,
+                send,
+                result,
+            } if epoch == state.epoch => {
+                self.inbox_reply_sent(state, &send, result);
+            }
+            Event::ActivityReacted {
+                epoch,
+                request,
+                result,
+            } if epoch == state.epoch => self.inbox_reacted(state, request, result),
             Event::ProfileStatus {
                 epoch,
                 person,
@@ -3316,6 +3364,9 @@ impl App {
                     })
                     .collect();
                 state.reads = reads;
+                if let Some(count) = unread.badge_count {
+                    state.inbox.unread_count = count;
+                }
                 state.layout += 1;
                 self.clear_open_unread(state);
             }
@@ -3765,6 +3816,12 @@ impl App {
                             self.mark_read(state);
                         }
                         self.clear_open_unread(state);
+                        if let Some((navigation, channel, message, root)) = state.arrival.take()
+                            && navigation == state.navigation
+                            && state.channel.as_deref() == Some(&channel)
+                        {
+                            state.arrival_ready = Some((message, root));
+                        }
                         if let Some((navigation, channel, root, focus)) = state.forward_focus.take()
                             && navigation == state.navigation
                             && state.channel.as_deref() == Some(&channel)

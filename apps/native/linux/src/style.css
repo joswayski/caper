@@ -1577,3 +1577,28 @@ button.gif-tile {
   border-radius: 6px;
   background: @caper_surface_raised;
 }
+
+/* The notifications inbox: its sidebar button and rows. */
+button.inbox-button {
+  min-height: 32px;
+  margin: 2px 8px 4px 16px;
+}
+
+.inbox-row {
+  padding: 6px 0;
+}
+
+button.inbox-open {
+  min-height: 0;
+  padding: 2px 0;
+}
+
+button.inbox-open:hover {
+  background: none;
+}
+
+button.small-action {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
