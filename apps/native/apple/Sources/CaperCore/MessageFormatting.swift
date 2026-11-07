@@ -1,4 +1,5 @@
 import Foundation
+@_implementationOnly import CaperMobile
 
 struct FormattedMessageRun: Equatable, Decodable {
     var text: String
@@ -72,67 +73,25 @@ public enum MessageFormatting {
         return parsed.sourceRange(string.rangeOfComposedCharacterSequence(at: visible.location))
     }
 
+    /// Parsed by the shared Rust grammar (shared/messages/formatting.rs), which
+    /// returns each visible span's UTF-16 and UTF-8 offsets.
     static func projection(_ text: String) -> Projection {
-        let units = Array(text.utf16)
-        var links: [Range<Int>] = []
-        var offset = 0
-        for segment in MessageLinks.segments(in: text) {
-            let end = offset + segment.text.utf16.count
-            if segment.href != nil { links.append(offset..<end) }
-            offset = end
-        }
-        func at(_ index: Int) -> UInt16? { units.indices.contains(index) ? units[index] : nil }
-        func word(_ value: UInt16?) -> Bool {
-            guard let value else { return false }
-            return (65...90).contains(value) || (97...122).contains(value) || (48...57).contains(value) || value == 95 || value == 64
-        }
-        func space(_ value: UInt16?) -> Bool {
-            guard let value else { return false }
-            // ECMAScript \s (unlike Unicode White_Space, includes BOM, excludes NEL).
-            return (9...13).contains(value) || [32, 160, 5760, 8232, 8233, 8239, 8287, 12288, 65279].contains(value) || (8192...8202).contains(value)
-        }
-        func markerAt(_ index: Int, _ marker: [UInt16]) -> Bool {
-            guard index + marker.count <= units.count, Array(units[index..<(index + marker.count)]) == marker,
-                  !links.contains(where: { $0.contains(index) }) else { return false }
-            var slash = index - 1
-            while at(slash) == 92 { slash -= 1 }
-            guard (index - 1 - slash) % 2 == 0 else { return false }
-            return marker.count != 2 || (at(index - 1) != 42 && at(index + 2) != 42)
-        }
-        var result: [FormattedMessageRun] = []
-        var sourceIndices: [Int] = []
-        func append(_ start: Int, _ end: Int, _ bold: Bool, _ italic: Bool) {
-            guard end > start else { return }
-            sourceIndices.append(contentsOf: start..<end)
-            let value = String(decoding: units[start..<end], as: UTF16.self)
-            if let last = result.last, last.bold == bold, last.italic == italic { result[result.count - 1].text += value }
-            else { result.append(.init(text: value, bold: bold, italic: italic)) }
-        }
-        func parse(_ start: Int, _ end: Int, _ bold: Bool, _ italic: Bool) {
-            var plain = start, index = start
-            while index < end {
-                let marker: [UInt16] = !bold && markerAt(index, [42, 42]) ? [42, 42] : !italic && markerAt(index, [95]) ? [95] : []
-                if !marker.isEmpty, !(marker.count == 1 && word(at(index - 1))) {
-                    let inner = index + marker.count
-                    if inner < end, !space(at(inner)) {
-                        var close = inner
-                        while close + marker.count <= end {
-                            if close != inner, markerAt(close, marker), !space(at(close - 1)), !(marker.count == 1 && word(at(close + 1))) {
-                                append(plain, index, bold, italic)
-                                parse(inner, close, bold || marker.count == 2, italic || marker.count == 1)
-                                index = close + marker.count - 1; plain = index + 1
-                                break
-                            }
-                            close += 1
-                        }
-                    }
-                }
-                index += 1
+        var source = text
+        return source.withUTF8 { bytes in
+            let spans = caper_mobile_format_spans(bytes.baseAddress, bytes.count)
+            defer { caper_mobile_ints_free(spans) }
+            var result: [FormattedMessageRun] = []
+            var sourceIndices: [Int] = []
+            for span in stride(from: 0, to: spans.len, by: 5) {
+                let values = spans.data.advanced(by: span)
+                let value = String(decoding: UnsafeBufferPointer(rebasing: bytes[Int(values[2])..<Int(values[3])]), as: UTF8.self)
+                let bold = values[4] & 1 != 0, italic = values[4] & 2 != 0
+                sourceIndices.append(contentsOf: Int(values[0])..<Int(values[1]))
+                if let last = result.last, last.bold == bold, last.italic == italic { result[result.count - 1].text += value }
+                else { result.append(.init(text: value, bold: bold, italic: italic)) }
             }
-            append(plain, end, bold, italic)
+            return Projection(runs: result, sourceIndices: sourceIndices, sourceLength: text.utf16.count)
         }
-        parse(0, units.count, false, false)
-        return Projection(runs: result, sourceIndices: sourceIndices, sourceLength: units.count)
     }
 
     /// Edits may erase one side or all contents of a style. Drop only punctuation

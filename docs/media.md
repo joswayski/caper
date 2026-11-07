@@ -2415,7 +2415,7 @@ expand a draft beyond 4,000 characters. Unmatched and backslash-escaped markers,
 underscores in identifiers and URL contents stay literal. HTML, custom links,
 headings, lists and other Markdown are not interpreted; older clients show the
 source markers. All clients' parser tests share
-`shared/messages/formatting-cases.json`; the API, desktop and Android share the Rust parser.
+`shared/messages/formatting-cases.json`; the API, desktop, Android and Apple share the Rust parser.
 
 Selecting part of a URL disables formatting (including shortcuts); selecting the
 whole URL is allowed. Selections the grammar cannot express (such as part of an
@@ -2450,8 +2450,8 @@ browser; on web in a new tab with `rel="noopener noreferrer nofollow ugc"`. They
 apply to message bodies in the timeline, threads, Pins and forwarded cards, not to
 edit-history diffs or the composer.
 
-The algorithm lives in `apps/web/src/chat/links.ts`, `shared/messages/links.rs`
-(API, desktop and Android), and the Apple client; every client's tests assert the
+The algorithm lives in `apps/web/src/chat/links.ts` and `shared/messages/links.rs`
+(API, desktop, Android and Apple); every client's tests assert the
 same segments for every case in `shared/messages/link-cases.json`. Change the rules
 and that file together.
 
