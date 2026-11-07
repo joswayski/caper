@@ -245,12 +245,30 @@ import CaperCore
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func setValue(_ value: Int) { integerValue = value; setAccessibilityValue("\(value)%") }
+    override var acceptsFirstResponder: Bool { isEnabled }
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 123, 125: _ = step(-1)
+        case 124, 126: _ = step(1)
+        default: super.keyDown(with: event)
+        }
+    }
+    override func accessibilityPerformIncrement() -> Bool { step(1) }
+    override func accessibilityPerformDecrement() -> Bool { step(-1) }
+    private func step(_ delta: Int) -> Bool {
+        guard isEnabled else { return false }
+        let value = min(Int(maxValue), max(Int(minValue), integerValue + delta))
+        setValue(value); changed(value); VoicePresentation.sliderFeedback(Double(value))
+        return true
+    }
     @objc private func adjusted() {
         let pointer = NSApp.currentEvent?.type == .leftMouseDragged
         let value = pointer && abs(doubleValue - 100) <= 4 ? 100 : Int(doubleValue.rounded())
         setValue(value); changed(value); VoicePresentation.sliderFeedback(Double(value))
     }
     override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        window?.makeFirstResponder(self)
         if event.clickCount == 2 { setValue(100); changed(100); VoicePresentation.sliderFeedback(100) }
         else { super.mouseDown(with: event) }
     }
