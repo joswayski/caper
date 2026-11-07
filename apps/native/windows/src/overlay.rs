@@ -255,6 +255,10 @@ pub enum Kind {
     /// "You\u{2019}re invited!" to a space, or a private channel's
     /// invitation: Decline or Accept invitation.
     Invitation,
+    /// "Create a space" and "Create a channel": a name, and a
+    /// channel's privacy.
+    CreateSpace,
+    CreateChannel,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -285,6 +289,11 @@ pub enum Part {
     Channel(usize),
     /// The invite link's space, who invited you and what joining opens.
     Preview,
+    /// A field's label above it, Create a channel's guidance, and its
+    /// Private channel switch.
+    Label,
+    Guide,
+    Toggle,
 }
 
 impl Part {
@@ -305,6 +314,9 @@ impl Part {
             Self::Retry => 11,
             Self::Older => 12,
             Self::Preview => 13,
+            Self::Label => 14,
+            Self::Guide => 15,
+            Self::Toggle => 16,
             Self::Column(k) => 16 + k as usize,
             Self::Version(k) => 32 + k,
             Self::Suggest(k) => 10_000 + k,
@@ -320,11 +332,11 @@ impl Part {
 
 pub(crate) const CARD_PAD: f32 = 24.0;
 const BUTTON_H: f32 = 36.0;
-const FIELD_PAD_X: f32 = 10.0;
+pub(crate) const FIELD_PAD_X: f32 = 10.0;
 const FIELD_PAD_Y: f32 = 8.0;
 /// The edit field shows this many lines, then scrolls.
 const FIELD_LINES: f32 = 6.0;
-const DIRECT_FIELD_H: f32 = 42.0;
+pub(crate) const DIRECT_FIELD_H: f32 = 42.0;
 /// A suggested person's row, and the highlighted row's fill (egui's).
 const SUGGEST_H: f32 = 44.0;
 const SUGGEST_SELECTED: u32 = 0x43241E;
@@ -382,6 +394,9 @@ pub struct Dialog {
     /// The invitation answered, and whether Decline was the answer.
     pub invitation: Option<Box<crate::live::Invitation>>,
     pub declining: bool,
+    /// Create a channel's privacy, and the space it is created in.
+    pub private: bool,
+    pub space_name: String,
     pub(crate) parts: Vec<(Part, Rect)>,
     pub(crate) card: Rect,
 }
@@ -454,6 +469,8 @@ impl Dialog {
             invite: None,
             invitation: None,
             declining: false,
+            private: false,
+            space_name: String::new(),
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -477,6 +494,8 @@ impl Dialog {
             ),
             Kind::Browse => "Browse channels".into(),
             Kind::JoinInvite | Kind::Invitation => self.invite_title().into(),
+            Kind::CreateSpace => "Create a space".into(),
+            Kind::CreateChannel => "Create a channel".into(),
             Kind::LeaveSpace | Kind::LeaveChannel => {
                 let name = self.leave.as_ref().map_or("", |l| l.name.as_str());
                 if self.kind == Kind::LeaveChannel {
@@ -507,6 +526,7 @@ impl Dialog {
                 self.browse.as_ref().map_or("", |b| b.space_name.as_str())
             ),
             Kind::JoinInvite | Kind::Invitation => self.invite_note(),
+            Kind::CreateSpace | Kind::CreateChannel => String::new(),
             Kind::LeaveSpace => "You will lose access to its channels and conversations. An owner can add you again later.".into(),
             Kind::LeaveChannel if self.leave.as_ref().is_some_and(|l| l.private) => {
                 "You\u{2019}ll lose access and need another invitation to return. You\u{2019}ll disconnect from this channel\u{2019}s voice call.".into()
@@ -592,6 +612,9 @@ impl Dialog {
             (Kind::LeaveChannel, false) => "Leave channel",
             (Kind::LeaveSpace | Kind::LeaveChannel, true) => "Leaving\u{2026}",
             (Kind::JoinInvite | Kind::Invitation, _) => self.invite_primary(),
+            (Kind::CreateSpace, false) => "Create space",
+            (Kind::CreateChannel, false) => "Create channel",
+            (Kind::CreateSpace | Kind::CreateChannel, true) => "Creating\u{2026}",
         }
     }
 
@@ -618,11 +641,15 @@ impl Dialog {
                             self.invite.is_some() || !self.draft().trim().is_empty()
                         }
                         Kind::Invitation => true,
+                        Kind::CreateSpace | Kind::CreateChannel => !self.create_name().is_empty(),
                     }
             }
-            Part::Cancel | Part::Reload | Part::Field | Part::Suggest(_) | Part::Channel(_) => {
-                !self.busy
-            }
+            Part::Cancel
+            | Part::Reload
+            | Part::Field
+            | Part::Suggest(_)
+            | Part::Channel(_)
+            | Part::Toggle => !self.busy,
             Part::Retry | Part::Older => self.history.as_ref().is_some_and(|v| !v.loading),
             Part::Title
             | Part::Note
@@ -633,7 +660,9 @@ impl Dialog {
             | Part::Version(_)
             | Part::Hint
             | Part::Loading
-            | Part::Preview => true,
+            | Part::Preview
+            | Part::Label
+            | Part::Guide => true,
         }
     }
 
@@ -663,6 +692,7 @@ impl Dialog {
                         | Part::Older
                         | Part::Suggest(_)
                         | Part::Channel(_)
+                        | Part::Toggle
                 ) && contains(*r, x, y)
                     && match self.kind {
                         Kind::History => !p.in_body() || contains(self.body, x, y),
@@ -745,6 +775,9 @@ impl Dialog {
                 y += DIRECT_FIELD_H;
             }
         }
+        if matches!(self.kind, Kind::CreateSpace | Kind::CreateChannel) {
+            y = self.relayout_create(g, inner, y, &mut parts)?;
+        }
         if self.kind == Kind::Edit {
             y += 12.0;
             self.field
@@ -809,10 +842,18 @@ impl Dialog {
         self.parts = parts;
         if let Some((fx, fy, _, fh)) = self.part_rect(Part::Field) {
             let pad = match self.kind {
-                Kind::StartDirect | Kind::JoinInvite => (fh - LINE) / 2.0,
+                Kind::StartDirect | Kind::JoinInvite | Kind::CreateSpace | Kind::CreateChannel => {
+                    (fh - LINE) / 2.0
+                }
                 _ => FIELD_PAD_Y,
             };
-            self.field_origin = (fx + FIELD_PAD_X, fy + pad);
+            // Create a channel's field starts after its # or lock.
+            let icon = if self.kind == Kind::CreateChannel {
+                crate::manage::ICON_W
+            } else {
+                0.0
+            };
+            self.field_origin = (fx + FIELD_PAD_X + icon, fy + pad);
         }
         Ok(())
     }
@@ -878,6 +919,12 @@ impl Dialog {
                             Kind::StartDirect => {
                                 Some(layout(g, "Username", &g.formats.composer, 1e6)?)
                             }
+                            Kind::CreateSpace => {
+                                Some(layout(g, "Gaming nights", &g.formats.composer, 1e6)?)
+                            }
+                            Kind::CreateChannel => {
+                                Some(layout(g, "project-updates", &g.formats.composer, 1e6)?)
+                            }
                             // web's and egui's example under an empty field.
                             Kind::JoinInvite => Some(layout(
                                 g,
@@ -895,6 +942,9 @@ impl Dialog {
                             hint.as_ref().map(|l| (l, &g.brushes.muted)),
                         );
                         dc.PopAxisAlignedClip();
+                        if self.kind == Kind::CreateChannel {
+                            self.draw_channel_icon(dc, (x, y, pw, ph));
+                        }
                         if self.kind == Kind::Edit {
                             let counter = layout(g, &self.counter(), &g.formats.quote_meta, 1e6)?;
                             crate::text::draw(
@@ -909,10 +959,18 @@ impl Dialog {
                     Part::Hint => {
                         let format = match self.kind {
                             Kind::Invitation => &g.formats.direct_name,
+                            Kind::CreateChannel => &g.formats.direct_note,
                             _ => &g.formats.dialog_note,
                         };
+                        let brush = match self.kind {
+                            Kind::CreateChannel => &g.brushes.muted,
+                            _ => &g.brushes.text,
+                        };
                         let l = layout(g, &self.hint_text(), format, pw)?;
-                        crate::text::draw(dc, &l, x, y, &g.brushes.text);
+                        crate::text::draw(dc, &l, x, y, brush);
+                    }
+                    Part::Label | Part::Guide | Part::Toggle => {
+                        self.draw_create_part(g, dc, *part, (x, y, pw, ph))?
                     }
                     Part::Preview => self.draw_preview(g, dc, (x, y, pw, ph))?,
                     Part::Error => {
@@ -1171,7 +1229,12 @@ impl App {
         self.set_composer_focus(false);
         let editing = matches!(
             d.kind,
-            Kind::Edit | Kind::StartDirect | Kind::Browse | Kind::JoinInvite
+            Kind::Edit
+                | Kind::StartDirect
+                | Kind::Browse
+                | Kind::JoinInvite
+                | Kind::CreateSpace
+                | Kind::CreateChannel
         );
         self.dialog = Some(d);
         if editing {
@@ -1212,7 +1275,13 @@ impl App {
                 d.username_changed(self.live.as_ref());
             }
             // Editing the link clears why the last one failed.
-            if d.kind == Kind::JoinInvite {
+            if matches!(d.kind, Kind::CreateSpace | Kind::CreateChannel) {
+                d.normalize_name();
+            }
+            if matches!(
+                d.kind,
+                Kind::JoinInvite | Kind::CreateSpace | Kind::CreateChannel
+            ) {
                 let typed = d.draft();
                 if typed != d.resolved {
                     d.error = None;
@@ -1246,6 +1315,31 @@ impl App {
                 d.declining = part == Part::Cancel;
                 d.error = None;
                 live.answer_invitation(invitation, part == Part::Primary);
+            }
+            Part::Toggle => {
+                d.private = !d.private;
+                if let Some(live) = &mut self.live {
+                    live.effects.toggle(d.private);
+                }
+            }
+            Part::Primary if matches!(d.kind, Kind::CreateSpace | Kind::CreateChannel) => {
+                let Some(live) = &mut self.live else { return };
+                // Web validates on submit and says why.
+                let name = d.create_name();
+                let channel = d.kind == Kind::CreateChannel;
+                let invalid = if channel {
+                    caper_client::names::channel_name_error(&name)
+                } else {
+                    caper_client::names::space_name_error(&name)
+                };
+                match invalid {
+                    Some(e) => d.error = Some(e.into()),
+                    None => {
+                        d.busy = true;
+                        d.error = None;
+                        live.create(name, channel.then_some(d.private));
+                    }
+                }
             }
             Part::Primary if d.kind == Kind::JoinInvite => {
                 let Some(live) = &mut self.live else { return };
@@ -1337,7 +1431,9 @@ impl App {
             | Part::Choose
             | Part::Hint
             | Part::Loading
-            | Part::Preview => {}
+            | Part::Preview
+            | Part::Label
+            | Part::Guide => {}
         }
         self.dialog_changed();
         if let Err(e) = self.drain_live() {
@@ -1462,7 +1558,11 @@ impl App {
         let Some(d) = self.dialog.as_mut().filter(|d| {
             matches!(
                 d.kind,
-                Kind::LeaveSpace | Kind::LeaveChannel | Kind::Invitation
+                Kind::LeaveSpace
+                    | Kind::LeaveChannel
+                    | Kind::Invitation
+                    | Kind::CreateSpace
+                    | Kind::CreateChannel
             ) && d.busy
         }) else {
             return;
@@ -1691,7 +1791,16 @@ impl App {
                     }
                     // Ctrl+Enter saves, as in the egui client; Enter finds or
                     // opens the New DM's person.
-                    VK_RETURN if ctrl || matches!(d.kind, Kind::StartDirect | Kind::JoinInvite) => {
+                    VK_RETURN
+                        if ctrl
+                            || matches!(
+                                d.kind,
+                                Kind::StartDirect
+                                    | Kind::JoinInvite
+                                    | Kind::CreateSpace
+                                    | Kind::CreateChannel
+                            ) =>
+                    {
                         self.dialog_activate(Part::Primary)
                     }
                     VK_RETURN if d.kind == Kind::Edit && d.field.focused && !d.busy => {
@@ -1719,7 +1828,12 @@ impl App {
                 let c = wp.0 as u16;
                 if matches!(
                     d.kind,
-                    Kind::Edit | Kind::StartDirect | Kind::Browse | Kind::JoinInvite
+                    Kind::Edit
+                        | Kind::StartDirect
+                        | Kind::Browse
+                        | Kind::JoinInvite
+                        | Kind::CreateSpace
+                        | Kind::CreateChannel
                 ) && d.field.focused
                     && !d.busy
                     && !ctrl

@@ -261,7 +261,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .chain(
                 a.invite_spots()
                     .into_iter()
-                    .filter(|s| !matches!(s, crate::invites::Spot::Channel(_)))
+                    .filter(|s| !s.in_sidebar())
                     .map(Id::Invite),
             )
             .collect(),
@@ -280,7 +280,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .chain(
                 a.invite_spots()
                     .into_iter()
-                    .filter(|s| matches!(s, crate::invites::Spot::Channel(_)))
+                    .filter(|s| s.in_sidebar())
                     .map(Id::Invite),
             )
             .collect(),
@@ -328,7 +328,7 @@ fn parent(id: Id) -> Option<Id> {
     Some(match id {
         Id::Root => return None,
         Id::Space(_) => Id::Rail,
-        Id::Invite(crate::invites::Spot::Channel(_)) => Id::Channels,
+        Id::Invite(s) if s.in_sidebar() => Id::Channels,
         Id::Invite(_) => Id::Rail,
         Id::Channel(_)
         | Id::ChannelOptions(_)
@@ -562,11 +562,23 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Field if d.kind == Kind::StartDirect => "Username".into(),
                 DPart::Field if d.kind == Kind::Browse => "Search channels".into(),
                 DPart::Field if d.kind == Kind::JoinInvite => "Invite link".into(),
+                DPart::Field | DPart::Label
+                    if matches!(d.kind, Kind::CreateSpace | Kind::CreateChannel) =>
+                {
+                    d.create_label().into()
+                }
+                DPart::Guide => crate::manage::GUIDE.into(),
+                DPart::Toggle => "Private channel".into(),
                 DPart::Preview => d.preview_label(),
                 DPart::Hint if d.kind == Kind::Browse => d.browse_empty().into(),
                 DPart::Channel(k) => d.browse_row_name(k),
                 DPart::Field => "Message".into(),
-                DPart::Hint if matches!(d.kind, Kind::StartDirect | Kind::Invitation) => {
+                DPart::Hint
+                    if matches!(
+                        d.kind,
+                        Kind::StartDirect | Kind::Invitation | Kind::CreateChannel
+                    ) =>
+                {
                     d.hint_text()
                 }
                 DPart::Error => d.error.clone().unwrap_or_default(),
@@ -709,8 +721,11 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
             | DPart::Choose
             | DPart::Hint
             | DPart::Loading
-            | DPart::Preview,
+            | DPart::Preview
+            | DPart::Label
+            | DPart::Guide,
         ) => UIA_TextControlTypeId,
+        Id::Dialog(DPart::Toggle) => UIA_CheckBoxControlTypeId,
         Id::Dialog(_) => UIA_ButtonControlTypeId,
         Id::Sign(_) | Id::Control(..) => UIA_ButtonControlTypeId,
     }
@@ -1083,6 +1098,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     || pattern == UIA_TextPattern2Id
             }
             Id::Gif(_) => pattern == UIA_InvokePatternId,
+            Id::Dialog(DPart::Toggle) => pattern == UIA_TogglePatternId,
             Id::Dialog(DPart::Field) => {
                 pattern == UIA_ValuePatternId
                     || pattern == UIA_TextPatternId
@@ -1196,6 +1212,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     (Id::Sign(Part::Field), Some(s)) => s.editable(),
                     (Id::Sign(Part::Title | Part::Message), _) => true,
                     (Id::Dialog(p), _) => a.dialog.as_ref().is_some_and(|d| d.enabled(p)),
+                    (Id::Invite(s), _) => a.invite_enabled(s),
                     (Id::Settings(p), _) => a.settings.as_ref().is_some_and(|s| s.enabled(p)),
                     (Id::Voice(p), _) => a.voice_enabled(p),
                     (Id::Rec(p), _) => a.rec_enabled(p),
@@ -1465,6 +1482,7 @@ impl IToggleProvider_Impl for Node_Impl {
             match id {
                 Id::ThreadPart(p) => a.thread_activate(p),
                 Id::Settings(p) => a.settings_activate(p),
+                Id::Dialog(p) => a.dialog_activate(p),
                 _ => {}
             }
             Ok(())
@@ -1476,6 +1494,7 @@ impl IToggleProvider_Impl for Node_Impl {
         with(|a| {
             let on = match id {
                 Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.checked(p)),
+                Id::Dialog(_) => a.dialog.as_ref().is_some_and(|d| d.private),
                 _ => a.thread.as_ref().is_some_and(|t| t.broadcast),
             };
             Ok(if on { ToggleState_On } else { ToggleState_Off })
@@ -2090,7 +2109,14 @@ fn editable() -> Id {
         )
     }) {
         Some((
-            Some(Kind::Edit | Kind::StartDirect | Kind::Browse | Kind::JoinInvite),
+            Some(
+                Kind::Edit
+                | Kind::StartDirect
+                | Kind::Browse
+                | Kind::JoinInvite
+                | Kind::CreateSpace
+                | Kind::CreateChannel,
+            ),
             _,
             _,
             _,

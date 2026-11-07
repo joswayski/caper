@@ -441,6 +441,8 @@ pub struct Live {
     /// refresh (when it last went, the one in flight), and the channel
     /// invitation a notification opens once its space has loaded.
     pub invitations: Vec<core::Space>,
+    /// The account's space and channel limits, as the space list said.
+    limits: Option<core::SpaceLimits>,
     invite_request: u64,
     membership_at: Option<Instant>,
     membership_request: u64,
@@ -659,6 +661,7 @@ impl Live {
             joining: false,
             join_error: None,
             invitations: Vec::new(),
+            limits: None,
             invite_request: 0,
             membership_at: None,
             membership_request: 0,
@@ -1110,6 +1113,7 @@ impl Live {
             });
         }
         self.invitations = spaces.invitations.clone();
+        self.limits = spaces.limits.clone();
         self.membership_at = Some(Instant::now());
         self.host.wake_after(MEMBERSHIP_EVERY);
         self.spaces = Some(spaces);
@@ -2536,6 +2540,85 @@ impl Live {
         });
     }
 
+    /// Whether you own the open space (its owner manages it).
+    pub fn owns_space(&self) -> bool {
+        self.detail.as_ref().is_some_and(|d| {
+            !d.space.demo && self.account_id.as_deref() == Some(d.space.owner_id.as_str())
+        })
+    }
+
+    pub fn space_name(&self) -> String {
+        self.detail
+            .as_ref()
+            .map_or_else(String::new, |d| d.space.name.clone())
+    }
+
+    /// Whether a space (`space`) or a channel in the open space can be
+    /// created within the account's limits (egui's `can_create_space`
+    /// and `can_create_channel`).
+    pub fn can_create(&self, space: bool) -> bool {
+        let Some(limits) = &self.limits else {
+            return false;
+        };
+        if !space {
+            return self
+                .detail
+                .as_ref()
+                .is_some_and(|d| d.channels.len() < limits.channels_per_space);
+        }
+        let listed: Vec<&core::Space> = self
+            .spaces
+            .iter()
+            .flat_map(|s| &s.spaces)
+            .filter(|s| !s.demo)
+            .collect();
+        let owned = listed
+            .iter()
+            .filter(|s| self.account_id.as_deref() == Some(s.owner_id.as_str()))
+            .count();
+        owned < limits.owned_spaces && listed.len() < limits.total_spaces
+    }
+
+    /// Create space's or Create channel's name: web's title, or the
+    /// limit that stops it.
+    pub fn create_label(&self, space: bool) -> String {
+        let limits = self.limits.as_ref();
+        match (space, self.can_create(space)) {
+            (true, true) => "Create space".into(),
+            (false, true) => "Create channel".into(),
+            (true, false) => {
+                let (owned, total) = limits.map_or((20, 100), |l| (l.owned_spaces, l.total_spaces));
+                format!("Space limit reached ({owned} owned, {total} total)")
+            }
+            (false, false) => format!(
+                "Channel limit reached ({})",
+                limits.map_or(100, |l| l.channels_per_space)
+            ),
+        }
+    }
+
+    /// Creates a space (Create a space) or a channel in the open space
+    /// (Create a channel); `Update::Left` answers, and it opens.
+    pub fn create(&mut self, name: String, channel: Option<bool>) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        let operation = match (channel, self.space.clone()) {
+            (None, _) => AdminOperation::CreateSpace { name },
+            (Some(private), Some(space)) => AdminOperation::CreateChannel {
+                space,
+                name,
+                private,
+            },
+            (Some(_), None) => return,
+        };
+        self.worker.send(Command::Admin {
+            generation: self.account_epoch,
+            token,
+            operation,
+        });
+    }
+
     /// The open space's private channels you're invited to.
     pub fn channel_invitations(&self) -> &[core::ChannelInvitation] {
         self.detail
@@ -2792,6 +2875,18 @@ impl Live {
                 // from a preview or an accepted invitation).
                 self.joining = false;
                 self.navigate(Some(detail.space.id.clone()), Some(channel));
+            }
+            AdminResult::SpaceCreated(space) => {
+                if let Some(s) = &mut self.spaces {
+                    s.spaces.push(space.clone());
+                }
+                self.navigate(Some(space.id), None);
+            }
+            AdminResult::ChannelCreated(channel) => {
+                if let Some(d) = &mut self.detail {
+                    d.channels.push(channel.clone());
+                }
+                self.navigate(Some(channel.space_id), Some(channel.id));
             }
             AdminResult::InvitationAccepted(space) => {
                 self.invitations.retain(|s| s.id != space.id);
@@ -4063,6 +4158,9 @@ impl Live {
                 self.membership_pending = false;
                 if let Ok((spaces, detail)) = result {
                     self.invitations = spaces.invitations;
+                    if spaces.limits.is_some() {
+                        self.limits = spaces.limits;
+                    }
                     if let (Some(fresh), Some(open)) = (detail, &mut self.detail)
                         && navigation == self.navigation
                         && fresh.space.id == open.space.id

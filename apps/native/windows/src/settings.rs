@@ -946,7 +946,15 @@ impl Settings {
 }
 
 /// A switch at (x, y): terracotta while on, its knob at the end.
-fn switch(g: &Gfx, dc: &ID2D1DeviceContext, x: f32, y: f32, enabled: bool, on: bool, hover: bool) {
+pub(crate) fn switch(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    x: f32,
+    y: f32,
+    enabled: bool,
+    on: bool,
+    hover: bool,
+) {
     let track = rect(x, y, x + 40.0, y + 22.0);
     let fill = match (enabled, on) {
         (false, _) => SURFACE_RAISED,

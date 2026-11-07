@@ -23,12 +23,16 @@ const LABEL_H: f32 = 28.0;
 const ROW_H: f32 = 28.0;
 const PITCH: f32 = 30.0;
 
-/// An invitation control: a space's rail tile, the rail's Join with invite
-/// link, or an open space's private channel in the sidebar.
+/// A membership control: an invited space's rail tile, the rail's
+/// Create space and Join with invite link, the Channels heading's
+/// Create channel (owners), or an open space's private channel
+/// invitation in the sidebar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Spot {
     Space(usize),
+    Create,
     Join,
+    NewChannel,
     Channel(usize),
 }
 
@@ -37,9 +41,16 @@ impl Spot {
     pub fn index(self) -> usize {
         match self {
             Self::Join => 0,
-            Self::Space(k) => 1 + 2 * k,
-            Self::Channel(k) => 2 + 2 * k,
+            Self::Create => 1,
+            Self::NewChannel => 2,
+            Self::Space(k) => 10 + 2 * k,
+            Self::Channel(k) => 11 + 2 * k,
         }
+    }
+
+    /// Whether the spot is in the sidebar (else the rail).
+    pub fn in_sidebar(self) -> bool {
+        matches!(self, Self::NewChannel | Self::Channel(_))
     }
 }
 
@@ -84,6 +95,9 @@ impl Dialog {
 
     /// The invitation dialog's heading, or the New DM dialog's person.
     pub fn hint_text(&self) -> String {
+        if self.kind == Kind::CreateChannel {
+            return self.privacy_note();
+        }
         match self.invitation.as_deref() {
             Some(Invitation::Space(s)) => format!("Join {}?", s.name),
             Some(Invitation::Channel(c)) => format!("Join #{}?", c.channel.name),
@@ -181,14 +195,16 @@ impl Dialog {
     }
 }
 
-/// The rail's invitation tiles and Join with invite link, after its
-/// `first` spaces (rail-local DIPs; the rail sits at the window's left).
+/// The rail's invitation tiles, Create space (dimmed at the account's
+/// limits) and Join with invite link, after its `first` spaces
+/// (rail-local DIPs; the rail sits at the window's left).
 pub fn draw_rail(
     g: &Gfx,
     dc: &ID2D1DeviceContext,
     names: &[String],
     first: usize,
     hover: Option<Spot>,
+    create: bool,
 ) -> Result<()> {
     for (k, name) in names.iter().enumerate() {
         let (x, y, w, h) = App::space_rect(first + k);
@@ -218,6 +234,28 @@ pub fn draw_rail(
     }
     let (x, y, w, h) = App::space_rect(first + names.len());
     let r = rect(x, y, x + w, y + h);
+    let lit = create && hover == Some(Spot::Create);
+    fill_round(
+        dc,
+        r,
+        12.0,
+        if lit {
+            &g.brushes.raised
+        } else {
+            &g.brushes.composer
+        },
+    );
+    stroke_round(dc, r, 12.0, &g.brushes.border);
+    let c = (r.left + w / 2.0, r.top + h / 2.0);
+    icons::draw(
+        dc,
+        Icon::Plus,
+        rect(c.0 - 9.0, c.1 - 9.0, c.0 + 9.0, c.1 + 9.0),
+        if lit { TEXT } else { TEXT_MUTED },
+        if create { 1.0 } else { 0.4 },
+    );
+    let (x, y, w, h) = App::space_rect(first + names.len() + 1);
+    let r = rect(x, y, x + w, y + h);
     let lit = hover == Some(Spot::Join);
     fill_round(
         dc,
@@ -239,6 +277,34 @@ pub fn draw_rail(
         1.0,
     );
     Ok(())
+}
+
+/// The Channels heading's Create channel (sidebar-local DIPs), for an
+/// owner: Some(enabled).
+pub fn draw_channel_plus(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    plus: Option<bool>,
+    hover: Option<Spot>,
+) {
+    let Some(enabled) = plus else { return };
+    let b = rect(
+        SIDEBAR_W - 40.0,
+        SECTION_TOP - 2.0,
+        SIDEBAR_W - 12.0,
+        SECTION_TOP + 26.0,
+    );
+    let lit = enabled && hover == Some(Spot::NewChannel);
+    if lit {
+        fill_round(dc, b, 6.0, &g.brushes.hover);
+    }
+    icons::draw(
+        dc,
+        Icon::Plus,
+        rect(b.left + 6.0, b.top + 6.0, b.right - 6.0, b.bottom - 6.0),
+        if lit { TEXT } else { TEXT_MUTED },
+        if enabled { 1.0 } else { 0.4 },
+    );
 }
 
 /// The sidebar's "Invitations" (sidebar-local DIPs), its gap at `top`.
@@ -317,9 +383,11 @@ impl App {
             return Vec::new();
         }
         let (spaces, channels) = self.invite_names();
+        let owner = self.live.as_ref().is_some_and(|l| l.owns_space());
         (0..spaces.len())
             .map(Spot::Space)
-            .chain(std::iter::once(Spot::Join))
+            .chain([Spot::Create, Spot::Join])
+            .chain(owner.then_some(Spot::NewChannel))
             .chain((0..channels.len()).map(Spot::Channel))
             .collect()
     }
@@ -342,13 +410,26 @@ impl App {
         let spaces = self.c.spaces.len();
         match spot {
             Spot::Space(k) => Self::space_rect(spaces + k),
-            Spot::Join => Self::space_rect(spaces + self.invite_names().0.len()),
+            Spot::Create => Self::space_rect(spaces + self.invite_names().0.len()),
+            Spot::Join => Self::space_rect(spaces + self.invite_names().0.len() + 1),
+            Spot::NewChannel => (RAIL_W + SIDEBAR_W - 40.0, SECTION_TOP - 2.0, 28.0, 28.0),
             Spot::Channel(k) => (
                 RAIL_W + 12.0,
                 self.invites_top() + GAP + LABEL_H + PITCH * k as f32,
                 SIDEBAR_W - 24.0,
                 ROW_H,
             ),
+        }
+    }
+
+    /// Whether a spot can be used now (Create is off at a limit).
+    pub fn invite_enabled(&self, spot: Spot) -> bool {
+        match spot {
+            Spot::Create | Spot::NewChannel => self
+                .live
+                .as_ref()
+                .is_some_and(|l| l.can_create(spot == Spot::Create)),
+            _ => true,
         }
     }
 
@@ -367,6 +448,11 @@ impl App {
                 .get(k)
                 .map_or_else(String::new, |n| format!("Invitation to {n}")),
             Spot::Join => "Join with invite link".into(),
+            // web's titles, with why it is unavailable at a limit.
+            Spot::Create | Spot::NewChannel => self
+                .live
+                .as_ref()
+                .map_or_else(String::new, |l| l.create_label(spot == Spot::Create)),
             Spot::Channel(k) => channels
                 .get(k)
                 .map_or_else(String::new, |n| format!("Invitation to #{n}, private")),
@@ -379,6 +465,14 @@ impl App {
         let Some(live) = &self.live else { return };
         let invitation = match spot {
             Spot::Join => return self.open_dialog(Dialog::join_invite()),
+            Spot::Create if live.can_create(true) => {
+                return self.open_dialog(Dialog::create_space());
+            }
+            Spot::NewChannel if live.can_create(false) => {
+                let name = live.space_name();
+                return self.open_dialog(Dialog::create_channel(name));
+            }
+            Spot::Create | Spot::NewChannel => return,
             Spot::Space(k) => live.invitations.get(k).cloned().map(Invitation::Space),
             Spot::Channel(k) => live
                 .channel_invitations()

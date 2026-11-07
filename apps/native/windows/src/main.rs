@@ -25,6 +25,7 @@ mod emoji;
 mod files;
 mod gifs;
 mod invites;
+mod manage;
 mod overlay;
 mod playback;
 mod preview;
@@ -1209,6 +1210,8 @@ impl App {
                             | overlay::Kind::StartDirect
                             | overlay::Kind::Browse
                             | overlay::Kind::JoinInvite
+                            | overlay::Kind::CreateSpace
+                            | overlay::Kind::CreateChannel
                     )
             });
         }
@@ -2763,6 +2766,11 @@ impl App {
             .contains(&invites::Spot::Join)
             .then_some(rail_invites);
         let (invite_hover, invites_top) = (self.hover_invite, self.invites_top());
+        let create_space = self.invite_enabled(invites::Spot::Create);
+        let channel_plus = self
+            .invite_spots()
+            .contains(&invites::Spot::NewChannel)
+            .then(|| self.invite_enabled(invites::Spot::NewChannel));
         if d.rail {
             let hover = self.hover_space;
             self.rail.draw(s, |dc| unsafe {
@@ -2855,7 +2863,7 @@ impl App {
                     }
                 }
                 if let Some(names) = &rail_invites {
-                    invites::draw_rail(g, dc, names, c.spaces.len(), invite_hover)?;
+                    invites::draw_rail(g, dc, names, c.spaces.len(), invite_hover, create_space)?;
                 }
                 Ok(())
             })?;
@@ -3060,6 +3068,7 @@ impl App {
                         }
                     }
                 }
+                invites::draw_channel_plus(g, dc, channel_plus, invite_hover);
                 invites::draw_sidebar(g, dc, &side_invites, invites_top, invite_hover)?;
                 directs::draw(g, dc, &drows, dtop, dhover, dmenu)?;
                 self.draw_call(g, dc)?;
