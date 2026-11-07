@@ -71,7 +71,7 @@ const MIN_PREVIEW_TOOL: f32 = 36.0;
 /// The editor's button for what will be sent, and why it waits.
 const OPEN_SENT: &str = "Open in default app";
 /// The editor's Close, which discards any unsaved change.
-pub const CLOSE: &str = "Close editor";
+pub const CLOSE: &str = caper_client::attachment_edit::CANCEL_EDITING;
 const EDIT_PENDING: &str = "Available when your edit is ready";
 pub const VIDEO_MARKS_UNAVAILABLE: &str =
     "Drawing on videos needs a newer FFmpeg than this build includes.";
@@ -617,7 +617,7 @@ impl Editor {
             egui::pos2(top.left() + 16.0 + 18.0, top.center().y),
             egui::vec2(36.0, 36.0),
         );
-        if icon_button(ui, close, NavIcon::Close, CLOSE, "Close", true).clicked() {
+        if icon_button(ui, close, NavIcon::Close, CLOSE, "Cancel", true).clicked() {
             return Outcome::Cancel;
         }
         let mut right = top.right() - 16.0;
@@ -713,20 +713,35 @@ impl Editor {
                 }
             }
         }
+        // As web: the title, with the file name small and muted under it
+        // unless the window is narrow.
         let title_left = close.right() + 12.0;
-        let mut job = egui::text::LayoutJob::simple_singleline(
-            self.name.clone(),
-            egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        let width = (title_right - 12.0 - title_left).max(0.0);
+        let line = |text: &str, size: f32, family: egui::FontFamily, color| {
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                text.to_owned(),
+                egui::FontId::new(size, family),
+                color,
+            );
+            job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+            ui.painter().layout_job(job)
+        };
+        let title = line(
+            caper_client::attachment_edit::title(self.kind, profile_picture),
+            14.0,
+            egui::FontFamily::Name("Satoshi Bold".into()),
             TEXT,
         );
-        job.wrap =
-            egui::text::TextWrapping::truncate_at_width((title_right - 12.0 - title_left).max(0.0));
-        let title = ui.painter().layout_job(job);
-        painter.galley(
-            egui::pos2(title_left, top.center().y - title.size().y / 2.0),
-            title,
-            TEXT,
-        );
+        let file = (rect.width() > caper_client::attachment_edit::NAME_HIDES_AT)
+            .then(|| line(&self.name, 11.5, egui::FontFamily::Proportional, MUTED));
+        let height = title.size().y + file.as_ref().map_or(0.0, |file| file.size().y);
+        let mut y = top.center().y - height / 2.0;
+        let title_height = title.size().y;
+        painter.galley(egui::pos2(title_left, y), title, TEXT);
+        y += title_height;
+        if let Some(file) = file {
+            painter.galley(egui::pos2(title_left, y), file, MUTED);
+        }
 
         // The stage: the picture, its marks and the crop frame, or the
         // picture as it will be sent while viewing.

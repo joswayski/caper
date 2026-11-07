@@ -34,7 +34,7 @@ const SAMPLE_POINTS: f64 = 1.5;
 /// A press on text that moves less than this edits it rather than moving it.
 const MOVE_POINTS: f64 = 4.0;
 const MIN_BRUSH: f64 = 6.0;
-pub(super) const CLOSE: &str = "Close editor";
+pub(super) const CLOSE: &str = caper_client::attachment_edit::CANCEL_EDITING;
 const OPEN_SENT: &str = "Open in default app";
 const EDIT_PENDING: &str = "Available when your edit is ready";
 const VIDEO_HINT: &str = "Drawings and text stay on screen for the whole video.";
@@ -488,17 +488,41 @@ impl App {
         window.add_css_class("editor");
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
-        // Top bar: Close, the name, Open in default app, Undo, Redo, Reset
-        // and Done.
+        // Top bar, as web: Cancel editing, the title with the file name
+        // under it, Open in default app, Undo, Redo, Reset and Done.
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         top.add_css_class("editor-top");
-        let close = icon_button(self, Icon::Close, CLOSE, "Close");
+        let close = icon_button(self, Icon::Close, CLOSE, "Cancel");
         top.append(&close);
-        let title = label(name, &["strong"]);
-        title.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-        title.set_hexpand(true);
+        let heading = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        heading.set_hexpand(true);
+        heading.set_valign(gtk::Align::Center);
+        let profile_picture = matches!(
+            &session.borrow().target,
+            Target::Picture {
+                destination: caper_client::pictures::Target::Avatar,
+                ..
+            }
+        );
+        let title = label(
+            caper_client::attachment_edit::title(kind, profile_picture),
+            &["strong", "editor-title"],
+        );
+        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
         title.set_xalign(0.0);
-        top.append(&title);
+        heading.append(&title);
+        let file = label(name, &["muted", "editor-file"]);
+        file.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        file.set_xalign(0.0);
+        file.set_tooltip_text(Some(name));
+        heading.append(&file);
+        top.append(&heading);
+        // A narrow window shows only the title.
+        let narrow = move |window: &gtk::Window| {
+            file.set_visible(
+                window.default_width() as f32 > caper_client::attachment_edit::NAME_HIDES_AT,
+            );
+        };
         let open = (!picture).then(|| {
             let open = icon_button(self, Icon::ExternalLink, OPEN_SENT, OPEN_SENT);
             top.append(&open);
@@ -516,6 +540,8 @@ impl App {
         top.append(&reset);
         top.append(&done);
         root.append(&top);
+        narrow(&window);
+        window.connect_default_width_notify(narrow);
 
         let area = gtk::DrawingArea::new();
         area.set_vexpand(true);
