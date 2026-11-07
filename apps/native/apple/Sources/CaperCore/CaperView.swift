@@ -7166,35 +7166,42 @@ struct ReactorsSheet: View {
     @Bindable var chat: ChatModel
     let messageID: String
     let viewerID: String?
+    private let close: (() -> Void)?
     @State private var selected: String
 
-    init(chat: ChatModel, messageID: String, emoji: String, viewerID: String?) {
+    init(chat: ChatModel, messageID: String, emoji: String, viewerID: String?, close: (() -> Void)? = nil) {
         self.chat = chat
         self.messageID = messageID
         self.viewerID = viewerID
+        self.close = close
         _selected = State(initialValue: emoji)
     }
 
     private var message: ChatMessage? { chat.messages.first { $0.id == messageID } }
     private var reactions: [MessageReaction] { message?.reactions ?? [] }
+    private func requestClose() { if let close { close() } else { dismiss() } }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                tabs
-                Rectangle().fill(CaperTheme.border).frame(height: 1)
-                people
+        Group {
+            if close != nil {
+                // An embedded AppKit dialog has no SwiftUI scene toolbar.
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Reactions").font(CaperTheme.font(20, weight: .bold))
+                        Spacer()
+                        Button("Done", action: requestClose).keyboardShortcut(.cancelAction)
+                    }.padding(16)
+                    content
+                }.frame(height: 420)
+            } else {
+                NavigationStack {
+                    content.navigationTitle("Reactions")
+                        #if os(iOS)
+                        .navigationBarTitleDisplayMode(.inline)
+                        #endif
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: requestClose) } }
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(CaperTheme.raised)
-            // Contain, so this identifier does not replace each tab's and row's own.
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("reactors-sheet")
-            .navigationTitle("Reactions")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         #if os(iOS)
         .presentationDetents([.medium, .large])
@@ -7206,9 +7213,22 @@ struct ReactorsSheet: View {
         // Opening again after a change, or a change while open, refetches.
         .task(id: message?.reactionSeq) { _ = chat.requestReactors(messageID: messageID) }
         .onChange(of: reactions.map(\.emoji)) { _, emojis in
-            guard let first = emojis.first else { dismiss(); return }
+            guard let first = emojis.first else { requestClose(); return }
             if !emojis.contains(selected) { selected = first }
         }
+    }
+
+    private var content: some View {
+        VStack(spacing: 0) {
+            tabs
+            Rectangle().fill(CaperTheme.border).frame(height: 1)
+            people
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(CaperTheme.raised)
+        // Contain, so this identifier does not replace each tab's and row's own.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("reactors-sheet")
     }
 
     private var tabs: some View {
