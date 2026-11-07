@@ -3,6 +3,7 @@ import CaperCore
 
 /// Native navigation chrome; only a requested management dialog is hosted.
 @MainActor final class NavigationSidebar: NativeView, NSSearchFieldDelegate {
+    static let railWidth: CGFloat = 60
     private let model: AppModel
     var show: ((WorkspaceSheet) -> Void)?
     var leaveChannel: ((Channel) -> Void)?
@@ -103,10 +104,10 @@ import CaperCore
 
     override func layout() {
         super.layout()
-        railScroll.frame = NSRect(x: 0, y: 0, width: 64, height: bounds.height)
-        rail.frame.size = NSSize(width: 64, height: max(bounds.height, CGFloat(railOrder.count) * 54 + 20))
-        for (index, child) in railOrder.enumerated() { child.frame = NSRect(x: 12, y: 14 + CGFloat(index) * 54, width: 40, height: 40) }
-        sidebar.frame = NSRect(x: 64, y: 0, width: bounds.width - 64, height: bounds.height)
+        railScroll.frame = NSRect(x: 0, y: 0, width: Self.railWidth, height: bounds.height)
+        rail.frame.size = NSSize(width: Self.railWidth, height: max(bounds.height, CGFloat(railOrder.count) * 54 + 20))
+        for (index, child) in railOrder.enumerated() { child.frame = NSRect(x: (Self.railWidth - 40) / 2, y: 14 + CGFloat(index) * 54, width: 40, height: 40) }
+        sidebar.frame = NSRect(x: Self.railWidth, y: 0, width: bounds.width - Self.railWidth, height: bounds.height)
         let width = sidebar.bounds.width
         space.frame = NSRect(x: 16, y: 8, width: width - 32, height: 34)
         var externalHeight: CGFloat = 0
