@@ -701,7 +701,8 @@ import XCTest
         app.buttons["Forward (2)"].click()
         let retry = app.buttons["Retry forwards (1)"]
         XCTAssertTrue(retry.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Forwarded to 1 destination.")).firstMatch.exists)
+        let partial = app.staticTexts.matching(NSPredicate(format: "value BEGINSWITH %@", "Forwarded to 1 destination.")).firstMatch
+        XCTAssertEqual(partial.value as? String, "Forwarded to 1 destination. Remaining forwards not confirmed. Retry checks the same forwards. TEST FIXTURE: requested failure.")
         XCTAssertFalse(search.isEnabled); XCTAssertFalse(first.isEnabled); XCTAssertFalse(second.isEnabled)
         XCTAssertEqual(first.value as? String, "Not selected"); XCTAssertEqual(second.value as? String, "Selected")
         XCTAssertEqual(note.value as? String, rawNote)
@@ -3237,8 +3238,13 @@ import XCTest
         XCTAssertEqual(composer.value as? String, "", "Cut repairs orphaned delimiters, not just visible characters")
         composer.typeKey("z", modifierFlags: .command)
         XCTAssertEqual(composer.value as? String, styled)
-        composer.typeKey("a", modifierFlags: .command); composer.typeText("menu style")
-        composer.typeKey("a", modifierFlags: .command); composer.rightClick()
+        composer.typeKey("a", modifierFlags: .command); composer.typeKey(.delete, modifierFlags: [])
+        XCTAssertEqual(composer.value as? String, "")
+        composer.typeText("menu style")
+        XCTAssertEqual(composer.value as? String, "menu style", "Menu formatting starts plain, without inherited bold delimiters")
+        composer.typeKey("a", modifierFlags: .command)
+        // Target the selected first-line glyphs, not the text view's blank centre.
+        composer.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 59, dy: 21)).rightClick()
         let italic = composer.menuItems["I — Italic"]
         XCTAssertTrue(italic.waitForExistence(timeout: 5))
         composer.menuItems["B — Bold"].hover(); italic.hover(); italic.click()
