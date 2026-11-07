@@ -69,6 +69,28 @@ pub fn caper_avatar_index(avatar_id: Option<i32>) -> Option<u16> {
     avatar_id.and_then(|index| u16::try_from(index).ok().filter(|index| *index < 800))
 }
 
+/// A space's tile without an icon: its first character, uppercased, as on
+/// web, Apple and Android ("C" for a blank name).
+pub fn space_initial(name: &str) -> String {
+    name.trim()
+        .chars()
+        .next()
+        .unwrap_or('C')
+        .to_uppercase()
+        .to_string()
+}
+
+#[cfg(test)]
+mod space_initial_tests {
+    #[test]
+    fn first_character_uppercased() {
+        assert_eq!(super::space_initial("  fixture Studio"), "F");
+        assert_eq!(super::space_initial("ßeta"), "SS");
+        assert_eq!(super::space_initial("🎲 Games"), "🎲");
+        assert_eq!(super::space_initial("   "), "C");
+    }
+}
+
 #[cfg(test)]
 mod avatar_tests {
     use super::caper_avatar_index;

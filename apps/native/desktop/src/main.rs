@@ -31802,7 +31802,7 @@ fn paint_space_tile(
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        space_initial(name),
+        caper_client::space_initial(name),
         egui::FontId::proportional(rect.height() * 0.4),
         TEXT,
     );
@@ -31829,16 +31829,6 @@ fn paint_rail_icon(
         ui.painter()
             .rect_filled(face, 11.0, Color32::from_white_alpha(14));
     }
-}
-
-/// The space's initial, matching web, Apple and Android.
-fn space_initial(name: &str) -> String {
-    name.trim()
-        .chars()
-        .next()
-        .unwrap_or('C')
-        .to_uppercase()
-        .to_string()
 }
 
 /// Profile and Manage space settings: the picture frame's side, and how far
