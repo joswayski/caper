@@ -252,6 +252,7 @@ private final class MemberRow: NativeView {
         super.init(background)
         addSubview(avatar); addSubview(name); addSubview(action)
         action.layer?.backgroundColor = NSColor.clear.cgColor
+        action.profileFeedback = true
         action.setAccessibilityIdentifier("profile-member-\(member.id)")
         action.setAccessibilityLabel("Open profile for \(member.displayName)")
         avatar.update(member)

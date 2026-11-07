@@ -14,6 +14,59 @@ import XCTest
         timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? NSTextView } } ?? []
     }
 
+    func testForwardProjectionChangesRemeasureWithoutLosingTheWrapperSelection() throws {
+        _ = NSApplication.shared
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let parent = NSViewController()
+        let media = AppKitMediaPresenter(model: model, parent: parent)
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 600))
+        timeline.makeAttachments = { media.messageAttachments($0) }
+        let previous = message(0)
+        var wrapper = message(1)
+        let source = message(7, author: "Maya")
+        var original = ChatMessage(id: source.id, channelId: "another-channel", seq: source.seq,
+            author: source.author, content: source.content, createdAt: source.createdAt, clientMessageId: source.clientMessageId)
+        func update() {
+            timeline.update([previous, wrapper], conversationID: "channel", canInteract: true)
+            timeline.layoutSubtreeIfNeeded()
+        }
+        update()
+        let body = try XCTUnwrap(bodies(in: timeline).first { $0.accessibilityIdentifier() == "message-message-1" })
+        let row = try XCTUnwrap(body.superview)
+        body.setSelectedRange((body.string as NSString).range(of: "👩🏽‍💻"))
+        func surface() throws -> AppKitAttachmentSurface {
+            try XCTUnwrap(row.subviews.compactMap { $0 as? AppKitAttachmentSurface }.first)
+        }
+        wrapper.forward = MessageForward(message: original, seq: "7")
+        update()
+        let shortHeight = row.frame.height
+        XCTAssertGreaterThan(try surface().frame.height, 80, "A forward-only update must create a visible original card")
+        original.content = ChatContent(version: 1, type: "text", text: String(repeating: "Asymmetric source edit — café 中文 👩🏽‍💻. ", count: 10))
+        wrapper.forward = MessageForward(message: original, seq: "11")
+        update()
+        XCTAssertGreaterThan(row.frame.height, shortHeight, "Source edits must invalidate the leaf even when the wrapper note is unchanged")
+        for width in [CGFloat(640), CGFloat(300)] {
+            timeline.setFrameSize(NSSize(width: width, height: 600))
+            update()
+            let card = try surface()
+            XCTAssertTrue(row.bounds.contains(card.frame))
+            XCTAssertGreaterThanOrEqual(card.frame.minY, body.frame.maxY)
+            XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+            XCTAssertEqual(body.string, wrapper.content.text, "A source edit must never overwrite the forwarder's note")
+        }
+        wrapper.content = ChatContent(version: 1, type: "text", text: "")
+        update()
+        XCTAssertEqual(body.frame.height, 0, accuracy: 0.5, "Captionless forwards reserve action space, not a blank note row")
+        XCTAssertGreaterThanOrEqual(try surface().frame.minY, 36)
+        wrapper.forward = MessageForward(message: nil, seq: "0")
+        update()
+        XCTAssertGreaterThan(try surface().frame.height, 30, "An unavailable source keeps its explanatory card")
+        wrapper.deletedAt = "2026-11-05T11:00:00Z"
+        update()
+        XCTAssertEqual(body.string, MessageDeletion.placeholder)
+        XCTAssertFalse(row.subviews.contains { $0 is AppKitAttachmentSurface }, "A deleted wrapper must not retain its source")
+    }
+
     func testReplyQuoteAndThreadSummaryKeepTextSelectionAndFitAtBothWidths() throws {
         _ = NSApplication.shared
         let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
@@ -105,6 +158,7 @@ import XCTest
             var value = message(index)
             value.content.attachments = [ChatAttachment(id: "image-\(index)", kind: .image, contentType: "image/png",
                 name: "photo.png", size: 640, width: 240, height: 160, url: "file:///nonexistent/caper-test.png")]
+            if index.isMultiple(of: 2) { value.forward = MessageForward(message: message(index + 3000, author: "Maya"), seq: "1") }
             return value
         }
         timeline.update(history, conversationID: "channel")

@@ -59,6 +59,25 @@ enum NativeStyle {
 final class NativeButton: NSButton {
     private let actionHandler: () -> Void
     var focusChanged: ((Bool) -> Void)?
+    var hoverChanged: ((Bool) -> Void)?
+    var profileFeedback = false {
+        didSet {
+            guard profileFeedback != oldValue else { return }
+            if profileFeedback {
+                let wash = CALayer()
+                wash.cornerRadius = 8; wash.isHidden = true
+                layer?.addSublayer(wash); hoverWash = wash
+                focusRingType = .none
+            } else {
+                hoverWash?.removeFromSuperlayer(); hoverWash = nil
+                focusRingType = .default
+            }
+            needsLayout = true
+        }
+    }
+    private var tracking: NSTrackingArea?
+    private var hovered = false
+    private var hoverWash: CALayer?
     init(_ title: String, primary: Bool = false, action: @escaping () -> Void) {
         actionHandler = action
         super.init(frame: .zero)
@@ -75,17 +94,49 @@ final class NativeButton: NSButton {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func pressed() { actionHandler() }
-    override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.45 } }
+    override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.45; needsLayout = true } }
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
-        if accepted { focusChanged?(true) }
+        if accepted { needsLayout = true; focusChanged?(true) }
         return accepted
     }
     override func resignFirstResponder() -> Bool {
         let accepted = super.resignFirstResponder()
-        if accepted { focusChanged?(false) }
+        if accepted { needsLayout = true; focusChanged?(false) }
         return accepted
+    }
+
+    override func layout() {
+        super.layout()
+        guard let hoverWash else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        let focused = window?.firstResponder === self
+        hoverWash.frame = bounds
+        hoverWash.backgroundColor = (hovered ? NSColor.white.withAlphaComponent(0.06) : .clear).cgColor
+        hoverWash.borderColor = NativeStyle.accent.cgColor
+        hoverWash.borderWidth = focused ? 2 : 0
+        hoverWash.isHidden = (!hovered && !focused) || !isEnabled
+        CATransaction.commit()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        tracking = nil
+        guard profileFeedback || hoverChanged != nil else { return }
+        let tracking = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+        self.tracking = tracking; addTrackingArea(tracking)
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true; needsLayout = true; hoverChanged?(true) }
+    override func mouseExited(with event: NSEvent) { hovered = false; needsLayout = true; hoverChanged?(false) }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { hovered = false; hoverChanged?(false) }
+    }
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if profileFeedback && isEnabled { addCursorRect(bounds, cursor: .pointingHand) }
     }
 
     static func icon(_ label: String, symbol: String, action: @escaping () -> Void) -> NativeButton {

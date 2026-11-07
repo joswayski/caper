@@ -53,13 +53,15 @@ struct ForwardCardView: View {
                 CaperLabel("Forwarded", icon: "forward", size: 12).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                 if let original = forward.message {
                     SharedOriginalView(message: original, isAvailable: {
-                        (chat.messages + chat.pinnedMessages).contains { $0.id == message.id && !$0.isDeleted && $0.forward?.message != nil }
+                        (chat.displayedMessages + chat.pinnedMessages).contains { $0.id == message.id && !$0.isDeleted && $0.forward?.message != nil }
                     })
                     Button("\(original.thread.flatMap { $0.replyCount > 0 ? "\($0.replyCount) \($0.replyCount == 1 ? "reply" : "replies") · " : nil } ?? "")View conversation", action: open)
                         .buttonStyle(CaperSecondaryButton())
+                        .accessibilityIdentifier("open-forward-\(message.id)")
                 } else { Text("Original conversation unavailable.").foregroundStyle(CaperTheme.muted) }
             }.padding(12).background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
                 .overlay { RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border) }
+                .accessibilityIdentifier("forward-card-\(message.id)")
         }
     }
 }
@@ -68,6 +70,7 @@ struct ForwardPickerView: View {
     @Environment(\.dismiss) private var dismiss
     let chat: ChatModel
     let message: ChatMessage
+    var close: (() -> Void)? = nil
     @State private var destinations: [ForwardDestination]?
     @State private var selected: Set<String> = []
     @State private var search = ""
@@ -87,7 +90,7 @@ struct ForwardPickerView: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Text("Forward message").font(CaperTheme.font(16, weight: .bold)); Spacer(); Button("Close") { dismiss() } }.padding(16)
+            HStack { Text("Forward message").font(CaperTheme.font(16, weight: .bold)); Spacer(); Button("Close", action: finish) }.padding(16)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Shares this conversation, including future edits, reactions and replies. People in the destination can read and forward it.")
@@ -112,6 +115,7 @@ struct ForwardPickerView: View {
                                 .contentShape(Rectangle())
                         }.buttonStyle(.plain).disabled(pending != nil)
                             .accessibilityValue(selected.contains(destination.id) ? "Selected" : "Not selected")
+                            .accessibilityIdentifier("forward-destination-\(destination.id)")
                             .modifier(ControlPointer())
                     }
                     if destinations == nil && error == nil { ProgressView("Loading destinations…") }
@@ -142,7 +146,7 @@ struct ForwardPickerView: View {
                                     selected.remove(next.destination)
                                     pending?.removeFirst()
                                 }
-                                dismiss()
+                                finish()
                             } catch is CancellationError { }
                             catch {
                                 let rejected = (error as? APIError).map { [400, 401, 403, 404, 409, 422].contains($0.status) } ?? false
@@ -164,24 +168,27 @@ struct ForwardPickerView: View {
                 catch { self.error = error.localizedDescription }
             }
     }
+
+    private func finish() { if let close { close() } else { dismiss() } }
 }
 
 struct ForwardConversationView: View {
     @Environment(\.dismiss) private var dismiss
     let chat: ChatModel
     let messageID: String
+    var close: (() -> Void)? = nil
     @State private var conversation: ForwardConversationHistory?
     @State private var oldest: String?
     @State private var pages = 1
     @State private var loading = false
     @State private var error: String?
     @State private var attempt = 0
-    private var message: ChatMessage? { (chat.messages + chat.pinnedMessages).first { $0.id == messageID } }
+    private var message: ChatMessage? { (chat.displayedMessages + chat.pinnedMessages).first { $0.id == messageID } }
     private var available: Bool { message?.isDeleted == false && message?.forward?.message != nil }
     private var root: ChatMessage? { guard available else { return nil }; if let conversation { return conversation.root } else if error == nil { return message?.forward?.message } else { return nil } }
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Text("Forwarded conversation").font(CaperTheme.font(16, weight: .bold)); Spacer(); Button("Close") { dismiss() } }.padding(16)
+            HStack { Text("Forwarded conversation").font(CaperTheme.font(16, weight: .bold)); Spacer(); Button("Close", action: finish) }.padding(16)
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let root {
@@ -201,9 +208,9 @@ struct ForwardConversationView: View {
         }.background(CaperTheme.raised).foregroundStyle(CaperTheme.text).frame(idealWidth: 520, idealHeight: 560)
             // A sheet: only it can present the viewer over itself.
             .modifier(MediaViewerHost())
-            .onChange(of: available) { _, value in if !value { dismiss() } }
+            .onChange(of: available) { _, value in if !value { finish() } }
             .task(id: "\(message?.forward?.seq ?? "0"):\(pages):\(attempt)") {
-                guard available, let message else { conversation = nil; dismiss(); return }
+                guard available, let message else { conversation = nil; finish(); return }
                 loading = true; error = nil
                 defer { loading = false }
                 do {
@@ -221,4 +228,6 @@ struct ForwardConversationView: View {
                 catch { conversation = nil; self.error = error.localizedDescription }
             }
     }
+
+    private func finish() { if let close { close() } else { dismiss() } }
 }
