@@ -380,35 +380,41 @@ public enum WorkspaceValidation {
         }
     }
 
+    /// Web's spaceNameError (apps/web/src/spaces/client.ts) on the name as
+    /// typed, through shared Rust (shared/names/channel-cases.json).
     public static func spaceNameError(_ value: String) -> String? {
-        let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if name.isEmpty { return "Enter a space name." }
-        if name.unicodeScalars.count > 80 { return "Space names can be at most 80 characters." }
-        // Cc only, as on web: Foundation's controlCharacters also holds format
-        // characters (bidi overrides, zero-width), which the next rule names.
-        if name.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) {
-            return "Space names cannot contain control characters."
-        }
-        if NameCharacters.hasHidden(name) { return "Space names cannot contain invisible or text-direction characters." }
-        return nil
+        ascii(value) { caper_mobile_name_error($0, $1, false) }
     }
 
+    /// The space name web sends: `name.trim()`, with JavaScript's white space.
+    public static func spaceName(_ value: String) -> String {
+        var source = value
+        return source.withUTF8 { bytes in
+            let span = caper_mobile_space_name(bytes.baseAddress, bytes.count)
+            defer { caper_mobile_ints_free(span) }
+            return String(decoding: UnsafeBufferPointer(rebasing: bytes[Int(span.data[2])..<Int(span.data[3])]), as: UTF8.self)
+        }
+    }
+
+    /// Web's normalizeChannelName: a channel name as typed, keeping a trailing dash.
     public static func normalizeChannelName(_ value: String) -> String {
-        var normalized = value.lowercased().replacingOccurrences(of: " ", with: "-")
-        normalized = String(normalized.filter { $0.isASCII && ($0.isLowercase || $0 == "-") }.prefix(80))
-        while normalized.contains("--") { normalized = normalized.replacingOccurrences(of: "--", with: "-") }
-        while normalized.first == "-" { normalized.removeFirst() }
-        return normalized
+        ascii(value) { bytes, count in caper_mobile_channel_name(bytes, count) } ?? ""
     }
 
+    /// Web's channelNameError; check the name without its trailing dash.
     public static func channelNameError(_ value: String) -> String? {
-        guard !value.isEmpty else { return "Enter a channel name." }
-        guard value.unicodeScalars.count <= 80 else { return "Channel names can be at most 80 characters." }
-        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
-        guard !parts.contains(where: { $0.isEmpty }), parts.allSatisfy({ $0.allSatisfy { $0.isASCII && $0.isLowercase } }) else {
-            return "Use lowercase letters separated by single dashes."
+        ascii(value) { caper_mobile_name_error($0, $1, true) }
+    }
+
+    /// The ASCII text `call` returns for `value`, or nil when it returns none.
+    private static func ascii(_ value: String, _ call: (UnsafePointer<UInt8>?, Int) -> CaperMobileInts) -> String? {
+        var source = value
+        return source.withUTF8 { bytes in
+            let result = call(bytes.baseAddress, bytes.count)
+            defer { caper_mobile_ints_free(result) }
+            guard result.len > 0 else { return nil }
+            return String(decoding: UnsafeBufferPointer(start: result.data, count: result.len).map { UInt8(truncatingIfNeeded: $0) }, as: UTF8.self)
         }
-        return nil
     }
 }
 
