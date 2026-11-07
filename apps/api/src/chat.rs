@@ -593,9 +593,10 @@ async fn session(
         .bind(&id).bind(Sha256::digest(token.as_bytes()).as_slice()).bind(account.id).bind(name)
         .bind(account_token(&headers).map(|token| Sha256::digest(token.as_bytes()).to_vec()))
         .execute(&mut *tx).await.map_err(database_error)?;
+    let admin = crate::feedback::team_member(&mut tx, Some(account.id)).await?;
     tx.commit().await.map_err(database_error)?;
     Ok(Json(
-        json!({"token":token,"author":{"id":account.external_id,"name":name,"isGuest":false,"avatarId":account.avatar_id,"avatarAsset":account.avatar_asset}}),
+        json!({"token":token,"author":{"id":account.external_id,"name":name,"isGuest":false,"admin":admin,"avatarId":account.avatar_id,"avatarAsset":account.avatar_asset}}),
     ))
 }
 

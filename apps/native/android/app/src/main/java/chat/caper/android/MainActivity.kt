@@ -2592,7 +2592,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         }))
                     }
                     MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped,
-                        avatarAsset = pending.author?.avatarAsset, avatarUrl = pending.author?.avatarUrl, gif = pending.gif, embeds = pending.embeds)
+                        admin = pending.author?.admin == true, avatarAsset = pending.author?.avatarAsset, avatarUrl = pending.author?.avatarUrl, gif = pending.gif, embeds = pending.embeds)
                     Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
                 }
             }
@@ -3822,12 +3822,11 @@ internal fun openExternalLink(uriHandler: UriHandler, href: String) {
 
 @Composable private fun TypingLine(authors: List<ChatAuthor>) {
     val label = when { authors.size > 2 -> "Several people are typing…"; authors.size == 2 -> "${authors[0].name} and ${authors[1].name} are typing…"; authors.size == 1 -> "${authors[0].name} is typing…"; else -> "" }
-    // Web keeps the last label for its 180 ms fade-out.
     var shown by remember { mutableStateOf("") }
     LaunchedEffect(label) { if (label.isNotEmpty()) shown = label else { kotlinx.coroutines.delay(180); shown = "" } }
     val alpha by androidx.compose.animation.core.animateFloatAsState(if (label.isNotEmpty()) 1f else 0f, androidx.compose.animation.core.tween(180), label = "typing")
-    if (shown.isNotEmpty()) {
-        Row(Modifier.fillMaxWidth().height(20.dp).graphicsLayer { this.alpha = alpha }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+    Row(Modifier.fillMaxWidth().height(20.dp).graphicsLayer { this.alpha = alpha }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+        if (shown.isNotEmpty()) {
             TypingDots()
             Text(shown, color = TextMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }

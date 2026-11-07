@@ -606,13 +606,20 @@ final class CaperUIKitTests: XCTestCase {
     func testTypingIndicator() {
         let app = launch()
         XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let composer = app.textViews["message-composer"]
+        let composerFrame = composer.frame
+        let messageFrame = row(Self.latest).frame
         control(["typing": ["channelId": "chan00000001"]])
         let typing = app.otherElements["typing-indicator"]
         XCTAssertTrue(typing.waitForExistence(timeout: 10))
         XCTAssertEqual(typing.label, "Maya is typing…")
+        XCTAssertEqual(composer.frame.minY, composerFrame.minY, accuracy: 1)
+        XCTAssertEqual(row(Self.latest).frame.minY, messageFrame.minY, accuracy: 1)
         screenshot("uikit-typing")
         control(["typing": ["channelId": "chan00000001", "active": false]])
         XCTAssertTrue(typing.waitForNonExistence(timeout: 10), "Stopping clears it")
+        XCTAssertEqual(composer.frame.minY, composerFrame.minY, accuracy: 1)
+        XCTAssertEqual(row(Self.latest).frame.minY, messageFrame.minY, accuracy: 1)
     }
 
     /// A person pill opens their card, as do the author's avatar and the members list.

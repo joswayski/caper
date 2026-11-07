@@ -522,11 +522,10 @@ final class HostedView: UIView {
 /// "Maya is typing…" above the composer, after three bouncing dots like web's
 /// keyframes: up and back over the first 60% of a 1.2 s cycle, each dot 0.15 s
 /// behind the last. Core Animation runs it off the main thread; Reduce Motion
-/// keeps the dots still. Collapses to nothing when nobody is typing.
+/// keeps the dots still. Reserves its height when nobody is typing.
 final class TypingIndicatorView: UIView {
     private let label = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
     private let dots = (0..<3).map { _ in UIView() }
-    private var visible: NSLayoutConstraint!
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -548,11 +547,8 @@ final class TypingIndicatorView: UIView {
         row.alignment = .center
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
-        visible = heightAnchor.constraint(equalToConstant: 20)
-        let hidden = heightAnchor.constraint(equalToConstant: 0)
-        hidden.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            hidden,
+            heightAnchor.constraint(equalToConstant: 20),
             row.leadingAnchor.constraint(equalTo: leadingAnchor),
             row.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
             row.centerYAnchor.constraint(equalTo: topAnchor, constant: 10),
@@ -568,7 +564,6 @@ final class TypingIndicatorView: UIView {
         guard text != label.text || isHidden != text.isEmpty else { return }
         label.text = text
         isHidden = text.isEmpty
-        visible.isActive = !text.isEmpty
         isAccessibilityElement = !text.isEmpty
         accessibilityLabel = text
         text.isEmpty ? stop() : animate()

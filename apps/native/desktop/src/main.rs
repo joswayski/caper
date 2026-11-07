@@ -17049,8 +17049,9 @@ impl CaperApp {
                         .filter(|typer| typer.typing)
                         .map(|typer| typer.author.name.as_str())
                         .collect();
-                    if !names.is_empty() {
-                        ui.horizontal(|ui| {
+                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_height(20.0);
+                        if names.is_empty() { return; }
                         ui.spacing_mut().item_spacing.x = 7.0;
                         typing_dots(ui);
                         // Long names end in an ellipsis, as on web; hover shows all.
@@ -17070,9 +17071,8 @@ impl CaperApp {
                             )
                             .truncate(),
                         );
-                        });
-                        ui.add_space(4.0);
-                    }
+                    });
+                    ui.add_space(4.0);
                     // The first link's card, before sending (signed-in accounts),
                     // drawn compact inside the input frame under the draft.
                     let preview = self.link_preview.update(ui.ctx(), &self.draft, self.token.as_deref(), self.media.api()).cloned();
@@ -17468,6 +17468,8 @@ impl CaperApp {
                         );
                         let avatar_id = self.session.as_ref().and_then(|session| session.author.avatar_id);
                         let (avatar_asset, avatar_url) = self.account.as_ref().map_or((None, None), |account| (account.avatar_asset.clone(), account.avatar_url.clone()));
+                        let is_guest = self.session.as_ref().is_some_and(|session| session.author.is_guest);
+                        let admin = self.session.as_ref().is_some_and(|session| session.author.admin);
                         // An unsent own message groups under your earlier ones.
                         let author_id = self.session.as_ref().map(|session| session.author.id.clone()).or_else(|| me.clone()).unwrap_or_default();
                         let grouped = grouping::grouped(previous.as_ref(), &grouping::Row::new(&author_id, &pending.created_at, pending.reply_to.is_some()));
@@ -17479,7 +17481,7 @@ impl CaperApp {
                                     reply_connector(ui, source, ui.cursor().top() + 11.0, &pending.id);
                                 }
                             }
-                            message_row(ui, &model::Author { id: author_id, name: author, avatar_id, avatar_asset, avatar_url, is_guest: false, admin: false }, "Now", grouped.then_some("Now"), false, 0.0, |ui| {
+                            message_row(ui, &model::Author { id: author_id, name: author, avatar_id, avatar_asset, avatar_url, is_guest, admin }, "Now", grouped.then_some("Now"), false, 0.0, |ui| {
                                 // File-only messages have no text row.
                                 if !pending.text.is_empty() {
                                     ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
@@ -56256,6 +56258,7 @@ mod tests {
 
     #[test]
     fn typing_stop_tombstones_are_not_rendered() {
+        let mut geometry = None;
         for stopped in [false, true] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
@@ -56300,6 +56303,15 @@ mod tests {
                     "typing belongs above the input"
                 );
             }
+            let last = app.timeline.messages().last().unwrap().content.text.clone();
+            let current = (composer, text_position(&output, &last));
+            if let Some(previous) = geometry {
+                assert_eq!(
+                    current, previous,
+                    "typing must not move the composer or latest message"
+                );
+            }
+            geometry = Some(current);
         }
     }
 

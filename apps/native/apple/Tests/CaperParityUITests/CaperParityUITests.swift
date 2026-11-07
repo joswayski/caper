@@ -2639,7 +2639,42 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Delete this channel for everyone in the space.", in: app)
     }
 
+    func testTypingDoesNotMoveMessagesOrComposer() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let app = launch()
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing message composer")
+        let timeline = app.scrollViews["chat-timeline"]
+        let message = try require(staticTexts("Agreed, @fixture_owner. Let’s check the narrow layout and the management dialogs too.", in: timeline).firstMatch,
+                                  timeout: 10, "Missing latest message")
+        for editing in [false, true] {
+            if editing { XCTAssertTrue(focus(composer)); composer.typeText("Draft") }
+            let viewport = timeline.frame
+            let messageFrame = message.frame
+            let editor = composer.frame
+            func assertStationary() {
+                XCTAssertEqual(timeline.frame.height, viewport.height, accuracy: 1)
+                XCTAssertEqual(message.frame.minY, messageFrame.minY, accuracy: 1)
+                XCTAssertEqual(composer.frame.minY, editor.minY, accuracy: 1)
+            }
+            let state = editing ? "editing" : "idle"
+            capture("typing-\(state)-off", app: app)
+            for _ in 0..<2 {
+                try await Self.fixtureControl(["typing": ["active": true]])
+                let label = try require(app.staticTexts["Maya is typing…"], timeout: 5, "Missing typing indicator")
+                assertStationary()
+                capture("typing-\(state)-on", app: app)
+                try await Self.fixtureControl(["typing": ["active": false]])
+                XCTAssertTrue(label.waitForNonExistence(timeout: 5))
+                assertStationary()
+            }
+        }
+    }
+
     func testPendingSendIsVisibleAndLeftAlignedBeforeConfirmation() async throws {
+        try await Self.fixtureControl(["reset": true, "admin": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
         let app = launch()
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
                                    "Missing message composer")
@@ -2677,6 +2712,9 @@ final class CaperParityUITests: XCTestCase {
                 // nor broadcast this send. Inspect the local pending row now.
                 let pending = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-message-")).firstMatch
                 XCTAssertTrue(pending.exists, "Clearing the composer must leave a visible pending message")
+                if message.count < 20 {
+                    XCTAssertTrue(pending.staticTexts["Admin"].exists, "The admin badge must precede server confirmation")
+                }
                 // A predicate, not `staticTexts[message]`: keying a query by the long
                 // message trips XCUIElementQuery's identifier assertion and aborts the run.
                 let text = staticTexts(message, in: pending).firstMatch

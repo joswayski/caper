@@ -855,7 +855,7 @@ final class APIClientTests: XCTestCase {
             switch request.url?.path {
             case "/api/chat/session":
                 sessionRequests += 1
-                return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Old Name","isGuest":false}}"#.utf8))
+                return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Old Name","isGuest":false,"admin":true}}"#.utf8))
             case "/api/chat/channels/Design123456/messages":
                 if request.httpMethod == "POST" { return (400, Data(#"{"error":"Rejected message"}"#.utf8)) }
                 historyRequests += 1
@@ -871,6 +871,7 @@ final class APIClientTests: XCTestCase {
         model.selectedSpaceID = "Space1234567"
         model.selectedChannelID = "Design123456"
         await model.chat.open(channelID: "Design123456", displayName: "Old Name")
+        XCTAssertEqual(model.chat.currentAuthor?.admin, true, "pending sends keep the session's admin badge")
         model.chat.draft = "rejected first message"
         await model.chat.send()
         let pending = try XCTUnwrap(model.chat.pendingMessage)
@@ -896,6 +897,7 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(model.chat.pendingMessage?.id, pending.id)
         XCTAssertTrue(model.chat.sendRejected)
         XCTAssertEqual(model.chat.currentAuthor?.name, "New Name")
+        XCTAssertEqual(model.chat.currentAuthor?.admin, true, "profile changes must not remove the pending badge")
         XCTAssertEqual(model.detail?.members.map(\.displayName), ["New Name", "Old Name"])
         XCTAssertEqual(model.detail?.members.first?.username, "new_user")
         XCTAssertEqual(model.chat.messages.first?.author.name, "Old Name")

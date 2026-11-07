@@ -1340,12 +1340,6 @@ export default function Chat({
       : typingNames.length
         ? `${typingNames.join(" and ")} ${typingNames.length === 1 ? "is" : "are"} typing…`
         : "";
-  useLayoutEffect(() => {
-    // The typing row resizes the viewport; retain live follow without moving history readers.
-    const scroller = scrollerRef.current;
-    if (scroller && allowFollow.current && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80)
-      scroller.scrollTop = scroller.scrollHeight;
-  }, [typingLabel]);
   const sendDraft = async (
     text: string,
     threadRootId?: string,

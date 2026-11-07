@@ -129,6 +129,7 @@ const author = (member) => ({
   name: member.displayName,
   isGuest: false,
   avatarId: member.avatarId,
+  ...(member.admin ? { admin: true } : {}),
   ...(member.avatarAsset ? { avatarAsset: member.avatarAsset, avatarUrl: member.avatarUrl } : {}),
 });
 const demoSpace = { id: ids.demoSpace, name: "Caper", ownerId: ids.owner, demo: true };
@@ -765,6 +766,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         return json(response, 200, { reads: state.channelReads ?? null, log: state.channelReadLog ?? [] });
       if (path === "/__fixture/control" && method === "POST") {
         if (body.reset) state = initialState();
+        if (typeof body.admin === "boolean") state.account.admin = body.admin;
         // Opt-in channel read state: `{ channelReads: { [channelId]: readSeq } }`.
         if (body.channelReads !== undefined) {
           state.channelReads = body.channelReads && { ...body.channelReads };

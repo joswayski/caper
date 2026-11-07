@@ -3153,7 +3153,7 @@ async fn history_shows_current_display_names_but_stores_the_original(pool: PgPoo
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable loopback DATABASE_URL"]
-async fn chat_session_limit_is_per_account(pool: PgPool) {
+async fn chat_session_identity_and_per_account_limit(pool: PgPool) {
     for name in ["busy", "calm"] {
         let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1||'-id',$1,$1) RETURNING id")
             .bind(name).fetch_one(&pool).await.unwrap();
@@ -3173,7 +3173,7 @@ async fn chat_session_limit_is_per_account(pool: PgPool) {
         redis::Client::open("redis://127.0.0.1:1").unwrap(),
     ));
     let app = crate::app(state);
-    let create = |account: &'static str| {
+    let create = |account: &'static str, admin: bool| {
         let app = app.clone();
         async move {
             let request = axum::http::Request::builder()
@@ -3183,15 +3183,33 @@ async fn chat_session_limit_is_per_account(pool: PgPool) {
                 .header("authorization", format!("Bearer {account}"))
                 .body(axum::body::Body::from(r#"{"name":"Ignored"}"#))
                 .unwrap();
-            app.oneshot(request).await.unwrap().status()
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            if status == StatusCode::OK {
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["author"]["admin"], admin);
+                assert_eq!(body["author"]["name"], account);
+            }
+            status
         }
     };
     for _ in 0..60 {
-        assert_eq!(create("busy").await, StatusCode::OK);
+        assert_eq!(create("busy", false).await, StatusCode::OK);
     }
-    assert_eq!(create("busy").await, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(create("busy", false).await, StatusCode::TOO_MANY_REQUESTS);
     // One account at its limit must not make chat unavailable to everyone.
-    assert_eq!(create("calm").await, StatusCode::OK);
+    assert_eq!(create("calm", false).await, StatusCode::OK);
+    sqlx::query("INSERT INTO public.feedback_team(user_id) SELECT id FROM public.users WHERE username='calm'")
+        .execute(&pool).await.unwrap();
+    assert_eq!(create("calm", true).await, StatusCode::OK);
+    sqlx::query("UPDATE public.feedback_team SET deleted_at=now()")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(create("calm", false).await, StatusCode::OK);
 }
 
 #[sqlx::test(migrations = "./migrations")]

@@ -3348,6 +3348,7 @@ public final class ChatModel {
     private var profileAuthor: ChatAuthor? {
         guard let account = viewerProfile(), let name = account.displayName else { return session?.author }
         return ChatAuthor(id: account.id, name: name, isGuest: false, avatarId: account.avatarId,
+                          admin: session?.author.id == account.id ? session?.author.admin : nil,
                           avatarAsset: account.avatarAsset, avatarUrl: account.avatarUrl)
     }
     public var currentAuthor: ChatAuthor? {
@@ -3562,6 +3563,7 @@ public final class ChatModel {
         // Account-backed sends resolve the current name server-side. Updating
         // this presentation snapshot must not reopen chat or discard its draft.
         self.session = ChatSession(token: session.token, author: ChatAuthor(id: account.id, name: name, isGuest: false, avatarId: account.avatarId,
+                                                                            admin: session.author.admin,
                                                                             avatarAsset: account.avatarAsset, avatarUrl: account.avatarUrl))
     }
 

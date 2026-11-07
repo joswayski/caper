@@ -4481,13 +4481,13 @@ private struct ChatView: View {
             } else if let conversation = peerConversation, conversation.blocked {
                 BlockedConversationBar(conversation: conversation) { unblock(conversation.peer.id) }
             } else { VStack(alignment: .leading, spacing: 8) {
-            if !chat.typingNames.isEmpty {
-                HStack(spacing: 7) {
+            HStack(spacing: 7) {
+                if !chat.typingNames.isEmpty {
                     TypingDots()
                     Text(typingLabel).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                    Spacer()
-                }.frame(height: 20)
-            }
+                }
+                Spacer()
+            }.frame(height: 20)
             if let reference = chat.replyTargets["channel"] { NativeReplyDraft(reference: reference, chat: chat, root: "channel") }
             if let notice = chat.attachmentNotice {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
@@ -8163,7 +8163,13 @@ struct PendingMessageRow: View {
                 Avatar(name: author?.name ?? "Guest", size: 34, avatarID: author?.avatarId, picture: author?.avatarPicture)
             }
             VStack(alignment: .leading, spacing: 4) {
-                if !grouped { Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold)) }
+                if !grouped {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold))
+                        if author?.isAdmin == true { AdminBadge() }
+                        if author?.isGuest == true { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
+                    }
+                }
                 if !pending.text.isEmpty {
                     Text(pending.text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                         .frame(maxWidth: .infinity, alignment: .leading)

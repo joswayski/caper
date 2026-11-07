@@ -17,7 +17,7 @@ function fixture() {
   if (location.protocol === "about:") return;
   const base = 9007199254740992n;
   const author = { id: "historyfixture", name: "TEST FIXTURE history", isGuest: false };
-  const ownAuthor = { id: "localfixture", name: "TEST FIXTURE local", isGuest: false };
+  const ownAuthor = { id: "localfixture", name: "TEST FIXTURE local", isGuest: false, admin: true };
   const account = { id: ownAuthor.id, username: "fixture_local", displayName: ownAuthor.name };
   const space = { id: "space1234567", name: "TEST FIXTURE history", ownerId: author.id };
   const channel = { id: "general12345", spaceId: space.id, name: "general", private: false, joined: true };
@@ -147,6 +147,12 @@ function fixture() {
     if (path.pathname === `/api/chat/channels/${channel.id}/messages`) {
       if (options?.method === "POST") {
         const body = JSON.parse(options.body);
+        if (control.holdSend) {
+          await new Promise((resolve) => {
+            control.releaseSend = resolve;
+          });
+          control.holdSend = false;
+        }
         await new Promise((resolve) => setTimeout(resolve, 250));
         return Response.json(control.append(body.text, body.clientMessageId, ownAuthor));
       }
@@ -287,6 +293,15 @@ const anchorOffset = (key) =>
   );
 
 function quietTimeline(layout) {
+  const geometry = () =>
+    evaluate(`(() => {
+    const selectors = ['.chat-scroller', '.chat-typing', '.chat-panel > .chat-composer',
+      '[data-message-key="' + chatHistoryFixture.latestKey + '"]'];
+    return selectors.map(selector => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return [rect.top, rect.bottom];
+    });
+  })()`);
   const composerSpacing = () => {
     const spacing = evaluate(`(() => {
       const timeline = document.querySelector('.chat-scroller').getBoundingClientRect();
@@ -301,10 +316,20 @@ function quietTimeline(layout) {
     assert.ok(spacing.left >= 14 && spacing.right >= 14, `${layout}: keep both side insets`);
   };
   composerSpacing();
+  const idle = geometry();
+  const assertStationary = () => {
+    for (const [index, rect] of geometry().entries())
+      assert.ok(
+        rect.every((value, edge) => Math.abs(value - idle[index][edge]) < 1),
+        `${layout}: typing must not move messages, viewport or composer`,
+      );
+  };
+  screenshot(`chat-typing-${layout}-idle`);
   evaluate("chatHistoryFixture.typing(true)");
   wait('document.querySelector(".chat-typing").getAttribute("data-visible") === "true"');
   settle();
   composerSpacing();
+  assertStationary();
   assert.ok(
     evaluate(`(() => {
       const typing = document.querySelector('.chat-typing').getBoundingClientRect();
@@ -317,7 +342,9 @@ function quietTimeline(layout) {
   assert.ok(latestVisible(), `${layout}: showing typing must retain the latest message`);
   screenshot(`chat-typing-${layout}`);
   evaluate("chatHistoryFixture.typing(false)");
-  wait('document.querySelector(".chat-typing").getBoundingClientRect().height === 0');
+  wait('document.querySelector(".chat-typing").getAttribute("data-visible") === "false"');
+  settle();
+  assertStationary();
   composerSpacing();
   assert.deepEqual(
     evaluate(`(() => {
@@ -358,7 +385,7 @@ function quietTimeline(layout) {
   settle();
   assert.ok(Math.abs(anchorOffset(before.key) - before.offset) < 2, `${layout}: showing typing preserves history`);
   evaluate("chatHistoryFixture.typing(false)");
-  wait('document.querySelector(".chat-typing").getBoundingClientRect().height === 0');
+  wait('document.querySelector(".chat-typing").getAttribute("data-visible") === "false"');
   settle();
   assert.ok(Math.abs(anchorOffset(before.key) - before.offset) < 2, `${layout}: clearing typing preserves history`);
   browser("fill", "#chat-message", "TEST FIXTURE reading history");
@@ -600,11 +627,10 @@ try {
       browser("focus", ".chat-scroller");
       browser("press", "End");
       settle();
-      // The composer intentionally pads its input; measure the timeline edge,
-      // not the textarea inside that padding.
+      // The typing slot and composer have fixed insets outside the timeline.
       const gap = evaluate(`(() => {
         const last = [...document.querySelectorAll('.chat-scroller .chat-message')].at(-1);
-        return document.querySelector('.chat-composer').getBoundingClientRect().top - last.getBoundingClientRect().bottom;
+        return document.querySelector('.chat-scroller').getBoundingClientRect().bottom - last.getBoundingClientRect().bottom;
       })()`);
       assert.ok(Math.abs(gap) < 1, `${layout} at ${resizedHeight}px: ${gap}px of empty space below newest message`);
     }
@@ -758,7 +784,16 @@ try {
   evaluate('document.querySelector(".chat-scroller").scrollTop = 0');
   settle();
   browser("fill", "#chat-message", "Fixture optimistic message");
+  evaluate("chatHistoryFixture.holdSend = true");
   browser("press", "Enter");
+  wait('typeof chatHistoryFixture.releaseSend === "function"');
+  assert.equal(
+    evaluate('document.querySelector(".chat-message-pending .chat-admin-badge")?.textContent.trim()'),
+    "Admin",
+    "Your admin badge is visible before the server confirms the send",
+  );
+  screenshot("chat-pending-admin-narrow");
+  evaluate("chatHistoryFixture.releaseSend()");
   wait(
     '[...document.querySelectorAll(".chat-message p")].some(p => p.textContent === "Fixture optimistic message") && !document.querySelector(".chat-message-pending") && document.querySelector("#chat-message").value === ""',
   );
