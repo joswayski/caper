@@ -4679,7 +4679,12 @@ impl App {
         } else {
             format!("# {}", state.channel_name)
         });
-        ui.status.set_label(&state.status);
+        // As desktop: a live connection says nothing; only its absence shows.
+        ui.status.set_label(if state.status == "Live" {
+            ""
+        } else {
+            &state.status
+        });
         // DMs are named after the other person, without a channel `#`.
         let destination = if direct {
             state.channel_name.clone()
@@ -5249,10 +5254,20 @@ impl App {
             if count > 0 {
                 line.append(&badge(count, mentions > 0));
             }
+            // As desktop: a live room you're not in says how many are there.
+            if let Some((_, people, false)) = &roster {
+                let live = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+                live.add_css_class("room-live");
+                live.append(&self.images.icon_image(Icon::AudioLines, "#4aa86b", 14));
+                live.append(&label(&people.to_string(), &["room-live-count"]));
+                live.set_tooltip_text(Some(&format!("{people} in voice")));
+                line.append(&live);
+            }
             self.scope_menu_on(&line, scope);
             match roster {
-                Some(roster) => {
+                Some((roster, _, _)) => {
                     let entry = gtk::Box::new(gtk::Orientation::Vertical, 4);
+                    entry.add_css_class("room-card");
                     entry.append(&line);
                     entry.append(&roster);
                     ui.channels.append(&entry);

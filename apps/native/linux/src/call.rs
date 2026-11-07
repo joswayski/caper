@@ -475,15 +475,29 @@ impl App {
     }
 
     /// A channel's live room under its sidebar row, as the desktop's room
-    /// card: the session timer, Join or Switch, and who is there.
-    pub(super) fn channel_voice(self: &Rc<Self>, state: &State, id: &str) -> Option<gtk::Box> {
+    /// card: who is there, the session timer, and Join or Switch. Rooms
+    /// you're not in fit one line (faces, names, timer, button); your own
+    /// call lists everyone, with who is speaking. Also returns how many
+    /// are there and whether it's your call.
+    pub(super) fn channel_voice(
+        self: &Rc<Self>,
+        state: &State,
+        id: &str,
+    ) -> Option<(gtk::Box, usize, bool)> {
         let people = self.voice_people(state, id);
         if people.is_empty() {
             return None;
         }
-        let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        list.add_css_class("voice-roster");
         let own = self.voice.borrow().state.active_channel() == Some(id);
+        let list = gtk::Box::new(
+            if own {
+                gtk::Orientation::Vertical
+            } else {
+                gtk::Orientation::Horizontal
+            },
+            if own { 2 } else { 6 },
+        );
+        list.add_css_class("voice-roster");
         let started = if own {
             self.voice.borrow().session_started_at
         } else {
@@ -506,6 +520,42 @@ impl App {
         if let Some(started) = started {
             self.room_timers.borrow_mut().push((timer.clone(), started));
             self.room_tick();
+        }
+        if !own {
+            // Up to three overlapping faces, then who is there.
+            let faces = gtk::Fixed::new();
+            faces.add_css_class("room-faces");
+            for (index, person) in people.iter().take(3).enumerate() {
+                let avatar = AvatarView::new(24, false);
+                avatar.set(
+                    &self.images,
+                    &Avatar::new(
+                        &person.name,
+                        person.avatar_id,
+                        &person.avatar_asset,
+                        &person.avatar_url,
+                    ),
+                );
+                faces.put(&avatar.root, index as f64 * 18.0, 0.0);
+            }
+            faces.set_size_request(24 + (people.len().min(3) as i32 - 1) * 18, 24);
+            faces.set_valign(gtk::Align::Center);
+            list.append(&faces);
+            if people.len() > 3 {
+                let more = label(&format!("+{}", people.len() - 3), &["room-more"]);
+                more.set_valign(gtk::Align::Center);
+                list.append(&more);
+            }
+            let names: Vec<&str> = people.iter().map(|person| person.name.as_str()).collect();
+            let names = label(
+                &voice::room_names(&names),
+                &["small", "muted", "room-names"],
+            );
+            names.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            names.set_hexpand(true);
+            names.set_xalign(0.0);
+            list.append(&names);
+            timer.set_hexpand(false);
         }
         top.append(&timer);
         let action = match self.action(state, id) {
@@ -555,13 +605,21 @@ impl App {
             button.set_valign(gtk::Align::Center);
             top.append(&button);
         }
+        if !own {
+            // One line: the timer and button follow the names.
+            while let Some(child) = top.first_child() {
+                top.remove(&child);
+                list.append(&child);
+            }
+            return Some((list, people.len(), own));
+        }
         if started.is_some() || top.last_child() != top.first_child() {
             list.append(&top);
         }
         for person in &people {
             list.append(&self.occupant(person, own, 18));
         }
-        Some(list)
+        Some((list, people.len(), own))
     }
 
     /// Keeps the sidebar's room timers running while any show.
@@ -666,8 +724,11 @@ impl App {
                 ui.voice_join.set_label(text);
                 ui.voice_join.set_sensitive(enabled);
                 ui.voice_join.set_tooltip_text(Some(&tooltip));
-                // Leave lives on the call card; Switch is neutral.
-                ui.voice_join.set_visible(action != Action::Leave);
+                // Leave lives on the call card; Switch is neutral. As on
+                // desktop, a wide window's voice lives in the sidebar's
+                // channel rows; only a narrow one offers it here.
+                ui.voice_join
+                    .set_visible(action != Action::Leave && self.narrow.get());
                 if matches!(
                     action,
                     Action::Join {

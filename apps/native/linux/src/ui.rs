@@ -806,6 +806,8 @@ impl Ui {
             .build();
         conversation.append(&error_bar);
         let list = List::new("Messages", images, main_rows);
+        // As desktop: a short conversation sits by the composer.
+        list.view.set_valign(gtk::Align::End);
         let empty = gtk::Box::new(gtk::Orientation::Vertical, 8);
         empty.add_css_class("empty-state");
         empty.set_halign(gtk::Align::Center);
