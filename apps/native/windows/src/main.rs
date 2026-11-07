@@ -763,6 +763,7 @@ impl App {
                         self.need = true;
                     }
                 }
+                live::Update::Inbox => self.inbox_changed(),
                 live::Update::Notified => {
                     self.close_dialog();
                     self.close_settings();
@@ -1514,6 +1515,7 @@ impl App {
                 TIMER_CARD => self.show_card(),
                 TIMER_MEDIA => self.next_gif_frame(),
                 TIMER_MUTE => self.mutes_changed(),
+                settings::TIMER_INBOX => self.inbox_tick(),
                 TIMER_GIFS => self.gifs_tick(),
                 TIMER_GIF_FRAMES => self.next_picker_frame(),
                 TIMER_UNREAD => {

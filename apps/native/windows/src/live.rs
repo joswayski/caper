@@ -115,6 +115,9 @@ pub enum Update {
     /// A notification was clicked: dialogs, settings and menus close over
     /// the conversation it opens.
     Notified,
+    /// The notification inbox's rows, filters or unread count changed, or
+    /// it closed to open one of its notifications.
+    Inbox,
     /// Something for the header's status line that leaves the sign-in
     /// screen alone (a toast that failed to show, say).
     Warning(String),
@@ -351,6 +354,15 @@ pub struct Live {
     notifications: caper_client::notifications::Notifications,
     /// When the unread badges are read again after a notification arrived.
     unread_due: Option<Instant>,
+    /// The signed-in account's epoch, as egui's `account_epoch`: what its
+    /// notifications and inbox results carry (`generation` moves on with
+    /// every navigation).
+    account_epoch: u64,
+    /// The notification inbox, as every client keeps it.
+    pub activity: caper_client::activity::Inbox,
+    /// Where an opened notification points: its navigation, the message
+    /// and its thread's root, shown once that navigation loads.
+    focus: Option<(u64, String, Option<String>)>,
 }
 
 /// What a send with composer files did.
@@ -495,6 +507,9 @@ impl Live {
             block_error: None,
             notifications: Default::default(),
             unread_due: None,
+            account_epoch: 0,
+            activity: Default::default(),
+            focus: None,
         }
     }
 
@@ -910,9 +925,10 @@ impl Live {
         self.load_blocks();
         self.load_notifications();
         // Mentions and DMs toast while the window isn't showing them.
+        self.account_epoch = self.generation;
         if let Some(token) = self.token.clone() {
             self.worker.send(Command::StartNotifications {
-                epoch: self.generation,
+                epoch: self.account_epoch,
                 token,
             });
         }
@@ -2029,6 +2045,180 @@ impl Live {
         self.load_unread(self.unread_pending.then_some(self.visit));
     }
 
+    /// The inbox opened (egui's Notifications button): its first page
+    /// loads.
+    pub fn open_activity(&mut self) {
+        self.activity.shown = true;
+        self.load_activity(false, false);
+    }
+
+    pub fn close_activity(&mut self) {
+        self.activity.shown = false;
+    }
+
+    /// egui's `load_activity_page`: the first page (`more`: the next older
+    /// one); as a poll, the loaded rows again. A filter change keeps the
+    /// shown rows, dimmed, until its page answers.
+    pub fn load_activity(&mut self, more: bool, poll: bool) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        let a = &mut self.activity;
+        if poll && (a.loading || !a.reads.is_empty()) || more && (a.loading || a.cursor.is_none())
+        {
+            return;
+        }
+        a.request += 1;
+        a.loading = true;
+        a.error = None;
+        a.refreshed = Some(Instant::now());
+        if !more && !poll {
+            a.stale = !a.items.is_empty();
+        }
+        self.worker.send(Command::LoadActivity {
+            epoch: self.account_epoch,
+            request: a.request,
+            token,
+            filter: a.filter,
+            unread: a.unread_only,
+            cursor: if more { a.cursor.clone() } else { None },
+            through: if poll { a.items.last().cloned() } else { None },
+            more,
+        });
+    }
+
+    /// The open inbox's 15 s refresh, or sooner after a notification.
+    pub fn poll_activity(&mut self) {
+        if self.activity.due() {
+            self.load_activity(false, true);
+        }
+    }
+
+    pub fn set_activity_filter(&mut self, filter: caper_client::activity::Filter) {
+        if self.activity.filter != filter {
+            self.activity.filter = filter;
+            self.load_activity(false, false);
+        }
+    }
+
+    pub fn toggle_unread_only(&mut self) {
+        self.activity.unread_only = !self.activity.unread_only;
+        self.load_activity(false, false);
+    }
+
+    /// Opens (`open`) or marks read the inbox's shown row `k`, as egui:
+    /// the row reads at once, and opening waits for the read. Reading
+    /// never accepts an invitation.
+    pub fn activity_action(&mut self, k: usize, open: bool) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        let Some(item) = self.activity.visible_items().into_iter().nth(k) else {
+            return;
+        };
+        if open && self.activity.opening.is_some() {
+            return;
+        }
+        self.unread_revision += 1;
+        // A refresh in flight could bring the row back unread; a filter's
+        // page replacing dimmed rows keeps going.
+        if !self.activity.stale {
+            self.activity.request += 1;
+            self.activity.loading = false;
+        }
+        if open {
+            self.activity.opening = Some(item.id.clone());
+        }
+        self.activity.error = None;
+        self.activity.mark_read(&item);
+        self.worker.send(Command::ReadActivity {
+            epoch: self.account_epoch,
+            navigation: self.navigation,
+            token,
+            item,
+            open,
+        });
+    }
+
+    /// egui's `open_activity_item`: the inbox closes over the notification's
+    /// conversation, at its message. Invitations aren't answered here yet.
+    fn open_activity_item(&mut self, item: caper_client::activity::Item, out: &mut Vec<Update>) {
+        self.activity.shown = false;
+        if item.kind == "space.invitation" || item.kind == "channel.invitation" {
+            out.push(Update::Warning(
+                "Invitations can't be answered in this app yet.".into(),
+            ));
+            return;
+        }
+        let Some(channel) = item.channel().map(str::to_owned) else {
+            out.push(Update::Warning(
+                "This notification is no longer available.".into(),
+            ));
+            return;
+        };
+        let target = item.message_id.map(|m| (m, item.thread_root_id));
+        if self.channel.as_ref() == Some(&channel) {
+            if let Some((message, thread)) = target {
+                self.focus_target(&message, thread.as_deref(), out);
+            }
+            return;
+        }
+        self.navigate(item.space_id, Some(channel));
+        self.focus = target.map(|(message, thread)| (self.navigation, message, thread));
+    }
+
+    /// Shows message `id` of the open channel: its thread for a reply in
+    /// one, else the row (or the history around it).
+    fn focus_target(&mut self, id: &str, thread: Option<&str>, out: &mut Vec<Update>) {
+        self.view_original(id, thread);
+        out.append(&mut self.queued);
+    }
+
+    /// What the inbox card shows (egui's `activity_dialog` rows).
+    pub fn inbox_snapshot(&self) -> crate::settings::InboxSnap {
+        let a = &self.activity;
+        let now = chrono::Utc::now();
+        crate::settings::InboxSnap {
+            filter: caper_client::activity::Filter::ALL
+                .iter()
+                .position(|f| *f == a.filter)
+                .unwrap_or(0),
+            unread_only: a.unread_only,
+            unread_count: a.unread_count,
+            rows: a
+                .visible_items()
+                .iter()
+                .map(|item| crate::settings::InboxRow {
+                    actor: item.actor_name.clone(),
+                    unread: item.unread,
+                    opening: a.opening.as_ref() == Some(&item.id),
+                    time: caper_client::feedback::relative_time(&item.created_at, now),
+                    description: match item.kind.as_str() {
+                        "reaction" => Some(format!(
+                            "Reacted {} to your message",
+                            item.emoji.as_deref().unwrap_or_default()
+                        )),
+                        "direct.request" => Some("Wants to send you messages".into()),
+                        "space.invitation" => Some("Invited you to a space".into()),
+                        "channel.invitation" => Some("Invited you to a private channel".into()),
+                        _ => None,
+                    },
+                    body: item.body.clone(),
+                    place: [item.space_name.as_deref(), item.channel_name.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(" \u{b7} "),
+                })
+                .collect(),
+            loading: a.loading,
+            stale: a.stale,
+            error: a.error.clone(),
+            more: a.cursor.is_some(),
+            retry: !a.loading && a.reads.is_empty(),
+        }
+    }
+
     /// Reads the unread state, as the snapshot of `visit` when given.
     fn load_unread(&mut self, visit: Option<u64>) {
         self.unread_due = None;
@@ -2243,6 +2433,11 @@ impl Live {
                         self.direct_head(),
                     );
                     out.push(Update::Loaded(Box::new((conversation, ids))));
+                    if let Some((_, message, thread)) =
+                        self.focus.take().filter(|(n, ..)| *n == navigation)
+                    {
+                        self.focus_target(&message, thread.as_deref(), out);
+                    }
                     self.mark_read();
                     self.worker.send(Command::Connect {
                         generation: current,
@@ -2500,7 +2695,10 @@ impl Live {
                     && let Ok(unread) = result
                 {
                     self.unread_spaces = unread.spaces;
-                    out.push(Update::Badges);
+                    if let Some(count) = unread.badge_count {
+                        self.activity.unread_count = count;
+                    }
+                    out.extend([Update::Badges, Update::Inbox]);
                 }
             }
             Event::Reactors {
@@ -2854,7 +3052,7 @@ impl Live {
             // client has no feedback-team visits, so every conversation
             // counts as known.
             Event::OpenNotification { epoch, alert }
-                if epoch == current && self.token.is_some() =>
+                if epoch == self.account_epoch && self.token.is_some() =>
             {
                 use caper_client::os_notifications::Route;
                 match alert.route(false, true) {
@@ -2875,15 +3073,46 @@ impl Live {
             }
             // Unread state changed: the badges are read again a second
             // later, once for a burst.
-            Event::NotificationActivity { epoch } if epoch == current => {
+            Event::NotificationActivity { epoch } if epoch == self.account_epoch => {
+                // An open inbox loads again at its next tick, as in egui.
+                self.activity.refreshed = None;
                 if self.unread_due.is_none() {
                     let wait = Duration::from_secs(1);
                     self.unread_due = Some(Instant::now() + wait);
                     self.host.wake_after(wait);
                 }
             }
-            Event::NotificationError { epoch, error } if epoch == current => {
+            Event::NotificationError { epoch, error } if epoch == self.account_epoch => {
                 out.push(Update::Warning(error));
+            }
+            Event::ActivityLoaded {
+                epoch,
+                request,
+                more,
+                result,
+            } if epoch == self.account_epoch => {
+                self.activity.finish(request, more, result);
+                out.push(Update::Inbox);
+            }
+            // A row reads before it opens, as in egui; a failed read puts
+            // it back unread and opens nothing.
+            Event::ActivityRead {
+                epoch,
+                navigation,
+                item,
+                open,
+                result,
+            } if epoch == self.account_epoch => {
+                if open {
+                    self.activity.opening = None;
+                }
+                if self.activity.read_finished(&item, result) {
+                    self.refresh_unread();
+                    if open && navigation == self.navigation && self.activity.shown {
+                        self.open_activity_item(item, out);
+                    }
+                }
+                out.push(Update::Inbox);
             }
             // Everything else (reactions, edits, threads, voice...) is not
             // shown by this client yet.

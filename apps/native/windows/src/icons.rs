@@ -25,6 +25,7 @@ macro_rules! icons {
 }
 
 icons! {
+    Bell => "bell.svg",
     BellOff => "bell-off.svg",
     Check => "check.svg",
     ChevronDown => "chevron-down.svg",

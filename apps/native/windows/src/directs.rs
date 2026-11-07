@@ -11,7 +11,8 @@
 //! off, mute for a while or unmute), and a muted one shows a bell-slash.
 //! The same menu serves the space (the sidebar header's button: when voice
 //! starts, the level, mute) and each channel (its row's button: the level,
-//! mute).
+//! mute). The section's first row opens the notification inbox, with its
+//! unread count.
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::live::Live;
 use crate::overlay::{Rect, Tone};
@@ -129,6 +130,8 @@ fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowKind {
     Direct,
+    /// "Notifications", opening the inbox, with its unread count.
+    Notifications,
     /// "Message requests", open or closed, with the requests' count.
     Requests {
         open: bool,
@@ -169,6 +172,12 @@ impl Row {
     pub fn label(&self) -> String {
         match self.kind {
             RowKind::Requests { .. } => return self.name.clone(),
+            RowKind::Notifications => {
+                return match self.count {
+                    Some(n) => format!("{} \u{b7} {n}", self.name),
+                    None => self.name.clone(),
+                };
+            }
             RowKind::Request => {
                 let note = self.note.as_deref().unwrap_or_default();
                 return format!("Message request from {} {note}", self.name);
@@ -213,7 +222,22 @@ impl Live {
                 error: None,
             }
         };
-        let mut out = Vec::new();
+        // egui's Notifications button, under the section's heading.
+        let unread = self.activity.unread_count;
+        let mut out = vec![Row {
+            kind: RowKind::Notifications,
+            id: None,
+            name: "Notifications".into(),
+            note: None,
+            own: false,
+            unread: false,
+            count: (unread > 0).then_some(unread),
+            color: 0,
+            initials: String::new(),
+            active: self.activity.shown,
+            muted: None,
+            error: None,
+        }];
         let requests: Vec<_> = self
             .directs
             .iter()
@@ -323,6 +347,10 @@ pub fn draw(
             draw_requests(g, dc, row, r, open, lit)?;
             continue;
         }
+        if row.kind == RowKind::Notifications {
+            draw_inbox(g, dc, row, r, lit)?;
+            continue;
+        }
         let e = D2D1_ELLIPSE {
             point: windows_numerics::Vector2 { X: cx, Y: cy },
             radiusX: 10.0,
@@ -356,18 +384,7 @@ pub fn draw(
             right = b.left - 4.0;
         }
         if let Some(n) = row.count {
-            let label = if n > 99 { "99+".into() } else { n.to_string() };
-            let l = g.layout(&gfx::wide(&label), &g.formats.badge, 1e6)?;
-            let w = gfx::metrics(&l).widthIncludingTrailingWhitespace + 12.0;
-            let b = rect(right - w, cy - 9.0, right, cy + 9.0);
-            fill_round(dc, b, 8.0, &g.brushes.terracotta);
-            // The badge format centres its text in the layout's box.
-            unsafe {
-                l.SetMaxWidth(w)?;
-                l.SetMaxHeight(18.0)?;
-            }
-            text::draw(dc, &l, b.left, b.top, &g.brushes.text);
-            right = b.left - 8.0;
+            right = badge(g, dc, n, right, cy)? - 8.0;
         } else if row.unread {
             let e = D2D1_ELLIPSE {
                 point: windows_numerics::Vector2 {
@@ -430,6 +447,54 @@ pub fn draw(
             }
         }
     }
+    Ok(())
+}
+
+/// A terracotta count ending at `right`, centred on `cy`; returns its
+/// left edge.
+fn badge(g: &Gfx, dc: &ID2D1DeviceContext, n: u64, right: f32, cy: f32) -> Result<f32> {
+    let label = if n > 99 { "99+".into() } else { n.to_string() };
+    let l = g.layout(&gfx::wide(&label), &g.formats.badge, 1e6)?;
+    let w = gfx::metrics(&l).widthIncludingTrailingWhitespace + 12.0;
+    let b = rect(right - w, cy - 9.0, right, cy + 9.0);
+    fill_round(dc, b, 8.0, &g.brushes.terracotta);
+    // The badge format centres its text in the layout's box.
+    unsafe {
+        l.SetMaxWidth(w)?;
+        l.SetMaxHeight(18.0)?;
+    }
+    text::draw(dc, &l, b.left, b.top, &g.brushes.text);
+    Ok(b.left)
+}
+
+/// "Notifications": a bell, the label, and the unread count.
+fn draw_inbox(g: &Gfx, dc: &ID2D1DeviceContext, row: &Row, r: D2D_RECT_F, lit: bool) -> Result<()> {
+    let cy = (r.top + r.bottom) / 2.0;
+    let on = lit || row.active;
+    crate::icons::draw(
+        dc,
+        crate::icons::Icon::Bell,
+        rect(r.left + 10.0, cy - 7.5, r.left + 25.0, cy + 7.5),
+        if on { TEXT } else { TEXT_MUTED },
+        1.0,
+    );
+    let mut right = r.right - 8.0;
+    if let Some(n) = row.count {
+        right = badge(g, dc, n, right, cy)? - 8.0;
+    }
+    let x = r.left + 32.0;
+    let name = g.layout(
+        &gfx::wide(&row.name),
+        &g.formats.direct_name,
+        (right - x).max(1.0),
+    )?;
+    let m = gfx::metrics(&name);
+    let brush = if on {
+        &g.brushes.text
+    } else {
+        &g.brushes.muted
+    };
+    text::draw(dc, &name, x, cy - 1.0 - m.height / 2.0, brush);
     Ok(())
 }
 
@@ -1189,6 +1254,9 @@ impl App {
         let Some(row) = self.direct_rows().into_iter().nth(k) else {
             return;
         };
+        if row.kind == RowKind::Notifications {
+            return self.open_inbox();
+        }
         let Some(live) = &mut self.live else { return };
         match (row.kind, row.own, row.id) {
             (RowKind::Requests { open }, ..) => {
@@ -1303,5 +1371,12 @@ mod tests {
             ..row
         };
         assert_eq!(row.label(), "Message request from Maya @maya");
+        let row = Row {
+            kind: RowKind::Notifications,
+            name: "Notifications".into(),
+            count: Some(2),
+            ..row
+        };
+        assert_eq!(row.label(), "Notifications \u{b7} 2");
     }
 }

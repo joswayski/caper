@@ -5,11 +5,17 @@
 //! inline error (the shared `Notifications` and the core's Account
 //! operations, kept in `Live`). Also the sidebar's account footer: your
 //! avatar and name, and its gear's menu (Settings…, Log out).
+//!
+//! The same card shows the notification inbox (egui's `activity_dialog`):
+//! the filters, Unread only with the count, each notification (opening it
+//! closes the inbox over its conversation; its check marks it read), and
+//! Load more. The shared `caper_client::activity::Inbox` keeps its state.
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::overlay::{Rect, Tone};
 use crate::theme::*;
 use crate::{App, EV_FOCUS, EV_SCREEN, text};
+use caper_client::activity::Filter;
 use caper_client::model::{DELETE_ACCOUNT_URL, DM_PRIVACY, NotificationLevel};
 use caper_client::notifications::{Change, Scope, account_level_label};
 use windows::Win32::Foundation::{LRESULT, WPARAM};
@@ -26,6 +32,12 @@ const PAD: f32 = 24.0;
 const HEAD_H: f32 = 64.0;
 const ROW_H: f32 = 26.0;
 const BUTTON_H: f32 = 30.0;
+/// An inbox filter's chip.
+const CHIP_H: f32 = 28.0;
+/// An inbox row's title width leaves this much for its time and check.
+const ROW_SIDE: f32 = 104.0;
+/// Refreshes the open inbox's times and polls it, as egui's repaint.
+pub const TIMER_INBOX: usize = 11;
 /// The gap around a section's separator.
 const SECTION_GAP: f32 = 18.0;
 pub const LEVELS: [NotificationLevel; 3] = [
@@ -58,6 +70,14 @@ pub enum SPart {
     Unblock(usize),
     RetryBlocks,
     Delete,
+    /// The inbox: a filter (`Filter::ALL`), Unread only, a shown row
+    /// (opens it), a row's mark read check, Load more and Retry.
+    Filter(usize),
+    UnreadOnly,
+    Open(usize),
+    MarkRead(usize),
+    LoadMore,
+    RetryInbox,
 }
 
 impl SPart {
@@ -74,17 +94,23 @@ impl SPart {
             Self::Delete => 7,
             Self::Level(k) => 8 + k,
             Self::Privacy(k) => 12 + k,
+            Self::Filter(k) => 20 + k,
+            Self::UnreadOnly => 30,
+            Self::LoadMore => 31,
+            Self::RetryInbox => 32,
             Self::Text(k) => 100 + k,
             Self::Unblock(k) => 1000 + k,
+            Self::Open(k) => 1_000_000 + 2 * k,
+            Self::MarkRead(k) => 1_000_001 + 2 * k,
         }
     }
 
     pub fn is_radio(self) -> bool {
-        matches!(self, Self::Level(_) | Self::Privacy(_))
+        matches!(self, Self::Level(_) | Self::Privacy(_) | Self::Filter(_))
     }
 
     pub fn is_toggle(self) -> bool {
-        matches!(self, Self::Launch | Self::VoiceStarted)
+        matches!(self, Self::Launch | Self::VoiceStarted | Self::UnreadOnly)
     }
 
     fn is_button(self) -> bool {
@@ -95,6 +121,8 @@ impl SPart {
                 | Self::RetryPrivacy
                 | Self::RetryBlocks
                 | Self::Unblock(_)
+                | Self::LoadMore
+                | Self::RetryInbox
         )
     }
 }
@@ -107,6 +135,8 @@ enum Style {
     Error,
     /// A blocked account: its avatar's colour and initials before the name.
     Person(u32),
+    /// An inbox row's title: who it is from.
+    Title,
 }
 
 struct Item {
@@ -138,9 +168,53 @@ pub struct Snapshot {
     pub blocks_error: Option<String>,
     pub block_busy: bool,
     pub block_error: Option<String>,
+    /// The inbox page's state.
+    pub inbox: Option<InboxSnap>,
+}
+
+/// What the inbox shows (`Live::inbox_snapshot`).
+#[derive(Clone, Default, PartialEq, Debug)]
+pub struct InboxSnap {
+    /// The chosen filter's place in `Filter::ALL`.
+    pub filter: usize,
+    pub unread_only: bool,
+    pub unread_count: u64,
+    pub rows: Vec<InboxRow>,
+    pub loading: bool,
+    /// The rows are the previous filter's, dimmed and inert until its page
+    /// answers.
+    pub stale: bool,
+    pub error: Option<String>,
+    /// Older notifications exist (Load more).
+    pub more: bool,
+    /// Retry can run: nothing loads and no read is in flight.
+    pub retry: bool,
+}
+
+/// One notification as the inbox shows it.
+#[derive(Clone, PartialEq, Debug)]
+pub struct InboxRow {
+    pub actor: String,
+    pub unread: bool,
+    /// Its open is in flight: only it is disabled.
+    pub opening: bool,
+    pub time: String,
+    /// What happened, for reactions, requests and invitations.
+    pub description: Option<String>,
+    pub body: String,
+    /// Its space and channel.
+    pub place: String,
+}
+
+/// Which card is shown.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Page {
+    Settings,
+    Inbox,
 }
 
 pub struct Settings {
+    pub page: Page,
     items: Vec<Item>,
     separators: Vec<f32>,
     pub snap: Snapshot,
@@ -160,6 +234,7 @@ pub struct Settings {
 impl Settings {
     pub fn new(launch: bool, startup_error: Option<String>) -> Self {
         Self {
+            page: Page::Settings,
             items: Vec::new(),
             separators: Vec::new(),
             snap: Snapshot::default(),
@@ -174,13 +249,28 @@ impl Settings {
         }
     }
 
+    /// The notification inbox.
+    pub fn inbox() -> Self {
+        Self {
+            page: Page::Inbox,
+            ..Self::new(false, None)
+        }
+    }
+
     pub fn enabled(&self, part: SPart) -> bool {
         let s = &self.snap;
+        let inbox = s.inbox.as_ref();
         match part {
             SPart::Launch => s.launch.is_some(),
             SPart::Level(_) | SPart::VoiceStarted => s.level.is_some() && !s.notify_saving,
             SPart::Privacy(_) => s.privacy.is_some(),
             SPart::Unblock(_) => !s.block_busy,
+            SPart::Open(k) => {
+                inbox.is_some_and(|i| !i.stale && i.rows.get(k).is_some_and(|r| !r.opening))
+            }
+            SPart::MarkRead(_) => inbox.is_some_and(|i| !i.stale),
+            SPart::LoadMore => inbox.is_some_and(|i| !i.loading),
+            SPart::RetryInbox => inbox.is_some_and(|i| i.retry),
             _ => true,
         }
     }
@@ -193,6 +283,8 @@ impl Settings {
             SPart::VoiceStarted => s.voice_started,
             SPart::Level(k) => s.level == Some(LEVELS[k]),
             SPart::Privacy(k) => s.privacy.as_deref() == Some(DM_PRIVACY[k].0),
+            SPart::Filter(k) => s.inbox.as_ref().is_some_and(|i| i.filter == k),
+            SPart::UnreadOnly => s.inbox.as_ref().is_some_and(|i| i.unread_only),
             _ => false,
         }
     }
@@ -207,6 +299,7 @@ impl Settings {
     /// A part's accessible name: its text or label.
     pub fn name(&self, part: SPart) -> String {
         match part {
+            SPart::Close if self.page == Page::Inbox => "Close notifications".into(),
             SPart::Close => "Close settings".into(),
             _ => self
                 .items
@@ -243,8 +336,10 @@ impl Settings {
         if !contains(self.body, x, y) {
             return None;
         }
+        // Last first: an inbox row's check lies on the row.
         self.items
             .iter()
+            .rev()
             .filter(|i| !matches!(i.part, SPart::Text(_)) && self.enabled(i.part))
             .find(|i| contains(self.client(i.rect), x, y))
             .map(|i| i.part)
@@ -274,6 +369,33 @@ impl Settings {
             separators: Vec::new(),
             texts: 0,
         };
+        if let (Page::Inbox, Some(inbox)) = (self.page, &snap.inbox) {
+            b.inbox(inbox)?;
+        } else if self.page == Page::Settings {
+            b.settings(&snap)?;
+        }
+        let content_h = b.y;
+        let card_h = (HEAD_H + content_h + PAD).min(h - 48.0).max(HEAD_H + 40.0);
+        let (cx, cy) = (
+            ((w - card_w) / 2.0).round(),
+            ((h - card_h) / 2.0).max(24.0).round(),
+        );
+        self.card = (cx, cy, card_w, card_h);
+        self.body = (cx, cy + HEAD_H, card_w, card_h - HEAD_H - PAD);
+        self.items = b.items;
+        self.separators = b.separators;
+        self.content_h = content_h;
+        self.snap = snap;
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+        Ok(())
+    }
+}
+
+impl Builder<'_> {
+    /// Settings' sections.
+    fn settings(&mut self, snap: &Snapshot) -> Result<()> {
+        let b = self;
+        let inner = b.inner;
         b.text("Startup", Style::Section)?;
         b.y += 6.0;
         // The switch row: its title and note on the left, the switch right.
@@ -374,22 +496,109 @@ impl Settings {
             });
             b.y += dh;
         }
-        let content_h = b.y;
-        let card_h = (HEAD_H + content_h + PAD).min(h - 48.0).max(HEAD_H + 40.0);
-        let (cx, cy) = (
-            ((w - card_w) / 2.0).round(),
-            ((h - card_h) / 2.0).max(24.0).round(),
-        );
-        self.card = (cx, cy, card_w, card_h);
-        self.body = (cx, cy + HEAD_H, card_w, card_h - HEAD_H - PAD);
-        self.items = b.items;
-        self.separators = b.separators;
-        self.content_h = content_h;
-        self.snap = snap;
-        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
         Ok(())
     }
 
+    /// The inbox, as egui's `activity_dialog` stacks it.
+    fn inbox(&mut self, s: &InboxSnap) -> Result<()> {
+        // The filters wrap like egui's selectable row.
+        let mut x = 0.0;
+        for (k, filter) in Filter::ALL.iter().enumerate() {
+            let w = self.width(filter.label(), Style::Label)? + 20.0;
+            if x > 0.0 && x + w > self.inner {
+                x = 0.0;
+                self.y += CHIP_H + 6.0;
+            }
+            self.push(SPart::Filter(k), (x, self.y, w, CHIP_H), filter.label());
+            x += w + 6.0;
+        }
+        self.y += CHIP_H + 10.0;
+        let unread = format!("Unread only ({})", s.unread_count);
+        self.push(
+            SPart::UnreadOnly,
+            (0.0, self.y, self.inner.min(220.0), ROW_H),
+            &unread,
+        );
+        self.y += ROW_H + 10.0;
+        if let Some(e) = &s.error {
+            self.text(e, Style::Error)?;
+            self.button(SPart::RetryInbox, "Retry")?;
+            self.y += 6.0;
+        }
+        if s.rows.is_empty() {
+            if s.loading {
+                self.text("Loading notifications\u{2026}", Style::Detail)?;
+            } else if s.error.is_none() {
+                self.text("No notifications match these filters.", Style::Detail)?;
+            }
+        }
+        for (k, row) in s.rows.iter().enumerate() {
+            let top = self.y;
+            // The row opens it; its title line ends in the time and, while
+            // unread, the check.
+            let open = self.items.len();
+            let title = format!("{}{}", if row.unread { "\u{25cf} " } else { "" }, row.actor);
+            let th = self.measure(&title, Style::Title, self.inner - ROW_SIDE)?;
+            self.items.push(Item {
+                part: SPart::Open(k),
+                rect: (0.0, top, self.inner, 0.0),
+                text: title,
+                style: Style::Title,
+                initials: String::new(),
+            });
+            let line = (th + 8.0).max(28.0);
+            let mark = if row.unread { 32.0 } else { 0.0 };
+            let tw = self.width(&row.time, Style::Detail)?;
+            let tm = self.measure(&row.time, Style::Detail, 1e6)?;
+            self.items.push(Item {
+                part: SPart::Text(self.texts),
+                rect: (self.inner - mark - tw, top + (line - tm) / 2.0, tw, tm),
+                text: row.time.clone(),
+                style: Style::Detail,
+                initials: String::new(),
+            });
+            self.texts += 1;
+            if row.unread {
+                let text = format!("Mark notification from {} read", row.actor);
+                self.push(
+                    SPart::MarkRead(k),
+                    (self.inner - 28.0, top + (line - 28.0) / 2.0, 28.0, 28.0),
+                    &text,
+                );
+            }
+            self.y = top + line;
+            if let Some(d) = &row.description {
+                self.text(d, Style::Detail)?;
+            }
+            if !row.body.is_empty() {
+                self.text(&row.body, Style::Label)?;
+            }
+            if !row.place.is_empty() {
+                self.text(&row.place, Style::Detail)?;
+            }
+            self.items[open].rect.3 = self.y - top + 4.0;
+            self.y += 10.0;
+            self.separators.push(self.y);
+            self.y += 10.0;
+        }
+        if s.more {
+            self.button(SPart::LoadMore, "Load more")?;
+        }
+        Ok(())
+    }
+
+    fn push(&mut self, part: SPart, rect: Rect, text: &str) {
+        self.items.push(Item {
+            part,
+            rect,
+            text: text.into(),
+            style: Style::Label,
+            initials: String::new(),
+        });
+    }
+}
+
+impl Settings {
     /// Draws the scrim and the card over a `w` × `h` window.
     pub fn draw(&self, g: &Gfx, dc: &ID2D1DeviceContext) -> Result<()> {
         unsafe {
@@ -398,7 +607,11 @@ impl Settings {
             let card = rect(cx, cy, cx + cw, cy + ch);
             fill_round(dc, card, RADIUS, &g.brushes.surface);
             stroke_round(dc, card, RADIUS, &g.brushes.border);
-            let title = g.layout(&gfx::wide("Settings"), &g.formats.dialog_title, 1e6)?;
+            let heading = match self.page {
+                Page::Settings => "Settings",
+                Page::Inbox => "Notifications",
+            };
+            let title = g.layout(&gfx::wide(heading), &g.formats.dialog_title, 1e6)?;
             text::draw(dc, &title, cx + PAD, cy + 22.0, &g.brushes.text);
             if let Some((x, y, w, h)) = self.part_rect(SPart::Close) {
                 let on = self.hover == Some(SPart::Close);
@@ -428,6 +641,15 @@ impl Settings {
                     continue;
                 }
                 self.draw_item(g, dc, item, r)?;
+            }
+            // A filter's page is loading: the previous rows stay, dimmed.
+            let stale = self.snap.inbox.as_ref().is_some_and(|i| i.stale);
+            if let Some(first) = self.items.iter().find(|i| i.part == SPart::Open(0))
+                && stale
+            {
+                let top = self.client(first.rect).1.max(by);
+                let veil = dc.CreateSolidColorBrush(&gfx::color(0x151719, 0.5), None)?;
+                dc.FillRectangle(&rect(bx, top, bx + bw, by + bh), &veil);
             }
             dc.PopAxisAlignedClip();
         }
@@ -491,29 +713,82 @@ impl Settings {
                     tw,
                 )?;
                 text::draw(dc, &n, x, y + th + 2.0, &g.brushes.muted);
-                // The switch: terracotta while on, its knob at the end.
-                let (sx, sy) = (x + w - 40.0, y + (h - 22.0) / 2.0);
-                let track = rect(sx, sy, sx + 40.0, sy + 22.0);
-                let fill = match (enabled, on) {
-                    (false, _) => SURFACE_RAISED,
-                    (true, true) => TERRACOTTA,
-                    (true, false) => BORDER,
-                };
-                fill_round(dc, track, 11.0, &g.solid(fill));
-                if hover {
-                    stroke_round(dc, track, 11.0, &g.solid(TERRACOTTA_BRIGHT));
+                switch(
+                    g,
+                    dc,
+                    x + w - 40.0,
+                    y + (h - 22.0) / 2.0,
+                    enabled,
+                    on,
+                    hover,
+                );
+            }
+            SPart::UnreadOnly => {
+                let l = g.layout(&gfx::wide(&item.text), &g.formats.dialog_note, w - 52.0)?;
+                let m = gfx::metrics(&l);
+                text::draw(dc, &l, x, y + (h - m.height) / 2.0, label_brush);
+                switch(
+                    g,
+                    dc,
+                    x + w - 40.0,
+                    y + (h - 22.0) / 2.0,
+                    enabled,
+                    on,
+                    hover,
+                );
+            }
+            SPart::Filter(_) => {
+                let r = rect(x, y, x + w, y + h);
+                if on {
+                    fill_round(dc, r, 6.0, &g.brushes.selected);
+                } else if hover {
+                    fill_round(dc, r, 6.0, &g.brushes.hover);
                 }
-                let kx = if on { sx + 29.0 } else { sx + 11.0 };
-                let e = D2D1_ELLIPSE {
-                    point: windows_numerics::Vector2 {
-                        X: kx,
-                        Y: sy + 11.0,
-                    },
-                    radiusX: 8.0,
-                    radiusY: 8.0,
+                let l = g.layout(&gfx::wide(&item.text), &g.formats.dialog_note, 1e6)?;
+                let m = gfx::metrics(&l);
+                let brush = if on || hover {
+                    &g.brushes.text
+                } else {
+                    &g.brushes.muted
                 };
-                let knob = if enabled { TEXT } else { TEXT_MUTED };
-                unsafe { dc.FillEllipse(&e, &g.solid(knob)) };
+                text::draw(
+                    dc,
+                    &l,
+                    x + (w - m.widthIncludingTrailingWhitespace) / 2.0,
+                    y + (h - m.height) / 2.0,
+                    brush,
+                );
+            }
+            SPart::Open(_) => {
+                if hover {
+                    fill_round(
+                        dc,
+                        rect(x - 8.0, y - 4.0, x + w + 8.0, y + h),
+                        6.0,
+                        &g.brushes.hover,
+                    );
+                }
+                let l = g.layout(
+                    &gfx::wide(&item.text),
+                    &g.formats.direct_unread,
+                    (w - ROW_SIDE).max(1.0),
+                )?;
+                crate::emoji::apply(&l, &item.text, 13.0, 1.0)?;
+                let m = gfx::metrics(&l);
+                let line = (m.height + 8.0).max(28.0);
+                text::draw(dc, &l, x, y + (line - m.height) / 2.0, label_brush);
+            }
+            SPart::MarkRead(_) => {
+                if hover {
+                    fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
+                }
+                icons::draw(
+                    dc,
+                    Icon::Check,
+                    rect(x + 6.0, y + 6.0, x + w - 6.0, y + h - 6.0),
+                    if hover { TEXT } else { TEXT_MUTED },
+                    1.0,
+                );
             }
             SPart::Level(_) | SPart::Privacy(_) | SPart::VoiceStarted => {
                 let (mx, my) = (x + 8.0, y + h / 2.0);
@@ -591,8 +866,33 @@ impl Settings {
     }
 }
 
+/// A switch at (x, y): terracotta while on, its knob at the end.
+fn switch(g: &Gfx, dc: &ID2D1DeviceContext, x: f32, y: f32, enabled: bool, on: bool, hover: bool) {
+    let track = rect(x, y, x + 40.0, y + 22.0);
+    let fill = match (enabled, on) {
+        (false, _) => SURFACE_RAISED,
+        (true, true) => TERRACOTTA,
+        (true, false) => BORDER,
+    };
+    fill_round(dc, track, 11.0, &g.solid(fill));
+    if hover {
+        stroke_round(dc, track, 11.0, &g.solid(TERRACOTTA_BRIGHT));
+    }
+    let e = D2D1_ELLIPSE {
+        point: windows_numerics::Vector2 {
+            X: if on { x + 29.0 } else { x + 11.0 },
+            Y: y + 11.0,
+        },
+        radiusX: 8.0,
+        radiusY: 8.0,
+    };
+    let knob = if enabled { TEXT } else { TEXT_MUTED };
+    unsafe { dc.FillEllipse(&e, &g.solid(knob)) };
+}
+
 fn style(g: &Gfx, s: Style) -> (&IDWriteTextFormat, &ID2D1SolidColorBrush) {
     match s {
+        Style::Title => (&g.formats.direct_unread, &g.brushes.text),
         Style::Section => (&g.formats.section, &g.brushes.muted),
         Style::Label | Style::Person(_) => (&g.formats.dialog_note, &g.brushes.text),
         Style::Detail => (&g.formats.direct_note, &g.brushes.muted),
@@ -725,6 +1025,7 @@ impl App {
     /// Opens Settings (egui's `open_settings`): reads launch at login and
     /// loads the account's choices.
     pub fn open_settings(&mut self) {
+        self.close_settings();
         self.account_menu = None;
         self.close_dm_menu();
         self.close_menu();
@@ -747,8 +1048,71 @@ impl App {
         self.events |= EV_SCREEN | EV_FOCUS;
     }
 
+    /// Opens the notification inbox (egui's Notifications button): its
+    /// first page loads, and it refreshes every second while open.
+    pub fn open_inbox(&mut self) {
+        self.close_settings();
+        self.account_menu = None;
+        self.close_dm_menu();
+        self.close_menu();
+        self.close_dialog();
+        self.close_gifs(false);
+        self.set_composer_focus(false);
+        self.settings = Some(Settings::inbox());
+        if let Some(live) = &mut self.live {
+            live.open_activity();
+        }
+        unsafe { SetTimer(Some(self.hwnd), TIMER_INBOX, 1000, None) };
+        self.dirty.sidebar = true;
+        self.settings_changed();
+        self.events |= EV_SCREEN | EV_FOCUS;
+    }
+
+    /// The open inbox's second: it polls when due and redraws when what it
+    /// shows changed (a relative time, say).
+    pub fn inbox_tick(&mut self) {
+        if let Some(live) = &mut self.live {
+            live.poll_activity();
+        }
+        let snap = self.settings_snapshot();
+        if self
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.page == Page::Inbox && s.snap != snap)
+        {
+            self.settings_changed();
+        }
+    }
+
+    /// The inbox's rows or count changed, or it closed to open one.
+    pub fn inbox_changed(&mut self) {
+        let shown = self.live.as_ref().is_some_and(|l| l.activity.shown);
+        if self
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.page == Page::Inbox)
+        {
+            if shown {
+                self.settings_changed();
+            } else {
+                self.close_settings();
+            }
+        }
+        self.dirty.sidebar = true;
+        self.need = true;
+    }
+
     pub fn close_settings(&mut self) {
-        if self.settings.take().is_some() {
+        if let Some(s) = self.settings.take() {
+            if s.page == Page::Inbox {
+                if let Some(live) = &mut self.live {
+                    live.close_activity();
+                }
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_INBOX);
+                }
+                self.dirty.sidebar = true;
+            }
             self.dirty.settings = true;
             self.need = true;
             self.events |= EV_SCREEN | EV_FOCUS;
@@ -764,6 +1128,9 @@ impl App {
         };
         if let Some(live) = self.live.as_ref().filter(|_| self.c.is_live()) {
             live.settings_snapshot(&mut snap);
+            if s.is_some_and(|s| s.page == Page::Inbox) {
+                snap.inbox = Some(live.inbox_snapshot());
+            }
         }
         snap
     }
@@ -820,8 +1187,16 @@ impl App {
                     SPart::RetryPrivacy => live.load_privacy(),
                     SPart::Unblock(k) => live.unblock(k),
                     SPart::RetryBlocks => live.load_blocks(),
+                    SPart::Filter(k) => live.set_activity_filter(Filter::ALL[k]),
+                    SPart::UnreadOnly => live.toggle_unread_only(),
+                    SPart::Open(k) => live.activity_action(k, true),
+                    SPart::MarkRead(k) => live.activity_action(k, false),
+                    SPart::LoadMore => live.load_activity(true, false),
+                    SPart::RetryInbox => live.load_activity(false, true),
                     _ => {}
                 }
+                // A read changes the sidebar's count.
+                self.dirty.sidebar = true;
             }
         }
         self.settings_changed();
