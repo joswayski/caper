@@ -219,7 +219,7 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 5), "No unrelated model event is needed to open the wide thread")
     }
 
-    func testWideResizeHandlesUseKeyboardBoundsAndReset() throws {
+    func testWideResizeHandlesUsePointerKeyboardBoundsAndReset() throws {
         guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("Requires the wide iPad gate") }
         XCUIDevice.shared.orientation = .landscapeLeft
         defer { XCUIDevice.shared.orientation = .portrait }
@@ -230,6 +230,20 @@ final class CaperUIKitTests: XCTestCase {
         func width(_ handle: XCUIElement) throws -> Int {
             try XCTUnwrap((handle.value as? String).flatMap { Int($0.split(separator: " ").first ?? "") })
         }
+        func drag(_ handle: XCUIElement, toward edge: CGFloat) {
+            let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            let destination = app.coordinate(withNormalizedOffset: CGVector(dx: edge,
+                dy: (handle.frame.midY - app.frame.minY) / app.frame.height))
+            start.hover()
+            start.click(forDuration: 0.2, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.2)
+        }
+        app.buttons["channel-pins"].hover()
+        drag(sidebar, toward: 0.95)
+        XCTAssertEqual(try width(sidebar), 440)
+        XCTAssertEqual(sidebar.frame.maxX - app.frame.minX, 500, accuracy: 2, "The actual sidebar follows the accessible width plus the 60pt rail")
+        drag(sidebar, toward: 0.05)
+        XCTAssertEqual(try width(sidebar), 220)
+        XCTAssertEqual(sidebar.frame.maxX - app.frame.minX, 280, accuracy: 2)
         sidebar.doubleTap()
         XCTAssertEqual(try width(sidebar), 280)
         app.typeKey(.rightArrow, modifierFlags: [])
@@ -246,6 +260,12 @@ final class CaperUIKitTests: XCTestCase {
         let members = app.sliders["members-panel-resize"]
         XCTAssertTrue(members.waitForExistence(timeout: 5))
         XCTAssertEqual(members.label, "Member list width")
+        app.buttons["Hide member list"].hover()
+        drag(members, toward: 0.05)
+        XCTAssertEqual(try width(members), 440)
+        XCTAssertEqual(app.frame.maxX - members.frame.minX, 440, accuracy: 2)
+        drag(members, toward: 0.95)
+        XCTAssertEqual(try width(members), 220)
         members.doubleTap()
         app.typeKey(.leftArrow, modifierFlags: [])
         XCTAssertEqual(try width(members), 230, "The right-hand panel widens toward the left")
@@ -262,6 +282,11 @@ final class CaperUIKitTests: XCTestCase {
         let thread = app.sliders["thread-panel-resize"]
         XCTAssertTrue(thread.waitForExistence(timeout: 5))
         XCTAssertEqual(thread.label, "Thread width")
+        drag(thread, toward: 0.05)
+        let pointerMaximum = try width(thread)
+        XCTAssertEqual(app.frame.maxX - thread.frame.minX, CGFloat(pointerMaximum), accuracy: 2)
+        drag(thread, toward: 0.95)
+        XCTAssertEqual(try width(thread), 300)
         thread.doubleTap()
         XCTAssertEqual(try width(thread), 340)
         app.typeKey(.leftArrow, modifierFlags: [])
@@ -273,6 +298,7 @@ final class CaperUIKitTests: XCTestCase {
         let maximum = try width(thread)
         XCTAssertGreaterThan(maximum, 340)
         XCTAssertLessThanOrEqual(maximum, 600)
+        XCTAssertEqual(maximum, pointerMaximum, "Pointer and keyboard reach the same visible panel bound")
         app.typeKey(.leftArrow, modifierFlags: [])
         XCTAssertEqual(try width(thread), maximum)
         thread.doubleTap()
