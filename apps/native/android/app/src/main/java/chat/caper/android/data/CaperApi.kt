@@ -467,10 +467,10 @@ class CaperApi(
     }
 
     suspend fun createSpace(token: String, name: String): Space = post(
-        "/api/spaces", buildJsonObject { put("name", name.trim()) }, token,
+        "/api/spaces", buildJsonObject { put("name", spaceName(name)) }, token,
     )
     suspend fun updateSpace(token: String, id: String, name: String): Space = request(
-        "/api/spaces/${id.pathId()}", "PATCH", token, buildJsonObject { put("name", name.trim()) }.toString(),
+        "/api/spaces/${id.pathId()}", "PATCH", token, buildJsonObject { put("name", spaceName(name)) }.toString(),
     )
     suspend fun deleteSpace(token: String, id: String) { request<Unit>("/api/spaces/${id.pathId()}", "DELETE", token) }
     suspend fun createChannel(token: String, space: String, name: String, privateChannel: Boolean): Channel = post(

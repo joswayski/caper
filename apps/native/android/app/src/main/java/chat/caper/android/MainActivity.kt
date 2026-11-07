@@ -4158,7 +4158,7 @@ internal fun counterTone(count: Int): Color = when {
         if (!allowed) Text("You have reached your space limit.", color = TextMuted, fontSize = 12.sp)
         (error ?: state.error)?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Spacer(Modifier.height(16.dp))
-        Button({ spaceNameError(name)?.let { error = it } ?: viewModel.createSpace(name.trim()) },
+        Button({ spaceNameError(name)?.let { error = it } ?: viewModel.createSpace(spaceName(name)) },
             enabled = allowed && !state.busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
         ) { Text(if (state.busy) "Creating…" else "Create space") }
         TextButton(viewModel::logout, Modifier.align(Alignment.End), enabled = !state.loggingOut, shape = MaterialTheme.shapes.small) { Text(if (state.loggingOut) "Logging out…" else "Log out", color = TextMuted) }
@@ -4174,7 +4174,7 @@ internal fun counterTone(count: Int): Color = when {
         val field = remember { FocusRequester() }
         LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
         // Web validates on submit and says why (spaces/client.ts spaceNameError).
-        fun submit() { spaceNameError(name)?.let { error = it } ?: run { submitted = true; create(name.trim()) } }
+        fun submit() { spaceNameError(name)?.let { error = it } ?: run { submitted = true; create(spaceName(name)) } }
         OutlinedTextField(name, { name = it.codePointTake(80); error = null; if (submitted && serverError != null) clearError() }, label = { Text("Space name") }, placeholder = { Text("Gaming nights") },
             modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { if (!busy) submit() }))
@@ -4231,7 +4231,7 @@ internal fun counterTone(count: Int): Color = when {
         val field = remember { FocusRequester() }
         LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
         fun submit() { channelNameError(name.removeSuffix("-"))?.let { error = it } ?: run { submitted = true; create(name.removeSuffix("-"), private) } }
-        OutlinedTextField(name, { name = normalizeChannel(it); error = null; if (submitted && serverError != null) clearError() }, label = { Text("Channel name") }, placeholder = { Text("project-updates") },
+        OutlinedTextField(name, { name = normalizeChannelName(it); error = null; if (submitted && serverError != null) clearError() }, label = { Text("Channel name") }, placeholder = { Text("project-updates") },
             leadingIcon = { Icon(painterResource(if (private) R.drawable.lucide_lock_keyhole else R.drawable.lucide_hash), null, Modifier.size(18.dp)) },
             modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
@@ -4345,11 +4345,11 @@ internal fun counterTone(count: Int): Color = when {
             Text("You have unsaved changes.", Modifier.weight(1f), fontSize = 12.sp)
             OutlinedButton({ name = channel.name; private = channel.private }, enabled = dirty && !state.busy, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), colors = neutralOutlinedButtonColors()) { Text("Reset") }
             Spacer(Modifier.width(8.dp))
-            Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = dirty && !state.busy && !channelInvalid(name), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Save changes", "Saving…", state.busy) }
+            Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = dirty && !state.busy && channelNameError(name.removeSuffix("-")) == null, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Save changes", "Saving…", state.busy) }
         }
     }) {
         state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
-        OutlinedTextField(name, { name = normalizeChannel(it); if (state.error != null) viewModel.clearError() }, label = { Text("Channel name") }, placeholder = { Text("project-updates") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(name, { name = normalizeChannelName(it); if (state.error != null) viewModel.clearError() }, label = { Text("Channel name") }, placeholder = { Text("project-updates") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space", stableSwitch = true) { private = it }
         if (channel.private) {
             HorizontalDivider(color = Border)
@@ -4516,25 +4516,6 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     Button(action, enabled = !busy && canSubmit, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel(label, pendingLabel, busy) }
 }
 
-/** Web's spaces/client.ts validation copy. */
-internal fun spaceNameError(name: String): String? {
-    val trimmed = name.trim()
-    return when {
-        trimmed.isEmpty() -> "Enter a space name."
-        trimmed.codePointCount(0, trimmed.length) > 80 -> "Space names can be at most 80 characters."
-        trimmed.any { it.isISOControl() } -> "Space names cannot contain control characters."
-        hasHiddenNameCharacters(trimmed) -> "Space names cannot contain invisible or text-direction characters."
-        else -> null
-    }
-}
-
-internal fun channelNameError(name: String): String? = when {
-    name.isEmpty() -> "Enter a channel name."
-    name.codePointCount(0, name.length) > 80 -> "Channel names can be at most 80 characters."
-    channelInvalid(name) -> "Use lowercase letters separated by single dashes."
-    else -> null
-}
-
 private fun normalizeUsername(value: String) = value.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(32)
 internal fun usernameValid(username: String) = Regex("^[a-z0-9_]{3,32}$").matches(username)
 
@@ -4563,8 +4544,6 @@ internal fun profileValid(username: String, displayName: String, saved: String? 
     usernameValid(username) && displayName.isNotBlank() &&
         displayName.codePointCount(0, displayName.length) <= 64 && displayName.none { it.isISOControl() } &&
         displayNameError(displayName, saved) == null
-private fun normalizeChannel(value: String) = value.lowercase().replace(Regex("\\s+"), "-").filter { it in 'a'..'z' || it == '-' }.replace(Regex("-+"), "-").removePrefix("-").take(80)
-private fun channelInvalid(value: String) = !Regex("^[a-z]+(?:-[a-z]+)*$").matches(value.removeSuffix("-"))
 private fun String.codePointTake(max: Int): String = if (codePointCount(0, length) <= max) this else substring(0, offsetByCodePoints(0, max))
 private fun localDate(value: String, zoneId: ZoneId): LocalDate? = runCatching { Instant.parse(value).atZone(zoneId).toLocalDate() }.getOrNull()
 internal fun sameLocalDay(first: String, second: String, zoneId: ZoneId = ZoneId.systemDefault()): Boolean =

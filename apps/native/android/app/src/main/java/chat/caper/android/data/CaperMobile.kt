@@ -45,4 +45,13 @@ internal object CaperMobile {
 
     /** Whether a display or space name holds a character names may not (shared/names/cases.json). */
     @JvmStatic external fun nameHasHidden(text: String): Boolean
+
+    /** Web's normalizeChannelName, one ASCII character per value. */
+    @JvmStatic external fun channelName(text: String): IntArray
+
+    /** Web's channelNameError ([channel]) or spaceNameError: the message's ASCII characters, or empty when valid. */
+    @JvmStatic external fun nameError(text: String, channel: Boolean): IntArray
+
+    /** `[start, end]` of the space name web sends (`name.trim()`). */
+    @JvmStatic external fun spaceName(text: String): IntArray
 }
