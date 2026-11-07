@@ -545,6 +545,63 @@ mod tests {
         }
     }
 
+    /// Whole drafts typed one key per real egui frame, closing markers and
+    /// the spaces after them included, leave web's source after every key
+    /// (shared/messages/composer-cases.json, "a whole draft typed").
+    #[test]
+    fn whole_drafts_type_as_web_through_egui_frames() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../shared/messages/composer-cases.json"
+        ))
+        .unwrap();
+        let drafts: Vec<_> = cases["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|case| {
+                case["note"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("a whole draft typed")
+            })
+            .collect();
+        assert!(drafts.len() >= 10);
+        let context = egui::Context::default();
+        crate::configure(&context);
+        let id = egui::Id::unique("whole-draft-test");
+        let frame = |text: &mut String, conversation: usize, events| {
+            context.test_pass(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    ctx.root_ui(|root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            typing_in(ui, id, conversation);
+                            prepare(ui, text, id, true);
+                            let mut output = egui::TextEdit::multiline(text).id(id).show(ui);
+                            composer_controls(ui, text, &mut output, true);
+                            output.response.request_focus();
+                        })
+                    });
+                },
+            );
+        };
+        for (conversation, case) in drafts.into_iter().enumerate() {
+            let note = case["note"].as_str().unwrap();
+            let mut text = String::new();
+            frame(&mut text, conversation, vec![]);
+            frame(&mut text, conversation, vec![]);
+            for step in case["steps"].as_array().unwrap() {
+                assert!(!step["placed"].as_bool().unwrap(), "{note}");
+                let key = step["key"].as_str().unwrap();
+                frame(&mut text, conversation, vec![egui::Event::Text(key.into())]);
+                assert_eq!(text, step["text"].as_str().unwrap(), "{note}, key {key:?}");
+            }
+        }
+    }
+
     /// The style web carries to the next key continues only while the field
     /// shows what typing left: a moved caret, undo and redo, or another
     /// conversation with an identical draft type plain again.
