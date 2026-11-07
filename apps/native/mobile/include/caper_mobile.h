@@ -8,6 +8,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// UTF-8 source/destination paths and MIME type. Destination must not exist.
+// Streams cleaned bytes to destination, including when the input is unchanged.
+// 0 success; 1 unsupported; 2 malformed; 3 I/O failure. Partial outputs are removed.
+int32_t caper_mobile_clean_metadata(const uint8_t *source, size_t source_len,
+                                  const uint8_t *destination, size_t destination_len,
+                                  const uint8_t *mime, size_t mime_len);
+
 typedef struct {
   int32_t *data;
   size_t len;

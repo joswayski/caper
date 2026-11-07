@@ -27,8 +27,11 @@ pub mod history_diff;
 pub mod invites;
 #[path = "../../../../shared/messages/links.rs"]
 pub mod links;
+pub mod media;
 #[path = "../../../../shared/messages/mentions.rs"]
 pub mod mentions;
+#[path = "../../../../shared/media/metadata.rs"]
+pub mod metadata;
 /// The name-character rule, as the desktop clients compile it.
 #[path = "../../client/src/names.rs"]
 pub mod names;
