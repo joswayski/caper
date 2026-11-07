@@ -1092,7 +1092,7 @@ export async function startFixture({
           const video = body.videoMessage;
           const data = readFileSync(video.file);
           const id = `video${String(state.assets.size).padStart(7, "0")}`;
-          const url = `http://127.0.0.1:${port}/api/assets/${id}/fixture-file`;
+          const url = `${advertised(port)}/api/assets/${id}/fixture-file`;
           state.assets.set(id, {
             ownerId: ids.member,
             purpose: "attachment",
