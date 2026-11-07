@@ -812,7 +812,13 @@ import XCTest
         resize(app, width: 900)
         gif.click()
         XCTAssertTrue(search.waitForExistence(timeout: 5))
-        app.segmentedControls["gif-picker-kind"].buttons["Stickers"].click()
+        // SwiftUI's macOS Picker need not expose the iOS segmented-control role.
+        // Keep the query scoped to this picker and exercise its real AX control.
+        let kinds = app.descendants(matching: .any).matching(identifier: "gif-picker-kind").firstMatch
+        XCTAssertTrue(kinds.waitForExistence(timeout: 5))
+        let stickers = kinds.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Stickers")).firstMatch
+        XCTAssertTrue(stickers.waitForExistence(timeout: 5)); XCTAssertTrue(stickers.isHittable)
+        stickers.click()
         let sticker = app.buttons["gif-picker-item-caper-fixture-sticker"]
         XCTAssertTrue(sticker.waitForExistence(timeout: 10))
         capture("sticker picker narrow", app: app)
