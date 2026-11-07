@@ -129,15 +129,15 @@ fn field(a: &App, id: Id) -> &Composer {
         return &t.composer;
     }
     match (id, &a.signin, &a.dialog) {
-        (Id::Dialog(_), _, Some(d)) => &d.field,
+        (Id::Dialog(p), _, Some(d)) => d.field_for(p),
         (Id::Sign(_), Some(s), _) => s.field(),
         _ => &a.composer,
     }
 }
 
 fn field_mut(a: &mut App, id: Id) -> &mut Composer {
-    if let (Id::Dialog(_), Some(d)) = (id, &mut a.dialog) {
-        return &mut d.field;
+    if let (Id::Dialog(p), Some(d)) = (id, &mut a.dialog) {
+        return d.field_for_mut(p);
     }
     if let (Id::Pick(_), Some(p)) = (id, &mut a.picker) {
         return &mut p.search;
@@ -173,6 +173,9 @@ fn field_changed(a: &mut App, id: Id, text: bool) {
 /// The node of the focused text field, while one is focused.
 fn focused(a: &App) -> Option<Id> {
     if let Some(d) = &a.dialog {
+        if let Some(k) = d.number_focus() {
+            return Some(Id::Dialog(DPart::Number(k)));
+        }
         return d.field.focused.then_some(Id::Dialog(DPart::Field));
     }
     if let Some(p) = &a.picker {
@@ -600,6 +603,15 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Primary => d.primary_label().into(),
                 // web's Dialog names its X "Close {title}".
                 DPart::Close if d.kind != Kind::History => format!("Close {}", d.title()),
+                DPart::Custom
+                | DPart::Number(_)
+                | DPart::Unit(_)
+                | DPart::Landing
+                | DPart::LandingChoice(_)
+                | DPart::CreateLink
+                | DPart::LinkRow(_)
+                | DPart::LinkCopy(_)
+                | DPart::LinkRevoke(_) => d.custom_name(p),
                 DPart::Suggest(k) => d.suggestion_name(k),
                 DPart::Version(k) if d.version_selected(k) => {
                     format!("{}, selected", d.history_text(p))
@@ -727,7 +739,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::ThreadPart(TPart::Broadcast) => UIA_CheckBoxControlTypeId,
         Id::ThreadPart(TPart::Field) => UIA_EditControlTypeId,
         Id::ThreadPart(_) => UIA_ButtonControlTypeId,
-        Id::Dialog(DPart::Field) => UIA_EditControlTypeId,
+        Id::Dialog(DPart::Field | DPart::Number(_)) => UIA_EditControlTypeId,
         Id::Dialog(
             DPart::Title
             | DPart::Note
@@ -742,7 +754,8 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
             | DPart::Heading(_)
             | DPart::Line(_)
             | DPart::Link
-            | DPart::Invitee(_),
+            | DPart::Invitee(_)
+            | DPart::LinkRow(_),
         ) => UIA_TextControlTypeId,
         Id::Dialog(DPart::Toggle) => UIA_CheckBoxControlTypeId,
         Id::Dialog(_) => UIA_ButtonControlTypeId,
@@ -1118,6 +1131,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             }
             Id::Gif(_) => pattern == UIA_InvokePatternId,
             Id::Dialog(DPart::Toggle) => pattern == UIA_TogglePatternId,
+            Id::Dialog(DPart::Number(_)) => pattern == UIA_ValuePatternId,
             Id::Dialog(DPart::Field) => {
                 pattern == UIA_ValuePatternId
                     || pattern == UIA_TextPatternId
@@ -1136,7 +1150,14 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 | DPart::Copy
                 | DPart::More
                 | DPart::LinkAction(_)
-                | DPart::CancelInvite(_),
+                | DPart::CancelInvite(_)
+                | DPart::Custom
+                | DPart::Unit(_)
+                | DPart::Landing
+                | DPart::LandingChoice(_)
+                | DPart::CreateLink
+                | DPart::LinkCopy(_)
+                | DPart::LinkRevoke(_),
             ) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
                 pattern == UIA_InvokePatternId
@@ -1227,7 +1248,13 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::MenuItem(_)
                         | Id::Pick(PPart::Search)
                         | Id::Gif(GPart::Search)
-                        | Id::Dialog(DPart::Field | DPart::Reload | DPart::Cancel | DPart::Primary)
+                        | Id::Dialog(
+                            DPart::Field
+                                | DPart::Number(_)
+                                | DPart::Reload
+                                | DPart::Cancel
+                                | DPart::Primary,
+                        )
                         | Id::Sign(Part::Field | Part::Primary | Part::OtherEmail | Part::Resend)
                 )),
                 UIA_HasKeyboardFocusPropertyId => VARIANT::from(focused(a) == Some(id)),
@@ -1338,6 +1365,7 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::Composer => a.set_composer_focus(true),
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
+                Id::Dialog(DPart::Number(k)) => a.dialog_activate(DPart::Number(k)),
                 Id::Pick(PPart::Search) => a.picker_activate(PPart::Search),
                 Id::Gif(GPart::Search) => a.gifs_activate(GPart::Search),
                 Id::ThreadPart(TPart::Field) => a.set_thread_focus(true),
@@ -2138,7 +2166,8 @@ fn editable() -> Id {
                 | Kind::Browse
                 | Kind::JoinInvite
                 | Kind::CreateSpace
-                | Kind::CreateChannel,
+                | Kind::CreateChannel
+                | Kind::InvitePeople,
             ),
             _,
             _,

@@ -19,6 +19,7 @@ mod browse;
 mod call;
 mod card;
 mod composer;
+mod custom_links;
 mod directs;
 mod embeds;
 mod emoji;
@@ -1204,6 +1205,9 @@ impl App {
 
     fn focused_field_mut(&mut self) -> Option<&mut Composer> {
         if let Some(d) = &mut self.dialog {
+            if d.number_focus().is_some() {
+                return d.number_mut();
+            }
             return Some(&mut d.field).filter(|f| {
                 f.focused
                     && matches!(
@@ -1214,6 +1218,7 @@ impl App {
                             | overlay::Kind::JoinInvite
                             | overlay::Kind::CreateSpace
                             | overlay::Kind::CreateChannel
+                            | overlay::Kind::InvitePeople
                     )
             });
         }

@@ -308,6 +308,19 @@ pub enum Part {
     LinkAction(u8),
     Invitee(usize),
     CancelInvite(usize),
+    /// Custom links (`custom_links`): its disclosure button, the
+    /// Expire after and Max uses fields, Expire after's units, Opens in
+    /// and its choices, Create link, and live link `k` with its Copy and
+    /// Deactivate.
+    Custom,
+    Number(u8),
+    Unit(u8),
+    Landing,
+    LandingChoice(usize),
+    CreateLink,
+    LinkRow(usize),
+    LinkCopy(usize),
+    LinkRevoke(usize),
 }
 
 impl Part {
@@ -343,6 +356,15 @@ impl Part {
             Self::LinkAction(k) => 30_300 + k as usize,
             Self::Invitee(k) => 40_000 + k,
             Self::CancelInvite(k) => 50_000 + k,
+            Self::Landing => 30_203,
+            Self::CreateLink => 30_204,
+            Self::Custom => 30_205,
+            Self::Number(k) => 30_400 + k as usize,
+            Self::Unit(k) => 30_500 + k as usize,
+            Self::LandingChoice(k) => 60_000 + k,
+            Self::LinkRow(k) => 70_000 + k,
+            Self::LinkCopy(k) => 80_000 + k,
+            Self::LinkRevoke(k) => 90_000 + k,
         }
     }
 
@@ -704,7 +726,16 @@ impl Dialog {
                         Kind::InvitePeople => self.invite_enabled(part),
                     }
             }
-            Part::Copy | Part::More => self.invite_enabled(part),
+            Part::Copy
+            | Part::More
+            | Part::Custom
+            | Part::Number(_)
+            | Part::Unit(_)
+            | Part::Landing
+            | Part::LandingChoice(_)
+            | Part::CreateLink
+            | Part::LinkCopy(_)
+            | Part::LinkRevoke(_) => self.invite_enabled(part),
             Part::Retry if self.kind == Kind::InvitePeople => self.invite_enabled(part),
             Part::CancelInvite(_) => !self.busy,
             Part::Cancel
@@ -730,7 +761,8 @@ impl Dialog {
             | Part::Line(_)
             | Part::Link
             | Part::LinkAction(_)
-            | Part::Invitee(_) => true,
+            | Part::Invitee(_)
+            | Part::LinkRow(_) => true,
         }
     }
 
@@ -765,6 +797,14 @@ impl Dialog {
                         | Part::More
                         | Part::LinkAction(_)
                         | Part::CancelInvite(_)
+                        | Part::Custom
+                        | Part::Number(_)
+                        | Part::Unit(_)
+                        | Part::Landing
+                        | Part::LandingChoice(_)
+                        | Part::CreateLink
+                        | Part::LinkCopy(_)
+                        | Part::LinkRevoke(_)
                 ) && contains(*r, x, y)
                     && match self.kind {
                         Kind::History | Kind::InvitePeople => {
@@ -1367,6 +1407,9 @@ impl App {
             if matches!(d.kind, Kind::StartDirect | Kind::InvitePeople) {
                 d.username_changed(self.live.as_ref());
             }
+            if d.kind == Kind::InvitePeople {
+                d.invite_changed();
+            }
             // Editing the link clears why the last one failed.
             if matches!(d.kind, Kind::CreateSpace | Kind::CreateChannel) {
                 d.normalize_name();
@@ -1539,7 +1582,16 @@ impl App {
             | Part::More
             | Part::LinkAction(_)
             | Part::Invitee(_)
-            | Part::CancelInvite(_) => {}
+            | Part::CancelInvite(_)
+            | Part::LinkRow(_)
+            | Part::Custom
+            | Part::Number(_)
+            | Part::Unit(_)
+            | Part::Landing
+            | Part::LandingChoice(_)
+            | Part::CreateLink
+            | Part::LinkCopy(_)
+            | Part::LinkRevoke(_) => {}
         }
         self.dialog_changed();
         if let Err(e) = self.drain_live() {
@@ -1826,12 +1878,7 @@ impl App {
                 let part = d.hit(x, y);
                 // A click off More invite options closes it, and one off
                 // the card closes a confirmation, before anything else.
-                if d.kind == Kind::InvitePeople
-                    && d.invite_layered()
-                    && (d.inviting.as_ref().is_some_and(|ip| ip.menu)
-                        && !matches!(part, Some(Part::LinkAction(_) | Part::More))
-                        || part.is_none() && !d.on_card(x, y))
-                {
+                if d.kind == Kind::InvitePeople && d.invite_click_off(part, x, y) {
                     d.invite_back();
                     self.dialog_changed();
                     return done;
@@ -1875,7 +1922,7 @@ impl App {
             WM_LBUTTONDBLCLK | WM_MOUSEWHEEL => done,
             WM_SETCURSOR => {
                 let cursor = match self.pointer.and_then(|(x, y)| d.hit(x, y)) {
-                    Some(Part::Field) => IDC_IBEAM,
+                    Some(Part::Field | Part::Number(_)) => IDC_IBEAM,
                     Some(p) if d.enabled(p) => IDC_HAND,
                     _ => IDC_ARROW,
                 };
@@ -1914,7 +1961,11 @@ impl App {
                     VK_ESCAPE if !d.busy => self.close_dialog(),
                     // Enter invites the typed username.
                     VK_RETURN if d.kind == Kind::InvitePeople => {
-                        if d.field.focused {
+                        // In Expire after or Max uses it creates the link,
+                        // as web's form submits.
+                        if d.number_focus().is_some() {
+                            self.dialog_activate(Part::CreateLink);
+                        } else if d.field.focused {
                             self.dialog_activate(Part::Primary);
                         }
                     }
@@ -1951,6 +2002,9 @@ impl App {
                         d.field.insert(&['\n' as u16]);
                         self.dialog_changed();
                     }
+                    _ if d.kind == Kind::InvitePeople && d.number_key(hwnd, vk, ctrl, shift) => {
+                        self.dialog_changed();
+                    }
                     _ if ctrl && vk == VIRTUAL_KEY('C' as u16) => {
                         let (a, b) = d.field.selection();
                         if b > a {
@@ -1970,6 +2024,16 @@ impl App {
             }
             WM_CHAR => {
                 let c = wp.0 as u16;
+                // Expire after and Max uses take their own characters.
+                if d.kind == Kind::InvitePeople
+                    && !ctrl
+                    && c >= 0x20
+                    && c != 0x7f
+                    && d.number_char(c)
+                {
+                    self.dialog_changed();
+                    return done;
+                }
                 if matches!(
                     d.kind,
                     Kind::Edit

@@ -1051,6 +1051,18 @@ impl Live {
                 }));
                 return;
             }
+            AccountResult::InviteLinkCreated {
+                space,
+                request,
+                result,
+            } => {
+                out.push(invite_answer(crate::invite_people::Answer::Created {
+                    space,
+                    request,
+                    result,
+                }));
+                return;
+            }
             AccountResult::InvitePreview { request, result } => {
                 if request == self.invite_request {
                     out.push(Update::InviteLink {

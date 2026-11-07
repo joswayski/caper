@@ -22,7 +22,7 @@ use windows::core::Result;
 
 /// "Copied" reads "Copy" again after two seconds, as on web.
 pub const TIMER_COPIED: usize = 17;
-const COPIED_MS: u32 = 2_000;
+pub(crate) const COPIED_MS: u32 = 2_000;
 
 const WIDTH: f32 = 480.0;
 const CLOSE: f32 = 32.0;
@@ -36,10 +36,11 @@ const MENU_W: f32 = 300.0;
 pub const SHARE: u8 = 0;
 pub const PENDING: u8 = 1;
 pub const BY_NAME: u8 = 2;
+pub const CUSTOM_HEAD: u8 = 3;
 /// `Part::Line`s: the link's guidance, the note without public channels,
 /// the link's summary, the note without a link, why a link request
-/// failed, the username rules, "Invitation sent…", and the confirmation's
-/// lines.
+/// failed, the username rules, "Invitation sent…", the confirmation's
+/// lines, and Custom links' guidance, labels and why a link wasn't made.
 pub const GUIDE: u8 = 0;
 pub const NO_CHANNEL: u8 = 1;
 pub const SUMMARY: u8 = 2;
@@ -50,9 +51,15 @@ pub const STATUS: u8 = 6;
 pub const STOPS: u8 = 7;
 pub const REPLACEMENT: u8 = 8;
 pub const CURRENT: u8 = 9;
+pub const CUSTOM_GUIDE: u8 = 10;
+pub const EXPIRE_LABEL: u8 = 11;
+pub const USES_LABEL: u8 = 12;
+pub const OPENS_LABEL: u8 = 13;
+pub const FORM_ERROR: u8 = 14;
 /// `Part::LinkAction`s, More invite options' items.
 pub const REGENERATE: u8 = 0;
 pub const DEACTIVATE: u8 = 1;
+pub const CUSTOM: u8 = 2;
 
 const USERNAME_RULE: &str = "Use 3\u{2013}32 lowercase letters, numbers, or underscores.";
 const REGENERATE_NOTE: &str =
@@ -83,6 +90,18 @@ pub struct InvitePeople {
     pub members: Vec<Member>,
     pub invitations: Vec<Member>,
     pub status: Option<&'static str>,
+    /// Custom links is open: Expire after (`numbers[0]` and `unit`),
+    /// Max uses (`numbers[1]`, as last seen), Opens in (`landing`, its
+    /// choices open), the number field with the keyboard, and why the
+    /// last link couldn't be made.
+    pub settings_open: bool,
+    pub numbers: [Composer; 2],
+    pub seen: [Vec<u16>; 2],
+    pub unit: invites::ExpiryUnit,
+    pub landing: Option<String>,
+    pub landing_open: bool,
+    pub focus: Option<u8>,
+    pub form_error: Option<String>,
 }
 
 impl InvitePeople {
@@ -94,6 +113,10 @@ impl InvitePeople {
         prefix: String,
         members: Vec<Member>,
     ) -> Self {
+        let landing = channel
+            .clone()
+            .or_else(|| public.first().map(|(id, _)| id.clone()));
+        let (amount, unit) = invites::DEFAULT_EXPIRY;
         Self {
             space,
             space_name,
@@ -111,6 +134,17 @@ impl InvitePeople {
             members,
             invitations: Vec::new(),
             status: None,
+            settings_open: false,
+            numbers: [
+                crate::custom_links::number(amount),
+                crate::custom_links::number("100"),
+            ],
+            seen: [gfx::wide(amount), gfx::wide("100")],
+            unit,
+            landing,
+            landing_open: false,
+            focus: None,
+            form_error: None,
         }
     }
 
@@ -136,6 +170,11 @@ pub enum Answer {
         request: u64,
         code: String,
         result: std::result::Result<(), String>,
+    },
+    Created {
+        space: String,
+        request: u64,
+        result: std::result::Result<InviteLink, String>,
     },
     Invitations(Vec<Member>),
     Invited(Member),
@@ -199,6 +238,14 @@ impl Dialog {
             Part::Primary if ip.confirm.is_some() => !ip.pending,
             Part::Copy | Part::More => !ip.pending && ip.default.is_some(),
             Part::Retry => !ip.pending,
+            Part::Landing => !ip.pending && !ip.public.is_empty(),
+            Part::LinkCopy(_) => true,
+            Part::Custom
+            | Part::Number(_)
+            | Part::Unit(_)
+            | Part::LandingChoice(_)
+            | Part::CreateLink
+            | Part::LinkRevoke(_) => !ip.pending,
             _ => !self.busy,
         }
     }
@@ -207,6 +254,7 @@ impl Dialog {
         match k {
             SHARE => "Share an invite link".into(),
             PENDING => "Pending invitations".into(),
+            CUSTOM_HEAD => "Create a separate link".into(),
             _ => "Or invite by username".into(),
         }
     }
@@ -228,6 +276,7 @@ impl Dialog {
             STATUS => ip.status.unwrap_or_default().into(),
             STOPS => "This shared URL will stop accepting new joins.".into(),
             REPLACEMENT => "The replacement allows 100 joins for 30 days.".into(),
+            CUSTOM_GUIDE..=FORM_ERROR => self.custom_line(k),
             _ => ip.confirm.as_ref().map_or_else(String::new, |(code, _)| {
                 format!("Current link: {}", ip.url(code))
             }),
@@ -268,10 +317,10 @@ impl Dialog {
     }
 
     pub fn link_action_label(k: u8) -> &'static str {
-        if k == REGENERATE {
-            "Regenerate link"
-        } else {
-            "Deactivate link"
+        match k {
+            REGENERATE => "Regenerate link",
+            CUSTOM => "Custom links",
+            _ => "Deactivate link",
         }
     }
 
@@ -297,13 +346,14 @@ impl Dialog {
     pub(crate) fn invite_layered(&self) -> bool {
         self.inviting
             .as_ref()
-            .is_some_and(|ip| ip.menu || ip.confirm.is_some())
+            .is_some_and(|ip| ip.menu || ip.landing_open || ip.confirm.is_some())
     }
 
     pub(crate) fn invite_back(&mut self) {
         if let Some(ip) = self.inviting.as_deref_mut() {
-            if ip.menu {
+            if ip.menu || ip.landing_open {
                 ip.menu = false;
+                ip.landing_open = false;
             } else if ip.confirm.take().is_some() {
                 self.field.focused = true;
             }
@@ -407,6 +457,21 @@ impl Dialog {
                     }
                 }
             }
+            Answer::Created {
+                space,
+                request: r,
+                result,
+            } if space == ip.space && r == request => {
+                ip.pending = false;
+                match result {
+                    Ok(link) => {
+                        ip.links.retain(|l| l.code != link.code);
+                        ip.links.insert(0, link);
+                        ip.form_error = None;
+                    }
+                    Err(e) => ip.form_error = Some(e),
+                }
+            }
             Answer::Invitations(members) => ip.invitations = members,
             Answer::Invited(member) => {
                 ip.invitations.retain(|m| m.id != member.id);
@@ -435,7 +500,7 @@ impl Dialog {
         k: u8,
     ) -> (&'g IDWriteTextFormat, &'g ID2D1SolidColorBrush) {
         match k {
-            LINK_ERROR => (&g.formats.error, &g.brushes.error),
+            LINK_ERROR | FORM_ERROR => (&g.formats.error, &g.brushes.error),
             STOPS | REPLACEMENT => (&g.formats.dialog_note, &g.brushes.text),
             _ => (&g.formats.direct_note, &g.brushes.muted),
         }
@@ -445,11 +510,12 @@ impl Dialog {
     /// the username field, in a body that scrolls once it fills the room;
     /// or, while confirming, the confirmation alone.
     pub(crate) fn relayout_invite(&mut self, g: &Gfx, w: f32, h: f32) -> Result<()> {
+        let card_w = WIDTH.min(w - 48.0).max(260.0);
+        let inner = card_w - 2.0 * CARD_PAD;
+        self.relayout_numbers(g, inner)?;
         let Some(ip) = self.inviting.as_deref() else {
             return Ok(());
         };
-        let card_w = WIDTH.min(w - 48.0).max(260.0);
-        let inner = card_w - 2.0 * CARD_PAD;
         let mut parts = Vec::new();
         let mut menu = Vec::new();
         let line = |parts: &mut Vec<(Part, Rect)>, part: Part, text: &str, format, y: f32| {
@@ -537,6 +603,8 @@ impl Dialog {
                 let rh = 10.0 + 20.0 + height(&note) + 10.0;
                 menu.push((Part::LinkAction(REGENERATE), (mx + 6.0, my, mw - 12.0, rh)));
                 my += rh;
+                menu.push((Part::LinkAction(CUSTOM), (mx + 6.0, my, mw - 12.0, 36.0)));
+                my += 36.0;
                 menu.push((
                     Part::LinkAction(DEACTIVATE),
                     (mx + 6.0, my, mw - 12.0, 36.0),
@@ -580,6 +648,7 @@ impl Dialog {
                 y,
             )?;
         }
+        y = self.relayout_custom(g, inner, y, &mut parts, &mut menu)?;
         y += 22.0;
         if !ip.invitations.is_empty() {
             y += line(
@@ -702,16 +771,11 @@ impl Dialog {
         }
         let drawn = (|| {
             let body = self.parts.iter().filter(|(p, _)| p.in_body());
-            for (part, r) in body
-                .clone()
-                .filter(|(p, _)| !matches!(p, Part::LinkAction(_)))
-            {
+            for (part, r) in body.clone().filter(|(p, _)| !p.popup()) {
                 self.draw_invite_part(g, dc, *part, *r)?;
             }
-            // More invite options, over everything else.
-            let items: Vec<_> = body
-                .filter(|(p, _)| matches!(p, Part::LinkAction(_)))
-                .collect();
+            // More invite options or Opens in's choices, over everything else.
+            let items: Vec<_> = body.filter(|(p, _)| p.popup()).collect();
             if let (Some((_, first)), Some((_, last))) = (items.first(), items.last()) {
                 let frame = rect(
                     first.0 - 6.0,
@@ -949,6 +1013,9 @@ impl Dialog {
                 };
                 self.button(g, dc, part, self.primary_label(), (x, y, w, h), tone)?;
             }
+            _ if part.custom() || matches!(part, Part::LinkRow(_)) => {
+                self.draw_custom_part(g, dc, part, (x, y, w, h))?
+            }
             _ => {}
         }
         Ok(())
@@ -1010,7 +1077,9 @@ impl App {
             }
         } else if let Some(ip) = d.inviting.as_deref_mut() {
             let menu = std::mem::take(&mut ip.menu);
+            let landing = std::mem::take(&mut ip.landing_open);
             match part {
+                _ if part.custom() => d.custom_activate(part, live, hwnd, landing),
                 Part::More => ip.menu = !menu,
                 Part::Copy => {
                     if let Some(link) = &ip.default {
@@ -1021,6 +1090,7 @@ impl App {
                         }
                     }
                 }
+                Part::LinkAction(CUSTOM) => ip.settings_open = true,
                 Part::LinkAction(k) => {
                     if let Some(link) = &ip.default {
                         ip.confirm = Some((link.code.clone(), k == REGENERATE));
