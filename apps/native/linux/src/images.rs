@@ -514,7 +514,6 @@ impl AvatarView {
             dot.add_css_class("presence");
             dot.set_halign(gtk::Align::End);
             dot.set_valign(gtk::Align::End);
-            dot.set_size_request(10, 10);
             root.add_overlay(&dot);
             dot
         });

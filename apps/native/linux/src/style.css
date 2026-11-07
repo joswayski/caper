@@ -286,9 +286,35 @@ button.remove:hover {
   background: @caper_surface_raised;
 }
 
-/* As desktop: the open space is outlined, not filled. */
+/* As desktop: the open space is outlined, not filled: a 1 px terracotta
+   ring and a soft glow, which bloom in (past their rest, then settle) when
+   it opens. Leaving it is instant; GTK skips the bloom when animations are
+   off (reduced motion). */
 .rail button.selected {
-  box-shadow: inset 0 0 0 2px @caper_terracotta;
+  box-shadow:
+    0 0 0 1px alpha(@caper_terracotta, 0.9),
+    0 0 12px 1px alpha(@caper_terracotta, 0.36);
+  animation: space-bloom 700ms ease-out;
+}
+
+@keyframes space-bloom {
+  0% {
+    box-shadow:
+      0 0 0 1px alpha(@caper_terracotta, 0),
+      0 0 12px 1px alpha(@caper_terracotta, 0);
+  }
+
+  50% {
+    box-shadow:
+      0 0 0 1px alpha(@caper_terracotta, 0.9),
+      0 0 16px 1px alpha(@caper_terracotta, 0.54);
+  }
+
+  100% {
+    box-shadow:
+      0 0 0 1px alpha(@caper_terracotta, 0.9),
+      0 0 12px 1px alpha(@caper_terracotta, 0.36);
+  }
 }
 
 /* Channels */
@@ -489,12 +515,14 @@ listview.messages > row:hover {
   font-size: 13px;
 }
 
+/* As desktop: a 7 px dot in a 1.5 px ring, centred 2 px in from the
+   avatar's right edge and 3 px up from its bottom. */
 .presence {
-  min-width: 10px;
-  min-height: 10px;
+  min-width: 7px;
+  min-height: 7px;
   border-radius: 9999px;
-  border: 2px solid @caper_surface_sidebar;
-  margin: 0 -2px -2px 0;
+  border: 1.5px solid @caper_surface_sidebar;
+  margin: 0 -3px -2px 0;
 }
 
 .presence.online {
