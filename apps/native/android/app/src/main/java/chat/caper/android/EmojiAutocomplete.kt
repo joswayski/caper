@@ -3,51 +3,20 @@ package chat.caper.android
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import chat.caper.android.ui.EmojiEntry
-import java.util.Locale
 
 internal data class EmojiToken(val start: Int, val end: Int, val query: String)
 
+/** Web's `:` token at the caret (shared/messages/emoji.rs, read in the visible text). */
 internal fun emojiToken(value: TextFieldValue): EmojiToken? {
     if (!value.selection.collapsed || value.composition != null) return null
-    val projection = chat.caper.android.data.formattedMessage(value.text)
-    val text = projection.text
-    val caret = projection.displayed(value.selection.start)
-    if (caret < text.length && (text[caret] == ':' || text[caret].isEmojiQueryChar())) return null
-    var colon = caret - 1
-    while (colon >= 0 && text[colon].isEmojiQueryChar()) colon--
-    if (colon < 0 || text[colon] != ':') return null
-    if (colon > 0 && !text[colon - 1].isWhitespace() && text[colon - 1] !in "([{") return null
-    val query = text.substring(colon + 1, caret)
-    // One character is an emoticon (":D", ":P", ":3"), not a search; Send sends it as typed.
-    if (query.length == 1) return null
-    return EmojiToken(projection.sourceIndices[colon], projection.sourceIndices[caret - 1] + 1, query)
+    val token = chat.caper.android.data.CaperMobile.emojiToken(value.text, value.selection.start)
+    if (token.size < 2) return null
+    return EmojiToken(token[0], token[1], String(CharArray(token.size - 2) { token[it + 2].toChar() }))
 }
 
-private fun Char.isEmojiQueryChar(): Boolean =
-    this in 'a'..'z' || this in 'A'..'Z' || this in '0'..'9' || this == '_' || this == '+' || this == '-'
-
-private fun normalized(value: String) = value.lowercase(Locale.ROOT).replace('_', ' ').replace('-', ' ')
-
-internal fun emojiSuggestions(entries: List<EmojiEntry>, query: String, limit: Int = 6): List<EmojiEntry> {
-    if (query.isEmpty()) {
-        val defaults = listOf("1f44d", "1f600", "2764", "1f389", "1f680", "1f440")
-        return defaults.mapNotNull { id -> entries.firstOrNull { it.selectable && it.id == id } }.take(limit)
-    }
-    val needle = normalized(query)
-    return entries.asSequence().filter { it.selectable }.mapNotNull { entry ->
-        val name = normalized(entry.name)
-        val keywords = normalized(entry.keywords)
-        val rank = when {
-            name == needle -> 0
-            name.startsWith(needle) -> 1
-            keywords.startsWith(needle) || " $needle" in keywords -> 2
-            needle in name || needle in keywords -> 3
-            else -> return@mapNotNull null
-        }
-        rank to entry
-    // Within a rank the shorter name is the closer match: ":fi" offers fire before film-frames.
-    }.sortedWith(compareBy({ it.first }, { it.second.name.length })).map { it.second }.take(limit).toList()
-}
+/** Up to six entries of [catalog], the one [EmojiArtwork] loaded, that web offers for [query]. */
+internal fun emojiSuggestions(catalog: List<EmojiEntry>, query: String): List<EmojiEntry> =
+    chat.caper.android.data.CaperMobile.emojiSuggestions(query).asList().mapNotNull { catalog.getOrNull(it) }
 
 internal fun insertEmoji(value: TextFieldValue, token: EmojiToken, emoji: String, limit: Int = 4000): TextFieldValue? {
     val text = value.text.substring(0, token.start) + emoji + value.text.substring(token.end)

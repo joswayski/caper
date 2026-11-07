@@ -31,6 +31,18 @@ internal object CaperMobile {
      */
     @JvmStatic external fun composerEdit(previous: String, next: String, start: Int, end: Int, continuing: Int): IntArray
 
+    /** Loads the catalog.json asset's bytes for [emojiSuggestions]; false when they are not a catalog. */
+    @JvmStatic external fun emojiCatalog(json: ByteArray): Boolean
+
+    /**
+     * The `:` token with the caret at [caret] (shared/messages/emoji.rs): `[start, end]` in [text],
+     * then the query's characters, or empty when none is open.
+     */
+    @JvmStatic external fun emojiToken(text: String, caret: Int): IntArray
+
+    /** Positions in the loaded catalog web offers for [query], best first. */
+    @JvmStatic external fun emojiSuggestions(query: String): IntArray
+
     /** Whether a display or space name holds a character names may not (shared/names/cases.json). */
     @JvmStatic external fun nameHasHidden(text: String): Boolean
 }

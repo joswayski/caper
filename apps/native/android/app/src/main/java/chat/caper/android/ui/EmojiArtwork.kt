@@ -25,15 +25,26 @@ internal object EmojiArtwork {
     /** The catalog by ID, built once; the first entry wins, as a scan would find it. */
     private var entries: Map<String, EmojiEntry>? = null
 
+    /**
+     * The catalog, read once (MainActivity starts it off the main thread at launch). The shared
+     * autocomplete searches the same bytes, and the name and ID lookups are built with it.
+     */
     fun catalog(context: Context): List<EmojiEntry> = synchronized(this) {
-        catalog ?: context.assets.open("catalog.json").bufferedReader().use {
-            Json { ignoreUnknownKeys = true }.decodeFromString<List<EmojiEntry>>(it.readText())
-        }.also { catalog = it }
+        catalog ?: load(context.assets.open("catalog.json").use { it.readBytes() })
+    }
+
+    private fun load(bytes: ByteArray): List<EmojiEntry> = synchronized(this) {
+        chat.caper.android.data.CaperMobile.emojiCatalog(bytes)
+        Json { ignoreUnknownKeys = true }.decodeFromString<List<EmojiEntry>>(bytes.decodeToString()).also {
+            catalog = it
+            names = emojiNameIndex(it)
+            entries = HashMap<String, EmojiEntry>().apply { it.forEach { entry -> putIfAbsent(entry.id, entry) } }
+        }
     }
 
     /** The catalog's dash-separated name ("thumbs-up"), or null when it has none. */
     fun name(context: Context, emoji: String): String? {
-        val index = synchronized(this) { names ?: emojiNameIndex(catalog(context)).also { names = it } }
+        val index = synchronized(this) { catalog(context); names!! }
         return emojiName(emoji, index)
     }
 
@@ -47,7 +58,7 @@ internal object EmojiArtwork {
         val id = id(emoji)
         crops.get(id)?.let { return it }
         val index = synchronized(this) {
-            entries ?: HashMap<String, EmojiEntry>().apply { catalog(context).forEach { putIfAbsent(it.id, it) } }.also { entries = it }
+            catalog(context); entries!!
         }
         val entry = index[id] ?: return null
         val sheet = pages.get(entry.sheet) ?: context.assets.open("sheet-${entry.sheet}.png").use {

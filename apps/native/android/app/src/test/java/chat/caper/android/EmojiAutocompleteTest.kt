@@ -3,12 +3,11 @@ package chat.caper.android
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import chat.caper.android.ui.EmojiEntry
+import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
 
 class EmojiAutocompleteTest {
-    private fun entry(id: String, name: String, keywords: String = "", selectable: Boolean = true) =
-        EmojiEntry(id, "😀", name, keywords, "faces", selectable, 0, 0, 0)
     private fun atEnd(text: String) = TextFieldValue(text, TextRange(text.length))
 
     @Test fun `token requires a boundary and rejects completed or split shortcodes`() {
@@ -31,14 +30,28 @@ class EmojiAutocompleteTest {
         assertTrue(result.selection.collapsed)
     }
 
-    @Test fun `ranking aliases selectability catalog order and limit`() {
-        val entries = listOf(
-            entry("0", "other", "rocketship"), entry("1", "rock et"), entry("2", "rock et fuel"),
-            entry("3", "stone", "space rock et"), entry("4", "pocket rock et", ""), entry("x", "rock et", selectable = false),
-            entry("5", "rock one"), entry("6", "rock two"), entry("7", "rock three"),
-        )
-        assertEquals(listOf("1", "2", "3", "4"), emojiSuggestions(entries, "rock_et").map { it.id })
-        assertEquals(6, emojiSuggestions(entries, "rock").size)
+    /** Every client replays these, generated from web; see shared/messages/emoji-cases.json. */
+    @Test fun `autocomplete follows the shared cases`() {
+        fun shared(path: String) = generateSequence(java.io.File("").absoluteFile) { it.parentFile }
+            .map { java.io.File(it, path) }.first { it.isFile }
+        val bytes = shared("shared/emoji/catalog.json").readBytes()
+        assertTrue(chat.caper.android.data.CaperMobile.emojiCatalog(bytes))
+        val catalog = Json { ignoreUnknownKeys = true }.decodeFromString<List<EmojiEntry>>(bytes.decodeToString())
+        val cases = Json.parseToJsonElement(shared("shared/messages/emoji-cases.json").readText()).jsonObject
+        val tokens = cases.getValue("tokens").jsonArray.map { it.jsonObject }
+        assertTrue(tokens.size > 400)
+        for (case in tokens) {
+            val text = case.getValue("text").jsonPrimitive.content
+            val caret = case.getValue("caret").jsonPrimitive.int
+            val expected = (case.getValue("token") as? JsonObject)?.let {
+                EmojiToken(it.getValue("start").jsonPrimitive.int, it.getValue("end").jsonPrimitive.int, it.getValue("query").jsonPrimitive.content)
+            }
+            assertEquals("$text at $caret", expected, emojiToken(TextFieldValue(text, TextRange(caret))))
+        }
+        for (case in cases.getValue("suggestions").jsonArray.map { it.jsonObject }) {
+            val query = case.getValue("query").jsonPrimitive.content
+            assertEquals(query, case.getValue("ids").jsonArray.map { it.jsonPrimitive.content }, emojiSuggestions(catalog, query).map { it.id })
+        }
     }
 
     @Test fun `insertion enforces scalar limit`() {
