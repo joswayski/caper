@@ -269,6 +269,8 @@ pub enum Part {
     Loading,
     Retry,
     Older,
+    /// The New DM field's suggested person `k`.
+    Suggest(usize),
 }
 
 impl Part {
@@ -290,6 +292,7 @@ impl Part {
             Self::Older => 12,
             Self::Column(k) => 16 + k as usize,
             Self::Version(k) => 32 + k,
+            Self::Suggest(k) => 10_000 + k,
         }
     }
 
@@ -306,6 +309,9 @@ const FIELD_PAD_Y: f32 = 8.0;
 /// The edit field shows this many lines, then scrolls.
 const FIELD_LINES: f32 = 6.0;
 const DIRECT_FIELD_H: f32 = 42.0;
+/// A suggested person's row, and the highlighted row's fill (egui's).
+const SUGGEST_H: f32 = 44.0;
+const SUGGEST_SELECTED: u32 = 0x43241E;
 
 pub struct Dialog {
     pub kind: Kind,
@@ -333,6 +339,12 @@ pub struct Dialog {
     pub recipient: Option<core::Person>,
     pub resolved: String,
     pub creating: bool,
+    /// The New DM field's people suggestions (egui's `people_field`): the
+    /// rows for the typed text, the highlighted one, and whether Escape or
+    /// a choice hid them until the text changes.
+    pub suggestions: Vec<core::Person>,
+    pub selected: usize,
+    pub hidden: bool,
     /// Whom the Block dialog blocks, and the request it declines.
     pub block: Option<(core::BlockedAccount, Option<String>)>,
     pub(crate) parts: Vec<(Part, Rect)>,
@@ -387,6 +399,9 @@ impl Dialog {
             recipient: None,
             resolved: String::new(),
             creating: false,
+            suggestions: Vec::new(),
+            selected: 0,
+            hidden: false,
             block: None,
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
@@ -449,8 +464,43 @@ impl Dialog {
         if name != self.resolved {
             self.recipient = live.and_then(|l| l.person_named(&name)).cloned();
             self.error = None;
+            self.selected = 0;
+            self.hidden = false;
             self.resolved = name;
         }
+        // Ranked as `@` suggestions are, while the field is focused and
+        // nothing is in flight.
+        self.suggestions = match live {
+            Some(live) if self.field.focused && !self.hidden && !self.busy => {
+                let people: Vec<_> = live
+                    .people()
+                    .iter()
+                    .map(caper_client::mentions::Person::from)
+                    .collect();
+                caper_client::mentions::field_suggestions(&people, &self.resolved)
+                    .into_iter()
+                    .filter_map(|p| live.person_named(&p.username).cloned())
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        self.selected = self.selected.min(self.suggestions.len().saturating_sub(1));
+    }
+
+    /// Puts suggestion `k`'s exact username in the field with the caret
+    /// after it, and hides the list until the text changes. It never
+    /// submits.
+    fn choose(&mut self, k: usize, live: Option<&crate::live::Live>) {
+        let Some(p) = self.suggestions.get(k) else {
+            return;
+        };
+        self.field.text = gfx::wide(&p.username);
+        self.field.caret = self.field.text.len();
+        self.field.anchor = self.field.caret;
+        self.field.focused = true;
+        self.username_changed(live);
+        self.hidden = true;
+        self.suggestions.clear();
     }
 
     pub fn primary_label(&self) -> &'static str {
@@ -490,7 +540,7 @@ impl Dialog {
                         Kind::StartDirect => self.draft().len() >= 3,
                     }
             }
-            Part::Cancel | Part::Reload | Part::Field => !self.busy,
+            Part::Cancel | Part::Reload | Part::Field | Part::Suggest(_) => !self.busy,
             Part::Retry | Part::Older => self.history.as_ref().is_some_and(|v| !v.loading),
             Part::Title
             | Part::Note
@@ -528,6 +578,7 @@ impl Dialog {
                         | Part::Version(_)
                         | Part::Retry
                         | Part::Older
+                        | Part::Suggest(_)
                 ) && contains(*r, x, y)
                     && (self.kind != Kind::History || !p.in_body() || contains(self.body, x, y))
             })
@@ -592,6 +643,15 @@ impl Dialog {
                 .relayout_with(g, &g.formats.composer, 15.0, inner - 2.0 * FIELD_PAD_X)?;
             parts.push((Part::Field, (0.0, y, inner, DIRECT_FIELD_H)));
             y += DIRECT_FIELD_H;
+            // The people list under the field, 44-DIP rows in a 4-DIP frame.
+            if !self.suggestions.is_empty() {
+                y += 8.0;
+                for k in 0..self.suggestions.len() {
+                    parts.push((Part::Suggest(k), (4.0, y, inner - 8.0, SUGGEST_H)));
+                    y += SUGGEST_H;
+                }
+                y += 4.0;
+            }
             if let Some(label) = self.recipient_label() {
                 y += 8.0;
                 let l = layout(g, &label, &g.formats.dialog_note, inner)?;
@@ -667,6 +727,16 @@ impl Dialog {
                         };
                         let l = layout(g, &self.note(), format, pw)?;
                         crate::text::draw(dc, &l, x, y, &g.brushes.muted);
+                    }
+                    Part::Suggest(k) => {
+                        if *k == 0 {
+                            // The list's frame, around every row.
+                            let n = self.suggestions.len() as f32;
+                            let frame = rect(x - 4.0, y - 4.0, x + pw + 4.0, y + n * ph + 4.0);
+                            fill_round(dc, frame, RADIUS, &g.brushes.composer);
+                            stroke_round(dc, frame, RADIUS, &g.brushes.border);
+                        }
+                        self.draw_suggestion(g, dc, *k, (x, y, pw, ph))?;
                     }
                     Part::Field => {
                         let body = rect(x, y, x + pw, y + ph);
@@ -746,6 +816,60 @@ impl Dialog {
             }
         }
         Ok(())
+    }
+
+    /// Suggested person `k`: highlighted or hovered, a 24-DIP avatar, the
+    /// name over a muted @username.
+    fn draw_suggestion(
+        &self,
+        g: &Gfx,
+        dc: &ID2D1DeviceContext,
+        k: usize,
+        (x, y, w, h): Rect,
+    ) -> Result<()> {
+        let Some(p) = self.suggestions.get(k) else {
+            return Ok(());
+        };
+        let r = rect(x, y, x + w, y + h);
+        if self.selected == k {
+            fill_round(dc, r, 6.0, &g.solid(SUGGEST_SELECTED));
+        } else if self.hover == Some(Part::Suggest(k)) {
+            fill_round(dc, r, 6.0, &g.brushes.hover);
+        }
+        let face = crate::live::person(&p.id, &p.display_name);
+        let (cx, cy) = (x + 8.0 + 12.0, y + h / 2.0);
+        unsafe {
+            dc.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: windows_numerics::Vector2 { X: cx, Y: cy },
+                    radiusX: 12.0,
+                    radiusY: 12.0,
+                },
+                &g.solid(face.color),
+            );
+        }
+        let i = g.layout(&gfx::wide(&face.initials), &g.formats.direct_initials, 1e6)?;
+        crate::text::draw(
+            dc,
+            &i,
+            cx - width(&i) / 2.0,
+            cy - height(&i) / 2.0,
+            &g.brushes.text,
+        );
+        let tx = x + 8.0 + 24.0 + 12.0;
+        let tw = (w - (tx - x) - 8.0).max(1.0);
+        let name = layout(g, &p.display_name, &g.formats.direct_name, tw)?;
+        crate::text::draw(dc, &name, tx, y + 5.0, &g.brushes.text);
+        let user = layout(g, &format!("@{}", p.username), &g.formats.direct_note, tw)?;
+        crate::text::draw(dc, &user, tx, y + 24.0, &g.brushes.muted);
+        Ok(())
+    }
+
+    /// Suggestion `k`'s accessible name.
+    pub fn suggestion_name(&self, k: usize) -> String {
+        self.suggestions.get(k).map_or_else(String::new, |p| {
+            format!("{} @{}", p.display_name, p.username)
+        })
     }
 
     pub(crate) fn button(
@@ -982,6 +1106,10 @@ impl App {
             }
             Part::Field => {
                 d.field.focused = true;
+                self.events |= EV_FOCUS;
+            }
+            Part::Suggest(k) => {
+                d.choose(k, self.live.as_ref());
                 self.events |= EV_FOCUS;
             }
             Part::Primary if d.kind == Kind::StartDirect => {
@@ -1254,6 +1382,11 @@ impl App {
                     let hover = d.hit(x, y);
                     if hover != d.hover {
                         d.hover = hover;
+                        // Moving over a suggestion selects it, as web's
+                        // `onMouseMove`, so Enter takes what it shows.
+                        if let Some(Part::Suggest(k)) = hover {
+                            d.selected = k;
+                        }
                         self.dirty.overlay = true;
                         self.need = true;
                     }
@@ -1314,6 +1447,24 @@ impl App {
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
                 match vk {
+                    // An open people list takes its keys first; Escape hides
+                    // it, not the dialog.
+                    VK_DOWN | VK_UP | VK_RETURN | VK_ESCAPE
+                        if d.kind == Kind::StartDirect && !d.suggestions.is_empty() && !ctrl =>
+                    {
+                        let n = d.suggestions.len();
+                        match vk {
+                            VK_DOWN => d.selected = (d.selected + 1) % n,
+                            VK_UP => d.selected = (d.selected + n - 1) % n,
+                            VK_RETURN => {
+                                let k = d.selected;
+                                self.dialog_activate(Part::Suggest(k));
+                                return done;
+                            }
+                            _ => d.hidden = true,
+                        }
+                        self.dialog_changed();
+                    }
                     VK_ESCAPE if !d.busy => self.close_dialog(),
                     // The history's body scrolls from the keyboard too.
                     VK_UP | VK_DOWN | VK_PRIOR | VK_NEXT | VK_HOME | VK_END

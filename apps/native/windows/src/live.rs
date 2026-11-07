@@ -982,6 +982,11 @@ impl Live {
         }
     }
 
+    /// People you share a space or a DM with (`GET /api/people`).
+    pub fn people(&self) -> &[core::Person] {
+        &self.people
+    }
+
     /// Someone you already know, by exact username.
     pub fn person_named(&self, username: &str) -> Option<&core::Person> {
         self.people.iter().find(|p| p.username == username)

@@ -466,6 +466,7 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Reload => "Discard draft and load latest".into(),
                 DPart::Cancel => "Cancel".into(),
                 DPart::Primary => d.primary_label().into(),
+                DPart::Suggest(k) => d.suggestion_name(k),
                 DPart::Version(k) if d.version_selected(k) => {
                     format!("{}, selected", d.history_text(p))
                 }
@@ -935,7 +936,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 | DPart::Close
                 | DPart::Version(_)
                 | DPart::Retry
-                | DPart::Older,
+                | DPart::Older
+                | DPart::Suggest(_),
             ) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
                 pattern == UIA_InvokePatternId
