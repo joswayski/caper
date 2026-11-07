@@ -1318,7 +1318,7 @@ final class APIClientTests: XCTestCase {
             let path = request.url?.path ?? ""
             paths.append(path)
             switch path {
-            case "/api/spaces": return (200, Data(#"{"spaces":[],"invitations":[]}"#.utf8))
+            case "/api/spaces": return (200, Data(#"{"spaces":[],"invitations":[],"limits":{"ownedSpaces":2,"totalSpaces":5,"channelsPerSpace":10}}"#.utf8))
             case "/api/dms": return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"peer","displayName":"Peer"},"lastSeq":"1","readSeq":"1"}]}"#.utf8))
             default: return (503, Data())
             }
@@ -1338,6 +1338,7 @@ final class APIClientTests: XCTestCase {
     func testLaunchUsesSpacesAndDirectMessagesRequestedBesideTheAccount() async {
         let (model, requested) = await launchWithHeldAccount(answering: 200)
         XCTAssertEqual(model.phase, .ready)
+        XCTAssertNil(model.spacesError)
         XCTAssertTrue(model.spacesLoaded)
         await waitUntil { !model.directMessages.isEmpty }
         XCTAssertEqual(model.directMessages.map(\.id), ["dm0000000001"])
