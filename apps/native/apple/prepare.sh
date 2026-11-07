@@ -97,6 +97,9 @@ for license in libavif-LICENSE.txt libaom-LICENSE.txt libaom-PATENTS.txt; do
   cmp -s "$AVIF_DIR/$license" "$ROOT/Resources/$license" || { echo "Resources/$license differs from $AVIF_RELEASE's; copy it from $AVIF_DIR." >&2; exit 1; }
 done
 
+# Shared Rust logic (apps/native/mobile) for every Apple slice, linked statically into CaperCore.
+bash "$REPO/apps/native/mobile/build-apple.sh" "$ROOT/.build/CaperMobile.xcframework"
+
 XCODEGEN_COMMIT=21ac9944b0ab546a07422dbed86f33dd2ebd76f8
 XCODEGEN="$ROOT/.build/xcodegen-$XCODEGEN_COMMIT"
 if [[ ! -d "$XCODEGEN/.git" ]]; then

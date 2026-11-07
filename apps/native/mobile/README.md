@@ -23,6 +23,7 @@ through a second encoding; `src/lib.rs` documents each layout.
 - **Apple:** the C ABI in `include/caper_mobile.h` (module `CaperMobile`),
   built by `build-apple.sh` into a static `CaperMobile.xcframework` with iOS
   device, iOS simulator (arm64, x86_64) and macOS (arm64, x86_64) slices.
+  `apps/native/apple/prepare.sh` runs it for every Apple build.
 - **Android:** JNI functions for `chat.caper.android.data.CaperMobile`
   (feature `jni`). The app's Gradle build runs cargo-ndk for arm64-v8a,
   armeabi-v7a, x86 and x86_64 (16 KiB-aligned on 64-bit ABIs) and builds the
