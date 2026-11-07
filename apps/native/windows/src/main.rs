@@ -848,6 +848,14 @@ impl App {
         (spaces, channels)
     }
 
+    /// Who is in voice in joined channel `i`: their count and one line of
+    /// names, as egui's room cards word it.
+    pub fn channel_voice(&self, i: usize) -> Option<(usize, String)> {
+        let people = self.live.as_ref()?.voice_people(self.ids.channels.get(i)?);
+        let names: Vec<&str> = people.iter().map(|p| p.name.as_str()).collect();
+        (!names.is_empty()).then(|| (names.len(), caper_client::voice::room_names(&names)))
+    }
+
     pub fn list_x(&self) -> f32 {
         RAIL_W + SIDEBAR_W
     }
@@ -2740,6 +2748,9 @@ impl App {
                 })
                 .collect();
             let options_hover = self.hover_channel_options;
+            let in_voice: Vec<usize> = (0..c.channels.len())
+                .map(|i| self.channel_voice(i).map_or(0, |(n, _)| n))
+                .collect();
             self.sidebar.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
                 if let Some((muted, lit)) = space_menu {
@@ -2819,6 +2830,24 @@ impl App {
                             &g.brushes.text,
                         );
                         right -= 16.0;
+                    }
+                    // A quiet "N in voice" while people are in its voice.
+                    if in_voice[i] > 0 {
+                        let l = g.layout(
+                            &gfx::wide(&format!("{} in voice", in_voice[i])),
+                            &g.formats.direct_note,
+                            1e6,
+                        )?;
+                        let m = gfx::metrics(&l);
+                        right -= m.widthIncludingTrailingWhitespace;
+                        text::draw(
+                            dc,
+                            &l,
+                            right,
+                            cy - m.height / 2.0,
+                            &g.solid(VOICE_GREEN),
+                        );
+                        right -= 8.0;
                     }
                     if *muted {
                         icons::draw(

@@ -400,7 +400,7 @@ fn name(a: &App, id: Id) -> String {
         }
         Id::Channels => format!("Channels in {}", c.spaces[c.space].name),
         Id::Channel(i) => format!(
-            "{}{}{}",
+            "{}{}{}{}",
             c.channels[i].name,
             if c.channels[i].private {
                 ", private"
@@ -411,7 +411,9 @@ fn name(a: &App, id: Id) -> String {
                 ", unread activity"
             } else {
                 ""
-            }
+            },
+            a.channel_voice(i)
+                .map_or_else(String::new, |(n, names)| format!(", {n} in voice: {names}"))
         ),
         Id::Directs => "Direct messages".into(),
         Id::NewDirect => "New direct message".into(),

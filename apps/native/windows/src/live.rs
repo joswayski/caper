@@ -363,6 +363,9 @@ pub struct Live {
     /// Where an opened notification points: its navigation, the message
     /// and its thread's root, shown once that navigation loads.
     focus: Option<(u64, String, Option<String>)>,
+    /// Who is in voice in each joined channel of the open space, as the
+    /// gateway last listed them (egui's `channel_rosters`).
+    rosters: HashMap<String, Vec<core::VoiceOccupant>>,
 }
 
 /// What a send with composer files did.
@@ -510,6 +513,7 @@ impl Live {
             account_epoch: 0,
             activity: Default::default(),
             focus: None,
+            rosters: HashMap::new(),
         }
     }
 
@@ -2174,6 +2178,11 @@ impl Live {
         out.append(&mut self.queued);
     }
 
+    /// Who is in voice in channel `id` (egui's `voice_people`).
+    pub fn voice_people(&self, id: &str) -> &[core::VoiceOccupant] {
+        self.rosters.get(id).map_or(&[], Vec::as_slice)
+    }
+
     /// What the inbox card shows (egui's `activity_dialog` rows).
     pub fn inbox_snapshot(&self) -> crate::settings::InboxSnap {
         let a = &self.activity;
@@ -2432,6 +2441,29 @@ impl Live {
                         unread.as_deref(),
                         self.direct_head(),
                     );
+                    // The space's joined channels' voice rosters, as egui
+                    // watches them; none in a request or a blocked DM.
+                    self.rosters.clear();
+                    let quiet = direct
+                        && self.directs.iter().any(|d| {
+                            d.id == channel
+                                && (d.status == core::DirectStatus::Incoming
+                                    || d.blocked
+                                    || self.is_blocked(&d.peer.id))
+                        });
+                    let media = gateway::MediaWatch {
+                        epoch: current,
+                        channels: detail
+                            .channels
+                            .iter()
+                            .filter(|c| c.joined && !quiet)
+                            .take(gateway::MAX_MEDIA_CHANNELS)
+                            .map(|c| gateway::MediaChannel {
+                                id: c.id.clone(),
+                                demo: detail.space.demo,
+                            })
+                            .collect(),
+                    };
                     out.push(Update::Loaded(Box::new((conversation, ids))));
                     if let Some((_, message, thread)) =
                         self.focus.take().filter(|(n, ..)| *n == navigation)
@@ -2445,7 +2477,7 @@ impl Live {
                         channel,
                         cursor,
                         presence: (!direct).then(|| (detail.space.id.clone(), Vec::new())),
-                        media: gateway::MediaWatch::default(),
+                        media,
                     });
                 }
                 Err(e) => out.push(Update::Failed(e.message)),
@@ -2897,6 +2929,29 @@ impl Live {
                 let old = self.seq();
                 let applied = self.timeline.apply_edit(*update);
                 self.publish(old, applied, &id, out);
+            }
+            Event::Gateway(gateway::GatewayEvent::VoiceRoster {
+                generation,
+                channel,
+                participants,
+                ..
+            }) if generation == current => {
+                self.rosters.insert(channel, participants);
+                out.push(Update::Badges);
+            }
+            Event::Gateway(gateway::GatewayEvent::VoiceUnavailable {
+                generation,
+                channel,
+                ..
+            }) if generation == current => {
+                self.rosters.remove(&channel);
+                out.push(Update::Badges);
+            }
+            Event::Gateway(gateway::GatewayEvent::VoiceReset { generation })
+                if generation == current =>
+            {
+                self.rosters.clear();
+                out.push(Update::Badges);
             }
             Event::Gateway(gateway::GatewayEvent::Presence {
                 generation,

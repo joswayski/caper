@@ -20,6 +20,8 @@ pub const ACTION: u32 = 0xF1EDE4;
 pub const ACTION_HOVER: u32 = 0xFBF9F4;
 pub const ACTION_PRESS: u32 = 0xDDD7CB;
 pub const CAPER: u32 = 0x637A43;
+/// Voice under way: egui's session green.
+pub const VOICE_GREEN: u32 = 0x4AA86B;
 /// `--surface-hover`: white at 6%.
 pub const HOVER: (u32, f32) = (0xFFFFFF, 0.06);
 pub const SELECTION: (u32, f32) = (0x3A6EA5, 0.55);
