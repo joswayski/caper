@@ -4060,7 +4060,7 @@ internal fun counterTone(count: Int): Color = when {
         if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Assertive }, color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) { Text(error, Modifier.padding(14.dp)) }
         if (screen.attemptsRemaining == 1) Text("One attempt left. Check the code carefully.", Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite }, fontSize = 14.sp, fontWeight = FontWeight.Bold)
         // Shown after a resend, announced politely; the new challenge also cleared the field and the attempts.
-        if (screen.resends > 0) Text(RESENT_CODE_STATUS, Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 14.sp)
+        if (screen.resends > 0 && error == null) Text(RESENT_CODE_STATUS, Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 14.sp)
         // "Email me a new code" counts as a resend too, and restarts the wait.
         // At the resend limit the API would send nothing, so the button is hidden (as on web).
         // Only the request that is running says so: a resend leaves Continue as it was.

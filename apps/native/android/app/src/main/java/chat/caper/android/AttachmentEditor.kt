@@ -60,6 +60,7 @@ import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -220,6 +221,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     remove: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    val title = if (pictureMode) "Adjust picture" else if (kind == "video") "Edit video" else "Edit image"
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val preparer = remember { AttachmentPreparer(context.applicationContext) }
@@ -319,7 +321,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
         Column(
             // Filled before the insets, so the bar and keyboard areas aren't left showing the dimmed scrim.
             Modifier.fillMaxSize().swipeCancelsPresses().entrance(MOTION_BASE, dy = 12.dp).background(Blackout).systemBarsPadding().imePadding()
-                .semantics { paneTitle = if (pictureMode) "Adjust picture" else if (kind == "video") "Edit video" else "Edit image" }
+                .semantics { paneTitle = title }
                 // Hardware keyboards: Ctrl+Z undoes, Ctrl+Shift+Z or Ctrl+Y redoes, Escape closes the field or the
                 // editor, and while cropping (with nothing else focused) arrows move the frame, Shift+arrows resize it.
                 .onPreviewKeyEvent { event ->
@@ -353,8 +355,12 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                 IconButton(cancel, Modifier.semantics { contentDescription = "Cancel editing" }) {
                     Icon(painterResource(R.drawable.lucide_x), null, tint = Text)
                 }
-                Text(name, Modifier.weight(1f).padding(horizontal = 4.dp).semantics { heading() }, color = Text, fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // Web's bar: what you're doing, with the file under it where there's room (web hides it at 420px and below).
+                Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
+                    Text(title, Modifier.semantics { heading() }, color = Text, fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (LocalConfiguration.current.screenWidthDp > 420) Text(name, color = TextMuted, fontSize = 11.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
                 BarIcon(R.drawable.lucide_undo_2, "Undo", canEdit && history.canUndo, ::undo)
                 BarIcon(R.drawable.lucide_redo_2, "Redo", canEdit && history.canRedo, ::redo)
                 TextButton({ field = null; commit(AttachmentEdit.NONE) }, enabled = canEdit && AttachmentEdits.isEdited(current),
