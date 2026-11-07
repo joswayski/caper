@@ -58,6 +58,7 @@ enum NativeStyle {
 
 final class NativeButton: NSButton {
     private let actionHandler: () -> Void
+    var focusChanged: ((Bool) -> Void)?
     init(_ title: String, primary: Bool = false, action: @escaping () -> Void) {
         actionHandler = action
         super.init(frame: .zero)
@@ -75,6 +76,17 @@ final class NativeButton: NSButton {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func pressed() { actionHandler() }
     override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.45 } }
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { focusChanged?(true) }
+        return accepted
+    }
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted { focusChanged?(false) }
+        return accepted
+    }
 
     static func icon(_ label: String, symbol: String, action: @escaping () -> Void) -> NativeButton {
         let button = NativeButton(label, action: action)
