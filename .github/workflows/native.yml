@@ -497,6 +497,10 @@ jobs:
             printf '%s' "$GOOGLE_SERVICES_JSON" | base64 --decode >apps/native/android/app/google-services.json
             python -m json.tool apps/native/android/app/google-services.json >/dev/null
           fi
+      # Gradle builds libcaper_mobile.so, the shared Rust library, with cargo-ndk.
+      - uses: ./.github/actions/mobile-rust
+        with:
+          platform: android
       - name: Test, lint, build and package Android
         run: bash apps/native/android/build.sh
       - name: Record exact checked-out revision and checksums

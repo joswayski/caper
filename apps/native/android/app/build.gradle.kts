@@ -42,6 +42,16 @@ if (fixtureMode.get().toBoolean()) {
     }
 }
 
+// Shared Rust logic (apps/native/mobile): libcaper_mobile.so, built by cargo-ndk for
+// every ABI the app ships, and once for this machine so JVM unit tests load the same code.
+val mobileCrate = rootProject.file("../mobile")
+val rustJniLibs = layout.buildDirectory.dir("rust-jniLibs")
+val rustHost = layout.buildDirectory.dir("rust-host")
+val rustInputs = files(
+    mobileCrate.resolve("src"), mobileCrate.resolve("Cargo.toml"), mobileCrate.resolve("Cargo.lock"),
+    rootProject.file("../../../shared/messages")
+)
+
 android {
     namespace = "chat.caper.android"
     compileSdk = 36
@@ -105,6 +115,7 @@ android {
             layout.buildDirectory.dir("native-inputs/assets").get().asFile.path
         )
         jniLibs.directories += layout.buildDirectory.dir("native-inputs/ort/jni").get().asFile.path
+        jniLibs.directories += rustJniLibs.get().asFile.path
         res.directories += layout.buildDirectory.dir("generated/caper-fonts/res").get().asFile.path
     }
     ndkVersion = "27.2.12479018"
@@ -118,7 +129,30 @@ android {
     lint.abortOnError = true
 }
 
+val buildRustAndroid by tasks.registering(Exec::class) {
+    val ndk = androidComponents.sdkComponents.sdkDirectory.map { it.dir("ndk/${android.ndkVersion}").asFile.path }
+    inputs.files(rustInputs)
+    outputs.dir(rustJniLibs)
+    workingDir(mobileCrate)
+    doFirst { environment("ANDROID_NDK_HOME", ndk.get()) }
+    commandLine(
+        "cargo", "ndk", "--platform", "26", "-t", "arm64-v8a", "-t", "armeabi-v7a", "-t", "x86", "-t", "x86_64",
+        "-o", rustJniLibs.get().asFile.path, "build", "--locked", "--release", "--lib", "--features", "jni"
+    )
+}
+val buildRustHost by tasks.registering(Exec::class) {
+    inputs.files(rustInputs)
+    outputs.dir(rustHost)
+    workingDir(mobileCrate)
+    commandLine("cargo", "build", "--locked", "--release", "--lib", "--features", "jni", "--target-dir", rustHost.get().asFile.path)
+}
+tasks.withType<Test>().configureEach {
+    dependsOn(buildRustHost)
+    systemProperty("java.library.path", rustHost.get().dir("release").asFile.path)
+}
+
 tasks.configureEach {
+    if (name.startsWith("merge") && name.endsWith("JniLibFolders")) dependsOn(buildRustAndroid)
     if (name.startsWith("configureCMake") || name.startsWith("merge") && name.endsWith("Assets")) {
         doFirst {
             check(file("build/native-inputs/ort/headers/onnxruntime_cxx_api.h").isFile) { "Run prepare-audio.sh before Gradle." }

@@ -33,6 +33,7 @@ for abi in arm64-v8a armeabi-v7a x86 x86_64; do
   grep -Fxq "lib/$abi/libonnxruntime.so" "$archive_entries"
   grep -Fxq "lib/$abi/libavif_android.so" "$archive_entries"
   grep -Fxq "lib/$abi/libcaper_avif.so" "$archive_entries"
+  grep -Fxq "lib/$abi/libcaper_mobile.so" "$archive_entries"
 done
 # Debug and release package the same native libraries.
 python3 "$ROOT/check-jni-keeps.py" app/build/outputs/mapping/release/mapping.txt app/build/outputs/mapping/release/usage.txt dist/Caper-android-debug.apk
