@@ -27,6 +27,7 @@ macro_rules! icons {
 icons! {
     BellOff => "bell-off.svg",
     Check => "check.svg",
+    ChevronDown => "chevron-down.svg",
     Close => "x.svg",
     Copy => "copy.svg",
     Eye => "eye.svg",

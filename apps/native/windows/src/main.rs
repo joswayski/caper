@@ -237,6 +237,10 @@ pub struct App {
     hover_row: Option<usize>,
     hover_space: Option<usize>,
     hover_channel: Option<usize>,
+    /// Whether the pointer is on the hovered channel's options button, or
+    /// the sidebar header's space options button.
+    hover_channel_options: bool,
+    space_options_hover: bool,
     hover_member: Option<usize>,
     /// The sidebar's DM row under the pointer.
     hover_direct: Option<directs::Spot>,
@@ -441,6 +445,8 @@ impl App {
                 hover_row: None,
                 hover_space: None,
                 hover_channel: None,
+                hover_channel_options: false,
+                space_options_hover: false,
                 hover_member: None,
                 hover_direct: None,
                 bar_hover: None,
@@ -542,6 +548,12 @@ impl App {
         let Some(live) = self.live.as_mut() else {
             return Ok(());
         };
+        // A toast asks whether its conversation is being read by waking the
+        // window; renewing the lease here answers without drawing a frame.
+        live.showing(unsafe {
+            GetForegroundWindow() == self.hwnd
+                && !windows::Win32::UI::WindowsAndMessaging::IsIconic(self.hwnd).as_bool()
+        });
         let updates = live.drain();
         let images = live.pump_media(&mut files::D2d(self.g.dc.clone()));
         let requests = live
@@ -750,6 +762,16 @@ impl App {
                         self.dirty.header = true;
                         self.need = true;
                     }
+                }
+                live::Update::Notified => {
+                    self.close_dialog();
+                    self.close_settings();
+                    self.close_dm_menu();
+                }
+                live::Update::Warning(e) => {
+                    self.status = Some((e, true));
+                    self.dirty.header = true;
+                    self.need = true;
                 }
                 live::Update::Failed(e) => {
                     if let Some(s) = self.signin.as_mut().filter(|s| s.restoring) {
@@ -1299,11 +1321,16 @@ impl App {
             x >= l && x < l + w && y >= t && y < t + h
         };
         let (mut space, mut channel, mut member, mut direct) = (None, None, None, None);
+        let (mut channel_options, mut space_options) = (false, false);
         if let Some((x, y)) = self.pointer {
             space = (0..self.c.spaces.len()).find(|&i| inside(Self::space_rect(i), x, y));
             channel = (0..self.c.channels.len()).find(|&i| inside(Self::channel_rect(i), x, y));
             member = (0..self.c.listed_members).find(|&i| inside(self.member_rect(i), x, y));
             direct = self.direct_at(x, y);
+            channel_options = channel.is_some_and(|i| {
+                self.channel_scope(i).is_some() && inside(Self::channel_options_rect(i), x, y)
+            });
+            space_options = self.space_scope().is_some() && inside(self.space_options_rect(), x, y);
         }
         if direct != self.hover_direct {
             self.hover_direct = direct;
@@ -1324,6 +1351,14 @@ impl App {
         }
         if channel != self.hover_channel {
             self.hover_channel = channel;
+            self.dirty.sidebar = true;
+            self.need = true;
+        }
+        if (channel_options, space_options)
+            != (self.hover_channel_options, self.space_options_hover)
+        {
+            self.hover_channel_options = channel_options;
+            self.space_options_hover = space_options;
             self.dirty.sidebar = true;
             self.need = true;
         }
@@ -1587,8 +1622,16 @@ impl App {
                             self.set_sel(Some((anchor, h)));
                             self.selecting = true;
                         }
+                    } else if self.space_options_hover {
+                        let scope = self.space_scope();
+                        self.toggle_scope_menu(scope);
                     } else if let Some(i) = self.hover_channel {
-                        self.select_channel(i);
+                        if self.hover_channel_options {
+                            let scope = self.channel_scope(i);
+                            self.toggle_scope_menu(scope);
+                        } else {
+                            self.select_channel(i);
+                        }
                     } else if let Some(spot) = self.hover_direct {
                         self.direct_click(spot);
                     } else if let Some(i) = self.hover_space {
@@ -1658,6 +1701,7 @@ impl App {
                         .is_some_and(|(x, y)| (self.in_box(x, y) && !bar) || self.in_history(x, y));
                 let hand = part
                     || self.hover_channel.is_some()
+                    || self.space_options_hover
                     || self
                         .hover_direct
                         .is_some_and(|s| s != directs::Spot::Heading)
@@ -2673,8 +2717,54 @@ impl App {
             let (hover, layouts) = (self.hover_channel, &self.channel_layouts);
             let (drows, dtop, dhover) = (self.direct_rows(), self.directs_top(), self.hover_direct);
             let dmenu = self.dm_menu_row();
+            // Notification menus: the space's button (and its bell while
+            // muted), and per channel its button, bell, dimming and error.
+            let open = self.dm_menu.as_ref().map(|m| m.scope.clone());
+            let live = self.live.as_ref();
+            let space_menu = self.space_scope().map(|scope| {
+                let muted = live.and_then(|l| l.muted(&scope)).is_some();
+                (
+                    muted,
+                    self.space_options_hover || open.as_ref() == Some(&scope),
+                )
+            });
+            let channel_menus: Vec<_> = (0..c.channels.len())
+                .map(|i| {
+                    let scope = self.channel_scope(i);
+                    let muted = scope.as_ref().and_then(|s| live?.muted(s)).is_some();
+                    let error = scope.as_ref().and_then(|s| live?.notify_error(s));
+                    let shown = scope.is_some() && open == scope;
+                    (scope.is_some(), muted, error, shown)
+                })
+                .collect();
+            let options_hover = self.hover_channel_options;
             self.sidebar.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
+                if let Some((muted, lit)) = space_menu {
+                    let b = rect(SIDEBAR_W - 40.0, 13.0, SIDEBAR_W - 12.0, 41.0);
+                    if lit {
+                        fill_round(dc, b, 6.0, &g.brushes.hover);
+                    }
+                    icons::draw(
+                        dc,
+                        icons::Icon::ChevronDown,
+                        rect(b.left + 6.0, b.top + 6.0, b.right - 6.0, b.bottom - 6.0),
+                        TEXT_MUTED,
+                        1.0,
+                    );
+                    if muted {
+                        icons::draw(
+                            dc,
+                            icons::Icon::BellOff,
+                            rect(b.left - 20.0, 20.0, b.left - 6.0, 34.0),
+                            TEXT_MUTED,
+                            1.0,
+                        );
+                    }
+                }
+                // egui halves a muted row's colours.
+                let dim_text = dc.CreateSolidColorBrush(&gfx::color(TEXT, 0.5), None)?;
+                let dim_muted = dc.CreateSolidColorBrush(&gfx::color(TEXT_MUTED, 0.5), None)?;
                 let t = g.layout(
                     &gfx::wide(&c.spaces[c.space].name),
                     &g.formats.space,
@@ -2699,16 +2789,50 @@ impl App {
                     } else if hover == Some(i) {
                         fill_round(dc, r, RADIUS, &g.brushes.hover);
                     }
+                    let (menu, muted, error, shown) = &channel_menus[i];
+                    let cy = y + h / 2.0;
+                    // From the right: the options button while revealed,
+                    // the unread dot, then the bell-slash.
+                    let mut right = r.right - 8.0;
+                    if *menu && (hover == Some(i) || *shown) {
+                        let b = rect(r.right - 30.0, cy - 12.0, r.right - 6.0, cy + 12.0);
+                        if (hover == Some(i) && options_hover) || *shown {
+                            fill_round(dc, b, 6.0, &g.brushes.hover);
+                        }
+                        icons::draw(
+                            dc,
+                            icons::Icon::More,
+                            rect(b.left + 4.0, b.top + 4.0, b.right - 4.0, b.bottom - 4.0),
+                            TEXT,
+                            1.0,
+                        );
+                        right = b.left - 4.0;
+                    }
                     // A channel with anything new: egui's small text-coloured dot.
                     if channel_badges.get(i).copied().unwrap_or(false) {
-                        let cy = y + h / 2.0;
                         fill_round(
                             dc,
-                            rect(r.right - 17.0, cy - 3.0, r.right - 11.0, cy + 3.0),
+                            rect(right - 9.0, cy - 3.0, right - 3.0, cy + 3.0),
                             3.0,
                             &g.brushes.text,
                         );
+                        right -= 16.0;
                     }
+                    if *muted {
+                        icons::draw(
+                            dc,
+                            icons::Icon::BellOff,
+                            rect(right - 14.0, cy - 7.0, right, cy + 7.0),
+                            TEXT_MUTED,
+                            0.5,
+                        );
+                        right -= 20.0;
+                    }
+                    let (bright, quiet) = if *muted {
+                        (&dim_text, &dim_muted)
+                    } else {
+                        (&g.brushes.text, &g.brushes.muted)
+                    };
                     let mark = g.layout(
                         &gfx::wide(if c.channels[i].private { "🔒" } else { "#" }),
                         &g.formats.channel,
@@ -2725,10 +2849,10 @@ impl App {
                         &mark,
                         24.0,
                         y + 5.0,
-                        if i == c.channel {
+                        if i == c.channel && !*muted {
                             &g.brushes.terracotta
                         } else {
-                            &g.brushes.muted
+                            quiet
                         },
                     );
                     text::draw(
@@ -2736,12 +2860,17 @@ impl App {
                         l,
                         46.0,
                         y + 5.0,
-                        if i == c.channel {
-                            &g.brushes.text
-                        } else {
-                            &g.brushes.muted
-                        },
+                        if i == c.channel { bright } else { quiet },
                     );
+                    // A failed notification change, after the name.
+                    if let Some(e) = error {
+                        let nx = 46.0 + gfx::metrics(l).widthIncludingTrailingWhitespace + 6.0;
+                        if nx < right {
+                            let el = g.layout(&gfx::wide(e), &g.formats.direct_note, right - nx)?;
+                            el.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+                            text::draw(dc, &el, nx, y + 7.0, &g.brushes.error);
+                        }
+                    }
                 }
                 directs::draw(g, dc, &drows, dtop, dhover, dmenu)?;
                 self.draw_foot(g, dc, self.h)?;

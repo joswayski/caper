@@ -9,12 +9,16 @@
 //! row rules are the shared `caper_client::model::DirectConversation` ones.
 //! Each conversation's options button opens its notification menu (on or
 //! off, mute for a while or unmute), and a muted one shows a bell-slash.
+//! The same menu serves the space (the sidebar header's button: when voice
+//! starts, the level, mute) and each channel (its row's button: the level,
+//! mute).
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::live::Live;
 use crate::overlay::{Rect, Tone};
 use crate::theme::*;
 use crate::{App, text};
-use caper_client::model::{DirectConversation, DirectStatus};
+use caper_client::model::{DirectConversation, DirectStatus, NotificationLevel};
+use caper_client::notifications::Scope;
 use windows::Win32::Foundation::{LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
@@ -42,17 +46,27 @@ pub enum Spot {
     Options(usize),
 }
 
-/// The options menu's entries, as egui's `notification_items` words them
-/// for a conversation.
+/// The options menu's entries, as egui's `notification_items` words them;
+/// egui's submenus are headings here, with their choices under them.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MenuItem {
-    /// "Turn off notifications" while they are on, else "Turn on…".
+    /// "When voice starts" (spaces), heading Default (account), On, Off.
+    VoiceHeading,
+    /// A voice choice, and whether it is the current one.
+    Voice(Option<bool>, bool),
+    /// "Notifications" (spaces and channels), heading the levels.
+    LevelHeading,
+    /// A level (None: "Default (…)", named for what it inherits), its
+    /// label, and whether it is the current one.
+    Level(Option<NotificationLevel>, String, bool),
+    /// A DM's "Turn off notifications" while they are on, else "Turn on…".
     Toggle(bool),
-    /// "Mute conversation", heading the mute presets.
-    MuteHeading,
+    /// "Mute space", "Mute channel" or "Mute conversation", heading the
+    /// mute presets.
+    MuteHeading(&'static str),
     /// `caper_client::notifications::MUTE_PRESETS` entry `k`.
     Mute(usize),
-    Unmute,
+    Unmute(&'static str),
     /// Text only: when the mute ends, "Loading…", or an error (true).
     Note(String, bool),
 }
@@ -60,28 +74,47 @@ pub enum MenuItem {
 impl MenuItem {
     pub fn label(&self) -> String {
         match self {
+            Self::VoiceHeading => "When voice starts".into(),
+            Self::Voice(None, _) => "Default (account)".into(),
+            Self::Voice(Some(true), _) => "On".into(),
+            Self::Voice(Some(false), _) => "Off".into(),
+            Self::LevelHeading => "Notifications".into(),
+            Self::Level(_, label, _) => label.clone(),
             Self::Toggle(true) => "Turn off notifications".into(),
             Self::Toggle(false) => "Turn on notifications".into(),
-            Self::MuteHeading => "Mute conversation".into(),
+            Self::MuteHeading(noun) => format!("Mute {noun}"),
             Self::Mute(k) => caper_client::notifications::MUTE_PRESETS
                 .get(*k)
                 .map_or("", |p| p.0)
                 .into(),
-            Self::Unmute => "Unmute conversation".into(),
+            Self::Unmute(noun) => format!("Unmute {noun}"),
             Self::Note(text, _) => text.clone(),
         }
     }
 
     /// Whether choosing it changes something.
     pub fn action(&self) -> bool {
-        matches!(self, Self::Toggle(_) | Self::Mute(_) | Self::Unmute)
+        matches!(
+            self,
+            Self::Toggle(_) | Self::Mute(_) | Self::Unmute(_) | Self::Voice(..) | Self::Level(..)
+        )
+    }
+
+    /// Whether it is one of a heading's choices (indented under it).
+    pub fn choice(&self) -> bool {
+        matches!(self, Self::Mute(_) | Self::Voice(..) | Self::Level(..))
+    }
+
+    /// Whether it is the current choice (ticked).
+    pub fn chosen(&self) -> bool {
+        matches!(self, Self::Voice(_, true) | Self::Level(_, _, true))
     }
 }
 
-/// A conversation's open options menu, by its id, and the item under the
-/// pointer or keyboard.
+/// The open notification menu (a DM's, a channel's or the space's), by
+/// its scope, and the item under the pointer or keyboard.
 pub struct DmMenu {
-    pub id: String,
+    pub scope: Scope,
     pub hover: Option<usize>,
 }
 
@@ -851,7 +884,9 @@ impl App {
 
     /// The row whose options menu is open.
     pub fn dm_menu_row(&self) -> Option<usize> {
-        let id = &self.dm_menu.as_ref()?.id;
+        let Scope::Direct(id) = &self.dm_menu.as_ref()?.scope else {
+            return None;
+        };
         self.direct_rows()
             .iter()
             .position(|r| r.id.as_ref() == Some(id))
@@ -860,7 +895,7 @@ impl App {
     /// The open menu's items and whether they can change now.
     pub fn dm_menu_items(&self) -> (bool, Vec<MenuItem>) {
         match (&self.dm_menu, &self.live) {
-            (Some(m), Some(live)) => live.direct_menu(&m.id),
+            (Some(m), Some(live)) => live.notify_menu(&m.scope),
             _ => (false, Vec::new()),
         }
     }
@@ -868,7 +903,7 @@ impl App {
     /// The menu (client DIPs), beside its row, kept in the window.
     pub fn dm_menu_rect(&self) -> Rect {
         let h = self.dm_menu_items().1.len() as f32 * MENU_ITEM_H + 12.0;
-        let y = self.dm_menu_row().map_or(0.0, |k| self.direct_rect(k).1);
+        let y = self.dm_menu_anchor().unwrap_or(0.0);
         (
             RAIL_W + SIDEBAR_W - 8.0,
             y.min(self.h - 8.0 - h).max(8.0),
@@ -887,25 +922,97 @@ impl App {
         )
     }
 
-    /// Opens or closes row `k`'s options menu; opening loads the
-    /// notification settings, as egui's row menu does.
+    /// Opens or closes row `k`'s options menu.
     pub fn toggle_dm_menu(&mut self, k: usize) {
-        let id = self
+        let scope = self
             .direct_rows()
             .get(k)
             .filter(|r| r.menu())
-            .and_then(|r| r.id.clone());
-        let open = self.dm_menu.as_ref().map(|m| m.id.clone());
-        self.dm_menu = match id {
-            Some(id) if open.as_ref() != Some(&id) => {
+            .and_then(|r| r.id.clone())
+            .map(Scope::Direct);
+        self.toggle_scope_menu(scope);
+    }
+
+    /// Opens `scope`'s notification menu, or closes it when it is the open
+    /// one; opening loads the settings, as egui's menus do.
+    pub fn toggle_scope_menu(&mut self, scope: Option<Scope>) {
+        let same = scope.is_some() && self.dm_menu.as_ref().map(|m| &m.scope) == scope.as_ref();
+        self.dm_menu = match scope {
+            Some(scope) if !same => {
                 if let Some(live) = &mut self.live {
                     live.load_notifications();
                 }
-                Some(DmMenu { id, hover: None })
+                Some(DmMenu { scope, hover: None })
             }
             _ => None,
         };
         self.dm_menu_changed();
+    }
+
+    /// The open space's notification scope, in a live account.
+    pub fn space_scope(&self) -> Option<Scope> {
+        self.live.as_ref()?;
+        if !self.c.is_live() {
+            return None;
+        }
+        Some(Scope::Space(self.ids.spaces.get(self.c.space)?.clone()))
+    }
+
+    /// Channel `i`'s notification scope, in a live account.
+    pub fn channel_scope(&self, i: usize) -> Option<Scope> {
+        let Some(Scope::Space(space)) = self.space_scope() else {
+            return None;
+        };
+        Some(Scope::Channel {
+            space,
+            channel: self.ids.channels.get(i)?.clone(),
+        })
+    }
+
+    /// The sidebar header's space options button (client DIPs).
+    pub fn space_options_rect(&self) -> Rect {
+        (RAIL_W + SIDEBAR_W - 40.0, 13.0, 28.0, 28.0)
+    }
+
+    /// Channel `i`'s options button (client DIPs), shown while its row is
+    /// hovered.
+    pub fn channel_options_rect(i: usize) -> Rect {
+        let (x, y, w, h) = App::channel_rect(i);
+        (x + w - 30.0, y + (h - 24.0) / 2.0, 24.0, 24.0)
+    }
+
+    /// The top of what the open menu sits beside: its DM or channel row,
+    /// or the sidebar header; None once that is no longer shown.
+    fn dm_menu_anchor(&self) -> Option<f32> {
+        let here = |space: &String| self.ids.spaces.get(self.c.space) == Some(space);
+        match &self.dm_menu.as_ref()?.scope {
+            Scope::Direct(_) => self.dm_menu_row().map(|k| self.direct_rect(k).1),
+            Scope::Channel { space, channel } if here(space) => self
+                .ids
+                .channels
+                .iter()
+                .position(|c| c == channel)
+                .map(|i| App::channel_rect(i).1),
+            Scope::Space(space) if here(space) => Some(HEADER_H - 6.0),
+            _ => None,
+        }
+    }
+
+    /// Whether (x, y) is on the button that opened the open menu.
+    fn on_menu_button(&self, x: f32, y: f32) -> bool {
+        match self.dm_menu.as_ref().map(|m| &m.scope) {
+            Some(Scope::Direct(_)) => {
+                matches!(self.direct_at(x, y), Some(Spot::Options(k)) if Some(k) == self.dm_menu_row())
+            }
+            Some(Scope::Channel { channel, .. }) => self
+                .ids
+                .channels
+                .iter()
+                .position(|c| c == channel)
+                .is_some_and(|i| contains(Self::channel_options_rect(i), x, y)),
+            Some(Scope::Space(_)) => contains(self.space_options_rect(), x, y),
+            _ => false,
+        }
     }
 
     pub fn close_dm_menu(&mut self) {
@@ -927,11 +1034,11 @@ impl App {
         let Some(item) = items.get(k).filter(|i| enabled && i.action()) else {
             return;
         };
-        let Some(id) = self.dm_menu.as_ref().map(|m| m.id.clone()) else {
+        let Some(scope) = self.dm_menu.as_ref().map(|m| m.scope.clone()) else {
             return;
         };
         if let Some(live) = &mut self.live {
-            live.direct_notify(&id, item);
+            live.menu_choose(&scope, item);
         }
         self.dm_menu = None;
         self.dm_menu_changed();
@@ -952,8 +1059,7 @@ impl App {
             .filter(|&k| enabled && items[k].action());
         let inside = contains(self.dm_menu_rect(), x, y);
         // The open row's own button only closes it.
-        let own =
-            matches!(self.direct_at(x, y), Some(Spot::Options(k)) if Some(k) == self.dm_menu_row());
+        let own = self.on_menu_button(x, y);
         let m = self.dm_menu.as_mut()?;
         match msg {
             WM_MOUSEMOVE => {
@@ -1018,7 +1124,7 @@ impl App {
         if !(std::mem::take(&mut self.dirty.dm_menu) || self.dirty.sidebar) {
             return Ok(());
         }
-        if self.dm_menu.is_none() || self.dm_menu_row().is_none() {
+        if self.dm_menu_anchor().is_none() {
             return self.dm_menu_p.offset(-100_000.0, 0.0);
         }
         let s = self.scale;
@@ -1040,12 +1146,17 @@ impl App {
                 if live && hover == Some(k) {
                     fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
                 }
-                // The presets sit under "Mute conversation".
-                let indent = if matches!(item, MenuItem::Mute(_)) {
-                    22.0
-                } else {
-                    10.0
-                };
+                // Choices sit under their heading; the current one is ticked.
+                let indent = if item.choice() { 26.0 } else { 10.0 };
+                if item.chosen() {
+                    crate::icons::draw(
+                        dc,
+                        crate::icons::Icon::Check,
+                        rect(x + 8.0, y + h / 2.0 - 7.0, x + 22.0, y + h / 2.0 + 7.0),
+                        TEXT,
+                        if live { 1.0 } else { 0.5 },
+                    );
+                }
                 let l = g.layout(
                     &gfx::wide(&item.label()),
                     &g.formats.dialog_note,

@@ -46,6 +46,10 @@ pub enum Id {
     /// Row `k`'s options button, and the conversation menu it opens with
     /// its items.
     DirectOptions(usize),
+    /// The sidebar header's space options and each channel's options
+    /// button, which open the same notification menu.
+    SpaceOptions,
+    ChannelOptions(usize),
     DmMenu,
     DmItem(usize),
     /// The account footer's gear, its menu and the menu's items.
@@ -243,7 +247,15 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .as_ref()
             .map_or_else(Vec::new, |p| p.parts().into_iter().map(Id::Pick).collect()),
         Id::Rail => (0..a.c.spaces.len()).map(Id::Space).collect(),
-        Id::Channels => (0..a.c.channels.len()).map(Id::Channel).collect(),
+        Id::Channels => a
+            .space_scope()
+            .map(|_| Id::SpaceOptions)
+            .into_iter()
+            .chain((0..a.c.channels.len()).flat_map(|i| {
+                std::iter::once(Id::Channel(i))
+                    .chain(a.channel_scope(i).map(|_| Id::ChannelOptions(i)))
+            }))
+            .collect(),
         Id::Directs => std::iter::once(Id::NewDirect)
             .chain(a.direct_rows().iter().enumerate().flat_map(|(k, r)| {
                 std::iter::once(Id::Direct(k)).chain(r.menu().then_some(Id::DirectOptions(k)))
@@ -288,7 +300,7 @@ fn parent(id: Id) -> Option<Id> {
     Some(match id {
         Id::Root => return None,
         Id::Space(_) => Id::Rail,
-        Id::Channel(_) => Id::Channels,
+        Id::Channel(_) | Id::ChannelOptions(_) | Id::SpaceOptions => Id::Channels,
         Id::Direct(_) | Id::NewDirect | Id::DirectOptions(_) => Id::Directs,
         Id::AccountItem(_) => Id::AccountMenu,
         Id::DmItem(_) => Id::DmMenu,
@@ -317,6 +329,8 @@ fn exists(a: &App, id: Id) -> bool {
             a.visible_rows().contains(&i) && a.row_controls(i).iter().any(|(c, _)| *c == action)
         }
         Id::Channel(i) => i < a.c.channels.len(),
+        Id::ChannelOptions(i) => a.channel_scope(i).is_some(),
+        Id::SpaceOptions => a.space_scope().is_some(),
         Id::Directs | Id::NewDirect => !a.direct_rows().is_empty(),
         Id::Bar(p) => a.bar_parts().iter().any(|(q, _)| *q == p),
         Id::Waiting => a.note.is_some(),
@@ -408,7 +422,21 @@ fn name(a: &App, id: Id) -> String {
         Id::DirectOptions(k) => a.direct_rows().get(k).map_or_else(String::new, |r| {
             format!("Conversation options for {}", r.name)
         }),
-        Id::DmMenu => "Conversation options".into(),
+        Id::DmMenu => match a.dm_menu.as_ref().map(|m| &m.scope) {
+            Some(caper_client::notifications::Scope::Space(_)) => "Space options",
+            Some(caper_client::notifications::Scope::Channel { .. }) => "Channel options",
+            _ => "Conversation options",
+        }
+        .into(),
+        // egui's names for these buttons.
+        Id::SpaceOptions => format!(
+            "{} actions",
+            a.c.spaces.get(a.c.space).map_or("", |s| s.name.as_str())
+        ),
+        Id::ChannelOptions(i) => format!(
+            "Channel options for {}",
+            a.c.channels.get(i).map_or("", |c| c.name.as_str())
+        ),
         Id::DmItem(k) => a
             .dm_menu_items()
             .1
@@ -600,7 +628,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Settings(_) | Id::Gear => UIA_ButtonControlTypeId,
         Id::AccountMenu | Id::DmMenu => UIA_MenuControlTypeId,
         Id::DmItem(_) => UIA_MenuItemControlTypeId,
-        Id::DirectOptions(_) => UIA_ButtonControlTypeId,
+        Id::DirectOptions(_) | Id::SpaceOptions | Id::ChannelOptions(_) => UIA_ButtonControlTypeId,
         Id::AccountItem(_) => UIA_MenuItemControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Thread => UIA_PaneControlTypeId,
@@ -640,6 +668,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::DirectOptions(k) => (43, k),
         Id::DmMenu => (44, 0),
         Id::DmItem(k) => (45, k),
+        Id::SpaceOptions => (46, 0),
+        Id::ChannelOptions(i) => (47, i),
         Id::AccountItem(k) => (41, k),
         Id::Waiting => (42, 0),
         Id::History => (5, 0),
@@ -752,6 +782,8 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Gear => a.gear_rect(),
         Id::AccountMenu => a.account_menu_rect(),
         Id::DirectOptions(k) => a.direct_options_rect(k),
+        Id::SpaceOptions => a.space_options_rect(),
+        Id::ChannelOptions(i) => App::channel_options_rect(i),
         Id::DmMenu => a.dm_menu_rect(),
         Id::DmItem(k) => a.dm_item_rect(k),
         Id::AccountItem(k) => a.account_item_rect(k),
@@ -923,6 +955,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             | Id::Gear
             | Id::AccountItem(_)
             | Id::DirectOptions(_)
+            | Id::SpaceOptions
+            | Id::ChannelOptions(_)
             | Id::DmItem(_) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Title | Part::Message) => false,
             Id::MenuItem(_)
@@ -1044,6 +1078,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::Gear
                         | Id::AccountItem(_)
                         | Id::DirectOptions(_)
+                        | Id::SpaceOptions
+                        | Id::ChannelOptions(_)
                         | Id::DmItem(_)
                         | Id::Bar(
                             crate::directs::BarPart::Accept
@@ -1222,6 +1258,14 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Gear => a.toggle_account_menu(),
                 Id::AccountItem(k) => a.account_activate(k),
                 Id::DirectOptions(k) => a.toggle_dm_menu(k),
+                Id::SpaceOptions => {
+                    let scope = a.space_scope();
+                    a.toggle_scope_menu(scope);
+                }
+                Id::ChannelOptions(i) => {
+                    let scope = a.channel_scope(i);
+                    a.toggle_scope_menu(scope);
+                }
                 Id::DmItem(k) => a.dm_menu_activate(k),
                 Id::Sign(p) => a.signin_activate(Some(p)),
                 Id::MenuItem(k) => a.menu_activate(k),

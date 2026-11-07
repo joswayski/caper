@@ -13,7 +13,7 @@ use caper_client::worker::{AccountOperation, AccountResult, Command, Event, Work
 use caper_client::{Host, api::Api, gateway, grouping, model as core};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
@@ -112,6 +112,12 @@ pub enum Update {
     DirectCreated(Option<String>),
     /// Settings' account choices loaded, saved or failed.
     Settings,
+    /// A notification was clicked: dialogs, settings and menus close over
+    /// the conversation it opens.
+    Notified,
+    /// Something for the header's status line that leaves the sign-in
+    /// screen alone (a toast that failed to show, say).
+    Warning(String),
     /// A block asked for in the Block dialog finished: None once blocked,
     /// else why not.
     Blocked(Option<String>),
@@ -337,6 +343,8 @@ pub struct Live {
     block_busy: bool,
     block_error: Option<String>,
     notifications: caper_client::notifications::Notifications,
+    /// When the unread badges are read again after a notification arrived.
+    unread_due: Option<Instant>,
 }
 
 /// What a send with composer files did.
@@ -478,6 +486,7 @@ impl Live {
             block_busy: false,
             block_error: None,
             notifications: Default::default(),
+            unread_due: None,
         }
     }
 
@@ -486,6 +495,7 @@ impl Live {
     /// worker, so nothing can restore the old session meanwhile.
     pub fn logout(self) -> Live {
         let generation = self.generation + 1;
+        self.worker.send(Command::StopNotifications);
         self.worker.send(Command::StopGateway);
         self.worker.send(Command::ClearCredential { generation });
         if let Some(token) = self.token.clone() {
@@ -568,31 +578,72 @@ impl Live {
             .map(str::to_owned)
     }
 
-    /// A DM's options menu, as egui's `notification_items` for a
-    /// conversation: whether its choices can change now, and its items.
-    pub fn direct_menu(&self, id: &str) -> (bool, Vec<crate::directs::MenuItem>) {
+    /// A space's, channel's or DM's bell-slash label while it is muted.
+    pub fn muted(&self, scope: &Scope) -> Option<String> {
+        self.notifications.muted_label(scope, &chrono::Local::now())
+    }
+
+    /// Why a space's, channel's or DM's last notification change failed.
+    pub fn notify_error(&self, scope: &Scope) -> Option<String> {
+        self.notifications.error(scope).map(str::to_owned)
+    }
+
+    /// A space's, channel's or DM's notification menu, as egui's
+    /// `notification_items`: whether its choices can change now, and its
+    /// items.
+    pub fn notify_menu(&self, scope: &Scope) -> (bool, Vec<crate::directs::MenuItem>) {
         use crate::directs::MenuItem;
+        use caper_client::model::NotificationLevel as Level;
+        use caper_client::notifications::{MUTE_PRESETS, default_label, level_label, mute_label};
         let n = &self.notifications;
-        let scope = Scope::Direct(id.to_owned());
         let now = chrono::Local::now();
-        let enabled = n.ready() && !n.saving(&scope);
-        let mut items = vec![MenuItem::Toggle(
-            n.level(&scope) != Some(core::NotificationLevel::Nothing),
-        )];
-        match n.mute(&scope, now.with_timezone(&chrono::Utc)) {
+        let utc = now.with_timezone(&chrono::Utc);
+        let enabled = n.ready() && !n.saving(scope);
+        let noun = match scope {
+            Scope::Space(_) => "space",
+            Scope::Channel { .. } => "channel",
+            _ => "conversation",
+        };
+        let level = n.level(scope);
+        let mut items = Vec::new();
+        if let Scope::Space(_) = scope {
+            let voice = n.voice_started(scope);
+            items.push(MenuItem::VoiceHeading);
+            items.extend([None, Some(true), Some(false)].map(|v| MenuItem::Voice(v, voice == v)));
+        }
+        if let Scope::Direct(_) = scope {
+            items.push(MenuItem::Toggle(level != Some(Level::Nothing)));
+        } else {
+            let inherited = n.inherited(scope);
+            items.push(MenuItem::LevelHeading);
+            items.extend(
+                [
+                    None,
+                    Some(Level::All),
+                    Some(Level::Mentions),
+                    Some(Level::Nothing),
+                ]
+                .map(|choice| {
+                    let label =
+                        choice.map_or_else(|| default_label(inherited), |l| level_label(l).into());
+                    MenuItem::Level(choice, label, level == choice)
+                }),
+            );
+        }
+        match n.mute(scope, utc) {
             Some(mute) => {
-                items.push(MenuItem::Unmute);
-                items.push(MenuItem::Note(
-                    caper_client::notifications::mute_label(mute, &now),
-                    false,
-                ));
+                items.push(MenuItem::Unmute(noun));
+                items.push(MenuItem::Note(mute_label(mute, &now), false));
             }
             None => {
-                items.push(MenuItem::MuteHeading);
-                items.extend(
-                    (0..caper_client::notifications::MUTE_PRESETS.len()).map(MenuItem::Mute),
-                );
+                items.push(MenuItem::MuteHeading(noun));
+                items.extend((0..MUTE_PRESETS.len()).map(MenuItem::Mute));
             }
+        }
+        if let Scope::Channel { space, .. } = scope
+            && n.mute(&Scope::Space(space.clone()), utc).is_some()
+        {
+            items.push(MenuItem::Note("Muted with the space".into(), false));
         }
         if !n.ready() {
             items.push(match n.load_error() {
@@ -600,25 +651,27 @@ impl Live {
                 None => MenuItem::Note("Loading\u{2026}".into(), false),
             });
         }
-        if let Some(e) = n.error(&scope) {
+        if let Some(e) = n.error(scope) {
             items.push(MenuItem::Note(e.to_owned(), true));
         }
         (enabled, items)
     }
 
-    /// A choice in a DM's options menu, applied at once and saved.
-    pub fn direct_notify(&mut self, id: &str, item: &crate::directs::MenuItem) {
+    /// A choice in a notification menu, applied at once and saved.
+    pub fn menu_choose(&mut self, scope: &Scope, item: &crate::directs::MenuItem) {
         use crate::directs::MenuItem;
         use caper_client::notifications::{MUTE_PRESETS, mute_value};
         let change = match item {
             MenuItem::Toggle(on) => Change::Level(on.then_some(core::NotificationLevel::Nothing)),
+            MenuItem::Level(choice, ..) => Change::Level(*choice),
+            MenuItem::Voice(value, _) => Change::VoiceStarted(*value),
             MenuItem::Mute(k) => {
                 Change::Mute(Some(mute_value(MUTE_PRESETS[*k].1, chrono::Utc::now())))
             }
-            MenuItem::Unmute => Change::Mute(None),
-            MenuItem::MuteHeading | MenuItem::Note(..) => return,
+            MenuItem::Unmute(_) => Change::Mute(None),
+            _ => return,
         };
-        self.change_notifications(Scope::Direct(id.to_owned()), change);
+        self.change_notifications(scope.clone(), change);
     }
 
     /// Who can start a DM with you: shown at once, reverted if the save
@@ -848,6 +901,13 @@ impl Live {
         // Blocked people's DMs show the blocked bar; muted ones their bell.
         self.load_blocks();
         self.load_notifications();
+        // Mentions and DMs toast while the window isn't showing them.
+        if let Some(token) = self.token.clone() {
+            self.worker.send(Command::StartNotifications {
+                epoch: self.generation,
+                token,
+            });
+        }
         self.spaces = Some(spaces);
         self.navigate(Some(space), None);
     }
@@ -1929,6 +1989,7 @@ impl Live {
     /// Reads the account's unread state again (the badges); while a visit
     /// waits for its snapshot, this is that snapshot too.
     pub fn refresh_unread(&mut self) {
+        self.unread_due = None;
         self.check_klipy();
         self.load_directs();
         let Some(token) = self.token.clone() else {
@@ -2015,6 +2076,14 @@ impl Live {
 
     /// Handles the worker's pending events; returns what the UI must show.
     pub fn drain(&mut self) -> Vec<Update> {
+        // A notification's unread change, once its second has passed (the
+        // window's timer rounds to whole milliseconds).
+        if self
+            .unread_due
+            .is_some_and(|due| due <= Instant::now() + Duration::from_millis(15))
+        {
+            self.refresh_unread();
+        }
         let events: Vec<Event> = self.worker.events.try_iter().collect();
         let mut out = std::mem::take(&mut self.queued);
         for event in events {
@@ -2746,8 +2815,43 @@ impl Live {
                 }
                 out.push(Update::Media);
             }
-            // Everything else (reactions, edits, threads, voice, unread
-            // state, notifications...) is not shown by this client yet.
+            // A clicked toast opens its conversation, as in egui. This
+            // client has no feedback-team visits, so every conversation
+            // counts as known.
+            Event::OpenNotification { epoch, alert }
+                if epoch == current && self.token.is_some() =>
+            {
+                use caper_client::os_notifications::Route;
+                match alert.route(false, true) {
+                    Some(Route::Direct(id)) => {
+                        // A new DM may arrive before the DM list.
+                        self.open_direct(id);
+                        self.load_directs();
+                    }
+                    Some(Route::Channel { space, channel }) => {
+                        self.navigate(Some(space), Some(channel));
+                    }
+                    Some(Route::Invitation { .. }) => out.push(Update::Warning(
+                        "Invitations can't be answered in this app yet.".into(),
+                    )),
+                    Some(Route::Visit(_)) | None => {}
+                }
+                out.push(Update::Notified);
+            }
+            // Unread state changed: the badges are read again a second
+            // later, once for a burst.
+            Event::NotificationActivity { epoch } if epoch == current => {
+                if self.unread_due.is_none() {
+                    let wait = Duration::from_secs(1);
+                    self.unread_due = Some(Instant::now() + wait);
+                    self.host.wake_after(wait);
+                }
+            }
+            Event::NotificationError { epoch, error } if epoch == current => {
+                out.push(Update::Warning(error));
+            }
+            // Everything else (reactions, edits, threads, voice...) is not
+            // shown by this client yet.
             _ => {}
         }
     }
