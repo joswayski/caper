@@ -15,4 +15,7 @@ internal object CaperMobile {
 
     /** `[start, end, scheme]` per link: scheme 8 is `https://`, 7 `http://`, 0 `www.`. */
     @JvmStatic external fun linkSpans(text: String): IntArray
+
+    /** Whether a display or space name holds a character names may not (shared/names/cases.json). */
+    @JvmStatic external fun nameHasHidden(text: String): Boolean
 }

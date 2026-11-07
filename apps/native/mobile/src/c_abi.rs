@@ -51,6 +51,17 @@ pub unsafe extern "C" fn caper_mobile_link_spans(utf8: *const u8, len: usize) ->
     crate::link_spans(unsafe { text(utf8, len) }, true).into()
 }
 
+/// `crate::names::has_hidden(text)`: whether a display or space name holds a
+/// character names may not.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_name_has_hidden(utf8: *const u8, len: usize) -> bool {
+    // SAFETY: forwarded from this function's contract.
+    crate::names::has_hidden(unsafe { text(utf8, len) })
+}
+
 /// # Safety
 /// `ints` must come from this library and be released only once.
 #[unsafe(no_mangle)]

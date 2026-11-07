@@ -9,6 +9,7 @@ workspace, so mobile builds never compile the desktop client's media stack.
 | --- | --- | --- | --- |
 | Bold/italic formatting | `shared/messages/formatting.rs` | `data/Formatting.kt` | |
 | Links | `shared/messages/links.rs` | `data/Links.kt` | |
+| Name characters | `apps/native/client/src/names.rs` | `model/Names.kt` | |
 
 The host code keeps its own types and editing helpers and calls Rust for the
 parse. Results are flat `i32` arrays of offsets into the caller's string
@@ -23,8 +24,8 @@ through a second encoding; `src/lib.rs` documents each layout.
   armeabi-v7a, x86 and x86_64 (16 KiB-aligned on 64-bit ABIs) and builds the
   library for the host so JVM unit tests run the same code.
 
-Each client's tests run the shared case files (`shared/messages/*-cases.json`)
-through its bridge. Here:
+Each client's tests run the shared case files (`shared/messages/*-cases.json`,
+`shared/names/cases.json`) through its bridge. Here:
 
 ```sh
 cargo fmt -- --check

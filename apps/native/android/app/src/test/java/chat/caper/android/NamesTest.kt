@@ -1,26 +1,25 @@
 package chat.caper.android
 
 import chat.caper.android.model.hasHiddenNameCharacters
-import org.junit.Assert.assertFalse
+import java.io.File
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The same cases as apps/api/src/names.rs. */
+/** Every client runs these same cases; see shared/names/cases.json. */
 class NamesTest {
-    @Test fun `names keep visible text emoji and joined scripts`() {
-        listOf(
-            "Café Society", "José 🌱", "مرحبا بالعالم", "👨‍👩‍👧‍👦 family", "👩🏽‍💻", "❤️‍🔥", "🏳️‍🌈", "🏳️‍⚧️", "1️⃣", "☺︎ text style",
-            "🏴󠁧󠁢󠁥󠁮󠁧󠁿 England",
-            "می‌خواهم", "क्‍ष", "葛󠄀城", "Screenshot at 10.00.00 AM",
-        ).forEach { assertFalse(it, hasHiddenNameCharacters(it)) }
-    }
-
-    @Test fun `names reject invisible and text-direction characters`() {
-        listOf(
-            "a\u0000b", "admin‮nimda", "‪x‬", "⁦x⁩", "a​b", "‎left", "‏right",
-            "؜x", "a⁠b", "﻿bom", "soft­hyphen", "a͏b", "ᅟ", "ㅤ", "ﾠ", "⠀",
-            "a᠎b", "hidden󠁁󠁂", "️", "a ️", "a️️", "‍a", "a‍",
-            "a‍‍b", "a ‍b", "a‍ b", "🏴󠁧󠁢", "🏴󠁿", "x󠁧󠁿",
-        ).forEach { assertTrue(it, hasHiddenNameCharacters(it)) }
+    @Test fun `names follow the shared visible and hidden cases`() {
+        val file = generateSequence(File("").absoluteFile) { it.parentFile }
+            .map { File(it, "shared/names/cases.json") }.first { it.isFile }
+        val cases = Json.parseToJsonElement(file.readText()).jsonObject
+        for ((key, hidden) in listOf("visible" to false, "hidden" to true)) {
+            val names = cases.getValue(key).jsonArray.map { it.jsonPrimitive.content }
+            assertTrue(names.size > 10)
+            names.forEach { assertEquals(it, hidden, hasHiddenNameCharacters(it)) }
+        }
     }
 }

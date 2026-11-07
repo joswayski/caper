@@ -4,6 +4,7 @@
 #ifndef CAPER_MOBILE_H
 #define CAPER_MOBILE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -19,5 +20,7 @@ CaperMobileInts caper_mobile_format_spans(const uint8_t *utf8, size_t len);
 // (8 https://, 7 http://, 0 www.).
 CaperMobileInts caper_mobile_link_spans(const uint8_t *utf8, size_t len);
 void caper_mobile_ints_free(CaperMobileInts ints);
+// Whether a display or space name holds a character names may not.
+bool caper_mobile_name_has_hidden(const uint8_t *utf8, size_t len);
 
 #endif

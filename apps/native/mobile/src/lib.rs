@@ -15,6 +15,9 @@
 pub mod formatting;
 #[path = "../../../../shared/messages/links.rs"]
 pub mod links;
+/// The name-character rule, as the desktop clients compile it.
+#[path = "../../client/src/names.rs"]
+pub mod names;
 
 mod c_abi;
 #[cfg(feature = "jni")]
@@ -193,6 +196,20 @@ mod tests {
                     })
                     .collect();
                 assert_eq!(actual, expected, "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn names_follow_the_shared_cases() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../shared/names/cases.json")).unwrap();
+        for (key, hidden) in [("visible", false), ("hidden", true)] {
+            let names = cases[key].as_array().unwrap();
+            assert!(names.len() > 10);
+            for name in names {
+                let name = name.as_str().unwrap();
+                assert_eq!(names::has_hidden(name), hidden, "{name:?}");
             }
         }
     }
