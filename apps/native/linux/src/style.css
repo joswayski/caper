@@ -294,7 +294,7 @@ listview.messages > row:hover {
 }
 
 .message {
-  padding: 10px 18px;
+  padding: 10px 18px 17px;
 }
 
 .message.grouped {
@@ -307,8 +307,8 @@ listview.messages > row:hover {
 .message.mentioned > .body,
 .message.replied > .body,
 .message.focused > .body {
-  margin: 0 -18px -10px;
-  padding: 0 18px 10px;
+  margin: 0 -18px -17px;
+  padding: 0 18px 17px;
   box-shadow: inset 2px 0 @caper_terracotta;
 }
 
@@ -347,8 +347,10 @@ listview.messages > row:hover {
   opacity: 0.6;
 }
 
+/* As desktop's timeline: 8px between rows, so the day sits close under
+   the message before it and further above its own. */
 .day-row {
-  margin: 12px 18px 6px;
+  margin: 2px 18px 22px;
 }
 
 .day-row separator {
@@ -486,12 +488,13 @@ button.replies {
   margin-left: -6px;
 }
 
-/* The row toolbar appears while the row is hovered or focused. */
+/* The row toolbar appears while the row is hovered or focused: as desktop,
+   centered on the author line, 15px from the conversation's edge. */
 .tools {
   background: @caper_surface;
   border: 1px solid @caper_border;
   border-radius: 8px;
-  margin: 0 16px;
+  margin: -8px -3px 0 0;
   padding: 2px;
   opacity: 0;
 }
@@ -1668,7 +1671,7 @@ checkbutton.broadcast {
 
 /* "Beginning of conversation", above the oldest message. */
 .history-start {
-  margin: 12px 0 4px 0;
+  margin: 12px 0 24px 0;
   color: @caper_text_muted;
   font-size: 11.5px;
 }

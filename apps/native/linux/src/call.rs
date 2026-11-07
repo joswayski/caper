@@ -104,7 +104,8 @@ impl App {
     }
 
     /// Which channels' rosters a new gateway connection watches: the open
-    /// space's joined channels, while the open channel is joined.
+    /// space's joined channels, while the open channel or DM is joined (as
+    /// desktop, so a DM keeps the sidebar's live rooms).
     pub(super) fn media_watch(&self, state: &mut State) -> MediaWatch {
         let calls = &mut state.calls;
         calls.generation += 1;
@@ -114,7 +115,7 @@ impl App {
         let channels = state
             .detail
             .as_ref()
-            .filter(|_| state.direct.is_none() && state.token.is_some() && state.joined())
+            .filter(|_| state.token.is_some() && state.joined())
             .map_or_else(Vec::new, |detail| {
                 detail
                     .channels

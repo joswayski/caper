@@ -4733,12 +4733,21 @@ impl App {
         // A visit is titled "#plans · Studio", or "Alice & Bob" for a DM.
         let visit = state.visiting();
         let direct = state.direct.is_some() && visit.is_none_or(|visit| visit.direct);
+        let person = state
+            .direct
+            .as_ref()
+            .filter(|_| visit.is_none())
+            .and_then(|id| state.directs.iter().find(|item| &item.id == id));
+        if let Some(person) = person {
+            ui.channel_avatar.set(&self.images, &peer_avatar(person));
+        }
+        ui.channel_avatar.root.set_visible(person.is_some());
         ui.channel_title.set_label(&if let Some(visit) = visit {
             visit.title.clone()
         } else if state.channel_name.is_empty() {
             String::new()
         } else if direct {
-            format!("@ {}", state.channel_name)
+            state.channel_name.clone()
         } else {
             format!("# {}", state.channel_name)
         });
@@ -4814,7 +4823,7 @@ impl App {
         });
         let prompt = match &state.session_error {
             Some(error) => error.clone(),
-            None if direct => format!("Message @{}", state.channel_name),
+            None if direct => format!("Message {}", state.channel_name),
             None => format!("Message #{}", state.channel_name),
         };
         ui.composer.placeholder.set_label(&prompt);

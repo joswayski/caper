@@ -431,6 +431,8 @@ pub struct Ui {
     pub feedback: gtk::ListBox,
     pub feedback_waiting: gtk::Label,
     pub feedback_page: gtk::Box,
+    /// A DM's person, before its name (as desktop).
+    pub channel_avatar: AvatarView,
     pub channel_title: gtk::Label,
     pub status: gtk::Label,
     pub pins_button: gtk::Button,
@@ -848,6 +850,10 @@ impl Ui {
         browse.set_valign(gtk::Align::Center);
         browse.set_visible(false);
         header.append(&browse);
+        let channel_avatar = AvatarView::new(28, false);
+        channel_avatar.root.set_valign(gtk::Align::Center);
+        channel_avatar.root.set_visible(false);
+        header.append(&channel_avatar.root);
         let channel_title = label("", &["channel-title"]);
         header.append(&channel_title);
         let status = label("", &["muted", "status"]);
@@ -1194,6 +1200,7 @@ impl Ui {
             feedback,
             feedback_waiting,
             feedback_page,
+            channel_avatar,
             channel_title,
             status,
             pins_button,
