@@ -5,6 +5,11 @@ desktop clients and the API compile, while their UI stays native (Jetpack
 Compose; SwiftUI, UIKit and AppKit through CaperCore). It has its own
 workspace, so mobile builds never compile the desktop client's media stack.
 
+| Module | Sources | Android | Apple |
+| --- | --- | --- | --- |
+| Bold/italic formatting | `shared/messages/formatting.rs` | `data/Formatting.kt` | |
+| Links | `shared/messages/links.rs` | `data/Links.kt` | |
+
 The host code keeps its own types and editing helpers and calls Rust for the
 parse. Results are flat `i32` arrays of offsets into the caller's string
 (UTF-16 code units, plus UTF-8 bytes for Swift), so text never round-trips
