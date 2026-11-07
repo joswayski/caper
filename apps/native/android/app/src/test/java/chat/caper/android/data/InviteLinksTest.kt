@@ -3,8 +3,14 @@ package chat.caper.android.data
 import chat.caper.android.model.InviteLink
 import chat.caper.android.model.InviteLinkChannel
 import chat.caper.android.model.InvitePerson
+import java.io.File
 import java.time.Instant
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -19,43 +25,16 @@ class InviteLinksTest {
 
     @After fun close() { server.close() }
 
-    @Test fun `codes come from links on any host, scheme-less links and bare codes`() {
-        assertEquals("aB3dE5fG7h", inviteCode("https://caper.chat/invite/aB3dE5fG7h"))
-        assertEquals("aB3dE5fG7h", inviteCode("  https://caper.chat/invite/aB3dE5fG7h/  "))
-        assertEquals("aB3dE5fG7h", inviteCode("https://caper.chat/invite/aB3dE5fG7h?utm=chat"))
-        assertEquals("aB3dE5fG7h", inviteCode("https://caper.chat/invite/aB3dE5fG7h/?ref=1#top"))
-        assertEquals("aB3dE5fG7h", inviteCode("http://localhost:3000/invite/aB3dE5fG7h"))
-        assertEquals("aB3dE5fG7h", inviteCode("https://staging.example.com/invite/aB3dE5fG7h"))
-        assertEquals("aB3dE5fG7h", inviteCode("caper.chat/invite/aB3dE5fG7h"))
-        assertEquals("aB3dE5fG7h", inviteCode("aB3dE5fG7h"))
-        assertEquals("0123456789", inviteCode("\n0123456789\t"))
-    }
-
-    @Test fun `anything else is not an invite`() {
-        listOf(
-            "", "   ", "aB3dE5fG7", "aB3dE5fG7hX", "aB3dE5fG7-", "aB3 dE5fG7h",
-            "https://caper.chat/invite/aB3dE5fG7", "https://caper.chat/invite/aB3dE5fG7hX",
-            "https://caper.chat/invite/", "https://caper.chat/invites/aB3dE5fG7h", "https://caper.chat/aB3dE5fG7h",
-            "https://caper.chat/invite/aB3dE5fG7h/extra", "/invite/aB3dE5fG7h", "invite/aB3dE5fG7h",
-            "https://caper.chat/invite/aB3dE5fG7h trailing",
-        ).forEach { assertNull(it, inviteCode(it)) }
-    }
-
-    @Test fun `codes come from the app's caper scheme`() {
-        assertEquals("aB3dE5fG7h", inviteCode("caper://invite/aB3dE5fG7h"))
-        assertEquals("aB3dE5fG7h", inviteCode("caper://invite/aB3dE5fG7h/"))
-        assertEquals("aB3dE5fG7h", inviteCode("caper://invite/aB3dE5fG7h?from=web"))
-        assertEquals("aB3dE5fG7h", inviteCode("caper://invite/aB3dE5fG7h/#top"))
-        assertEquals("aB3dE5fG7h", inviteCode("CAPER://Invite/aB3dE5fG7h"))
-        assertEquals("aB3dE5fG7h", inviteCode("  caper://invite/aB3dE5fG7h\n"))
-    }
-
-    @Test fun `other caper scheme links are not invites`() {
-        listOf(
-            "caper://invite/", "caper://invite/aB3dE5fG7", "caper://invite/aB3dE5fG7hX", "caper://invite/aB3dE5f-7h",
-            "caper://invites/aB3dE5fG7h", "caper://join/aB3dE5fG7h", "caper:invite/aB3dE5fG7h", "caper:///invite/aB3dE5fG7h",
-            "caper://invite/aB3dE5fG7h/extra", "caper://invite/aB3dE5fG7h trailing", "other://invite/aB3dE5fG7h",
-        ).forEach { assertNull(it, inviteCode(it)) }
+    /** Generated from web (shared/invites/invite-cases.json); only the code comes back, never the host. */
+    @Test fun `invite codes follow the shared cases`() {
+        val file = generateSequence(File("").absoluteFile) { it.parentFile }
+            .map { File(it, "shared/invites/invite-cases.json") }.first { it.isFile }
+        val cases = Json.parseToJsonElement(file.readText()).jsonObject.getValue("cases").jsonArray
+        assertTrue(cases.size > 50)
+        cases.forEach {
+            val input = it.jsonObject.getValue("input").jsonPrimitive.content
+            assertEquals(input, it.jsonObject.getValue("code").jsonPrimitive.contentOrNull, inviteCode(input))
+        }
     }
 
     @Test fun `links use the API origin`() {

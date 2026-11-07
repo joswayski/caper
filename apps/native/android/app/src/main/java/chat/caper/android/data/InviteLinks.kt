@@ -10,24 +10,16 @@ import kotlin.math.roundToLong
 const val INVALID_INVITE_LINK = "This invite link is invalid or has expired."
 
 private val bareInviteCode = Regex("^[A-Za-z0-9]{10}$")
-/** `[scheme://]host/invite/<code>[/][?query][#fragment]`, on any host. */
-private val inviteUrlPattern = Regex("^(?:[A-Za-z][A-Za-z0-9+.-]*://)?[^/?#\\s]+/invite/([A-Za-z0-9]{10})/?(?:[?#]\\S*)?$")
-/** The app's own scheme, `caper://invite/<code>[/][?query][#fragment]` (scheme and host in any case). */
-private val appInvitePattern = Regex("^(?i:caper)://(?i:invite)/([A-Za-z0-9]{10})/?(?:[?#]\\S*)?$")
-
 internal fun isInviteCode(value: String): Boolean = bareInviteCode.matches(value)
 
 /**
- * The invite code in what someone pasted or opened: a full link on any host
- * (`https://caper.chat/invite/<code>`, with an optional trailing slash, query or fragment), the
- * same without a scheme, the app link `caper://invite/<code>`, or a bare 10-character code. Null
- * when it is none of those.
+ * Web's inviteCode, through shared Rust (shared/invites/code.rs): the code in what someone pasted
+ * or opened, from a link on any host, the same without a scheme, `caper://invite/<code>`, or a bare
+ * 10-character code. Null when it is none of those. Only the code is used: joins go to the
+ * configured API origin, never the link's host.
  */
-fun inviteCode(input: String): String? {
-    val text = input.trim()
-    if (bareInviteCode.matches(text)) return text
-    return (inviteUrlPattern.matchEntire(text) ?: appInvitePattern.matchEntire(text))?.groupValues?.get(1)
-}
+fun inviteCode(input: String): String? =
+    CaperMobile.inviteCode(input).takeIf { it.isNotEmpty() }?.let { code -> String(CharArray(code.size) { code[it].toChar() }) }
 
 /** `<origin>/invite/<code>`, for the configured API origin. */
 fun inviteLinkUrl(origin: String, code: String): String = "${origin.trimEnd('/')}/invite/$code"
