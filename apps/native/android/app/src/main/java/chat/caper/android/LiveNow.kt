@@ -436,7 +436,7 @@ private fun Modifier.keepsTaps(): Modifier = pointerInput(Unit) { detectTapGestu
     Column(
         modifier.then(if (rowHeading) Modifier else Modifier.entrance(MOTION_BASE, dy = 4.dp)).fillMaxWidth().clip(CardShape)
             .background(LiveRoomSurface).border(1.dp, LiveRoomBorder, CardShape)
-            .clickable(onClickLabel = "Open chat", onClick = open).padding(bottom = 8.dp),
+            .clickable(onClickLabel = "Open chat", role = Role.Button, onClick = open).padding(bottom = 8.dp),
     ) {
         heading()
         Row(
@@ -547,7 +547,7 @@ private class VoiceListRequest(val openId: String?)
     Box(modifier.then(if (rowHeading) Modifier else Modifier.entrance(MOTION_BASE, dy = 4.dp)).fillMaxWidth().onSizeChanged { cardSize = it }) {
         Column(
             Modifier.fillMaxWidth().clip(CardShape).background(LiveCallSurface).border(1.dp, LiveCallBorder, CardShape)
-                .clickable(onClickLabel = "Open chat", onClick = open).padding(bottom = 12.dp),
+                .clickable(onClickLabel = "Open chat", role = Role.Button, onClick = open).padding(bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             heading()

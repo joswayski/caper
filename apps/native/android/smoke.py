@@ -440,6 +440,22 @@ def main() -> None:
     tap(description="Hide member list")
     assert find(hierarchy(), text="Members") is None
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
+    # Screen readers hear the open space and channel as the selected buttons (web: aria-current).
+    rows = {
+        node.get("text"): node
+        for node in nodes(desktop)
+        if node.get("clickable") == "true" and node.get("text") in ("general", "planning")
+    }
+    assert set(rows) == {"general", "planning"}, f"Channel rows must be single buttons: {sorted(rows)}"
+    assert all(node.get("class") == "android.widget.Button" for node in rows.values()), "Channel rows are buttons"
+    assert rows["general"].get("selected") == "true", "The open channel is selected"
+    assert rows["planning"].get("selected") == "false", "Other channels are not selected"
+    tile = find(desktop, description="Fixture Studio")
+    assert tile is not None and tile.get("class") == "android.widget.Button", "Space tiles are buttons"
+    assert tile.get("selected") == "true", "The open space's tile is selected"
+    for label in ("Create space", "Join with invite link"):
+        rail = find(desktop, description=label)
+        assert rail is not None and rail.get("class") == "android.widget.Button", f"{label} is a button"
     general = find(desktop, text="general")
     menu = find(desktop, description="general channel menu")
     assert general is not None and menu is not None, "General must expose its channel menu"

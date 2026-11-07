@@ -764,8 +764,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 }
                             }
                             .background(Surface, shape)
-                            .alpha(if (muted) MUTED_ALPHA else 1f).clip(shape).hoverable(interaction).clickable(interactionSource = interaction, indication = null) { viewModel.selectSpace(space.id) }
-                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread messages" else null, mentionLabel, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
+                            .alpha(if (muted) MUTED_ALPHA else 1f).clip(shape).hoverable(interaction).clickable(interactionSource = interaction, indication = null, role = Role.Button) { viewModel.selectSpace(space.id) }
+                            .semantics { contentDescription = space.name; if (selected) this.selected = true; stateDescription = listOfNotNull(if (unread) "Unread messages" else null, mentionLabel, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
                         color = Surface, shape = MaterialTheme.shapes.medium,
                     ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, TextMuted) }
                     if (muted) Box(Modifier.align(Alignment.TopStart).offset(x = (-3).dp, y = (-3).dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
@@ -781,7 +781,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         state.invitations.forEach { invitation ->
             Surface(
                 // The same 48dp tile (and touch target) as the spaces above it.
-                Modifier.size(48.dp).clip(MaterialTheme.shapes.medium).clickable { show(Overlay.Invitation(invitation)) }.semantics {
+                Modifier.size(48.dp).clip(MaterialTheme.shapes.medium).clickable(role = Role.Button) { show(Overlay.Invitation(invitation)) }.semantics {
                     contentDescription = "Invitation to ${invitation.name}"
                 },
                 color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, TerracottaBorder),
@@ -792,7 +792,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             state.spaces.count { !it.demo } < limits.totalSpaces
         val spaceEnabled = state.account == null || canCreateSpace
         Surface(
-            Modifier.size(48.dp).clip(MaterialTheme.shapes.medium).clickable(enabled = spaceEnabled) { if (state.account == null) viewModel.showLogin() else show(Overlay.CreateSpace) }.semantics {
+            Modifier.size(48.dp).clip(MaterialTheme.shapes.medium).clickable(enabled = spaceEnabled, role = Role.Button) { if (state.account == null) viewModel.showLogin() else show(Overlay.CreateSpace) }.semantics {
                 contentDescription = "Create space"
                 // Web's tooltip; Android has no hover, so it is the state description.
                 if (!spaceEnabled) stateDescription = "Space limit reached (${limits?.ownedSpaces ?: 20} owned, ${limits?.totalSpaces ?: 100} total)"
@@ -801,7 +801,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         ) { Box(contentAlignment = Alignment.Center) { Icon(painterResource(R.drawable.lucide_plus), null, tint = if (spaceEnabled) TerracottaBright else TerracottaBright.copy(alpha = 0.4f)) } }
         // Joining by link stays open at the owned-space limit; the server enforces the membership limit.
         if (state.account != null) Surface(
-            Modifier.size(48.dp).clip(MaterialTheme.shapes.medium).clickable { show(Overlay.JoinInvite) }.semantics { contentDescription = "Join with invite link" },
+            Modifier.size(48.dp).clip(MaterialTheme.shapes.medium).clickable(role = Role.Button) { show(Overlay.JoinInvite) }.semantics { contentDescription = "Join with invite link" },
             color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, Border),
         ) { Box(contentAlignment = Alignment.Center) { Icon(painterResource(R.drawable.lucide_link), null, Modifier.size(20.dp), tint = TextMuted) } }
     }
@@ -860,8 +860,9 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         ) {
             // The press starts at the row's edge; only the content is inset.
             Row(Modifier.weight(1f).fillMaxHeight().alpha(if (channelMuted) MUTED_ALPHA else 1f)
-                .then(if (kind == RowVoice.QUIET) Modifier.clickable(onClick = openChannel) else Modifier).padding(start = 9.dp)
-                .semantics { if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
+                .then(if (kind == RowVoice.QUIET) Modifier.clickable(role = Role.Button, onClick = openChannel) else Modifier).padding(start = 9.dp)
+                // In a voice card this merges into the card, which opens the chat instead.
+                .semantics { if (selected) this.selected = true; if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
                 Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (unread) Box(Modifier.padding(horizontal = 6.dp).size(6.dp).background(Text, CircleShape).semantics { contentDescription = "Unread activity" })
@@ -1196,7 +1197,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                 val selfSelected = selfDirect != null && selfDirect.id == state.selectedDirectId
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                     .background(if (selfSelected) TerracottaWash else Color.Transparent)
-                    .clickable(enabled = !state.busy) { viewModel.openSelfDirect(); closeNavigation?.invoke() }.padding(horizontal = 9.dp),
+                    .clickable(enabled = !state.busy, role = Role.Button) { viewModel.openSelfDirect(); closeNavigation?.invoke() }
+                    .semantics { if (selfSelected) selected = true }.padding(horizontal = 9.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Avatar(state.account.displayName ?: state.account.username ?: "You", 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = state.account.avatarId,
                         avatarAsset = state.account.avatarAsset, avatarUrl = state.account.avatarUrl)
@@ -1220,9 +1222,9 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         // Options: the ⋯ button, or a long press like message actions.
                         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                             .background(if (selected) TerracottaWash else Color.Transparent)
-                            .combinedClickable(onLongClick = openOptions, onLongClickLabel = "Options for ${direct.peer.displayName}") {
+                            .combinedClickable(role = Role.Button, onLongClick = openOptions, onLongClickLabel = "Options for ${direct.peer.displayName}") {
                                 viewModel.selectDirect(direct); closeNavigation?.invoke()
-                            }.padding(start = 9.dp),
+                            }.semantics { if (selected) this.selected = true }.padding(start = 9.dp),
                             verticalAlignment = Alignment.CenterVertically) {
                             Row(Modifier.weight(1f).alpha(if (muted) MUTED_ALPHA else 1f).semantics { if (muted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
                                 Avatar(direct.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = direct.peer.avatarId,
@@ -1250,7 +1252,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         NotificationSaveError(state.notificationErrors[directKey(direct.id)], Modifier.padding(horizontal = 25.dp)) { viewModel.dismissNotificationError(directKey(direct.id)) }
                     }
                 }
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).clickable {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).clickable(role = Role.Button) {
                     show(Overlay.StartDirect)
                 }.padding(horizontal = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(17.dp), tint = TextMuted)
@@ -1473,7 +1475,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     Surface(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
         Row(Modifier.height(56.dp).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().clip(MaterialTheme.shapes.small)
-                .clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
+                .clickable(role = Role.Button) { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
                 .semantics { contentDescription = if (state.account == null) "Sign in to edit your profile" else "Edit profile for ${state.account.displayName ?: "Guest"}" }
                 .padding(horizontal = 4.dp), contentAlignment = Alignment.CenterStart) {
                 // Web: where the controls would leave the name a letter or two ("F…"), the
@@ -3842,7 +3844,9 @@ internal fun openExternalLink(uriHandler: UriHandler, href: String) {
     var shown by remember { mutableStateOf("") }
     LaunchedEffect(label) { if (label.isNotEmpty()) shown = label else { kotlinx.coroutines.delay(180); shown = "" } }
     val alpha by androidx.compose.animation.core.animateFloatAsState(if (label.isNotEmpty()) 1f else 0f, androidx.compose.animation.core.tween(180), label = "typing")
-    Row(Modifier.fillMaxWidth().height(20.dp).graphicsLayer { this.alpha = alpha }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+    // Web's role="status": screen readers hear who starts typing.
+    Row(Modifier.fillMaxWidth().height(20.dp).graphicsLayer { this.alpha = alpha }.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
         if (shown.isNotEmpty()) {
             TypingDots()
             Text(shown, color = TextMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
