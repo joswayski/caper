@@ -68,6 +68,75 @@ import XCTest
         XCTAssertEqual(body.string, value.content.text)
     }
 
+    func testReactionUpdatesKeepFocusSelectionAndFailureControlsInsideTheRow() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 400),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 420, height: 400))
+        window.contentView = timeline
+        var value = message(1)
+        value.reactions = [MessageReaction(emoji: "👍", authorIds: ["peer"])]
+        func update(allowed: Bool = true, failed: Bool = false) {
+            timeline.update([value], conversationID: "channel", viewerID: "self", canInteract: allowed,
+                reactionErrors: failed ? [value.id: "Couldn’t save reaction. Retry."] : [:])
+            timeline.layoutSubtreeIfNeeded()
+        }
+        func visible(_ view: NSView) -> [NSView] {
+            view.isHiddenOrHasHiddenAncestor ? [] : [view] + view.subviews.flatMap(visible)
+        }
+        func button(_ id: String) throws -> NSButton {
+            try XCTUnwrap(visible(timeline).compactMap { $0 as? NSButton }.first { $0.accessibilityIdentifier() == id })
+        }
+        update()
+        let body = try XCTUnwrap(bodies(in: timeline).first)
+        let row = try XCTUnwrap(body.superview)
+        let emoji = (body.string as NSString).range(of: "👩🏽‍💻")
+        body.setSelectedRange(emoji)
+        let quick = try button("quick-reaction-message-1-👍")
+        XCTAssertTrue(window.makeFirstResponder(quick))
+        value.reactions = [MessageReaction(emoji: "👍", authorIds: ["peer", "self"])]
+        update()
+        XCTAssertTrue(window.firstResponder === quick, "An optimistic reaction must not remove the focused quick action")
+        XCTAssertEqual(quick.state, .on)
+        XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+        let chip = try button("reaction-message-1-👍")
+        XCTAssertEqual(chip.title, "👍 2")
+        XCTAssertTrue(window.makeFirstResponder(chip))
+        value.reactions = [MessageReaction(emoji: "👍", authorIds: ["peer", "self", "other"])]
+        update()
+        XCTAssertTrue(window.firstResponder === chip, "Incoming counts must not replace a focused reaction chip")
+        XCTAssertEqual(chip.title, "👍 3")
+        let height = row.frame.height
+        update(failed: true)
+        let retry = try button("reaction-retry-message-1")
+        let dismiss = try button("reaction-dismiss-message-1")
+        XCTAssertGreaterThan(row.frame.height, height, "Error-only changes must invalidate the row measurement")
+        XCTAssertGreaterThan(retry.frame.minY, chip.frame.maxY)
+        for control in [retry, dismiss] { XCTAssertTrue(row.bounds.contains(control.frame)) }
+        var actions: [String] = []
+        timeline.messageAction = { message, action, _ in
+            XCTAssertEqual(message.id, value.id)
+            switch action {
+            case .retryReaction: actions.append("retry")
+            case .dismissReaction: actions.append("dismiss")
+            default: XCTFail("Wrong action for failure recovery")
+            }
+        }
+        retry.performClick(nil); dismiss.performClick(nil)
+        XCTAssertEqual(actions, ["retry", "dismiss"])
+        update(allowed: false, failed: true)
+        XCTAssertFalse(retry.isEnabled)
+        XCTAssertTrue(dismiss.isEnabled, "Read-only users can put an error away without mutating the server")
+        XCTAssertFalse(try button("add-reaction-message-1").isEnabled)
+        XCTAssertFalse(chip.isEnabled)
+        update()
+        XCTAssertTrue(retry.isHidden); XCTAssertTrue(dismiss.isHidden)
+        XCTAssertEqual(row.frame.height, height, accuracy: 0.5)
+        XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+    }
+
     func testBlockedRunsRevealIndependentlyWithoutRealizingTheirWholeHistory() throws {
         let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         let history = [message(0, author: "blocked"), message(1, author: "blocked"),
@@ -77,13 +146,17 @@ import XCTest
             try XCTUnwrap(timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? NSButton } }
                 .first { $0.accessibilityLabel() == label })
         }
-        timeline.update(history, conversationID: "channel", viewerID: "self", blocked: ["blocked", "self"])
+        timeline.update(history, conversationID: "channel", viewerID: "self", blocked: ["blocked", "self"], canInteract: true)
         timeline.layoutSubtreeIfNeeded()
         XCTAssertEqual(visible(), [history[2].content.text], "Blocked content is absent; your own message never collapses")
         try toggle("Show 2 blocked messages").performClick(nil)
         XCTAssertTrue(visible().contains(history[0].content.text))
         XCTAssertTrue(visible().contains(history[1].content.text))
         XCTAssertFalse(visible().contains(history[3].content.text), "Showing one run must not reveal another")
+        let revealed = try XCTUnwrap(bodies(in: timeline).first { $0.string == history[0].content.text })
+        let addReaction = try XCTUnwrap(revealed.superview?.subviews.flatMap(\.subviews).compactMap { $0 as? NSButton }
+            .first { $0.accessibilityIdentifier() == "add-reaction-message-0" })
+        XCTAssertTrue(addReaction.isEnabled, "Revealing a blocked run must preserve the conversation's interaction permission")
         try toggle("Hide 2 blocked messages").performClick(nil)
         XCTAssertEqual(visible(), [history[2].content.text])
         timeline.update(history, conversationID: "channel", viewerID: "self")
@@ -304,6 +377,13 @@ import XCTest
         let row = try XCTUnwrap(body.superview)
         let author = try XCTUnwrap(row.subviews.compactMap { $0 as? NSTextField }.first { $0.stringValue == "maya" })
         XCTAssertTrue(author.isHidden, "Consecutive messages from the same author are grouped")
+        last.revision = 2
+        timeline.update([first, previous, last], conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        let history = try XCTUnwrap(row.subviews.compactMap { $0 as? NSButton }
+            .first { $0.accessibilityIdentifier() == "message-history-message-2" })
+        XCTAssertFalse(history.isHidden)
+        XCTAssertGreaterThanOrEqual(body.frame.minY, history.frame.maxY, "A grouped edited marker must not cover the message text")
         timeline.update([first, last], conversationID: "channel")
         timeline.layoutSubtreeIfNeeded()
         XCTAssertFalse(author.isHidden, "Deleting the preceding message reveals the author again")
