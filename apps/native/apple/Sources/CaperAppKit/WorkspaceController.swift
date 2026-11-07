@@ -8,11 +8,13 @@ import CaperCore
     private var threadPane: WorkspaceController?
     private let threadObservation = NativeObservation()
     private var preferredThreadWidth = CGFloat(UserDefaults.standard.object(forKey: "caper.threadPanelWidth") as? Double ?? 340)
-    private lazy var threadDivider = NativeThreadDivider { [weak self] delta in
+    private var threadDragWidth: CGFloat?
+    private lazy var threadDivider = NativePanelResizeHandle("Thread width", identifier: "thread-panel-resize", defaultWidth: 340, minimum: 300, widensToLeft: true) { [weak self] width, commit in
         guard let self else { return }
-        let maximum = min(600, self.view.bounds.width - self.navigationWidth - 300)
-        self.preferredThreadWidth = min(maximum, max(300, self.preferredThreadWidth + delta))
-        UserDefaults.standard.set(Double(self.preferredThreadWidth), forKey: "caper.threadPanelWidth")
+        if commit {
+            self.preferredThreadWidth = width; self.threadDragWidth = nil
+            UserDefaults.standard.set(Double(width), forKey: "caper.threadPanelWidth")
+        } else { self.threadDragWidth = width }
         self.view.needsLayout = true
         self.view.layoutSubtreeIfNeeded()
     }
@@ -439,13 +441,15 @@ import CaperCore
             // at a time; the native channel timeline retains its scroll anchor.
             let available = max(0, width - navigationWidth - (visible && docked ? memberWidth : 0))
             let split = available >= 900
-            let threadWidth: CGFloat = threadPane == nil ? 0 : split ? min(min(600, available - 300), max(300, preferredThreadWidth)) : available
+            if threadPane == nil || !split { threadDragWidth = nil }
+            let maximumThreadWidth = min(600, max(300, available - 300))
+            let threadWidth: CGFloat = threadPane == nil ? 0 : split ? min(maximumThreadWidth, max(300, threadDragWidth ?? preferredThreadWidth)) : available
             stage.isHidden = threadPane != nil && !split
             stage.frame = NSRect(x: navigationWidth, y: 0, width: max(0, available - (split ? threadWidth : 0)), height: height)
             threadPane?.view.frame = NSRect(x: width - threadWidth, y: 0, width: threadWidth, height: height)
             threadDivider.isHidden = threadPane == nil || !split
-            threadDivider.frame = NSRect(x: width - threadWidth - 3, y: 0, width: 6, height: height)
-            threadDivider.setAccessibilityValue("\(Int(threadWidth)) points")
+            threadDivider.frame = NSRect(x: width - threadWidth, y: 0, width: 8, height: height)
+            threadDivider.update(width: threadWidth, maximum: maximumThreadWidth)
             members.frame = NSRect(x: width - memberWidth, y: docked ? 0 : 50, width: memberWidth, height: height - (docked ? 0 : 50))
             members.setVisible(visible)
             membersResize.isHidden = !visible
@@ -856,42 +860,4 @@ import CaperCore
             await model.chat.send(inThread: inThread)
         }
     }
-}
-
-/// The same saved width as the shipping thread panel, with native pointer,
-/// keyboard and accessibility adjustments. Width remains a host concern.
-@MainActor private final class NativeThreadDivider: NativeView {
-    private let resize: (CGFloat) -> Void
-    init(resize: @escaping (CGFloat) -> Void) {
-        self.resize = resize
-        super.init()
-        setAccessibilityElement(true); setAccessibilityRole(.splitter)
-        setAccessibilityLabel("Resize thread"); setAccessibilityIdentifier("thread-divider")
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override var acceptsFirstResponder: Bool { true }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
-    override func draw(_ dirtyRect: NSRect) {
-        NativeStyle.border.setFill()
-        NSRect(x: floor(bounds.midX), y: 0, width: 1, height: bounds.height).fill()
-    }
-    override func mouseDown(with event: NSEvent) {
-        guard let window else { return }
-        window.makeFirstResponder(self)
-        var previous = event.locationInWindow.x
-        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
-            if next.type == .leftMouseUp { break }
-            resize(previous - next.locationInWindow.x)
-            previous = next.locationInWindow.x
-        }
-    }
-    override func keyDown(with event: NSEvent) {
-        switch event.keyCode {
-        case 123: resize(16)
-        case 124: resize(-16)
-        default: super.keyDown(with: event)
-        }
-    }
-    override func accessibilityPerformIncrement() -> Bool { resize(16); return true }
-    override func accessibilityPerformDecrement() -> Bool { resize(-16); return true }
 }

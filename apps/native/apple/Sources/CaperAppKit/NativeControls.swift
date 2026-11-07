@@ -153,14 +153,15 @@ final class NativeButton: NSButton {
 /// the pointer, keyboard adjustments and AX adjustments commit a preference.
 @MainActor final class NativePanelResizeHandle: NativeView {
     private let defaultWidth: CGFloat
+    private let minimum: CGFloat
     private let widensToLeft: Bool
     private let resized: (CGFloat, Bool) -> Void
     private var width: CGFloat
     private var maximum: CGFloat = 440
 
-    init(_ label: String, identifier: String, defaultWidth: CGFloat, widensToLeft: Bool,
+    init(_ label: String, identifier: String, defaultWidth: CGFloat, minimum: CGFloat = 220, widensToLeft: Bool,
          resized: @escaping (CGFloat, Bool) -> Void) {
-        self.defaultWidth = defaultWidth; self.width = defaultWidth
+        self.defaultWidth = defaultWidth; self.width = defaultWidth; self.minimum = minimum
         self.widensToLeft = widensToLeft; self.resized = resized
         super.init()
         setAccessibilityElement(true); setAccessibilityRole(.slider)
@@ -183,11 +184,11 @@ final class NativeButton: NSButton {
     }
 
     func update(width: CGFloat, maximum: CGFloat) {
-        self.maximum = max(220, maximum)
-        let next = min(self.maximum, max(220, width))
+        self.maximum = max(minimum, maximum)
+        let next = min(self.maximum, max(minimum, width))
         let changed = self.width != next
         self.width = next
-        setAccessibilityMinValue(220); setAccessibilityMaxValue(Double(self.maximum))
+        setAccessibilityMinValue(Double(minimum)); setAccessibilityMaxValue(Double(self.maximum))
         setAccessibilityValue("\(Int(next)) pixels")
         if changed { NSAccessibility.post(element: self, notification: .valueChanged) }
     }
@@ -216,7 +217,7 @@ final class NativeButton: NSButton {
         switch event.keyCode {
         case 123: resize(width + (widensToLeft ? 10 : -10))
         case 124: resize(width + (widensToLeft ? -10 : 10))
-        case 115: resize(220)
+        case 115: resize(minimum)
         case 119: resize(maximum)
         default: super.keyDown(with: event)
         }

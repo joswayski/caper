@@ -4,9 +4,9 @@ import XCTest
 
 @MainActor final class MemberPanelTests: XCTestCase {
     func testPanelResizeKeyboardAndAccessibilityRespectDirectionAndLiveBounds() throws {
-        for widensToLeft in [true, false] {
+        for (minimum, maximum, widensToLeft) in [(CGFloat(220), CGFloat(440), true), (220, 440, false), (300, 600, true)] {
             var committed: [CGFloat] = []
-            let handle = NativePanelResizeHandle("Panel width", identifier: "panel-resize", defaultWidth: 280, widensToLeft: widensToLeft) { width, commit in
+            let handle = NativePanelResizeHandle("Panel width", identifier: "panel-resize", defaultWidth: 340, minimum: minimum, widensToLeft: widensToLeft) { width, commit in
                 if commit { committed.append(width) }
             }
             func key(_ code: UInt16) throws {
@@ -15,7 +15,9 @@ import XCTest
                 handle.keyDown(with: event)
             }
             XCTAssertEqual(handle.accessibilityRole(), .slider)
-            handle.update(width: 333, maximum: 440)
+            handle.update(width: 333, maximum: maximum)
+            XCTAssertEqual(handle.accessibilityMinValue() as? Double, Double(minimum))
+            XCTAssertEqual(handle.accessibilityMaxValue() as? Double, Double(maximum))
             XCTAssertTrue(committed.isEmpty, "Window layout must not save the temporarily clamped width")
             try key(123)
             XCTAssertEqual(committed.last, widensToLeft ? 343 : 323)
@@ -26,21 +28,21 @@ import XCTest
             XCTAssertTrue(handle.accessibilityPerformDecrement())
             XCTAssertEqual(committed.last, 333)
             try key(115)
-            XCTAssertEqual(committed.last, 220)
+            XCTAssertEqual(committed.last, minimum)
             try key(119)
-            XCTAssertEqual(committed.last, 440)
-            handle.update(width: 440, maximum: 225.5)
-            XCTAssertEqual(committed.last, 440, "Clamping is a display change, not a new preference")
-            XCTAssertEqual(handle.accessibilityValue() as? String, "225 pixels")
+            XCTAssertEqual(committed.last, maximum)
+            handle.update(width: maximum, maximum: minimum + 5.5)
+            XCTAssertEqual(committed.last, maximum, "Clamping is a display change, not a new preference")
+            XCTAssertEqual(handle.accessibilityValue() as? String, "\(Int(minimum + 5)) pixels")
             XCTAssertTrue(handle.accessibilityPerformDecrement())
-            XCTAssertEqual(committed.last, 220)
+            XCTAssertEqual(committed.last, minimum)
             XCTAssertTrue(handle.accessibilityPerformIncrement())
-            XCTAssertEqual(committed.last, 225.5, "An interval smaller than one key step remains adjustable")
-            handle.update(width: 440, maximum: 220)
+            XCTAssertEqual(committed.last, minimum + 5.5, "An interval smaller than one key step remains adjustable")
+            handle.update(width: maximum, maximum: minimum)
             try key(119)
             XCTAssertTrue(handle.accessibilityPerformIncrement())
-            XCTAssertEqual(committed.last, 220)
-            XCTAssertEqual(handle.accessibilityValue() as? String, "220 pixels")
+            XCTAssertEqual(committed.last, minimum)
+            XCTAssertEqual(handle.accessibilityValue() as? String, "\(Int(minimum)) pixels")
         }
     }
 
