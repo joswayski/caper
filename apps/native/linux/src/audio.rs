@@ -605,8 +605,8 @@ pub(super) struct ReportDialog {
 }
 
 impl App {
-    /// The account bar's settings button: Settings…, Audio test, and
-    /// Connection details during a call, as on the desktop.
+    /// The account bar's settings button: Settings…, Audio test,
+    /// Connection details during a call, and Log out, as on the desktop.
     pub(super) fn settings_menu(self: &Rc<Self>, anchor: &gtk::Button) {
         let popover = gtk::Popover::new();
         popover.add_css_class("menu");
@@ -623,6 +623,7 @@ impl App {
             ("Audio test", 1, true),
             ("Connection details", 2, connection),
             ("Audio diagnostics", 3, debug),
+            ("Log out", 4, true),
         ] {
             if !shown {
                 continue;
@@ -642,11 +643,15 @@ impl App {
                         match item {
                             0 => app.open_settings(),
                             1 => app.open_audio(),
+                            4 => app.sign_out(),
                             other => app.open_report(other == 2),
                         }
                     }
                 });
             });
+            if item == 4 {
+                items.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            }
             items.append(&button);
             if item == 0 {
                 items.append(&gtk::Separator::new(gtk::Orientation::Horizontal));

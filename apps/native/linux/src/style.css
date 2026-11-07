@@ -198,7 +198,20 @@ popover.menu .title {
 /* Channels */
 .sidebar {
   background: @caper_surface_sidebar;
-  border-right: 1px solid @caper_border;
+}
+
+/* The lines between the sidebar, conversation and member list: 1px,
+   draggable (with a wider grab area), focusable with F8. */
+paned.caper-split > separator {
+  min-width: 1px;
+  background: @caper_border;
+  background-image: none;
+  box-shadow: none;
+}
+
+paned.caper-split > separator:focus-visible {
+  background: @caper_terracotta;
+  outline: none;
 }
 
 .space-name {
@@ -562,7 +575,6 @@ button.send:not(:disabled) {
 /* Members */
 .members {
   background: @caper_surface_sidebar;
-  border-left: 1px solid @caper_border;
 }
 
 .section {

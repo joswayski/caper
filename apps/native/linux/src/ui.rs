@@ -340,7 +340,6 @@ pub struct Ui {
     pub directs: gtk::ListBox,
     pub account_avatar: AvatarView,
     pub account_name: gtk::Label,
-    pub sign_out: gtk::Button,
     pub settings: gtk::Button,
     pub new_direct: gtk::Button,
     /// The call card above the account bar, and the bar's voice toggles.
@@ -358,6 +357,9 @@ pub struct Ui {
     pub pins_button: gtk::Button,
     pub members_toggle: gtk::ToggleButton,
     pub members_panel: gtk::Box,
+    /// Sidebar | the rest, and conversation | members (`app::panes`).
+    pub split: gtk::Paned,
+    pub content_split: gtk::Paned,
     pub members_title: gtk::Label,
     pub members_count: gtk::Label,
     pub member_search_button: gtk::Button,
@@ -573,7 +575,7 @@ impl Ui {
 
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sidebar.add_css_class("sidebar");
-        sidebar.set_size_request(260, -1);
+        sidebar.set_size_request(220, -1);
         // Expanding children (the account name) must not widen it.
         sidebar.set_hexpand(false);
         // The space's name opens its menu: invite, settings, leave.
@@ -686,10 +688,6 @@ impl Ui {
         };
         let input_options = options("Input Options");
         let output_options = options("Output Options");
-        let sign_out: gtk::Button = crate::app::named("GtkButton", "Sign out");
-        sign_out.set_child(Some(&images.icon_image(Icon::LogOut, "#b9bcbe", 18)));
-        sign_out.set_tooltip_text(Some("Sign out"));
-        sign_out.add_css_class("flat");
         dock.append(&account_avatar.root);
         dock.append(&account_name);
         let audio = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -699,7 +697,6 @@ impl Ui {
         audio.append(&output_options);
         dock.append(&audio);
         dock.append(&settings);
-        dock.append(&sign_out);
         let call_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
         call_card.add_css_class("call-card");
         call_card.set_visible(false);
@@ -710,7 +707,6 @@ impl Ui {
         update_dock.set_visible(false);
         sidebar.append(&update_dock);
         sidebar.append(&dock);
-        chat.append(&sidebar);
 
         let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);
         conversation.add_css_class("conversation");
@@ -851,11 +847,10 @@ impl Ui {
         drop_card.append(&drop_detail);
         drop.append(&drop_card);
         stage.add_overlay(&drop);
-        chat.append(&stage);
 
         let members_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
         members_panel.add_css_class("members");
-        members_panel.set_size_request(240, -1);
+        members_panel.set_size_request(220, -1);
         members_panel.set_hexpand(false);
         let members_header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         members_header.add_css_class("members-header");
@@ -891,7 +886,26 @@ impl Ui {
                 .child(&members)
                 .build(),
         );
-        chat.append(&members_panel);
+        // Sidebar | conversation | members, split by draggable lines
+        // (`app::panes`). The conversation takes a window's resizing.
+        let content_split: gtk::Paned = crate::app::named("GtkPaned", "Member list width");
+        content_split.set_start_child(Some(&stage));
+        content_split.set_end_child(Some(&members_panel));
+        content_split.set_resize_start_child(true);
+        content_split.set_shrink_start_child(false);
+        content_split.set_resize_end_child(false);
+        content_split.set_shrink_end_child(false);
+        let split: gtk::Paned = crate::app::named("GtkPaned", "Channel sidebar width");
+        split.add_css_class("caper-split");
+        content_split.add_css_class("caper-split");
+        split.set_start_child(Some(&sidebar));
+        split.set_end_child(Some(&content_split));
+        split.set_resize_start_child(false);
+        split.set_shrink_start_child(false);
+        split.set_resize_end_child(true);
+        split.set_shrink_end_child(false);
+        split.set_hexpand(true);
+        chat.append(&split);
 
         let thread_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
         thread_panel.add_css_class("thread");
@@ -962,7 +976,6 @@ impl Ui {
             directs,
             account_avatar,
             account_name,
-            sign_out,
             settings,
             new_direct,
             call_card,
@@ -977,6 +990,8 @@ impl Ui {
             pins_button,
             members_toggle,
             members_panel,
+            split,
+            content_split,
             members_title,
             members_count,
             member_search_button,

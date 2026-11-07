@@ -55,6 +55,8 @@ mod inbox;
 mod members;
 #[path = "notify.rs"]
 mod notify;
+#[path = "panes.rs"]
+mod panes;
 #[path = "picture.rs"]
 mod picture;
 #[path = "profile.rs"]
@@ -532,6 +534,8 @@ pub struct App {
     recording_ticking: Cell<bool>,
     /// What each composer's voice-send rows show, so they rebuild on change.
     voice_send_rows: RefCell<[String; 2]>,
+    /// The member list's saved width is placed (`panes`).
+    panes_placed: Cell<bool>,
 }
 
 struct PinsView {
@@ -613,6 +617,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         dictation: RefCell::default(),
         recording_ticking: Cell::new(false),
         voice_send_rows: RefCell::default(),
+        panes_placed: Cell::new(false),
         images,
         worker: Worker::new(api.clone(), Wakes(sender.clone())),
         state: RefCell::new(State::default()),
@@ -686,6 +691,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.connect_requests();
     app.connect_gifs();
     app.connect_recording();
+    app.connect_panes();
     app.connect_inbox();
     app.start_updates();
     app.install_actions();
@@ -783,8 +789,6 @@ impl App {
             }
             app.render();
         });
-        let app = self.clone();
-        ui.sign_out.connect_clicked(move |_| app.sign_out());
         let app = self.clone();
         ui.settings
             .connect_clicked(move |button| app.settings_menu(button));
@@ -1012,6 +1016,8 @@ impl App {
                             widget.is::<gtk::TextView>()
                                 || widget.is::<gtk::Text>()
                                 || widget.is::<gtk::Entry>()
+                                // A focused pane line takes End itself.
+                                || widget.is::<gtk::Paned>()
                         });
                     if typing || app.state.borrow().page() != Page::Chat {
                         return glib::Propagation::Proceed;
