@@ -181,6 +181,12 @@ final class CaperButton: UIButton {
 /// A square icon control with at least a 44pt target.
 final class IconButton: UIButton {
     private let handler: () -> Void
+    private var heightConstraint: NSLayoutConstraint!
+    /// A composer button follows the field's minimum height; its width stays.
+    var height: CGFloat {
+        get { heightConstraint.constant }
+        set { heightConstraint.constant = newValue }
+    }
     init(icon: String, label: String, size: CGFloat = 20, side: CGFloat = 44, handler: @escaping () -> Void) {
         self.handler = handler
         super.init(frame: .zero)
@@ -188,7 +194,8 @@ final class IconButton: UIButton {
         tintColor = UIKitStyle.text
         accessibilityLabel = label
         translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([widthAnchor.constraint(equalToConstant: side), heightAnchor.constraint(equalToConstant: side)])
+        heightConstraint = heightAnchor.constraint(equalToConstant: side)
+        NSLayoutConstraint.activate([widthAnchor.constraint(equalToConstant: side), heightConstraint])
         addAction(UIAction { [weak self] _ in self?.handler() }, for: .primaryActionTriggered)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

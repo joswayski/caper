@@ -60,6 +60,19 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     private var fieldToBottom: NSLayoutConstraint!
     private var fieldToCounter: [NSLayoutConstraint] = []
     private var height: NSLayoutConstraint!
+    private var microphoneHeight: NSLayoutConstraint!
+    private var recordingBarHeight: NSLayoutConstraint!
+    /// SwiftUI's composerMinHeight: 42 points, or 52 in the wide layout. The
+    /// field, its buttons, the microphone, the recording bar and Send follow it.
+    var minimumHeight: CGFloat = 42 {
+        didSet {
+            guard minimumHeight != oldValue else { return }
+            for button in [attach, emoji, send] { button.height = minimumHeight }
+            microphoneHeight.constant = minimumHeight
+            recordingBarHeight.constant = minimumHeight
+            refresh()
+        }
+    }
     /// The shared draft rendering sets Satoshi 14 itself, as SwiftUI does.
     private let font = UIKitStyle.font(14, scaled: false)
     /// Text edits; the owner writes them to the model's draft.
@@ -160,6 +173,8 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         addSubview(suggestions)
 
         height = textView.heightAnchor.constraint(equalToConstant: 42)
+        microphoneHeight = microphone.heightAnchor.constraint(equalToConstant: 42)
+        recordingBarHeight = recordingBar.heightAnchor.constraint(equalToConstant: 42)
         NSLayoutConstraint.activate([
             accessories.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             accessories.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
@@ -182,12 +197,12 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
             microphone.trailingAnchor.constraint(equalTo: field.trailingAnchor, constant: -2),
             microphone.bottomAnchor.constraint(equalTo: fieldRow.bottomAnchor),
             microphone.widthAnchor.constraint(equalToConstant: 36),
-            microphone.heightAnchor.constraint(equalToConstant: 42),
+            microphoneHeight,
             // The bar covers the field beside the microphone, which stays under the finger.
             recordingBar.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: 8),
             recordingBar.trailingAnchor.constraint(equalTo: microphone.leadingAnchor),
             recordingBar.bottomAnchor.constraint(equalTo: fieldRow.bottomAnchor),
-            recordingBar.heightAnchor.constraint(equalToConstant: 42),
+            recordingBarHeight,
             textView.leadingAnchor.constraint(equalTo: text.leadingAnchor),
             textView.trailingAnchor.constraint(equalTo: text.trailingAnchor),
             textView.topAnchor.constraint(equalTo: text.topAnchor),
@@ -467,7 +482,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         let fitting = textView.sizeThatFits(CGSize(width: textView.bounds.width > 0 ? textView.bounds.width : 240, height: .greatestFiniteMagnitude)).height
         // One line to six, then it scrolls.
         let maximum = 24 + lineHeight * 6
-        let next = min(max(42, ceil(fitting)), maximum)
+        let next = min(max(minimumHeight, ceil(fitting)), maximum)
         textView.isScrollEnabled = fitting > maximum
         if height.constant != next { height.constant = next }
     }

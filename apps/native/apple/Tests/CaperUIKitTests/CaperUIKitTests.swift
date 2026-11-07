@@ -1282,9 +1282,11 @@ final class CaperUIKitParityTests: XCTestCase {
                 let name = orientation == .portrait ? "portrait" : "landscape"
                 let layout = app.buttons["Back to Browse"].exists ? "narrow" : "wide"
                 let members = app.buttons["Close member list"].exists ? ", members" : ""
-                seen.append("\(name): \(layout)\(members)")
+                // Send is as tall as the composer's minimum: 42 points narrow, 52 wide.
+                let sendFrame = app.buttons.matching(send).firstMatch.frame
+                seen.append("\(name): \(layout)\(members), send \(Int(sendFrame.height.rounded()))pt")
                 XCTAssertTrue(composer.isHittable, "\(prefix) \(name)")
-                XCTAssertTrue(app.frame.contains(app.buttons.matching(send).firstMatch.frame), "\(prefix) \(name): Send must fit")
+                XCTAssertTrue(app.frame.contains(sendFrame), "\(prefix) \(name): Send must fit")
                 capture("\(prefix)-\(device)-\(name)")
             }
             states[prefix] = seen

@@ -32,6 +32,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         didSet {
             guard wide != oldValue, isViewLoaded else { return }
             if wide { members.close() }
+            // SwiftUI's wide composer is 52 points tall, the phone's 42.
+            composer.minimumHeight = wide ? 52 : 42
+            voice.height = composer.minimumHeight
+            renderComposer()
             render()
         }
     }

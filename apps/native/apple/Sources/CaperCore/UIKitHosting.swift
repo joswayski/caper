@@ -409,6 +409,8 @@ public struct UIKitComposerAccessories: View {
     let chat: ChatModel
     let inThread: Bool
     let controller = ComposerAutocompleteController()
+    /// The composer's minimum height: 42 points, or 52 in the wide layout.
+    public var height: CGFloat = 42
 
     public init(chat: ChatModel, inThread: Bool = false, dictate: @escaping (String) -> Bool) {
         self.chat = chat; self.inThread = inThread
@@ -422,7 +424,7 @@ public struct UIKitComposerAccessories: View {
 
     /// Tap to dictate, hold for a voice message, slide up to lock.
     public var button: some View {
-        VoiceRecordButton(target: target, height: 42)
+        VoiceRecordButton(target: target, height: height)
             // The lock hint draws above the microphone, outside the composer box.
             .modifier(VoiceLockLayer())
             .preferredColorScheme(.dark)
@@ -430,7 +432,7 @@ public struct UIKitComposerAccessories: View {
 
     /// Discard, the timer, live bars and "Voice note".
     public var bar: some View {
-        VoiceRecordingBar(target: target, height: 42).preferredColorScheme(.dark)
+        VoiceRecordingBar(target: target, height: height).preferredColorScheme(.dark)
     }
 }
 /// What a UIKit conversation asks SwiftUI to present: message actions (the
