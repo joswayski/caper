@@ -623,7 +623,8 @@ public struct UIKitComposerNotices: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
                     .accessibilityIdentifier("chat-error")
             }
-            if let error = voice.error {
+            // Wider layouts show it in Browse's account bar, beside the conversation.
+            if model.narrowLayout, let error = voice.error {
                 HStack(alignment: .top, spacing: 8) {
                     Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
                         .fixedSize(horizontal: false, vertical: true)

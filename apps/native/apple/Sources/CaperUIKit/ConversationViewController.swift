@@ -25,6 +25,51 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     var browse: (() -> Void)?
     /// Whether a swipe right may open Browse: not over Members or a sheet.
     var allowsBrowseSwipe: Bool { !members.isOpen && !presentations.presenting && presentedViewController == nil }
+    /// SwiftUI's wide layout (over 760 points): Browse sits beside the
+    /// conversation, so the header drops Back to Browse and the title menu for
+    /// Pins, Members and DM options buttons, and the phone voice strip goes.
+    var wide = false {
+        didSet {
+            guard wide != oldValue, isViewLoaded else { return }
+            if wide { members.close() }
+            render()
+        }
+    }
+    /// Wide: whether the workspace shows its docked member list, and how to toggle it.
+    var wideMembersShown = false { didSet { if wideMembersShown != oldValue, isViewLoaded { render() } } }
+    var toggleWideMembers: (() -> Void)?
+    private var backLeading: NSLayoutConstraint!
+    private var actionsTrailing: NSLayoutConstraint!
+    private var belowVoiceStrip: NSLayoutConstraint!
+    private var belowHeader: NSLayoutConstraint!
+    private lazy var widePins: IconButton = {
+        let button = IconButton(icon: "pin", label: "Pins", size: 20, side: 36) { [weak self] in self?.showPins() }
+        button.accessibilityIdentifier = "channel-pins"
+        return button
+    }()
+    private lazy var wideMembers = IconButton(icon: "users", label: "Show member list", size: 20, side: 36) { [weak self] in self?.toggleMembers() }
+    private lazy var wideOptions: UIButton = {
+        let button = UIButton(type: .system)
+        button.setImage(UIKitStyle.icon("ellipsis")?.resized(to: 20), for: .normal)
+        button.accessibilityLabel = "Conversation options"
+        button.accessibilityIdentifier = "dm-options"
+        button.showsMenuAsPrimaryAction = true
+        button.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            completion(self?.peerMenuItems() ?? [])
+        }])
+        button.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([button.widthAnchor.constraint(equalToConstant: 36), button.heightAnchor.constraint(equalToConstant: 36)])
+        return button
+    }()
+    /// Wide layouts close a feedback visit back to the conversation before it.
+    private lazy var wideCloseVisit: IconButton = {
+        let button = IconButton(icon: "x", label: "Close conversation", size: 20, side: 36) { [weak self] in
+            guard let model = self?.model else { return }
+            Task { await model.closeVisit() }
+        }
+        button.accessibilityIdentifier = "feedback-visit-close"
+        return button
+    }()
 
     private let header = UIView()
     private let channelTitle = UIKitStyle.label(size: 14, weight: .bold)
@@ -98,7 +143,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let membersSwipe = DirectionalSwipe(direction: -1)
         membersSwipe.allowed = { [weak self] in
             guard let self else { return false }
-            return self.membersAvailable && !self.members.isOpen && !self.presentations.presenting
+            return !self.wide && self.membersAvailable && !self.members.isOpen && !self.presentations.presenting
         }
         membersSwipe.moved = { [weak self] in self?.view.endEditing(true); self?.members.follow($0) }
         membersSwipe.ended = { [weak self] complete, _ in self?.members.release(opening: complete) }
@@ -175,11 +220,23 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let rule = UIView()
         rule.backgroundColor = UIKitStyle.border
         rule.translatesAutoresizingMaskIntoConstraints = false
-        [back, peerAvatar, titleMenu, connection, rule].forEach(header.addSubview)
+        let actions = UIStackView(arrangedSubviews: [widePins, wideMembers, wideOptions, wideCloseVisit])
+        actions.spacing = 6
+        actions.alignment = .center
+        actions.translatesAutoresizingMaskIntoConstraints = false
+        for case let button as UIButton in actions.arrangedSubviews {
+            button.tintColor = UIKitStyle.muted
+            button.isHidden = true
+        }
+        [back, peerAvatar, titleMenu, connection, actions, rule].forEach(header.addSubview)
         peerAvatar.isHidden = true
         peerAvatar.accessibilityElementsHidden = true
         titleAfterBack = titleMenu.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 5)
         titleAfterAvatar = titleMenu.leadingAnchor.constraint(equalTo: peerAvatar.trailingAnchor, constant: 1)
+        // Wide: Back to Browse hides and the title moves to SwiftUI's 18pt inset
+        // (the title's own 6pt padding included).
+        backLeading = back.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 13)
+        actionsTrailing = actions.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -10)
         // The conversation's name for VoiceOver's heading rotor, beside its menu, as on web.
         heading.accessibilityTraits = .header
         heading.accessibilityIdentifier = "selected-channel-name"
@@ -189,7 +246,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             header.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             header.heightAnchor.constraint(equalToConstant: 50),
-            back.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 13),
+            backLeading,
             back.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             titleAfterBack,
             peerAvatar.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 5),
@@ -200,8 +257,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             titles.trailingAnchor.constraint(lessThanOrEqualTo: titleMenu.trailingAnchor, constant: -6),
             titles.centerYAnchor.constraint(equalTo: titleMenu.centerYAnchor),
             connection.leadingAnchor.constraint(equalTo: titleMenu.trailingAnchor, constant: 5),
-            connection.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -10),
+            connection.trailingAnchor.constraint(equalTo: actions.leadingAnchor, constant: -6),
             connection.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            actionsTrailing,
+            actions.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             rule.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             rule.trailingAnchor.constraint(equalTo: header.trailingAnchor),
             rule.bottomAnchor.constraint(equalTo: header.bottomAnchor),
@@ -219,12 +278,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         var items: [UIMenuElement] = [
             UIAction(title: "Pins", image: UIKitStyle.icon("pin")) { [weak self] _ in self?.showPins() },
         ]
-        members.openProfile = { [weak self] member in
-            guard let self else { return }
-            self.present(UIKitHosting.profileCard(model: self.model, member: member) { [weak self] target in
-                self?.presentations.block = target
-            }, animated: !UIKitStyle.reduceMotion)
-        }
+        members.openProfile = { [weak self] member in self?.showProfile(member) }
         if membersAvailable {
             let title = members.isOpen ? "Hide members" : "Members"
             items.append(UIAction(title: memberCount.map { "\(title) · \($0)" } ?? title, image: UIKitStyle.icon("users")) { [weak self] _ in
@@ -257,8 +311,46 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         return items
     }
 
+    /// A member's profile card, from either member list.
+    func showProfile(_ member: Member) {
+        present(UIKitHosting.profileCard(model: model, member: member) { [weak self] target in
+            self?.presentations.block = target
+        }, animated: !UIKitStyle.reduceMotion)
+    }
+
     private func toggleMembers() {
+        if wide { toggleWideMembers?(); return }
         if members.isOpen { members.close() } else { view.endEditing(true); members.open() }
+    }
+
+    /// The header for the layout's width, as SwiftUI's channelBody: phones get
+    /// Back to Browse and the title menu, wider layouts a plain title with
+    /// Pins, Members and DM options beside it (unless a status column holds them).
+    private func applyWidth(live: Bool) {
+        let insets = view.safeAreaInsets
+        let actions = wide && live && !(insets.right > insets.left)
+        back.isHidden = wide
+        backLeading.constant = wide ? 12 - 5 - 44 : 13
+        actionsTrailing.constant = wide ? -18 : -10
+        chevron.isHidden = wide
+        titleMenu.isUserInteractionEnabled = !wide
+        let font = UIKitStyle.font(14, wide ? .medium : .bold)
+        if channelTitle.font != font { channelTitle.font = font }
+        if wide { subtitle.isHidden = true }
+        widePins.isHidden = !actions
+        wideMembers.isHidden = !(actions && membersAvailable)
+        wideMembers.accessibilityLabel = wideMembersShown ? "Hide member list" : "Show member list"
+        wideOptions.isHidden = !(actions && peerConversation != nil)
+        wideCloseVisit.isHidden = !(wide && live && model.visit != nil)
+        // Phones carry your call in a strip under the header; wider layouts in Browse.
+        voiceStrip.view.isHidden = wide
+        if belowHeader.isActive != wide {
+            belowVoiceStrip.isActive = false; belowHeader.isActive = false
+            (wide ? belowHeader : belowVoiceStrip).isActive = true
+        }
+        var elements: [Any] = [heading, connection]
+        for button in [widePins, wideMembers, wideOptions, wideCloseVisit] as [UIView] where !button.isHidden { elements.append(button) }
+        header.accessibilityElements = wide ? elements : [back, heading, titleMenu, connection]
     }
 
     private func showPins() {
@@ -344,6 +436,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         skeleton.isHidden = true
         view.addSubview(skeleton)
         view.addSubview(typing)
+        belowVoiceStrip = collection.topAnchor.constraint(equalTo: voiceStrip.view.bottomAnchor)
+        belowHeader = collection.topAnchor.constraint(equalTo: header.bottomAnchor)
         NSLayoutConstraint.activate([
             // At the timeline's top, as SwiftUI's MessageSkeleton.
             skeleton.topAnchor.constraint(equalTo: collection.topAnchor),
@@ -352,7 +446,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             voiceStrip.view.topAnchor.constraint(equalTo: header.bottomAnchor),
             voiceStrip.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             voiceStrip.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            collection.topAnchor.constraint(equalTo: voiceStrip.view.bottomAnchor),
+            belowVoiceStrip,
             notices.view.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             notices.view.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             notices.view.topAnchor.constraint(equalTo: collection.bottomAnchor),
@@ -500,6 +594,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         titleMenu.accessibilityValue = subtitle.text
         titleMenu.isEnabled = live
         renderConnection(live ? chat.liveState : .connected)
+        applyWidth(live: live)
 
         var messages: [ChatMessage]
         var pending: PendingMessage?

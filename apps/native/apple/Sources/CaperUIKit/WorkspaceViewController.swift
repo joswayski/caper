@@ -4,11 +4,30 @@ import UIKit
 /// The phone workspace: Browse underneath, the conversation sliding fully over
 /// it. Opening Browse slides the conversation off to the right; a pan from
 /// the conversation's leading edge does the same, as on the SwiftUI app.
+/// Over 760 points of safe width (iPad, large phones in landscape) it is
+/// SwiftUI's wide layout instead: Browse beside the conversation, and Members
+/// docked at the trailing edge once 540 points are left for the conversation.
 final class WorkspaceViewController: UIViewController {
     private let model: AppModel
     let browse: BrowseViewController
     let conversation: ConversationViewController
     private var browsing = false
+    /// SwiftUI's `narrow` breakpoint, inverted.
+    private(set) var wide = false
+    /// Wide: the reader's Members choice; until they make one, it follows the width.
+    private var membersPreference: Bool?
+    private var closingMembers = false
+    private var bannerInset: CGFloat = 0
+    private lazy var dockedMembers: MembersPanel = {
+        let panel = MembersPanel(model: model, docked: true)
+        panel.openProfile = { [weak self] member in self?.conversation.showProfile(member) }
+        panel.closed = { [weak self] in
+            guard let self, !self.closingMembers else { return }
+            self.membersPreference = false
+            self.view.setNeedsLayout()
+        }
+        return panel
+    }()
     private var rosterShown = false
     private let observer = ModelObserver()
     /// SwiftUI's banner for a channel or DM that failed to open, above both
@@ -55,11 +74,16 @@ final class WorkspaceViewController: UIViewController {
         conversation.view.layer.shadowOffset = CGSize(width: -12, height: 0)
         browse.opened = { [weak self] in self?.slide(browsing: false) }
         conversation.browse = { [weak self] in self?.slide(browsing: true) }
+        conversation.toggleWideMembers = { [weak self] in
+            guard let self else { return }
+            self.membersPreference = !self.conversation.wideMembersShown
+            self.view.setNeedsLayout()
+        }
         // As SwiftUI's DrawerSwipe: a swipe right from anywhere on the
         // conversation brings Browse in under the finger; a swipe left on
         // Browse returns to the conversation.
         let toBrowse = DirectionalSwipe(direction: 1)
-        toBrowse.allowed = { [weak self] in self.map { !$0.browsing && $0.conversation.allowsBrowseSwipe } ?? false }
+        toBrowse.allowed = { [weak self] in self.map { !$0.wide && !$0.browsing && $0.conversation.allowsBrowseSwipe } ?? false }
         toBrowse.moved = { [weak self] distance in
             guard let self else { return }
             self.loadBrowse()
@@ -80,6 +104,12 @@ final class WorkspaceViewController: UIViewController {
                 self.rosterShown = true
                 let model = self.model
                 DispatchQueue.main.async { CaperRuntime.showVoiceRosterPreview(model) }
+            }
+            if self.wide {
+                // Members follow the conversation: none for a DM or a visit.
+                _ = (self.model.selectedDirectMessageID, self.model.visit?.channelID, self.model.detail?.space.id)
+                self.view.setNeedsLayout()
+                return
             }
             let hasChannel = self.hasConversation
             if !hasChannel && !self.browsing { self.slide(browsing: true, animated: false, record: false) }
@@ -131,10 +161,80 @@ final class WorkspaceViewController: UIViewController {
         let inset = banner.isHidden ? 0 : banner.systemLayoutSizeFitting(
             CGSize(width: view.bounds.width, height: 0), withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel).height
+        bannerInset = inset
         for child in [browse, conversation] where child.additionalSafeAreaInsets.top != inset {
             child.additionalSafeAreaInsets.top = inset
         }
-        update(progress: browsing ? 1 : 0)
+        let safeWidth = view.bounds.width - view.safeAreaInsets.left - view.safeAreaInsets.right
+        if (safeWidth > 760) != wide { setWide(safeWidth > 760) }
+        if wide { layoutWide() } else { update(progress: browsing ? 1 : 0) }
+    }
+
+    /// Crossing the breakpoint (rotation, Split View, Stage Manager) keeps both
+    /// controllers, and so the draft, scroll position and revealed messages.
+    private func setWide(_ wide: Bool) {
+        self.wide = wide
+        model.narrowLayout = !wide
+        loadBrowse()
+        browse.wide = wide
+        conversation.wide = wide
+        conversation.view.transform = .identity
+        conversation.view.layer.shadowOpacity = wide ? 0 : 0.45
+        for child in [browse.view!, conversation.view!] {
+            child.autoresizingMask = wide ? [] : [.flexibleWidth, .flexibleHeight]
+            if !wide { child.frame = view.bounds }
+        }
+        if wide {
+            if dockedMembers.superview == nil { view.insertSubview(dockedMembers, aboveSubview: conversation.view) }
+            browse.view.isUserInteractionEnabled = true
+            browse.view.accessibilityElementsHidden = false
+            conversation.view.accessibilityElementsHidden = false
+        } else {
+            showDockedMembers(false)
+            // Back to the phone pose: the conversation, unless nothing is open.
+            browsing = !hasConversation
+            if model.navigationOpen != browsing { model.navigationOpen = browsing }
+            browse.view.accessibilityElementsHidden = !browsing
+            conversation.view.accessibilityElementsHidden = browsing
+        }
+        UIAccessibility.post(notification: .layoutChanged, argument: nil)
+    }
+
+    /// SwiftUI's wide widths: the 60pt rail and the saved sidebar width
+    /// (220...440, leaving the conversation 320), then the conversation, then
+    /// Members at their saved width (220...440) when they tile.
+    private func layoutWide() {
+        let bounds = view.bounds, insets = view.safeAreaInsets
+        let usable = Double(bounds.width - insets.left - insets.right)
+        let defaults = UserDefaults.standard
+        let savedSidebar = defaults.object(forKey: "caper.channelSidebarWidth") as? Double ?? 280
+        let sidebar = min(max(220, min(440, usable - 60 - 320)), max(220, savedSidebar.rounded()))
+        let navigation = 60 + sidebar
+        let tiles = usable - navigation >= 540
+        let membersMaximum = min(440, max(220, usable - navigation - (tiles ? 320 : 64)))
+        let savedMembers = defaults.object(forKey: "caper.membersWidth") as? Double ?? 220
+        let membersWidth = CGFloat(min(membersMaximum, max(220, savedMembers)))
+        let hasMembers = model.selectedDirectMessageID == nil && model.visit == nil && model.detail != nil
+        let showsMembers = hasMembers && (membersPreference ?? tiles)
+        let lead = insets.left + CGFloat(navigation)
+        browse.view.frame = CGRect(x: 0, y: 0, width: lead, height: bounds.height)
+        let tiled = showsMembers && tiles ? membersWidth + insets.right : 0
+        conversation.view.frame = CGRect(x: lead, y: 0, width: bounds.width - lead - tiled, height: bounds.height)
+        // Tiled: a full-height column. Otherwise over the conversation, below its header.
+        let top = insets.top + bannerInset + (tiles ? 0 : 50)
+        let width = tiles ? tiled : membersWidth + insets.right
+        dockedMembers.frame = CGRect(x: bounds.width - width, y: top, width: width, height: bounds.height - top - insets.bottom)
+        showDockedMembers(showsMembers)
+        conversation.wideMembersShown = showsMembers
+    }
+
+    private func showDockedMembers(_ shows: Bool) {
+        guard shows != dockedMembers.isOpen else { return }
+        if shows { dockedMembers.open() } else {
+            closingMembers = true
+            dockedMembers.close()
+            closingMembers = false
+        }
     }
 
     private func embed(_ child: UIViewController, below: UIView? = nil) {
@@ -151,7 +251,7 @@ final class WorkspaceViewController: UIViewController {
         let back = DirectionalSwipe(direction: -1)
         back.allowed = { [weak self] in
             guard let self else { return false }
-            return self.browsing && self.hasConversation && self.browse.presentedViewController == nil
+            return !self.wide && self.browsing && self.hasConversation && self.browse.presentedViewController == nil
         }
         back.moved = { [weak self] distance in
             guard let self else { return }
@@ -167,6 +267,12 @@ final class WorkspaceViewController: UIViewController {
     /// show yet, so the first channel to open (a new space's) slides away.
     func slide(browsing: Bool, animated: Bool = true, record: Bool = true) {
         loadBrowse()
+        // Browse is always beside a wide conversation: nothing slides.
+        if wide {
+            self.browsing = false
+            if record && model.navigationOpen { model.navigationOpen = false }
+            return
+        }
         self.browsing = browsing
         if record && model.navigationOpen != browsing { model.navigationOpen = browsing }
         if browsing { conversation.view.endEditing(true) }
@@ -183,6 +289,7 @@ final class WorkspaceViewController: UIViewController {
     }
 
     private func update(progress: CGFloat) {
+        guard !wide else { return }
         let travel = view.bounds.width + 40
         conversation.view.transform = CGAffineTransform(translationX: travel * progress, y: 0)
         if browse.isViewLoaded { browse.view.isUserInteractionEnabled = progress > 0.5 }
@@ -190,7 +297,7 @@ final class WorkspaceViewController: UIViewController {
 
 
     override func accessibilityPerformEscape() -> Bool {
-        guard !browsing else { return false }
+        guard !browsing, !wide else { return false }
         slide(browsing: true)
         return true
     }

@@ -4,7 +4,9 @@ import UIKit
 /// The member list on phones (SwiftUI's MembersOverlay and MemberPresenceView):
 /// a rounded panel that slides over the conversation from the trailing edge,
 /// below its header, over a dimmed conversation. The channel's readers lead;
-/// each group splits into Online, Offline and Status unavailable.
+/// each group splits into Online, Offline and Status unavailable. Wider
+/// layouts dock it instead (`docked`): flush beside or over the conversation's
+/// trailing edge, without the dimming, as SwiftUI's wide MemberPresenceView.
 final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDelegate {
     private enum Item: Hashable {
         case label(String, Int, primary: Bool, group: String)
@@ -13,6 +15,7 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
     }
 
     private let model: AppModel
+    private let docked: Bool
     private let dimming = UIView()
     private let panel = UIView()
     private let count = UIKitStyle.label(size: 10, weight: .bold, color: UIKitStyle.muted)
@@ -31,10 +34,12 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
     var closed: (() -> Void)?
     private(set) var isOpen = false
 
-    init(model: AppModel) {
+    /// `docked` panels are placed by their owner's frame (WorkspaceViewController).
+    init(model: AppModel, docked: Bool = false) {
         self.model = model
+        self.docked = docked
         super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
+        translatesAutoresizingMaskIntoConstraints = docked
         isHidden = true
         dimming.backgroundColor = UIColor.black.withAlphaComponent(0.25)
         dimming.translatesAutoresizingMaskIntoConstraints = false
@@ -52,13 +57,31 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         panel.layer.shadowRadius = 16
         panel.layer.shadowOffset = CGSize(width: -12, height: 0)
         panel.translatesAutoresizingMaskIntoConstraints = false
-        panel.accessibilityViewIsModal = true
+        panel.accessibilityViewIsModal = !docked
         // Modal among the conversation's views too, not only beside the dimming.
-        accessibilityViewIsModal = true
+        accessibilityViewIsModal = !docked
         panel.accessibilityIdentifier = "members-panel"
         addSubview(panel)
-        let swipe = UIPanGestureRecognizer(target: self, action: #selector(swiped(_:)))
-        panel.addGestureRecognizer(swipe)
+        if docked {
+            // A column of the layout: no card, shadow or dimming; a rule at its leading edge.
+            dimming.isHidden = true
+            panel.layer.cornerRadius = 0
+            panel.layer.borderWidth = 0
+            panel.layer.shadowOpacity = 0
+            let edge = UIView()
+            edge.backgroundColor = UIKitStyle.border
+            edge.translatesAutoresizingMaskIntoConstraints = false
+            panel.addSubview(edge)
+            NSLayoutConstraint.activate([
+                edge.topAnchor.constraint(equalTo: panel.topAnchor),
+                edge.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
+                edge.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
+                edge.widthAnchor.constraint(equalToConstant: 1),
+            ])
+        } else {
+            let swipe = UIPanGestureRecognizer(target: self, action: #selector(swiped(_:)))
+            panel.addGestureRecognizer(swipe)
+        }
 
         let title = UIKitStyle.label("Members", size: 12, weight: .bold, color: UIKitStyle.muted)
         title.accessibilityTraits = .header
@@ -141,11 +164,6 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
             dimming.leadingAnchor.constraint(equalTo: leadingAnchor),
             dimming.trailingAnchor.constraint(equalTo: trailingAnchor),
             dimming.bottomAnchor.constraint(equalTo: bottomAnchor),
-            panel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            panel.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            panel.widthAnchor.constraint(equalToConstant: 280).withPriority(.defaultHigh),
-            panel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -64),
-            panel.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -8),
             bar.topAnchor.constraint(equalTo: panel.topAnchor),
             bar.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 12),
             bar.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -4),
@@ -159,6 +177,18 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
             column.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -6),
             column.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -6),
             search.heightAnchor.constraint(equalToConstant: 36),
+        ])
+        NSLayoutConstraint.activate(docked ? [
+            panel.topAnchor.constraint(equalTo: topAnchor),
+            panel.bottomAnchor.constraint(equalTo: bottomAnchor),
+            panel.leadingAnchor.constraint(equalTo: leadingAnchor),
+            panel.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor),
+        ] : [
+            panel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            panel.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            panel.widthAnchor.constraint(equalToConstant: 280).withPriority(.defaultHigh),
+            panel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -64),
+            panel.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -8),
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -178,6 +208,17 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         isHidden = false
         observer.start { [weak self] in self?.render() }
         layoutIfNeeded()
+        if docked {
+            // A column arrives from the trailing edge; the conversation beside it just resizes.
+            if !UIKitStyle.reduceMotion {
+                panel.transform = CGAffineTransform(translationX: panel.bounds.width, y: 0)
+                let animator = UIViewPropertyAnimator(duration: 0.24, timingParameters: UIKitStyle.easeOut)
+                animator.addAnimations { self.panel.transform = .identity }
+                animator.startAnimation()
+            }
+            UIAccessibility.post(notification: .layoutChanged, argument: panel)
+            return
+        }
         if UIKitStyle.reduceMotion {
             dimming.alpha = 1
             panel.transform = .identity

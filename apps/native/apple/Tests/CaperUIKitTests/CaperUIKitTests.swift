@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 @MainActor
@@ -120,6 +121,28 @@ final class CaperUIKitTests: XCTestCase {
         if !logOut.isHittable { app.staticTexts["Choose how you show up."].swipeUp() }
         logOut.tap()
         XCTAssertTrue(app.textFields["login-email"].waitForExistence(timeout: 10), "Log out returns to sign-in")
+    }
+
+    /// Rotating keeps the conversation, its draft and a reachable Send, as
+    /// SwiftUI's rotation test checks; on an iPad it crosses the wide breakpoint.
+    func testRotationKeepsDraftAndSend() {
+        let app = launch()
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 30))
+        composer.tap()
+        composer.typeText("Keep this draft while rotating")
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait, .landscapeRight, .portrait] {
+            let previousWidth = app.frame.width
+            XCUIDevice.shared.orientation = orientation
+            let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(app.frame.width - previousWidth) > 10 }, object: app)
+            XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed, "Rotation must resize the app before checking it")
+            XCTAssertEqual(composer.value as? String, "Keep this draft while rotating", "Rotation must keep the draft")
+            XCTAssertTrue(composer.isHittable)
+            XCTAssertTrue(app.frame.contains(app.buttons["send-message"].frame), "Send must fit the rotated window")
+            XCTAssertTrue(row(Self.latest).exists, "Rotation must keep the conversation open")
+            screenshot("uikit-rotate-\(orientation.rawValue)")
+        }
     }
 
     func testConversationOpensAtLatestAndSends() {
@@ -1227,6 +1250,47 @@ final class CaperUIKitParityTests: XCTestCase {
             XCTAssertTrue(skeleton.waitForNonExistence(timeout: 15), prefix)
             app.terminate()
         }
+    }
+
+    /// SwiftUI's 760pt breakpoint in each app, portrait and landscape: both make
+    /// the same narrow or wide choice and show Members the same way. Run on an
+    /// iPhone for the landscape phone layout and on an iPad for the wide one.
+    func testWideLayoutPairs() throws {
+        try requireSwiftUI()
+        let device = UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
+        let send = NSPredicate(format: "identifier IN %@", ["send-message", "send-message-button"])
+        var states: [String: [String]] = [:]
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            XCUIDevice.shared.orientation = .portrait
+            let app = configured(bundle)
+            app.launchArguments += ["-caper.channelSidebarWidth", "280", "-caper.membersWidth", "220"]
+            app.launch()
+            let composer = app.textViews["message-composer"]
+            XCTAssertTrue(composer.waitForExistence(timeout: 30), prefix)
+            sleep(2)
+            var seen: [String] = []
+            for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+                if orientation != .portrait {
+                    let previousWidth = app.frame.width
+                    XCUIDevice.shared.orientation = orientation
+                    let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(app.frame.width - previousWidth) > 10 }, object: app)
+                    XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed, prefix)
+                    sleep(2)
+                }
+                let name = orientation == .portrait ? "portrait" : "landscape"
+                let layout = app.buttons["Back to Browse"].exists ? "narrow" : "wide"
+                let members = app.buttons["Close member list"].exists ? ", members" : ""
+                seen.append("\(name): \(layout)\(members)")
+                XCTAssertTrue(composer.isHittable, "\(prefix) \(name)")
+                XCTAssertTrue(app.frame.contains(app.buttons.matching(send).firstMatch.frame), "\(prefix) \(name): Send must fit")
+                capture("\(prefix)-\(device)-\(name)")
+            }
+            states[prefix] = seen
+            app.terminate()
+        }
+        XCTAssertEqual(states["uikit"], states["swiftui"], "Both apps must choose the same layout at each size")
     }
 
     /// A channel's own first-page skeleton in each app: an empty #general
