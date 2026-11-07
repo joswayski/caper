@@ -123,12 +123,12 @@ class ProfileUiTest {
         compose.onNodeWithText("Unsaved changes").assertDoesNotExist()
         compose.onNodeWithText("Display name").performTextReplacement("Joseph")
         compose.onNodeWithText("Unsaved changes").assertExists()
-        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithContentDescription("Close Edit profile").performClick()
         compose.onNodeWithText("Discard changes?").assertExists()
         compose.onNodeWithText("Keep editing").performClick()
         compose.runOnIdle { assertEquals(0, closed) }
         compose.onNodeWithText("Save profile").performClick()
-        compose.onNodeWithContentDescription("Close").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Close Edit profile").assertIsNotEnabled()
         compose.onNodeWithText("Saving…").assertIsNotEnabled()
         compose.runOnIdle {
             assertEquals("jose" to "Joseph", submitted)
@@ -138,7 +138,7 @@ class ProfileUiTest {
         compose.onNodeWithText("Your profile could not be saved. Please try again.").assertExists()
         compose.onNodeWithText("Joseph").assertExists()
         compose.onNodeWithText("Save profile").assertIsEnabled()
-        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithContentDescription("Close Edit profile").performClick()
         compose.onNodeWithText("Discard").performClick()
         compose.runOnIdle { assertEquals(1, closed) }
     }
@@ -157,18 +157,18 @@ class ProfileUiTest {
         compose.onNodeWithText("Save profile").assertIsEnabled()
         compose.runOnIdle { draft.picturePending = true }
         compose.onNodeWithText("Saving…").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("Close").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Close Edit profile").assertIsNotEnabled()
         androidx.test.espresso.Espresso.pressBack()
         compose.runOnIdle { assertEquals(0, closed); draft.picturePending = false }
         compose.onNodeWithText("Save profile").assertIsEnabled()
         androidx.test.espresso.Espresso.pressBack()
         compose.onNodeWithText("Discard changes?").assertExists()
         compose.onNodeWithText("Keep editing").performClick()
-        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithContentDescription("Close Edit profile").performClick()
         compose.onNodeWithText("Keep editing").performClick()
         compose.runOnIdle { changed.value = false }
         compose.onNodeWithText("Save profile").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithContentDescription("Close Edit profile").performClick()
         compose.runOnIdle { assertEquals(1, closed) }
     }
 }

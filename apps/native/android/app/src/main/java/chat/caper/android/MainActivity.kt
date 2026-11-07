@@ -4486,7 +4486,7 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
                             subtitle?.let { Box(Modifier.padding(top = 2.dp)) { it() } }
                         }
                         Spacer(Modifier.width(8.dp))
-                        IconButton(close, Modifier.size(48.dp), enabled = !busy) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = if (busy) TextMuted.copy(alpha = 0.4f) else TextMuted) }
+                        IconButton(close, Modifier.size(48.dp), enabled = !busy) { Icon(painterResource(R.drawable.lucide_x), "Close $title", tint = if (busy) TextMuted.copy(alpha = 0.4f) else TextMuted) }
                     }
                     HorizontalDivider(color = Border)
                     Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {

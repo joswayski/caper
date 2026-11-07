@@ -52,7 +52,7 @@ class VoiceStripUiTest {
         compose.onNodeWithText("Audio output").performClick()
         compose.onNodeWithText("Communication device").assertExists()
         if (Build.VERSION.SDK_INT >= 31) compose.onNodeWithText("Headset").assertExists()
-        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithContentDescription("Close Communication device").performClick()
         compose.onNodeWithText("Communication device").assertDoesNotExist()
     }
 
@@ -74,7 +74,7 @@ class VoiceStripUiTest {
         compose.onNodeWithText("Communication device").assertDoesNotExist()
         compose.onNodeWithText("Microphone").performClick()
         compose.onNode(hasText(longName) and hasAnyAncestor(isDialog())).performScrollTo().assertIsSelected()
-        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithContentDescription("Close Communication device").performClick()
         compose.onNodeWithText("Communication device").assertDoesNotExist()
     }
 
@@ -83,7 +83,7 @@ class VoiceStripUiTest {
         compose.onNodeWithText("System default").performClick()
         val message = if (Build.VERSION.SDK_INT >= 31) "No communication devices available." else "Choose audio devices in system settings"
         compose.onNodeWithText(message, substring = true).assertExists()
-        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithContentDescription("Close Communication device").performClick()
         compose.onNodeWithText("System default").assertExists()
     }
 

@@ -541,16 +541,16 @@ def main() -> None:
     assert find(create_space, contains="A space keeps") is None
     tap(text="Create space")
     wait_for(text="Enter a space name.")  # Web validates on submit and says why.
-    tap(description="Close")
+    tap(description="Close Create a space")
     tap(description="Create channel")
     create_channel = capture("caper-android-create-channel", "Channel name")
     assert find(create_channel, contains="Add a conversation") is None
     assert find(create_channel, text="Anyone in Fixture Studio can view or join this channel.") is not None
-    tap(description="Close")
+    tap(description="Close Create a channel")
     tap(description="Channel options")
     tap(text="Create channel")
     wait_for(text="Channel name")
-    tap(description="Close")
+    tap(description="Close Create a channel")
     assert find(hierarchy(), text="Collapse channels") is None, "Opening a dialog must close the menu"
 
     # Inspect prejoin audio controls without starting capture or playback.
@@ -610,12 +610,12 @@ def main() -> None:
     # The microphone test sits below the fold of the tall dialog.
     lower = reveal("Test microphone", anchor="Only you can hear these tests.")
     assert find(lower, text="Input level") is not None, "Missing audio test copy: Input level"
-    tap(description="Close")
+    tap(description="Close Audio test")
     tap(description="User Settings")
     tap(text="Audio test")
     capture("caper-android-audio-prejoin-zero-output", "0%")
     reveal("Test microphone", anchor="Only you can hear these tests.")
-    tap(description="Close")
+    tap(description="Close Audio test")
 
     tap(description="Edit profile for Fixture Owner")
     enter_first_field("ab")
@@ -671,7 +671,7 @@ def main() -> None:
     assert len(privacy) == 1 and privacy[0].get("checked") == "true", "Private channel is one checked switch"
     for removed in ("Private channel access", "Existing username", "Grant"):
         assert find(overview, contains=removed) is None, f"Unexpected member-management copy: {removed}"
-    tap(description="Close")
+    tap(description="Close Channel settings")
 
     viewport(390, 844)
     launch()
@@ -769,7 +769,7 @@ def main() -> None:
     tap(text="Audio test")
     audio_narrow = capture("caper-android-audio-prejoin-narrow", "Only you can hear these tests.")
     assert find(audio_narrow, description="Test microphone volume") is not None
-    tap(description="Close")
+    tap(description="Close Audio test")
 
     # Spectator snapshots are fixture-only; the media join endpoint remains 503.
     # Read #general while #design has occupants, without granting microphone access.
