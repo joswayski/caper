@@ -289,11 +289,12 @@ final class ProtocolTests: XCTestCase {
     }
 
     @MainActor
-    func testShippingModelUsesCaperChatUnlessTheFixtureIsLoopback() {
+    func testShippingModelUsesCaperChatUnlessTheFixtureIsLoopback() async {
         let lan = ["CAPER_TEST_MODE": "parity", "CAPER_API_BASE_URL": "http://192.168.1.20:3001"]
-        XCTAssertEqual(CaperRuntime.makeModel(environment: lan).api.baseURL, URL(string: "https://caper.chat"))
-        XCTAssertEqual(CaperRuntime.makeModel(environment: lan.merging(["CAPER_API_BASE_URL": "http://127.0.0.1:3001"]) { _, new in new }).api.baseURL,
-                       URL(string: "http://127.0.0.1:3001"))
+        let shipping = await CaperRuntime.makeModel(environment: lan).api.baseURL
+        XCTAssertEqual(shipping, URL(string: "https://caper.chat"))
+        let loopback = await CaperRuntime.makeModel(environment: lan.merging(["CAPER_API_BASE_URL": "http://127.0.0.1:3001"]) { _, new in new }).api.baseURL
+        XCTAssertEqual(loopback, URL(string: "http://127.0.0.1:3001"))
     }
 
     @MainActor
