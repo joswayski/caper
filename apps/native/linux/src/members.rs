@@ -77,14 +77,18 @@ impl App {
         clear_list(&ui.members);
         let empty = next.groups.iter().all(|(_, members)| members.is_empty());
         if empty {
-            ui.members.append(&label(
+            let note = label(
                 if next.query.is_empty() {
                     "No members to show."
                 } else {
                     "No members match your search."
                 },
                 &["muted", "small", "members-empty"],
-            ));
+            );
+            let row = gtk::ListBoxRow::new();
+            row.set_child(Some(&note));
+            row.set_activatable(false);
+            ui.members.append(&row);
         }
         let grouped = next.groups.len() > 1;
         for (index, (title, members)) in next.groups.iter().enumerate() {
@@ -103,7 +107,8 @@ impl App {
                     }],
                 ));
                 heading.append(&label(&members.len().to_string(), &["muted", "small"]));
-                ui.members.append(&heading);
+                ui.members
+                    .append(&heading_row(&heading, title, members.len()));
             }
             for (section, title) in ["Online", "Offline", "Status unavailable"]
                 .into_iter()
@@ -121,7 +126,7 @@ impl App {
                 heading.add_css_class("member-section");
                 heading.append(&label(title, &["member-heading-quiet"]));
                 heading.append(&label(&rows.len().to_string(), &["muted", "small"]));
-                ui.members.append(&heading);
+                ui.members.append(&heading_row(&heading, title, rows.len()));
                 for member in rows {
                     ui.members.append(
                         &self.member_row(
@@ -146,7 +151,7 @@ impl App {
         status: &str,
         offline: bool,
         quiet: bool,
-    ) -> gtk::Box {
+    ) -> gtk::ListBoxRow {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         line.add_css_class("member");
         if offline {
@@ -178,14 +183,31 @@ impl App {
         if member.owner {
             line.append(&label("Owner", &["muted", "badge"]));
         }
-        line.set_tooltip_text(Some(&format!("Open profile for {}", member.display_name)));
+        // As desktop: "Open profile for …", by click or by Enter (the
+        // list's activation, `open_member`), the row's name its member id.
+        let action = format!("Open profile for {}", member.display_name);
+        line.set_tooltip_text(Some(&action));
         line.set_cursor_from_name(Some("pointer"));
-        let click = gtk::GestureClick::new();
-        let (app, id, anchor) = (self.clone(), member.id.clone(), line.clone());
-        click.connect_released(move |_, _, _, _| {
-            app.open_profile(id.clone(), None, anchor.upcast_ref());
-        });
-        line.add_controller(click);
-        line
+        let row: gtk::ListBoxRow = super::named("GtkListBoxRow", &action);
+        row.set_widget_name(&member.id);
+        row.set_child(Some(&line));
+        row
     }
+
+    /// The Members list's activation: the member's profile, beside the row.
+    pub(super) fn open_member(self: &Rc<Self>, row: &gtk::ListBoxRow) {
+        if row.is_activatable() {
+            self.open_profile(row.widget_name().to_string(), None, row.upcast_ref());
+        }
+    }
+}
+
+/// A section's heading, named for assistive technologies ("Online, 3").
+/// It stays focusable: a list whose first row can't take focus can't be
+/// entered with Tab.
+fn heading_row(heading: &gtk::Box, title: &str, count: usize) -> gtk::ListBoxRow {
+    let row: gtk::ListBoxRow = super::named("GtkListBoxRow", &format!("{title}, {count}"));
+    row.set_child(Some(heading));
+    row.set_activatable(false);
+    row
 }

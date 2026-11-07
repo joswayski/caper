@@ -985,6 +985,9 @@ impl App {
             }
         });
         let app = self.clone();
+        ui.members
+            .connect_row_activated(move |_, row| app.open_member(row));
+        let app = self.clone();
         ui.join.connect_clicked(move |_| app.join());
         let app = self.clone();
         ui.load_newer.connect_clicked(move |_| app.load_newer());
@@ -5425,12 +5428,28 @@ impl App {
                     .unwrap_or_default(),
                 channel: channel.id.clone(),
             };
+            // What the row says to assistive technologies: what it shows.
+            let mut spoken = vec![channel.name.clone()];
+            if channel.private {
+                spoken.push("private".into());
+            }
+            if !channel.joined {
+                spoken.push("not joined".into());
+            }
             if let Some(muted) = state.muted_label(&scope) {
                 name.add_css_class("muted");
                 line.append(&self.muted_icon(&muted));
+                spoken.push("muted".into());
             }
             if count > 0 {
                 line.append(&badge(count, mentions > 0));
+                spoken.push(format!("{count} unread"));
+                if mentions > 0 {
+                    spoken.push("mentions you".into());
+                }
+            }
+            if let Some((_, people, _)) = &roster {
+                spoken.push(format!("{people} in voice"));
             }
             // As desktop: a live room you're not in says how many are there.
             if let Some((_, people, false)) = &roster {
@@ -5442,16 +5461,18 @@ impl App {
                 line.append(&live);
             }
             self.scope_menu_on(&line, scope);
+            let row: gtk::ListBoxRow = named("GtkListBoxRow", &spoken.join(", "));
             match roster {
                 Some((roster, _, _)) => {
                     let entry = gtk::Box::new(gtk::Orientation::Vertical, 4);
                     entry.add_css_class("room-card");
                     entry.append(&line);
                     entry.append(&roster);
-                    ui.channels.append(&entry);
+                    row.set_child(Some(&entry));
                 }
-                None => ui.channels.append(&line),
+                None => row.set_child(Some(&line)),
             }
+            ui.channels.append(&row);
             if open && let Some(row) = ui.channels.row_at_index(ids.len() as i32) {
                 ui.channels.select_row(Some(&row));
             }
@@ -5549,16 +5570,22 @@ impl App {
             if let Some(suffix) = suffix {
                 line.append(&label(suffix, &["muted", "direct-suffix"]));
             }
+            let mut spoken = vec![direct.peer.display_name.clone()];
+            spoken.extend(suffix.map(str::to_owned));
             let scope = Scope::Direct(direct.id.clone());
             if let Some(muted) = state.muted_label(&scope) {
                 name.add_css_class("muted");
                 line.append(&self.muted_icon(&muted));
+                spoken.push("muted".into());
             }
             if count > 0 {
                 line.append(&badge(count, true));
+                spoken.push(format!("{count} unread"));
             }
             self.scope_menu_on(&line, scope);
-            ui.directs.append(&line);
+            let row: gtk::ListBoxRow = named("GtkListBoxRow", &spoken.join(", "));
+            row.set_child(Some(&line));
+            ui.directs.append(&row);
             if state.direct.as_deref() == Some(&direct.id)
                 && let Some(row) = ui.directs.row_at_index(ids.len() as i32)
             {
@@ -5670,6 +5697,53 @@ pub fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {
         }
         None => popover.set_parent(anchor),
     }
+    // Escape gives focus back to what had it (the row or button that opened
+    // the popover). Left to GTK it lands on the chat page's first control,
+    // the rail, because the popover's parent is the page.
+    let previous = anchor
+        .root()
+        .and_then(|root| root.focus())
+        .map(|widget| widget.downgrade());
+    let stale: Vec<gtk::EventController> = popover
+        .observe_controllers()
+        .iter::<glib::Object>()
+        .flatten()
+        .filter_map(|object| object.downcast::<gtk::EventController>().ok())
+        .filter(|controller| controller.name().as_deref() == Some("restore-focus"))
+        .collect();
+    for controller in stale {
+        popover.remove_controller(&controller);
+    }
+    // Only notes the key: a field inside may still take Escape for itself.
+    let escaped = Rc::new(std::cell::Cell::new(false));
+    let keys = gtk::EventControllerKey::new();
+    keys.set_name(Some("restore-focus"));
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let pressed = escaped.clone();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        pressed.set(key == gdk::Key::Escape);
+        glib::Propagation::Proceed
+    });
+    popover.add_controller(keys);
+    let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+    let once = handler.clone();
+    let id = popover.connect_closed(move |popover| {
+        if let Some(id) = once.borrow_mut().take() {
+            popover.disconnect(id);
+        }
+        if let Some(widget) = previous
+            .as_ref()
+            .and_then(|widget| widget.upgrade())
+            .filter(|_| escaped.get())
+        {
+            glib::idle_add_local_once(move || {
+                if widget.is_mapped() {
+                    widget.grab_focus();
+                }
+            });
+        }
+    });
+    *handler.borrow_mut() = Some(id);
     popover.connect_closed(|popover| {
         let popover = popover.clone();
         glib::idle_add_local_once(move || popover.unparent());

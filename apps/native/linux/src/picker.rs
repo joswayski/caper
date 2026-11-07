@@ -29,7 +29,7 @@ pub fn show(
     let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     tabs.set_homogeneous(true);
     root.append(&tabs);
-    let search = gtk::SearchEntry::new();
+    let search: gtk::SearchEntry = crate::app::named("GtkSearchEntry", "Search emoji");
     search.set_placeholder_text(Some("Search emoji"));
     root.append(&search);
     let section = label(emoji::CATEGORIES[0].1, &["muted", "small"]);
@@ -149,6 +149,18 @@ pub fn show(
     }
     let refill = fill.clone();
     search.connect_search_changed(move |_| refill());
+    // The field takes Escape for itself: the first clears the search, the
+    // next closes the picker, so the keyboard can always leave.
+    let closing = popover.downgrade();
+    search.connect_stop_search(move |search| {
+        if search.text().is_empty() {
+            if let Some(popover) = closing.upgrade() {
+                popover.popdown();
+            }
+        } else {
+            search.set_text("");
+        }
+    });
     let (popover_ref, pick) = (popover.downgrade(), Rc::new(pick));
     let activate = move |position: u32| {
         let Some(entry) = store

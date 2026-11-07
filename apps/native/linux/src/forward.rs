@@ -199,7 +199,8 @@ impl App {
         );
         preview.add_css_class("forward-card");
         root.append(&preview);
-        let search = gtk::SearchEntry::new();
+        let search: gtk::SearchEntry =
+            crate::app::named("GtkSearchEntry", "Find a space, channel or DM");
         search.set_placeholder_text(Some("Find a space, channel or DM"));
         root.append(&search);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);

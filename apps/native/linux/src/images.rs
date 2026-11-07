@@ -208,7 +208,11 @@ impl Images {
     }
 
     pub fn icon_image(&self, icon: Icon, color: &'static str, size: i32) -> gtk::Image {
-        let image = gtk::Image::new();
+        // Icons decorate a named control or sit beside their text; screen
+        // readers skip them.
+        let image = gtk::Image::builder()
+            .accessible_role(gtk::AccessibleRole::Presentation)
+            .build();
         if let Some(texture) = self.icon(icon, color) {
             image.set_paintable(Some(&texture));
         }
@@ -490,7 +494,11 @@ impl AvatarView {
         frame.set_halign(gtk::Align::Start);
         // Avatars are square: an image at a fixed pixel size has exactly
         // that natural size, where a picture would ask for its texture's.
-        let picture = gtk::Image::new();
+        // Beside the person's name wherever it shows, so screen readers
+        // skip it.
+        let picture = gtk::Image::builder()
+            .accessible_role(gtk::AccessibleRole::Presentation)
+            .build();
         picture.set_pixel_size(size);
         let initial = gtk::Label::new(None);
         initial.add_css_class("initial");

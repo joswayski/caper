@@ -1084,7 +1084,7 @@ impl Ui {
         members_close.add_css_class("flat");
         members_header.append(&members_close);
         members_panel.append(&members_header);
-        let member_search = gtk::SearchEntry::new();
+        let member_search: gtk::SearchEntry = crate::app::named("GtkSearchEntry", "Search members");
         member_search.set_placeholder_text(Some("Search members"));
         member_search.add_css_class("member-search");
         member_search.set_visible(false);
