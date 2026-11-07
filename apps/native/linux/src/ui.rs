@@ -35,6 +35,8 @@ pub struct Composer {
     pub line: gtk::Box,
     /// The microphone: it dictates (`app::recording`).
     pub mic: gtk::Button,
+    /// Insert emoji, as on desktop.
+    pub emoji: gtk::Button,
     pub recording: RecordingBar,
     /// Transcribing (Cancel), or failed (Retry, Keep as voice note,
     /// Discard), above the input.
@@ -226,6 +228,13 @@ impl Composer {
         gif.add_css_class("send");
         gif.set_visible(false);
         line.append(&gif);
+        let emoji: gtk::Button = crate::app::named("GtkButton", "Insert emoji");
+        emoji.set_child(Some(&images.icon_image(Icon::Smile, "#b9bcbe", 18)));
+        emoji.set_tooltip_text(Some("Insert emoji"));
+        emoji.set_valign(gtk::Align::End);
+        emoji.add_css_class("flat");
+        emoji.add_css_class("send");
+        line.append(&emoji);
         let mic: gtk::Button = crate::app::named("GtkButton", "Dictate");
         mic.set_child(Some(&images.icon_image(Icon::Mic, "#b9bcbe", 18)));
         mic.set_tooltip_text(Some("Dictate"));
@@ -260,6 +269,7 @@ impl Composer {
             preview,
             line,
             mic,
+            emoji,
             recording,
             dictation,
             sends,

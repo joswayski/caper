@@ -10,11 +10,13 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-/// Opens the picker at `anchor`. `pick` gets the emoji and whether it adds
+/// Opens the picker at `anchor`, titled "Add a reaction" or, for a
+/// composer, "Insert emoji". `pick` gets the emoji and whether it adds
 /// your reaction (`false`: you had reacted with it, so it comes off).
 pub fn show(
     images: &Rc<Images>,
     anchor: &gtk::Widget,
+    title: &str,
     mine: HashSet<String>,
     pick: impl Fn(String, bool) + 'static,
 ) {
@@ -22,7 +24,7 @@ pub fn show(
     popover.add_css_class("emoji-picker");
     let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
     root.set_size_request(352, 430);
-    root.append(&label("Add a reaction", &["picker-title"]));
+    root.append(&label(title, &["picker-title"]));
 
     let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     tabs.set_homogeneous(true);

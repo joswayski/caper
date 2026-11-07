@@ -752,6 +752,26 @@ pub fn start(application: &gtk::Application, base: &str) {
         });
         app.suggestions.borrow_mut().push(popup);
     }
+    // Insert emoji at the caret, as on desktop.
+    for composer in [&app.ui.composer, &app.ui.thread_composer] {
+        let weak = Rc::downgrade(&app);
+        let view = composer.view.clone();
+        composer.emoji.connect_clicked(move |button| {
+            let Some(app) = weak.upgrade() else { return };
+            let view = view.clone();
+            crate::picker::show(
+                &app.images,
+                button.upcast_ref(),
+                "Insert emoji",
+                HashSet::new(),
+                move |emoji, _| {
+                    let buffer = view.buffer();
+                    buffer.insert_at_cursor(&emoji);
+                    view.grab_focus();
+                },
+            );
+        });
+    }
     app.restore_voice();
     app.connect();
     app.connect_voice();
@@ -3142,9 +3162,15 @@ impl App {
                 .unwrap_or_default()
         };
         let app = self.clone();
-        crate::picker::show(&self.images, anchor, mine, move |emoji, active| {
-            app.react(id.clone(), emoji, active);
-        });
+        crate::picker::show(
+            &self.images,
+            anchor,
+            "Add a reaction",
+            mine,
+            move |emoji, active| {
+                app.react(id.clone(), emoji, active);
+            },
+        );
     }
 
     // ---------------------------------------------------------------------

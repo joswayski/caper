@@ -550,6 +550,7 @@ impl App {
                 crate::picker::show(
                     &app.images,
                     button.upcast_ref(),
+                    "Add a reaction",
                     Default::default(),
                     move |emoji, _| {
                         if let Some(app) = weak.upgrade() {
