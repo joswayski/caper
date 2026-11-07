@@ -27441,10 +27441,14 @@ fn participant_label(name: &str, speaking: bool, muted: bool, deafened: bool) ->
     }
 }
 
-/// A live session's running time from `started`, repainting each second.
+/// A live session's running time from `started`, repainting when its
+/// seconds next change (not a second after this frame, which could show
+/// the old second for most of the next).
 fn live_timer(context: &egui::Context, started: u64) -> String {
-    context.request_repaint_after(Duration::from_secs(1));
-    voice::session_duration(started, chrono::Utc::now().timestamp_millis().max(0) as u64)
+    let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    let into_second = now.saturating_sub(started) % 1_000;
+    context.request_repaint_after(Duration::from_millis(1_000 - into_second));
+    voice::session_duration(started, now)
 }
 
 /// Paints a green session timer in tabular digits ending at `right`,
