@@ -4008,7 +4008,7 @@ internal fun counterTone(count: Int): Color = when {
         colors = neutralTextButtonColors(TextMuted)) { Text(if (loggingOut) "Logging out…" else "Log out") }
 }
 
-@Composable private fun LoginScreen(busy: Boolean, error: String?, clearError: () -> Unit, submit: (String) -> Unit) {
+@Composable internal fun LoginScreen(busy: Boolean, error: String?, clearError: () -> Unit, submit: (String) -> Unit) {
     var email by remember { mutableStateOf("") }
     val emailFocus = remember { FocusRequester() }
     var requested by remember { mutableStateOf(false) }
@@ -4038,7 +4038,7 @@ internal fun counterTone(count: Int): Color = when {
 }
 
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun VerifyScreen(screen: SessionScreen.Verify, busy: Boolean, error: String?, clearError: () -> Unit, back: () -> Unit, submit: (String, String) -> Unit, resend: () -> Unit) {
+@Composable internal fun VerifyScreen(screen: SessionScreen.Verify, busy: Boolean, error: String?, clearError: () -> Unit, back: () -> Unit, submit: (String, String) -> Unit, resend: () -> Unit) {
     var code by remember(screen.challengeId) { mutableStateOf("") }
     val exhausted = screen.attemptsRemaining == 0
     val codeFocus = remember { FocusRequester() }
