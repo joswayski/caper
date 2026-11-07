@@ -2,8 +2,7 @@
 # verifies the Audio candidate under one explicitly checked keyboard policy.
 name: Apple macOS 15 probe
 on:
-  push:
-    branches: [apple-macos15-probe]
+  workflow_dispatch:
 jobs:
   probe:
     name: macOS 15 / ${{ matrix.name }}

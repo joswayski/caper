@@ -1,0 +1,95 @@
+# Disposable hosted clipboard coverage only. Never merge this workflow or branch.
+name: Apple isolated clipboard probe
+on:
+  push:
+    branches: [apple-macos15-probe]
+    paths: [.github/workflows/apple-clipboard-probe.yml]
+jobs:
+  clipboard:
+    name: Clipboard / ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: appkit-09d4fb85
+            source: 09d4fb853e1f262885f98fb81f5d150ba637763d
+          - name: uikit-frozen-55b80aa9
+            source: 55b80aa9e1d99f46c51c0e4dfce85f454e075297
+    runs-on: macos-15
+    timeout-minutes: 75
+    env:
+      SOURCE_SHA: ${{ matrix.source }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: ./.github/actions/mobile-rust
+        with:
+          platform: apple
+      - name: Assert exact source and restore pinned model
+        run: |
+          mkdir -p clipboard
+          sw_vers | tee clipboard/environment.txt
+          xcodebuild -version | tee -a clipboard/environment.txt
+          git rev-parse HEAD | tee -a clipboard/environment.txt
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          mkdir -p apps/native/apple/.build/rnnoise
+          git show "$GITHUB_SHA:.github/probe-inputs/rnnoise-model.tar.gz" > apps/native/apple/.build/rnnoise-model.tar.gz
+          echo '0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37  apps/native/apple/.build/rnnoise-model.tar.gz' | shasum -a 256 -c -
+          curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors 'https://github.com/xiph/rnnoise/archive/70f1d256acd4b34a572f999a05c87bf00b67730d.tar.gz' -o apps/native/apple/.build/rnnoise-source.tar.gz
+          echo 'f61ee0b3f4c4cd337303e003d333357c5eaf25ef5d75a742109ee59e9a0a3932  apps/native/apple/.build/rnnoise-source.tar.gz' | shasum -a 256 -c -
+          tar -xzf apps/native/apple/.build/rnnoise-source.tar.gz -C apps/native/apple/.build/rnnoise --strip-components=1
+          tar -xzf apps/native/apple/.build/rnnoise-model.tar.gz -C apps/native/apple/.build/rnnoise src/rnnoise_data.c src/rnnoise_data.h
+      - name: Run the six excluded clipboard tests
+        continue-on-error: true
+        run: |
+          bash apps/native/apple/prepare.sh
+          set +e
+          xcodebuild -project apps/native/apple/CaperApple.xcodeproj -scheme CaperMacOS -configuration Debug \
+            -destination "platform=macOS,arch=$(uname -m)" -derivedDataPath apps/native/apple/DerivedData-Clipboard \
+            -resultBundlePath clipboard/ClipboardResults.xcresult \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 \
+            -only-testing:CaperCoreTests/DraftLinkTests/testFormattedLinksComposeWithHiddenGlyphsAndPlainClipboard \
+            -only-testing:CaperCoreTests/AttachmentPasteTests/testGIFWinsOverStaticRepresentation \
+            -only-testing:CaperCoreTests/AttachmentPasteTests/testPDFBytesAreStaged \
+            -only-testing:CaperCoreTests/AttachmentPasteTests/testTextBasedImageWinsOverOpaqueRepresentation \
+            -only-testing:CaperCoreTests/AttachmentPasteTests/testFileURLPreservesUnknownFileAndItsName \
+            -only-testing:CaperCoreTests/AttachmentPasteTests/testTextHTMLAndWebURLsRemainTextViewPaste \
+            test 2>&1 | tee clipboard/tests.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > clipboard/test-exit-code
+          exit "$status"
+      - name: Export test summary
+        if: always()
+        run: |
+          if [[ -d clipboard/ClipboardResults.xcresult ]]; then
+            xcrun xcresulttool get test-results summary --path clipboard/ClipboardResults.xcresult > clipboard/summary.json
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clipboard-${{ matrix.name }}
+          path: clipboard/
+          retention-days: 7
+      - name: Require all six tests to pass
+        if: always()
+        run: |
+          test "$(cat clipboard/test-exit-code)" = 0
+          grep -F 'Executed 6 tests, with 0 failures' clipboard/tests.log
+          python3 - <<'PY'
+          import json
+          with open('clipboard/summary.json') as file:
+              summary = json.load(file)
+          assert summary['totalTestCount'] == 6, summary
+          assert summary['passedTests'] == 6, summary
+          assert summary['failedTests'] == 0, summary
+          assert summary['skippedTests'] == 0, summary
+          PY
