@@ -158,6 +158,8 @@ struct Pictures {
 pub struct Images {
     /// Message media: attachments, link previews and GIFs.
     pub media: crate::media::Media,
+    /// Loopback media routes for FFmpeg, shared by voice and video.
+    pub streams: std::rc::Rc<crate::playback::Streams>,
     /// The one voice message playing, app-wide (`crate::playback`).
     pub voice: std::rc::Rc<crate::playback::Voice>,
     api: Api,
@@ -173,9 +175,11 @@ pub struct Images {
 
 impl Images {
     pub fn new(api: Api, signals: async_channel::Sender<Signal>) -> Self {
+        let streams = std::rc::Rc::new(crate::playback::Streams::default());
         Self {
             media: crate::media::Media::new(api.clone(), signals.clone()),
-            voice: std::rc::Rc::default(),
+            streams: streams.clone(),
+            voice: std::rc::Rc::new(crate::playback::Voice::new(streams)),
             api,
             signals,
             icons: RefCell::default(),

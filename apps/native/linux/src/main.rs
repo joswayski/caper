@@ -22,6 +22,7 @@ mod rows;
 mod suggest;
 mod ui;
 mod uploads;
+mod video;
 mod viewer;
 mod zoom;
 

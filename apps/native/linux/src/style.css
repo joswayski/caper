@@ -872,6 +872,82 @@ window.caper.viewer button.step {
   background: alpha(@caper_surface, 0.85);
 }
 
+/* Videos (src/video.rs): the paused glyph, then a bar of round buttons,
+   the time and white tracks under the picture, as on the desktop. */
+.play.video-paused {
+  padding: 17px;
+  background: alpha(black, 0.67);
+}
+
+.video-controls {
+  min-height: 52px;
+}
+
+button.video-button,
+button.video-expand {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  box-shadow: none;
+  background: alpha(black, 0.47);
+}
+
+button.video-button:hover,
+button.video-expand:hover {
+  background: alpha(white, 0.16);
+}
+
+button.video-expand {
+  min-width: 32px;
+  min-height: 32px;
+  margin: 4px;
+  background: alpha(black, 0.67);
+}
+
+.video-time {
+  font-family: monospace;
+  font-size: 12px;
+}
+
+scale.video-track trough {
+  min-height: 4px;
+  border-radius: 2px;
+  background: alpha(white, 0.2);
+  border: none;
+}
+
+scale.video-track highlight {
+  min-height: 4px;
+  border-radius: 2px;
+  background: @caper_text;
+  border: none;
+}
+
+scale.video-track slider {
+  min-width: 12px;
+  min-height: 12px;
+  margin: -4px;
+  border-radius: 999px;
+  background: @caper_text;
+  border: none;
+  box-shadow: none;
+}
+
+.video-notice {
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: alpha(black, 0.78);
+  color: @caper_text;
+  font-size: 13px;
+}
+
+.inline-video {
+  border-radius: 8px;
+  background: @caper_surface;
+}
+
 /* Composer files: chips with progress, retry, spoiler and remove. */
 .chips {
   padding: 2px 0 4px;

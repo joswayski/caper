@@ -49,15 +49,46 @@ struct Card {
     scrub: Rc<Cell<Option<f32>>>,
 }
 
+/// Loopback routes to media for FFmpeg (`caper_client::media_proxy`),
+/// started on first use and shared by voice messages and videos.
 #[derive(Default)]
+pub struct Streams(RefCell<Option<MediaProxy>>);
+
+impl Streams {
+    /// A local URL for `url`, or `None` when it can't be streamed.
+    pub fn route(&self, url: &str) -> Option<String> {
+        caper_client::api::media_url(url)?;
+        let mut proxy = self.0.borrow_mut();
+        if proxy.is_none() {
+            *proxy = MediaProxy::start().ok();
+        }
+        Some(proxy.as_ref()?.route(url))
+    }
+
+    pub fn remove(&self, local: &str) {
+        if let Some(proxy) = self.0.borrow().as_ref() {
+            proxy.remove(local);
+        }
+    }
+}
+
 pub struct Voice {
+    streams: Rc<Streams>,
     current: RefCell<Option<Current>>,
     cards: RefCell<Vec<Card>>,
-    proxy: RefCell<Option<MediaProxy>>,
     ticking: Cell<bool>,
 }
 
 impl Voice {
+    pub fn new(streams: Rc<Streams>) -> Self {
+        Self {
+            streams,
+            current: RefCell::default(),
+            cards: RefCell::default(),
+            ticking: Cell::new(false),
+        }
+    }
+
     /// Plays or pauses `attachment` (or plays it from `at` ms), stopping any
     /// other voice message first.
     pub fn play(self: &Rc<Self>, attachment: &Attachment, at: Option<u64>) {
@@ -88,19 +119,11 @@ impl Voice {
         let started = (|| {
             let binary = caper_client::ffmpeg::binary()
                 .ok_or("Voice playback needs the FFmpeg that ships with Caper.")?;
-            let url = attachment
+            let local = attachment
                 .url
-                .clone()
-                .filter(|url| caper_client::api::media_url(url).is_some())
+                .as_deref()
+                .and_then(|url| self.streams.route(url))
                 .ok_or("This voice message can’t be played here.")?;
-            let mut proxy = self.proxy.borrow_mut();
-            if proxy.is_none() {
-                *proxy = MediaProxy::start().ok();
-            }
-            let local = proxy
-                .as_ref()
-                .ok_or("This voice message can’t be played here.")?
-                .route(&url);
             let mut player = Player::audio(binary, local.clone(), attachment.duration_ms);
             match at {
                 Some(ms) => player.seek(ms, true),
@@ -124,9 +147,8 @@ impl Voice {
         if let Some(Current {
             local: Some(local), ..
         }) = stopped
-            && let Some(proxy) = self.proxy.borrow().as_ref()
         {
-            proxy.remove(&local);
+            self.streams.remove(&local);
         }
         self.render();
     }

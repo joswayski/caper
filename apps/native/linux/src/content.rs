@@ -7,6 +7,7 @@ use crate::rows::{Action, Handler};
 use caper_client::attachments::{frame_size, gallery, inline_source};
 use caper_client::model::{Attachment, AttachmentKind, AttachmentStatus, Embed, EmbedBlock};
 use gtk::{glib, pango, prelude::*};
+use std::rc::Rc;
 
 /// A gallery's width, as desktop and web cap it.
 const GALLERY_WIDTH: f32 = 480.0;
@@ -41,9 +42,9 @@ fn media(attachment: &Attachment) -> bool {
     )
 }
 
-/// What the viewer can show: images that are ready.
+/// What the viewer can show: images and videos that are ready.
 pub fn viewable(attachment: &Attachment) -> bool {
-    attachment.kind == AttachmentKind::Image
+    media(attachment)
         && attachment.status == AttachmentStatus::Ready
         && !attachment.unavailable
         && attachment.url.is_some()
@@ -60,7 +61,7 @@ fn duration(ms: u64) -> String {
 }
 
 /// The view for `content`, or `None` when there is nothing to show.
-pub fn view(images: &Images, content: &Content, handler: &Handler) -> Option<gtk::Box> {
+pub fn view(images: &Rc<Images>, content: &Content, handler: &Handler) -> Option<gtk::Box> {
     if content.is_empty() {
         return None;
     }
@@ -182,13 +183,13 @@ fn tile_notice(attachment: &Attachment) -> Option<&'static str> {
 }
 
 fn tile(
-    images: &Images,
+    images: &Rc<Images>,
     attachment: &Attachment,
     hidden: bool,
     size: (i32, i32),
     gallery_files: &[Attachment],
     handler: &Handler,
-) -> gtk::Button {
+) -> gtk::Widget {
     let video = attachment.kind == AttachmentKind::Video;
     let overlay = gtk::Overlay::new();
     let shown = picture(size);
@@ -211,7 +212,7 @@ fn tile(
         let (handler, id) = (handler.clone(), attachment.id.clone());
         tile.connect_clicked(move |_| handler(Action::Reveal(id.clone())));
         tile.set_child(Some(&overlay));
-        return tile;
+        return tile.upcast();
     }
     if let Some(url) = inline_source(attachment).filter(|_| !attachment.unavailable) {
         images.media.bind(&shown, &attachment.id, url);
@@ -243,16 +244,119 @@ fn tile(
     tile.set_child(Some(&overlay));
     let ready = tile_notice(attachment).is_none() && attachment.url.is_some();
     tile.set_sensitive(ready);
-    let handler = handler.clone();
-    let attachment = attachment.clone();
-    let files = gallery_files.to_vec();
-    tile.connect_clicked(
-        move |_| match files.iter().position(|file| file.id == attachment.id) {
+    let view = {
+        let (handler, attachment) = (handler.clone(), attachment.clone());
+        let files = gallery_files.to_vec();
+        move || match files.iter().position(|file| file.id == attachment.id) {
             Some(index) => handler(Action::View(files.clone(), index)),
             None => handler(Action::Open(attachment.clone())),
-        },
-    );
-    tile
+        }
+    };
+    if video && ready {
+        return inline_video(images, attachment, &tile, size, view);
+    }
+    tile.connect_clicked(move |_| view());
+    tile.upcast()
+}
+
+/// A video tile that plays in place when clicked, with "Open in viewer"
+/// over it, as on the desktop. GIF-style videos play by themselves (when
+/// animations are on) while their tile is in view, and stop out of it.
+fn inline_video(
+    images: &Rc<Images>,
+    attachment: &Attachment,
+    tile: &gtk::Button,
+    (width, height): (i32, i32),
+    view: impl Fn() + 'static,
+) -> gtk::Widget {
+    let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    holder.add_css_class("inline-video");
+    holder.set_size_request(width, height);
+    holder.set_overflow(gtk::Overflow::Hidden);
+    holder.append(tile);
+    let expand: gtk::Button =
+        crate::app::named("GtkButton", &format!("Open {} in viewer", attachment.name));
+    let glyph = images.icon_image(Icon::ExternalLink, "#f3f4f5", 16);
+    centered(&glyph);
+    expand.set_child(Some(&glyph));
+    expand.set_tooltip_text(Some("Open in viewer"));
+    expand.add_css_class("video-expand");
+    expand.set_halign(gtk::Align::End);
+    expand.set_valign(gtk::Align::Start);
+    // The holder keeps both: the poster tile, and the stage once playing.
+    let playing = gtk::Overlay::new();
+    playing.add_overlay(&expand);
+    playing.set_visible(false);
+    holder.append(&playing);
+    // Back to the poster: the stage leaves the window and stops.
+    let poster = {
+        let (tile, playing) = (tile.downgrade(), playing.downgrade());
+        move || {
+            let (Some(tile), Some(playing)) = (tile.upgrade(), playing.upgrade()) else {
+                return;
+            };
+            if playing.child().is_some() {
+                playing.set_child(gtk::Widget::NONE);
+                playing.set_visible(false);
+                tile.set_visible(true);
+            }
+        }
+    };
+    let play = {
+        let (images, attachment) = (Rc::downgrade(images), attachment.clone());
+        let (tile, playing) = (tile.downgrade(), playing.downgrade());
+        move || {
+            let (Some(images), Some(tile), Some(playing)) =
+                (images.upgrade(), tile.upgrade(), playing.upgrade())
+            else {
+                return;
+            };
+            if playing.child().is_none() {
+                let video = crate::video::stage(&images, &attachment, width, height);
+                playing.set_child(Some(&video.root));
+                tile.set_visible(false);
+                playing.set_visible(true);
+            }
+        }
+    };
+    let start = play.clone();
+    tile.connect_clicked(move |_| start());
+    let stop = poster.clone();
+    expand.connect_clicked(move |_| {
+        stop();
+        view();
+    });
+    if attachment.animated {
+        let holder_ref = holder.downgrade();
+        glib::timeout_add_local(std::time::Duration::from_millis(400), move || {
+            let Some(holder) = holder_ref.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let animate =
+                gtk::Settings::default().is_none_or(|settings| settings.is_gtk_enable_animations());
+            if animate && in_view(&holder) {
+                play();
+            } else {
+                poster();
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+    holder.upcast()
+}
+
+/// Whether any of `widget` shows in its scrolled window's viewport.
+fn in_view(widget: &impl IsA<gtk::Widget>) -> bool {
+    let Some(scroller) = widget.ancestor(gtk::ScrolledWindow::static_type()) else {
+        return widget.is_mapped();
+    };
+    widget.is_mapped()
+        && widget.compute_bounds(&scroller).is_some_and(|bounds| {
+            bounds.y() + bounds.height() > 0.0
+                && bounds.y() < scroller.height() as f32
+                && bounds.x() + bounds.width() > 0.0
+                && bounds.x() < scroller.width() as f32
+        })
 }
 
 fn file_card(

@@ -181,7 +181,7 @@ impl Original {
     }
 
     /// The original's author line, text, files and reactions.
-    pub fn view(&self, images: &Images, handler: &Handler, open: Option<&str>) -> gtk::Box {
+    pub fn view(&self, images: &Rc<Images>, handler: &Handler, open: Option<&str>) -> gtk::Box {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
         root.add_css_class("original");
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -890,7 +890,7 @@ pub fn factory(images: Rc<Images>, handler: Handler) -> gtk::SignalListItemFacto
 pub struct Standalone(Rc<Widgets>);
 
 impl Standalone {
-    pub fn new(images: &Images, row: &Row, handler: &Handler) -> Self {
+    pub fn new(images: &Rc<Images>, row: &Row, handler: &Handler) -> Self {
         let widgets = Rc::new(build_widgets(images));
         connect(&widgets, handler);
         fill(&widgets, images, row, handler);
@@ -1217,7 +1217,7 @@ fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
     }
 }
 
-fn fill(widgets: &Widgets, images: &Images, row: &Row, handler: &Handler) {
+fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     let mut classes = vec!["message"];
     if row.grouped {
         classes.push("grouped");

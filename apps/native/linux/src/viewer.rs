@@ -1,13 +1,14 @@
-//! The image viewer: a message's images full size, one at a time, with
-//! previous and next, copy, save and open in the browser. As on the
-//! desktop, double-click zooms to 2.5×, Ctrl+scroll zooms up to 8× about
-//! the pointer, and dragging pans while zoomed. Escape closes it; the arrow
-//! keys step through.
+//! The media viewer: a message's images and videos full size, one at a
+//! time, with previous and next, copy, save and open in the browser. As on
+//! the desktop, double-click zooms to 2.5×, Ctrl+scroll zooms up to 8× about
+//! the pointer, and dragging pans while zoomed; videos play with their
+//! controls (`crate::video`), Space playing or pausing. Escape closes it;
+//! the arrow keys step through.
 
 use crate::images::{Icon, Images};
 use crate::media::Media;
 use caper_client::attachments::inline_source;
-use caper_client::model::Attachment;
+use caper_client::model::{Attachment, AttachmentKind};
 use gtk::{gdk, glib, prelude::*};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -29,7 +30,17 @@ struct Viewer {
     pointer: Cell<Option<(f64, f64)>>,
     save: gtk::Button,
     chooser: RefCell<Option<gtk::FileChooserNative>>,
+    copy: gtk::Button,
+    /// The stage, and the video playing on it in place of the picture.
+    stage: gtk::Overlay,
+    slot: gtk::Box,
+    video: RefCell<Option<crate::video::Video>>,
 }
+
+/// Room left either side of a video for previous and next.
+const SIDE: i32 = 64;
+/// The header's height, for sizing a video before the stage is laid out.
+const HEADER: i32 = 56;
 
 const MAX_ZOOM: f64 = 8.0;
 const DOUBLE_CLICK_ZOOM: f64 = 2.5;
@@ -41,8 +52,33 @@ impl Viewer {
         let file = self.images.media.resolve(&self.files[index]);
         self.picture.set_paintable(gdk::Paintable::NONE);
         self.picture.remove_css_class("loaded");
-        // GIFs play from their tile's frames; stills load full size.
-        if file.content_type == "image/gif" {
+        // Stepping off a video stops it.
+        if let Some(video) = self.video.take() {
+            self.slot.remove(&video.root);
+        }
+        let video = file.kind == AttachmentKind::Video;
+        self.scroller.set_visible(!video);
+        self.slot.set_visible(video);
+        self.copy.set_visible(!video);
+        if video {
+            let window = self.stage.root().and_downcast::<gtk::Window>();
+            let (width, height) = match (self.stage.width(), self.stage.height()) {
+                (width, height) if width > 0 && height > 0 => (width, height),
+                _ => window.map_or((800, 600), |window| {
+                    let (width, height) = window.default_size();
+                    (width, height - HEADER)
+                }),
+            };
+            let video = crate::video::stage(
+                &self.images,
+                &file,
+                (width - 2 * SIDE).max(160),
+                (height - 16).max(120),
+            );
+            self.slot.append(&video.root);
+            self.video.replace(Some(video));
+        } else if file.content_type == "image/gif" {
+            // GIFs play from their tile's frames; stills load full size.
             if let Some(url) = inline_source(&file) {
                 self.images.media.bind(&self.picture, &file.id, url);
             }
@@ -228,7 +264,7 @@ pub fn open(
     let window = gtk::Window::builder()
         .transient_for(parent)
         .modal(true)
-        .title("Image viewer")
+        .title("Media viewer")
         .default_width(parent.width().max(800) - 80)
         .default_height(parent.height().max(600) - 80)
         .build();
@@ -269,7 +305,16 @@ pub fn open(
         .vscrollbar_policy(gtk::PolicyType::External)
         .child(&picture)
         .build();
-    stage.set_child(Some(&scroller));
+    let slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    slot.set_halign(gtk::Align::Center);
+    slot.set_valign(gtk::Align::Center);
+    slot.set_margin_bottom(16);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    scroller.set_vexpand(true);
+    slot.set_vexpand(true);
+    body.append(&scroller);
+    body.append(&slot);
+    stage.set_child(Some(&body));
     let previous = icon_button(images, Icon::ChevronLeft, "Previous image");
     previous.set_halign(gtk::Align::Start);
     previous.add_css_class("step");
@@ -296,6 +341,10 @@ pub fn open(
         pointer: Cell::new(None),
         save: save.clone(),
         chooser: RefCell::default(),
+        copy: copy.clone(),
+        stage: stage.clone(),
+        slot,
+        video: RefCell::default(),
     });
     viewer.index.set(index.min(viewer.files.len() - 1));
     viewer.show();
@@ -405,6 +454,13 @@ pub fn open(
             shown.step(true);
             glib::Propagation::Stop
         }
+        gdk::Key::space => match shown.video.borrow().as_ref() {
+            Some(video) => {
+                video.toggle();
+                glib::Propagation::Stop
+            }
+            None => glib::Propagation::Proceed,
+        },
         _ => glib::Propagation::Proceed,
     });
     window.add_controller(keys);
