@@ -7874,6 +7874,7 @@ struct ReactionPicker: View {
     #endif
     var title = "Add reaction"
     var embedded = false
+    var close: (() -> Void)? = nil
     let select: (String) -> Void
     private var choices: [EmojiCatalogEntry] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -7888,7 +7889,7 @@ struct ReactionPicker: View {
             HStack {
                 Text(title).font(CaperTheme.font(14, weight: .bold))
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { if let close { close() } else { dismiss() } }
                     .keyboardShortcut(.cancelAction)
             }.padding(.horizontal, 12).padding(.top, 12)
             content
