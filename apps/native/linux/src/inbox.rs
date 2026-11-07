@@ -160,31 +160,33 @@ impl App {
         let done = gtk::Button::with_label("Done");
         top.append(&done);
         root.append(&top);
-        let filters = gtk::FlowBox::new();
-        filters.set_selection_mode(gtk::SelectionMode::None);
-        filters.set_max_children_per_line(6);
-        filters.set_column_spacing(4);
-        filters.set_row_spacing(4);
+        // Packed at the start, as desktop's row of filters.
+        let filters = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         let mut tabs = Vec::new();
         let mut group: Option<gtk::ToggleButton> = None;
         for filter in Filter::ALL {
             let tab = gtk::ToggleButton::with_label(filter.label());
-            tab.add_css_class("reactor-tab");
+            tab.add_css_class("inbox-tab");
             if let Some(first) = &group {
                 tab.set_group(Some(first));
             } else {
                 group = Some(tab.clone());
             }
-            filters.insert(&tab, -1);
+            filters.append(&tab);
             tabs.push((filter, tab));
         }
         root.append(&filters);
-        let unread_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // As desktop: "Unread only (N)" with its switch at the right, 210px.
+        let unread_line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        unread_line.set_size_request(210, -1);
+        unread_line.set_halign(gtk::Align::Start);
         let unread: gtk::Switch = super::named("GtkSwitch", "Unread only");
         unread.set_valign(gtk::Align::Center);
-        let unread_label = label("", &[]);
-        unread_line.append(&unread);
+        let unread_label = label("", &["settings-label"]);
+        unread_label.set_xalign(0.0);
+        unread_label.set_hexpand(true);
         unread_line.append(&unread_label);
+        unread_line.append(&unread);
         root.append(&unread_line);
         let error_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let error = label("", &["error"]);

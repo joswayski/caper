@@ -1967,6 +1967,25 @@ button.reactor-tab:checked {
   background: rgb(57, 35, 30);
 }
 
+/* The inbox's filters, as desktop's selectable labels: flat until chosen,
+   then a terracotta fill. */
+button.inbox-tab {
+  min-height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: @caper_text;
+}
+
+button.inbox-tab:hover {
+  background: @caper_surface_hover;
+}
+
+button.inbox-tab:checked {
+  background: @caper_terracotta;
+}
+
 .reactor-heading {
   font-size: 12px;
   font-weight: 700;
