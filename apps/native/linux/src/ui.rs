@@ -373,6 +373,8 @@ pub struct Ui {
     pub members_panel: gtk::Box,
     /// Sidebar | the rest, and conversation | members (`app::panes`).
     pub split: gtk::Paned,
+    /// Channels above, Direct messages below.
+    pub sidebar_lists: gtk::Paned,
     pub content_split: gtk::Paned,
     pub members_title: gtk::Label,
     pub members_count: gtk::Label,
@@ -649,6 +651,9 @@ impl Ui {
         let channel_invites = gtk::Box::new(gtk::Orientation::Vertical, 6);
         channel_invites.add_css_class("channel-invites");
         lists.append(&channel_invites);
+        // As desktop: Direct messages get their own list below a line that
+        // resizes the two (`panes`).
+        let direct_lists = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let direct_header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let direct_title = label("Direct messages", &["section"]);
         direct_title.set_hexpand(true);
@@ -660,11 +665,11 @@ impl Ui {
         new_direct.add_css_class("section-action");
         new_direct.set_valign(gtk::Align::End);
         direct_header.append(&new_direct);
-        lists.append(&direct_header);
+        direct_lists.append(&direct_header);
         // The notifications inbox, with its unread count.
         let inbox = gtk::Button::with_label("Notifications");
         inbox.add_css_class("inbox-button");
-        lists.append(&inbox);
+        direct_lists.append(&inbox);
         // The Caper team's inbox, for team members only (`app::feedback`).
         let feedback: gtk::ListBox = crate::app::named("GtkListBox", "Feedback");
         feedback.add_css_class("channels");
@@ -678,24 +683,33 @@ impl Ui {
         feedback_waiting.set_visible(false);
         feedback_line.append(&feedback_waiting);
         feedback.append(&feedback_line);
-        lists.append(&feedback);
+        direct_lists.append(&feedback);
         let requests: gtk::ListBox = crate::app::named("GtkListBox", "Message requests");
         requests.add_css_class("channels");
         requests.set_visible(false);
-        lists.append(&requests);
+        direct_lists.append(&requests);
         let directs: gtk::ListBox = crate::app::named("GtkListBox", "Direct messages");
         directs.add_css_class("channels");
-        lists.append(&directs);
-        sidebar.append(
-            &gtk::ScrolledWindow::builder()
+        direct_lists.append(&directs);
+        let scroller = |child: &gtk::Box| {
+            gtk::ScrolledWindow::builder()
                 .hscrollbar_policy(gtk::PolicyType::Never)
-                .vexpand(true)
-                .child(&lists)
-                .build(),
-        );
-        let dock = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                .child(child)
+                .build()
+        };
+        let sidebar_lists: gtk::Paned =
+            crate::app::named("GtkPaned", "Channel and direct message list height");
+        sidebar_lists.set_orientation(gtk::Orientation::Vertical);
+        sidebar_lists.add_css_class("caper-split");
+        sidebar_lists.set_start_child(Some(&scroller(&lists)));
+        sidebar_lists.set_end_child(Some(&scroller(&direct_lists)));
+        sidebar_lists.set_shrink_start_child(false);
+        sidebar_lists.set_shrink_end_child(false);
+        sidebar_lists.set_vexpand(true);
+        sidebar.append(&sidebar_lists);
+        let dock = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         dock.add_css_class("dock");
-        let account_avatar = AvatarView::new(32, true);
+        let account_avatar = AvatarView::new(30, true);
         account_avatar.set_presence("online");
         let account_name = label("", &["author"]);
         account_name.set_hexpand(true);
@@ -1085,6 +1099,7 @@ impl Ui {
             members_toggle,
             members_panel,
             split,
+            sidebar_lists,
             content_split,
             members_title,
             members_count,

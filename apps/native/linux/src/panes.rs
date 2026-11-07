@@ -3,10 +3,14 @@
 //! `members-width-v1`). Drag the line between panes, or focus it (F8) and
 //! use the arrow keys (10 px), Home and End; double-click resets it. The
 //! conversation keeps room beside them, and a window too small for a saved
-//! width shows it narrower without forgetting it. A child of `app`.
+//! width shows it narrower without forgetting it. In the sidebar, a line
+//! splits Channels from Direct messages the same way (Up and Down), saved
+//! as a fraction of its height (`sidebar-channels-fraction-v1`), each list
+//! keeping at least 96 px. A child of `app`.
 
 use super::App;
 use gtk::{glib, prelude::*};
+use std::cell::Cell;
 use std::rc::Rc;
 
 const MIN: i32 = 220;
@@ -22,12 +26,24 @@ const STEP: i32 = 10;
 const LINE: i32 = 1;
 const SIDEBAR_KEY: &str = "sidebar-width-v1";
 const MEMBERS_KEY: &str = "members-width-v1";
+const LISTS_KEY: &str = "sidebar-channels-fraction-v1";
 
 fn saved(app: &App, key: &str, default: i32) -> i32 {
     app.prefs
         .get::<i32>(key)
         .filter(|width| (MIN..=MAX).contains(width))
         .unwrap_or(default)
+}
+
+/// The shortest either sidebar list can be in a split `height` tall.
+fn list_min(height: i32) -> i32 {
+    if height >= 240 { 96 } else { height / 4 }
+}
+
+/// The channel list's height in a split `height` tall.
+fn lists_position(position: i32, height: i32) -> i32 {
+    let min = list_min(height);
+    position.clamp(min, (height - min).max(min))
 }
 
 /// The widest the sidebar can be in a split `total` wide.
@@ -123,6 +139,68 @@ impl App {
             }
         });
         self.place_members();
+
+        // Channels above Direct messages. GTK keeps the line where it was,
+        // proportionally, as the sidebar's height changes; only a move at a
+        // steady height is the person's, and saved.
+        let lists = &self.ui.sidebar_lists;
+        let fraction = self
+            .prefs
+            .get::<f64>(LISTS_KEY)
+            .filter(|fraction| fraction.is_finite() && *fraction > 0.0 && *fraction < 1.0)
+            .unwrap_or(0.5);
+        // Nothing is saved before the saved fraction is placed: GTK's own
+        // first position isn't the person's.
+        let placed = Rc::new(Cell::new(false));
+        let height = Rc::new(Cell::new(0));
+        // A resize that leaves the line in place still changes the height.
+        let seen = height.clone();
+        lists.connect_max_position_notify(move |lists| seen.set(lists.height() - LINE));
+        let app = Rc::downgrade(self);
+        let ready = placed.clone();
+        let steady = height.clone();
+        lists.connect_position_notify(move |lists| {
+            let Some(app) = app.upgrade() else {
+                return;
+            };
+            let total = lists.height() - LINE;
+            if total <= 0 || !ready.get() {
+                return;
+            }
+            let position = lists.position();
+            let clamped = lists_position(position, total);
+            if clamped != position {
+                lists.set_position(clamped);
+            } else if steady.replace(total) == total {
+                app.prefs
+                    .set(LISTS_KEY, f64::from(position) / f64::from(total));
+            }
+        });
+        keys(lists, |lists, key| {
+            let total = lists.height() - LINE;
+            let next = match key {
+                Key::Shorter => lists.position() - STEP,
+                Key::Wider => lists.position() + STEP,
+                Key::Min => 0,
+                Key::Max => total,
+            };
+            lists.set_position(lists_position(next, total));
+        });
+        reset_on_double_click(lists, |lists| {
+            lists.set_position((lists.height() - LINE) / 2);
+        });
+        lists.add_tick_callback(move |lists, _| {
+            let total = lists.height() - LINE;
+            if total <= 0 {
+                return glib::ControlFlow::Continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let position = (fraction * f64::from(total)).round() as i32;
+            lists.set_position(lists_position(position, total));
+            height.set(total);
+            placed.set(true);
+            glib::ControlFlow::Break
+        });
     }
 
     /// Puts the sidebar back at its saved width, as a window widens past
@@ -157,7 +235,7 @@ impl App {
     }
 }
 
-/// What a key does to a focused line: Left, Right, Home and End.
+/// What a key does to a focused line: Left/Up, Right/Down, Home and End.
 enum Key {
     Shorter,
     Wider,
@@ -179,9 +257,12 @@ fn keys(paned: &gtk::Paned, apply: impl Fn(&gtk::Paned, Key) + 'static) {
         if !modifiers.is_empty() {
             return glib::Propagation::Proceed;
         }
+        let vertical = paned.orientation() == gtk::Orientation::Vertical;
         let action = match key {
-            gtk::gdk::Key::Left | gtk::gdk::Key::KP_Left => Key::Shorter,
-            gtk::gdk::Key::Right | gtk::gdk::Key::KP_Right => Key::Wider,
+            gtk::gdk::Key::Left | gtk::gdk::Key::KP_Left if !vertical => Key::Shorter,
+            gtk::gdk::Key::Right | gtk::gdk::Key::KP_Right if !vertical => Key::Wider,
+            gtk::gdk::Key::Up | gtk::gdk::Key::KP_Up if vertical => Key::Shorter,
+            gtk::gdk::Key::Down | gtk::gdk::Key::KP_Down if vertical => Key::Wider,
             gtk::gdk::Key::Home | gtk::gdk::Key::KP_Home => Key::Min,
             gtk::gdk::Key::End | gtk::gdk::Key::KP_End => Key::Max,
             _ => return glib::Propagation::Proceed,
@@ -197,10 +278,16 @@ fn reset_on_double_click(paned: &gtk::Paned, reset: impl Fn(&gtk::Paned) + 'stat
     let click = gtk::GestureClick::new();
     click.set_propagation_phase(gtk::PropagationPhase::Capture);
     let target = paned.downgrade();
-    click.connect_pressed(move |_, presses, x, _| {
+    click.connect_pressed(move |_, presses, x, y| {
         if let Some(paned) = target.upgrade()
             && presses == 2
-            && (x - f64::from(paned.position())).abs() <= 4.0
+            && ((if paned.orientation() == gtk::Orientation::Vertical {
+                y
+            } else {
+                x
+            }) - f64::from(paned.position()))
+            .abs()
+                <= 4.0
         {
             reset(&paned);
         }

@@ -205,12 +205,21 @@ popover.menu .title {
    draggable (with a wider grab area), focusable with F8. */
 paned.caper-split > separator {
   min-width: 1px;
+  min-height: 1px;
   background: @caper_border;
   background-image: none;
   box-shadow: none;
 }
 
-paned.caper-split > separator:focus-visible {
+paned.caper-split.vertical > separator {
+  min-height: 1px;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+/* The focused line (F8): GTK marks the paned, not its separator. */
+paned.caper-split:focus-visible > separator {
   background: @caper_terracotta;
   outline: none;
 }
@@ -568,9 +577,17 @@ popover.emoji-picker image.mine {
   margin-left: -12px;
 }
 
+/* As desktop: the account bar is a raised 42px card. */
 .dock {
-  border-top: 1px solid @caper_border;
-  padding: 10px 12px;
+  background: @caper_surface_raised;
+  border: 1px solid @caper_border;
+  border-radius: 6px;
+  margin: 8px 12px 16px;
+  padding: 5px;
+}
+
+.dock .author {
+  font-size: 12.8px;
 }
 
 .thread {
@@ -1237,6 +1254,7 @@ window.caper radio:checked {
 
 /* Owner management: the space header, rail actions and invitations. */
 button.space-header {
+  color: @caper_text;
   padding: 0 8px 0 0;
   margin: 4px 6px 0;
   border-radius: 8px;
@@ -1413,12 +1431,15 @@ popover.menu check:checked {
 }
 
 .dock button.flat {
-  min-width: 0;
-  padding: 4px 6px;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 5px;
+  border: none;
 }
 
 .dock button.device-options {
-  padding: 4px 1px;
+  min-width: 14px;
+  padding: 0;
 }
 
 .voice-roster .voice-timer {
@@ -1793,9 +1814,18 @@ button.gif-tile {
 }
 
 /* The notifications inbox: its sidebar button and rows. */
+/* As desktop: an outlined button, neutral until hovered. */
 button.inbox-button {
-  min-height: 32px;
+  min-height: 30px;
   margin: 2px 8px 4px 16px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid @caper_border;
+  box-shadow: none;
+}
+
+button.inbox-button:hover {
+  background: @caper_surface_hover;
 }
 
 .inbox-row {
