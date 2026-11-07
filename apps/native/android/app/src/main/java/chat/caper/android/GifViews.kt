@@ -248,7 +248,9 @@ private fun adRequest(context: Context, gridWidth: Int): KlipyAdRequest {
                 horizontalArrangement = Arrangement.spacedBy(6.dp), verticalItemSpacing = 6.dp,
             ) {
                 // KLIPY may repeat an item across pages, so positions (not slugs) are the keys.
-                items(results.size, span = { if (results[it] is KlipyItem.Ad) StaggeredGridItemSpan.FullLine else StaggeredGridItemSpan.SingleLane }) { index ->
+                // Ads and GIF tiles reuse only their own kind's slots while scrolling.
+                items(results.size, contentType = { if (results[it] is KlipyItem.Ad) "ad" else "gif" },
+                    span = { if (results[it] is KlipyItem.Ad) StaggeredGridItemSpan.FullLine else StaggeredGridItemSpan.SingleLane }) { index ->
                     when (val item = results[index]) {
                         is KlipyItem.Ad -> KlipyAdTile(item)
                         is KlipyItem.Result -> {
