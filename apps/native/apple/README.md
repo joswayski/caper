@@ -105,6 +105,17 @@ The scripts launch only the explicit loopback fixture; fixture data can never be
 
 The macOS suite captures populated, members-hidden, login, login error, Manage space, and private channel overview states; iOS adds narrow conversation and Browse-open states on an `iPhone 16` simulator. The `reaction-chips` fixture captures who reacted (hover card on macOS, press-and-hold sheet on iOS). The `voice-roster`, `voice-crowd` and `voice-elsewhere` fixtures show local call rosters without capture or media. Screenshots are exported into ignored `apps/native/apple/parity-artifacts/`.
 
+## Device benchmarks
+
+`bench-project.yml` includes the shipping project and builds two TEST FIXTURE apps in Release: `chat.caper.bench.uikit` (the UIKit client) and `chat.caper.bench.swiftui` (the shipping SwiftUI app). Their `CaperCore` is compiled with `CAPER_DEVICE_FIXTURE`, the only build that accepts a fixture on a private-LAN IPv4 address (10/8, 172.16/12, 192.168/16) as well as loopback. Without a valid `CAPER_TEST_MODE=parity` and `CAPER_API_BASE_URL`, a bench app stops at launch instead of connecting to caper.chat, and its session stays in memory. The apps have no URL schemes, associated domains, push or extensions, so they cannot replace or impersonate `chat.caper.ios`. Shipping builds still accept only a loopback fixture.
+
+```sh
+CAPER_FIXTURE_HOST="$(ipconfig getifaddr en0)" CAPER_BENCH_DESTINATION='platform=iOS,id=<device UDID>' \
+  DEVELOPMENT_TEAM=<team> ./apps/native/apple/bench.sh test uikit   # or swiftui
+```
+
+`bench.sh` starts the fixture on `CAPER_FIXTURE_HOST:CAPER_FIXTURE_PORT` (default `127.0.0.1:3101`, for simulators). The fixture binds only that address and uses it in every absolute URL. It serves 3,000 `#general` rows and, in an opt-in `#bench-formatting` channel, `CAPER_BENCH_FORMATTED_MESSAGES` (default 400) long, formatted, link-heavy rows. `Tests/CaperBenchTests` measures launch (with and without the UIKit startup cache), history scrolling in both channels, and typing a formatted draft that is never sent. Without these variables the fixture behaves as before.
+
 ## Voice
 
 Join and audio preferences are available in normal builds. Joining requests microphone permission; publication stays silent until the remote answer, transport readiness and generation checks complete. Signaling sends pending local SDP immediately, like the web client. The implementation supports gateway and lease snapshots, roster subscribe/close, local mute/deafen/leave, bounded rejoin, TURN renewal with restart/ack, and per-participant local mute/gain. Browsing keeps the call; Join elsewhere, logout, deletion and access loss tear it down locally first.

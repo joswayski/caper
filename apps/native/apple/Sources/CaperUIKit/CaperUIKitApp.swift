@@ -22,11 +22,7 @@ enum CaperUIKitLaunch {
     static let log = Logger(subsystem: "chat.caper.uikit", category: "launch")
     static var parityFixture: Bool { ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity" }
     /// The server CaperRuntime.makeModel talks to (the loopback fixture in parity launches).
-    static var origin: URL {
-        let environment = ProcessInfo.processInfo.environment
-        if parityFixture, let raw = environment["CAPER_API_BASE_URL"], let url = URL(string: raw) { return url }
-        return URL(string: "https://caper.chat")!
-    }
+    static var origin: URL { CaperRuntime.fixtureBaseURL() ?? URL(string: "https://caper.chat")! }
 
     static func mark(_ step: String) {
         guard let start = processStart else { return }

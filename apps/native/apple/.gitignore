@@ -16,3 +16,6 @@ Package.resolved
 /DerivedData-UIKit/
 /uikit-artifacts/
 /UIKitResults.xcresult/
+/CaperBench.xcodeproj/
+/DerivedData-Bench/
+/BenchResults-*.xcresult/

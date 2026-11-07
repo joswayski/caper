@@ -2,7 +2,12 @@ import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { inflateSync } from "node:zlib";
-import { startFixture, fixtureIDs as ids } from "../scripts/native-parity-fixture.mjs";
+import {
+  startFixture,
+  fixtureHost,
+  benchFormattingChannel,
+  fixtureIDs as ids,
+} from "../scripts/native-parity-fixture.mjs";
 
 async function setup(t) {
   const fixture = await startFixture({ port: 0, gatewayPort: 0 });
@@ -1882,4 +1887,54 @@ test("ordinary multipart file hashes and recorded voice media keep their existin
     "the fixture still serves recorded bytes without transcoding",
   );
   assert.deepEqual(Buffer.from(await recorded.arrayBuffer()), bytes);
+});
+
+test("binds loopback unless a private-LAN host is explicitly configured", async (t) => {
+  for (const host of [
+    "0.0.0.0",
+    "8.8.8.8",
+    "172.32.0.1",
+    "172.15.0.1",
+    "192.168.1.256",
+    "010.0.0.1",
+    "example.com",
+    "",
+  ])
+    await assert.rejects(startFixture({ port: 0, gatewayPort: 0, host }), /not a loopback or private-LAN/, host);
+  for (const host of ["127.0.0.1", "10.0.0.5", "172.16.0.1", "172.31.255.255", "192.168.1.20"])
+    assert.equal(fixtureHost(host), host);
+  const { fixture } = await setup(t);
+  assert.equal(fixture.host, "127.0.0.1");
+});
+
+test("formatted bench rows are opt-in and deterministic", async (t) => {
+  const { request } = await setup(t);
+  const plain = await request(`/api/spaces/${ids.space}`, { auth: true });
+  assert.deepEqual(
+    plain.value.channels.map((channel) => channel.name),
+    ["general", "design", "planning"],
+  );
+  assert.equal(
+    (await request(`/api/chat/channels/${benchFormattingChannel}/messages`, { auth: true })).response.status,
+    404,
+  );
+
+  const page = async () => {
+    const fixture = await startFixture({ port: 0, gatewayPort: 0, formatted: 60 });
+    t.onTestFinished(() => fixture.close());
+    const base = `http://127.0.0.1:${fixture.port}`;
+    const headers = { authorization: "Bearer fixture-owner-token" };
+    const space = await (await fetch(`${base}/api/spaces/${ids.space}`, { headers })).json();
+    assert.ok(space.channels.some((channel) => channel.id === benchFormattingChannel && !channel.private));
+    return (await fetch(`${base}/api/chat/channels/${benchFormattingChannel}/messages`, { headers })).json();
+  };
+  const first = await page();
+  assert.equal(first.messages.length, 50);
+  assert.equal(first.hasMore, true);
+  for (const { content } of first.messages) {
+    assert.ok(content.text.length >= 400, content.text);
+    assert.match(content.text, /\*\*[^*]+\*\*/);
+    assert.ok((content.text.match(/https?:\/\/|www\./g) ?? []).length >= 4, content.text);
+  }
+  assert.deepEqual((await page()).messages, first.messages);
 });

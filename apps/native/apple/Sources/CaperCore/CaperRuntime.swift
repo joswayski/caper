@@ -64,13 +64,26 @@ import Foundation
                                          speaking: fixture == "voice-crowd" ? ["fixture-crowd-alex"] : [])
     }
 
-    public static func makeModel(environment: [String: String] = ProcessInfo.processInfo.environment) -> AppModel {
-        guard environment["CAPER_TEST_MODE"] == "parity",
-              let rawURL = environment["CAPER_API_BASE_URL"],
-              let baseURL = URL(string: rawURL),
-              ["localhost", "127.0.0.1", "::1"].contains(baseURL.host?.lowercased() ?? "") else {
-            return AppModel()
+    /// The fixture server this launch talks to, or nil for caper.chat.
+    /// Shipping builds accept only a loopback fixture in a parity launch.
+    /// Bench builds (`CAPER_DEVICE_FIXTURE`, device-fixture-project.yml) also
+    /// accept a private-LAN fixture and never fall back: missing or invalid
+    /// settings stop the app rather than reach caper.chat.
+    nonisolated public static func fixtureBaseURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        #if CAPER_DEVICE_FIXTURE
+        switch FixtureServer.resolve(environment, privateNetwork: true) {
+        case .success(let url): return url
+        case .failure(let rejection):
+            fatalError("TEST FIXTURE bench build: \(rejection). It never connects to caper.chat.")
         }
+        #else
+        return try? FixtureServer.resolve(environment, privateNetwork: false).get()
+        #endif
+    }
+
+    public static func makeModel(environment: [String: String] = ProcessInfo.processInfo.environment) -> AppModel {
+        guard let baseURL = fixtureBaseURL(environment: environment) else { return AppModel() }
+        // Fixture sessions stay in memory, never in the Keychain.
         let store = FixtureTokenStore(token: environment["CAPER_TEST_BEARER"])
         let model = AppModel(
             api: APIClient(baseURL: baseURL, tokenStore: store),
@@ -91,4 +104,51 @@ private final class FixtureTokenStore: TokenStore, @unchecked Sendable {
     func load() throws -> String? { lock.withLock { token } }
     func save(_ token: String) throws { lock.withLock { self.token = token } }
     func clear() throws { lock.withLock { token = nil } }
+}
+
+/// Which fixture server a parity launch (`CAPER_TEST_MODE=parity`,
+/// `CAPER_API_BASE_URL`) may use. Loopback hosts are always allowed. Bench
+/// builds for a physical iPhone also allow plain-HTTP private-LAN IPv4
+/// literals (10/8, 172.16/12, 192.168/16): a host name could resolve anywhere.
+enum FixtureServer {
+    enum Rejection: Error, Equatable, CustomStringConvertible {
+        case notParity, missingURL, invalidURL(String), notFixtureHost(String)
+
+        var description: String {
+            switch self {
+            case .notParity: return "CAPER_TEST_MODE is not parity"
+            case .missingURL: return "CAPER_API_BASE_URL is missing"
+            case .invalidURL(let raw): return "CAPER_API_BASE_URL \(raw) is not a plain http://host:port fixture URL"
+            case .notFixtureHost(let host): return "\(host) is not a loopback or private-LAN IPv4 fixture host"
+            }
+        }
+    }
+
+    static let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "::1"]
+
+    static func resolve(_ environment: [String: String], privateNetwork: Bool) -> Result<URL, Rejection> {
+        guard environment["CAPER_TEST_MODE"] == "parity" else { return .failure(.notParity) }
+        guard let raw = environment["CAPER_API_BASE_URL"], !raw.isEmpty else { return .failure(.missingURL) }
+        guard let url = URL(string: raw), let host = url.host?.lowercased() else { return .failure(.invalidURL(raw)) }
+        guard privateNetwork else {
+            return loopbackHosts.contains(host) ? .success(url) : .failure(.notFixtureHost(host))
+        }
+        guard loopbackHosts.contains(host) || isPrivateIPv4(host) else { return .failure(.notFixtureHost(host)) }
+        guard url.scheme == "http", url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+              ["", "/"].contains(url.path) else { return .failure(.invalidURL(raw)) }
+        return .success(url)
+    }
+
+    static func isPrivateIPv4(_ host: String) -> Bool {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        let octets = parts.compactMap { part -> Int? in
+            guard (1...3).contains(part.count), part.allSatisfy(\.isASCII), part.allSatisfy(\.isNumber),
+                  part == "0" || !part.hasPrefix("0"), let value = Int(part), value <= 255 else { return nil }
+            return value
+        }
+        guard octets.count == 4 else { return false }
+        return octets[0] == 127 || octets[0] == 10 || (octets[0] == 172 && (16...31).contains(octets[1]))
+            || (octets[0] == 192 && octets[1] == 168)
+    }
 }
