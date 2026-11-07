@@ -217,6 +217,115 @@ import XCTest
         XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
     }
 
+    func testPinsKeepAuthorIdentitySelectionAndIndependentErrorsInsideGroupedAndQuotedRows() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let parent = NSViewController()
+        let media = AppKitMediaPresenter(model: model, parent: parent)
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 600))
+        timeline.makeReply = { media.replyContext($0) }
+        window.contentView = timeline
+        let previous = message(0)
+        var value = message(1)
+        value.reactions = [MessageReaction(emoji: "👍", authorIds: ["peer"])]
+        value.thread = ThreadSummary(replyCount: 2, participants: [previous.author], seq: "7")
+        func update(pinError: Bool = false, reactionError: Bool = false, pending: Bool = false, allowed: Bool = true) {
+            timeline.update([previous, value], conversationID: "channel", viewerID: "self", canInteract: allowed,
+                reactionErrors: reactionError ? [value.id: "Couldn’t save reaction. Retry."] : [:],
+                pinErrors: pinError ? [value.id: "Couldn’t update pin. Try again."] : [:],
+                pendingPins: pending ? [value.id] : [])
+            timeline.layoutSubtreeIfNeeded()
+        }
+        update()
+        let body = try XCTUnwrap(bodies(in: timeline).first { $0.accessibilityIdentifier() == "message-message-1" })
+        let row = try XCTUnwrap(body.superview)
+        func button(_ id: String) throws -> NSButton {
+            try XCTUnwrap(row.subviews.compactMap { $0 as? NSButton }.first { $0.accessibilityIdentifier() == id })
+        }
+        let unpinnedHeight = row.frame.height
+        body.setSelectedRange((body.string as NSString).range(of: "👩🏽‍💻"))
+        value.pin = MessagePin(author: message(2, author: "self").author, createdAt: value.createdAt)
+        update()
+        let badge = try button("pinned-by-message-1")
+        XCTAssertEqual(badge.title, "Pinned by you", "The pin's author, not the message's author, determines ownership")
+        XCTAssertEqual(badge.accessibilityLabel(), "Open profile for self")
+        XCTAssertGreaterThan(row.frame.height, unpinnedHeight, "A pin-only update must invalidate the grouped row's measurement")
+        XCTAssertTrue(window.makeFirstResponder(badge))
+        value.pin = MessagePin(author: message(3, author: "Maya").author, createdAt: value.createdAt)
+        update()
+        XCTAssertTrue(window.firstResponder === badge)
+        XCTAssertEqual(badge.title, "Pinned by Maya")
+        XCTAssertEqual(badge.accessibilityLabel(), "Open profile for Maya")
+        var openedAuthor: String?
+        timeline.openAuthor = { author, _ in openedAuthor = author.id }
+        badge.performClick(nil)
+        XCTAssertEqual(openedAuthor, "Maya")
+        XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+
+        for quoted in [false, true] {
+            value.replyTo = quoted ? MessageReply(message: previous) : nil
+            for width in [CGFloat(640), CGFloat(300)] {
+                timeline.setFrameSize(NSSize(width: width, height: 600))
+                update(pinError: true, reactionError: true)
+                let retry = try button("pin-retry-message-1")
+                let dismiss = try button("pin-dismiss-message-1")
+                let reactionRetry = try button("reaction-retry-message-1")
+                let summary = try button("thread-summary-message-1")
+                for control in [badge, retry, dismiss, reactionRetry, summary] {
+                    XCTAssertFalse(control.isHidden)
+                    XCTAssertTrue(row.bounds.contains(control.frame), "Pin and reaction errors must fit together at both pane widths")
+                }
+                XCTAssertGreaterThan(retry.frame.minY, reactionRetry.frame.maxY)
+                XCTAssertGreaterThan(summary.frame.minY, retry.frame.maxY)
+                XCTAssertGreaterThanOrEqual(body.frame.minY, badge.frame.maxY)
+                if quoted {
+                    let quote = try XCTUnwrap(row.subviews.compactMap { $0 as? AppKitAttachmentSurface }.first)
+                    XCTAssertGreaterThanOrEqual(quote.frame.minY, badge.frame.maxY)
+                    XCTAssertGreaterThanOrEqual(body.frame.minY, quote.frame.maxY)
+                }
+                update(pinError: true, pending: true)
+                XCTAssertFalse(retry.isEnabled, "Pending changes must not accept duplicate retries")
+                XCTAssertTrue(reactionRetry.isHidden, "Dismissing a reaction error must not hide the independent pin error")
+                update(pinError: true, allowed: false)
+                XCTAssertFalse(retry.isEnabled)
+                XCTAssertTrue(dismiss.isEnabled)
+                XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+            }
+        }
+        update(pinError: true)
+        var actions: [String] = []
+        timeline.messageAction = { message, action, _ in
+            XCTAssertEqual(message.id, value.id)
+            switch action {
+            case .retryPin: actions.append("retry")
+            case .dismissPin: actions.append("dismiss")
+            default: XCTFail("Wrong action for pin failure recovery")
+            }
+        }
+        try button("pin-retry-message-1").performClick(nil)
+        try button("pin-dismiss-message-1").performClick(nil)
+        XCTAssertEqual(actions, ["retry", "dismiss"])
+        value.pin = nil; value.replyTo = nil
+        timeline.setFrameSize(NSSize(width: 640, height: 600))
+        update()
+        XCTAssertTrue(badge.isHidden)
+        XCTAssertTrue(try button("pin-retry-message-1").isHidden)
+        XCTAssertEqual(row.frame.height, unpinnedHeight, accuracy: 0.5)
+        XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+        value.pin = MessagePin(author: previous.author, createdAt: value.createdAt)
+        value.deletedAt = "2026-11-05T11:00:00Z"
+        update(pinError: true, reactionError: true)
+        XCTAssertEqual(body.string, MessageDeletion.placeholder)
+        XCTAssertTrue(badge.isHidden, "A tombstone must hide stale pin metadata")
+        XCTAssertTrue(try button("pin-retry-message-1").isHidden)
+        XCTAssertTrue(try button("reaction-retry-message-1").isHidden)
+        XCTAssertFalse(try button("thread-summary-message-1").isHidden)
+    }
+
     func testBlockedRunsRevealIndependentlyWithoutRealizingTheirWholeHistory() throws {
         let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         let history = [message(0, author: "blocked"), message(1, author: "blocked"),

@@ -27,10 +27,16 @@ import CaperCore
     private lazy var navigation = NavigationSidebar(model: model)
     private lazy var dialogs = AppKitWorkspacePresenter(model: model)
     private lazy var media = AppKitMediaPresenter(model: model, parent: presentationParent)
+    private lazy var pins = AppKitPinsPresenter(model: model, media: media)
     private lazy var picker = AppKitComposerPicker(model: model, inThread: inThread)
     private lazy var members = MemberPanel(model: model)
     private lazy var profiles = AppKitProfilePresenter(model: model)
     private var membersPreference: Bool?
+    private lazy var pinsButton: NativeButton = NativeButton.icon("Pins", symbol: "pin") { [weak self] in
+        guard let self else { return }
+        self.picker.close(restoringFocus: false)
+        self.pins.show(from: self.pinsButton, composer: self.composer)
+    }
     private lazy var membersToggle = NativeButton.icon("Show members", symbol: "person.2") { [weak self] in
         guard let self else { return }
         self.membersPreference = self.members.isHidden
@@ -121,7 +127,9 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, header, membersToggle, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, header, pinsButton, membersToggle, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        pinsButton.setAccessibilityIdentifier("channel-pins")
+        pinsButton.isHidden = inThread
         timeline.inThread = inThread
         if inThread { timeline.setAccessibilityIdentifier("thread-timeline"); timeline.setAccessibilityLabel("Thread replies") }
         back.isHidden = !inThread; back.font = NativeStyle.font(11, bold: true)
@@ -275,7 +283,7 @@ import CaperCore
             self.timeline.update(visible, conversationID: identity,
                 viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs,
                 pending: chat.pendingMessage.flatMap { $0.threadRootId == root ? $0 : nil },
-                canInteract: chat.canInteract, reactionErrors: chat.reactionErrors)
+                canInteract: chat.canInteract, reactionErrors: chat.reactionErrors, pinErrors: chat.pinErrors, pendingPins: chat.pendingPins)
             if let id = chat.focusedMessageID, self.focusedRevision != chat.focusRevision || self.focusedConversation != identity,
                visible.contains(where: { $0.id == id }) {
                 self.focusedRevision = chat.focusRevision; self.focusedConversation = identity
@@ -314,9 +322,11 @@ import CaperCore
     override func viewDidDisappear() {
         super.viewDidDisappear()
         picker.close(restoringFocus: false)
+        pins.close(restoringFocus: false)
     }
 
     private func updateThreadPane(_ root: String?) {
+        pins.close(restoringFocus: false)
         if root != nil, threadPane == nil {
             let pane = WorkspaceController(model: model, inThread: true)
             addChild(pane)
@@ -386,10 +396,11 @@ import CaperCore
             members.setVisible(visible)
         }
         let center = stage.bounds.width
-        header.frame = NSRect(x: 20, y: 14, width: max(0, center - (inThread ? 195 : 80)), height: 26)
         back.frame = NSRect(x: center - 170, y: 10, width: 150, height: 28)
         membersToggle.frame = NSRect(x: center - 48, y: 8, width: 32, height: 32)
         membersToggle.isHidden = inThread || threadPane != nil || model.selectedDirectMessageID != nil
+        pinsButton.frame = NSRect(x: center - (membersToggle.isHidden ? 48 : 88), y: 8, width: 32, height: 32)
+        header.frame = NSRect(x: 20, y: 14, width: max(0, center - (inThread ? 195 : membersToggle.isHidden ? 80 : 120)), height: 26)
         membersToggle.setAccessibilityLabel(visible ? "Hide members" : "Show members")
         membersToggle.toolTip = visible ? "Hide members" : "Show members"
         membersToggle.contentTintColor = visible ? NativeStyle.accent : NativeStyle.muted
@@ -435,6 +446,7 @@ import CaperCore
         let identity = [dialogs.messageContext, root ?? "channel"].joined(separator: ":")
         if composerIdentity != identity {
             picker.close(restoringFocus: false)
+            pins.close(restoringFocus: false)
             composerIdentity = identity
             composer.unmarkText()
             suggestionsDismissed = false
@@ -447,6 +459,7 @@ import CaperCore
         }
         composer.placeholder = inThread ? "Reply to thread…" : "Message \(model.selectedDirectMessage?.peer.displayName ?? "#\(chat.channelName)")"
         let ready = !inThread || (root != nil && !chat.threadLoading)
+        pinsButton.isEnabled = chat.channelID != nil
         composer.isEditable = ready && directBar.isHidden && chat.canInteract && !chat.sending && !chat.sendRejected && chat.pendingMessage == nil
         send.isEnabled = ready && directBar.isHidden && chat.canInteract && chat.canPressSend(inThread: inThread)
         send.title = chat.sending ? "Sending…" : inThread ? "Send reply" : "Send"
@@ -539,6 +552,15 @@ import CaperCore
         case .reactors(let emoji): dialogs.reactions(current, emoji: emoji, in: presentationParent)
         case .addReaction: picker.reaction(to: current, from: anchor, composer: composer)
         case .dismissReaction: chat.reactionErrors[current.id] = nil
+        case .dismissPin: chat.pinErrors[current.id] = nil
+        case .pin, .retryPin:
+            Task {
+                guard dialogs.messageContext == context, chat.canInteract,
+                      let latest = dialogs.currentMessage(current), !latest.isDeleted,
+                      !chat.pendingPins.contains(latest.id) else { return }
+                if case .retryPin = action { await chat.retryPin(messageID: latest.id) }
+                else { await chat.setPin(messageID: latest.id, active: latest.pin == nil) }
+            }
         case .retryReaction:
             Task {
                 guard dialogs.messageContext == context, chat.canInteract,
@@ -606,6 +628,10 @@ import CaperCore
                 guard let self else { return }; self.dialogs.messageHistory($0, in: self.presentationParent)
             }))
         }
+        items.append(NavigationMenuItem(current.pin == nil ? "Pin message" : "Unpin message",
+            enabled: chat.canInteract && !chat.pendingPins.contains(current.id), action: perform { [weak self, weak anchor] in
+                guard let self, let anchor else { return }; self.messageAction($0, action: .pin, anchor: anchor)
+            }))
         if !current.content.text.isEmpty {
             items.append(NavigationMenuItem("Copy text", action: perform { if !$0.isDeleted { copy($0.content.text) } }))
         }

@@ -59,6 +59,234 @@ import XCTest
         return item.exists ? item : body.menuItems[title]
     }
 
+    func testNativePinsRollbackRetryDismissAndLiveAuthorIdentityPreserveDraft() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let path = "/api/chat/channels/chan00000001/messages"
+        let id = "chan00000001m02", peerPinID = "chan00000001m01"
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        let draft = "TEST FIXTURE — keep this draft while managing pins"
+        composer.click(); composer.typeText(draft)
+        let timeline = app.scrollViews["message-timeline"]
+        let body = timeline.textViews["message-\(id)"]
+        let badge = timeline.buttons["pinned-by-\(id)"]
+        let error = timeline.staticTexts["pin-error-\(id)"]
+        let retry = timeline.buttons["pin-retry-\(id)"]
+        let dismiss = timeline.buttons["pin-dismiss-\(id)"]
+        let pins = app.descendants(matching: .any)["pinned-messages"]
+        func options() {
+            timeline.descendants(matching: .any)["message-row-\(id)"].hover()
+            timeline.buttons["add-reaction-\(id)"].hover()
+            let button = timeline.buttons["message-options-\(id)"]
+            button.hover(); button.click()
+            XCTAssertTrue(messageMenuItem("Copy message ID", app: app, body: body).waitForExistence(timeout: 5))
+        }
+        func openPins() {
+            app.buttons["toggle-members"].hover()
+            let button = app.buttons["channel-pins"]
+            button.hover(); button.click()
+            XCTAssertTrue(pins.waitForExistence(timeout: 5))
+            XCTAssertEqual(pins.frame.width, 470, accuracy: 3)
+            XCTAssertEqual(pins.frame.height, 360, accuracy: 3)
+            XCTAssertTrue(composer.exists, "A native popover must not hide the underlying composer from accessibility")
+            XCTAssertEqual(composer.value as? String, draft)
+        }
+        func closePins() {
+            app.buttons["close-pins"].click()
+            XCTAssertTrue(pins.waitForNonExistence(timeout: 5))
+            XCTAssertEqual(composer.value as? String, draft)
+        }
+        func storedPin(_ messageID: String, authorID: String?) async throws {
+            let history = try await Self.fixtureGET(path)
+            let message = try XCTUnwrap((history["messages"] as? [[String: Any]])?.first { $0["id"] as? String == messageID })
+            let pinned = try XCTUnwrap(history["pinnedMessages"] as? [[String: Any]])
+            let pin = message["pin"] as? [String: Any]
+            XCTAssertEqual((pin?["author"] as? [String: Any])?["id"] as? String, authorID)
+            XCTAssertEqual(pinned.contains { $0["id"] as? String == messageID }, authorID != nil,
+                "The HTTP pin list must agree with the timeline, not only its optimistic badge")
+        }
+        openPins()
+        XCTAssertTrue(pins.staticTexts["No pinned messages"].exists)
+        capture("pins empty wide with channel draft", app: app)
+        closePins()
+        try await Self.control(["failure": ["path": "\(path)/\(id)/pin", "method": "PUT", "status": 503]])
+        options()
+        let pin = messageMenuItem("Pin message", app: app, body: body)
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: pin)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed); pin.click()
+        XCTAssertTrue(error.waitForExistence(timeout: 10))
+        XCTAssertEqual(error.value as? String, "Couldn’t pin message. Try again.")
+        XCTAssertFalse(badge.exists, "A failed pin rolls back its optimistic identity")
+        try await storedPin(id, authorID: nil)
+        capture("pin failed and rolled back wide", app: app)
+        openPins()
+        XCTAssertTrue(pins.staticTexts["No pinned messages"].exists, "Rollback must also remove the optimistic pinned-list entry")
+        closePins()
+        retry.hover(); dismiss.hover(); retry.click()
+        XCTAssertTrue(error.waitForNonExistence(timeout: 10))
+        // The native button's AX label describes its profile action; its visible title says "Pinned by you".
+        XCTAssertTrue(badge.waitForExistence(timeout: 10)); XCTAssertEqual(badge.label, "Open profile for Fixture Owner")
+        body.rightClick()
+        let unpin = messageMenuItem("Unpin message", app: app, body: body)
+        XCTAssertTrue(unpin.waitForExistence(timeout: 5))
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: unpin)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 10), .completed)
+        app.typeKey(.escape, modifierFlags: [])
+        try await storedPin(id, authorID: "owner0000001")
+        timeline.buttons["profile-author-\(id)"].hover(); badge.hover(); badge.click()
+        XCTAssertTrue(app.buttons["mention-card-edit-profile"].waitForExistence(timeout: 5),
+            "The pin author is you even though Maya wrote the message")
+        XCTAssertTrue(app.descendants(matching: .any)["mention-card-you"].exists)
+        XCTAssertFalse(app.buttons["mention-card-message"].exists)
+        capture("own pin author on Maya message", app: app)
+        app.buttons["mention-card-close"].click()
+        openPins()
+        XCTAssertTrue(pins.descendants(matching: .any)["pinned-message-\(id)"].waitForExistence(timeout: 5))
+        XCTAssertFalse(pins.staticTexts["No pinned messages"].exists)
+        capture("pins populated wide with channel draft", app: app)
+        closePins()
+
+        try await Self.control(["failure": ["path": "\(path)/\(id)/pin", "method": "PUT", "status": 503]])
+        options(); messageMenuItem("Unpin message", app: app, body: body).click()
+        XCTAssertTrue(error.waitForExistence(timeout: 10))
+        XCTAssertEqual(error.value as? String, "Couldn’t unpin message. Try again.")
+        XCTAssertTrue(badge.exists); XCTAssertEqual(badge.label, "Open profile for Fixture Owner")
+        try await storedPin(id, authorID: "owner0000001")
+        let beforeDismiss = try await Self.fixtureGET(path)
+        capture("unpin failed and restored wide", app: app)
+        retry.hover(); dismiss.hover(); dismiss.click()
+        XCTAssertTrue(error.waitForNonExistence(timeout: 5)); XCTAssertFalse(retry.exists); XCTAssertFalse(dismiss.exists)
+        XCTAssertTrue(badge.exists, "Dismiss clears the error, not the restored pin")
+        let afterDismiss = try await Self.fixtureGET(path)
+        XCTAssertEqual(afterDismiss["cursor"] as? String, beforeDismiss["cursor"] as? String,
+            "Dismiss must not retry the failed unpin")
+        body.rightClick()
+        XCTAssertTrue(messageMenuItem("Unpin message", app: app, body: body).waitForExistence(timeout: 5))
+        messageMenuItem("Unpin message", app: app, body: body).click()
+        XCTAssertTrue(badge.waitForNonExistence(timeout: 10))
+        body.rightClick()
+        let restoredPin = messageMenuItem("Pin message", app: app, body: body)
+        XCTAssertTrue(restoredPin.waitForExistence(timeout: 5))
+        let unpinned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: restoredPin)
+        XCTAssertEqual(XCTWaiter.wait(for: [unpinned], timeout: 10), .completed)
+        app.typeKey(.escape, modifierFlags: [])
+        try await storedPin(id, authorID: nil)
+
+        // Reverse authorship to catch a badge opening the message author instead of the pinner.
+        try await Self.control(["incomingPin": ["channelId": "chan00000001", "messageId": peerPinID, "userId": "member000001"]])
+        let peerBadge = timeline.buttons["pinned-by-\(peerPinID)"]
+        XCTAssertTrue(peerBadge.waitForExistence(timeout: 10)); XCTAssertEqual(peerBadge.label, "Open profile for Maya")
+        timeline.buttons["profile-author-\(peerPinID)"].hover(); peerBadge.hover(); peerBadge.click()
+        let username = app.staticTexts["mention-card-username"]
+        XCTAssertTrue(username.waitForExistence(timeout: 5)); XCTAssertEqual(username.label, "@maya")
+        XCTAssertFalse(app.descendants(matching: .any)["mention-card-you"].exists)
+        XCTAssertTrue(app.textViews["mention-card-composer"].exists)
+        capture("Maya pin author on own message", app: app)
+        app.buttons["mention-card-close"].click()
+        try await storedPin(peerPinID, authorID: "member000001")
+        resize(app, width: 900)
+        openPins()
+        let peerRow = pins.descendants(matching: .any)["pinned-message-\(peerPinID)"]
+        XCTAssertTrue(peerRow.waitForExistence(timeout: 5))
+        XCTAssertFalse(pins.descendants(matching: .any)["pinned-message-\(id)"].exists)
+        capture("pins populated narrow after native unpin", app: app)
+        try await Self.control(["incomingPin": ["channelId": "chan00000001", "messageId": peerPinID, "active": false]])
+        XCTAssertTrue(peerRow.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(pins.staticTexts["No pinned messages"].waitForExistence(timeout: 10))
+        XCTAssertFalse(peerBadge.exists, "Live unpin updates the native timeline beneath the still-open popover")
+        XCTAssertTrue(composer.exists); XCTAssertEqual(composer.value as? String, draft)
+        try await storedPin(peerPinID, authorID: nil)
+        capture("pins live unpin to empty narrow", app: app)
+        closePins()
+    }
+
+    func testPinnedOldOriginalAndPrivateReplyJumpToTheirOwnTimelines() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let path = "/api/chat/channels/chan00000001/messages"
+        let oldID = "chan00000001m01", rootID = "chan00000001m02"
+        let initial = try await Self.fixtureGET(path)
+        let old = try XCTUnwrap((initial["messages"] as? [[String: Any]])?.first { $0["id"] as? String == oldID })
+        let oldText = try XCTUnwrap((old["content"] as? [String: Any])?["text"] as? String)
+        try await Self.control(["incomingReply": ["rootId": rootID, "text": "Private pinned thread reply"]])
+        let threadPath = "\(path)/\(rootID)/thread"
+        let thread = try await Self.fixtureGET(threadPath)
+        let reply = try XCTUnwrap((thread["messages"] as? [[String: Any]])?.first)
+        let replyID = try XCTUnwrap(reply["id"] as? String)
+        let replyText = try XCTUnwrap((reply["content"] as? [String: Any])?["text"] as? String)
+        XCTAssertEqual(reply["threadRootId"] as? String, rootID); XCTAssertEqual(reply["broadcast"] as? Bool, false)
+        try await Self.control(["incomingPin": ["channelId": "chan00000001", "messageId": oldID, "userId": "owner0000001"]])
+        // Seed before launch: the original must not be in the app's loaded history already.
+        for index in 1...55 {
+            try await Self.control(["incomingMessage": ["channelId": "chan00000001", "text": "After old pinned original \(index)"]])
+        }
+        let newest = try await Self.fixtureGET(path)
+        let page = try XCTUnwrap(newest["messages"] as? [[String: Any]])
+        XCTAssertEqual(page.count, 50)
+        XCTAssertFalse(page.contains { [oldID, rootID, replyID].contains($0["id"] as? String ?? "") })
+        XCTAssertEqual((newest["pinnedMessages"] as? [[String: Any]])?.compactMap { $0["id"] as? String }, [oldID])
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        let draft = "TEST FIXTURE — retain draft across pin context jumps"
+        composer.click(); composer.typeText(draft)
+        let channel = app.scrollViews["message-timeline"]
+        let oldBody = channel.textViews["message-\(oldID)"]
+        XCTAssertFalse(oldBody.exists)
+        app.buttons["toggle-members"].hover(); app.buttons["channel-pins"].hover(); app.buttons["channel-pins"].click()
+        let pins = app.descendants(matching: .any)["pinned-messages"]
+        XCTAssertTrue(pins.descendants(matching: .any)["pinned-message-\(oldID)"].waitForExistence(timeout: 5))
+        XCTAssertTrue(composer.exists); XCTAssertEqual(composer.value as? String, draft)
+        capture("old pin outside latest history page wide", app: app)
+        let original = pins.buttons["go-to-message-\(oldID)"]
+        original.hover(); app.buttons["close-pins"].hover(); original.click()
+        XCTAssertTrue(pins.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(oldBody.waitForExistence(timeout: 10)); XCTAssertEqual(oldBody.value as? String, oldText)
+        XCTAssertTrue(oldBody.isHittable); XCTAssertTrue(channel.frame.intersects(oldBody.frame))
+        XCTAssertFalse(app.descendants(matching: .any)["thread-pane"].exists)
+        XCTAssertEqual(composer.value as? String, draft)
+        capture("pin jumped to old channel original wide", app: app)
+
+        // Replace the list through real gateway events, keeping the next target unambiguous.
+        try await Self.control(["incomingPin": ["channelId": "chan00000001", "messageId": oldID, "active": false]])
+        try await Self.control(["incomingPin": ["channelId": "chan00000001", "messageId": replyID, "userId": "member000001"]])
+        let persisted = try await Self.fixtureGET(path)
+        let pinned = try XCTUnwrap((persisted["pinnedMessages"] as? [[String: Any]])?.first)
+        XCTAssertEqual(pinned["id"] as? String, replyID); XCTAssertEqual(pinned["threadRootId"] as? String, rootID)
+        XCTAssertEqual(pinned["broadcast"] as? Bool, false)
+        resize(app, width: 900)
+        app.buttons["channel-pins"].click()
+        XCTAssertTrue(pins.descendants(matching: .any)["pinned-message-\(replyID)"].waitForExistence(timeout: 10))
+        XCTAssertFalse(pins.descendants(matching: .any)["pinned-message-\(oldID)"].exists)
+        XCTAssertFalse(channel.textViews["message-\(replyID)"].exists, "A private reply appears in pins, never in channel history")
+        XCTAssertTrue(composer.exists); XCTAssertEqual(composer.value as? String, draft)
+        capture("private thread reply in channel pins narrow", app: app)
+        pins.buttons["go-to-message-\(replyID)"].click()
+        XCTAssertTrue(pins.waitForNonExistence(timeout: 10))
+        let threadTimeline = app.scrollViews["thread-timeline"]
+        let replyBody = threadTimeline.textViews["message-\(replyID)"]
+        XCTAssertTrue(replyBody.waitForExistence(timeout: 10)); XCTAssertEqual(replyBody.value as? String, replyText)
+        XCTAssertTrue(replyBody.isHittable); XCTAssertTrue(threadTimeline.frame.intersects(replyBody.frame))
+        XCTAssertFalse(channel.exists); XCTAssertFalse(composer.exists, "Narrow navigation opens the thread instead of exposing the covered channel")
+        let editor = app.textViews["thread-composer"]
+        XCTAssertEqual(editor.value as? String, "", "A pin jump must not transfer the channel draft to its thread")
+        capture("pin jumped to private reply narrow", app: app)
+        resize(app, width: 1280)
+        XCTAssertTrue(threadTimeline.textViews["message-\(rootID)"].waitForExistence(timeout: 5), "The pane must belong to the reply's root, not the previously pinned message")
+        XCTAssertFalse(threadTimeline.textViews["message-\(oldID)"].exists)
+        XCTAssertFalse(channel.textViews["message-\(replyID)"].exists)
+        XCTAssertEqual(composer.value as? String, draft)
+        app.buttons["close-thread"].click()
+        XCTAssertTrue(app.descendants(matching: .any)["thread-pane"].waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, draft)
+    }
+
     func testWhoReactedRetriesSwitchesEmojiAndFollowsLiveChangesWithoutToggling() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
@@ -531,7 +759,7 @@ import XCTest
         }
         XCTAssertFalse(item("Message history").exists, "An unedited message has no history action")
         XCTAssertFalse(app.buttons["message-history-\(id)"].exists)
-        for title in ["Pin message", "Unpin message", "Forward message", "Forward…"] {
+        for title in ["Forward message", "Forward…"] {
             XCTAssertFalse(item(title).exists, "Unimplemented actions must not appear as placeholders")
         }
         capture("own message options wide", app: app)
@@ -625,7 +853,7 @@ import XCTest
         XCTAssertTrue(item("Copy message ID").waitForExistence(timeout: 5))
         let tombstoneMenu = app.menus.containing(.menuItem, identifier: "Copy message ID").firstMatch
         XCTAssertEqual(tombstoneMenu.menuItems.allElementsBoundByIndex.map(\.label), ["Copy message ID"])
-        for title in ["Add reaction…", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message"] {
+        for title in ["Add reaction…", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message", "Pin message", "Unpin message"] {
             XCTAssertFalse(item(title).exists, "A tombstone only offers Copy message ID")
         }
         capture("tombstone options menu narrow", app: app)
@@ -635,7 +863,7 @@ import XCTest
         XCTAssertTrue(item("Copy message ID").waitForExistence(timeout: 5))
         // Native text-selection commands may remain for the placeholder. Only
         // message actions are restricted; they must not resurrect deleted text.
-        for title in ["Add reaction…", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message"] {
+        for title in ["Add reaction…", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message", "Pin message", "Unpin message"] {
             XCTAssertFalse(item(title).exists, "Right-click must not restore actions on deleted content")
         }
         app.typeKey(.escape, modifierFlags: [])
@@ -1273,6 +1501,7 @@ import XCTest
         try await Self.resetFixture()
         try await Self.control(["incomingReaction": ["channelId": "chan00000002", "messageId": "chan00000002m01",
             "emoji": "🍅", "userId": "member000001"]])
+        try await Self.control(["incomingPin": ["channelId": "chan00000002", "messageId": "chan00000002m01", "userId": "member000001"]])
         let app = launch()
         defer { app.terminate() }
         let design = app.buttons["channel-chan00000002"]
@@ -1316,6 +1545,37 @@ import XCTest
         capture("who reacted in a read-only channel preview", app: app)
         app.buttons["Done"].click()
         XCTAssertTrue(app.buttons["join-channel"].waitForExistence(timeout: 5))
+        let pinHistoryPath = "/api/chat/channels/chan00000002/messages"
+        let beforePins = try await Self.fixtureGET(pinHistoryPath)
+        for (id, title) in [("chan00000002m01", "Unpin message"), ("chan00000002m02", "Pin message")] {
+            let body = app.textViews["message-\(id)"]
+            app.descendants(matching: .any)["message-row-\(id)"].hover()
+            app.buttons["add-reaction-\(id)"].hover(); app.buttons["message-options-\(id)"].hover()
+            app.buttons["message-options-\(id)"].click()
+            let option = messageMenuItem(title, app: app, body: body)
+            XCTAssertTrue(option.waitForExistence(timeout: 5)); XCTAssertFalse(option.isEnabled, "Preview options cannot mutate pins")
+            app.typeKey(.escape, modifierFlags: [])
+            body.rightClick()
+            let context = messageMenuItem(title, app: app, body: body)
+            XCTAssertTrue(context.waitForExistence(timeout: 5)); XCTAssertFalse(context.isEnabled, "Right-click cannot bypass preview restrictions")
+            capture("preview disabled \(title) context menu", app: app)
+            app.typeKey(.escape, modifierFlags: [])
+        }
+        app.buttons["toggle-members"].hover(); app.buttons["channel-pins"].hover(); app.buttons["channel-pins"].click()
+        let pins = app.descendants(matching: .any)["pinned-messages"]
+        XCTAssertTrue(pins.descendants(matching: .any)["pinned-message-chan00000002m01"].waitForExistence(timeout: 5),
+            "Reading the pin list must not require joining or a chat session")
+        XCTAssertTrue(app.buttons["join-channel"].exists, "Pins is a popover, not the modal accessibility overlay")
+        XCTAssertFalse(app.textViews["message-composer"].exists)
+        capture("pins readable in unjoined channel preview", app: app)
+        app.buttons["close-pins"].click()
+        XCTAssertTrue(pins.waitForNonExistence(timeout: 5))
+        let afterPins = try await Self.fixtureGET(pinHistoryPath)
+        XCTAssertEqual(afterPins["cursor"] as? String, beforePins["cursor"] as? String, "Reading preview pins must not mutate them")
+        let persistedPins = try XCTUnwrap(afterPins["pinnedMessages"] as? [[String: Any]])
+        XCTAssertEqual(persistedPins.compactMap { $0["id"] as? String }, ["chan00000002m01"])
+        let pinner = try XCTUnwrap(persistedPins.first?["pin"] as? [String: Any])
+        XCTAssertEqual((pinner["author"] as? [String: Any])?["id"] as? String, "member000001")
         app.buttons["join-channel"].click()
         XCTAssertTrue(app.textViews["message-composer"].waitForExistence(timeout: 10))
         XCTAssertTrue(design.exists)

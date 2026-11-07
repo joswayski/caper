@@ -7644,7 +7644,7 @@ struct MessageActionsSheet: View {
 }
 #endif
 
-private struct PinnedMessagesView: View {
+struct PinnedMessagesView: View {
     @Bindable var chat: ChatModel
     let model: AppModel
     let close: () -> Void
