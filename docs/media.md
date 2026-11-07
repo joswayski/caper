@@ -4387,6 +4387,8 @@ Shared tokens: `--ease-out` `cubic-bezier(0.16, 1, 0.3, 1)`, `--motion-fast`
   never discard unsaved Channel settings or a renamed space.
 - Touch targets are 44px/44pt/48dp; disclosure chevrons rotate; timers use
   tabular digits; keyboard focus returns to User Settings after its dialogs.
+  On macOS, native menu activation follows the system's Keyboard navigation
+  setting: focus and Space activation require it; pointer reopening does not.
 - Every client hides **Copy text** for attachment-only messages and says
   **Message history**, **New direct message**, **Pin message**/**Unpin message**
   and **Reply in thread** in message menus.
