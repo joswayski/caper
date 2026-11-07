@@ -30,10 +30,13 @@ internal fun MacrobenchmarkScope.signIn() {
     device.wait(Until.gone(By.text("Continue")), WAIT_MS)
 }
 
-/** Opens a Fixture Studio channel from the sidebar, or from Browse on narrow screens. */
+/**
+ * Opens a Fixture Studio channel from the sidebar, or from Browse on narrow screens: the open
+ * conversation's back arrow, or an empty channel's "Browse spaces".
+ */
 internal fun MacrobenchmarkScope.openChannel(name: String) {
     if (device.wait(Until.hasObject(By.text("Message #$name")), 2_000)) return
-    if (!device.hasObject(By.text(name))) device.findObject(By.text("Browse spaces"))?.click()
+    if (!device.hasObject(By.text(name))) (device.findObject(By.desc("Back to Browse")) ?: device.findObject(By.text("Browse spaces")))?.click()
     check(waitFor(name)) { "Channel #$name isn't listed." }
     device.findObject(By.text(name)).click()
     check(waitFor("Message #$name")) { "#$name didn't open." }
