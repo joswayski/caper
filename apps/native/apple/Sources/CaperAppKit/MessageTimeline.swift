@@ -1,7 +1,7 @@
 import AppKit
 import CaperCore
 
-enum MessageAction { case reaction(String), reactors(String), addReaction, retryReaction, dismissReaction, history, reply, replyInThread, openThread }
+enum MessageAction { case reaction(String), reactors(String), addReaction, retryReaction, dismissReaction, pin, retryPin, dismissPin, history, reply, replyInThread, openThread }
 
 /// A scroll document with only realized native text views. Unlike NSTableView,
 /// it never manufactures an AX row for every message in the loaded history.
@@ -20,6 +20,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     private var viewerID: String?
     private var canInteract = false
     private var reactionErrors: [String: String] = [:]
+    private var pinErrors: [String: String] = [:]
+    private var pendingPins: Set<String> = []
     private var followEnd = true
     private var selection: [String: (text: String, range: NSRange)] = [:]
     private var focusedID: String?
@@ -54,7 +56,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil, blocked: Set<String> = [], pending: PendingMessage? = nil, canInteract: Bool = false, reactionErrors: [String: String] = [:]) {
+    func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil, blocked: Set<String> = [], pending: PendingMessage? = nil, canInteract: Bool = false, reactionErrors: [String: String] = [:], pinErrors: [String: String] = [:], pendingPins: Set<String> = []) {
         let changedConversation = self.conversationID != conversationID
         let anchor = geometry.anchor(at: contentView.bounds.minY)
         let anchorTextTop = anchor.flatMap { rows[$0.id]?.textTop }
@@ -72,7 +74,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             let predecessor = index > 0 ? next[index - 1] : nil
             // Deleting or inserting a predecessor can change grouping even
             // when this message itself has not changed.
-            if entries[oldIndex] != entry || oldPredecessor != predecessor || self.reactionErrors[id] != reactionErrors[id] { invalid.insert(id) }
+            if entries[oldIndex] != entry || oldPredecessor != predecessor || self.reactionErrors[id] != reactionErrors[id]
+                || self.pinErrors[id] != pinErrors[id] || self.pendingPins.contains(id) != pendingPins.contains(id) { invalid.insert(id) }
         }
         if self.pending != pending, let pending { invalid.insert("pending-\(pending.id)") }
         self.pending = pending
@@ -83,6 +86,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         self.viewerID = viewerID
         self.canInteract = canInteract
         self.reactionErrors = reactionErrors
+        self.pinErrors = pinErrors
+        self.pendingPins = pendingPins
         if changedConversation {
             geometry = NativeTimelineLayout()
             followEnd = true
@@ -108,7 +113,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         focusedID = id
         revealed.insert(id)
         update(messages, conversationID: conversationID, viewerID: viewerID, blocked: blocked,
-            pending: pending, canInteract: canInteract, reactionErrors: reactionErrors)
+            pending: pending, canInteract: canInteract, reactionErrors: reactionErrors, pinErrors: pinErrors, pendingPins: pendingPins)
         guard let index = rowIDs.firstIndex(of: id) else { return false }
         realize(anchor: geometry.anchor(at: geometry.origin(of: index)))
         let offset = max(0, geometry.origin(of: index) - max(0, (contentSize.height - geometry.height(at: index)) / 2))
@@ -254,14 +259,15 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             let prior = inThread && predecessor?.threadRootId == nil ? nil : predecessor
             row.configure(message, grouped: NativePresentation.grouped(message, after: prior, inThread: inThread), day: revealedBlocked ? nil : day,
                 viewerID: viewerID, revealedBlocked: revealedBlocked, canInteract: canInteract, inThread: inThread,
-                reactionError: reactionErrors[message.id], react: react)
+                reactionError: reactionErrors[message.id], pinError: pinErrors[message.id], pinPending: pendingPins.contains(message.id), react: react)
         case .blocked(let run):
             row.configure(run, day: day) { [weak self] in
                 guard let self else { return }
                 self.revealed = BlockedMessages.toggling(run, in: self.revealed)
                 self.followEnd = false
                 self.update(self.messages, conversationID: self.conversationID, viewerID: self.viewerID, blocked: self.blocked,
-                    pending: self.pending, canInteract: self.canInteract, reactionErrors: self.reactionErrors)
+                    pending: self.pending, canInteract: self.canInteract, reactionErrors: self.reactionErrors,
+                    pinErrors: self.pinErrors, pendingPins: self.pendingPins)
             }
         }
         row.layer?.borderColor = NativeStyle.accent.cgColor
@@ -299,7 +305,24 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         guard let self, let message = self.message else { return }
         self.messageAction?(message, .dismissReaction, self)
     }
-    private var failureHeight: CGFloat { reactionFailure.isHidden ? 0 : 66 }
+    private lazy var pinnedBy: NativeButton = NativeButton("") { [weak self] in
+        guard let self, let message = self.message, !message.isDeleted, let pin = message.pin else { return }
+        self.openAuthor?(pin.author, self.pinnedBy)
+    }
+    private var pinHeight: CGFloat { pinnedBy.isHidden ? 0 : 22 }
+    private let pinFailure = NativeStyle.label("", size: 11)
+    private lazy var retryPin = NativeButton("Retry") { [weak self] in
+        guard let self, let message = self.message else { return }
+        self.messageAction?(message, .retryPin, self)
+    }
+    private lazy var dismissPin = NativeButton("Dismiss") { [weak self] in
+        guard let self, let message = self.message else { return }
+        self.messageAction?(message, .dismissPin, self)
+    }
+    private var pinPending = false
+    private var reactionFailureHeight: CGFloat { reactionFailure.isHidden ? 0 : 66 }
+    private var pinFailureHeight: CGFloat { pinFailure.isHidden ? 0 : 66 }
+    private var failureHeight: CGFloat { reactionFailureHeight + pinFailureHeight }
     private lazy var authorAction: NativeButton = NativeButton("") { [weak self] in
         guard let self, let message = self.message, !message.author.isGuest else { return }
         self.openAuthor?(message.author, self.authorAction)
@@ -341,7 +364,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         // An attachment-only grouped row still needs room above its gallery
         // for hover actions, as in the shipping Mac timeline.
         let groupedTop: CGFloat = attachments != nil && body.string.isEmpty ? 36 : (edited.isHidden ? 4 : 24)
-        return dayHeight + quoteHeight + (grouped ? groupedTop : 32)
+        return dayHeight + pinHeight + quoteHeight + (grouped ? groupedTop : 32)
     }
 
     init() {
@@ -381,11 +404,18 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         edited.isHidden = true
         reactionFailure.textColor = NSColor(CaperTheme.error)
         reactionFailure.maximumNumberOfLines = 2; reactionFailure.lineBreakMode = .byWordWrapping
+        pinnedBy.isHidden = true; pinnedBy.alignment = .left
+        pinnedBy.font = NativeStyle.font(10); pinnedBy.contentTintColor = NativeStyle.muted
+        pinnedBy.layer?.backgroundColor = NSColor.clear.cgColor
+        pinnedBy.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: nil)
+        pinnedBy.imagePosition = .imageLeading
+        pinFailure.textColor = NSColor(CaperTheme.error)
+        pinFailure.maximumNumberOfLines = 2; pinFailure.lineBreakMode = .byWordWrapping
         thread.isHidden = true; thread.alignment = .left
         thread.font = NativeStyle.font(11, bold: true); thread.contentTintColor = NativeStyle.accent
         thread.layer?.backgroundColor = NSColor.clear.cgColor
         [body, author, timestamp, avatar, day, authorAction, avatarAction, blockedToggle, edited, controls,
-            reactionFailure, retryReaction, dismissReaction, thread].forEach { addSubview($0) }
+            reactionFailure, retryReaction, dismissReaction, pinnedBy, pinFailure, retryPin, dismissPin, thread].forEach { addSubview($0) }
         controls.action = { [weak self] action, anchor in
             guard let self, let message = self.message else { return }
             self.messageAction?(message, action, anchor)
@@ -422,8 +452,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         setAccessibilityIdentifier("pending-row-\(pending.id)")
     }
 
-    func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, reactionError: String?, react: ((String, String) -> Void)?) {
-        guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") else { return }
+    func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, reactionError: String?, pinError: String?, pinPending: Bool, react: ((String, String) -> Void)?) {
+        guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
         let range = body.selectedRange()
         if self.message?.replyTo != message.replyTo || self.message?.isDeleted != message.isDeleted {
             quote?.removeFromSuperview()
@@ -444,6 +474,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         }
         self.message = message; self.grouped = grouped; self.viewerID = viewerID
         self.canInteract = canInteract
+        self.pinPending = pinPending
         blockedRun = nil; self.revealedBlocked = revealedBlocked
         blockedToggle.isHidden = true; body.isHidden = false
         setAccessibilityIdentifier("message-row-\(message.id)")
@@ -463,6 +494,19 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         retryReaction.isEnabled = canInteract
         retryReaction.setAccessibilityIdentifier("reaction-retry-\(message.id)")
         dismissReaction.setAccessibilityIdentifier("reaction-dismiss-\(message.id)")
+        pinnedBy.isHidden = message.isDeleted || message.pin == nil
+        if let pin = message.pin {
+            pinnedBy.title = "Pinned by \(pin.author.id == viewerID ? "you" : pin.author.name)"
+            pinnedBy.setAccessibilityLabel("Open profile for \(pin.author.name)")
+            pinnedBy.toolTip = pinnedBy.title
+        }
+        pinnedBy.setAccessibilityIdentifier("pinned-by-\(message.id)")
+        pinFailure.stringValue = pinError ?? ""
+        pinFailure.setAccessibilityIdentifier("pin-error-\(message.id)")
+        for item in [pinFailure, retryPin, dismissPin] { item.isHidden = message.isDeleted || pinError == nil }
+        retryPin.isEnabled = canInteract && !pinPending
+        retryPin.setAccessibilityIdentifier("pin-retry-\(message.id)")
+        dismissPin.setAccessibilityIdentifier("pin-dismiss-\(message.id)")
         self.day.stringValue = day ?? ""
         self.day.isHidden = day == nil
         self.day.setAccessibilityIdentifier("date-\(message.id)")
@@ -471,7 +515,11 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         CATransaction.begin(); CATransaction.setDisableActions(true)
         layer?.backgroundColor = revealedBlocked ? NSColor(CaperTheme.surface).cgColor : NSColor.clear.cgColor
         blockedBar.isHidden = !revealedBlocked
-        mentionTint.isHidden = !mentionsViewer
+        let pin = message.isDeleted ? nil : message.pin
+        mentionTint.isHidden = !mentionsViewer && pin == nil
+        mentionTint.backgroundColor = pin.map { ($0.author.id == viewerID
+            ? NativeStyle.accent.withAlphaComponent(0.12) : NSColor(CaperTheme.pinGold).withAlphaComponent(0.06)).cgColor }
+            ?? NativeStyle.accent.withAlphaComponent(0.08).cgColor
         mentionBar.isHidden = !mentionsViewer || message.pin != nil
         CATransaction.commit()
         author.stringValue = message.author.name
@@ -538,6 +586,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         authorAction.isHidden = true; avatarAction.isHidden = true
         controls.isHidden = true; edited.isHidden = true
         reactionFailure.isHidden = true; retryReaction.isHidden = true; dismissReaction.isHidden = true
+        pinnedBy.isHidden = true; pinFailure.isHidden = true; retryPin.isHidden = true; dismissPin.isHidden = true
         reactions.forEach { $0.removeFromSuperview() }; reactions = []
         attachments?.removeFromSuperview(); attachments = nil; attachmentHeight = 0
         quote?.removeFromSuperview(); quote = nil; quoteHeight = 0
@@ -588,8 +637,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             blockedToggle.frame = NSRect(x: 18, y: inset + 4, width: bounds.width - 36, height: 36)
             return
         }
-        quote?.frame = NSRect(x: 20, y: inset, width: max(40, bounds.width - 40), height: quoteHeight)
-        let messageTop = inset + quoteHeight
+        pinnedBy.frame = NSRect(x: 68, y: inset, width: max(40, bounds.width - 88), height: pinHeight)
+        quote?.frame = NSRect(x: 20, y: inset + pinHeight, width: max(40, bounds.width - 40), height: quoteHeight)
+        let messageTop = inset + pinHeight + quoteHeight
         avatar.frame = NSRect(x: 20, y: messageTop + 12, width: 36, height: 36)
         // Intrinsic size describes the alignment rect, excluding NSTextField's
         // cell insets. Manual frames need cellSize or even short names truncate.
@@ -617,6 +667,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         reactionFailure.frame = NSRect(x: 68, y: bounds.height - failureHeight - threadHeight - 8, width: max(40, bounds.width - 88), height: 30)
         retryReaction.frame = NSRect(x: 68, y: reactionFailure.frame.maxY + 4, width: 58, height: 24)
         dismissReaction.frame = NSRect(x: 132, y: retryReaction.frame.minY, width: 68, height: 24)
+        pinFailure.frame = NSRect(x: 68, y: reactionFailure.frame.minY + reactionFailureHeight, width: max(40, bounds.width - 88), height: 30)
+        retryPin.frame = NSRect(x: 68, y: pinFailure.frame.maxY + 4, width: 58, height: 24)
+        dismissPin.frame = NSRect(x: 132, y: retryPin.frame.minY, width: 68, height: 24)
     }
 
     override func updateTrackingAreas() {
