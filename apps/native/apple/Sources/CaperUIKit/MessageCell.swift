@@ -813,12 +813,22 @@ final class TimelineEdgeCell: UICollectionViewCell {
     static let reuse = "edge"
     private let label = UIKitStyle.label(size: 11, weight: .medium, color: UIKitStyle.muted)
     private let button = CaperButton("Retry", kind: .plain, size: 11) {}
+    private let skeleton = MessageSkeletonView(rows: 2, label: "Loading thread replies")
+    private var stack: UIStackView!
+    private var skeletonFit: [NSLayoutConstraint] = []
     var retry: (() -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        let stack = UIStackView(arrangedSubviews: [label, button])
+        stack = UIStackView(arrangedSubviews: [label, button])
         stack.spacing = 6
+        contentView.addSubview(skeleton)
+        skeletonFit = [
+            skeleton.topAnchor.constraint(equalTo: contentView.topAnchor),
+            skeleton.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            skeleton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            skeleton.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ]
         label.numberOfLines = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
@@ -841,14 +851,65 @@ final class TimelineEdgeCell: UICollectionViewCell {
         case .beginning: label.text = "Beginning of conversation"
         case .loading: label.text = "Loading older messages…"
         case .failed: label.text = error ?? "Couldn’t load older messages."
+        case .firstLoad: label.text = nil
         }
+        skeleton.isHidden = edge != .firstLoad
+        stack.isHidden = edge == .firstLoad
+        if edge == .firstLoad { NSLayoutConstraint.activate(skeletonFit) } else { NSLayoutConstraint.deactivate(skeletonFit) }
         label.textColor = edge == .failed && error != nil ? UIKitStyle.error : UIKitStyle.muted
         button.isHidden = edge != .failed
         accessibilityIdentifier = "timeline-edge"
     }
 }
 
-enum TimelineEdge: Hashable { case beginning, loading, failed }
+/// `firstLoad`: a thread's replies before any arrive, as SwiftUI's two-row skeleton.
+enum TimelineEdge: Hashable { case beginning, loading, failed, firstLoad }
+
+/// SwiftUI's MessageSkeleton: placeholder rows (an avatar and two bars) while
+/// a conversation's first page loads. One VoiceOver element with its label.
+final class MessageSkeletonView: UIView {
+    init(rows: Int, label: String) {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        isAccessibilityElement = true
+        accessibilityLabel = label
+        var previous: NSLayoutYAxisAnchor = topAnchor
+        for index in 0..<rows {
+            let avatar = Self.shape(width: 34, height: 34, radius: 17)
+            let name = Self.shape(width: 96, height: 12, radius: 4)
+            let line = Self.shape(width: index.isMultiple(of: 2) ? 180 : 128, height: 10, radius: 4)
+            [avatar, name, line].forEach(addSubview)
+            NSLayoutConstraint.activate([
+                avatar.topAnchor.constraint(equalTo: previous, constant: 10),
+                avatar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+                name.topAnchor.constraint(equalTo: avatar.topAnchor),
+                name.leadingAnchor.constraint(equalTo: avatar.trailingAnchor, constant: 10),
+                line.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 12),
+                line.leadingAnchor.constraint(equalTo: name.leadingAnchor),
+            ])
+            // Each row is 50pt tall plus 10pt above and below.
+            let spacer = UILayoutGuide()
+            addLayoutGuide(spacer)
+            NSLayoutConstraint.activate([
+                spacer.topAnchor.constraint(equalTo: avatar.topAnchor),
+                spacer.heightAnchor.constraint(equalToConstant: 60),
+            ])
+            previous = spacer.bottomAnchor
+        }
+        bottomAnchor.constraint(equalTo: previous).isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private static func shape(width: CGFloat, height: CGFloat, radius: CGFloat) -> UIView {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.backgroundColor = UIKitStyle.border
+        view.layer.cornerRadius = radius
+        view.isAccessibilityElement = false
+        NSLayoutConstraint.activate([view.widthAnchor.constraint(equalToConstant: width), view.heightAnchor.constraint(equalToConstant: height)])
+        return view
+    }
+}
 
 /// A full-date divider between days, as on every client.
 /// What a blocked-run row shows; Equatable so unchanged runs aren't reconfigured.

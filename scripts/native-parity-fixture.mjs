@@ -365,6 +365,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   const sockets = new Set();
   let holdSends = false;
   const heldSends = new Set();
+  // Thread replies stay loading, for loading-state captures.
+  let holdThreads = false;
+  const heldThreads = new Set();
   let holdUploads = false;
   const heldUploads = new Set();
   let holdAvatarRegeneration = false;
@@ -772,6 +775,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (body.reset || typeof body.holdSends === "boolean") {
           holdSends = !body.reset && body.holdSends;
           if (!holdSends) for (const release of heldSends) release();
+        }
+        if (body.reset || typeof body.holdThreads === "boolean") {
+          holdThreads = !body.reset && body.holdThreads;
+          if (!holdThreads) for (const release of heldThreads) release();
         }
         if (body.reset || typeof body.holdUploads === "boolean") {
           holdUploads = !body.reset && body.holdUploads;
@@ -2085,6 +2092,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       }
       const thread = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/thread$/.exec(path);
       if (thread && method === "GET") {
+        if (holdThreads) {
+          await new Promise((resolve) => {
+            const release = () => {
+              heldThreads.delete(release);
+              response.off("close", release);
+              resolve();
+            };
+            heldThreads.add(release);
+            response.once("close", release);
+          });
+          if (response.destroyed) return;
+        }
         const channel = channelFor(thread[1]);
         if (!canRead(channel, user)) return reject(response, user ? 404 : 401, "resource not found");
         const messages = state.messages.get(thread[1]) ?? [];
@@ -2825,6 +2844,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     async close() {
       for (const client of sockets) client.socket.destroy();
       for (const release of heldSends) release();
+      for (const release of heldThreads) release();
       for (const release of heldAvatarRegenerations) release();
       await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
     },

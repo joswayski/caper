@@ -47,6 +47,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         return button
     }()
     private lazy var statusStack = UIStackView(arrangedSubviews: [statusTitle, status, tryAgain])
+    private let skeleton = MessageSkeletonView(rows: 5, label: "Loading messages")
     private let typing = TypingIndicatorView()
     private let composer = ComposerView()
     private lazy var members = MembersPanel(model: model)
@@ -340,8 +341,14 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         statusStack.spacing = 8
         statusStack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(statusStack)
+        skeleton.isHidden = true
+        view.addSubview(skeleton)
         view.addSubview(typing)
         NSLayoutConstraint.activate([
+            // At the timeline's top, as SwiftUI's MessageSkeleton.
+            skeleton.topAnchor.constraint(equalTo: collection.topAnchor),
+            skeleton.leadingAnchor.constraint(equalTo: collection.leadingAnchor),
+            skeleton.trailingAnchor.constraint(equalTo: collection.trailingAnchor),
             voiceStrip.view.topAnchor.constraint(equalTo: header.bottomAnchor),
             voiceStrip.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             voiceStrip.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -522,7 +529,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         var emptyTitle: String?, note: String?, titleColor = UIKitStyle.text
         if live, chat.loadFailed, let error = chat.error { note = error }
         else if live, let error = chat.error, messages.isEmpty { note = error }
-        else if live, chat.loading && messages.isEmpty { note = "Loading messages…" }
+        else if live, chat.loading && messages.isEmpty {}
         else if live, messages.isEmpty, pending == nil {
             if let conversation = model.selectedDirectMessage, conversation.peer.id == model.account?.id {
                 emptyTitle = "You can message yourself here to keep notes, reminders, and ideas."
@@ -540,6 +547,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         status.isHidden = note == nil
         tryAgain.isHidden = !(live && chat.loadFailed)
         statusStack.isHidden = emptyTitle == nil && note == nil
+        // The first page's skeleton, as SwiftUI's MessageSkeleton.
+        skeleton.isHidden = !(live && chat.loading && messages.isEmpty && chat.error == nil)
 
         apply(messages: messages, pending: pending, author: chat.currentAuthor, viewerID: viewer,
               key: channelID, live: live, error: chat.error, rejected: chat.sendRejected,

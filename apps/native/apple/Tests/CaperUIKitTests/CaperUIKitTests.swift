@@ -1130,6 +1130,29 @@ final class CaperUIKitParityTests: XCTestCase {
         }
     }
 
+    /// A thread whose replies are still loading: each app's two-row skeleton.
+    func testThreadLoadingSkeletonPairs() throws {
+        try requireSwiftUI()
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            control(["incomingReply": ["rootId": "b00000000003000", "text": "a reply in the thread"]])
+            let app = configured(bundle)
+            app.launch()
+            let view = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "View thread")).firstMatch
+            XCTAssertTrue(view.waitForExistence(timeout: 30), prefix)
+            sleep(2)
+            control(["holdThreads": true])
+            view.tap()
+            let skeleton = app.descendants(matching: .any)["Loading thread replies"].firstMatch
+            XCTAssertTrue(skeleton.waitForExistence(timeout: 15), prefix)
+            sleep(1)
+            capture("\(prefix)-thread-loading")
+            control(["holdThreads": false])
+            XCTAssertTrue(skeleton.waitForNonExistence(timeout: 15), prefix)
+            app.terminate()
+        }
+    }
+
     /// The unread line in each app, with #general read through seq 2997.
     func testNewMessagesPairs() throws {
         try requireSwiftUI()

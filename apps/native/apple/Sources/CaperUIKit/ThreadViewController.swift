@@ -10,6 +10,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
 
     private let model: AppModel
     private var chat: ChatModel { model.chat }
+    /// The replies' first page is loading: the edge row shows the skeleton.
+    private var firstLoad = false
     private let subtitle = UIKitStyle.label(size: 11, color: UIKitStyle.muted)
     private let status = UIKitStyle.label(size: 12, color: UIKitStyle.muted)
     private let composer = ComposerView()
@@ -111,7 +113,9 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             case .edge:
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: TimelineEdgeCell.reuse, for: path) as! TimelineEdgeCell
                 cell.retry = { [weak self] in Task { await self?.chat.loadThread() } }
-                cell.configure(self.chat.threadError != nil ? .failed : .loading, error: self.chat.threadError)
+                let chat = self.chat
+                cell.configure(chat.threadError != nil ? .failed : self.firstLoad ? .firstLoad : .loading,
+                               error: chat.threadError)
                 return cell
             case let .day(key):
                 let cell = collection.dequeueReusableCell(withReuseIdentifier: DayDividerCell.reuse, for: path) as! DayDividerCell
@@ -290,7 +294,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
                 items.append(.day("replies"))
             }
         }
-        if (chat.threadLoading && replies.isEmpty) || chat.threadError != nil || chat.threadHasMore { items.append(.edge) }
+        firstLoad = chat.threadLoading && replies.isEmpty
+        if firstLoad || chat.threadError != nil || chat.threadHasMore { items.append(.edge) }
         let built = TimelineRows.build(replies, pending: pending, author: chat.currentAuthor, viewerID: viewer,
                                        focusedID: chat.focusedMessageID, chat: chat, error: chat.error,
                                        rejected: chat.sendRejected, inThread: true,
