@@ -13,7 +13,7 @@ workspace, so mobile builds never compile the desktop client's media stack.
 | Emoji autocomplete | `shared/messages/emoji.rs`, searching the catalog the app ships (`emoji_catalog`) | `EmojiAutocomplete.kt`, `ui/EmojiArtwork.kt` | |
 | Links | `shared/messages/links.rs` | `data/Links.kt` | `MessageLinks.swift` |
 | Mention tokens | `shared/messages/mentions.rs` | `MentionAutocomplete.kt` (`mentionSpans`) | |
-| Name characters | `apps/native/client/src/names.rs` | `model/Names.kt` | |
+| Name characters | `apps/native/client/src/names.rs` | `model/Names.kt` | `Names.swift` |
 
 The host code keeps its own types and editing helpers and calls Rust for the
 parse. Results are flat `i32` arrays of offsets into the caller's string
