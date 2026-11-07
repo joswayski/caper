@@ -29,8 +29,8 @@ public enum NativePresentation {
         return String(input.uppercased().filter { allowed.contains($0) }.prefix(6))
     }
 
-    public static func grouped(_ message: ChatMessage, after previous: ChatMessage?) -> Bool {
-        MessageGrouping.isGrouped(message, after: previous, inThread: false)
+    public static func grouped(_ message: ChatMessage, after previous: ChatMessage?, inThread: Bool = false) -> Bool {
+        MessageGrouping.isGrouped(message, after: previous, inThread: inThread)
     }
 
     public static func time(_ value: String) -> String {
