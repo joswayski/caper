@@ -19,7 +19,9 @@ let package = Package(
         // XCFramework from joswayski/libavif-apple, fetched by prepare.sh (run prepare.sh
         // first; BSD, Resources/libavif-LICENSE.txt, libaom-LICENSE.txt, libaom-PATENTS.txt).
         .binaryTarget(name: "libavif", path: ".build/libavif-1.4.2/libavif.xcframework"),
-        .target(name: "CaperCore", dependencies: [.product(name: "WebRTC", package: "WebRTC"), .product(name: "libwebp", package: "libwebp-Xcode"), "libavif"],
+        // Shared Rust logic (apps/native/mobile), a static XCFramework built by prepare.sh.
+        .binaryTarget(name: "CaperMobile", path: ".build/CaperMobile.xcframework"),
+        .target(name: "CaperCore", dependencies: [.product(name: "WebRTC", package: "WebRTC"), .product(name: "libwebp", package: "libwebp-Xcode"), "libavif", "CaperMobile"],
                 resources: [.process("EmojiAssets"), .process("CaperAvatars.xcassets"), .process("InvitationAssets.xcassets"), .process("InvitationAssets")]),
         .executableTarget(name: "CaperMacOS", dependencies: ["CaperCore"]),
         .executableTarget(name: "CaperIOS", dependencies: ["CaperCore"]),
