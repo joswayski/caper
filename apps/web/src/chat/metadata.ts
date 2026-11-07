@@ -932,18 +932,21 @@ async function cleanTiff(source: Source, edits: Edits, start: number, end: numbe
       let at = note.data;
       let len = note.len;
       let base = tiff.base;
+      let little = tiff.little;
       if (note.tag === 50740) {
         // DNGPrivateData: Adobe's copy of the maker note, with its original
         // offset so TIFF-relative offsets still resolve, or (Pentax) the
         // maker note itself.
         const head = await source.read(at, Math.min(len, 20));
         if (ascii(head, 0, "Adobe\0MakN")) {
+          // The maker note keeps the byte order of the file it came from.
+          little = ascii(head, 14, "II");
           base = at + 20 - be32(head, 16);
           len = Math.min(be32(head, 10) - 6, len - 20);
           at += 20;
         }
       }
-      await cleanMakerNote(new Tiff(source, tiff.little, base, end), scratch, at, len, make);
+      await cleanMakerNote(new Tiff(source, little, base, end), scratch, at, len, make);
       edits.list.push(...scratch.list);
     } catch (error) {
       // A maker note this can't read stays as it is, as ExifTool leaves it.

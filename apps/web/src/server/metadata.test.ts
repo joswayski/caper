@@ -29,6 +29,44 @@ test.each(cases)("$file as $contentType matches the shared fixture", async ({ fi
   assert.equal(await outcome(new Blob([input]), contentType), expected);
 });
 
+test("a DNG's copied maker note is read in its own byte order", async () => {
+  // A little-endian TIFF whose DNGPrivateData holds a big-endian Canon maker
+  // note with one entry: SerialNumber, inline.
+  const le16 = (n: number) => [n & 0xff, n >> 8];
+  const le32 = (n: number) => [...le16(n & 0xffff), ...le16(n >>> 16)];
+  const be32 = (n: number) => le32(n).reverse();
+  const note = [0, 1, 0, 12, 0, 4, 0, 0, 0, 1, 0x12, 0x34, 0x56, 0x78, 0, 0, 0, 0];
+  const wrapper = [
+    ...Buffer.from("Adobe\0MakN"),
+    ...be32(6 + note.length),
+    ...Buffer.from("MM"),
+    ...be32(5000),
+    ...note,
+  ];
+  const tiff = Uint8Array.from([
+    ...Buffer.from("II*\0"),
+    ...le32(8),
+    ...le16(2),
+    // Make, then DNGPrivateData.
+    ...le16(271),
+    ...le16(2),
+    ...le32(6),
+    ...le32(38),
+    ...le16(50740),
+    ...le16(1),
+    ...le32(wrapper.length),
+    ...le32(44),
+    ...le32(0),
+    ...Buffer.from("Canon\0"),
+    ...wrapper,
+  ]);
+  const cleaned = new Uint8Array(await (await cleanMetadata(new Blob([tiff]), "image/x-adobe-dng")).arrayBuffer());
+  const serial = 44 + 20 + 10;
+  assert.deepEqual([...cleaned.subarray(serial, serial + 4)], [0, 0, 0, 0]);
+  cleaned.set(tiff.subarray(serial, serial + 4), serial);
+  assert.deepEqual(cleaned, tiff, "nothing else changes");
+});
+
 test("a large video is cleaned from its box headers, without reading the samples", async () => {
   const input = readFileSync(new URL("inputs/clip.mov", fixtures));
   // clip.mov keeps `moov` after `mdat`; grow the samples to 200 MB.
