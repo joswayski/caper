@@ -97,6 +97,23 @@ impl Upload {
         }
     }
 
+    /// A recording staged in a composer as a voice message: already
+    /// prepared, so it uploads as it is, and not yet started.
+    pub fn recorded(
+        key: u64,
+        channel: String,
+        thread_root_id: Option<String>,
+        prepared: Arc<Prepared>,
+    ) -> Self {
+        let mut upload = Self::picked(key, channel, thread_root_id, prepared.name.clone(), None);
+        upload.kind = AttachmentKind::Audio;
+        upload.source_size = prepared.size;
+        upload.stored_size = Some(prepared.size);
+        upload.uploading = false;
+        upload.prepared = Some(prepared);
+        upload
+    }
+
     /// A file already on the server, such as one a rejected message returns
     /// to the composer.
     pub fn uploaded(

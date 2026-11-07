@@ -29073,19 +29073,7 @@ impl CaperApp {
         prepared: std::sync::Arc<uploads::Prepared>,
     ) -> DraftUpload {
         self.draft_keys += 1;
-        let mut upload = caper_client::drafts::Upload::picked(
-            self.draft_keys,
-            channel,
-            root,
-            prepared.name.clone(),
-            None,
-        );
-        upload.kind = model::AttachmentKind::Audio;
-        upload.source_size = prepared.size;
-        upload.stored_size = Some(prepared.size);
-        upload.uploading = false;
-        upload.prepared = Some(prepared);
-        upload.into()
+        caper_client::drafts::Upload::recorded(self.draft_keys, channel, root, prepared).into()
     }
 
     /// Uploads (or retries) the recorded file as it is: the prepared voice
