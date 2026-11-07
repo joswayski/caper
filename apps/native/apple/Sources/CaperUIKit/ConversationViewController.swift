@@ -803,7 +803,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         composer.configure(prompt: isLive && (direct || model.visit?.direct == true) ? "Message \(chat.channelName)" : "Message #\(name.lowercased())", enabled: ready,
                            canSend: chat.canPressSend(inThread: false), sending: chat.sending,
                            canAttach: chat.canAttach,
-                           attachReason: chat.canAttach ? nil : chat.attachUnavailableReason,
+                           attachReason: chat.canAttach ? AttachCapacity.hint(chat.attachmentDrafts.count) : chat.attachUnavailableReason,
                            canPickExpressions: ready)
         composer.show(draft: chat.draft)
         composer.refreshContext()

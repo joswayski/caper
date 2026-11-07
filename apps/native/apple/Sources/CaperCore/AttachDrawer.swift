@@ -2,9 +2,9 @@ import Foundation
 
 /// The attach drawer's limit line, worded as on every client (web chat/attach.ts).
 /// Drafts below the limit show nothing.
-enum AttachCapacity {
+public enum AttachCapacity {
     /// How to make room once full.
-    static func hint(_ attached: Int, max: Int = AttachmentPolicy.maxAttachments) -> String? {
+    public static func hint(_ attached: Int, max: Int = AttachmentPolicy.maxAttachments) -> String? {
         attached >= max ? "Remove a file to add another." : nil
     }
 }

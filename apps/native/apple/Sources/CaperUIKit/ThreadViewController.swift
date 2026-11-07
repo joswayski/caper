@@ -354,7 +354,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         composer.claimFocus(chat, inThread: true)
         let ready = chat.threadRootID != nil && chat.canInteract && !chat.isPreview
         composer.configure(prompt: "Reply to thread…", enabled: ready, canSend: chat.canPressSend(inThread: true), sending: chat.sending,
-                           canAttach: chat.canAttach, attachReason: chat.canAttach ? nil : chat.attachUnavailableReason,
+                           canAttach: chat.canAttach,
+                           attachReason: chat.canAttach ? AttachCapacity.hint(chat.threadAttachmentDrafts.count) : chat.attachUnavailableReason,
                            canPickExpressions: ready)
         composer.show(draft: chat.threadDraft)
         composer.refreshContext()

@@ -144,6 +144,8 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         rail.translatesAutoresizingMaskIntoConstraints = false
         railScroll.addSubview(rail)
         view.addSubview(railScroll)
+        // A group, so VoiceOver names the column when focus enters it.
+        railScroll.accessibilityContainerType = .semanticGroup
         railScroll.accessibilityLabel = "Spaces"
         NSLayoutConstraint.activate([
             railScroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
