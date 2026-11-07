@@ -52,10 +52,10 @@ import CaperCore
     private lazy var deafen = NativeButton.icon("Deafen audio", symbol: "headphones") { [weak self] in
         guard let self else { return }; VoicePresentation.toggleDeafen(self.model.voice)
     }
-    private lazy var inputOptions = NativeButton.icon("Microphone options", symbol: "chevron.down") { [weak self] in
+    private lazy var inputOptions: NativeButton = NativeButton.icon("Microphone options", symbol: "chevron.down") { [weak self] in
         guard let self else { return }; self.voicePanels.audio(input: true, from: self.inputOptions)
     }
-    private lazy var outputOptions = NativeButton.icon("Audio output options", symbol: "chevron.down") { [weak self] in
+    private lazy var outputOptions: NativeButton = NativeButton.icon("Audio output options", symbol: "chevron.down") { [weak self] in
         guard let self else { return }; self.voicePanels.audio(input: false, from: self.outputOptions)
     }
     private lazy var settings = NativeButton.icon("Account settings", symbol: "gearshape") { [weak self] in self?.openAccountMenu() }
