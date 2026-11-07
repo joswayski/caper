@@ -599,6 +599,22 @@ mod tests {
                 frame(&mut text, conversation, vec![egui::Event::Text(key.into())]);
                 assert_eq!(text, step["text"].as_str().unwrap(), "{note}, key {key:?}");
             }
+            frame(
+                &mut text,
+                conversation,
+                vec![egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }],
+            );
+            frame(&mut text, conversation, vec![egui::Event::Text("*".into())]);
+            assert_eq!(
+                text, "*",
+                "{note}, replace the visible draft with a literal"
+            );
         }
     }
 

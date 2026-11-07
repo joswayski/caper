@@ -31,3 +31,18 @@ test("composer typing follows the shared cases", () => {
     }
   }
 });
+
+test("replacing a styled draft preserves newly typed literal markers", () => {
+  for (const literal of ["*", "**", "***", "**x", "_", "🙂*", "e\u0301 👩‍💻 *"]) {
+    let state = place("**bold** a", 0);
+    state = state.apply(
+      normalizeComposer(
+        state.tr.setSelection(TextSelection.create(state.doc, 0, state.doc.content.size)).insertText(literal),
+      ),
+    );
+    // The replacement may inherit bold, but none of its literal text is lost.
+    assert.equal(state.doc.textContent, literal);
+    assert.equal(composerDocument(composerSource(state.doc)).textContent, literal);
+    assert.equal(state.selection.head, literal.length);
+  }
+});

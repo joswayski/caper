@@ -435,6 +435,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn composer_replacement_preserves_literals_and_utf16_selection() {
+        for prefix in ["", "🙂 ", "e\u{301} 👩‍💻 "] {
+            let previous = format!("{prefix}**bold** a");
+            let next = format!("{prefix}***");
+            let expected = format!("{prefix}*");
+            let end = prefix.encode_utf16().count() as i32;
+            let result = composer_edit(
+                &previous,
+                &next,
+                next.encode_utf16().count() as i32,
+                end,
+                -1,
+            );
+            assert_eq!(
+                &result[..3],
+                &[expected.encode_utf16().count() as i32, end, -1],
+                "{prefix:?}"
+            );
+            assert_eq!(
+                result[3..],
+                expected.encode_utf16().map(i32::from).collect::<Vec<_>>(),
+                "{prefix:?}"
+            );
+        }
+    }
+
     /// Hosts rebuild each side's runs from the highlighted spans; every shared case agrees.
     #[test]
     fn spans_rebuild_the_shared_history_diff_cases() {
