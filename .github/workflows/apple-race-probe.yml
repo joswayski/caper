@@ -1,4 +1,5 @@
-# Temporary hosted relocation of queue53's race/control, never merge.
+# Temporary hosted integration check, never merge. Candidate/control repetition
+# stays in run42402578793; do not duplicate those jobs when fixing this leg.
 name: Apple workspace race probe
 on:
   push:
@@ -11,19 +12,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: candidate-50
-            source: e4c6f8d264dcbc0945a71ad078189f47343f52b4
-            iterations: 50
-            selector: CaperCoreTests/APIClientTests/testWorkspaceCompletionAfterLogoutDoesNotStartServicesForNewAccount
-            expected: 50
-          - name: control-50
-            source: 441e0f17e06d0c32467d448f6bebe49a7eccdbe6
-            iterations: 50
-            selector: CaperCoreTests/APIClientTests/testWorkspaceCompletionAfterLogoutDoesNotStartServicesForNewAccount
-            expected: 50
           - name: integrated-api
             source: 3c20b1795581626a96726f212b12a897286fb7e2
-            iterations: 1
             selector: CaperCoreTests/APIClientTests
             expected: 94
     runs-on: macos-15
@@ -33,7 +23,6 @@ jobs:
       PROBE_CASE: ${{ matrix.name }}
       EXPECTED_TESTS: ${{ matrix.expected }}
       TEST_SELECTOR: ${{ matrix.selector }}
-      ITERATIONS: ${{ matrix.iterations }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,7 +59,7 @@ jobs:
           xcodebuild -project apps/native/apple/CaperApple.xcodeproj -scheme CaperMacOS \
             -destination 'platform=macOS' -derivedDataPath apps/native/apple/DerivedData-Mac \
             -resultBundlePath race/RaceResults.xcresult \
-            "-only-testing:$TEST_SELECTOR" -test-iterations "$ITERATIONS" \
+            "-only-testing:$TEST_SELECTOR" \
             test CODE_SIGNING_ALLOWED=NO 2>&1 | tee race/tests.log
           status=${PIPESTATUS[0]}
           echo "$status" > race/test-exit-code
@@ -93,11 +82,7 @@ jobs:
           print(json.dumps(evidence, indent=2))
           assert len(outcomes) == int(os.environ['EXPECTED_TESTS']), evidence
           assert counts['skipped'] == 0, evidence
-          if os.environ['PROBE_CASE'] == 'control-50':
-              # Control failures are observations, never mistaken for a passing test run.
-              assert status == (65 if counts['failed'] else 0), evidence
-          else:
-              assert status == 0 and counts['failed'] == 0, evidence
+          assert status == 0 and counts['failed'] == 0, evidence
           PY
       - uses: actions/upload-artifact@v4
         if: always()
