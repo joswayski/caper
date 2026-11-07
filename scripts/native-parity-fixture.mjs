@@ -915,6 +915,80 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           created(message);
           unfurl(message);
         }
+        if (body.voiceMessage) {
+          // Maya's 3 s voice message in #general, a 16 kHz WAV tone served as
+          // the API labels voice notes. `{ transcript: "pending" }` leaves its
+          // transcript waiting.
+          const rate = 16_000;
+          const samples = rate * 3;
+          const wav = Buffer.alloc(44 + samples * 2);
+          wav.write("RIFF", 0);
+          wav.writeUInt32LE(36 + samples * 2, 4);
+          wav.write("WAVEfmt ", 8);
+          wav.writeUInt32LE(16, 16);
+          wav.writeUInt16LE(1, 20);
+          wav.writeUInt16LE(1, 22);
+          wav.writeUInt32LE(rate, 24);
+          wav.writeUInt32LE(rate * 2, 28);
+          wav.writeUInt16LE(2, 32);
+          wav.writeUInt16LE(16, 34);
+          wav.write("data", 36);
+          wav.writeUInt32LE(samples * 2, 40);
+          for (let index = 0; index < samples; index++) {
+            const swell = 0.2 + 0.8 * Math.abs(Math.sin((index / rate) * Math.PI));
+            wav.writeInt16LE(Math.round(Math.sin((index / rate) * 2 * Math.PI * 330) * 8000 * swell), 44 + index * 2);
+          }
+          const id = "voice0000001";
+          const url = `http://127.0.0.1:${port}/api/assets/${id}/fixture-file`;
+          const peaks = Buffer.from(
+            Array.from({ length: 64 }, (_, bar) => Math.round(60 + 190 * Math.abs(Math.sin(bar / 6)))),
+          );
+          state.assets.set(id, {
+            ownerId: ids.member,
+            purpose: "attachment",
+            contentType: "audio/mp4",
+            size: wav.length,
+            voice: true,
+            data: wav,
+            url,
+          });
+          const channelId = ids.general;
+          const messages = state.messages.get(channelId) ?? [];
+          const message = {
+            id: `fixture${String(messages.length + 1).padStart(8, "0")}`,
+            channelId,
+            seq: String(BigInt(channelHead(channelId)) + 1n),
+            author: author(members[1]),
+            content: {
+              version: 1,
+              type: "text",
+              text: "",
+              attachments: [
+                {
+                  id,
+                  name: "Voice message.m4a",
+                  contentType: "audio/mp4",
+                  size: wav.length,
+                  kind: "audio",
+                  status: "ready",
+                  durationMs: 3000,
+                  voice: true,
+                  waveform: peaks.toString("base64"),
+                  transcript:
+                    body.voiceMessage.transcript === "pending"
+                      ? { status: "pending" }
+                      : { status: "ready", text: fixtureTranscript },
+                  url,
+                },
+              ],
+            },
+            clientMessageId: randomUUID(),
+            createdAt: new Date().toISOString(),
+          };
+          messages.push(message);
+          state.messages.set(channelId, messages);
+          created(message);
+        }
         if (body.notification) {
           // `kind: "space.invitation"` announces the pending space invitation
           // (control `spaceInvitation`) instead of a channel message.
