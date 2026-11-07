@@ -59,6 +59,14 @@ import XCTest
         timeline.layoutSubtreeIfNeeded()
         XCTAssertFalse(row.subviews.contains { $0 is AppKitAttachmentSurface })
         XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+        reply.deletedAt = "2026-11-05T11:00:00Z"
+        timeline.update([reply], conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(body.string, MessageDeletion.placeholder)
+        let summary = try XCTUnwrap(row.subviews.compactMap { $0 as? NSButton }
+            .first { $0.accessibilityIdentifier() == "thread-summary-message-1" })
+        XCTAssertFalse(summary.isHidden, "Deleting the root must not strand its surviving replies")
+        XCTAssertEqual(summary.accessibilityLabel(), "3 replies")
     }
 
     func testOriginalMessageJumpRevealsBlockedTargetWithoutRealizingInterveningHistory() throws {
