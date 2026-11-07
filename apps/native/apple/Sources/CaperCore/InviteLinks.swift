@@ -1,4 +1,5 @@
 import Foundation
+@_implementationOnly import CaperMobile
 
 /// Who made an invite link, as the invite endpoints describe them.
 public struct InvitePerson: Codable, Equatable, Sendable {
@@ -147,33 +148,18 @@ public enum InviteLinks {
         value.count == codeLength && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
     }
 
-    /// The code in what a person pasted: a full link on any host
-    /// (`https://caper.chat/invite/<code>`, optionally with a trailing slash,
-    /// query or fragment), the same without a scheme, the app's own
-    /// `caper://invite/<code>`, or the bare code.
+    /// Web's inviteCode, through shared Rust (shared/invites/code.rs): the code
+    /// in what a person pasted, from a full link on any host, the same without
+    /// a scheme, the app's own `caper://invite/<code>`, or the bare code. Only
+    /// the code is used: joins go to the configured API, never the link's host.
     public static func code(from input: String) -> String? {
-        var rest = Substring(input.trimmingCharacters(in: .whitespacesAndNewlines))
-        if isCode(rest) { return String(rest) }
-        if let end = rest.firstIndex(where: { $0 == "?" || $0 == "#" }) { rest = rest[..<end] }
-        if let separator = rest.range(of: "://") {
-            let scheme = rest[..<separator.lowerBound].lowercased()
-            rest = rest[separator.upperBound...]
-            if scheme == appScheme {
-                // `caper://invite/<code>`: "invite" is the URL's host, so it is case-insensitive.
-                var segments = rest.split(separator: "/", omittingEmptySubsequences: false)
-                if segments.count == 3, segments[2].isEmpty { segments.removeLast() }
-                guard segments.count == 2, segments[0].lowercased() == "invite", isCode(segments[1]) else { return nil }
-                return String(segments[1])
-            }
-            guard scheme == "https" || scheme == "http" else { return nil }
+        var source = input
+        return source.withUTF8 { bytes in
+            let code = caper_mobile_invite_code(bytes.baseAddress, bytes.count)
+            defer { caper_mobile_ints_free(code) }
+            guard code.len == codeLength else { return nil }
+            return String(decoding: UnsafeBufferPointer(start: code.data, count: code.len).map { UInt8(truncatingIfNeeded: $0) }, as: UTF8.self)
         }
-        guard let slash = rest.firstIndex(of: "/") else { return nil }
-        let host = rest[..<slash]
-        guard !host.isEmpty, !host.contains(where: { $0.isWhitespace }) else { return nil }
-        var segments = rest[rest.index(after: slash)...].split(separator: "/", omittingEmptySubsequences: false)
-        if segments.count == 3, segments[2].isEmpty { segments.removeLast() }
-        guard segments.count == 2, segments[0] == "invite", isCode(segments[1]) else { return nil }
-        return String(segments[1])
     }
 
     /// The custom URL scheme both apps register (the web invite page's

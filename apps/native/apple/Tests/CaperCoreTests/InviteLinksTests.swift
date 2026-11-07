@@ -2,62 +2,17 @@ import XCTest
 @testable import CaperCore
 
 final class InviteLinksTests: XCTestCase {
-    func testCodeFromFullLinksBareHostsAndCodes() {
-        let code = "aB3dE5gH9k"
-        for input in [
-            code,
-            "  \(code)\n",
-            "https://caper.chat/invite/\(code)",
-            "https://caper.chat/invite/\(code)/",
-            "https://caper.chat/invite/\(code)?utm=chat",
-            "https://caper.chat/invite/\(code)/?utm=chat#top",
-            "HTTPS://caper.chat/invite/\(code)",
-            "http://localhost:5173/invite/\(code)",
-            "https://staging.example.test/invite/\(code)",
-            "caper.chat/invite/\(code)",
-            "caper.chat/invite/\(code)/",
-            "caper.chat/invite/\(code)?ref=https://elsewhere.test",
-            "caper://invite/\(code)",
-            "caper://invite/\(code)/",
-            "caper://invite/\(code)?from=web",
-            "CAPER://Invite/\(code)",
-        ] {
-            XCTAssertEqual(InviteLinks.code(from: input), code, input)
-        }
-    }
-
-    func testCodeRejectsAnythingElse() {
-        for input in [
-            "",
-            "   ",
-            "aB3dE5gH9",                            // 9 characters
-            "aB3dE5gH9kZ",                          // 11 characters
-            "aB3dE5gH9-",                           // not alphanumeric
-            "aB3dé5gH9k",                           // not ASCII
-            "https://caper.chat/invite/",
-            "https://caper.chat/invite/aB3dE5gH9",
-            "https://caper.chat/invites/aB3dE5gH9k",
-            "https://caper.chat/Invite/aB3dE5gH9k",
-            "https://caper.chat/invite/aB3dE5gH9k/extra",
-            "https://caper.chat/invite/aB3dE5gH9k//",
-            "https://caper.chat/x/invite/aB3dE5gH9k",
-            "https://caper.chat/aB3dE5gH9k",
-            "ftp://caper.chat/invite/aB3dE5gH9k",
-            "https:///invite/aB3dE5gH9k",
-            "/invite/aB3dE5gH9k",
-            "invite/aB3dE5gH9k",
-            "caper chat/invite/aB3dE5gH9k",
-            "caper://invite/",
-            "caper://invite/aB3dE5gH9",
-            "caper://invites/aB3dE5gH9k",
-            "caper://invite/aB3dE5gH9k/extra",
-            "caper:///invite/aB3dE5gH9k",
-            "caper://caper.chat/invite/aB3dE5gH9k",
-            "caper://aB3dE5gH9k",
-            "capers://invite/aB3dE5gH9k",
-        ] {
-            XCTAssertNil(InviteLinks.code(from: input), input)
-        }
+    /// Generated from web (shared/invites/invite-cases.json): only the code
+    /// comes back, never the link's host, so joins use the configured API.
+    func testCodeFollowsTheSharedCases() throws {
+        struct Case: Decodable { let input: String; let code: String? }
+        struct Cases: Decodable { let cases: [Case] }
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        // JSONDecoder, not JSONSerialization: Darwin's JSONSerialization drops a leading U+FEFF.
+        let cases = try JSONDecoder().decode(Cases.self, from: Data(contentsOf: root.appendingPathComponent("shared/invites/invite-cases.json")))
+        XCTAssertGreaterThan(cases.cases.count, 50)
+        for item in cases.cases { XCTAssertEqual(InviteLinks.code(from: item.input), item.code, item.input.debugDescription) }
     }
 
     func testOpenedLinksAreTheAppSchemeOrCaperChatUniversalLinks() throws {
