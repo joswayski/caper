@@ -1292,7 +1292,7 @@ test("push config and device registration follow the API contract", async (t) =>
 
 test("notification settings and overrides validate, persist in memory and reset", async (t) => {
   const { request } = await setup(t);
-  const defaults = { level: "all", mobile: "whenInactive", overrides: [] };
+  const defaults = { level: "all", mobile: "whenInactive", voiceStarted: true, overrides: [] };
   assert.equal((await request("/api/notifications/settings")).response.status, 401);
   assert.deepEqual((await request("/api/notifications/settings", { auth: true })).value, defaults);
   const put = (path, body, auth = true) =>
@@ -1302,16 +1302,23 @@ test("notification settings and overrides validate, persist in memory and reset"
     [{ level: null }, "level must be all, mentions or nothing"],
     [{ level: "some" }, "level must be all, mentions or nothing"],
     [{ mobile: "never" }, "mobile must be always or whenInactive"],
+    [{ voiceStarted: null }, "invalid notification settings"],
+    [{ voiceStarted: "false" }, "invalid notification settings"],
   ])
     assert.deepEqual(await put("/api/notifications/settings", body), [400, { error }], JSON.stringify(body));
   assert.deepEqual(await put("/api/notifications/settings", { level: "mentions" }), [
     200,
     { ...defaults, level: "mentions" },
   ]);
-  assert.deepEqual(await put("/api/notifications/settings", { mobile: "always" }), [
+  assert.deepEqual(await put("/api/notifications/settings", { voiceStarted: false }), [
     200,
-    { level: "mentions", mobile: "always", overrides: [] },
+    { ...defaults, level: "mentions", voiceStarted: false },
   ]);
+  assert.deepEqual(
+    await put("/api/notifications/settings", { mobile: "always" }),
+    [200, { level: "mentions", mobile: "always", voiceStarted: false, overrides: [] }],
+    "a missing voiceStarted keeps the saved choice",
+  );
 
   const space = `/api/spaces/${ids.space}/notifications`;
   const channel = `/api/spaces/${ids.space}/channels/${ids.design}/notifications`;
@@ -1354,6 +1361,7 @@ test("notification settings and overrides validate, persist in memory and reset"
   assert.deepEqual((await request("/api/notifications/settings", { auth: true })).value, {
     level: "mentions",
     mobile: "always",
+    voiceStarted: false,
     overrides: [
       { spaceId: ids.space, level: "mentions", mutedUntil: muted },
       { spaceId: ids.space, channelId: ids.design, level: null, mutedUntil: "forever" },

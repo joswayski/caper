@@ -1441,6 +1441,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       const settingsFor = (user) => ({
         level: "all",
         mobile: "whenInactive",
+        voiceStarted: true,
         ...state.notificationSettings.get(user.id),
       });
       const overrideTarget = (user, { spaceId, channelId, conversationId }) => {
@@ -1475,7 +1476,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (method === "PUT") {
           if (!body || typeof body !== "object" || Array.isArray(body))
             return reject(response, 400, "invalid notification settings");
-          if (Object.keys(body).some((key) => key !== "level" && key !== "mobile"))
+          // Like push::settings::update_settings: voiceStarted must be a boolean, never null.
+          if (Object.keys(body).some((key) => !["level", "mobile", "voiceStarted"].includes(key)))
+            return reject(response, 400, "invalid notification settings");
+          if ("voiceStarted" in body && typeof body.voiceStarted !== "boolean")
             return reject(response, 400, "invalid notification settings");
           if ("level" in body && !notificationLevels.includes(body.level))
             return reject(response, 400, "level must be all, mentions or nothing");
