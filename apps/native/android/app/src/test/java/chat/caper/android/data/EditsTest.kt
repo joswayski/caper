@@ -1,19 +1,27 @@
 package chat.caper.android.data
 
 import chat.caper.android.model.*
+import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
 
 class EditsTest {
-    @Test fun `word diffs preserve separate changes Unicode and whitespace`() {
-        val before = "Meet Friday 🙂\nKeep this unchanged\nAt 9"
-        val after = "Meet Saturday 🚀\nKeep this unchanged\nAt 11"
-        val (old, next) = messageDiff(before, after)
-        assertEquals(before, old.joinToString("") { it.text })
-        assertEquals(after, next.joinToString("") { it.text })
-        assertEquals("Friday🙂9", old.filter { it.changed }.joinToString("") { it.text })
-        assertEquals("Saturday🚀11", next.filter { it.changed }.joinToString("") { it.text })
-        assertTrue(old.filter { it.text in listOf("Keep", "this", "unchanged") }.all { !it.changed })
+    /** Every client runs these same cases, generated from web; see shared/messages/history-diff-cases.json. */
+    @Test fun `history highlights follow the shared cases`() {
+        val file = generateSequence(java.io.File("").absoluteFile) { it.parentFile }
+            .map { java.io.File(it, "shared/messages/history-diff-cases.json") }.first { it.isFile }
+        val cases = Json.parseToJsonElement(file.readText()).jsonObject.getValue("cases").jsonArray
+        assertTrue(cases.size > 20)
+        for (case in cases.map { it.jsonObject }) {
+            fun runs(key: String) = case.getValue(key).jsonArray.map {
+                DiffToken(it.jsonArray[0].jsonPrimitive.content, it.jsonArray[1].jsonPrimitive.boolean)
+            }
+            val (old, next) = messageDiff(case.getValue("before").jsonPrimitive.content, case.getValue("after").jsonPrimitive.content)
+            assertEquals(case.getValue("note").jsonPrimitive.content, runs("old") to runs("new"), old to next)
+        }
+    }
+
+    @Test fun `edited text rules`() {
         assertTrue(validEditText("🙂".repeat(4000)))
         assertFalse(validEditText("🙂".repeat(4001)))
         assertFalse(validEditText(" \n\t"))

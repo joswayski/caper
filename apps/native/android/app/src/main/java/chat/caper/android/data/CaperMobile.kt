@@ -19,6 +19,12 @@ internal object CaperMobile {
     /** `[start, end]` per `@mention` token (shared/messages/mentions.rs), covering the `@` and its name. */
     @JvmStatic external fun mentionSpans(text: String): IntArray
 
+    /**
+     * What an edit-history comparison highlights: the number of `before` spans, then `[start, end]`
+     * per highlighted span, `before` spans first.
+     */
+    @JvmStatic external fun historyDiffSpans(before: String, after: String): IntArray
+
     /** Whether a display or space name holds a character names may not (shared/names/cases.json). */
     @JvmStatic external fun nameHasHidden(text: String): Boolean
 }

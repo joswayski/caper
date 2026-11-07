@@ -2309,10 +2309,14 @@ An **edited** indicator opens retained versions, also available from message
 actions and pins. Everyone with current read access can inspect the original and
 later versions, including members previewing an unjoined channel; the edit dialog
 explains this before saving. History shows the previous version on the left and
-the current on the right, with word-level changes highlighted; **View previous
+the current on the right, with changes highlighted; **View previous
 versions** selects an older change without replacing that pair. Web uses Pierre
-Diffs (`@pierre/diffs`); native clients render equivalent word diffs. There is no
-version purge or restore-to-version action.
+Diffs (`@pierre/diffs`, `lineDiffType: "word"`): lines are compared first, each
+changed line paired with its counterpart is compared by words, and a changed
+line without a counterpart is highlighted whole. The desktop and Android clients
+highlight the same characters through `shared/messages/history_diff.rs`, a port
+of that pipeline, and run `shared/messages/history-diff-cases.json`, which web
+checks; Apple renders its own word diff. There is no version purge or restore-to-version action.
 
 ### Editing API and durable delivery
 

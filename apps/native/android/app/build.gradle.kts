@@ -241,8 +241,6 @@ dependencies {
     // itself from API 31; used below that. Photos are encoded to AVIF by
     // libcaper_avif.so (libavif + libaom encoder, prepare-avif.sh), not this.
     implementation("org.aomedia.avif.android:avif:1.3.0.841110fd")
-    // Word-level diffs for message edit history.
-    implementation("io.github.java-diff-utils:java-diff-utils:4.16")
     implementation("io.github.webrtc-sdk:android:150.7871.01")
     implementation(platform("com.google.firebase:firebase-bom:34.3.0"))
     implementation("com.google.firebase:firebase-messaging")

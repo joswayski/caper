@@ -3,7 +3,6 @@ package chat.caper.android.data
 import chat.caper.android.model.ChatMessage
 import chat.caper.android.model.EditUpdate
 import chat.caper.android.model.MessageVersions
-import com.github.difflib.DiffUtils
 import java.time.Instant
 
 internal fun EditUpdate.validated(expectedChannel: String): EditUpdate {
@@ -62,15 +61,18 @@ internal fun MessageVersions.validated(messageId: String, before: Int?): Message
 }
 
 internal data class DiffToken(val text: String, val changed: Boolean)
-/** Myers word diff: keep separate edits and preserve every whitespace/Unicode token. */
+/** Each version as runs, marked where web's history view highlights it (shared/messages/history_diff.rs). */
 internal fun messageDiff(before: String, after: String): Pair<List<DiffToken>, List<DiffToken>> {
-    val pattern = Regex("\\s+|[\\p{L}\\p{N}_]+|[^\\s\\p{L}\\p{N}_]+")
-    val old = pattern.findAll(before).map { it.value }.toList()
-    val next = pattern.findAll(after).map { it.value }.toList()
-    val removed = mutableSetOf<Int>(); val added = mutableSetOf<Int>()
-    DiffUtils.diff(old, next).deltas.forEach { delta ->
-        removed.addAll(delta.source.position until delta.source.position + delta.source.lines.size)
-        added.addAll(delta.target.position until delta.target.position + delta.target.lines.size)
+    val spans = CaperMobile.historyDiffSpans(before, after)
+    val split = 1 + spans[0] * 2
+    fun runs(text: String, from: Int, until: Int) = buildList {
+        var end = 0
+        for (index in from until until step 2) {
+            if (spans[index] > end) add(DiffToken(text.substring(end, spans[index]), false))
+            add(DiffToken(text.substring(spans[index], spans[index + 1]), true))
+            end = spans[index + 1]
+        }
+        if (end < text.length) add(DiffToken(text.substring(end), false))
     }
-    return old.mapIndexed { index, text -> DiffToken(text, index in removed) } to next.mapIndexed { index, text -> DiffToken(text, index in added) }
+    return runs(before, 1, split) to runs(after, split, spans.size)
 }
