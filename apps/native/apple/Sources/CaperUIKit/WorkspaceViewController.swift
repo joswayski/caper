@@ -28,6 +28,33 @@ final class WorkspaceViewController: UIViewController {
         }
         return panel
     }()
+    /// Wide: the open thread beside the conversation, as SwiftUI's resizable thread panel.
+    private var threadPane: ThreadViewController?
+    /// Wide: a drag's width before release saves it, for each resize handle.
+    private var sidebarDrag: CGFloat?
+    private var membersDrag: CGFloat?
+    private var threadDrag: CGFloat?
+    private var sidebarRange: ClosedRange<CGFloat> = 220...440
+    private var membersRange: ClosedRange<CGFloat> = 220...440
+    private var threadRange: ClosedRange<CGFloat> = 300...600
+    private var sidebarWidth: CGFloat = 280
+    private var membersWidth: CGFloat = 220
+    private var threadWidth: CGFloat = 340
+    private lazy var sidebarHandle = PanelResizeHandle(label: "Channel sidebar width", identifier: "channel-sidebar-resize",
+        hint: "Drag to resize. Double-tap resets.", widensToRight: true, reset: 280,
+        current: { [weak self] in self?.sidebarWidth ?? 280 }, range: { [weak self] in self?.sidebarRange ?? 220...440 }) { [weak self] width, commit in
+        self?.resized(width, commit: commit, key: "caper.channelSidebarWidth", drag: \.sidebarDrag)
+    }
+    private lazy var membersHandle = PanelResizeHandle(label: "Member list width", identifier: "members-panel-resize",
+        hint: "Drag to resize. Double-tap resets.", widensToRight: false, reset: 220,
+        current: { [weak self] in self?.membersWidth ?? 220 }, range: { [weak self] in self?.membersRange ?? 220...440 }) { [weak self] width, commit in
+        self?.resized(width, commit: commit, key: "caper.membersWidth", drag: \.membersDrag)
+    }
+    private lazy var threadHandle = PanelResizeHandle(label: "Thread width", identifier: "thread-panel-resize",
+        hint: "Drag to resize. Double-tap resets.", widensToRight: false, reset: 340,
+        current: { [weak self] in self?.threadWidth ?? 340 }, range: { [weak self] in self?.threadRange ?? 300...600 }) { [weak self] width, commit in
+        self?.resized(width, commit: commit, key: "caper.threadPanelWidth", drag: \.threadDrag)
+    }
     private var rosterShown = false
     private let observer = ModelObserver()
     /// SwiftUI's banner for a channel or DM that failed to open, above both
@@ -106,8 +133,9 @@ final class WorkspaceViewController: UIViewController {
                 DispatchQueue.main.async { CaperRuntime.showVoiceRosterPreview(model) }
             }
             if self.wide {
-                // Members follow the conversation: none for a DM or a visit.
-                _ = (self.model.selectedDirectMessageID, self.model.visit?.channelID, self.model.detail?.space.id)
+                // Members follow the conversation: none for a DM or a visit. A thread opens beside it.
+                _ = (self.model.selectedDirectMessageID, self.model.visit?.channelID, self.model.detail?.space.id,
+                     self.model.chat.threadRootID)
                 self.view.setNeedsLayout()
                 return
             }
@@ -186,10 +214,15 @@ final class WorkspaceViewController: UIViewController {
         }
         if wide {
             if dockedMembers.superview == nil { view.insertSubview(dockedMembers, aboveSubview: conversation.view) }
+            for handle in [sidebarHandle, membersHandle, threadHandle] where handle.superview == nil { view.addSubview(handle) }
+            // The phone's full-screen thread becomes the panel beside the conversation.
+            if conversation.presentedViewController is ThreadViewController { conversation.dismiss(animated: false) }
             browse.view.isUserInteractionEnabled = true
             browse.view.accessibilityElementsHidden = false
             conversation.view.accessibilityElementsHidden = false
         } else {
+            showThreadPane(false)
+            for handle in [sidebarHandle, membersHandle, threadHandle] { handle.isHidden = true }
             showDockedMembers(false)
             // Back to the phone pose: the conversation, unless nothing is open.
             browsing = !hasConversation
@@ -208,24 +241,78 @@ final class WorkspaceViewController: UIViewController {
         let usable = Double(bounds.width - insets.left - insets.right)
         let defaults = UserDefaults.standard
         let savedSidebar = defaults.object(forKey: "caper.channelSidebarWidth") as? Double ?? 280
-        let sidebar = min(max(220, min(440, usable - 60 - 320)), max(220, savedSidebar.rounded()))
+        let sidebarMaximum = max(220, min(440, usable - 60 - 320))
+        let sidebar = min(sidebarMaximum, max(220, sidebarDrag.map { Double($0) } ?? savedSidebar.rounded()))
+        sidebarRange = 220...CGFloat(sidebarMaximum); sidebarWidth = CGFloat(sidebar)
         let navigation = 60 + sidebar
         let tiles = usable - navigation >= 540
         let membersMaximum = min(440, max(220, usable - navigation - (tiles ? 320 : 64)))
         let savedMembers = defaults.object(forKey: "caper.membersWidth") as? Double ?? 220
-        let membersWidth = CGFloat(min(membersMaximum, max(220, savedMembers)))
+        let membersWidth = CGFloat(min(membersMaximum, max(220, membersDrag.map { Double($0) } ?? savedMembers)))
+        membersRange = 220...CGFloat(membersMaximum); self.membersWidth = membersWidth
         let hasMembers = model.selectedDirectMessageID == nil && model.visit == nil && model.detail != nil
         let showsMembers = hasMembers && (membersPreference ?? tiles)
         let lead = insets.left + CGFloat(navigation)
         browse.view.frame = CGRect(x: 0, y: 0, width: lead, height: bounds.height)
         let tiled = showsMembers && tiles ? membersWidth + insets.right : 0
-        conversation.view.frame = CGRect(x: lead, y: 0, width: bounds.width - lead - tiled, height: bounds.height)
+        // SwiftUI's thread panel shares the conversation's stage: 300...600
+        // points, leaving the channel at least half of it (up to 300).
+        let stage = Double(bounds.width - lead - tiled)
+        let threadMaximum = min(600, stage - min(300, stage / 2)), threadMinimum = min(300, threadMaximum)
+        let savedThread = defaults.object(forKey: "caper.threadPanelWidth") as? Double ?? 340
+        threadWidth = CGFloat(min(threadMaximum, max(threadMinimum, threadDrag.map { Double($0) } ?? savedThread)))
+        threadRange = CGFloat(threadMinimum)...CGFloat(max(threadMinimum, threadMaximum))
+        let threadOpen = model.chat.threadRootID != nil
+        showThreadPane(threadOpen)
+        let pane = threadOpen ? threadWidth : 0
+        conversation.view.frame = CGRect(x: lead, y: 0, width: CGFloat(stage) - pane, height: bounds.height)
+        threadPane?.view.frame = CGRect(x: conversation.view.frame.maxX, y: 0, width: pane, height: bounds.height)
+        sidebarHandle.frame = CGRect(x: lead - 8, y: 0, width: 8, height: bounds.height)
+        threadHandle.frame = CGRect(x: conversation.view.frame.maxX, y: 0, width: 8, height: bounds.height)
+        threadHandle.isHidden = !threadOpen
+        sidebarHandle.isHidden = false
         // Tiled: a full-height column. Otherwise over the conversation, below its header.
         let top = insets.top + bannerInset + (tiles ? 0 : 50)
         let width = tiles ? tiled : membersWidth + insets.right
         dockedMembers.frame = CGRect(x: bounds.width - width, y: top, width: width, height: bounds.height - top - insets.bottom)
         showDockedMembers(showsMembers)
+        membersHandle.frame = CGRect(x: dockedMembers.frame.minX, y: top, width: 8, height: dockedMembers.frame.height)
+        membersHandle.isHidden = !showsMembers
+        for handle in [sidebarHandle, membersHandle, threadHandle] { view.bringSubviewToFront(handle) }
         conversation.wideMembersShown = showsMembers
+    }
+
+    /// A pointer or finger previews the width; releasing, a double tap or
+    /// VoiceOver saves it where SwiftUI keeps the same preference.
+    private func resized(_ width: CGFloat, commit: Bool, key: String, drag: ReferenceWritableKeyPath<WorkspaceViewController, CGFloat?>) {
+        if commit {
+            UserDefaults.standard.set(Double(width.rounded()), forKey: key)
+            self[keyPath: drag] = nil
+        } else {
+            self[keyPath: drag] = width
+        }
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+    }
+
+    private func showThreadPane(_ shows: Bool) {
+        if shows, threadPane == nil {
+            let controller = ThreadViewController(model: model)
+            controller.paned = true
+            controller.closed = { [weak self, weak controller] in
+                guard let self, let controller, self.threadPane === controller else { return }
+                self.showThreadPane(false)
+            }
+            addChild(controller)
+            view.insertSubview(controller.view, aboveSubview: conversation.view)
+            controller.didMove(toParent: self)
+            threadPane = controller
+        } else if !shows, let controller = threadPane {
+            threadPane = nil
+            controller.willMove(toParent: nil)
+            controller.view.removeFromSuperview()
+            controller.removeFromParent()
+        }
     }
 
     private func showDockedMembers(_ shows: Bool) {
@@ -300,5 +387,69 @@ final class WorkspaceViewController: UIViewController {
         guard !browsing, !wide else { return false }
         slide(browsing: true)
         return true
+    }
+}
+
+/// SwiftUI's 8-point resize handles in the wide layout. A drag previews the
+/// width and saves it on release; a double tap resets it; VoiceOver adjusts
+/// it as a slider in 10-point steps.
+final class PanelResizeHandle: UIView {
+    private let widensToRight: Bool
+    private let reset: CGFloat
+    private let current: () -> CGFloat
+    private let range: () -> ClosedRange<CGFloat>
+    private let changed: (CGFloat, Bool) -> Void
+    private var start: CGFloat?
+
+    init(label: String, identifier: String, hint: String, widensToRight: Bool, reset: CGFloat,
+         current: @escaping () -> CGFloat, range: @escaping () -> ClosedRange<CGFloat>,
+         changed: @escaping (CGFloat, Bool) -> Void) {
+        self.widensToRight = widensToRight; self.reset = reset
+        self.current = current; self.range = range; self.changed = changed
+        super.init(frame: .zero)
+        isAccessibilityElement = true
+        accessibilityTraits = .adjustable
+        accessibilityLabel = label
+        accessibilityIdentifier = identifier
+        accessibilityHint = hint
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
+        addGestureRecognizer(pan)
+        let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
+        double.numberOfTapsRequired = 2
+        addGestureRecognizer(double)
+        addInteraction(UIPointerInteraction(delegate: self))
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func clamped(_ width: CGFloat) -> CGFloat {
+        let range = range()
+        return min(range.upperBound, max(range.lowerBound, width))
+    }
+
+    @objc private func panned(_ pan: UIPanGestureRecognizer) {
+        let offset = pan.translation(in: superview).x * (widensToRight ? 1 : -1)
+        switch pan.state {
+        case .began: start = current()
+        case .changed: changed(clamped((start ?? current()) + offset), false)
+        case .ended, .cancelled:
+            changed(clamped((start ?? current()) + offset), true)
+            start = nil
+        default: break
+        }
+    }
+
+    @objc private func doubleTapped() { changed(clamped(reset), true) }
+
+    override var accessibilityValue: String? {
+        get { "\(Int(current())) pixels" }
+        set {}
+    }
+    override func accessibilityIncrement() { changed(clamped(current() + 10), true) }
+    override func accessibilityDecrement() { changed(clamped(current() - 10), true) }
+}
+
+extension PanelResizeHandle: UIPointerInteractionDelegate {
+    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        UIPointerStyle(shape: .verticalBeam(length: 24), constrainedAxis: .vertical)
     }
 }

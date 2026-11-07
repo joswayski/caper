@@ -1252,6 +1252,34 @@ final class CaperUIKitParityTests: XCTestCase {
         }
     }
 
+    /// A thread opened in landscape: on an iPad (wide) both apps show it as a
+    /// 340-point panel beside the channel with its width handle; on an iPhone
+    /// (narrow) both cover the channel. Both must make the same choice.
+    func testWideThreadPanelPairs() throws {
+        try requireSwiftUI()
+        var states: [String: String] = [:]
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            control(["incomingReply": ["rootId": "b00000000003000", "text": "a reply in the thread"]])
+            XCUIDevice.shared.orientation = .landscapeLeft
+            let app = configured(bundle)
+            app.launchArguments += ["-caper.threadPanelWidth", "340"]
+            app.launch()
+            let view = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "View thread")).firstMatch
+            XCTAssertTrue(view.waitForExistence(timeout: 30), prefix)
+            view.tap()
+            XCTAssertTrue(app.staticTexts["a reply in the thread"].waitForExistence(timeout: 15), prefix)
+            sleep(1)
+            let handle = app.descendants(matching: .any)["thread-panel-resize"].firstMatch
+            let channelVisible = app.descendants(matching: .any)["selected-channel-name"].firstMatch.exists
+            states[prefix] = handle.exists ? "panel \(handle.value as? String ?? "?"), channel \(channelVisible)" : "cover"
+            capture("\(prefix)-thread-landscape")
+            app.terminate()
+        }
+        XCTAssertEqual(states["uikit"], states["swiftui"], "Both apps must show a landscape thread the same way")
+    }
+
     /// SwiftUI's 760pt breakpoint in each app, portrait and landscape: both make
     /// the same narrow or wide choice and show Members the same way. Run on an
     /// iPhone for the landscape phone layout and on an iPad for the wide one.

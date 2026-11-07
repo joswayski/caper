@@ -554,9 +554,10 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
 
     /// Opening a thread (View thread, Reply in thread, a jump) covers the conversation.
     private func presentThreadIfNeeded() {
-        guard model.chat.threadRootID != nil, thread?.presentingViewController == nil, view.window != nil else { return }
+        // Wide: the workspace shows the thread as a panel beside the conversation.
+        guard !wide, model.chat.threadRootID != nil, thread?.presentingViewController == nil, view.window != nil else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.thread?.presentingViewController == nil, self.model.chat.threadRootID != nil else { return }
+            guard let self, !self.wide, self.thread?.presentingViewController == nil, self.model.chat.threadRootID != nil else { return }
             let controller = ThreadViewController(model: self.model)
             self.thread = controller
             controller.closed = { [weak self] in self?.thread = nil }

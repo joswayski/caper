@@ -43,6 +43,8 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         return host
     }()
     var closed: (() -> Void)?
+    /// Wide: a panel beside the conversation rather than a full-screen cover.
+    var paned = false
 
     init(model: AppModel) {
         self.model = model
@@ -235,7 +237,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         // As SwiftUI's ThreadBackSwipe: a swipe right from anywhere follows
         // the finger back to the channel.
         let swipeBack = DirectionalSwipe(direction: 1)
-        swipeBack.allowed = { [weak self] in self.map { !$0.closing && $0.presentedViewController == nil } ?? false }
+        swipeBack.allowed = { [weak self] in self.map { !$0.paned && !$0.closing && $0.presentedViewController == nil } ?? false }
         swipeBack.moved = { [weak self] distance in
             self?.view.endEditing(true)
             self?.view.transform = CGAffineTransform(translationX: distance, y: 0)
@@ -265,7 +267,12 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         closing = true
         model.threadVisibilityChanged(rootID: nil, seq: nil)
         chat.closeThread()
-        dismiss(animated: !slid && !UIKitStyle.reduceMotion) { [weak self] in self?.closed?() }
+        leave(animated: !slid && !UIKitStyle.reduceMotion)
+    }
+
+    /// A cover dismisses itself; the wide layout removes its panel.
+    private func leave(animated: Bool) {
+        if paned { closed?() } else { dismiss(animated: animated) { [weak self] in self?.closed?() } }
     }
 
     // MARK: Rendering
@@ -275,7 +282,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private func render() {
         guard let rootID = chat.threadRootID else {
             // The model closed it (another conversation, a denied thread).
-            if !closing { closing = true; dismiss(animated: false) { [weak self] in self?.closed?() } }
+            if !closing { closing = true; leave(animated: false) }
             return
         }
         subtitle.text = direct ? "with \(chat.channelName)" : "in #\(chat.channelName)"
