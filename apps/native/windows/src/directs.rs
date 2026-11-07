@@ -78,6 +78,9 @@ pub enum MenuItem {
     /// "Invite people…", for the open space's owner (the space's menu
     /// and its public channels').
     Invite,
+    /// The owner's "Space settings" and "Channel settings".
+    SpaceSettings,
+    ChannelSettings,
 }
 
 impl MenuItem {
@@ -102,6 +105,8 @@ impl MenuItem {
             Self::Leave(false) => "Leave channel".into(),
             Self::Browse => "Browse channels".into(),
             Self::Invite => "Invite people\u{2026}".into(),
+            Self::SpaceSettings => "Space settings".into(),
+            Self::ChannelSettings => "Channel settings".into(),
         }
     }
 
@@ -117,13 +122,24 @@ impl MenuItem {
                 | Self::Leave(_)
                 | Self::Browse
                 | Self::Invite
+                | Self::SpaceSettings
+                | Self::ChannelSettings
         )
     }
 
     /// Whether it can be chosen now: the notification choices once the
     /// settings are ready (`enabled`), Browse and Leave always.
     pub fn usable(&self, enabled: bool) -> bool {
-        self.action() && (enabled || matches!(self, Self::Leave(_) | Self::Browse | Self::Invite))
+        self.action()
+            && (enabled
+                || matches!(
+                    self,
+                    Self::Leave(_)
+                        | Self::Browse
+                        | Self::Invite
+                        | Self::SpaceSettings
+                        | Self::ChannelSettings
+                ))
     }
 
     /// Whether it is one of a heading's choices (indented under it).
@@ -1037,9 +1053,18 @@ impl App {
         if matches!(m.scope, Scope::Channel { .. }) && live.can_invite(&m.scope) {
             items.push(MenuItem::Invite);
         }
+        // The owner's Channel settings come before Leave channel, and Space
+        // settings where others have Leave space, as on web.
+        let manage = live.can_manage(&m.scope);
         match &m.scope {
-            Scope::Channel { .. } => items.push(MenuItem::Leave(false)),
+            Scope::Channel { .. } => {
+                if manage {
+                    items.push(MenuItem::ChannelSettings);
+                }
+                items.push(MenuItem::Leave(false));
+            }
             Scope::Space(_) if live.can_leave_space() => items.push(MenuItem::Leave(true)),
+            Scope::Space(_) if manage => items.push(MenuItem::SpaceSettings),
             _ => {}
         }
         (enabled, items)
@@ -1201,6 +1226,19 @@ impl App {
                 _ => None,
             };
             return self.open_invite_people(channel);
+        }
+        if *item == MenuItem::SpaceSettings {
+            self.dm_menu = None;
+            self.dm_menu_changed();
+            return self.open_manage_space();
+        }
+        if *item == MenuItem::ChannelSettings {
+            self.dm_menu = None;
+            self.dm_menu_changed();
+            if let Scope::Channel { channel, .. } = &scope {
+                self.open_channel_settings(channel);
+            }
+            return;
         }
         if let MenuItem::Leave(_) = item {
             self.dm_menu = None;

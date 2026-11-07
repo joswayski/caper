@@ -22,6 +22,8 @@ use windows::core::Result;
 /// `Part::Number`s.
 pub const AMOUNT: u8 = 0;
 pub const USES: u8 = 1;
+/// Manage space's and Channel settings' name field.
+pub const NAME: u8 = 2;
 
 const AMOUNT_W: f32 = 72.0;
 const CONTROL_H: f32 = 38.0;
@@ -99,6 +101,15 @@ impl Dialog {
         self.inviting.as_ref().and_then(|ip| ip.focus)
     }
 
+    /// Whether the focused number field takes no edits now: the name while
+    /// it saves, the others while a link request is in flight.
+    pub(crate) fn number_locked(&self) -> bool {
+        match self.number_focus() {
+            Some(NAME) => self.busy,
+            _ => self.inviting.as_ref().is_some_and(|ip| ip.pending),
+        }
+    }
+
     pub(crate) fn number_mut(&mut self) -> Option<&mut Composer> {
         let ip = self.inviting.as_deref_mut()?;
         let k = ip.focus?;
@@ -129,7 +140,7 @@ impl Dialog {
         ctrl: bool,
         shift: bool,
     ) -> bool {
-        let pending = self.inviting.as_ref().is_some_and(|ip| ip.pending);
+        let pending = self.number_locked();
         let Some(f) = self.number_mut().filter(|_| !pending) else {
             return false;
         };
@@ -145,7 +156,7 @@ impl Dialog {
 
     /// A typed character for the focused number field.
     pub(crate) fn number_char(&mut self, c: u16) -> bool {
-        let pending = self.inviting.as_ref().is_some_and(|ip| ip.pending);
+        let pending = self.number_locked();
         match self.number_mut().filter(|_| !pending) {
             Some(f) => {
                 f.insert(&[c]);
@@ -169,6 +180,12 @@ impl Dialog {
         let focus = ip.focus;
         let mut changed = false;
         for (k, (f, seen)) in ip.numbers.iter_mut().zip(&mut ip.seen).enumerate() {
+            // The name keeps what `space_settings` lets it.
+            if k as u8 == NAME {
+                f.focused = focus == Some(NAME);
+                f.caret_on = true;
+                continue;
+            }
             if f.text.iter().any(|c| !digit(c)) || f.text.len() > 6 {
                 let caret = f.text[..f.caret.min(f.text.len())]
                     .iter()
@@ -233,6 +250,7 @@ impl Dialog {
         match part {
             Part::Custom => "Custom links".into(),
             Part::Number(AMOUNT) => "Expire after amount".into(),
+            Part::Number(NAME) => self.manage_label().into(),
             Part::Number(_) => "Max uses".into(),
             Part::Unit(k) => EXPIRY_UNITS
                 .get(k as usize)
@@ -312,7 +330,8 @@ impl Dialog {
         let Some(ip) = self.inviting.as_deref() else {
             return Ok(y);
         };
-        if !ip.settings_open && (ip.default.is_some() || ip.pending) {
+        // Manage space always offers Custom links, as web's disclosure.
+        if ip.manage.is_none() && !ip.settings_open && (ip.default.is_some() || ip.pending) {
             return Ok(y);
         }
         let text = |s: &str, format| -> Result<f32> { Ok(height(&layout(g, s, format, inner)?)) };
@@ -402,8 +421,9 @@ impl Dialog {
     /// The number fields' layouts, before the rest is laid out.
     pub(crate) fn relayout_numbers(&mut self, g: &Gfx, inner: f32) -> Result<()> {
         let colw = ((inner - 12.0) / 2.0).floor();
+        let name_w = self.name_field_w(g, inner)?;
         if let Some(ip) = self.inviting.as_deref_mut() {
-            for (k, w) in [(AMOUNT, AMOUNT_W), (USES, colw)] {
+            for (k, w) in [(AMOUNT, AMOUNT_W), (USES, colw), (NAME, name_w)] {
                 ip.numbers[k as usize].relayout_with(
                     g,
                     &g.formats.composer,
@@ -464,8 +484,14 @@ impl Dialog {
                         D2D1_ANTIALIAS_MODE_ALIASED,
                     );
                 }
-                let hint = (k == USES)
-                    .then(|| layout(g, "No limit", &g.formats.composer, 1e6))
+                let hint = match k {
+                    USES => Some("No limit"),
+                    NAME if self.settings_channel().is_some() => Some("project-updates"),
+                    NAME => Some("Gaming nights"),
+                    _ => None,
+                };
+                let hint = hint
+                    .map(|s| layout(g, s, &g.formats.composer, 1e6))
                     .transpose()?;
                 f.draw_text(
                     g,
@@ -701,11 +727,12 @@ mod tests {
     #[test]
     fn a_custom_link_starts_with_web_s_defaults_and_checks_its_limits() {
         let mut d = dialog();
-        // 30 days, 100 joins, in the channel it was opened from.
+        // 30 days, 100 joins, in the first public channel even when opened
+        // from another, as on web.
         assert_eq!(d.custom_link(), Some((Some(2_592_000), Some(100))));
         let ip = d.inviting.as_ref().unwrap();
-        assert_eq!(ip.landing_channel().as_deref(), Some("c2"));
-        assert_eq!(d.custom_name(Part::Landing), "Opens in: #feedback");
+        assert_eq!(ip.landing_channel().as_deref(), Some("c1"));
+        assert_eq!(d.custom_name(Part::Landing), "Opens in: #general");
         assert_eq!(
             d.custom_name(Part::Unit(2)),
             "Expire after unit: days, selected"

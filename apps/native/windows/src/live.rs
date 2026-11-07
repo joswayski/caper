@@ -154,6 +154,8 @@ pub enum Update {
     Invitation(Invitation),
     /// Invite people's link or invitation answer.
     InvitePeople(Box<crate::invite_people::Answer>),
+    /// A new private channel's settings open, as on web.
+    ChannelSettings(String),
     /// Your space or channel invitations changed: the rail and sidebar
     /// redraw.
     Invitations,
@@ -2561,6 +2563,7 @@ impl Live {
                 .any(|s| s.channels.iter().any(|c| c.id == id))
         };
         Some(crate::browse::Browse {
+            owner: self.owns_space(),
             space: detail.space.id.clone(),
             space_name: detail.space.name.clone(),
             rows: detail
@@ -2634,6 +2637,31 @@ impl Live {
             }
             _ => false,
         }
+    }
+
+    /// Whether a menu offers Space settings or Channel settings: the open
+    /// space you own, or any of its channels.
+    pub fn can_manage(&self, scope: &Scope) -> bool {
+        let Some(d) = self.detail.as_ref().filter(|_| self.owns_space()) else {
+            return false;
+        };
+        match scope {
+            Scope::Space(space) => *space == d.space.id,
+            Scope::Channel { space, channel } => {
+                *space == d.space.id && d.channels.iter().any(|c| c.id == *channel)
+            }
+            _ => false,
+        }
+    }
+
+    /// Channel settings for one of the open space's channels, if you own it.
+    pub fn channel_settings(&self, id: &str) -> Option<crate::invite_people::InvitePeople> {
+        let c = self.detail.as_ref()?.channels.iter().find(|c| c.id == id)?;
+        let owner = self.account_id.clone()?;
+        Some(
+            self.invite_people(None)?
+                .channel_settings(c.id.clone(), &c.name, c.private, owner),
+        )
     }
 
     /// Sends an owner's space or member change.
@@ -2993,7 +3021,73 @@ impl Live {
                 if let Some(d) = &mut self.detail {
                     d.channels.push(channel.clone());
                 }
+                // A new private channel's settings open, to add its people
+                // (web's).
+                let settings = channel.private.then(|| channel.id.clone());
                 self.navigate(Some(channel.space_id), Some(channel.id));
+                out.push(Update::Left(None));
+                out.extend(settings.map(Update::ChannelSettings));
+                return;
+            }
+            AdminResult::SpaceUpdated(space) => {
+                if let Some(d) = self.detail.as_mut().filter(|d| d.space.id == space.id) {
+                    d.space.name = space.name.clone();
+                }
+                if let Some(s) = self
+                    .spaces
+                    .as_mut()
+                    .and_then(|s| s.spaces.iter_mut().find(|s| s.id == space.id))
+                {
+                    s.name = space.name.clone();
+                }
+                out.push(invite_answer(crate::invite_people::Answer::SpaceSaved(
+                    space,
+                )));
+                return;
+            }
+            AdminResult::ChannelUpdated(channel) => {
+                if let Some(c) = self
+                    .detail
+                    .as_mut()
+                    .and_then(|d| d.channels.iter_mut().find(|c| c.id == channel.id))
+                {
+                    c.name = channel.name.clone();
+                    c.private = channel.private;
+                }
+                out.push(invite_answer(crate::invite_people::Answer::ChannelSaved(
+                    channel,
+                )));
+                return;
+            }
+            AdminResult::Members {
+                channel: Some(channel),
+                members,
+                invitations,
+            } => {
+                out.push(invite_answer(crate::invite_people::Answer::Members {
+                    channel,
+                    members,
+                    invitations,
+                }));
+                return;
+            }
+            AdminResult::MemberAdded {
+                channel: Some(channel),
+                member,
+            } => {
+                out.push(invite_answer(
+                    crate::invite_people::Answer::ChannelInvited { channel, member },
+                ));
+                return;
+            }
+            AdminResult::MemberRemoved {
+                channel: Some(channel),
+                member,
+            } => {
+                out.push(invite_answer(
+                    crate::invite_people::Answer::ChannelRemoved { channel, member },
+                ));
+                return;
             }
             AdminResult::InvitationAccepted(space) => {
                 self.invitations.retain(|s| s.id != space.id);

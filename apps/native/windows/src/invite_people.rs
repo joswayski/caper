@@ -10,6 +10,7 @@ use crate::live::Live;
 use crate::overlay::{
     CARD_PAD, Dialog, FIELD_PAD_X, Kind, Part, Rect, Tone, height, layout, width,
 };
+use crate::space_settings::{FOOTER_H, Manage};
 use crate::theme::*;
 use crate::{App, text};
 use caper_client::invites::{self, INVITATION_SENT, InviteLink};
@@ -56,6 +57,8 @@ pub const EXPIRE_LABEL: u8 = 11;
 pub const USES_LABEL: u8 = 12;
 pub const OPENS_LABEL: u8 = 13;
 pub const FORM_ERROR: u8 = 14;
+/// Why the name wasn't saved.
+pub const NAME_ERROR: u8 = 15;
 /// `Part::LinkAction`s, More invite options' items.
 pub const REGENERATE: u8 = 0;
 pub const DEACTIVATE: u8 = 1;
@@ -95,13 +98,20 @@ pub struct InvitePeople {
     /// choices open), the number field with the keyboard, and why the
     /// last link couldn't be made.
     pub settings_open: bool,
-    pub numbers: [Composer; 2],
-    pub seen: [Vec<u16>; 2],
+    pub numbers: [Composer; 3],
+    pub seen: [Vec<u16>; 3],
     pub unit: invites::ExpiryUnit,
     pub landing: Option<String>,
     pub landing_open: bool,
     pub focus: Option<u8>,
     pub form_error: Option<String>,
+    /// Manage space or Channel settings (`space_settings`), the name
+    /// saved (`numbers[NAME]` holds the draft), why it wasn't, and
+    /// whether a save is in flight.
+    pub manage: Option<Manage>,
+    pub saved: String,
+    pub name_error: Option<String>,
+    pub saving: bool,
 }
 
 impl InvitePeople {
@@ -113,9 +123,8 @@ impl InvitePeople {
         prefix: String,
         members: Vec<Member>,
     ) -> Self {
-        let landing = channel
-            .clone()
-            .or_else(|| public.first().map(|(id, _)| id.clone()));
+        // Opens in starts on the first public channel, as web's does.
+        let landing = public.first().map(|(id, _)| id.clone());
         let (amount, unit) = invites::DEFAULT_EXPIRY;
         Self {
             space,
@@ -138,13 +147,18 @@ impl InvitePeople {
             numbers: [
                 crate::custom_links::number(amount),
                 crate::custom_links::number("100"),
+                Composer::default(),
             ],
-            seen: [gfx::wide(amount), gfx::wide("100")],
+            seen: [gfx::wide(amount), gfx::wide("100"), Vec::new()],
             unit,
             landing,
             landing_open: false,
             focus: None,
             form_error: None,
+            manage: None,
+            saved: String::new(),
+            name_error: None,
+            saving: false,
         }
     }
 
@@ -179,6 +193,23 @@ pub enum Answer {
     Invitations(Vec<Member>),
     Invited(Member),
     Cancelled(String),
+    /// Manage space's and Channel settings' saves, and a private channel's
+    /// members, invitations and removals.
+    SpaceSaved(caper_client::model::Space),
+    ChannelSaved(caper_client::model::Channel),
+    Members {
+        channel: String,
+        members: Vec<Member>,
+        invitations: Vec<Member>,
+    },
+    ChannelInvited {
+        channel: String,
+        member: Member,
+    },
+    ChannelRemoved {
+        channel: String,
+        member: String,
+    },
 }
 
 impl Dialog {
@@ -208,16 +239,25 @@ impl Dialog {
             Some(InvitePeople {
                 confirm: Some(_), ..
             }) => "Deactivate invite link?".into(),
+            Some(InvitePeople {
+                manage: Some(Manage::Space),
+                ..
+            }) => "Manage space".into(),
+            Some(InvitePeople {
+                manage: Some(Manage::Channel(_)),
+                ..
+            }) => "Channel settings".into(),
             Some(ip) => format!("Invite people to {}", ip.space_name),
             None => String::new(),
         }
     }
 
     pub(crate) fn invite_people_note(&self) -> String {
-        if self.confirming() {
-            String::new()
-        } else {
-            "Share a link or invite someone by username.".into()
+        match self.managing() {
+            _ if self.confirming() => String::new(),
+            Some(Manage::Space) => crate::space_settings::OWNER_NOTE.into(),
+            Some(Manage::Channel(_)) => String::new(),
+            None => "Share a link or invite someone by username.".into(),
         }
     }
 
@@ -239,6 +279,7 @@ impl Dialog {
             Part::Copy | Part::More => !ip.pending && ip.default.is_some(),
             Part::Retry => !ip.pending,
             Part::Landing => !ip.pending && !ip.public.is_empty(),
+            Part::Number(crate::custom_links::NAME) => !self.busy,
             Part::LinkCopy(_) => true,
             Part::Custom
             | Part::Number(_)
@@ -255,6 +296,7 @@ impl Dialog {
             SHARE => "Share an invite link".into(),
             PENDING => "Pending invitations".into(),
             CUSTOM_HEAD => "Create a separate link".into(),
+            _ if self.managing().is_some() => "Members".into(),
             _ => "Or invite by username".into(),
         }
     }
@@ -277,6 +319,7 @@ impl Dialog {
             STOPS => "This shared URL will stop accepting new joins.".into(),
             REPLACEMENT => "The replacement allows 100 joins for 30 days.".into(),
             CUSTOM_GUIDE..=FORM_ERROR => self.custom_line(k),
+ NAME_ERROR => ip.name_error.clone().unwrap_or_default(),
             _ => ip.confirm.as_ref().map_or_else(String::new, |(code, _)| {
                 format!("Current link: {}", ip.url(code))
             }),
@@ -385,7 +428,8 @@ impl Dialog {
         self.error = if name.len() < 3 {
             Some(USERNAME_RULE.into())
         } else {
-            invites::invite_error(&name, &ip.members, &ip.invitations, false).map(Into::into)
+            invites::invite_error(&name, &ip.members, &ip.invitations, ip.channel().is_some())
+                .map(Into::into)
         };
         self.error.is_none().then_some(name)
     }
@@ -425,6 +469,7 @@ impl Dialog {
                 result,
             } if space == ip.space && r == request => match result {
                 Ok(links) => {
+                    ip.pending = false;
                     if ip
                         .default
                         .as_ref()
@@ -434,7 +479,10 @@ impl Dialog {
                     }
                     ip.links = links;
                 }
-                Err(e) => ip.link_error = Some(e),
+                Err(e) => {
+                    ip.pending = false;
+                    ip.link_error = Some(e);
+                }
             },
             Answer::Revoked {
                 space,
@@ -500,7 +548,7 @@ impl Dialog {
         k: u8,
     ) -> (&'g IDWriteTextFormat, &'g ID2D1SolidColorBrush) {
         match k {
-            LINK_ERROR | FORM_ERROR => (&g.formats.error, &g.brushes.error),
+            LINK_ERROR | FORM_ERROR | NAME_ERROR => (&g.formats.error, &g.brushes.error),
             STOPS | REPLACEMENT => (&g.formats.dialog_note, &g.brushes.text),
             _ => (&g.formats.direct_note, &g.brushes.muted),
         }
@@ -553,90 +601,95 @@ impl Dialog {
         )?;
         parts.push((Part::Title, (0.0, 0.0, inner - CLOSE - 8.0, height(&title))));
         let mut y = height(&title).max(CLOSE) + 2.0;
-        y += line(
-            &mut parts,
-            Part::Note,
-            &self.note(),
-            &g.formats.dialog_note,
-            y,
-        )? + 16.0;
-        let body_top = y;
-        y += line(
-            &mut parts,
-            Part::Heading(SHARE),
-            &self.invite_heading(SHARE),
-            &g.formats.direct_name,
-            y,
-        )? + 6.0;
-        y += line(
-            &mut parts,
-            Part::Line(GUIDE),
-            &self.invite_line(GUIDE),
-            &g.formats.direct_note,
-            y,
-        )? + 4.0;
-        if ip.public.is_empty() {
-            let text = self.invite_line(NO_CHANNEL);
-            y += line(
-                &mut parts,
-                Part::Line(NO_CHANNEL),
-                &text,
-                &g.formats.direct_note,
-                y,
-            )? + 4.0;
+        let note = self.note();
+        if note.is_empty() {
+            y += 12.0;
+        } else {
+            y += line(&mut parts, Part::Note, &note, &g.formats.dialog_note, y)? + 16.0;
         }
-        y += 8.0;
-        if ip.default.is_some() {
-            let copied = layout(g, "Copied", &g.formats.button, 1e6)?;
-            let copy_w = width(&copied) + 28.0;
-            let link_w = (inner - copy_w - 1.0 - CONTROL_H - 8.0).max(40.0);
-            parts.push((Part::Link, (0.0, y, link_w, CONTROL_H)));
-            parts.push((Part::Copy, (link_w + 8.0, y, copy_w, CONTROL_H)));
-            let more_x = link_w + 8.0 + copy_w + 1.0;
-            parts.push((Part::More, (more_x, y, CONTROL_H, CONTROL_H)));
-            if ip.menu {
-                // A popup under More, right-aligned with it.
-                let mw = MENU_W.min(inner);
-                let mx = more_x + CONTROL_H - mw;
-                let mut my = y + CONTROL_H + 4.0 + 6.0;
-                let note = layout(g, REGENERATE_NOTE, &g.formats.direct_note, mw - 32.0)?;
-                let rh = 10.0 + 20.0 + height(&note) + 10.0;
-                menu.push((Part::LinkAction(REGENERATE), (mx + 6.0, my, mw - 12.0, rh)));
-                my += rh;
-                menu.push((Part::LinkAction(CUSTOM), (mx + 6.0, my, mw - 12.0, 36.0)));
-                my += 36.0;
-                menu.push((
-                    Part::LinkAction(DEACTIVATE),
-                    (mx + 6.0, my, mw - 12.0, 36.0),
-                ));
-            }
-            y += CONTROL_H + 6.0;
-            y += line(
-                &mut parts,
-                Part::Line(SUMMARY),
-                &self.invite_line(SUMMARY),
-                &g.formats.direct_note,
-                y,
-            )?;
-        } else if ip.pending {
-            y += line(
-                &mut parts,
-                Part::Loading,
-                "Preparing invite link\u{2026}",
-                &g.formats.direct_note,
-                y,
-            )?;
+        let body_top = y;
+        let channel = ip.channel().is_some();
+        if ip.manage.is_some() {
+            // Manage space's name, or the channel's name and privacy.
+            y = self.relayout_manage_head(g, inner, y, &mut parts)? + 22.0;
         } else {
             y += line(
                 &mut parts,
-                Part::Line(MISSING),
-                &self.invite_line(MISSING),
+                Part::Heading(SHARE),
+                &self.invite_heading(SHARE),
+                &g.formats.direct_name,
+                y,
+            )? + 6.0;
+            y += line(
+                &mut parts,
+                Part::Line(GUIDE),
+                &self.invite_line(GUIDE),
                 &g.formats.direct_note,
                 y,
-            )? + 8.0;
-            let l = layout(g, self.retry_label(), &g.formats.button, 1e6)?;
-            parts.push((Part::Retry, (0.0, y, width(&l) + 24.0, BUTTON_H)));
-            y += BUTTON_H;
+            )? + 4.0;
+            if ip.public.is_empty() {
+                let text = self.invite_line(NO_CHANNEL);
+                y += line(
+                    &mut parts,
+                    Part::Line(NO_CHANNEL),
+                    &text,
+                    &g.formats.direct_note,
+                    y,
+                )? + 4.0;
+            }
+            y += 8.0;
+            if ip.default.is_some() {
+                let copied = layout(g, "Copied", &g.formats.button, 1e6)?;
+                let copy_w = width(&copied) + 28.0;
+                let link_w = (inner - copy_w - 1.0 - CONTROL_H - 8.0).max(40.0);
+                parts.push((Part::Link, (0.0, y, link_w, CONTROL_H)));
+                parts.push((Part::Copy, (link_w + 8.0, y, copy_w, CONTROL_H)));
+                let more_x = link_w + 8.0 + copy_w + 1.0;
+                parts.push((Part::More, (more_x, y, CONTROL_H, CONTROL_H)));
+                if ip.menu {
+                    // A popup under More, right-aligned with it.
+                    let mw = MENU_W.min(inner);
+                    let mx = more_x + CONTROL_H - mw;
+                    let mut my = y + CONTROL_H + 4.0 + 6.0;
+                    let note = layout(g, REGENERATE_NOTE, &g.formats.direct_note, mw - 32.0)?;
+                    let rh = 10.0 + 20.0 + height(&note) + 10.0;
+                    menu.push((Part::LinkAction(REGENERATE), (mx + 6.0, my, mw - 12.0, rh)));
+                    my += rh;
+                    menu.push((Part::LinkAction(CUSTOM), (mx + 6.0, my, mw - 12.0, 36.0)));
+                    my += 36.0;
+                    menu.push((
+                        Part::LinkAction(DEACTIVATE),
+                        (mx + 6.0, my, mw - 12.0, 36.0),
+                    ));
+                }
+                y += CONTROL_H + 6.0;
+                y += line(
+                    &mut parts,
+                    Part::Line(SUMMARY),
+                    &self.invite_line(SUMMARY),
+                    &g.formats.direct_note,
+                    y,
+                )?;
+            } else if ip.pending {
+                y += line(
+                    &mut parts,
+                    Part::Loading,
+                    self.loading_text(),
+                    &g.formats.direct_note,
+                    y,
+                )?;
+            } else {
+                y += line(
+                    &mut parts,
+                    Part::Line(MISSING),
+                    &self.invite_line(MISSING),
+                    &g.formats.direct_note,
+                    y,
+                )? + 8.0;
+                let l = layout(g, self.retry_label(), &g.formats.button, 1e6)?;
+                parts.push((Part::Retry, (0.0, y, width(&l) + 24.0, BUTTON_H)));
+                y += BUTTON_H;
+            }
         }
         if ip.link_error.is_some() {
             y += 6.0;
@@ -648,79 +701,100 @@ impl Dialog {
                 y,
             )?;
         }
-        y = self.relayout_custom(g, inner, y, &mut parts, &mut menu)?;
-        y += 22.0;
-        if !ip.invitations.is_empty() {
+        // Channel settings make no links.
+        if !channel {
+            y = self.relayout_custom(g, inner, y, &mut parts, &mut menu)?;
+            y += 22.0;
+        }
+        if self.members_shown() {
+            if !ip.invitations.is_empty() {
+                y += line(
+                    &mut parts,
+                    Part::Heading(PENDING),
+                    &self.invite_heading(PENDING),
+                    &g.formats.direct_name,
+                    y,
+                )? + 6.0;
+                let l = layout(g, "Cancel invite", &g.formats.button, 1e6)?;
+                let cw = width(&l) + 24.0;
+                for k in 0..ip.invitations.len() {
+                    parts.push((Part::Invitee(k), (0.0, y, inner - cw - 12.0, ROW_H)));
+                    parts.push((
+                        Part::CancelInvite(k),
+                        (inner - cw, y + (ROW_H - 32.0) / 2.0, cw, 32.0),
+                    ));
+                    y += ROW_H;
+                }
+                y += 16.0;
+            }
             y += line(
                 &mut parts,
-                Part::Heading(PENDING),
-                &self.invite_heading(PENDING),
+                Part::Heading(BY_NAME),
+                &self.invite_heading(BY_NAME),
                 &g.formats.direct_name,
                 y,
-            )? + 6.0;
-            let l = layout(g, "Cancel invite", &g.formats.button, 1e6)?;
-            let cw = width(&l) + 24.0;
-            for k in 0..ip.invitations.len() {
-                parts.push((Part::Invitee(k), (0.0, y, inner - cw - 12.0, ROW_H)));
-                parts.push((
-                    Part::CancelInvite(k),
-                    (inner - cw, y + (ROW_H - 32.0) / 2.0, cw, 32.0),
-                ));
-                y += ROW_H;
+            )? + 8.0;
+            let invite = layout(g, "Invite", &g.formats.button, 1e6)?;
+            let invite_w = (width(&invite) + 24.0).max(72.0);
+            let field_w = inner - invite_w - 8.0;
+            self.field
+                .relayout_with(g, &g.formats.composer, 15.0, field_w - 2.0 * FIELD_PAD_X)?;
+            parts.push((Part::Field, (0.0, y, field_w, CONTROL_H)));
+            parts.push((Part::Primary, (field_w + 8.0, y, invite_w, CONTROL_H)));
+            y += CONTROL_H;
+            if !self.suggestions.is_empty() {
+                y += 8.0;
+                for k in 0..self.suggestions.len() {
+                    parts.push((Part::Suggest(k), (4.0, y, field_w - 8.0, SUGGEST_H)));
+                    y += SUGGEST_H;
+                }
+                y += 4.0;
             }
-            y += 16.0;
-        }
-        y += line(
-            &mut parts,
-            Part::Heading(BY_NAME),
-            &self.invite_heading(BY_NAME),
-            &g.formats.direct_name,
-            y,
-        )? + 8.0;
-        let invite = layout(g, "Invite", &g.formats.button, 1e6)?;
-        let invite_w = (width(&invite) + 24.0).max(72.0);
-        let field_w = inner - invite_w - 8.0;
-        self.field
-            .relayout_with(g, &g.formats.composer, 15.0, field_w - 2.0 * FIELD_PAD_X)?;
-        parts.push((Part::Field, (0.0, y, field_w, CONTROL_H)));
-        parts.push((Part::Primary, (field_w + 8.0, y, invite_w, CONTROL_H)));
-        y += CONTROL_H;
-        if !self.suggestions.is_empty() {
-            y += 8.0;
-            for k in 0..self.suggestions.len() {
-                parts.push((Part::Suggest(k), (4.0, y, field_w - 8.0, SUGGEST_H)));
-                y += SUGGEST_H;
-            }
-            y += 4.0;
-        }
-        y += 8.0;
-        y += line(
-            &mut parts,
-            Part::Line(HELP),
-            &self.invite_line(HELP),
-            &g.formats.direct_note,
-            y,
-        )?;
-        if let Some(e) = &self.error {
-            y += 8.0;
-            y += line(&mut parts, Part::Error, e, &g.formats.error, y)?;
-        } else if ip.status.is_some() {
             y += 8.0;
             y += line(
                 &mut parts,
-                Part::Line(STATUS),
-                &self.invite_line(STATUS),
+                Part::Line(HELP),
+                &self.invite_line(HELP),
                 &g.formats.direct_note,
                 y,
             )?;
+            if let Some(e) = &self.error {
+                y += 8.0;
+                y += line(&mut parts, Part::Error, e, &g.formats.error, y)?;
+            } else if ip.status.is_some() {
+                y += 8.0;
+                y += line(
+                    &mut parts,
+                    Part::Line(STATUS),
+                    &self.invite_line(STATUS),
+                    &g.formats.direct_note,
+                    y,
+                )?;
+            }
+            if self.members_loading() {
+                y += 8.0;
+                y += line(
+                    &mut parts,
+                    Part::Loading,
+                    self.loading_text(),
+                    &g.formats.direct_note,
+                    y,
+                )?;
+            }
+            y = self.relayout_members(inner, y, &mut parts);
         }
         // The menu is hit first, and drawn last.
         menu.append(&mut parts);
+        // A channel's unsaved changes keep their save bar under the body.
+        let foot = if self.save_bar() { FOOTER_H } else { 0.0 };
         let content = y - body_top;
-        let room = (h - 48.0 - 2.0 * CARD_PAD - body_top).max(ROW_H);
+        let room = (h - 48.0 - 2.0 * CARD_PAD - body_top - foot).max(ROW_H);
         let view = content.min(room);
         self.scroll = self.scroll.clamp(0.0, (content - view).max(0.0));
-        let card_h = body_top + view + 2.0 * CARD_PAD;
+        if foot > 0.0 {
+            self.relayout_footer(g, inner, body_top + view, &mut menu)?;
+        }
+        let card_h = body_top + view + foot + 2.0 * CARD_PAD;
         self.place(menu, card_w, card_h, w, h, (body_top, view))
     }
 
@@ -849,8 +923,15 @@ impl Dialog {
                     y,
                     w,
                 )?;
-                if k == PENDING {
-                    let n = ip.invitations.len().to_string();
+                let count = match k {
+                    PENDING => Some(ip.invitations.len()),
+                    BY_NAME if self.managing().is_some() && !self.members_loading() => {
+                        Some(ip.members.len())
+                    }
+                    _ => None,
+                };
+                if let Some(n) = count {
+                    let n = n.to_string();
                     let l = layout(g, &n, &g.formats.direct_note, 1e6)?;
                     text::draw(dc, &l, x + w - width(&l), y, &g.brushes.muted);
                 }
@@ -860,7 +941,7 @@ impl Dialog {
                 draw(&self.invite_line(k), format, brush, x, y, w)?;
             }
             Part::Loading => draw(
-                "Preparing invite link\u{2026}",
+                self.loading_text(),
                 &g.formats.direct_note,
                 &g.brushes.muted,
                 x,
@@ -948,53 +1029,23 @@ impl Dialog {
                 self.button(g, dc, part, self.retry_label(), (x, y, w, h), Tone::Primary)?
             }
             Part::Invitee(k) => {
-                let Some(m) = ip.invitations.get(k) else {
-                    return Ok(());
-                };
-                let face = crate::live::person(&m.id, &m.display_name);
-                let (cx, cy) = (x + 15.0, y + h / 2.0);
-                unsafe {
-                    dc.FillEllipse(
-                        &D2D1_ELLIPSE {
-                            point: windows_numerics::Vector2 { X: cx, Y: cy },
-                            radiusX: 15.0,
-                            radiusY: 15.0,
-                        },
-                        &g.solid(face.color),
-                    );
+                if let Some(m) = ip.invitations.get(k) {
+                    let sub = format!("@{} \u{b7} Invited", m.username);
+                    crate::space_settings::draw_person(g, dc, m, &sub, (x, y, w, h))?;
                 }
-                let i = g.layout(&gfx::wide(&face.initials), &g.formats.direct_initials, 1e6)?;
-                text::draw(
-                    dc,
-                    &i,
-                    cx - width(&i) / 2.0,
-                    cy - height(&i) / 2.0,
-                    &g.brushes.text,
-                );
-                let tx = x + 30.0 + 12.0;
-                let tw = w - (tx - x);
-                draw(
-                    &m.display_name,
-                    &g.formats.direct_name,
-                    &g.brushes.text,
-                    tx,
-                    y + 6.0,
-                    tw,
-                )?;
-                let user = format!("@{} \u{b7} Invited", m.username);
-                draw(
-                    &user,
-                    &g.formats.direct_note,
-                    &g.brushes.muted,
-                    tx,
-                    y + 26.0,
-                    tw,
-                )?;
             }
             Part::CancelInvite(_) => {
                 self.button(g, dc, part, "Cancel invite", (x, y, w, h), Tone::Secondary)?
             }
             Part::Field => self.draw_field(g, dc, (x, y, w, h))?,
+            Part::Label
+            | Part::Hint
+            | Part::Toggle
+            | Part::SaveName
+            | Part::Member(_)
+            | Part::Unsaved
+            | Part::Reset
+            | Part::SaveChanges => self.draw_manage_part(g, dc, part, (x, y, w, h))?,
             Part::Suggest(k) => {
                 if k == 0 {
                     let n = self.suggestions.len() as f32;
@@ -1040,6 +1091,7 @@ impl App {
     }
 
     pub fn invite_people_answer(&mut self, answer: Answer) {
+        self.settings_saved(&answer);
         let Some(d) = self
             .dialog
             .as_mut()
@@ -1047,6 +1099,27 @@ impl App {
         else {
             return;
         };
+        if matches!(
+            answer,
+            Answer::SpaceSaved(_)
+                | Answer::ChannelSaved(_)
+                | Answer::Members { .. }
+                | Answer::ChannelInvited { .. }
+                | Answer::ChannelRemoved { .. }
+        ) {
+            let saved = matches!(answer, Answer::ChannelSaved(_));
+            d.manage_answer(answer);
+            // Saved private: who has access loads, as web's dialog reloads.
+            if let (true, Some(ip), Some(live)) = (saved, d.inviting.as_deref(), &self.live)
+                && let Some(c) = ip.channel().filter(|c| !c.loaded)
+            {
+                live.admin(AdminOperation::LoadMembers {
+                    space: ip.space.clone(),
+                    channel: Some(c.id.clone()),
+                });
+            }
+            return self.dialog_changed();
+        }
         let request = d.request;
         if let (Some(space), Some(live)) = (d.invite_answer(answer), &self.live) {
             live.account(AccountOperation::LoadInviteLinks { space, request });
@@ -1060,7 +1133,11 @@ impl App {
         let (Some(d), Some(live)) = (self.dialog.as_mut(), self.live.as_ref()) else {
             return;
         };
-        if part == Part::Retry {
+        if matches!(part, Part::SaveName | Part::Reset | Part::SaveChanges) {
+            if let Some(operation) = d.manage_activate(part) {
+                live.admin(operation);
+            }
+        } else if part == Part::Retry {
             d.prepare_link(live);
         } else if part == Part::Primary && !d.confirming() {
             if let Some(username) = d.invite_submit()
@@ -1071,7 +1148,7 @@ impl App {
                 d.suggestions.clear();
                 live.admin(AdminOperation::AddMember {
                     space: ip.space.clone(),
-                    channel: None,
+                    channel: ip.channel().map(|c| c.id.clone()),
                     username,
                 });
             }
@@ -1126,13 +1203,22 @@ impl App {
                 }
                 Part::CancelInvite(k) => {
                     if let Some(m) = ip.invitations.get(k) {
+                        // A private channel's invitation is its grant.
+                        let operation = match ip.channel() {
+                            Some(c) => AdminOperation::RemoveMember {
+                                space: ip.space.clone(),
+                                channel: Some(c.id.clone()),
+                                member: m.id.clone(),
+                            },
+                            None => AdminOperation::CancelInvitation {
+                                space: ip.space.clone(),
+                                user: m.id.clone(),
+                            },
+                        };
                         d.busy = true;
                         d.error = None;
                         ip.status = None;
-                        live.admin(AdminOperation::CancelInvitation {
-                            space: ip.space.clone(),
-                            user: m.id.clone(),
-                        });
+                        live.admin(operation);
                     }
                 }
                 _ => {}

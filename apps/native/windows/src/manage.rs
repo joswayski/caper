@@ -17,6 +17,29 @@ const TOGGLE_H: f32 = 26.0;
 /// Web's guidance under a new channel's name.
 pub const GUIDE: &str = "Channels are where conversations happen around a topic. Use a name that is easy to find and understand.";
 
+/// A name as typed, kept as web keeps it: a channel's normalized
+/// (`normalize_channel`) with the caret after the same typed text, a
+/// space's cut at 80 characters. None when it already is.
+pub(crate) fn normalized(text: &[u16], caret: usize, channel: bool) -> Option<(Vec<u16>, usize)> {
+    let caret = caret.min(text.len());
+    let typed = String::from_utf16_lossy(text);
+    let (next, at) = if channel {
+        let before = String::from_utf16_lossy(&text[..caret]);
+        (
+            names::normalize_channel(&typed),
+            names::normalize_channel(&before).encode_utf16().count(),
+        )
+    } else {
+        (typed.chars().take(80).collect::<String>(), caret)
+    };
+    if next == typed {
+        return None;
+    }
+    let next = gfx::wide(&next);
+    let at = at.min(next.len());
+    Some((next, at))
+}
+
 impl Dialog {
     pub fn create_space() -> Self {
         let field = Composer {
@@ -73,21 +96,11 @@ impl Dialog {
     /// (`normalize_channel`) with the caret after the same typed text, a
     /// space's cut at 80 characters.
     pub(crate) fn normalize_name(&mut self) {
-        let text = self.draft();
-        let caret = self.field.caret.min(self.field.text.len());
-        let (next, at) = if self.kind == Kind::CreateChannel {
-            let typed = String::from_utf16_lossy(&self.field.text[..caret]);
-            (
-                names::normalize_channel(&text),
-                names::normalize_channel(&typed).encode_utf16().count(),
-            )
-        } else {
-            (text.chars().take(80).collect(), caret)
-        };
-        if next != text {
-            self.field.text = gfx::wide(&next);
-            self.field.caret = at.min(self.field.text.len());
-            self.field.anchor = self.field.caret;
+        let channel = self.kind == Kind::CreateChannel;
+        if let Some((text, caret)) = normalized(&self.field.text, self.field.caret, channel) {
+            self.field.text = text;
+            self.field.caret = caret;
+            self.field.anchor = caret;
         }
     }
 

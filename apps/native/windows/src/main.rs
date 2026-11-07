@@ -33,6 +33,7 @@ mod playback;
 mod preview;
 mod recording;
 mod settings;
+mod space_settings;
 // The message grammar every client shares.
 #[allow(dead_code)]
 #[path = "../../../../shared/messages/formatting.rs"]
@@ -707,6 +708,7 @@ impl App {
                 }
                 live::Update::Invitations => self.invitations_changed(),
                 live::Update::InvitePeople(answer) => self.invite_people_answer(*answer),
+                live::Update::ChannelSettings(id) => self.open_channel_settings(&id),
                 live::Update::Settings => {
                     if self.settings.is_some() {
                         self.settings_changed();

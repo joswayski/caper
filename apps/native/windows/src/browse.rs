@@ -34,6 +34,8 @@ pub struct Browse {
     pub space: String,
     pub space_name: String,
     pub rows: Vec<Row>,
+    /// Whether you own the space: each row then has Manage.
+    pub owner: bool,
 }
 
 impl Browse {
@@ -87,6 +89,13 @@ impl Dialog {
         })
     }
 
+    /// Shown row `k`'s Manage button's name, as web's.
+    pub fn browse_manage_name(&self, k: usize) -> String {
+        self.browse_shown()
+            .get(k)
+            .map_or_else(String::new, |r| format!("Manage {}", r.name))
+    }
+
     /// The note when no row is shown.
     pub fn browse_empty(&self) -> &'static str {
         if self.draft().trim().is_empty() {
@@ -132,8 +141,15 @@ impl Dialog {
             let l = layout(g, self.browse_empty(), &g.formats.dialog_note, inner)?;
             parts.push((Part::Hint, (0.0, y, inner, height(&l))));
         }
+        // The owner's rows end with Manage, as on web.
+        let owner = self.browse.as_ref().is_some_and(|b| b.owner);
+        let row_w = if owner { inner - 44.0 } else { inner };
         for k in 0..shown {
-            parts.push((Part::Channel(k), (0.0, y + k as f32 * ROW_H, inner, ROW_H)));
+            let ry = y + k as f32 * ROW_H;
+            parts.push((Part::Channel(k), (0.0, ry, row_w, ROW_H)));
+            if owner {
+                parts.push((Part::ManageRow(k), (inner - 40.0, ry + 8.0, 32.0, 32.0)));
+            }
         }
         let all = self.browse.as_ref().map_or(0, |b| b.rows.len()).max(1);
         let room = (h - 48.0 - 2.0 * CARD_PAD - body_top).clamp(ROW_H, 6.5 * ROW_H);
@@ -149,7 +165,7 @@ impl Dialog {
         for (p, r) in &mut parts {
             r.0 += cx + CARD_PAD;
             r.1 += cy + CARD_PAD;
-            if matches!(p, Part::Channel(_)) {
+            if matches!(p, Part::Channel(_) | Part::ManageRow(_)) {
                 r.1 -= self.scroll;
             }
         }
@@ -236,8 +252,10 @@ impl Dialog {
             if y > by + bh || y + h < by {
                 continue;
             }
-            if self.hover == Some(*part) {
-                fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
+            let manage = self.part_rect(Part::ManageRow(k));
+            let full = manage.map_or(x + w, |(mx, _, mw, _)| mx + mw + 8.0);
+            if self.hover == Some(*part) || self.hover == Some(Part::ManageRow(k)) {
+                fill_round(dc, rect(x, y, full, y + h), 6.0, &g.brushes.hover);
             }
             let mark = if row.private { "\u{1F512}" } else { "#" };
             let l = layout(g, mark, &g.formats.channel, 40.0)?;
@@ -275,6 +293,19 @@ impl Dialog {
                     &g.brushes.text,
                 );
             }
+            if let Some((mx, my, mw, mh)) = manage {
+                let lit = self.hover == Some(Part::ManageRow(k));
+                if lit {
+                    fill_round(dc, rect(mx, my, mx + mw, my + mh), 6.0, &g.brushes.raised);
+                }
+                icons::draw(
+                    dc,
+                    Icon::Settings,
+                    rect(mx + 8.0, my + 8.0, mx + mw - 8.0, my + mh - 8.0),
+                    if lit { TEXT } else { TEXT_MUTED },
+                    1.0,
+                );
+            }
         }
         Ok(())
     }
@@ -287,6 +318,15 @@ impl App {
             return;
         };
         self.open_dialog(Dialog::browse(browse));
+    }
+
+    /// A row's Manage (the owner's) opens its Channel settings.
+    pub fn browse_manage(&mut self, k: usize) {
+        let Some((_, channel)) = self.dialog.as_ref().and_then(|d| d.browse_row(k)) else {
+            return;
+        };
+        self.close_dialog();
+        self.open_channel_settings(&channel);
     }
 
     /// A row opens its channel (a preview until you join it) and closes
@@ -319,6 +359,7 @@ mod tests {
             space: "s".into(),
             space_name: "Studio".into(),
             rows: vec![row("design"), row("dev"), row("c#-tips")],
+            owner: false,
         };
         let names = |q: &str| {
             browse

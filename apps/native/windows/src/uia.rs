@@ -574,10 +574,16 @@ fn name(a: &App, id: Id) -> String {
                 DPart::LinkAction(k) => crate::overlay::Dialog::link_action_label(k).into(),
                 DPart::Invitee(k) => d.invitee_name(k),
                 DPart::CancelInvite(_) => "Cancel invite".into(),
-                DPart::Loading if d.kind == Kind::InvitePeople => {
-                    "Preparing invite link\u{2026}".into()
-                }
+                DPart::Loading if d.kind == Kind::InvitePeople => d.loading_text().into(),
                 DPart::Retry if d.kind == Kind::InvitePeople => d.retry_label().into(),
+                DPart::Label if d.kind == Kind::InvitePeople => d.manage_label().into(),
+                DPart::Hint if d.kind == Kind::InvitePeople => d.privacy_note(),
+                DPart::SaveName => "Save name".into(),
+                DPart::Member(k) => d.member_name(k),
+                DPart::Unsaved => crate::space_settings::UNSAVED.into(),
+                DPart::Reset => "Reset".into(),
+                DPart::SaveChanges => d.save_changes_label().into(),
+                DPart::ManageRow(k) => d.browse_manage_name(k),
                 DPart::Field | DPart::Label
                     if matches!(d.kind, Kind::CreateSpace | Kind::CreateChannel) =>
                 {
@@ -755,6 +761,8 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
             | DPart::Line(_)
             | DPart::Link
             | DPart::Invitee(_)
+            | DPart::Member(_)
+            | DPart::Unsaved
             | DPart::LinkRow(_),
         ) => UIA_TextControlTypeId,
         Id::Dialog(DPart::Toggle) => UIA_CheckBoxControlTypeId,
@@ -1157,7 +1165,11 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 | DPart::LandingChoice(_)
                 | DPart::CreateLink
                 | DPart::LinkCopy(_)
-                | DPart::LinkRevoke(_),
+                | DPart::LinkRevoke(_)
+                | DPart::SaveName
+                | DPart::Reset
+                | DPart::SaveChanges
+                | DPart::ManageRow(_),
             ) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
                 pattern == UIA_InvokePatternId

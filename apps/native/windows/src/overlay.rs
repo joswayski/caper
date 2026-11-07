@@ -321,6 +321,15 @@ pub enum Part {
     LinkRow(usize),
     LinkCopy(usize),
     LinkRevoke(usize),
+    /// Manage space and Channel settings (`space_settings`): Save name,
+    /// member `k`, and the save bar's text, Reset and Save changes; and
+    /// Browse's Manage on shown channel `k`.
+    SaveName,
+    Member(usize),
+    Unsaved,
+    Reset,
+    SaveChanges,
+    ManageRow(usize),
 }
 
 impl Part {
@@ -365,13 +374,27 @@ impl Part {
             Self::LinkRow(k) => 70_000 + k,
             Self::LinkCopy(k) => 80_000 + k,
             Self::LinkRevoke(k) => 90_000 + k,
+            Self::SaveName => 30_206,
+            Self::Unsaved => 30_207,
+            Self::Reset => 30_208,
+            Self::SaveChanges => 30_209,
+            Self::Member(k) => 100_000 + k,
+            Self::ManageRow(k) => 110_000 + k,
         }
     }
 
     /// Whether the part scrolls with the history's or Invite people's
     /// body (all but its head).
     pub(crate) fn in_body(self) -> bool {
-        !matches!(self, Self::Title | Self::Note | Self::Close)
+        !matches!(
+            self,
+            Self::Title
+                | Self::Note
+                | Self::Close
+                | Self::Unsaved
+                | Self::Reset
+                | Self::SaveChanges
+        )
     }
 }
 
@@ -619,11 +642,22 @@ impl Dialog {
                 // Invite people's: known people outside the space, then
                 // pending invitees (egui's and web's `invitees`).
                 let people: Vec<_> = match self.inviting.as_deref() {
-                    Some(ip) => caper_client::mentions::invitees(
-                        live.people(),
-                        &ip.members,
-                        &ip.invitations,
-                    ),
+                    Some(ip) => match ip.channel() {
+                        // A private channel's: the space's members without
+                        // access, once its own have loaded (web's).
+                        Some(c) if c.loaded => caper_client::mentions::grantees(
+                            &c.space_members,
+                            Some(&c.owner),
+                            &ip.members,
+                            &ip.invitations,
+                        ),
+                        Some(_) => Vec::new(),
+                        None => caper_client::mentions::invitees(
+                            live.people(),
+                            &ip.members,
+                            &ip.invitations,
+                        ),
+                    },
                     None => live
                         .people()
                         .iter()
@@ -634,12 +668,20 @@ impl Dialog {
                     .inviting
                     .as_deref()
                     .map_or(&[][..], |ip| &ip.invitations);
+                let granted = self
+                    .inviting
+                    .as_deref()
+                    .and_then(|ip| ip.channel())
+                    .map_or(&[][..], |c| &c.space_members);
                 caper_client::mentions::field_suggestions(&people, &self.resolved)
                     .into_iter()
                     .filter_map(|p| {
                         live.person_named(&p.username).cloned().or_else(|| {
-                            invited.iter().find(|m| m.username == p.username).map(|m| {
-                                core::Person {
+                            invited
+                                .iter()
+                                .chain(granted)
+                                .find(|m| m.username == p.username)
+                                .map(|m| core::Person {
                                     admin: m.admin,
                                     id: m.id.clone(),
                                     username: m.username.clone(),
@@ -647,8 +689,7 @@ impl Dialog {
                                     avatar_id: m.avatar_id,
                                     avatar_asset: m.avatar_asset.clone(),
                                     avatar_url: m.avatar_url.clone(),
-                                }
-                            })
+                                })
                         })
                     })
                     .collect()
@@ -738,6 +779,9 @@ impl Dialog {
             | Part::LinkRevoke(_) => self.invite_enabled(part),
             Part::Retry if self.kind == Kind::InvitePeople => self.invite_enabled(part),
             Part::CancelInvite(_) => !self.busy,
+            Part::SaveName => self.can_save_name(),
+            Part::Reset | Part::SaveChanges => !self.busy,
+            Part::Member(_) | Part::Unsaved | Part::ManageRow(_) => true,
             Part::Cancel
             | Part::Reload
             | Part::Field
@@ -805,12 +849,19 @@ impl Dialog {
                         | Part::CreateLink
                         | Part::LinkCopy(_)
                         | Part::LinkRevoke(_)
+                        | Part::SaveName
+                        | Part::Reset
+                        | Part::SaveChanges
+                        | Part::ManageRow(_)
                 ) && contains(*r, x, y)
                     && match self.kind {
                         Kind::History | Kind::InvitePeople => {
                             !p.in_body() || contains(self.body, x, y)
                         }
-                        Kind::Browse => !matches!(p, Part::Channel(_)) || contains(self.body, x, y),
+                        Kind::Browse => {
+                            !matches!(p, Part::Channel(_) | Part::ManageRow(_))
+                                || contains(self.body, x, y)
+                        }
                         _ => true,
                     }
             })
@@ -1409,6 +1460,7 @@ impl App {
             }
             if d.kind == Kind::InvitePeople {
                 d.invite_changed();
+                d.settings_name_changed();
             }
             // Editing the link clears why the last one failed.
             if matches!(d.kind, Kind::CreateSpace | Kind::CreateChannel) {
@@ -1442,7 +1494,10 @@ impl App {
             return;
         }
         if d.kind == Kind::InvitePeople
-            && !matches!(part, Part::Field | Part::Suggest(_) | Part::Close)
+            && !matches!(
+                part,
+                Part::Field | Part::Suggest(_) | Part::Close | Part::Toggle
+            )
         {
             return self.invite_people_activate(part);
         }
@@ -1524,6 +1579,7 @@ impl App {
                 self.events |= EV_FOCUS;
             }
             Part::Channel(k) => return self.browse_open(k),
+            Part::ManageRow(k) => return self.browse_manage(k),
             Part::Primary if d.kind == Kind::StartDirect => {
                 let Some(live) = &mut self.live else { return };
                 d.busy = true;
@@ -1591,7 +1647,12 @@ impl App {
             | Part::LandingChoice(_)
             | Part::CreateLink
             | Part::LinkCopy(_)
-            | Part::LinkRevoke(_) => {}
+            | Part::LinkRevoke(_)
+            | Part::SaveName
+            | Part::Member(_)
+            | Part::Unsaved
+            | Part::Reset
+            | Part::SaveChanges => {}
         }
         self.dialog_changed();
         if let Err(e) = self.drain_live() {
@@ -1718,12 +1779,18 @@ impl App {
         if let (Some(d), Some(e)) = (
             self.dialog
                 .as_mut()
-                .filter(|d| d.kind == Kind::InvitePeople && d.busy),
+                .filter(|d| d.kind == Kind::InvitePeople),
             &error,
         ) {
-            d.busy = false;
-            d.error = Some(caper_client::invites::admin_error(e.clone()));
-            return self.dialog_changed();
+            // A save, or a channel's members: why shows by the name.
+            if d.manage_failed(e) {
+                return self.dialog_changed();
+            }
+            if d.busy {
+                d.busy = false;
+                d.error = Some(caper_client::invites::admin_error(e.clone()));
+                return self.dialog_changed();
+            }
         }
         let Some(d) = self.dialog.as_mut().filter(|d| {
             matches!(
@@ -1890,7 +1957,7 @@ impl App {
                     d.field.focused = true;
                     self.events |= EV_FOCUS;
                     self.dialog_changed();
-                } else if part.is_none() && !d.on_card(x, y) && !d.busy {
+                } else if part.is_none() && !d.on_card(x, y) && !d.busy && !d.unsaved() {
                     self.close_dialog();
                 } else {
                     self.dirty.overlay = true;
@@ -1962,11 +2029,17 @@ impl App {
                     // Enter invites the typed username.
                     VK_RETURN if d.kind == Kind::InvitePeople => {
                         // In Expire after or Max uses it creates the link,
-                        // as web's form submits.
-                        if d.number_focus().is_some() {
-                            self.dialog_activate(Part::CreateLink);
-                        } else if d.field.focused {
-                            self.dialog_activate(Part::Primary);
+                        // and in the name it saves, as web's forms submit.
+                        let part = match d.number_focus() {
+                            Some(crate::custom_links::NAME) if d.settings_channel().is_some() => {
+                                Some(Part::SaveChanges)
+                            }
+                            Some(crate::custom_links::NAME) => Some(Part::SaveName),
+                            Some(_) => Some(Part::CreateLink),
+                            None => d.field.focused.then_some(Part::Primary),
+                        };
+                        if let Some(part) = part {
+                            self.dialog_activate(part);
                         }
                     }
                     // The history's body scrolls from the keyboard too.
