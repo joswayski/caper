@@ -9,6 +9,7 @@ workspace, so mobile builds never compile the desktop client's media stack.
 | --- | --- | --- | --- |
 | Bold/italic formatting | `shared/messages/formatting.rs` | `data/Formatting.kt` | |
 | Links | `shared/messages/links.rs` | `data/Links.kt` | |
+| Mention tokens | `shared/messages/mentions.rs` | `MentionAutocomplete.kt` (`mentionSpans`) | |
 | Name characters | `apps/native/client/src/names.rs` | `model/Names.kt` | |
 
 The host code keeps its own types and editing helpers and calls Rust for the

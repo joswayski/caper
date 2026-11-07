@@ -20,6 +20,9 @@ import chat.caper.android.model.FeedbackReporter
 import chat.caper.android.model.ThreadUi
 import chat.caper.android.model.VisitUi
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -334,16 +337,21 @@ class MentionAutocompleteTest {
         assertNull(insertMention(over, mentionToken(over)!!, "bob"))
     }
 
-    @Test fun `message tokens follow the grammar`() {
-        assertEquals(listOf(MentionSpan(3, 9, "alice")), mentionSpans("hi @Alice!"))
-        assertEquals(listOf("alice", "bob", "carol"), mentionSpans("(@alice) [@bob] {@carol}").map { it.name })
-        assertEquals(listOf("alice"), mentionSpans("@Alice's").map { it.name })
-        assertEquals(listOf("bob"), mentionSpans("🙂 @bob").map { it.name })
-        listOf("bob@alice.com", "x/@alice", "@@alice", "@", "@ alice", "a,@alice", "@" + "a".repeat(33)).forEach {
-            assertTrue(it, mentionSpans(it).isEmpty())
+    /** Every client runs these same cases; see shared/messages/mention-cases.json. */
+    @Test fun `message tokens follow the shared grammar cases`() {
+        val file = generateSequence(java.io.File("").absoluteFile) { it.parentFile }
+            .map { java.io.File(it, "shared/messages/mention-cases.json") }.first { it.isFile }
+        val cases = Json.parseToJsonElement(file.readText()).jsonObject.getValue("cases").jsonArray
+        assertTrue(cases.size > 10)
+        for (case in cases) {
+            val text = case.jsonObject.getValue("text").jsonPrimitive.content
+            val expected = case.jsonObject.getValue("tokens").jsonArray.map {
+                it.jsonObject.getValue("text").jsonPrimitive.content to it.jsonObject.getValue("name").jsonPrimitive.content
+            }
+            assertEquals(text, expected, mentionSpans(text).map { text.substring(it.start, it.end) to it.name })
         }
-        assertEquals(listOf("alice"), mentionSpans("@alice@bob").map { it.name })
-        assertEquals(listOf("a".repeat(32)), mentionSpans("@" + "a".repeat(32)).map { it.name })
+        // Offsets are UTF-16 units of the Kotlin string.
+        assertEquals(listOf(MentionSpan(3, 9, "alice")), mentionSpans("🙂 @Alice!"))
     }
 
     @Test fun `highlights only resolved names, case-insensitively, ignoring unknown types`() {

@@ -15,6 +15,8 @@
 pub mod formatting;
 #[path = "../../../../shared/messages/links.rs"]
 pub mod links;
+#[path = "../../../../shared/messages/mentions.rs"]
+pub mod mentions;
 /// The name-character rule, as the desktop clients compile it.
 #[path = "../../client/src/names.rs"]
 pub mod names;
@@ -109,6 +111,23 @@ pub fn link_spans(text: &str, utf8: bool) -> Vec<i32> {
             });
         }
         start = end;
+    }
+    out
+}
+
+/// The `@mention` tokens in message text. Each is `[utf16_start,
+/// utf16_end]`, or `[utf16_start, utf16_end, utf8_start, utf8_end]` with
+/// `utf8`, covering the `@` and its name; the name is ASCII, so hosts
+/// lowercase it themselves.
+pub fn mention_spans(text: &str, utf8: bool) -> Vec<i32> {
+    let mut out = Vec::new();
+    let mut cursor = Utf16Cursor::new(text);
+    for (range, _) in mentions::tokens(text) {
+        out.push(offset(cursor.at(range.start)));
+        out.push(offset(cursor.at(range.end)));
+        if utf8 {
+            out.extend([offset(range.start), offset(range.end)]);
+        }
     }
     out
 }
@@ -212,6 +231,38 @@ mod tests {
                 assert_eq!(names::has_hidden(name), hidden, "{name:?}");
             }
         }
+    }
+
+    #[test]
+    fn mention_spans_rebuild_the_shared_cases() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../shared/messages/mention-cases.json"
+        ))
+        .unwrap();
+        for case in cases["cases"].as_array().unwrap() {
+            let text = case["text"].as_str().unwrap();
+            let expected: Vec<&str> = case["tokens"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|token| token["text"].as_str().unwrap())
+                .collect();
+            for (utf8, width) in [(false, 2), (true, 4)] {
+                let actual: Vec<String> = mention_spans(text, utf8)
+                    .chunks(width)
+                    .map(|span| {
+                        let value = utf16(text, span[0]..span[1]);
+                        if utf8 {
+                            assert_eq!(value, text[span[2] as usize..span[3] as usize]);
+                        }
+                        value
+                    })
+                    .collect();
+                assert_eq!(actual, expected, "{text:?}");
+            }
+        }
+        // "😀 " is 3 UTF-16 units and 5 bytes.
+        assert_eq!(mention_spans("😀 @Ab", true), vec![3, 6, 5, 8]);
     }
 
     /// Offsets count UTF-16 units and UTF-8 bytes separately past astral and accented characters.

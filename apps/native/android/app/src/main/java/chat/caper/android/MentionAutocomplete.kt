@@ -193,18 +193,14 @@ internal fun insertMention(value: TextFieldValue, token: MentionToken, username:
 /** A grammatical mention in message text; [name] is lowercase. */
 internal data class MentionSpan(val start: Int, val end: Int, val name: String)
 
+/** The tokens of shared/messages/mentions.rs, through Rust. */
 internal fun mentionSpans(text: String): List<MentionSpan> {
-    val spans = mutableListOf<MentionSpan>()
-    var index = 0
-    while (index < text.length) {
-        if (text[index] != '@' || index > 0 && !text[index - 1].startsMention()) { index++; continue }
-        var end = index + 1
-        while (end < text.length && text[end].isMentionNameChar()) end++
-        if (end - index - 1 in 1..MENTION_NAME_LIMIT) spans += MentionSpan(index, end, text.substring(index + 1, end).lowercase(Locale.ROOT))
-        // The character after a run is never a start, so resume there.
-        index = end
+    val spans = chat.caper.android.data.CaperMobile.mentionSpans(text)
+    return (spans.indices step 2).map { span ->
+        val start = spans[span]
+        val end = spans[span + 1]
+        MentionSpan(start, end, text.substring(start + 1, end).lowercase(Locale.ROOT))
     }
-    return spans
 }
 
 /** Complete locally known mentions; unresolved/partial names stay plain while typing. */

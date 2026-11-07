@@ -19,6 +19,8 @@ CaperMobileInts caper_mobile_format_spans(const uint8_t *utf8, size_t len);
 // Five values per link: utf16 start, utf16 end, utf8 start, utf8 end, scheme
 // (8 https://, 7 http://, 0 www.).
 CaperMobileInts caper_mobile_link_spans(const uint8_t *utf8, size_t len);
+// Four values per @mention token: utf16 start, utf16 end, utf8 start, utf8 end.
+CaperMobileInts caper_mobile_mention_spans(const uint8_t *utf8, size_t len);
 void caper_mobile_ints_free(CaperMobileInts ints);
 // Whether a display or space name holds a character names may not.
 bool caper_mobile_name_has_hidden(const uint8_t *utf8, size_t len);

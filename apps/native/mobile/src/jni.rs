@@ -77,6 +77,20 @@ pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_linkSpans
     unsafe { spans(env, text, crate::link_spans) }
 }
 
+/// `CaperMobile.mentionSpans(text)`: `crate::mention_spans(text, false)`.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live string.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_mentionSpans(
+    env: *mut JNIEnv,
+    _class: jclass,
+    text: jstring,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    unsafe { spans(env, text, crate::mention_spans) }
+}
+
 /// `CaperMobile.nameHasHidden(text)`: `crate::names::has_hidden(text)`.
 ///
 /// # Safety
