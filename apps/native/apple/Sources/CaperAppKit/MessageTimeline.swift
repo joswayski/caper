@@ -452,6 +452,10 @@ import CaperCore
     var openMention: ((MessageMention, NSView, NSRect) -> Void)?
     private var people: [String: MessageMention] = [:]
 
+    // Read-only message bodies are drag sources, never destinations. Let the
+    // conversation receive files even when a drag also offers plain text.
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [] }
+
     func configureMentions(_ mentions: [MessageMention]) {
         people.removeAll()
         var actions: [NSAccessibilityCustomAction] = []
