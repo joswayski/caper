@@ -10150,7 +10150,7 @@ private struct SpaceEditor: View {
     var body: some View {
         VStack(spacing: 0) {
             SheetHeader(title: inviteOnly ? "Invite people" : managing ? "Manage space" : "Create a space", detail: inviteOnly ? model.detail?.space.name : managing ? "Only the owner can change this space and its membership." : nil, closeDisabled: creating, close: close)
-            ScrollView {
+            ScrollViewReader { proxy in ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if !inviteOnly {
                         CaperField(title: "Space name", text: $name, placeholder: "Gaming nights", focus: $nameFocused)
@@ -10212,7 +10212,7 @@ private struct SpaceEditor: View {
                                     .accessibilityLabel("Exact username")
                                 Button("Invite", action: addMember).buttonStyle(CaperSecondaryButton(minHeight: 42))
                                     .disabled(pending || WorkspaceValidation.usernameError(username) != nil)
-                            }
+                            }.id("space-member-entry")
                             if !choices.isEmpty {
                                 PeopleSuggestionList(choices: choices, state: suggestions, identifier: "space-invite-suggestions", pick: pickMember)
                             }
@@ -10234,6 +10234,20 @@ private struct SpaceEditor: View {
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
                 }.padding(22)
             }.scrollDismissesKeyboard(.interactively).accessibilityIdentifier("space-settings-scroll")
+            #if os(iOS)
+            // UIKit reveals the text caret, not the decorated field and its
+            // adjacent button. Keep their whole row inside the resized dialog.
+            .onChange(of: memberFocused) { _, focused in
+                if focused { proxy.scrollTo("space-member-entry", anchor: .center) }
+            }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in
+                if memberFocused { proxy.scrollTo("space-member-entry", anchor: .center) }
+            }
+            .onChange(of: model.pendingMembers.count) { _, _ in
+                if memberFocused { proxy.scrollTo("space-member-entry", anchor: .center) }
+            }
+            #endif
+            }
         }.background(CaperTheme.surface).onAppear { name = managing ? model.detail?.space.name ?? "" : ""; if !managing { nameFocused = true } }
         .onChange(of: pending) { _, running in if !running && refocusMember { refocusMember = false; memberFocused = true } }
         .interactiveDismissDisabled(creating).preference(key: DialogDismissDisabled.self, value: creating)
