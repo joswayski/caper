@@ -13,6 +13,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -117,8 +120,8 @@ import java.util.UUID
         catch (reason: Throwable) { if (reason is CancellationException) throw reason; error = friendlyError(reason, "Destinations are unavailable.") }
     }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
-        Column(Modifier.fillMaxWidth().swipeCancelsPresses().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Forward message", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        Column(Modifier.fillMaxWidth().swipeCancelsPresses().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp).imePadding().semantics { paneTitle = "Forward message" }, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Forward message", Modifier.semantics { heading() }, fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Text("Shares this conversation, including future edits, reactions and replies. People in the destination can read and forward it.", color = TextMuted, fontSize = 12.sp)
             SharedOriginal(message.forward?.message ?: message)
             OutlinedTextField(search, { search = it }, label = { Text("Find a space, channel or DM") }, singleLine = true, enabled = pending == null, modifier = Modifier.fillMaxWidth())
@@ -197,8 +200,8 @@ import java.util.UUID
         finally { loading = false }
     }
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
-        Column(Modifier.fillMaxWidth().swipeCancelsPresses().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("Forwarded conversation", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        Column(Modifier.fillMaxWidth().swipeCancelsPresses().heightIn(max = 660.dp).verticalScroll(rememberScrollState()).padding(18.dp).semantics { paneTitle = "Forwarded conversation" }, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text("Forwarded conversation", Modifier.semantics { heading() }, fontWeight = FontWeight.Bold, fontSize = 16.sp)
             val root = if (conversation != null) conversation?.root else if (error == null) message.forward?.message else null
             root?.let { SharedOriginal(it) }
             if (conversation?.hasMore == true) TextButton({ pages++ }, enabled = !loading, shape = MaterialTheme.shapes.small) { Text("Load older replies") }

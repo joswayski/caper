@@ -36,6 +36,8 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -389,13 +391,15 @@ private val FrameSide = 112.dp
             }
             LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxWidth().heightIn(max = 240.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(pictures, key = { it.avatarAsset }) { item ->
-                    Column(Modifier.clickable { selected = item }, horizontalAlignment = Alignment.CenterHorizontally) {
+                itemsIndexed(pictures, key = { _, it -> it.avatarAsset }) { index, item ->
+                    // Named and numbered like web's tiles; the check and "Current" caption are in the name and state.
+                    val current = item.avatarAsset == expected
+                    Column(Modifier.clickable(role = Role.Button) { selected = item }.semantics { this.selected = selected == item }, horizontalAlignment = Alignment.CenterHorizontally) {
                         Box(Modifier.aspectRatio(1f).clip(PictureShape).border(2.dp, if (selected == item) Terracotta else Border, PictureShape)) {
-                            PictureImage(Picture(item.avatarAsset, item.avatarUrl), 80.dp, Modifier.fillMaxSize(), "Previous picture")
-                            if (selected == item) Text("✓", Modifier.align(Alignment.TopEnd).background(Terracotta), color = chat.caper.android.ui.Text)
+                            PictureImage(Picture(item.avatarAsset, item.avatarUrl), 80.dp, Modifier.fillMaxSize(), "${if (current) "Current picture" else "Previous picture"} ${index + 1}")
+                            if (selected == item) Text("✓", Modifier.align(Alignment.TopEnd).background(Terracotta).clearAndSetSemantics {}, color = chat.caper.android.ui.Text)
                         }
-                        if (item.avatarAsset == expected) Text("Current", fontSize = 11.sp)
+                        if (current) Text("Current", Modifier.clearAndSetSemantics {}, fontSize = 11.sp)
                     }
                 }
             }

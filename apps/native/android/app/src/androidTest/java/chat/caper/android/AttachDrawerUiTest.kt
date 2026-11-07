@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.isHeading
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -84,6 +85,8 @@ class AttachDrawerUiTest {
                 }
             }
             compose.waitUntil(15_000) { compose.onAllNodesWithTag("attach-drawer-tile", useUnmergedTree = true).fetchSemanticsNodes().size >= 3 }
+            compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Attach")).assertExists()
+            compose.onNodeWithText("Attach").assert(isHeading())
             // Below the limit the drawer shows no count.
             compose.onNodeWithText("of 10 attached", substring = true).assertDoesNotExist()
             save("attach-drawer-open-test-fixture")

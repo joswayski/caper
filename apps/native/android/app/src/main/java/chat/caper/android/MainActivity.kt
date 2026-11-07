@@ -122,6 +122,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.setProgress
@@ -860,9 +861,13 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         ) {
             // The press starts at the row's edge; only the content is inset.
             Row(Modifier.weight(1f).fillMaxHeight().alpha(if (channelMuted) MUTED_ALPHA else 1f)
-                .then(if (kind == RowVoice.QUIET) Modifier.clickable(role = Role.Button, onClick = openChannel) else Modifier).padding(start = 9.dp)
+                .then(if (kind == RowVoice.QUIET) Modifier.clickable(onClickLabel = "Preview".takeUnless { channel.joined }, role = Role.Button, onClick = openChannel) else Modifier).padding(start = 9.dp)
                 // In a voice card this merges into the card, which opens the chat instead.
-                .semantics { if (selected) this.selected = true; if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
+                // The lock icon is decorative: a private channel says so (web: ", private").
+                .semantics {
+                    if (selected) this.selected = true
+                    listOfNotNull("Private".takeIf { channel.private }, "Muted".takeIf { channelMuted }).joinToString(", ").takeIf { it.isNotEmpty() }?.let { stateDescription = it }
+                }, verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
                 Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (unread) Box(Modifier.padding(horizontal = 6.dp).size(6.dp).background(Text, CircleShape).semantics { contentDescription = "Unread activity" })
@@ -1700,7 +1705,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     IconButton(viewModel::closeThread, Modifier.size(48.dp)) {
                         Icon(painterResource(R.drawable.lucide_chevron_left), if (direct) "Back to conversation" else "Back to channel", Modifier.size(20.dp), tint = TextMuted)
                     }
-                    Text("Thread · $conversation", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Thread · $conversation", Modifier.weight(1f).semantics { heading() }, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 HorizontalDivider(color = Border)
                 thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread(older = thread.failedOlder, newer = thread.failedNewer) }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
@@ -2259,8 +2264,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun SuggestionRow(selected: Boolean, description: String, choose: () -> Unit, content: @Composable RowScope.() -> Unit) = Row(
     Modifier.fillMaxWidth().heightIn(min = 48.dp)
         .background(if (selected) Terracotta.copy(alpha = 0.18f) else Color.Transparent)
-        .clickable(onClick = choose)
-        .semantics { contentDescription = description }
+        .clickable(role = Role.Button, onClick = choose)
+        .semantics { contentDescription = description; if (selected) this.selected = true }
         .padding(horizontal = 12.dp),
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -2570,18 +2575,22 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         grouped = message.id != newMessagesId && row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
                     )
                     if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp), shape = MaterialTheme.shapes.small) {
-                            message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach {
-                                Avatar(it.name, 24.dp, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl)
+                        val summary = message.thread?.takeIf { message.threadRootId == null }
+                        val threadUnread = state.unreadThreads.containsKey(message.id)
+                        // Web's name for the summary; the faces, dot and styled count are not read one by one.
+                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }, modifier = Modifier.fillMaxWidth().semantics {
+                            if (summary != null) contentDescription = "View thread with ${summary.replyCount} ${if (summary.replyCount == 1) "reply" else "replies"}${if (threadUnread) ", unread" else ""}"
+                        }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp), shape = MaterialTheme.shapes.small) {
+                            summary?.participants?.forEach {
+                                Avatar(it.name, 24.dp, Modifier.clearAndSetSemantics {}, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl)
                                 Spacer(Modifier.width(6.dp))
                             }
-                            val summary = message.thread?.takeIf { message.threadRootId == null }
                             // As on web: the reply count in bold terracotta, then a quiet "View thread".
-                            if (summary != null) Text(buildAnnotatedString {
+                            if (summary != null) Text(modifier = Modifier.clearAndSetSemantics {}, text = buildAnnotatedString {
                                 withStyle(SpanStyle(color = TerracottaBright, fontWeight = FontWeight.Bold)) {
                                     append("${summary.replyCount} ${if (summary.replyCount == 1) "reply" else "replies"}")
                                 }
-                                if (state.unreadThreads.containsKey(message.id)) {
+                                if (threadUnread) {
                                     withStyle(SpanStyle(color = PinGold)) { append("  ● Unread") }
                                 }
                                 withStyle(SpanStyle(color = TextMuted)) { append("  View thread") }
@@ -3105,8 +3114,8 @@ private val quickReactions = listOf("👍", "❤️", "😂")
     }
     // Opens fully, and scrolls when the actions outgrow a short or landscape screen.
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = SurfaceRaised, contentColor = Text) {
-        Column(Modifier.fillMaxWidth().swipeCancelsPresses().verticalScroll(rememberScrollState()).padding(start = 18.dp, end = 18.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Message actions", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        Column(Modifier.fillMaxWidth().swipeCancelsPresses().verticalScroll(rememberScrollState()).padding(start = 18.dp, end = 18.dp, bottom = 24.dp).semantics { paneTitle = "Message actions" }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Message actions", Modifier.semantics { heading() }, fontWeight = FontWeight.Bold, fontSize = 16.sp)
             if (canReact) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     quickReactions.forEach { emoji ->
@@ -4017,7 +4026,8 @@ internal fun counterTone(count: Int): Color = when {
             email, { email = it; if (error != null) clearError() }, placeholder = { Text("you@example.com") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = { if (email.contains('@') && !busy) submit(email) }),
-            singleLine = true, readOnly = busy, modifier = Modifier.fillMaxWidth().focusRequester(emailFocus),
+            // Named by the visible "Email address" above it (web: <label for>), not only by its placeholder.
+            singleLine = true, readOnly = busy, modifier = Modifier.fillMaxWidth().focusRequester(emailFocus).semantics { contentDescription = "Email address" },
         )
         if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp), color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) {
             Text(error, Modifier.padding(horizontal = 14.dp, vertical = 12.dp), lineHeight = 24.sp)
@@ -4043,7 +4053,7 @@ internal fun counterTone(count: Int): Color = when {
         // Done submits a complete code, like Continue (and the email field's Send).
         OutlinedTextField(code, { code = it.uppercase().filter { character -> character in "ABCDEFGHJKMNPQRSTWXYZ23456789" }.take(6); if (error != null) clearError() }, singleLine = true,
             placeholder = { Text("e.g. ABC234") },
-            readOnly = busy, enabled = !exhausted, modifier = Modifier.fillMaxWidth().focusRequester(codeFocus),
+            readOnly = busy, enabled = !exhausted, modifier = Modifier.fillMaxWidth().focusRequester(codeFocus).semantics { contentDescription = "Sign-in code" },
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { if (code.length == 6 && !busy) submit(screen.challengeId, code) }))
         if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp), color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) { Text(error, Modifier.padding(14.dp)) }
@@ -4413,8 +4423,8 @@ internal fun counterTone(count: Int): Color = when {
 internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolean =
     draft.isBlank() || draft == rejectedText
 
-@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, stableSwitch: Boolean = false, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable { CaperEffects.toggle(!value); changed(!value) }, verticalAlignment = if (stableSwitch) Alignment.Top else Alignment.CenterVertically) {
-    Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, { CaperEffects.toggle(it); changed(it) }, colors = caperSwitchColors())
+@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, stableSwitch: Boolean = false, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).toggleable(value, role = Role.Switch) { CaperEffects.toggle(it); changed(it) }, verticalAlignment = if (stableSwitch) Alignment.Top else Alignment.CenterVertically) {
+    Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, null, Modifier.minimumInteractiveComponentSize(), colors = caperSwitchColors())
 }
 
 @Composable internal fun ConfirmDialog(
@@ -4460,7 +4470,8 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     Dialog({ if (!busy) close() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         BoxWithConstraints(Modifier.swipeCancelsPresses().padding(16.dp).widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
             // Short dialogs fit their content; long ones scroll below a fixed heading (web).
-            Surface(Modifier.fillMaxWidth().heightIn(max = minOf(maxHeight, 760.dp)), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+            // Named by its title, like web's aria-labelledby.
+            Surface(Modifier.fillMaxWidth().heightIn(max = minOf(maxHeight, 760.dp)).semantics { paneTitle = title }, color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                 Column {
                     Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 10.dp, top = 10.dp, bottom = if (description != null || subtitle != null) 16.dp else 10.dp), verticalAlignment = Alignment.Top) {
                         Column(Modifier.weight(1f)) {

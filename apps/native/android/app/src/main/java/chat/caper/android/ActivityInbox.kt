@@ -24,6 +24,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -115,15 +116,16 @@ import kotlinx.coroutines.delay
                                 Avatar(item.actorName, 28.dp, avatarId = item.avatarId)
                                 Spacer(Modifier.width(10.dp))
                                 Text("${if (item.unread) "● " else ""}${item.actorName}",
-                                    Modifier.weight(1f).clickable(enabled = !inbox.stale && inbox.opening != item.id) {
+                                    Modifier.weight(1f).clickable(enabled = !inbox.stale && inbox.opening != item.id, role = Role.Button) {
                                         viewModel.readActivity(item, open = true) { shown = false; onOpened() }
-                                    }, fontWeight = if (item.unread) FontWeight.Bold else FontWeight.Medium, color = Text, fontSize = 13.sp)
+                                    // The dot is unread state (web: aria-label "Unread"), not a glyph to read out.
+                                    }.semantics { contentDescription = item.actorName; if (item.unread) stateDescription = "Unread" }, fontWeight = if (item.unread) FontWeight.Bold else FontWeight.Medium, color = Text, fontSize = 13.sp)
                                 Text(feedbackAge(item.createdAt), color = TextMuted, fontSize = 11.sp)
                                 if (item.unread) IconButton({ viewModel.readActivity(item) }, enabled = !inbox.stale) {
                                     Icon(painterResource(R.drawable.lucide_check), "Mark notification from ${item.actorName} read", Modifier.size(16.dp), tint = TextMuted)
                                 }
                             }
-                            Column(Modifier.fillMaxWidth().clickable(enabled = !inbox.stale && inbox.opening != item.id) {
+                            Column(Modifier.fillMaxWidth().clickable(enabled = !inbox.stale && inbox.opening != item.id, role = Role.Button) {
                                 viewModel.readActivity(item, open = true) { shown = false; onOpened() }
                             }, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 val description = when (item.kind) {

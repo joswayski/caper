@@ -19,6 +19,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.selected
@@ -240,6 +241,7 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
     NotificationSaveError(state.notificationErrors[ACCOUNT_LEVEL_KEY]) { viewModel.dismissNotificationError(ACCOUNT_LEVEL_KEY) }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Checkbox(settings?.voiceStarted ?: true, viewModel::setVoiceStartedNotifications,
+            Modifier.semantics { contentDescription = "When voice starts in a space" },
             enabled = settings != null && VOICE_KEY !in state.notificationSaving)
         Text("When voice starts in a space", fontSize = 13.sp)
     }

@@ -72,7 +72,8 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     var soundEffects by remember { mutableStateOf(CaperEffects.enabled) }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("Caper sound effects", Modifier.weight(1f), fontSize = 13.sp)
-        Switch(soundEffects, { soundEffects = it; CaperEffects.enabled = it; if (it) CaperEffects.play(CaperEffects.Effect.ToggleOn) }, colors = caperSwitchColors())
+        Switch(soundEffects, { soundEffects = it; CaperEffects.enabled = it; if (it) CaperEffects.play(CaperEffects.Effect.ToggleOn) },
+            Modifier.semantics { contentDescription = "Caper sound effects" }, colors = caperSwitchColors())
     }
     // Off by default: stopping a recording stages it in the composer.
     VoiceSendOnStopSetting()

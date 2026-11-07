@@ -19,6 +19,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -66,7 +67,7 @@ import kotlinx.coroutines.launch
         Row(
             Modifier.fillMaxWidth().padding(start = 28.dp, end = 16.dp).heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                 .background(if (selected) TerracottaWash else androidx.compose.ui.graphics.Color.Transparent)
-                .clickable { select(request) }.padding(horizontal = 9.dp),
+                .clickable(role = Role.Button) { select(request) }.semantics { if (selected) this.selected = true }.padding(horizontal = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Avatar(request.peer.displayName, 20.dp, modifier = Modifier.padding(horizontal = 3.dp), avatarId = request.peer.avatarId,

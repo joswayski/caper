@@ -116,7 +116,9 @@ class ReactionUiTest {
         compose.runOnIdle { assertEquals(Triple(message.id, "❤️", true), submitted) }
         capture("reaction-chips-test-fixture.png", compose.onRoot())
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
-        compose.onNodeWithText("Message actions").assertIsDisplayed()
+        compose.onNodeWithText("Message actions").assertIsDisplayed().assert(isHeading())
+        // TalkBack announces the sheet by its pane title (web: aria-label).
+        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Message actions")).assertExists()
         compose.onNodeWithContentDescription("React with 👍").assertIsSelected().performClick()
         compose.runOnIdle { assertEquals(Triple(message.id, "👍", false), submitted) }
 

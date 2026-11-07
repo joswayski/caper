@@ -298,11 +298,11 @@ private fun formatDuration(ms: Long): String {
         sheetMaxWidth = androidx.compose.ui.unit.Dp.Unspecified,
         containerColor = Surface, contentColor = Text,
     ) {
-        Box(Modifier.fillMaxWidth().height(height)) {
+        Box(Modifier.fillMaxWidth().height(height).semantics { paneTitle = purpose.title }) {
             Column(Modifier.fillMaxSize()) {
                 // Header: the title, and only once full the limit line, which shakes when it refuses a file.
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(purpose.title, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Text(purpose.title, Modifier.semantics { heading() }, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
                 AttachCapacity.hint(used)?.let {
                     Text(it, Modifier.padding(horizontal = 16.dp)

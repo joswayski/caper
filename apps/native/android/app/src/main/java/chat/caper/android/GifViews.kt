@@ -39,6 +39,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -131,7 +132,7 @@ private fun klipyRequest(context: Context, url: String, animate: Boolean): Image
     ModalBottomSheet(onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = Surface, contentColor = Text) {
-        Column(Modifier.fillMaxWidth().height(height).navigationBarsPadding()) {
+        Column(Modifier.fillMaxWidth().height(height).navigationBarsPadding().semantics { paneTitle = "Emojis, GIFs and stickers" }) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                 listOf("Emojis", "GIFs", "Stickers").forEachIndexed { index, label ->
                     val active = index == tab

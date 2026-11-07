@@ -379,6 +379,9 @@ def main() -> None:
     login = capture("caper-android-login", "Welcome to Caper", seconds=60)
     for required in ("Email address", "Email me a code"):
         assert find(login, text=required) is not None, f"Login is missing {required!r}"
+    # The field is named by its visible label (web: <label for>), not only by its placeholder.
+    email_field = find(login, description="Email address")
+    assert email_field is not None and email_field.get("class") == "android.widget.EditText", "The email field is named"
     assert find(login, text="WELCOME TO CAPER") is None, "Login must not repeat the welcome heading"
     for retired in ("general", "Join", "TEST FIXTURE", "Message #"):
         assert find(login, contains=retired) is None, f"Signed-out screen exposes retired demo content: {retired!r}"
@@ -392,6 +395,8 @@ def main() -> None:
     assert find(error, text="fixture@example.test") is not None
     tap(text="Email me a code")
     verification = wait_for(text="Check your email.")
+    code_field = find(verification, description="Sign-in code")
+    assert code_field is not None and code_field.get("class") == "android.widget.EditText", "The code field is named"
     assert find(verification, text="WELCOME TO CAPER") is None, "Verification must not repeat the welcome heading"
     enter_first_field("ABC234")
     tap(text="Continue")
@@ -553,6 +558,10 @@ def main() -> None:
     settings = capture("caper-android-audio-settings", "Audio test")
     for label in ("Caper sound effects", "Audio test", "Log out"):
         assert find(settings, text=label) is not None, f"Missing audio settings entry: {label}"
+    effects = find(settings, description="Caper sound effects")
+    assert effects is not None and effects.get("class") == "android.widget.Switch", "The sound effects switch is named"
+    voice_started = find(settings, description="When voice starts in a space")
+    assert voice_started is not None and voice_started.get("class") == "android.widget.CheckBox", "Checkbox is named"
     assert find(settings, text="Connection details") is None, "Connection details are only offered while connected"
     tap(text="Audio test")
     audio = capture("caper-android-audio-prejoin", "Only you can hear these tests.")
@@ -653,6 +662,13 @@ def main() -> None:
     ):
         assert find(overview, contains=required) is not None, f"Channel overview is missing {required!r}"
     assert find(overview, text="Invite") is not None
+    # The row is one switch stop, not a clickable row beside an unnamed switch.
+    privacy = [
+        n
+        for n in nodes(overview)
+        if n.get("class") == "android.widget.Switch" and "Private channel" in n.get("text", "")
+    ]
+    assert len(privacy) == 1 and privacy[0].get("checked") == "true", "Private channel is one checked switch"
     for removed in ("Private channel access", "Existing username", "Grant"):
         assert find(overview, contains=removed) is None, f"Unexpected member-management copy: {removed}"
     tap(description="Close")
