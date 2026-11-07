@@ -115,7 +115,10 @@ final class CaperUIKitTests: XCTestCase {
         username.tap()
         username.typeText("_user")
         XCTAssertTrue(submit.isEnabled)
-        app.buttons["Log out"].tap()
+        // Below the fields, possibly under the keyboard: scroll it clear first.
+        let logOut = app.buttons["Log out"]
+        if !logOut.isHittable { app.staticTexts["Choose how you show up."].swipeUp() }
+        logOut.tap()
         XCTAssertTrue(app.textFields["login-email"].waitForExistence(timeout: 10), "Log out returns to sign-in")
     }
 
@@ -1182,7 +1185,8 @@ final class CaperUIKitParityTests: XCTestCase {
             let back = app.buttons["Back to Browse"]
             XCTAssertTrue(back.waitForExistence(timeout: 30), prefix)
             back.tap()
-            let notes = app.buttons["dm-self"].firstMatch
+            // A cell in UIKit, a button in SwiftUI.
+            let notes = app.descendants(matching: .any)["dm-self"].firstMatch
             XCTAssertTrue(notes.waitForExistence(timeout: 10), prefix)
             notes.tap()
             let composer = app.textViews["message-composer"]
@@ -1223,6 +1227,31 @@ final class CaperUIKitParityTests: XCTestCase {
             XCTAssertTrue(skeleton.waitForNonExistence(timeout: 15), prefix)
             app.terminate()
         }
+    }
+
+    /// A channel's own first-page skeleton in each app: an empty #general
+    /// reloads after the gateway's resync while its history is held.
+    func testChannelLoadingSkeletonPairs() throws {
+        try requireSwiftUI()
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            control(["emptyChannel": "chan00000001"])
+            let app = configured(bundle)
+            app.launch()
+            XCTAssertTrue(app.staticTexts["No messages yet."].waitForExistence(timeout: 30), prefix)
+            sleep(2)
+            control(["holdHistory": true])
+            control(["resync": true])
+            let skeleton = app.descendants(matching: .any)["Loading messages"].firstMatch
+            XCTAssertTrue(skeleton.waitForExistence(timeout: 15), prefix)
+            sleep(1)
+            capture("\(prefix)-channel-loading")
+            control(["holdHistory": false])
+            XCTAssertTrue(skeleton.waitForNonExistence(timeout: 15), prefix)
+            XCTAssertTrue(app.staticTexts["No messages yet."].waitForExistence(timeout: 15), prefix)
+            app.terminate()
+        }
+        control(["reset": true])
     }
 
     /// The unread line in each app, with #general read through seq 2997.
