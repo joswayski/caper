@@ -397,9 +397,10 @@ def main() -> None:
     tap(text="Continue")
     wait_for(description="Fixture Studio")
 
-    # A failed saved-session restore must stay on authentication, not reveal
-    # the retired Guest/General workspace. A transient failure keeps the vault
-    # credential, so the next successful launch still restores the account.
+    # A failed saved-session restore shows web's "Caper didn’t load." page, not
+    # sign-in or the retired Guest/General workspace. Only a 401 signs out: a
+    # transient failure keeps the session, so Try again and the next launch
+    # both restore the account.
     adb("shell", "am", "force-stop", PACKAGE)
     fixture(
         {
@@ -412,11 +413,13 @@ def main() -> None:
         }
     )
     launch()
-    restore_error = capture("caper-android-restore-error", "Session restoration temporarily unavailable.")
-    assert find(restore_error, text="Welcome to Caper") is not None
-    assert find(restore_error, text="Email address") is not None
-    for retired in ("Guest", "Message #general", "TEST FIXTURE"):
-        assert find(restore_error, contains=retired) is None, f"Restore failure exposes workspace: {retired!r}"
+    restore_error = capture("caper-android-restore-error", "Caper didn’t load.")
+    assert find(restore_error, text="Check your connection, then try again.") is not None
+    assert find(restore_error, text="Log out") is not None
+    for absent in ("Welcome to Caper", "Email address", "Guest", "Message #general", "TEST FIXTURE"):
+        assert find(restore_error, contains=absent) is None, f"Restore failure shows {absent!r}"
+    tap(text="Try again")
+    wait_for(description="Fixture Studio")
     adb("shell", "am", "force-stop", PACKAGE)
     launch()
     wait_for(description="Fixture Studio")
