@@ -49,6 +49,7 @@ struct MessageEditorView: View {
             .frame(width: 520, height: 430)
             #endif
             .interactiveDismissDisabled(busy)
+            .preference(key: DialogDismissDisabled.self, value: busy)
             .onAppear { autocomplete.restoreFocus() }
             .onChange(of: chat.editingContext) { _, _ in close() }
             // Deleted meanwhile (here or elsewhere): nothing is left to edit.
