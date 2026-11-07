@@ -32,6 +32,8 @@ install -m 0755 "$here/lib/caper-linux" "$here/lib/ffmpeg" "$here/lib/libonnxrun
 ln -sf "$lib/caper-linux" "$bin"
 sed "s|^Exec=caper-linux|Exec=$lib/caper-linux|" "$here/share/chat.caper.linux.desktop" >"$desktop"
 install -m 0644 "$here/share/chat.caper.linux.svg" "$icon"
+rm -rf "$lib/licenses"
+cp -R "$here/licenses" "$lib/licenses"
 [ -f "$here/REVISION" ] && install -m 0644 "$here/REVISION" "$lib/REVISION"
 refresh
 echo "Installed caper-linux $(cat "$here/REVISION" 2>/dev/null | cut -c1-8) in $lib."

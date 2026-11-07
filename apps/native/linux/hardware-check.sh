@@ -70,7 +70,7 @@ say "Caper Linux hardware check → $REPORT"
   echo "memory: $(free -h | awk '/Mem:/ {print $2}')"
   command -v glxinfo >/dev/null && glxinfo -B 2>/dev/null | grep -E 'renderer string|version string'
   command -v vulkaninfo >/dev/null && vulkaninfo --summary 2>/dev/null | grep -E 'deviceName|driverName' | head -4
-  echo "input method: GTK_IM_MODULE=${GTK_IM_MODULE:-} XMODIFIERS=${XMODIFIERS:-} $(pgrep -l -x 'ibus-daemon|fcitx5|fcitx' | tr '\n' ' ')"
+  echo "input method: GTK_IM_MODULE=${GTK_IM_MODULE:-} XMODIFIERS=${XMODIFIERS:-} $( (pgrep -l -x ibus-daemon; pgrep -l -x fcitx5; pgrep -l -x fcitx) | tr '\n' ' ')"
   command -v pactl >/dev/null && pactl info 2>/dev/null | grep -E 'Server Name|Default Sink|Default Source'
   echo "orca: $(command -v orca || echo 'not installed')"
   echo '```'

@@ -8,9 +8,18 @@ speakers. It writes everything to one report, `~/caper-hardware-check-<time>.md`
 ## Before you start
 
 - A desktop session (Wayland or X11) on the machine itself, not SSH.
-- Rust, `libgtk-4-dev`, Clang (export `CC=clang CXX=clang++` if libwebrtc
-  fails to build with GCC), Node.js and Python 3. The script builds the
-  release binaries; set `SKIP_BUILD=1` if they're current.
+- A checkout of this repository with Node.js, which runs the local fixture.
+- Release binaries, one of three ways:
+  - Built from source (the default): Rust, `libgtk-4-dev`, Clang (export
+    `CC=clang CXX=clang++` if libwebrtc fails to build with GCC) and Python 3.
+    Set `SKIP_BUILD=1` if the binaries in `apps/native/desktop/target/release`
+    are current.
+  - `FROM_CI=1`: downloads the newest nightly `caper-linux` tester tarball and
+    the egui desktop's development build with the GitHub CLI (run
+    `gh auth login` first). Only GTK 4.8 or later is needed then.
+  - `CAPER_LINUX_BUILD=<path>/caper-linux-x64.tar.gz`: a tester tarball you
+    already downloaded. The egui comparison then uses an installed
+    `caper-desktop` if there is one, and its benchmarks are skipped otherwise.
 - For the IME questions, an input method set up (ibus or fcitx5 with, for
   example, Mozc or Pinyin). For the Orca questions, `orca` installed. For
   voice, your caper.chat account signed in on Linux and a second device to
@@ -22,6 +31,7 @@ speakers. It writes everything to one report, `~/caper-hardware-check-<time>.md`
 
 ```sh
 apps/native/linux/hardware-check.sh
+FROM_CI=1 apps/native/linux/hardware-check.sh   # nightly builds, no compiling
 ```
 
 1. It records the machine (session, desktop, GTK, GPU, IME, audio server).

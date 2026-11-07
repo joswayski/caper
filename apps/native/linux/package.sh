@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Packages a built caper-linux as a tester tarball: the binary with Caper's
 # trimmed FFmpeg and ONNX Runtime beside it (where it looks for them), a
-# .desktop file, the icon and install.sh. Not a release: nothing ships it.
+# .desktop file, the icon, install.sh and the bundled software's notices. Not
+# a release: nothing ships it.
 #   apps/native/linux/package.sh <caper-linux binary> <output directory>
 # writes <output directory>/caper-linux-x64.tar.gz.
 set -euo pipefail
@@ -34,6 +35,19 @@ install -m 0755 "$work/ffmpeg/ffmpeg" "$stage/lib/ffmpeg"
 install -m 0755 "$ort" "$stage/lib/libonnxruntime.so.1.23.2"
 install -m 0644 "$root/apps/native/desktop/resources/caper.svg" "$stage/share/chat.caper.linux.svg"
 install -m 0755 "$here/install.sh" "$stage/install.sh"
+# The same notices as the desktop packages (apps/native/desktop/build.sh).
+native="$root/apps/native/desktop"
+licenses="$stage/licenses"
+install -d "$licenses/ffmpeg-licenses"
+install -m 0644 "$root/LICENSE" "$native/THIRD-PARTY-NOTICES.md" "$root/shared/fonts/cache/Satoshi-FFL.txt" \
+  "$native/voice-spike/licenses/"* "$licenses/"
+for notice in "$root/shared/emoji/"*.txt; do
+  install -m 0644 "$notice" "$licenses/EMOJI-$(basename "$notice")"
+done
+install -m 0644 "$work/ort/LICENSE" "$licenses/ONNX-RUNTIME-LICENSE"
+install -m 0644 "$work/ort/ThirdPartyNotices.txt" "$licenses/ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt"
+install -m 0644 "$root/apps/web/public/audio/dpdfnet8-v2/LICENSE-APACHE-2.0" "$licenses/DPDFNET-LICENSE"
+install -m 0644 "$work/ffmpeg/licenses/"* "$work/ffmpeg/SOURCES.txt" "$licenses/ffmpeg-licenses/"
 # Named for the app id, so the desktop matches its windows to it.
 cat >"$stage/share/chat.caper.linux.desktop" <<'EOF'
 [Desktop Entry]

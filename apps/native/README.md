@@ -19,11 +19,14 @@ belong in an app.
 the shared `client/` core: sign-in and sign-out, spaces, channels (joining),
 DMs, members with presence, unread badges, typing, the message list with
 avatars, reactions, replies, edit/delete/pin and a thread pane, and the
-composer. It is not packaged or released; run it with
-`cargo run -p caper-linux` from `desktop/` (`CAPER_API_URL` or `--api-url` picks
-the server). `linux/smoke.py` drives it through AT-SPI under Xvfb against the parity
-fixture (`scripts/native-parity-fixture.mjs`); the nightly Linux GTK job runs
-it.
+composer. It is not released; run it with `cargo run -p caper-linux` from
+`desktop/` (`CAPER_API_URL` or `--api-url` picks the server). The nightly Linux
+GTK job packages a tester tarball with `linux/package.sh` (artifact
+`caper-linux-x64-<sha>`, kept 14 days): unpack it and run `install.sh` to
+install it for your user in `~/.local` (`--uninstall` removes it). It needs GTK
+4.8 or later. The job installs that tarball and runs `linux/smoke.py`, which
+drives the app through AT-SPI under Xvfb against the parity fixture
+(`scripts/native-parity-fixture.mjs`).
 
 ## Shared behavior
 
