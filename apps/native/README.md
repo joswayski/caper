@@ -21,7 +21,9 @@ DMs, members with presence, unread badges, typing, the message list with
 avatars, reactions, replies, edit/delete/pin and a thread pane, and the
 composer. It is not packaged or released; run it with
 `cargo run -p caper-linux` from `desktop/` (`CAPER_API_URL` or `--api-url` picks
-the server).
+the server). `linux/smoke.py` drives it through AT-SPI under Xvfb against the parity
+fixture (`scripts/native-parity-fixture.mjs`); the nightly Linux GTK job runs
+it.
 
 ## Shared behavior
 

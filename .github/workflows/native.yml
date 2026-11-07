@@ -141,6 +141,9 @@ jobs:
           cache-key: linux-gtk
           # Pull requests restore main's cache but do not upload their own.
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Linux native build dependencies
         run: |
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 3 \
@@ -151,7 +154,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential clang-21 lld-21 libglib2.0-dev libpulse0 libasound2t64 libasound2-dev \
-            pkg-config libssl-dev libdbus-1-dev libgtk-4-dev
+            pkg-config libssl-dev libdbus-1-dev libgtk-4-dev \
+            xvfb xdotool dbus-x11 at-spi2-core python3-gi gir1.2-atspi-2.0 gnome-keyring
       - name: Format, lint and test caper-linux
         env:
           CARGO_BUILD_JOBS: '2'
@@ -165,6 +169,24 @@ jobs:
           cargo fmt --manifest-path "$manifest" --package caper-linux -- --check
           cargo clippy --manifest-path "$manifest" --locked --package caper-linux --all-targets --no-deps -- -D warnings
           cargo test --manifest-path "$manifest" --locked --package caper-linux
+      # The real app against the parity fixture, read through AT-SPI: sign-in,
+      # named message rows and toolbars, and a send. Ubuntu 24.04 has GTK 4.14,
+      # so this also covers newer GTK than the 4.8 the client targets.
+      - name: Smoke caper-linux under Xvfb
+        env:
+          CARGO_BUILD_JOBS: '2'
+          CC: clang-21
+          CXX: clang++-21
+        run: |
+          export LK_CUSTOM_WEBRTC="$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux)"
+          cargo build --manifest-path apps/native/desktop/Cargo.toml --locked --package caper-linux
+          CAPER_FIXTURE_PORT=3911 CAPER_FIXTURE_GATEWAY_PORT=3912 \
+            node scripts/native-parity-fixture.mjs >"$RUNNER_TEMP/fixture.log" 2>&1 &
+          timeout 30 bash -c 'until curl -s -o /dev/null http://127.0.0.1:3911/; do sleep 0.5; done'
+          # The system Python, which has PyGObject.
+          timeout 300 xvfb-run -a -s '-screen 0 1440x900x24' dbus-run-session -- \
+            /usr/bin/python3 -I apps/native/linux/smoke.py \
+            --binary apps/native/desktop/target/debug/caper-linux --api-url http://127.0.0.1:3911
 
   # The native Windows client (apps/native/windows): compiled and checked here
   # only. It is not packaged, uploaded or released, and release.yml never
