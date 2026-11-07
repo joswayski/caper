@@ -145,6 +145,24 @@ import XCTest
         XCTAssertTrue(visible.contains("message-2999"))
         XCTAssertTrue(bodies(in: timeline).contains { $0.string == history.last?.content.text })
         XCTAssertLessThan(timeline.documentView?.accessibilityChildren()?.count ?? 3000, 40)
+        for width in [CGFloat(420), 170] {
+            timeline.setFrameSize(NSSize(width: width, height: 360))
+            XCTAssertTrue(timeline.focusMessage("message-147"))
+            timeline.layoutSubtreeIfNeeded()
+            let before = try XCTUnwrap(bodies(in: timeline).first { $0.string == history[147].content.text })
+            if width == 420 { XCTAssertEqual(before.frame, target.frame, "A cached return must match the initial wide render") }
+            let frame = before.frame
+            let height = try XCTUnwrap(before.superview).frame.height
+            timeline.showLatest()
+            timeline.layoutSubtreeIfNeeded()
+            XCTAssertFalse(bodies(in: timeline).contains { $0.string == history[147].content.text })
+            XCTAssertTrue(timeline.focusMessage("message-147"))
+            timeline.layoutSubtreeIfNeeded()
+            let restored = try XCTUnwrap(bodies(in: timeline).first { $0.string == history[147].content.text })
+            XCTAssertEqual(restored.frame, frame, "Recreating a cached row must restore the same compact or wide text layout")
+            XCTAssertEqual(try XCTUnwrap(restored.superview).frame.height, height)
+            XCTAssertLessThan(timeline.documentView?.accessibilityChildren()?.count ?? 3000, 40)
+        }
     }
 
     func testAttachmentLeavesHaveHeightAndStayInsideRealizedHistory() throws {
@@ -276,6 +294,42 @@ import XCTest
         XCTAssertTrue(retry.isHidden); XCTAssertTrue(dismiss.isHidden)
         XCTAssertEqual(row.frame.height, height, accuracy: 0.5)
         XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+
+        value.reactions = [MessageReaction(emoji: "👍", authorIds: ["peer", "self", "other"]),
+            MessageReaction(emoji: "❤️", authorIds: ["peer"]), MessageReaction(emoji: "😂", authorIds: ["other"])]
+        for width in [CGFloat(160), 170, 259, 260, 420] {
+            timeline.setFrameSize(NSSize(width: width, height: 600))
+            update(failed: true)
+            XCTAssertTrue(window.makeFirstResponder(quick))
+            timeline.layoutSubtreeIfNeeded()
+            let chips = try ["👍", "❤️", "😂"].map { try button("reaction-message-1-\($0)") }
+            for control in chips + [retry, dismiss] {
+                XCTAssertTrue(row.bounds.contains(control.frame), "Reactions and recovery must fit the compact split pane")
+            }
+            for (index, left) in chips.enumerated() {
+                for right in chips.dropFirst(index + 1) { XCTAssertTrue(left.frame.intersection(right.frame).isEmpty) }
+            }
+            if width <= 170 { XCTAssertGreaterThan(chips.last!.frame.minY, chips.first!.frame.minY, "Reactions wrap instead of escaping the narrow pane") }
+            for (index, left) in actionButtons.enumerated() {
+                XCTAssertTrue(row.bounds.contains(left.convert(left.bounds, to: row)))
+                for right in actionButtons.dropFirst(index + 1) {
+                    XCTAssertTrue(left.accessibilityFrame().intersection(right.accessibilityFrame()).isEmpty,
+                        "Wrapped actions must keep distinct native hit regions")
+                }
+            }
+            XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+            XCTAssertEqual(body.string, value.content.text)
+        }
+        timeline.setFrameSize(NSSize(width: 160, height: 600))
+        value.content = ChatContent(version: 1, type: "text", text: "Hi")
+        value.reactions = []
+        timeline.update([message(0), value], conversationID: "channel", viewerID: "self", canInteract: false)
+        timeline.layoutSubtreeIfNeeded()
+        let readOnlyHeight = row.frame.height
+        timeline.update([message(0), value], conversationID: "channel", viewerID: "self", canInteract: true)
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(row.frame.height, readOnlyHeight, "Newly available wrapped actions must fit even a short grouped row")
+        for button in actionButtons { XCTAssertTrue(row.bounds.contains(button.convert(button.bounds, to: row))) }
     }
 
     func testPinsKeepAuthorIdentitySelectionAndIndependentErrorsInsideGroupedAndQuotedRows() throws {
@@ -329,7 +383,7 @@ import XCTest
 
         for quoted in [false, true] {
             value.replyTo = quoted ? MessageReply(message: previous) : nil
-            for width in [CGFloat(640), CGFloat(300)] {
+            for width in [CGFloat(640), 300, 170, 160] {
                 timeline.setFrameSize(NSSize(width: width, height: 600))
                 update(pinError: true, reactionError: true)
                 let retry = try button("pin-retry-message-1")

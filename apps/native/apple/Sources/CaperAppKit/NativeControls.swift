@@ -153,7 +153,7 @@ final class NativeButton: NSButton {
 /// the pointer, keyboard adjustments and AX adjustments commit a preference.
 @MainActor final class NativePanelResizeHandle: NativeView {
     private let defaultWidth: CGFloat
-    private let minimum: CGFloat
+    private var minimum: CGFloat
     private let widensToLeft: Bool
     private let resized: (CGFloat, Bool) -> Void
     private var width: CGFloat
@@ -183,12 +183,13 @@ final class NativeButton: NSButton {
         NSRect(x: floor(bounds.midX) - 1, y: 0, width: 2, height: bounds.height).fill()
     }
 
-    func update(width: CGFloat, maximum: CGFloat) {
-        self.maximum = max(minimum, maximum)
-        let next = min(self.maximum, max(minimum, width))
+    func update(width: CGFloat, maximum: CGFloat, minimum: CGFloat? = nil) {
+        self.minimum = max(0, minimum ?? self.minimum)
+        self.maximum = max(self.minimum, maximum)
+        let next = min(self.maximum, max(self.minimum, width))
         let changed = self.width != next
         self.width = next
-        setAccessibilityMinValue(Double(minimum)); setAccessibilityMaxValue(Double(self.maximum))
+        setAccessibilityMinValue(Double(self.minimum)); setAccessibilityMaxValue(Double(self.maximum))
         setAccessibilityValue("\(Int(next)) pixels")
         if changed { NSAccessibility.post(element: self, notification: .valueChanged) }
     }
@@ -224,4 +225,74 @@ final class NativeButton: NSButton {
     }
     override func accessibilityPerformIncrement() -> Bool { resize(width + 10); return true }
     override func accessibilityPerformDecrement() -> Bool { resize(width - 10); return true }
+}
+
+/// The shipping sidebar stores a fraction; keyboard steps are physical points,
+/// while VoiceOver steps are five percentage points. Resizing never saves a clamp.
+@MainActor final class NativeSidebarDivider: NativeView {
+    private let resized: (Double, Bool) -> Void
+    private var available: CGFloat = 0
+    private var lower = 0.0
+    private(set) var share = 0.5
+
+    init(resized: @escaping (Double, Bool) -> Void) {
+        self.resized = resized
+        super.init()
+        setAccessibilityElement(true); setAccessibilityRole(.slider)
+        setAccessibilityOrientation(.vertical)
+        setAccessibilityIdentifier("sidebar-sections-resize")
+        setAccessibilityLabel("Channels and direct messages divider")
+        setAccessibilityHelp("Drag to resize the lists. Up and Down adjust by 10 pixels; Home and End select the bounds. Double-click resets.")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override var acceptsFirstResponder: Bool { true }
+    override func becomeFirstResponder() -> Bool { needsDisplay = true; return true }
+    override func resignFirstResponder() -> Bool { needsDisplay = true; return true }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeUpDown) }
+    override func draw(_ dirtyRect: NSRect) {
+        let focused = window?.firstResponder === self
+        (focused ? NativeStyle.accent : NativeStyle.border).setFill()
+        NSRect(x: 0, y: floor(bounds.midY), width: bounds.width, height: focused ? 2 : 1).fill()
+    }
+    func update(available: CGFloat, share: Double) {
+        self.available = max(0, available)
+        lower = Double(min(96, self.available / 3) / max(1, self.available))
+        let next = min(1 - lower, max(lower, share.isFinite ? share : 0.5))
+        let changed = next != self.share
+        self.share = next
+        setAccessibilityMinValue(lower); setAccessibilityMaxValue(1 - lower)
+        setAccessibilityValue("\(Int(next * 100)) percent channels")
+        if changed { NSAccessibility.post(element: self, notification: .valueChanged) }
+    }
+    private func resize(_ share: Double, commit: Bool = true) {
+        guard available > 0 else { return }
+        update(available: available, share: share)
+        resized(self.share, commit)
+    }
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        window.makeFirstResponder(self)
+        if event.clickCount == 2 { resize(0.5); return }
+        let start = event.locationInWindow.y, initial = share
+        var dragged = false
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if next.type == .leftMouseUp {
+                if dragged { resize(share) }
+                break
+            }
+            dragged = true
+            resize(initial + Double((start - next.locationInWindow.y) / max(available, 1)), commit: false)
+        }
+    }
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 126: resize(share - 10 / Double(max(available, 1)))
+        case 125: resize(share + 10 / Double(max(available, 1)))
+        case 115: resize(lower)
+        case 119: resize(1 - lower)
+        default: super.keyDown(with: event)
+        }
+    }
+    override func accessibilityPerformIncrement() -> Bool { resize(share + 0.05); return available > 0 }
+    override func accessibilityPerformDecrement() -> Bool { resize(share - 0.05); return available > 0 }
 }

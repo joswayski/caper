@@ -49,24 +49,25 @@ import CaperCore
     }
     override func viewDidLayout() {
         super.viewDidLayout()
-        let x = max(24, (view.bounds.width - 360) / 2)
+        let width = min(360, max(0, view.bounds.width - 48))
+        let x = (view.bounds.width - width) / 2
         let fields = [email, code, username, name].filter { !$0.isHidden }
         let controls = [resend, changeEmail].filter { !$0.isHidden }
         let height = 64 + CGFloat(fields.count) * 48 + 52 + CGFloat(controls.count) * 42 + 80
         var y = max(40, (view.bounds.height - height) / 2)
-        heading.frame = NSRect(x: x, y: y, width: 400, height: 44)
+        heading.frame = NSRect(x: x, y: y, width: min(400, view.bounds.width - x - 24), height: 44)
         y += 64
         for field in fields {
-            field.frame = NSRect(x: x, y: y, width: 360, height: 36)
+            field.frame = NSRect(x: x, y: y, width: width, height: 36)
             y += 48
         }
-        submit.frame = NSRect(x: x, y: y, width: 360, height: 40)
+        submit.frame = NSRect(x: x, y: y, width: width, height: 40)
         y += 52
         for control in controls {
-            control.frame = NSRect(x: x, y: y, width: 360, height: 32)
+            control.frame = NSRect(x: x, y: y, width: width, height: 32)
             y += 42
         }
-        error.frame = NSRect(x: x, y: y, width: 360, height: 80)
+        error.frame = NSRect(x: x, y: y, width: width, height: 80)
     }
     private func update() {
         let onboarding = model.phase == .onboarding

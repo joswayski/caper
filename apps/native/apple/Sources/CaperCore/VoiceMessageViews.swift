@@ -711,6 +711,7 @@ struct VoiceComposerCover: ViewModifier {
 struct VoiceRecordingBar: View {
     let target: VoiceTarget
     var height: CGFloat = 42
+    var compact = false
     private var recorder: VoiceMessageRecorder { .shared }
 
     var body: some View {
@@ -728,21 +729,28 @@ struct VoiceRecordingBar: View {
         .accessibilityLabel(recorder.dictating ? "Dictating" : "Recording voice message")
         .accessibilityIdentifier("\(target.identifier)-recording")
         #else
-        HStack(spacing: 10) {
-            discard.keyboardShortcut(.cancelAction)
-            VoiceRecordingTimer(elapsedMs: recorder.elapsedMs)
-            VoiceLiveBars()
-            if recorder.dictating { asVoiceNote }
-            VoiceStopButton(height: height, width: 42, square: 32, done: recorder.dictating) {
-                let target = target
-                Task { await VoiceTarget.finish(target) }
+        Group {
+            if compact {
+                // AppKit's split panes may be narrower than a single recording
+                // toolbar. Keep every action visible rather than clipping it.
+                VStack(spacing: 4) {
+                    HStack(spacing: 10) { discard.keyboardShortcut(.cancelAction); stop }
+                    HStack(spacing: 6) { VoiceRecordingTimer(elapsedMs: recorder.elapsedMs); VoiceLiveBars() }
+                        .frame(height: 28)
+                    if recorder.dictating { asVoiceNote }
+                }.padding(.horizontal, 4)
+            } else {
+                HStack(spacing: 10) {
+                    discard.keyboardShortcut(.cancelAction)
+                    VoiceRecordingTimer(elapsedMs: recorder.elapsedMs)
+                    VoiceLiveBars()
+                    if recorder.dictating { asVoiceNote }
+                    stop
+                }
             }
-            .keyboardShortcut(.defaultAction)
-            .help("\(recorder.dictating ? VoiceMessage.doneLabel : VoiceMessage.stopLabel) (Return)")
-            .accessibilityIdentifier("\(target.identifier)-stop")
         }
         .padding(.leading, 4)
-        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height)
+        .frame(maxWidth: .infinity, minHeight: compact ? 126 : height, maxHeight: compact ? 126 : height)
         .background(CaperTheme.composer)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -751,6 +759,18 @@ struct VoiceRecordingBar: View {
         .accessibilityIdentifier("\(target.identifier)-recording")
         #endif
     }
+
+    #if os(macOS)
+    private var stop: some View {
+        VoiceStopButton(height: height, width: 42, square: 32, done: recorder.dictating) {
+            let target = target
+            Task { await VoiceTarget.finish(target) }
+        }
+        .keyboardShortcut(.defaultAction)
+        .help("\(recorder.dictating ? VoiceMessage.doneLabel : VoiceMessage.stopLabel) (Return)")
+        .accessibilityIdentifier("\(target.identifier)-stop")
+    }
+    #endif
 
     /// Dictating: stop now and keep the recording as a voice message.
     private var asVoiceNote: some View {

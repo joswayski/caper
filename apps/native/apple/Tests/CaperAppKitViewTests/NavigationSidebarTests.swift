@@ -5,9 +5,34 @@ import XCTest
 @MainActor final class NavigationSidebarTests: XCTestCase {
     func testActivityEntryRetainsFocusAndUpdatesUnreadWithoutAcknowledging() async throws {
         _ = NSApplication.shared
-        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [NavigationSidebarURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!, session: session))
         model.account = Account(id: "owner", username: "owner", displayName: "Owner")
         model.activityUnread = 17
+        model.detail = SpaceDetail(space: Space(id: "space", name: "Fixture", ownerId: "owner"), channels: (0..<29).map {
+            Channel(id: "channel-\($0)", spaceId: "space", name: "Channel \($0)", private: false)
+        }, members: [])
+        let directs = (0..<17).map {
+            DirectMessageConversation(id: "direct-\($0)", peer: DirectMessagePeer(id: "peer-\($0)", username: "peer\($0)", displayName: "Person \($0)"),
+                lastSeq: "9", readSeq: "0", unreadCount: 5)
+        }
+        func notes(_ count: Int?) -> DirectMessageConversation {
+            DirectMessageConversation(id: "notes", peer: DirectMessagePeer(id: "owner", username: "owner", displayName: "Owner"),
+                lastSeq: "500", readSeq: count == 0 ? "500" : "0", unreadCount: count)
+        }
+        model.directMessages = [notes(0)] + directs
+        model.chat.setBlockedAuthors(["peer-2"])
+        await model.loadNotificationSettings()
+        let preference = "caper.channelSidebarChannelsShare"
+        let previousShare = UserDefaults.standard.object(forKey: preference)
+        UserDefaults.standard.set(0.5, forKey: preference)
+        defer {
+            if let previousShare { UserDefaults.standard.set(previousShare, forKey: preference) }
+            else { UserDefaults.standard.removeObject(forKey: preference) }
+        }
         let sidebar = NavigationSidebar(model: model)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = sidebar
@@ -16,9 +41,31 @@ import XCTest
         sidebar.showActivity = { opens += 1 }
         sidebar.layoutSubtreeIfNeeded()
         func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
-        func entry() -> NSButton? {
-            descendants(sidebar).compactMap { $0 as? NSButton }.first { $0.accessibilityIdentifier() == "activity-inbox" }
+        func control(_ id: String) -> NSButton? {
+            descendants(sidebar).compactMap { $0 as? NSButton }.first { $0.accessibilityIdentifier() == id }
         }
+        func entry() -> NSButton? {
+            control("activity-inbox")
+        }
+        let channelsScroll = try XCTUnwrap(descendants(sidebar).first { $0.accessibilityIdentifier() == "sidebar-channels-scroll" } as? NSScrollView)
+        let directScroll = try XCTUnwrap(descendants(sidebar).first { $0.accessibilityIdentifier() == "sidebar-direct-scroll" } as? NSScrollView)
+        XCTAssertFalse(channelsScroll === directScroll)
+        XCTAssertEqual(channelsScroll.accessibilityLabel(), "Channels")
+        XCTAssertEqual(directScroll.accessibilityLabel(), "Direct messages")
+        XCTAssertGreaterThan(try XCTUnwrap(channelsScroll.documentView).bounds.height, channelsScroll.contentSize.height + 137)
+        XCTAssertGreaterThan(try XCTUnwrap(directScroll.documentView).bounds.height, directScroll.contentSize.height + 31)
+        channelsScroll.contentView.scroll(to: NSPoint(x: 0, y: 137))
+        channelsScroll.reflectScrolledClipView(channelsScroll.contentView)
+        XCTAssertEqual(directScroll.contentView.bounds.origin, .zero, "Scrolling Channels must not move Direct messages")
+        directScroll.contentView.scroll(to: NSPoint(x: 0, y: 31))
+        directScroll.reflectScrolledClipView(directScroll.contentView)
+        func assertScrollOrigins() {
+            XCTAssertTrue(descendants(sidebar).first { $0.accessibilityIdentifier() == "sidebar-channels-scroll" } === channelsScroll)
+            XCTAssertTrue(descendants(sidebar).first { $0.accessibilityIdentifier() == "sidebar-direct-scroll" } === directScroll)
+            XCTAssertEqual(channelsScroll.contentView.bounds.origin, NSPoint(x: 0, y: 137))
+            XCTAssertEqual(directScroll.contentView.bounds.origin, NSPoint(x: 0, y: 31))
+        }
+        assertScrollOrigins()
         let button = try XCTUnwrap(entry())
         XCTAssertEqual(button.accessibilityLabel(), "Notifications")
         XCTAssertEqual(button.accessibilityValue() as? String, "17 unread")
@@ -34,6 +81,7 @@ import XCTest
             await fulfillment(of: [updated], timeout: 3)
             sidebar.frame.size.width = 280
             sidebar.layoutSubtreeIfNeeded()
+            assertScrollOrigins()
             XCTAssertTrue(entry() === button)
             XCTAssertTrue(window.firstResponder === button, "An unread refresh must not replace the keyboard-focused entry")
             XCTAssertEqual(button.accessibilityLabel(), "Notifications")
@@ -45,6 +93,61 @@ import XCTest
         button.performClick(nil)
         XCTAssertEqual(opens, 2)
         XCTAssertEqual(model.activityUnread, 2)
+
+        func labels(_ button: NSButton) throws -> [NSTextField] {
+            try XCTUnwrap(button.superview).subviews.compactMap { $0 as? NSTextField }.filter { !$0.isHiddenOrHasHiddenAncestor }
+        }
+        let selfNotes = try XCTUnwrap(control("dm-self"))
+        XCTAssertEqual(selfNotes.accessibilityLabel(), "Owner, you")
+        XCTAssertEqual(try labels(selfNotes).map(\.stringValue), ["Owner", "you"])
+        let initial = try XCTUnwrap(descendants(try XCTUnwrap(selfNotes.superview)).compactMap { $0 as? NSTextField }
+            .first { $0.stringValue == "O" && !$0.isHiddenOrHasHiddenAncestor })
+        XCTAssertFalse(initial.isAccessibilityElement(), "The self avatar is decorative, not a second focus stop")
+        XCTAssertGreaterThan(initial.bounds.width, 0)
+        for (id, value, visibleLabels) in [("direct-0", "5 unread messages", ["Person 0", "5"]),
+            ("direct-1", "Muted", ["Person 1"]), ("direct-2", "", ["Person 2"])] {
+            let row = try XCTUnwrap(control("dm-\(id)"))
+            XCTAssertEqual(row.accessibilityValue() as? String, value)
+            XCTAssertEqual(try labels(row).map(\.stringValue), visibleLabels, "Muted/blocked peers must not display an unread badge")
+        }
+        XCTAssertTrue(window.makeFirstResponder(selfNotes))
+        let states: [(Int?, String?, String, Bool)] = [
+            (99, "99", "Selected, 99 unread messages", false), (120, "99+", "Selected, 120 unread messages", true),
+            (nil, "", "Selected, Unread activity", false), (0, nil, "", false),
+        ]
+        for (count, badge, value, busy) in states {
+            model.directMessages = [notes(count)] + directs
+            model.selectedDirectMessageID = count == 0 ? nil : "notes"
+            model.busy = busy
+            let updated = expectation(for: NSPredicate { _, _ in
+                MainActor.assumeIsolated { control("dm-self")?.accessibilityValue() as? String == value && control("dm-self")?.isEnabled == !busy }
+            }, evaluatedWith: sidebar)
+            await fulfillment(of: [updated], timeout: 3)
+            sidebar.layoutSubtreeIfNeeded()
+            XCTAssertTrue(control("dm-self") === selfNotes)
+            XCTAssertTrue(window.firstResponder === selfNotes, "Selection, unread and busy updates must retain the same focused button")
+            XCTAssertEqual(selfNotes.isEnabled, !busy)
+            XCTAssertEqual(selfNotes.accessibilityLabel(), "Owner, you")
+            let visibleLabels = try labels(selfNotes)
+            XCTAssertEqual(visibleLabels.map(\.stringValue), ["Owner", "you"] + (badge.map { [$0] } ?? []))
+            XCTAssertTrue(visibleLabels.allSatisfy { !$0.isAccessibilityElement() })
+            assertScrollOrigins()
+        }
+        let divider = try XCTUnwrap(descendants(sidebar).first { $0.accessibilityIdentifier() == "sidebar-sections-resize" })
+        XCTAssertEqual(divider.accessibilityRole(), .slider)
+        let channelHeight = channelsScroll.frame.height, directHeight = directScroll.frame.height
+        XCTAssertTrue(divider.accessibilityPerformIncrement())
+        sidebar.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(channelsScroll.frame.height, channelHeight)
+        XCTAssertLessThan(directScroll.frame.height, directHeight)
+        assertScrollOrigins()
+        XCTAssertTrue(divider.accessibilityPerformDecrement())
+        sidebar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(channelsScroll.frame.height, channelHeight, accuracy: 0.5)
+        XCTAssertEqual(directScroll.frame.height, directHeight, accuracy: 0.5)
+        assertScrollOrigins()
+        XCTAssertTrue(control("dm-self") === selfNotes)
+        XCTAssertTrue(window.firstResponder === selfNotes, "Resizing the lists must not detach the focused row")
     }
 
     func testVoiceCardPreservesFocusAndLiveRowWhenChannelsCollapse() async throws {
@@ -52,8 +155,14 @@ import XCTest
         let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
         let text = Channel(id: "text", spaceId: "space", name: "general", private: false)
         let call = Channel(id: "call", spaceId: "space", name: "design", private: false)
-        model.detail = SpaceDetail(space: Space(id: "space", name: "Fixture", ownerId: "owner"), channels: [text, call], members: [])
+        let room = Channel(id: "room", spaceId: "space", name: "lounge", private: false)
+        model.detail = SpaceDetail(space: Space(id: "space", name: "Fixture", ownerId: "owner"), channels: [text, call, room], members: [])
         model.selectedChannelID = text.id
+        await model.voicePresence.watch(spaceID: "space", channels: [room], demo: false)
+        defer { model.voicePresence.revoke(channelID: room.id) }
+        model.voicePresence.receive(["type": "snapshot", "revision": 1, "participants": (0..<7).map {
+            ["id": "guest-\($0)", "name": "Guest \($0)", "muted": false, "deafened": false] as [String: Any]
+        }], generation: 1, channelID: room.id)
         let data = try JSONSerialization.data(withJSONObject: (0..<12).map {
             ["id": "person-\($0)", "name": "Person \($0)", "muted": false, "deafened": false, "tracks": []] as [String: Any]
         })
@@ -72,8 +181,17 @@ import XCTest
         }
         XCTAssertEqual(visible(sidebar).filter { $0.accessibilityIdentifier().hasPrefix("voice-face-") }.count, 9)
         XCTAssertEqual(button("voice-faces-more")?.accessibilityLabel(), "3 more in the call")
+        XCTAssertEqual(button("voice-faces-more")?.accessibilityCustomActions()?.map(\.name), ["Show everyone"])
+        let roomMore = try XCTUnwrap(visible(sidebar).first { $0.accessibilityIdentifier() == "room-faces-more" } as? NSTextField)
+        XCTAssertEqual(roomMore.stringValue, "+4")
+        XCTAssertEqual(roomMore.accessibilityLabel(), "4 more in the room")
+        XCTAssertNil(button("room-faces-more"), "Other-room overflow is a passive label, not a call action")
+        XCTAssertTrue(roomMore.accessibilityCustomActions()?.isEmpty ?? true, "Other-room overflow must not offer volume or everyone actions")
+        XCTAssertNil(roomMore.toolTip, "Read-only occupants must not advertise call controls")
         let ownFace = try XCTUnwrap(button("voice-face-person-3"))
         let firstRemote = try XCTUnwrap(button("voice-face-person-0"))
+        XCTAssertEqual(ownFace.accessibilityCustomActions()?.map(\.name), ["Show everyone"])
+        XCTAssertEqual(firstRemote.accessibilityCustomActions()?.map(\.name), ["Volume"])
         XCTAssertLessThan(ownFace.frame.minX, firstRemote.frame.minX, "Self leads join order, not speaking order")
         let deafen = try XCTUnwrap(button("voice-call-deafen"))
         XCTAssertTrue(window.makeFirstResponder(deafen))
@@ -111,6 +229,7 @@ import XCTest
         try XCTUnwrap(button("voice-call-leave")).performClick(nil)
         XCTAssertEqual(model.voice.phase, .idle)
         XCTAssertEqual(model.selectedChannelID, text.id)
+        await model.voicePresence.stop()
     }
 
     func testElsewhereCallStaysAboveChannelsWithoutReplacingSelectedChat() throws {
@@ -290,7 +409,7 @@ private final class NavigationSidebarURLProtocol: URLProtocol, @unchecked Sendab
         let body: String
         switch request.url?.path {
         case "/api/notifications/settings":
-            body = #"{"level":"all","mobile":"whenInactive","overrides":[{"spaceId":"space","channelId":"planning","mutedUntil":"forever"}]}"#
+            body = #"{"level":"all","mobile":"whenInactive","overrides":[{"spaceId":"space","channelId":"planning","mutedUntil":"forever"},{"conversationId":"direct-1","mutedUntil":"forever"}]}"#
         case "/api/spaces/unread":
             body = #"{"spaces":[{"id":"space","channels":[{"id":"planning","lastSeq":"2","readSeq":"0"}]}]}"#
         default:

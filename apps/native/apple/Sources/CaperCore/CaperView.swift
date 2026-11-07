@@ -7705,6 +7705,7 @@ struct PinnedMessagesView: View {
                                 }.padding(.horizontal, 18).padding(.bottom, 12)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                                 .background(message.pin?.author.id == viewerID ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.pinGold.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                                .accessibilityElement(children: .contain)
                                 .accessibilityIdentifier("pinned-message-\(message.id)")
                         }
                     }.padding(12)
@@ -7741,6 +7742,7 @@ struct PinnedMessagesView: View {
             // The popover closes so the window's viewer fills the window.
             .environment(\.mediaViewer, mediaViewer.map { show in MediaViewerAction { close(); show($0) } })
             #endif
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("pinned-messages")
     }
 

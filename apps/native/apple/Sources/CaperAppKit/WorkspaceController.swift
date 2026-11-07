@@ -14,8 +14,8 @@ import CaperCore
     private lazy var threadDivider = NativePanelResizeHandle("Thread width", identifier: "thread-panel-resize", defaultWidth: 340, minimum: 300, widensToLeft: true) { [weak self] width, commit in
         guard let self else { return }
         if commit {
-            self.preferredThreadWidth = width; self.threadDragWidth = nil
-            UserDefaults.standard.set(Double(width), forKey: "caper.threadPanelWidth")
+            self.preferredThreadWidth = max(300, width); self.threadDragWidth = nil
+            UserDefaults.standard.set(Double(self.preferredThreadWidth), forKey: "caper.threadPanelWidth")
         } else { self.threadDragWidth = width }
         self.view.needsLayout = true
         self.view.layoutSubtreeIfNeeded()
@@ -111,6 +111,9 @@ import CaperCore
     }
     private var uploadConversationID: String?
     private var voicePreviewChecked = false
+    private lazy var browse = NativeButton.icon("Browse channels", symbol: "sidebar.left") { [weak self] in
+        self?.model.navigationOpen = true
+    }
     private lazy var attach = NativeButton.icon("Attach files", symbol: "plus") { [weak self] in self?.showAttachMenu() }
     private lazy var emoji: NativeButton = NativeButton.icon("Insert emoji", symbol: "face.smiling") { [weak self] in
         guard let self else { return }; self.picker.emoji(from: self.emoji, composer: self.composer)
@@ -162,7 +165,8 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, header, pinsButton, membersToggle, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, header, browse, pinsButton, membersToggle, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        browse.setAccessibilityIdentifier("open-navigation")
         pinsButton.setAccessibilityIdentifier("channel-pins")
         pinsButton.isHidden = inThread
         timeline.inThread = inThread
@@ -189,6 +193,7 @@ import CaperCore
         counter.alignment = .center
         join.setAccessibilityIdentifier("join-channel")
         if !inThread {
+            navigation.closeNavigation = { [weak self] in self?.model.navigationOpen = false }
             navigation.show = { [weak self] item in
                 guard let self else { return }; self.dialogs.show(item, in: self)
             }
@@ -299,6 +304,7 @@ import CaperCore
         }
         navigationObservation.start { [weak self] in
             guard let self else { return }
+            self.browse.setAccessibilityValue(self.model.navigationOpen ? "Open" : "Closed")
             self.header.stringValue = self.inThread ? "Thread" : self.model.selectedDirectMessage?.peer.displayName ?? "# \(self.model.chat.channelName)"
             self.back.title = self.model.selectedDirectMessageID == nil ? "Back to channel" : "Back to conversation"
             self.back.setAccessibilityLabel(self.back.title)
@@ -456,35 +462,61 @@ import CaperCore
         let previousStage = stage.frame
         let wasHidden = stage.isHidden
         let width = view.bounds.width, height = view.bounds.height
-        let navigationWidth = self.navigationWidth
-        let docked = width > 760 && width - navigationWidth >= 540
-        let hasMembers = !inThread && threadPane == nil && model.selectedDirectMessageID == nil && model.visit == nil
-        let visible = hasMembers && (membersPreference ?? docked)
+        let narrow = !inThread && width <= 760
+        if !inThread, model.narrowLayout != narrow {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.model.narrowLayout = self.view.bounds.width <= 760
+            }
+        }
+        let browsing = narrow && model.navigationOpen
+        let navigationWidth = narrow ? 0 : self.navigationWidth
+        let docked = !narrow && width - navigationWidth >= 540
+        let hasMembers = !inThread && model.selectedDirectMessageID == nil && model.visit == nil
+        let visible = hasMembers && !browsing && !(narrow && model.previewingChannel) && (membersPreference ?? docked)
         if !visible { membersDragWidth = nil }
         let maximum = min(440, max(220, width - navigationWidth - (docked ? 320 : 64)))
         // Clamping a small window never overwrites the user's saved width.
-        let memberWidth = min(maximum, max(220, membersDragWidth ?? preferredMembersWidth))
+        let memberWidth = narrow ? min(280, width - 64) : min(maximum, max(220, membersDragWidth ?? preferredMembersWidth))
         if inThread { stage.frame = view.bounds }
         else {
-            navigation.frame = NSRect(x: 0, y: 0, width: navigationWidth, height: height)
+            navigation.narrow = narrow
+            let navigationWasHidden = navigation.isHidden
+            navigation.isHidden = narrow && !browsing
+            navigation.frame = NSRect(x: 0, y: 0, width: narrow ? width : navigationWidth, height: height)
+            if browsing && navigationWasHidden && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                let fade = CABasicAnimation(keyPath: "opacity")
+                fade.fromValue = 0; fade.toValue = 1; fade.duration = 0.14
+                fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+                navigation.layer?.add(fade, forKey: "entrance")
+            }
+            sidebarResize.isHidden = narrow
             sidebarResize.frame = NSRect(x: navigationWidth - 8, y: 0, width: 8, height: height)
             sidebarResize.update(width: navigationWidth - NavigationSidebar.railWidth, maximum: sidebarMaximum)
-            // Narrow windows keep the editor width and show one conversation
-            // at a time; the native channel timeline retains its scroll anchor.
+            // Like shipping SwiftUI, only the viewport breakpoint folds the
+            // channel. The same controllers survive every width and retain drafts.
             let available = max(0, width - navigationWidth - (visible && docked ? memberWidth : 0))
-            let split = available >= 900
+            let split = !narrow
             if threadPane == nil || !split { threadDragWidth = nil }
-            let maximumThreadWidth = min(600, max(300, available - 300))
-            let threadWidth: CGFloat = threadPane == nil ? 0 : split ? min(maximumThreadWidth, max(300, threadDragWidth ?? preferredThreadWidth)) : available
-            stage.isHidden = threadPane != nil && !split
+            let maximumThreadWidth = min(600, available - min(300, available / 2))
+            let minimumThreadWidth = min(300, maximumThreadWidth)
+            let threadWidth: CGFloat = threadPane == nil ? 0 : split ? min(maximumThreadWidth, max(minimumThreadWidth, threadDragWidth ?? preferredThreadWidth)) : available
+            stage.isHidden = browsing || (threadPane != nil && !split)
             stage.frame = NSRect(x: navigationWidth, y: 0, width: max(0, available - (split ? threadWidth : 0)), height: height)
-            threadPane?.view.frame = NSRect(x: width - threadWidth, y: 0, width: threadWidth, height: height)
+            if let pane = threadPane {
+                let wasCovered = pane.view.isHidden
+                pane.view.isHidden = browsing
+                pane.view.frame = NSRect(x: navigationWidth + available - threadWidth, y: 0, width: threadWidth, height: height)
+                if wasCovered != browsing {
+                    DispatchQueue.main.async { [weak pane] in pane?.updateComposer(); pane?.acknowledgeVisibleThread() }
+                }
+            }
             threadDivider.isHidden = threadPane == nil || !split
-            threadDivider.frame = NSRect(x: width - threadWidth, y: 0, width: 8, height: height)
-            threadDivider.update(width: threadWidth, maximum: maximumThreadWidth)
+            threadDivider.frame = NSRect(x: navigationWidth + available - threadWidth, y: 0, width: 8, height: height)
+            threadDivider.update(width: threadWidth, maximum: maximumThreadWidth, minimum: minimumThreadWidth)
             members.frame = NSRect(x: width - memberWidth, y: docked ? 0 : 50, width: memberWidth, height: height - (docked ? 0 : 50))
             members.setVisible(visible)
-            membersResize.isHidden = !visible
+            membersResize.isHidden = !visible || narrow
             membersResize.frame = NSRect(x: members.frame.minX, y: members.frame.minY, width: 8, height: members.frame.height)
             membersResize.update(width: memberWidth, maximum: maximum)
         }
@@ -492,19 +524,31 @@ import CaperCore
             // Ending a recording publishes model state, never during layout.
             DispatchQueue.main.async { [weak self] in self?.updateComposer() }
         }
+        if let focused = view.window?.firstResponder as? NSView, focused.isDescendant(of: view), focused.isHiddenOrHasHiddenAncestor {
+            view.window?.makeFirstResponder(nil)
+        }
         if stage.frame != previousStage || stage.isHidden { reactionTooltip.close() }
         let center = stage.bounds.width
-        back.frame = NSRect(x: center - 170, y: 10, width: 150, height: 28)
+        let compactBack = center < 300
+        back.title = compactBack ? "" : (model.selectedDirectMessageID == nil ? "Back to channel" : "Back to conversation")
+        back.image = compactBack ? NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil) : nil
+        back.imagePosition = compactBack ? .imageOnly : .noImage
+        back.frame = NSRect(x: center - (compactBack ? 48 : 170), y: 10, width: compactBack ? 28 : 150, height: 28)
+        browse.isHidden = !narrow || inThread
+        browse.frame = NSRect(x: 12, y: 8, width: 32, height: 32)
         membersToggle.frame = NSRect(x: center - 48, y: 8, width: 32, height: 32)
         membersToggle.isHidden = !hasMembers
         pinsButton.frame = NSRect(x: center - (membersToggle.isHidden ? 48 : 88), y: 8, width: 32, height: 32)
-        header.frame = NSRect(x: 20, y: 14, width: max(0, center - (inThread ? 195 : membersToggle.isHidden ? 80 : 120)), height: 26)
+        let headerLeft: CGFloat = browse.isHidden ? 20 : 52
+        let headerRight: CGFloat = inThread ? (compactBack ? 56 : 175) : membersToggle.isHidden ? 60 : 100
+        header.frame = NSRect(x: headerLeft, y: 14, width: max(0, center - headerLeft - headerRight), height: 26)
         membersToggle.setAccessibilityLabel(visible ? "Hide members" : "Show members")
         membersToggle.toolTip = visible ? "Hide members" : "Show members"
         membersToggle.contentTintColor = visible ? NativeStyle.accent : NativeStyle.muted
         let base = height - (broadcast.isHidden ? 0 : 28)
         let compact = center < 500
-        let composerTop = base - (compact ? 150 : 102)
+        let stackedActions = center < 250
+        let composerTop = base - (stackedActions ? 192 : compact ? 150 : 102)
         let attachmentHeight = attachmentTray?.height(for: max(1, center - 40)) ?? 0
         let trayHeight = min(attachmentHeight, max(80, height * 0.3))
         let quoteHeight = replyDraft?.height(for: max(1, center - 40)) ?? 0
@@ -516,26 +560,32 @@ import CaperCore
         let statusY = directBar.isHidden ? quoteBottom - quoteHeight - recoveryHeight - 30 : height - max(138, directBar.preferredHeight(width: center - 40) + 32) + 6
         let top: CGFloat = newer.isHidden && latest.isHidden ? 48 : 88
         timeline.frame = NSRect(x: 0, y: top, width: center, height: max(0, statusY - 6 - top))
-        newer.frame = NSRect(x: 20, y: 52, width: 150, height: 28)
-        latest.frame = NSRect(x: center - 130, y: 52, width: 110, height: 28)
+        let historyWidth = max(0, (center - 48) / 2)
+        newer.frame = NSRect(x: 20, y: 52, width: min(150, historyWidth), height: 28)
+        latest.frame = NSRect(x: center - 20 - min(110, historyWidth), y: 52, width: min(110, historyWidth), height: 28)
         status.frame = NSRect(x: 20, y: statusY, width: center - (retry.isHidden ? 40 : 116), height: 24)
         directBar.frame = NSRect(x: 20, y: status.frame.maxY, width: center - 40, height: max(0, height - status.frame.maxY - 8))
-        attach.frame = NSRect(x: 16, y: base - 72, width: 38, height: 42)
+        attach.frame = NSRect(x: 16, y: base - (stackedActions ? 114 : 72), width: 38, height: 42)
         send.frame = NSRect(x: center - 56, y: base - 70, width: 36, height: 38)
         voiceComposer.button.frame = NSRect(x: send.frame.minX - 42, y: base - 72, width: 36, height: 42)
-        voiceComposer.bar.frame = NSRect(x: 20, y: base - 72, width: max(0, center - 40), height: 42)
+        let recordingHeight: CGFloat = center - 40 < 300 ? 126 : 42
+        voiceComposer.bar.frame = NSRect(x: 20, y: base - 30 - recordingHeight, width: max(0, center - 40), height: recordingHeight)
         emoji.frame = NSRect(x: voiceComposer.button.frame.minX - 40, y: base - 72, width: 32, height: 42)
         gif.frame = NSRect(x: emoji.frame.minX - 40, y: base - 72, width: 32, height: 42)
+        if stackedActions {
+            gif.frame = NSRect(x: 58, y: base - 114, width: 32, height: 42)
+            emoji.frame = NSRect(x: gif.isHidden ? 58 : 98, y: base - 114, width: 32, height: 42)
+        }
         let editorRight = (gif.isHidden ? emoji.frame.minX : gif.frame.minX) - 12
         composerScroll.frame = NSRect(x: compact ? 20 : 58, y: composerTop, width: compact ? center - 40 : editorRight - 58, height: 70)
         composer.frame.size.width = composerScroll.contentSize.width
         composer.minSize = NSSize(width: 0, height: 70)
         counter.frame = NSRect(x: 20, y: base - 24, width: center - 40, height: 16)
         broadcast.frame = NSRect(x: 20, y: height - 26, width: center - 40, height: 22)
-        join.frame = NSRect(x: 20, y: height - 80, width: 140, height: 38)
+        join.frame = NSRect(x: 20, y: height - 80, width: min(140, center - 40), height: 38)
         layoutSuggestions()
         retry.frame = NSRect(x: center - 84, y: statusY, width: 64, height: 24)
-        editRejected.frame = NSRect(x: 20, y: quoteBottom - quoteHeight - recoveryHeight, width: 200, height: 30)
+        editRejected.frame = NSRect(x: 20, y: quoteBottom - quoteHeight - recoveryHeight, width: min(200, center - 40), height: 30)
         focusComposerIfRequested()
     }
 
@@ -572,8 +622,9 @@ import CaperCore
         pinsButton.isEnabled = pins.isAvailable
         composer.isEditable = !recording && ready && directBar.isHidden && chat.canInteract && !chat.sending && !chat.sendRejected && chat.pendingMessage == nil
         send.isEnabled = !recording && ready && directBar.isHidden && chat.canInteract && chat.canPressSend(inThread: inThread)
-        send.title = chat.sending ? "Sending…" : inThread ? "Send reply" : "Send"
-        send.setAccessibilityLabel(send.title); send.toolTip = send.title
+        let sendLabel = chat.sending ? "Sending…" : inThread ? "Send reply" : "Send"
+        send.title = ""
+        send.setAccessibilityLabel(sendLabel); send.toolTip = sendLabel
         send.layer?.backgroundColor = (send.isEnabled ? NSColor(CaperTheme.action) : NativeStyle.composer).cgColor
         send.contentTintColor = send.isEnabled ? NativeStyle.blackout : NativeStyle.muted
         composerScroll.isHidden = hidden || recording

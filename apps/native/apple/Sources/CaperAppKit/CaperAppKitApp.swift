@@ -33,7 +33,7 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Caper — AppKit development (not feature complete)"
         window.identifier = NSUserInterfaceItemIdentifier("caper-appkit-development")
-        window.minSize = NSSize(width: 840, height: 600)
+        window.contentMinSize = NSSize(width: 390, height: 578)
         window.contentViewController = AppKitRootController(model: model, settings: settings)
         window.setContentSize(NSSize(width: fixture ? 1440 : 1180, height: fixture ? 900 : 760))
         window.center()

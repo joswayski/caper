@@ -9,6 +9,8 @@ import CaperCore
     var showActivity: (() -> Void)?
     var showSettings: (() -> Void)?
     var showWhatsNew: (() -> Void)?
+    var closeNavigation: (() -> Void)?
+    var narrow = false { didSet { if oldValue != narrow { needsLayout = true } } }
     var leaveChannel: ((Channel) -> Void)?
     var block: ((BlockTarget) -> Void)?
     private let observation = NativeObservation()
@@ -18,25 +20,40 @@ import CaperCore
     private var railOrder: [NativeButton] = []
     private lazy var createSpace = NativeButton.icon("Create space", symbol: "plus") { [weak self] in self?.show?(.createSpace) }
     private let sidebar = NativeView(NativeStyle.sidebar)
-    private let rows = NativeView()
-    private let scroll = NSScrollView()
+    private let channels = NativeSidebarList("Channels", identifier: "sidebar-channels-scroll")
+    private let directs = NativeSidebarList("Direct messages", identifier: "sidebar-direct-scroll")
+    private var preferredChannelsShare = UserDefaults.standard.object(forKey: "caper.channelSidebarChannelsShare") as? Double ?? 0.5
+    private var draggedChannelsShare: Double?
+    private lazy var sectionsDivider = NativeSidebarDivider { [weak self] share, commit in
+        guard let self else { return }
+        if commit {
+            self.preferredChannelsShare = share; self.draggedChannelsShare = nil
+            UserDefaults.standard.set(share, forKey: "caper.channelSidebarChannelsShare")
+        } else { self.draggedChannelsShare = share }
+        self.needsLayout = true; self.layoutSubtreeIfNeeded()
+    }
     private let search = NSSearchField()
     private let error = NativeStyle.label("", size: 11)
     private var expanded = true
     private var browsing = false
     private var spaceID: String?
-    private var rowHeights: [CGFloat] = []
-    private var rowOrder: [NSView] = []
     private var requestButtons: [String: NativeButton] = [:]
+    private var directRows: [String: NativeDirectRow] = [:]
     private var channelCards: [String: NativeVoiceCard] = [:]
     private var externalCards: [String: NativeVoiceCard] = [:]
-    private var externalOrder: [NativeVoiceCard] = []
     private lazy var voicePanels = NativeVoicePanels(model: model)
     private lazy var activity = NativeActivityEntry { [weak self] in self?.showActivity?() }
+    private lazy var selfNotes = NativeDirectRow { [weak self] in
+        guard let self else { return }; Task { await self.model.openSelfDirectMessage() }
+    }
+    private lazy var newMessage = NativeButton("New message") { [weak self] in self?.show?(.newDirectMessage) }
+    private lazy var directAdd = NativeButton.icon("New direct message", symbol: "plus") { [weak self] in self?.show?(.newDirectMessage) }
+    private lazy var directHeading = NativeSidebarHeading(title: NativeStyle.label("Direct messages", size: 12, bold: true), actions: [directAdd], hoverActions: true)
     private lazy var requests = NativeButton("") { [weak self] in
         guard let self else { return }; self.model.showingMessageRequests.toggle()
     }
     private lazy var space = NativeButton("") { [weak self] in self?.openSpaceMenu() }
+    private lazy var close = NativeButton.icon("Close navigation", symbol: "xmark") { [weak self] in self?.closeNavigation?() }
     private lazy var heading = NativeButton("") { [weak self] in
         guard let self else { return }; self.expanded.toggle(); self.render()
     }
@@ -48,7 +65,9 @@ import CaperCore
                 guard let self else { return }; self.expanded.toggle(); self.render()
             }], at: self.options)
     }
+    private lazy var channelHeading = NativeSidebarHeading(title: heading, actions: [create, options], disclosure: true)
     private let accountAvatar = NativeAvatar()
+    private let accountPresence = CALayer()
     private let accountName = NativeStyle.label("", size: 13)
     private lazy var account = NativeButton("") { [weak self] in self?.show?(.profile) }
     private lazy var mute = NativeButton.icon("Mute microphone", symbol: "mic") { [weak self] in
@@ -70,16 +89,24 @@ import CaperCore
         super.init()
         [railScroll, sidebar].forEach { addSubview($0) }
         railScroll.documentView = rail; railScroll.drawsBackground = false
-        [space, heading, create, options, search, scroll, error, accountAvatar, accountName, account, mute, inputOptions, deafen, outputOptions, settings].forEach { sidebar.addSubview($0) }
+        [space, close, channels, sectionsDivider, directs, accountAvatar, accountName, account, mute, inputOptions, deafen, outputOptions, settings].forEach { sidebar.addSubview($0) }
+        sidebar.layer?.addSublayer(accountPresence)
+        accountPresence.cornerRadius = 5; accountPresence.borderWidth = 2
+        accountPresence.borderColor = NativeStyle.sidebar.cgColor
         accountName.setAccessibilityElement(false)
-        scroll.documentView = rows
-        scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
+        newMessage.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
+        newMessage.imagePosition = .imageLeft; newMessage.alignment = .left
+        newMessage.font = NativeStyle.font(13); newMessage.profileFeedback = true
+        newMessage.layer?.backgroundColor = NSColor.clear.cgColor
+        newMessage.setAccessibilityIdentifier("new-message")
+        directAdd.setAccessibilityIdentifier("new-direct-message")
         search.placeholderString = "Search channels"
         search.font = NativeStyle.font(13)
         search.delegate = self
         search.setAccessibilityIdentifier("browse-channels-search")
         search.setAccessibilityLabel("Search channels")
         space.setAccessibilityIdentifier("selected-space-name")
+        close.setAccessibilityIdentifier("close-navigation")
         space.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
         space.imagePosition = .imageRight
         space.alignment = .left; space.font = NativeStyle.font(15, bold: true)
@@ -113,32 +140,24 @@ import CaperCore
         for (index, child) in railOrder.enumerated() { child.frame = NSRect(x: (Self.railWidth - 40) / 2, y: 14 + CGFloat(index) * 54, width: 40, height: 40) }
         sidebar.frame = NSRect(x: Self.railWidth, y: 0, width: bounds.width - Self.railWidth, height: bounds.height)
         let width = sidebar.bounds.width
-        space.frame = NSRect(x: 16, y: 8, width: width - 32, height: 34)
-        var externalHeight: CGFloat = 0
-        for card in externalOrder {
-            let height = card.height(width: width - 32)
-            card.frame = NSRect(x: 16, y: 50 + externalHeight, width: width - 32, height: height)
-            externalHeight += height + 8
-        }
-        heading.frame = NSRect(x: 16, y: 54 + externalHeight, width: width - 88, height: 32)
-        create.frame = NSRect(x: width - 72, y: 54 + externalHeight, width: 28, height: 32)
-        options.frame = NSRect(x: width - 42, y: 54 + externalHeight, width: 28, height: 32)
-        search.isHidden = !browsing
-        search.frame = NSRect(x: 16, y: 94 + externalHeight, width: width - 32, height: 30)
-        let top: CGFloat = (browsing ? 132 : 94) + externalHeight
-        let footer = bounds.height - 62
-        scroll.frame = NSRect(x: 0, y: top, width: width, height: max(0, footer - top - (error.stringValue.isEmpty ? 0 : 30)))
-        error.frame = NSRect(x: 16, y: footer - 30, width: width - 32, height: 28)
-        var y: CGFloat = 0
-        for (child, defaultHeight) in zip(rowOrder, rowHeights) {
-            let height = (child as? NativeVoiceCard)?.height(width: scroll.contentSize.width - 32) ?? defaultHeight
-            child.frame = NSRect(x: 16, y: y, width: scroll.contentSize.width - 32, height: height)
-            y += height + 3
-        }
-        rows.frame.size = NSSize(width: scroll.contentSize.width, height: y + 8)
+        close.isHidden = !narrow
+        close.frame = NSRect(x: width - 44, y: 8, width: 28, height: 34)
+        space.frame = NSRect(x: 16, y: 8, width: width - (narrow ? 64 : 32), height: 34)
+        let footer = max(50, bounds.height - 62)
+        let available = max(0, footer - 50 - 12)
+        sectionsDivider.update(available: available, share: draggedChannelsShare ?? preferredChannelsShare)
+        let channelHeight = available * CGFloat(sectionsDivider.share)
+        channels.frame = NSRect(x: 0, y: 50, width: width, height: channelHeight)
+        sectionsDivider.frame = NSRect(x: 0, y: channels.frame.maxY, width: width, height: 12)
+        directs.frame = NSRect(x: 0, y: sectionsDivider.frame.maxY, width: width, height: max(0, available - channelHeight))
+        channels.layoutRows(); directs.layoutRows()
         account.frame = NSRect(x: 16, y: footer + 8, width: width - 156, height: 36)
         accountAvatar.frame = NSRect(x: 16, y: footer + 11, width: 30, height: 30)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        accountPresence.frame = NSRect(x: accountAvatar.frame.maxX - 8, y: accountAvatar.frame.maxY - 8, width: 10, height: 10)
+        CATransaction.commit()
         accountName.frame = NSRect(x: 53, y: footer + 17, width: max(0, width - 197), height: 20)
+        accountName.isHidden = account.frame.width < 76
         mute.frame = NSRect(x: width - 138, y: footer + 10, width: 28, height: 32)
         inputOptions.frame = NSRect(x: width - 110, y: footer + 10, width: 16, height: 32)
         deafen.frame = NSRect(x: width - 92, y: footer + 10, width: 28, height: 32)
@@ -183,32 +202,37 @@ import CaperCore
         space.setAccessibilityLabel(space.title)
         space.isEnabled = model.detail != nil && model.detail?.space.demo != true
         let joined = model.detail?.channels.filter(\.joined) ?? []
-        heading.title = "\(expanded ? "⌄" : "›")  Channels  \(joined.count)"
+        heading.title = "Channels  \(joined.count)"
         heading.setAccessibilityLabel("Channels, \(joined.count)")
         heading.setAccessibilityValue(expanded ? "Expanded" : "Collapsed")
+        channelHeading.setExpanded(expanded)
         create.isHidden = !model.isOwner; options.isHidden = !model.isOwner
         create.isEnabled = model.canCreateChannel
         create.toolTip = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
-        rowOrder = []; rowHeights = []
+        channels.beginUpdates(); directs.beginUpdates()
         updateExternalVoice(joined: joined)
+        channels.append(channelHeading, height: 44)
         channelCards = channelCards.filter { id, _ in joined.contains { $0.id == id } }
         LiveNow.listed(joined, expanded: expanded) { VoicePresentation.isLive(model, $0) }.forEach { addChannel($0) }
         if browsing {
+            channels.append(search, height: 30)
             let query = String(search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).drop(while: { $0 == "#" }))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let matches = (model.detail?.channels ?? []).filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
-            addRow(NativeStyle.label("Browse channels", size: 12, bold: true), height: 28)
-            if matches.isEmpty { addRow(NativeStyle.label("No channels match your search.", size: 12)) }
+            if matches.isEmpty { channels.append(NativeStyle.label(query.isEmpty ? "This space has no channels yet." : "No channels match your search.", size: 12)) }
             matches.forEach { addChannel($0, browsing: true) }
         }
+        if model.detail?.channelInvitations.isEmpty == false {
+            channels.append(NativeStyle.label("Private invitations", size: 12, bold: true), height: 28)
+        }
         for invitation in model.detail?.channelInvitations ?? [] {
-            addRow(NativeButton("#\(invitation.channel.name) · from @\(invitation.inviter.username)") { [weak self] in
+            channels.append(NativeButton("#\(invitation.channel.name) · from @\(invitation.inviter.username)") { [weak self] in
                 self?.show?(.channelInvitation(invitation))
             })
         }
-        addRow(NativeStyle.label("Direct messages", size: 12, bold: true), height: 28)
+        directs.append(directHeading, height: 28)
         activity.update(unread: AppKitWorkspacePresenter.activityUnread(model))
-        addRow(activity, height: 36)
+        directs.append(activity, height: 28)
         var nextRequests: [String: NativeButton] = [:]
         if !model.messageRequests.isEmpty {
             requests.title = "\(model.showingMessageRequests ? "⌄" : "›")  Message requests  \(model.messageRequests.count)"
@@ -216,7 +240,7 @@ import CaperCore
             requests.setAccessibilityIdentifier("message-requests")
             requests.setAccessibilityLabel("Message requests")
             requests.setAccessibilityValue("\(model.messageRequests.count) \(model.messageRequests.count == 1 ? "request" : "requests"), \(model.showingMessageRequests ? "Expanded" : "Collapsed")")
-            addRow(requests)
+            directs.append(requests)
             if model.showingMessageRequests {
                 for request in model.messageRequests {
                     let button = requestButtons[request.id] ?? NativeButton("") { [weak self, id = request.id] in
@@ -230,22 +254,29 @@ import CaperCore
                     button.setAccessibilityValue(model.selectedDirectMessageID == request.id ? "Selected" : "")
                     button.layer?.backgroundColor = model.selectedDirectMessageID == request.id ? NativeStyle.accent.withAlphaComponent(0.16).cgColor : NSColor.clear.cgColor
                     nextRequests[request.id] = button
-                    addRow(button)
+                    directs.append(button)
                 }
             }
         }
         if let account = model.account {
-            let button = NativeButton("\(account.displayName ?? account.username ?? "You")  · you") { [weak self] in
-                guard let self else { return }; Task { await self.model.openSelfDirectMessage() }
-            }
-            button.setAccessibilityIdentifier("dm-self"); button.alignment = .left
-            addRow(button)
+            let conversation = model.directMessages.first { $0.peer.id == account.id }
+            selfNotes.update(name: account.displayName ?? account.username ?? "You", avatarID: account.avatarId, picture: account.avatarPicture,
+                selected: conversation.map { model.selectedDirectMessageID == $0.id } == true, unread: conversation?.unread == true,
+                count: conversation?.unreadCount, muted: false, isSelf: true, busy: model.busy)
+            selfNotes.open.setAccessibilityIdentifier("dm-self")
+            directs.append(selfNotes, height: 28)
         }
+        var nextDirects: [String: NativeDirectRow] = [:]
         for conversation in model.visibleDirectMessages where conversation.peer.id != model.account?.id {
-            let row = NavigationRow(conversation.peer.displayName, symbol: "person", selected: model.selectedDirectMessageID == conversation.id,
-                unread: conversation.unread, muted: model.notificationsMuted(.direct(conversation.id)), open: { [weak self] in
-                    guard let self else { return }; Task { await self.model.select(directMessage: conversation) }
-                })
+            let row = directRows[conversation.id] ?? NativeDirectRow { [weak self, id = conversation.id] in
+                guard let self, let current = self.model.directMessages.first(where: { $0.id == id }) else { return }
+                Task { await self.model.select(directMessage: current) }
+            }
+            let muted = model.notificationsMuted(.direct(conversation.id))
+            row.update(name: conversation.peer.displayName, avatarID: conversation.peer.avatarId, picture: conversation.peer.avatarPicture,
+                selected: model.selectedDirectMessageID == conversation.id,
+                unread: conversation.unread && !muted && !model.chat.blockedAuthorIDs.contains(conversation.peer.id),
+                count: conversation.unreadCount, muted: muted, isSelf: false, busy: false)
             row.open.setAccessibilityIdentifier("dm-\(conversation.id)")
             row.options.setAccessibilityIdentifier("dm-options-\(conversation.id)")
             row.options.setAccessibilityLabel("Options for \(conversation.peer.displayName)")
@@ -268,30 +299,33 @@ import CaperCore
                 }
                 self.popup(items, at: row.options)
             }
-            addRow(row)
+            nextDirects[conversation.id] = row
+            directs.append(row, height: 28)
         }
-        let newMessage = NativeButton("+  New message") { [weak self] in self?.show?(.newDirectMessage) }
-        newMessage.setAccessibilityIdentifier("new-message"); newMessage.alignment = .left
-        addRow(newMessage)
+        directRows = nextDirects
+        directs.append(newMessage, height: 28)
         requestButtons = nextRequests
-        for child in rows.subviews where !rowOrder.contains(where: { $0 === child }) { child.removeFromSuperview() }
-        rows.setAccessibilityChildren(rowOrder)
         accountName.stringValue = model.account?.displayName ?? ""
         account.setAccessibilityLabel("Edit profile for \(model.account?.displayName ?? "your account")")
         if let current = model.account { accountAvatar.update(current) }
+        account.setAccessibilityValue(model.ownPresence == nil || model.ownPresence == .unknown
+            ? "Status unavailable" : model.ownPresence!.rawValue.capitalized)
+        accountPresence.backgroundColor = (model.ownPresence == .online ? NSColor(CaperTheme.green) : model.ownPresence == .idle
+            ? NSColor(srgbRed: 0.72, green: 0.60, blue: 0.35, alpha: 1) : NativeStyle.border).cgColor
         mute.image = NSImage(systemSymbolName: model.voice.muted ? "mic.slash" : "mic", accessibilityDescription: nil)
         mute.setAccessibilityLabel(model.voice.muted ? "Unmute microphone" : "Mute microphone")
         mute.setAccessibilityValue(model.voice.muted ? "Muted" : "On")
+        mute.contentTintColor = model.voice.muted ? NSColor(CaperTheme.voiceOff) : NativeStyle.muted
+        inputOptions.contentTintColor = mute.contentTintColor
         deafen.image = NSImage(systemSymbolName: model.voice.deafened ? "speaker.slash" : "headphones", accessibilityDescription: nil)
         deafen.setAccessibilityLabel(model.voice.deafened ? "Undeafen audio" : "Deafen audio")
         deafen.setAccessibilityValue(model.voice.deafened ? "Deafened" : "On")
+        deafen.contentTintColor = model.voice.deafened ? NSColor(CaperTheme.voiceOff) : NativeStyle.muted
+        outputOptions.contentTintColor = deafen.contentTintColor
         error.stringValue = model.voice.error ?? model.notificationError ?? model.error ?? model.directMessagesError ?? ""
+        if !error.stringValue.isEmpty { channels.append(error, height: 30) }
+        channels.endUpdates(); directs.endUpdates()
         needsLayout = true
-    }
-
-    private func addRow(_ view: NSView, height: CGFloat = 32) {
-        if view.superview == nil { rows.addSubview(view) }
-        rowOrder.append(view); rowHeights.append(height)
     }
 
     private func addChannel(_ channel: Channel, browsing: Bool = false) {
@@ -331,7 +365,7 @@ import CaperCore
             }
             self.popup(items, at: row.options)
         }
-        if browsing { addRow(row) }
+        if browsing { channels.append(row) }
         else {
             let card = channelCards[channel.id] ?? NativeVoiceCard(model: model, channelID: channel.id, heading: row, panels: voicePanels) { [weak self, id = channel.id] in
                 guard let self, let channel = self.model.detail?.channels.first(where: { $0.id == id }) else { return }
@@ -339,13 +373,12 @@ import CaperCore
             }
             card.changed = { [weak self] in self?.needsLayout = true }
             channelCards[channel.id] = card
-            addRow(card)
+            channels.append(card)
         }
     }
 
     private func updateExternalVoice(joined: [Channel]) {
         var next: [String: NativeVoiceCard] = [:]
-        externalOrder = []
         func add(id: String, title: String, open: @escaping () -> Void) {
             let button = externalCards[id]?.heading as? NativeButton ?? NativeButton(title, action: open)
             button.title = title; button.setAccessibilityLabel(title)
@@ -354,8 +387,7 @@ import CaperCore
             button.layer?.backgroundColor = NSColor.clear.cgColor
             let card = externalCards[id] ?? NativeVoiceCard(model: model, channelID: id, heading: button, panels: voicePanels, openChat: open)
             card.changed = { [weak self] in self?.needsLayout = true }
-            next[id] = card; externalOrder.append(card)
-            if card.superview == nil { sidebar.addSubview(card) }
+            next[id] = card; channels.append(card)
         }
         if VoicePresentation.active(model.voice), let context = model.voice.context,
            !LiveNow.hasRow(context.channelID, rows: joined.map(\.id)) {
@@ -407,6 +439,213 @@ import CaperCore
     }
 
     func controlTextDidChange(_ notification: Notification) { render() }
+}
+
+/// Stable children keep keyboard focus and each list's own native scroll origin.
+private final class NativeSidebarList: NSScrollView {
+    private let rows = NativeView()
+    private var items: [(NSView, CGFloat)] = []
+    init(_ label: String, identifier: String) {
+        super.init(frame: .zero)
+        documentView = rows
+        drawsBackground = false; hasVerticalScroller = true; autohidesScrollers = true
+        setAccessibilityLabel(label); setAccessibilityIdentifier(identifier)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func beginUpdates() { items = [] }
+    func append(_ view: NSView, height: CGFloat = 32) {
+        items.append((view, height))
+        if view.superview !== rows { rows.addSubview(view) }
+    }
+    func endUpdates() {
+        for child in rows.subviews where !items.contains(where: { $0.0 === child }) { child.removeFromSuperview() }
+        rows.setAccessibilityChildren(items.map { $0.0 })
+        needsLayout = true
+    }
+    override func layout() { super.layout(); layoutRows() }
+    func layoutRows() {
+        let origin = contentView.bounds.origin
+        let width = max(0, contentSize.width - 32)
+        var y: CGFloat = 6
+        for (child, fallback) in items {
+            let height = (child as? NativeVoiceCard)?.height(width: width) ?? fallback
+            child.frame = NSRect(x: 16, y: y, width: width, height: height)
+            y += height + 3
+        }
+        let size = NSSize(width: contentSize.width, height: max(contentSize.height, y + 8))
+        if rows.frame.size != size { rows.setFrameSize(size) }
+        contentView.scroll(to: NSPoint(x: 0, y: min(max(0, origin.y), max(0, size.height - contentSize.height))))
+        reflectScrolledClipView(contentView)
+    }
+}
+
+/// A single rotating chevron, not alternating text glyphs. Only its transform
+/// animates, and Reduce Motion removes that animation.
+private final class NativeSidebarHeading: NativeView {
+    private let title: NSView
+    private let actions: [NativeButton]
+    private let hoverActions: Bool
+    private let chevron: CAShapeLayer?
+    private var expanded = true
+    private var hovered = false
+    private var focusedActions: Set<ObjectIdentifier> = []
+    private var tracking: NSTrackingArea?
+    init(title: NSView, actions: [NativeButton], disclosure: Bool = false, hoverActions: Bool = false) {
+        self.title = title; self.actions = actions; self.hoverActions = hoverActions
+        chevron = disclosure ? CAShapeLayer() : nil
+        super.init()
+        addSubview(title)
+        for action in actions {
+            addSubview(action)
+            action.focusChanged = { [weak self, weak action] focused in
+                guard let self, let action else { return }
+                if focused { self.focusedActions.insert(ObjectIdentifier(action)) }
+                else { self.focusedActions.remove(ObjectIdentifier(action)) }
+                self.updateActions()
+            }
+        }
+        if let chevron {
+            chevron.fillColor = nil; chevron.strokeColor = NativeStyle.muted.cgColor
+            chevron.lineWidth = 1.5; chevron.lineCap = .round; chevron.lineJoin = .round
+            let path = CGMutablePath(); path.move(to: CGPoint(x: 2, y: 4)); path.addLine(to: CGPoint(x: 6, y: 8)); path.addLine(to: CGPoint(x: 10, y: 4))
+            chevron.path = path; layer?.addSublayer(chevron)
+        }
+        updateActions()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func setExpanded(_ value: Bool) {
+        guard value != expanded else { return }
+        let from = expanded ? 0.0 : -Double.pi / 2
+        expanded = value
+        let to = value ? 0.0 : -Double.pi / 2
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        chevron?.setAffineTransform(CGAffineTransform(rotationAngle: to))
+        CATransaction.commit()
+        if window != nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let animation = CABasicAnimation(keyPath: "transform.rotation.z")
+            animation.fromValue = from; animation.toValue = to; animation.duration = 0.15
+            animation.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+            chevron?.add(animation, forKey: "disclosure")
+        }
+    }
+    override func layout() {
+        super.layout()
+        var right = bounds.width
+        for action in actions.reversed() where !action.isHidden {
+            right -= 28
+            action.frame = NSRect(x: right, y: (bounds.height - 28) / 2, width: 28, height: 28)
+            right -= 2
+        }
+        let left: CGFloat = chevron == nil ? 0 : 20
+        title.frame = NSRect(x: left, y: title is NSButton ? 0 : (bounds.height - 18) / 2,
+            width: max(0, right - left), height: title is NSButton ? bounds.height : 18)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        chevron?.bounds = NSRect(x: 0, y: 0, width: 12, height: 12)
+        chevron?.position = CGPoint(x: 6, y: bounds.midY)
+        CATransaction.commit()
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        if hit === self, title is NSButton { return title }
+        if hoverActions, actions.contains(where: { $0 === hit }), !hovered && window?.firstResponder !== hit { return self }
+        return hit
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+        addTrackingArea(area); tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true; updateActions() }
+    override func mouseExited(with event: NSEvent) { hovered = false; updateActions() }
+    private func updateActions() {
+        for action in actions { action.layer?.opacity = !hoverActions || hovered || focusedActions.contains(ObjectIdentifier(action)) ? 1 : 0 }
+    }
+}
+
+/// Avatars, badges and the self marker are decorative; one native button owns
+/// their hit target and accessible name. Options stay a separate focus stop.
+private final class NativeDirectRow: NativeView {
+    let open: NativeButton
+    let options = NativeButton.icon("Options", symbol: "ellipsis") {}
+    var openMenu: (() -> Void)?
+    private let avatar = NativeAvatar()
+    private let name = NativeStyle.label("", size: 13)
+    private let you = NativeStyle.label("you", size: 10, bold: true)
+    private let badge = NativeStyle.label("", size: 10, bold: true)
+    private let bell = NSImageView()
+    private var selected = false
+    private var hovered = false
+    private var optionsFocused = false
+    private var tracking: NSTrackingArea?
+
+    init(action: @escaping () -> Void) {
+        open = NativeButton("", action: action)
+        super.init()
+        layer?.cornerRadius = 6
+        open.layer?.backgroundColor = NSColor.clear.cgColor
+        [open, avatar, name, you, badge, bell, options].forEach { addSubview($0) }
+        [name, you, badge, bell].forEach { $0.setAccessibilityElement(false) }
+        you.textColor = NativeStyle.muted
+        badge.alignment = .center; badge.wantsLayer = true
+        badge.layer?.backgroundColor = NativeStyle.accent.cgColor; badge.layer?.cornerRadius = 8
+        bell.image = NSImage(systemSymbolName: "bell.slash", accessibilityDescription: nil)
+        bell.contentTintColor = NativeStyle.muted
+        options.target = self; options.action = #selector(showMenu)
+        options.focusChanged = { [weak self] focused in self?.optionsFocused = focused; self?.updateHover() }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func showMenu() { openMenu?() }
+    func update(name: String, avatarID: Int?, picture: CaperPicture?, selected: Bool, unread: Bool,
+                count: Int?, muted: Bool, isSelf: Bool, busy: Bool) {
+        self.selected = selected
+        self.name.stringValue = name; self.name.font = NativeStyle.font(13, bold: unread)
+        self.name.textColor = selected || unread ? NativeStyle.text : NativeStyle.muted
+        avatar.update(name: name, avatarId: avatarID, picture: picture)
+        you.isHidden = !isSelf; options.isHidden = isSelf; bell.isHidden = !muted
+        badge.isHidden = !unread
+        let unreadCount = count ?? 0
+        badge.stringValue = unreadCount > 0 ? (unreadCount > 99 ? "99+" : String(unreadCount)) : ""
+        open.isEnabled = !busy
+        open.setAccessibilityLabel(name + (isSelf ? ", you" : ""))
+        let unreadLabel = unread ? (unreadCount > 0 ? "\(unreadCount) unread messages" : "Unread activity") : ""
+        open.setAccessibilityValue([selected ? "Selected" : "", unreadLabel, muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", "))
+        alphaValue = muted ? 0.55 : 1
+        updateHover(); needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        let end = bounds.width - (options.isHidden ? 6 : 32)
+        open.frame = NSRect(x: 0, y: 0, width: max(0, end), height: bounds.height)
+        avatar.frame = NSRect(x: 9, y: (bounds.height - 20) / 2, width: 20, height: 20)
+        let badgeWidth: CGFloat = badge.isHidden ? 0 : badge.stringValue.isEmpty ? 8 : (badge.cell?.cellSize.width ?? 0) + 12
+        badge.frame = NSRect(x: end - badgeWidth, y: (bounds.height - (badge.stringValue.isEmpty ? 8 : 18)) / 2,
+            width: badgeWidth, height: badge.stringValue.isEmpty ? 8 : 18)
+        let youWidth: CGFloat = you.isHidden ? 0 : 23
+        let bellWidth: CGFloat = bell.isHidden ? 0 : 18
+        let textWidth = max(0, end - 40 - badgeWidth - youWidth - bellWidth - 4)
+        name.frame = NSRect(x: 38, y: (bounds.height - 18) / 2, width: min(textWidth, name.cell?.cellSize.width ?? 0), height: 18)
+        you.frame = NSRect(x: name.frame.maxX + 4, y: (bounds.height - 16) / 2, width: youWidth, height: 16)
+        bell.frame = NSRect(x: name.frame.maxX + 4, y: (bounds.height - 14) / 2, width: bellWidth > 0 ? 14 : 0, height: 14)
+        options.frame = NSRect(x: bounds.width - 28, y: 0, width: 28, height: bounds.height)
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        return hit === options && (hovered || window?.firstResponder === options) ? options : open
+    }
+    override func rightMouseDown(with event: NSEvent) { if !options.isHidden { openMenu?() } }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+        addTrackingArea(area); tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true; updateHover() }
+    override func mouseExited(with event: NSEvent) { hovered = false; updateHover() }
+    private func updateHover() {
+        layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : hovered ? NSColor.white.withAlphaComponent(0.06) : .clear).cgColor
+        options.layer?.opacity = hovered || optionsFocused ? 1 : 0
+    }
 }
 
 /// The unread count belongs to the same action, not a second focus stop.

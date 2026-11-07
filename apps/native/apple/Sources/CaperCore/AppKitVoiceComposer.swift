@@ -104,7 +104,11 @@ import SwiftUI
             if let target = target() {
                 let recording = VoiceMessageRecorder.shared.isRecording(target.owner)
                 if bar {
-                    if recording { VoiceRecordingBar(target: target).modifier(Entrance.anchored) }
+                    if recording {
+                        GeometryReader { geometry in
+                            VoiceRecordingBar(target: target, compact: geometry.size.width < 300)
+                        }.modifier(Entrance.anchored)
+                    }
                 } else {
                     // Keep the microphone's recording-lifetime modifier mounted
                     // while the bar covers it, as VoiceComposerCover does.

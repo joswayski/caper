@@ -43,6 +43,16 @@ import XCTest
             XCTAssertTrue(handle.accessibilityPerformIncrement())
             XCTAssertEqual(committed.last, minimum)
             XCTAssertEqual(handle.accessibilityValue() as? String, "\(Int(minimum)) pixels")
+            let count = committed.count
+            handle.update(width: 370, maximum: 170.5, minimum: 170.5)
+            XCTAssertEqual(handle.accessibilityValue() as? String, "170 pixels")
+            XCTAssertEqual(handle.accessibilityMinValue() as? Double, 170.5)
+            XCTAssertEqual(handle.accessibilityMaxValue() as? Double, 170.5)
+            XCTAssertEqual(committed.count, count, "A compact thread clamp must not write a new preference")
+            try key(123)
+            XCTAssertEqual(committed.last, 170.5, "A singleton interval cannot grow past its pane")
+            handle.update(width: 370, maximum: maximum, minimum: minimum)
+            XCTAssertEqual(handle.accessibilityValue() as? String, "370 pixels", "Widening restores the preferred width")
         }
     }
 

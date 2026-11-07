@@ -77,7 +77,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             // Deleting or inserting a predecessor can change grouping even
             // when this message itself has not changed.
             if entries[oldIndex] != entry || oldPredecessor != predecessor || self.reactionErrors[id] != reactionErrors[id]
-                || self.pinErrors[id] != pinErrors[id] || self.pendingPins.contains(id) != pendingPins.contains(id) { invalid.insert(id) }
+                || self.pinErrors[id] != pinErrors[id] || self.pendingPins.contains(id) != pendingPins.contains(id)
+                || self.canInteract != canInteract { invalid.insert(id) }
         }
         if self.pending != pending, let pending { invalid.insert("pending-\(pending.id)") }
         self.pending = pending
@@ -192,8 +193,10 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         // Measuring changes the estimated visible interval. Converge by measuring
         // only newly exposed rows, never the rest of the history at startup.
         var needed = geometry.visibleRange(offset: offset(), height: viewport, overscan: 100)
-        while needed.contains(where: { !geometry.isMeasured($0) }) {
-            for index in needed where !geometry.isMeasured(index) {
+        // A recreated cell still needs its text/container and leaf geometry,
+        // even when the virtual timeline remembers its previous outer height.
+        while needed.contains(where: { !geometry.isMeasured($0) || rows[ids[$0]] == nil }) {
+            for index in needed where !geometry.isMeasured(index) || rows[ids[index]] == nil {
                 let row = cell(at: index)
                 geometry.measure(index, height: row.measuredHeight(width: contentSize.width))
             }
@@ -326,8 +329,12 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         self.messageAction?(message, .dismissPin, self)
     }
     private var pinPending = false
-    private var reactionFailureHeight: CGFloat { reactionFailure.isHidden ? 0 : 66 }
-    private var pinFailureHeight: CGFloat { pinFailure.isHidden ? 0 : 66 }
+    private var layoutWidth: CGFloat = 0
+    private var compact: Bool { layoutWidth < 260 }
+    private var textInset: CGFloat { compact ? 20 : 68 }
+    private var stackedRecovery: Bool { layoutWidth - textInset - 20 < 132 }
+    private var reactionFailureHeight: CGFloat { reactionFailure.isHidden ? 0 : stackedRecovery ? 94 : 66 }
+    private var pinFailureHeight: CGFloat { pinFailure.isHidden ? 0 : stackedRecovery ? 94 : 66 }
     private var failureHeight: CGFloat { reactionFailureHeight + pinFailureHeight }
     private lazy var authorAction: NativeButton = NativeButton("") { [weak self] in
         guard let self, let message = self.message, !message.author.isGuest else { return }
@@ -370,7 +377,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         // An attachment-only grouped row still needs room above its gallery
         // for hover actions, as in the shipping Mac timeline.
         let groupedTop: CGFloat = attachments != nil && body.string.isEmpty ? 36 : (edited.isHidden ? 4 : 24)
-        return dayHeight + pinHeight + quoteHeight + (grouped ? groupedTop : 32)
+        return dayHeight + pinHeight + quoteHeight + (grouped ? groupedTop : compact ? 70 : 32)
     }
 
     init() {
@@ -618,9 +625,10 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
 
     func measuredHeight(width: CGFloat) -> CGFloat {
+        layoutWidth = width
         if pending != nil { return attachments?.height(for: width) ?? 0 }
         if blockedRun != nil { return dayHeight + 48 }
-        let textWidth = max(40, width - 88)
+        let textWidth = max(40, width - textInset - 20)
         body.textContainer?.containerSize = NSSize(width: textWidth, height: .greatestFiniteMagnitude)
         let text = body.attributedString()
         let coreTextHeight = NativePresentation.textHeight(text, width: textWidth)
@@ -629,8 +637,24 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         attachmentHeight = attachments?.height(for: textWidth) ?? 0
         quoteHeight = quote?.height(for: max(40, width - 40)) ?? 0
         let textHeight = body.string.isEmpty && attachments != nil ? 0 : max(20, max(coreTextHeight, ceil(nativeHeight)))
-        return textTop + textHeight + attachmentHeight + (reactions.isEmpty ? 0 : 32) + failureHeight + threadHeight + 12
+        let height = textTop + textHeight + attachmentHeight + reactionHeight + failureHeight + threadHeight + 12
+        let controlsWidth = min(controls.preferredWidth, max(30, width - 30))
+        // A wrapped hover bar must not steal the next grouped row's hit area.
+        return controlsWidth < controls.preferredWidth
+            ? max(height, dayHeight + pinHeight + quoteHeight + controls.height(for: controlsWidth) + 11) : height
     }
+
+    private var reactionFrames: [NSRect] {
+        let available = max(40, layoutWidth - textInset - 20)
+        var x: CGFloat = 0, y: CGFloat = 0
+        return reactions.map { reaction in
+            let width = min(available, max(54, reaction.intrinsicContentSize.width + 12))
+            if x > 0, x + width > available { x = 0; y += 32 }
+            defer { x += width + 6 }
+            return NSRect(x: x, y: y, width: width, height: 28)
+        }
+    }
+    private var reactionHeight: CGFloat { reactionFrames.last.map { $0.maxY + 4 } ?? 0 }
 
     override func layout() {
         super.layout()
@@ -652,39 +676,38 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             blockedToggle.frame = NSRect(x: 18, y: inset + 4, width: bounds.width - 36, height: 36)
             return
         }
-        pinnedBy.frame = NSRect(x: 68, y: inset, width: max(40, bounds.width - 88), height: pinHeight)
+        let textWidth = max(40, bounds.width - textInset - 20)
+        pinnedBy.frame = NSRect(x: textInset, y: inset, width: textWidth, height: pinHeight)
         quote?.frame = NSRect(x: 20, y: inset + pinHeight, width: max(40, bounds.width - 40), height: quoteHeight)
         let messageTop = inset + pinHeight + quoteHeight
         avatar.frame = NSRect(x: 20, y: messageTop + 12, width: 36, height: 36)
         // Intrinsic size describes the alignment rect, excluding NSTextField's
         // cell insets. Manual frames need cellSize or even short names truncate.
-        let timeWidth = ceil(timestamp.cell?.cellSize.width ?? timestamp.intrinsicContentSize.width)
         let editedWidth: CGFloat = edited.isHidden ? 0 : 48
-        let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - timeWidth - editedWidth - 7))
+        let timeWidth = min(ceil(timestamp.cell?.cellSize.width ?? timestamp.intrinsicContentSize.width), compact ? max(0, textWidth - editedWidth - 5) : .greatestFiniteMagnitude)
+        let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - (compact ? 0 : timeWidth + editedWidth + 7)))
         author.frame = NSRect(x: 68, y: messageTop + 10, width: authorWidth, height: 20)
-        timestamp.frame = NSRect(x: author.frame.maxX + 7, y: messageTop + 13, width: timeWidth, height: 17)
+        timestamp.frame = NSRect(x: compact ? textInset : author.frame.maxX + 7, y: messageTop + (compact ? 50 : 13), width: timeWidth, height: 17)
         authorAction.frame = author.frame
         avatarAction.frame = avatar.frame
-        edited.frame = NSRect(x: grouped ? 68 : timestamp.frame.maxX + 5, y: messageTop + (grouped ? 2 : 10), width: editedWidth, height: 20)
-        controls.frame = NSRect(x: max(0, bounds.width - controls.preferredWidth - 15), y: messageTop + 3,
-            width: controls.preferredWidth, height: 30)
-        let footer = attachmentHeight + (reactions.isEmpty ? 0.0 : 32) + failureHeight + threadHeight
+        edited.frame = NSRect(x: grouped ? textInset : timestamp.frame.maxX + 5, y: messageTop + (grouped ? 2 : compact ? 48 : 10), width: editedWidth, height: 20)
+        let controlsWidth = min(controls.preferredWidth, max(30, bounds.width - 30))
+        controls.frame = NSRect(x: max(0, bounds.width - controlsWidth - 15), y: messageTop + 3,
+            width: controlsWidth, height: controls.height(for: controlsWidth))
+        let footer = attachmentHeight + reactionHeight + failureHeight + threadHeight
         let top = textTop
-        body.frame = NSRect(x: 68, y: top, width: max(40, bounds.width - 88), height: max(0, bounds.height - top - footer - 12))
-        attachments?.frame = NSRect(x: 68, y: body.frame.maxY, width: max(40, bounds.width - 88), height: attachmentHeight)
-        var x: CGFloat = 68
-        for reaction in reactions {
-            let width = max(54, reaction.intrinsicContentSize.width + 12)
-            reaction.frame = NSRect(x: x, y: bounds.height - failureHeight - threadHeight - 40, width: width, height: 28)
-            x += width + 6
+        body.frame = NSRect(x: textInset, y: top, width: textWidth, height: max(0, bounds.height - top - footer - 12))
+        attachments?.frame = NSRect(x: textInset, y: body.frame.maxY, width: textWidth, height: attachmentHeight)
+        for (reaction, frame) in zip(reactions, reactionFrames) {
+            reaction.frame = frame.offsetBy(dx: textInset, dy: bounds.height - failureHeight - threadHeight - reactionHeight - 8)
         }
-        thread.frame = NSRect(x: 68, y: bounds.height - threadHeight - 8, width: max(40, bounds.width - 88), height: 28)
-        reactionFailure.frame = NSRect(x: 68, y: bounds.height - failureHeight - threadHeight - 8, width: max(40, bounds.width - 88), height: 30)
-        retryReaction.frame = NSRect(x: 68, y: reactionFailure.frame.maxY + 4, width: 58, height: 24)
-        dismissReaction.frame = NSRect(x: 132, y: retryReaction.frame.minY, width: 68, height: 24)
-        pinFailure.frame = NSRect(x: 68, y: reactionFailure.frame.minY + reactionFailureHeight, width: max(40, bounds.width - 88), height: 30)
-        retryPin.frame = NSRect(x: 68, y: pinFailure.frame.maxY + 4, width: 58, height: 24)
-        dismissPin.frame = NSRect(x: 132, y: retryPin.frame.minY, width: 68, height: 24)
+        thread.frame = NSRect(x: textInset, y: bounds.height - threadHeight - 8, width: textWidth, height: 28)
+        reactionFailure.frame = NSRect(x: textInset, y: bounds.height - failureHeight - threadHeight - 8, width: textWidth, height: 30)
+        retryReaction.frame = NSRect(x: textInset, y: reactionFailure.frame.maxY + 4, width: 58, height: 24)
+        dismissReaction.frame = NSRect(x: stackedRecovery ? textInset : textInset + 64, y: retryReaction.frame.minY + (stackedRecovery ? 28 : 0), width: 68, height: 24)
+        pinFailure.frame = NSRect(x: textInset, y: reactionFailure.frame.minY + reactionFailureHeight, width: textWidth, height: 30)
+        retryPin.frame = NSRect(x: textInset, y: pinFailure.frame.maxY + 4, width: 58, height: 24)
+        dismissPin.frame = NSRect(x: stackedRecovery ? textInset : textInset + 64, y: retryPin.frame.minY + (stackedRecovery ? 28 : 0), width: 68, height: 24)
     }
 
     override func updateTrackingAreas() {
@@ -796,6 +819,11 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     // Leave room between their hit regions, not only between their artwork.
     private let buttonPitch: CGFloat = 26
     var preferredWidth: CGFloat { CGFloat(subviews.filter { !$0.isHidden }.count - 1) * buttonPitch + 30 }
+    private func columns(for width: CGFloat) -> Int { max(1, Int((width - 30) / buttonPitch) + 1) }
+    func height(for width: CGFloat) -> CGFloat {
+        let columns = columns(for: width), count = subviews.filter { !$0.isHidden }.count
+        return CGFloat(max(0, (count - 1) / columns)) * buttonPitch + 30
+    }
 
     init() {
         super.init(NSColor(CaperTheme.surface))
@@ -845,8 +873,9 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
     override func layout() {
         super.layout()
+        let columns = columns(for: bounds.width)
         for (index, button) in subviews.filter({ !$0.isHidden }).enumerated() {
-            button.frame = NSRect(x: 3 + CGFloat(index) * buttonPitch, y: 3, width: 24, height: 24)
+            button.frame = NSRect(x: 3 + CGFloat(index % columns) * buttonPitch, y: 3 + CGFloat(index / columns) * buttonPitch, width: 24, height: 24)
         }
     }
     override func hitTest(_ point: NSPoint) -> NSView? { alphaValue == 0 ? nil : super.hitTest(point) }

@@ -14,6 +14,7 @@ import CaperCore
     private let body = NativeView()
     private let state = NativeStyle.label("", size: 11, bold: true)
     private let clock = NativeStyle.label("", size: 11)
+    private let roomOverflow = NativeStyle.label("", size: 10, bold: true)
     private var timer: Timer?
     private var availability: Task<Void, Never>?
     private var startedAt: Double?
@@ -48,7 +49,11 @@ import CaperCore
         self.panels = panels; self.openChat = openChat
         super.init()
         addSubview(heading); addSubview(body); addSubview(join)
-        [state, clock, mute, deafen, leave].forEach { body.addSubview($0) }
+        [state, clock, roomOverflow, mute, deafen, leave].forEach { body.addSubview($0) }
+        roomOverflow.alignment = .center; roomOverflow.wantsLayer = true
+        roomOverflow.layer?.backgroundColor = NSColor(CaperTheme.raised).cgColor
+        roomOverflow.layer?.cornerRadius = 10
+        roomOverflow.setAccessibilityIdentifier("room-faces-more")
         layer?.cornerRadius = 10
         setAccessibilityElement(true); setAccessibilityRole(.group)
         clock.textColor = NSColor(CaperTheme.voiceSessionGreen)
@@ -159,6 +164,9 @@ import CaperCore
     private func updateFaces() {
         var next: [String: NativeVoiceFace] = [:]
         faceOrder = []
+        roomOverflow.isHidden = own || occupants.count <= 3
+        roomOverflow.stringValue = "+\(max(0, occupants.count - 3))"
+        roomOverflow.setAccessibilityLabel("\(max(0, occupants.count - 3)) more in the room")
         let columns = LiveNow.columns(width: Double(body.bounds.width), pitch: 44)
         if own {
             let split = LiveNow.fold(people, slots: LiveNow.faceSlots(columns: columns))
@@ -181,11 +189,15 @@ import CaperCore
         }
         for face in faces.values where !next.values.contains(where: { $0 === face }) { face.removeFromSuperview() }
         faces = next
+        let overflowWidth: CGFloat = roomOverflow.isHidden ? 0 : (roomOverflow.cell?.cellSize.width ?? 0) + 12
+        let roomWidth = max(0, bounds.width - 84 - 12 - 8)
+        let roomPitch = min(26, max(0, (roomWidth - 32 - (overflowWidth > 0 ? overflowWidth + 4 : 0)) / CGFloat(max(1, faceOrder.count - 1))))
         for (index, face) in faceOrder.enumerated() {
             if face.superview == nil { body.addSubview(face) }
             face.frame = own ? NSRect(x: CGFloat(index % columns) * 44, y: 24 + CGFloat(index / columns) * 44, width: 44, height: 44)
-                : NSRect(x: CGFloat(index) * 26, y: 28, width: 32, height: 32)
+                : NSRect(x: CGFloat(index) * roomPitch, y: 28, width: 32, height: 32)
         }
+        roomOverflow.frame = NSRect(x: CGFloat(max(0, faceOrder.count - 1)) * roomPitch + 36, y: 34, width: overflowWidth, height: 20)
     }
 
     private func makeFace(id: String?) -> NativeVoiceFace {

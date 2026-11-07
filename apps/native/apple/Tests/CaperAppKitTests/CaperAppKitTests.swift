@@ -46,6 +46,20 @@ import XCTest
         XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed)
     }
 
+    /// Only scroll the section that owns the control; never resize it to make
+    /// an existing action reachable or rely on XCTest clicking a clipped row.
+    private func revealSidebar(_ element: XCUIElement, in scroll: XCUIElement) {
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        XCTAssertTrue(element.waitForExistence(timeout: 5))
+        for _ in 0..<16 {
+            if element.isHittable && scroll.frame.contains(element.frame) { break }
+            let step = min(CGFloat(100), scroll.frame.height / 2)
+            scroll.scroll(byDeltaX: 0, deltaY: element.frame.minY < scroll.frame.minY ? step : -step)
+        }
+        XCTAssertTrue(element.isHittable)
+        XCTAssertTrue(scroll.frame.contains(element.frame), "The requested sidebar control must be fully inside its own scrollport")
+    }
+
     private nonisolated static func control(_ body: [String: Any]) async throws {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
         request.httpMethod = "POST"
@@ -62,6 +76,19 @@ import XCTest
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    /// Seed only API routes actually implemented by the disposable loopback
+    /// fixture. In particular, it cannot manufacture an arbitrary list of DMs.
+    private nonisolated static func fixturePOST(_ path: String, body: [String: Any], status: Int = 200) async throws -> [String: Any] {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3001\(path)")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, status)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
@@ -1506,6 +1533,10 @@ import XCTest
         let send = app.buttons["thread-send"]
         let back = app.buttons["close-thread"]
         let broadcast = app.checkBoxes["thread-broadcast"]
+        let window = app.windows["Caper — AppKit development (not feature complete)"]
+        let members = app.scrollViews["member-list"]
+        let membersToggle = app.buttons["toggle-members"]
+        let divider = app.sliders["thread-panel-resize"]
         let summary = channel.buttons["thread-summary-\(rootID)"]
         let channelDraft = "TEST FIXTURE — keep the channel draft"
         let threadDraft = "TEST FIXTURE — private reply to the first root"
@@ -1544,16 +1575,95 @@ import XCTest
         XCTAssertEqual(channelMicrophone.label, "Dictate")
         XCTAssertEqual(threadMicrophone.label, "Dictate")
         XCTAssertTrue(channelMicrophone.isHittable); XCTAssertTrue(threadMicrophone.isHittable)
+        // The two controllers intentionally share attach/emoji/GIF identifiers.
+        // Scope thread controls to its real AX pane, and require exactly one
+        // channel control inside the channel's horizontal bounds, not firstMatch.
+        func channelAccessory(_ identifier: String) throws -> XCUIElement {
+            let matches = app.buttons.matching(identifier: identifier)
+            XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 5))
+            let candidates = matches.allElementsBoundByIndex.filter {
+                $0.frame.minX >= channel.frame.minX && $0.frame.maxX <= channel.frame.maxX
+            }
+            XCTAssertEqual(candidates.count, 1, "Exactly one \(identifier) must fit in the channel pane")
+            return try XCTUnwrap(candidates.first)
+        }
+        func assertComposerGeometry(inThread: Bool) throws {
+            let input = inThread ? editor : composer
+            let bounds = inThread ? pane.frame : CGRect(x: channel.frame.minX, y: window.frame.minY,
+                width: channel.frame.width, height: window.frame.height)
+            // A long draft's NSTextView can exceed its clipped viewport. Test
+            // the native scrollport rather than confusing hidden text with overlap.
+            let viewports = app.scrollViews.containing(.textView, identifier: input.identifier)
+            XCTAssertEqual(viewports.count, 1)
+            let viewport = viewports.firstMatch
+            XCTAssertTrue(viewport.exists); XCTAssertTrue(input.isHittable)
+            var controls = [viewport]
+            for identifier in ["attach-files-button", "composer-gif", "composer-emoji"] {
+                let control: XCUIElement
+                if inThread { control = pane.buttons[identifier] }
+                else { control = try channelAccessory(identifier) }
+                XCTAssertTrue(control.waitForExistence(timeout: 5))
+                controls.append(control)
+                control.hover()
+            }
+            let microphone = inThread ? threadMicrophone : channelMicrophone
+            let submit = inThread ? send : app.buttons["send-message"]
+            controls += [microphone, submit]
+            if inThread {
+                controls.append(broadcast); broadcast.hover()
+                let cancelReply = pane.buttons["Cancel reply"]
+                if cancelReply.exists { controls.append(cancelReply); cancelReply.hover() }
+            }
+            microphone.hover(); submit.hover()
+            for (index, control) in controls.enumerated() {
+                XCTAssertTrue(control.exists)
+                XCTAssertGreaterThan(control.frame.width, 0); XCTAssertGreaterThan(control.frame.height, 0)
+                XCTAssertTrue(bounds.contains(control.frame), "\(control.identifier) must stay within its own composer pane")
+                for neighbor in controls.dropFirst(index + 1) {
+                    let overlap = control.frame.intersection(neighbor.frame)
+                    XCTAssertTrue(overlap.isNull || overlap.isEmpty, "\(control.identifier) must not overlap \(neighbor.identifier)")
+                }
+            }
+            if bounds.width < 250 {
+                for control in controls.dropFirst().prefix(3) {
+                    XCTAssertLessThanOrEqual(control.frame.maxY, microphone.frame.minY,
+                        "Attach, GIF and emoji must wrap above microphone/send in the very narrow split")
+                }
+            }
+        }
+        func assertSplit(threadWidth: CGFloat, showingMembers: Bool) throws {
+            XCTAssertTrue(channel.exists); XCTAssertTrue(composer.exists); XCTAssertTrue(divider.exists)
+            XCTAssertEqual(members.exists, showingMembers)
+            XCTAssertEqual(app.sliders["members-panel-resize"].exists, showingMembers)
+            XCTAssertEqual(timeline.frame.width, threadWidth, accuracy: 1)
+            XCTAssertEqual(pane.frame.width, threadWidth, accuracy: 1)
+            XCTAssertEqual(channel.frame.maxX, pane.frame.minX, accuracy: 1)
+            XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX)
+            let available = window.frame.maxX - channel.frame.minX - (showingMembers ? members.frame.width : 0)
+            let maximum = min(CGFloat(600), available - min(CGFloat(300), available / 2))
+            XCTAssertEqual(channel.frame.width + pane.frame.width, available, accuracy: 1)
+            XCTAssertGreaterThanOrEqual(channel.frame.width, min(CGFloat(300), available / 2) - 1)
+            XCTAssertGreaterThanOrEqual(pane.frame.width, min(CGFloat(300), maximum) - 1)
+            XCTAssertLessThanOrEqual(pane.frame.width, maximum + 1)
+            if showingMembers {
+                XCTAssertEqual(members.frame.width, 220, accuracy: 1)
+                XCTAssertEqual(pane.frame.maxX, members.frame.minX, accuracy: 1)
+                XCTAssertLessThanOrEqual(timeline.frame.maxX, members.frame.minX)
+                XCTAssertEqual(members.frame.maxX, window.frame.maxX, accuracy: 1)
+                app.buttons["Search members"].hover(); app.buttons["Close member list"].hover()
+            } else { XCTAssertEqual(pane.frame.maxX, window.frame.maxX, accuracy: 1) }
+            try assertComposerGeometry(inThread: false); try assertComposerGeometry(inThread: true)
+            app.buttons["channel-pins"].hover(); membersToggle.hover(); divider.hover(); back.hover()
+        }
         // Inspect the native entrypoints without requesting microphone access
         // or recording the Mac's surroundings during fixture UI flows.
-        app.buttons["composer-emoji"].hover(); channelMicrophone.hover()
+        try channelAccessory("composer-emoji").hover(); channelMicrophone.hover()
         app.buttons["send-message"].hover(); threadMicrophone.hover(); send.hover()
         XCTAssertLessThanOrEqual(channelMicrophone.frame.maxX, app.buttons["send-message"].frame.minX)
         XCTAssertLessThanOrEqual(threadMicrophone.frame.maxX, send.frame.minX)
         XCTAssertEqual(composer.value as? String, channelDraft)
         capture("dictation entrypoints and independent composers wide", app: app)
         XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX, "Wide windows show both timelines without overlap")
-        let divider = app.sliders["thread-panel-resize"]
         XCTAssertTrue(divider.exists); XCTAssertEqual(divider.value as? String, "340 pixels")
         app.buttons["channel-pins"].hover(); back.hover(); divider.hover()
         let handle = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
@@ -1565,8 +1675,9 @@ import XCTest
         XCTAssertEqual(timeline.frame.width, 300, accuracy: 1)
         capture("thread minimum width and focused handle", app: app)
         divider.typeKey(.end, modifierFlags: [])
-        XCTAssertEqual(timeline.frame.width, 600, accuracy: 1)
+        XCTAssertEqual(timeline.frame.width, 420, accuracy: 1, "1280 minus 340 navigation and 220 members leaves a 720pt split")
         XCTAssertGreaterThanOrEqual(channel.frame.width, 300)
+        try assertSplit(threadWidth: 420, showingMembers: true)
         capture("thread maximum width and adjacent channel", app: app)
         divider.doubleClick()
         XCTAssertEqual(timeline.frame.width, 340, accuracy: 1)
@@ -1590,33 +1701,90 @@ import XCTest
 
         let sidebar = app.sliders["channel-sidebar-resize"]
         sidebar.click(); sidebar.typeKey(.end, modifierFlags: [])
-        XCTAssertFalse(channel.exists, "Widening navigation can fold the channel without changing window size")
-        XCTAssertFalse(divider.exists, "A folded thread has no width control")
+        XCTAssertTrue(channel.exists, "Above 760, even maximum navigation must keep both conversations accessible")
+        XCTAssertTrue(divider.exists, "Sidebar width never folds the thread split")
         XCTAssertTrue(editor.isHittable); XCTAssertEqual(editor.value as? String, threadDraft)
-        XCTAssertFalse(app.sliders["members-panel-resize"].exists)
-        capture("wide sidebar folds channel beside thread", app: app)
+        XCTAssertTrue(app.sliders["members-panel-resize"].exists)
+        try assertSplit(threadWidth: 280, showingMembers: true)
+        XCTAssertEqual(composer.value as? String, channelDraft)
+        capture("1280 maximum sidebar keeps two bounded 280pt conversation panes", app: app)
         sidebar.typeKey(.home, modifierFlags: [])
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
-        XCTAssertEqual(timeline.frame.width, 370, accuracy: 1, "Folding never replaces the preferred thread width")
+        XCTAssertEqual(timeline.frame.width, 370, accuracy: 1, "A temporary layout clamp never replaces the preferred thread width")
         XCTAssertEqual(composer.value as? String, channelDraft)
         XCTAssertEqual(editor.value as? String, threadDraft)
         XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX)
+        try assertSplit(threadWidth: 370, showingMembers: true)
         sidebar.doubleClick()
 
-        resize(app, width: 900)
-        XCTAssertTrue(editor.isHittable)
-        XCTAssertFalse(composer.exists); XCTAssertFalse(channel.exists, "Narrow windows expose only the thread, not covered channel controls")
-        XCTAssertFalse(channelMicrophone.exists, "The folded channel's microphone must leave accessibility too")
-        XCTAssertTrue(threadMicrophone.isHittable)
-        XCTAssertGreaterThanOrEqual(threadMicrophone.frame.minX, pane.frame.minX)
-        XCTAssertLessThanOrEqual(threadMicrophone.frame.maxX, send.frame.minX)
-        XCTAssertEqual(back.label, "Back to channel")
-        capture("thread quote narrow", app: app)
+        // Check automatic member docking before any explicit show/hide choice.
+        // Exact window widths distinguish the two sides of the 760/761 boundary.
+        for width in [CGFloat(900), 761, 760, 390] {
+            resize(app, width: width)
+            XCTAssertEqual(window.frame.width, width, accuracy: 0.5)
+            XCTAssertTrue(editor.isHittable)
+            XCTAssertEqual(editor.value as? String, threadDraft)
+            XCTAssertTrue(pane.buttons["Cancel reply"].exists)
+            if width > 760 {
+                try assertSplit(threadWidth: width == 900 ? 170 : 210.5, showingMembers: width == 900)
+                XCTAssertEqual(channel.frame.width, timeline.frame.width, accuracy: 1)
+                XCTAssertEqual(composer.value as? String, channelDraft)
+                capture("\(Int(width)) split thread and channel with wrapped accessories and real neighbor hover", app: app)
+            } else {
+                XCTAssertFalse(composer.exists); XCTAssertFalse(channel.exists, "At or below 760 only the open thread is accessible")
+                XCTAssertFalse(channelMicrophone.exists, "The folded channel's microphone must leave accessibility too")
+                XCTAssertFalse(divider.exists); XCTAssertFalse(sidebar.exists); XCTAssertFalse(members.exists)
+                XCTAssertFalse(app.sliders["members-panel-resize"].exists)
+                XCTAssertEqual(pane.frame.minX, window.frame.minX, accuracy: 1)
+                XCTAssertEqual(pane.frame.width, width, accuracy: 1)
+                XCTAssertEqual(timeline.frame.width, width, accuracy: 1)
+                XCTAssertTrue(threadMicrophone.isHittable)
+                XCTAssertGreaterThanOrEqual(threadMicrophone.frame.minX, pane.frame.minX)
+                XCTAssertLessThanOrEqual(threadMicrophone.frame.maxX, send.frame.minX)
+                XCTAssertEqual(back.label, "Back to channel")
+                try assertComposerGeometry(inThread: true)
+                back.hover(); pane.buttons["Cancel reply"].hover()
+                capture("\(Int(width)) folded fullwidth thread quote and composer", app: app)
+            }
+        }
         back.click()
         XCTAssertTrue(pane.waitForNonExistence(timeout: 5))
         XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, channelDraft)
         XCTAssertTrue(channelMicrophone.waitForExistence(timeout: 5)); XCTAssertTrue(channelMicrophone.isHittable)
         XCTAssertFalse(threadMicrophone.exists)
+        XCTAssertEqual(channel.frame.minX, window.frame.minX, accuracy: 1)
+        XCTAssertEqual(channel.frame.width, 390, accuracy: 1)
+        try assertComposerGeometry(inThread: false)
+        capture("390 close thread returns fullwidth channel and exact unsent draft", app: app)
+        let browse = app.buttons["open-navigation"]
+        let closeBrowse = app.buttons["close-navigation"]
+        for cycle in 1...2 {
+            composer.click()
+            let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: composer)
+            XCTAssertEqual(XCTWaiter.wait(for: [focused], timeout: 5), .completed)
+            XCTAssertTrue(browse.isHittable); browse.hover(); browse.click()
+            XCTAssertTrue(closeBrowse.waitForExistence(timeout: 5))
+            XCTAssertFalse(channel.exists); XCTAssertFalse(composer.exists); XCTAssertFalse(channelMicrophone.exists)
+            XCTAssertFalse(pane.exists); XCTAssertFalse(divider.exists)
+            let channelsScroll = app.scrollViews["sidebar-channels-scroll"]
+            let directScroll = app.scrollViews["sidebar-direct-scroll"]
+            XCTAssertTrue(channelsScroll.exists); XCTAssertTrue(directScroll.exists)
+            // The fullwidth navigation includes its existing 60pt space rail.
+            XCTAssertEqual(channelsScroll.frame.minX - window.frame.minX, 60, accuracy: 1)
+            XCTAssertEqual(channelsScroll.frame.maxX, window.frame.maxX, accuracy: 1)
+            XCTAssertEqual(directScroll.frame.width, channelsScroll.frame.width, accuracy: 1)
+            XCTAssertTrue(closeBrowse.isHittable); closeBrowse.hover()
+            capture("390 fullwidth Browse cycle \(cycle) hides channel accessibility", app: app)
+            closeBrowse.click()
+            XCTAssertTrue(closeBrowse.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(composer.waitForExistence(timeout: 5))
+            XCTAssertEqual(composer.value as? String, channelDraft)
+            XCTAssertEqual(channel.frame.width, 390, accuracy: 1)
+            XCTAssertFalse(NSPredicate(format: "hasKeyboardFocus == true").evaluate(with: composer),
+                "Closing Browse must not steal keyboard focus back into the retained composer")
+            try assertComposerGeometry(inThread: false)
+            capture("390 Browse closed cycle \(cycle) preserves exact draft without autofocus", app: app)
+        }
         openOtherRoot()
         XCTAssertEqual(editor.value as? String, ""); XCTAssertFalse(pane.buttons["Cancel reply"].exists)
         editor.click(); editor.typeText(otherDraft)
@@ -1624,6 +1792,31 @@ import XCTest
         XCTAssertTrue(summary.waitForExistence(timeout: 5)); summary.click()
         XCTAssertTrue(editor.waitForExistence(timeout: 5)); XCTAssertEqual(editor.value as? String, threadDraft)
         XCTAssertTrue(pane.buttons["Cancel reply"].exists, "Returning to a root restores its quote as well as its text")
+
+        resize(app, width: 1280)
+        XCTAssertEqual(window.frame.width, 1280, accuracy: 0.5)
+        try assertSplit(threadWidth: 370, showingMembers: true)
+        XCTAssertEqual(divider.value as? String, "370 pixels", "390/760/761/900 clamps must not save over the preferred width")
+        XCTAssertEqual(composer.value as? String, channelDraft); XCTAssertEqual(editor.value as? String, threadDraft)
+        membersToggle.click()
+        XCTAssertTrue(members.waitForNonExistence(timeout: 5))
+        try assertSplit(threadWidth: 370, showingMembers: false)
+        capture("1280 thread with members hidden and real neighboring hover", app: app)
+        membersToggle.click()
+        XCTAssertTrue(members.waitForExistence(timeout: 5))
+        try assertSplit(threadWidth: 370, showingMembers: true)
+        XCTAssertEqual(composer.value as? String, channelDraft); XCTAssertEqual(editor.value as? String, threadDraft)
+        XCTAssertTrue(pane.buttons["Cancel reply"].exists)
+        capture("1280 restored preferred thread width with members shown and no overlap", app: app)
+        // An explicitly opened member overlay is separate from automatic docking;
+        // close it before continuing the existing folded send/retry lifecycle.
+        app.buttons["Close member list"].click()
+        XCTAssertTrue(members.waitForNonExistence(timeout: 5))
+        resize(app, width: 760)
+        XCTAssertEqual(window.frame.width, 760, accuracy: 0.5)
+        XCTAssertFalse(composer.exists); XCTAssertFalse(channel.exists); XCTAssertFalse(divider.exists)
+        XCTAssertFalse(members.exists); XCTAssertEqual(pane.frame.width, 760, accuracy: 1)
+        XCTAssertEqual(editor.value as? String, threadDraft)
 
         try await Self.control(["failure": ["path": path, "method": "POST", "status": 503,
             "error": "TEST FIXTURE: reply send unavailable."]])
@@ -2231,6 +2424,7 @@ import XCTest
         let mute = app.buttons["voice-call-mute"]
         XCTAssertTrue(mute.waitForExistence(timeout: 15))
         capture("voice crowd", app: app)
+        revealSidebar(app.buttons["channel-chan00000003"], in: app.scrollViews["sidebar-channels-scroll"])
         app.buttons["channel-chan00000002"].hover(); app.buttons["channel-chan00000003"].hover()
         app.buttons["channel-chan00000002"].click()
         XCTAssertTrue(app.staticTexts["# design"].waitForExistence(timeout: 10))
@@ -2256,6 +2450,7 @@ import XCTest
         XCTAssertFalse(volume.exists)
         remote.click()
         XCTAssertTrue(app.staticTexts["# general"].waitForExistence(timeout: 10), "A face opens the call's chat")
+        revealSidebar(app.buttons["channels-toggle"], in: app.scrollViews["sidebar-channels-scroll"])
         app.buttons["channels-toggle"].click()
         XCTAssertTrue(mute.exists)
         XCTAssertTrue(app.buttons["channel-chan00000002"].exists, "The fixture's other live room also stays visible")
@@ -2882,6 +3077,45 @@ import XCTest
         capture("draft formatting narrow", app: app)
     }
 
+    func testComposerKeyByKeyMarkdownClosuresKeepFollowingTextLiteral() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        addTeardownBlock { try await Self.resetFixture() }
+        let historyPath = "/api/chat/channels/chan00000001/messages"
+        let before = try await Self.fixtureGET(historyPath)
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        XCTAssertEqual(composer.value as? String, "")
+        let source = "**Release check** for _the voice beta_: see **both _builds_** and **Done** when"
+        var prefix = ""
+        composer.click()
+        // Send every character to the actual first responder, including each
+        // closing marker and the next space. No paste, whole-string insertion,
+        // refocusing, selection repair, or Return can mask the typing state.
+        // This differs deliberately from continuing an already formatted run.
+        for (index, character) in source.enumerated() {
+            app.typeText(String(character))
+            prefix.append(character)
+            XCTAssertEqual(composer.value as? String, prefix,
+                "Source after key \(index + 1) (\(String(character).debugDescription)) must equal the exact typed prefix")
+        }
+        let finalSource = try XCTUnwrap(composer.value as? String)
+        XCTAssertEqual(finalSource, source)
+        XCTAssertTrue(finalSource.hasSuffix("**Done** when"), "The tail after the explicitly closed bold span stays literal")
+        XCTAssertFalse(finalSource.hasSuffix("**when**"))
+        XCTAssertTrue(app.buttons["send-message"].isEnabled)
+        capture("key-by-key markdown closures unsent 1280", app: app)
+        resize(app, width: 900)
+        XCTAssertTrue(composer.isHittable)
+        XCTAssertEqual(composer.value as? String, source)
+        capture("key-by-key markdown exact source and plain tail unsent 900", app: app)
+        let after = try await Self.fixtureGET(historyPath)
+        XCTAssertEqual(after["cursor"] as? String, before["cursor"] as? String, "Typing never submits the draft")
+    }
+
     func testAutocompleteKeyboardPointerUndoAndSelection() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
@@ -3046,6 +3280,250 @@ import XCTest
         XCTAssertTrue(app.buttons["mention-card-close"].waitForNonExistence(timeout: 5))
         XCTAssertEqual(app.textViews["message-composer"].value as? String, "")
         capture("profile message delivered", app: app)
+    }
+
+    func testSidebarSectionsIndependentScrollDividerGeometryAndRelaunchPreserveState() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        addTeardownBlock { try await Self.resetFixture() }
+        // Clear only the development host's real shipping-key preference.
+        // An argument-domain value would conceal both missing writes and a
+        // broken relaunch read. Never touch the shipping app's defaults domain.
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: "chat.caper.appkit-development"))
+        let shareKey = "caper.channelSidebarChannelsShare"
+        preferences.removeObject(forKey: shareKey)
+        XCTAssertTrue(preferences.synchronize())
+        XCTAssertNil(preferences.object(forKey: shareKey))
+        defer { preferences.removeObject(forKey: shareKey); _ = preferences.synchronize() }
+
+        // The existing fixture permits channel creation and exactly two
+        // accepted non-self DM peers. The 96pt direct pane below forces those
+        // real rows to overflow; there is no invented many-DMs control.
+        var extraChannels: [String] = []
+        for suffix in ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo", "lima"] {
+            let channel = try await Self.fixturePOST("/api/spaces/space0000001/channels",
+                body: ["name": "sidebar-fixture-\(suffix)", "private": false], status: 201)
+            XCTAssertEqual(channel["joined"] as? Bool, true)
+            extraChannels.append(try XCTUnwrap(channel["id"] as? String))
+        }
+        for (username, id) in [("maya", "dm0000000004"), ("fixture_alex", "dm0000000001")] {
+            let conversation = try await Self.fixturePOST("/api/dms", body: ["username": username])
+            XCTAssertEqual(conversation["id"] as? String, id)
+            XCTAssertEqual(conversation["status"] as? String, "accepted")
+        }
+        try await Self.control(["messageRequest": ["text": "TEST FIXTURE — sidebar request stays pending"],
+            "channelReads": ["chan00000002": "0"]])
+        let detail = try await Self.fixtureGET("/api/spaces/space0000001")
+        XCTAssertEqual((detail["channels"] as? [[String: Any]])?.count, 15)
+        let historyPath = "/api/chat/channels/chan00000001/messages"
+        let historyBefore = try await Self.fixtureGET(historyPath)
+        let app = launch(fixture: "voice-crowd")
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        let channels = app.scrollViews["sidebar-channels-scroll"]
+        let directs = app.scrollViews["sidebar-direct-scroll"]
+        let divider = app.sliders["sidebar-sections-resize"]
+        let space = app.buttons["selected-space-name"]
+        let account = app.buttons["account-profile"]
+        let timeline = app.scrollViews["message-timeline"]
+        let heading = channels.buttons["channels-toggle"]
+        let general = channels.buttons["channel-chan00000001"]
+        let design = channels.buttons["channel-chan00000002"]
+        let mute = channels.buttons["voice-call-mute"]
+        let activity = directs.buttons["activity-inbox"]
+        let requests = directs.buttons["message-requests"]
+        let newMessage = directs.buttons["new-message"]
+        let search = channels.searchFields["browse-channels-search"]
+        let lastID = try XCTUnwrap(extraChannels.last)
+        let browseResult = channels.buttons["browse-channel-\(lastID)"]
+        let draft = "TEST FIXTURE — independent sidebar sections keep this unsent draft"
+        XCTAssertTrue(channels.waitForExistence(timeout: 5)); XCTAssertTrue(directs.exists)
+        XCTAssertTrue(divider.exists); XCTAssertEqual(divider.label, "Channels and direct messages divider")
+        XCTAssertEqual(divider.value as? String, "50 percent channels")
+        XCTAssertEqual(channels.frame.height, directs.frame.height, accuracy: 1)
+        XCTAssertTrue(heading.exists); XCTAssertTrue(mute.waitForExistence(timeout: 10))
+        XCTAssertTrue(directs.staticTexts["Direct messages"].exists)
+        XCTAssertTrue(directs.buttons["dm-self"].exists)
+        XCTAssertTrue(directs.buttons["dm-dm0000000004"].waitForExistence(timeout: 10))
+        XCTAssertTrue(directs.buttons["dm-dm0000000001"].waitForExistence(timeout: 5))
+        XCTAssertFalse(channels.buttons["activity-inbox"].exists)
+        XCTAssertFalse(directs.buttons["channels-toggle"].exists)
+        composer.click(); composer.typeText(draft)
+        revealSidebar(mute, in: channels); mute.click()
+        let muted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Muted"), object: mute)
+        XCTAssertEqual(XCTWaiter.wait(for: [muted], timeout: 5), .completed)
+        revealSidebar(requests, in: directs); requests.click()
+        XCTAssertTrue(directs.buttons["message-request-dm0000000003"].waitForExistence(timeout: 5))
+        space.click(); app.menuItems["Browse channels"].click()
+        revealSidebar(search, in: channels); search.click(); search.typeText("sidebar-fixture-lima")
+        XCTAssertTrue(browseResult.waitForExistence(timeout: 5))
+        let unread = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Unread activity"), object: design)
+        XCTAssertEqual(XCTWaiter.wait(for: [unread], timeout: 10), .completed)
+
+        func assertState() {
+            XCTAssertEqual(composer.value as? String, draft); XCTAssertTrue(composer.isHittable)
+            XCTAssertTrue(app.staticTexts["# general"].exists)
+            XCTAssertTrue((general.value as? String ?? "").contains("Selected"))
+            XCTAssertTrue((design.value as? String ?? "").contains("Unread activity"))
+            XCTAssertEqual(mute.value as? String, "Muted")
+            XCTAssertEqual(app.buttons["microphone-toggle"].value as? String, "Muted")
+            XCTAssertEqual(app.buttons["deafen-toggle"].value as? String, "On")
+            XCTAssertEqual(activity.value as? String, "2 unread")
+            XCTAssertEqual(requests.value as? String, "1 request, Expanded")
+            XCTAssertEqual(search.value as? String, "sidebar-fixture-lima")
+            XCTAssertTrue(browseResult.exists)
+            XCTAssertTrue(space.isHittable); XCTAssertTrue(account.isHittable)
+        }
+        func assertSavedShare(_ expected: Double, accuracy: Double = 0.0001) {
+            let persisted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                _ = preferences.synchronize()
+                return preferences.object(forKey: shareKey) != nil && abs(preferences.double(forKey: shareKey) - expected) < accuracy
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [persisted], timeout: 5), .completed,
+                "The development host must persist its real sidebar share, not merely change its AX value")
+        }
+        for width in [CGFloat(1280), CGFloat(900)] {
+            resize(app, width: width)
+            let available = channels.frame.height + directs.frame.height
+            let lower = min(CGFloat(96), available / 3)
+            let headerFrame = space.frame, accountFrame = account.frame, timelineFrame = timeline.frame
+            let channelsTop = channels.frame.minY, directsBottom = directs.frame.maxY
+            func assertGeometry(_ height: CGFloat) {
+                XCTAssertEqual(channels.frame.height, height, accuracy: 2)
+                XCTAssertEqual(directs.frame.height, available - height, accuracy: 2)
+                XCTAssertEqual(divider.frame.height, 12, accuracy: 1)
+                XCTAssertEqual(divider.frame.minY, channels.frame.maxY, accuracy: 1)
+                XCTAssertEqual(directs.frame.minY, divider.frame.maxY, accuracy: 1)
+                XCTAssertEqual(channels.frame.minY, channelsTop, accuracy: 1)
+                XCTAssertEqual(directs.frame.maxY, directsBottom, accuracy: 1)
+                XCTAssertGreaterThanOrEqual(channels.frame.minY, space.frame.maxY)
+                XCTAssertLessThanOrEqual(directs.frame.maxY, account.frame.minY)
+                XCTAssertEqual(space.frame, headerFrame); XCTAssertEqual(account.frame, accountFrame)
+                XCTAssertEqual(timeline.frame, timelineFrame, "Only the two sidebar sections may change geometry")
+                XCTAssertEqual(app.sliders["channel-sidebar-resize"].value as? String, "280 pixels")
+            }
+            divider.doubleClick()
+            XCTAssertEqual(divider.value as? String, "50 percent channels")
+            assertGeometry(available / 2)
+            channels.scroll(byDeltaX: 0, deltaY: 10000); directs.scroll(byDeltaX: 0, deltaY: 10000)
+            heading.hover(); channels.buttons["channel-options"].hover(); activity.hover(); divider.hover()
+            assertState()
+            capture("sidebar sections default divider and live fixture \(Int(width))", app: app)
+
+            // Both documents genuinely overflow at End. Wheel input in one
+            // scrollport must leave a concrete row in the other unmoved.
+            divider.click(); divider.typeKey(.end, modifierFlags: [])
+            assertGeometry(available - lower)
+            channels.scroll(byDeltaX: 0, deltaY: 10000); directs.scroll(byDeltaX: 0, deltaY: 10000)
+            let generalY = general.frame.minY, activityFrame = activity.frame
+            XCTAssertFalse(channels.frame.contains(browseResult.frame), "The fixture must really overflow channels")
+            channels.scroll(byDeltaX: 0, deltaY: -10000)
+            XCTAssertTrue(browseResult.isHittable); XCTAssertTrue(channels.frame.contains(browseResult.frame))
+            XCTAssertLessThan(general.frame.minY, generalY - 20)
+            XCTAssertEqual(activity.frame, activityFrame, "Scrolling channels must not scroll direct messages")
+            browseResult.hover(); channels.buttons["browse-options-\(lastID)"].hover(); browseResult.hover()
+            assertGeometry(available - lower); assertState()
+            capture("sidebar channels independently scrolled to Browse result \(Int(width))", app: app)
+            let resultFrame = browseResult.frame
+            XCTAssertFalse(directs.frame.contains(newMessage.frame), "The supported DM rows must really overflow the minimum pane")
+            directs.scroll(byDeltaX: 0, deltaY: -10000)
+            XCTAssertTrue(newMessage.isHittable); XCTAssertTrue(directs.frame.contains(newMessage.frame))
+            XCTAssertLessThan(activity.frame.minY, activityFrame.minY - 20)
+            XCTAssertEqual(browseResult.frame, resultFrame, "Scrolling direct messages must not scroll channels")
+            // These are real pointer movements over a DM, its separate menu,
+            // New message and the fixed account bar, not a fabricated hover.
+            revealSidebar(directs.buttons["dm-dm0000000001"], in: directs)
+            directs.buttons["dm-dm0000000001"].hover(); directs.buttons["dm-options-dm0000000001"].hover()
+            revealSidebar(newMessage, in: directs); newMessage.hover(); app.buttons["account-settings-menu"].hover()
+            let directBottomFrame = newMessage.frame
+            let refreshedPeer = "fixture-sidebar-\(Int(width))"
+            try await Self.control(["media": ["channelId": "chan00000002", "participants": [
+                ["id": "fixture-voice-maya", "name": "TEST FIXTURE Maya", "muted": false, "deafened": false],
+                ["id": refreshedPeer, "name": "TEST FIXTURE — sidebar refresh \(Int(width))", "muted": true, "deafened": false],
+            ]]])
+            XCTAssertTrue(channels.buttons["room-face-\(refreshedPeer)"].waitForExistence(timeout: 10))
+            XCTAssertEqual(browseResult.frame, resultFrame, "A live roster refresh keeps the channel scroll origin")
+            XCTAssertEqual(newMessage.frame, directBottomFrame, "A live roster refresh cannot reset the independent DM scroll origin")
+            assertGeometry(available - lower); assertState()
+            capture("sidebar direct messages independently scrolled with live fixture refresh and fixed account \(Int(width))", app: app)
+
+            divider.doubleClick(); assertGeometry(available / 2)
+            let start = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            let delta: CGFloat = width == 1280 ? 67 : -67
+            start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: delta)))
+            assertGeometry(available / 2 + delta)
+            let draggedHeight = channels.frame.height
+            assertSavedShare(Double(draggedHeight / available), accuracy: 0.005)
+            divider.click(); divider.typeKey(.upArrow, modifierFlags: [])
+            assertGeometry(draggedHeight - 10)
+            divider.typeKey(.downArrow, modifierFlags: [])
+            assertGeometry(draggedHeight)
+            assertState()
+            capture("sidebar pointer drag and ten-point keyboard geometry \(Int(width))", app: app)
+            divider.typeKey(.home, modifierFlags: [])
+            assertGeometry(lower)
+            divider.typeKey(.upArrow, modifierFlags: []); assertGeometry(lower)
+            revealSidebar(heading, in: channels)
+            heading.hover(); channels.buttons["create-channel"].hover(); channels.buttons["channel-options"].hover()
+            assertState()
+            capture("sidebar minimum channels with reachable neighboring actions \(Int(width))", app: app)
+            divider.click(); divider.typeKey(.end, modifierFlags: [])
+            assertGeometry(available - lower)
+            divider.typeKey(.downArrow, modifierFlags: []); assertGeometry(available - lower)
+            divider.doubleClick(); assertGeometry(available / 2)
+            XCTAssertEqual(divider.value as? String, "50 percent channels")
+            revealSidebar(heading, in: channels); heading.click()
+            XCTAssertEqual(heading.value as? String, "Collapsed")
+            XCTAssertTrue(mute.exists); XCTAssertTrue(design.exists, "Both live rooms survive collapsing quiet channels")
+            XCTAssertFalse(channels.buttons["channel-\(lastID)"].exists)
+            assertState(); assertGeometry(available / 2)
+            capture("sidebar reset and collapsed channels retain live call Browse requests and draft \(Int(width))", app: app)
+            heading.click()
+            XCTAssertEqual(heading.value as? String, "Expanded")
+        }
+
+        // Finish with a non-default pointer write. Neither launch overrides
+        // this key; no fixture/default reset occurs between the two processes.
+        let start = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 47)))
+        let savedShare = Double(channels.frame.height / (channels.frame.height + directs.frame.height))
+        let savedValue = try XCTUnwrap(divider.value as? String)
+        XCTAssertGreaterThan(savedShare, 0.5); XCTAssertNotEqual(savedValue, "50 percent channels")
+        let other = channels.buttons["channel-\(try XCTUnwrap(extraChannels.first))"]
+        revealSidebar(other, in: channels); other.click()
+        XCTAssertTrue(app.staticTexts["# sidebar-fixture-alpha"].waitForExistence(timeout: 10))
+        revealSidebar(general, in: channels); general.click()
+        let restoredDraft = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", draft), object: composer)
+        XCTAssertEqual(XCTWaiter.wait(for: [restoredDraft], timeout: 10), .completed)
+        XCTAssertEqual(divider.value as? String, savedValue)
+        assertState()
+        let historyAfter = try await Self.fixtureGET(historyPath)
+        XCTAssertEqual(historyAfter["cursor"] as? String, historyBefore["cursor"] as? String)
+        let conversations = try await Self.fixtureGET("/api/dms")
+        XCTAssertEqual((conversations["conversations"] as? [[String: Any]])?.first { $0["id"] as? String == "dm0000000003" }?["status"] as? String,
+            "incoming", "Scrolling, hovering and resizing cannot accept the pending request")
+        app.terminate()
+        let relaunched = launch(fixture: "voice-crowd", preservePanelWidths: true)
+        defer { relaunched.terminate() }
+        let restored = relaunched.sliders["sidebar-sections-resize"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 15))
+        for width in [CGFloat(900), CGFloat(1280)] {
+            resize(relaunched, width: width)
+            let restoredChannels = relaunched.scrollViews["sidebar-channels-scroll"]
+            let restoredDirects = relaunched.scrollViews["sidebar-direct-scroll"]
+            XCTAssertEqual(restored.value as? String, savedValue)
+            XCTAssertEqual(Double(restoredChannels.frame.height / (restoredChannels.frame.height + restoredDirects.frame.height)), savedShare, accuracy: 0.005)
+            XCTAssertTrue(relaunched.textViews["message-composer"].isHittable)
+            restored.hover(); relaunched.buttons["account-settings-menu"].hover()
+            capture("sidebar saved split restored in a new process \(Int(width))", app: relaunched)
+        }
+        restored.doubleClick()
+        XCTAssertEqual(restored.value as? String, "50 percent channels")
+        XCTAssertEqual(relaunched.scrollViews["sidebar-channels-scroll"].frame.height,
+            relaunched.scrollViews["sidebar-direct-scroll"].frame.height, accuracy: 1)
+        assertSavedShare(0.5)
     }
 
     func testSidebarWidthDragKeyboardAndRelaunchKeepChannelsAndComposerUsable() async throws {
@@ -3241,18 +3719,44 @@ import XCTest
         defer { app.terminate() }
         let email = app.textFields["Email address"]
         XCTAssertTrue(email.waitForExistence(timeout: 10))
+        resize(app, width: 390)
+        let window = app.windows["Caper — AppKit development (not feature complete)"]
+        XCTAssertEqual(window.frame.width, 390, accuracy: 0.5)
+        for control in [app.staticTexts["Welcome to Caper"], email, app.buttons["Send code"]] {
+            XCTAssertTrue(control.exists)
+            XCTAssertTrue(window.frame.contains(control.frame))
+            XCTAssertGreaterThanOrEqual(control.frame.minX, window.frame.minX + 24)
+            XCTAssertLessThanOrEqual(control.frame.maxX, window.frame.maxX - 24)
+        }
+        XCTAssertEqual(email.frame.width, 342, accuracy: 1)
+        XCTAssertEqual(app.buttons["Send code"].frame.width, email.frame.width, accuracy: 1)
+        XCTAssertLessThanOrEqual(email.frame.maxY, app.buttons["Send code"].frame.minY)
         XCTAssertFalse(app.buttons["Send code"].isEnabled)
+        email.hover(); app.buttons["Send code"].hover()
+        capture("390 signed-out email form within window margins", app: app)
         email.click(); email.typeText("not-an-email")
         app.buttons["Send code"].click()
         XCTAssertTrue(app.buttons["Send code"].waitForExistence(timeout: 10))
         XCTAssertTrue(email.isEnabled)
         XCTAssertEqual(app.staticTexts["sign-in-error"].value as? String, "Enter a valid email address.")
+        XCTAssertTrue(window.frame.contains(app.staticTexts["sign-in-error"].frame))
         capture("sign-in error", app: app)
         email.click(); email.typeKey("a", modifierFlags: .command)
         email.typeText("owner@example.test\n")
         let code = app.textFields["Sign-in code"]
         XCTAssertTrue(code.waitForExistence(timeout: 10))
+        for control in [app.staticTexts["Check your email"], code, app.buttons["Sign in"], app.buttons["Use a different email"]] {
+            XCTAssertTrue(control.exists)
+            XCTAssertTrue(window.frame.contains(control.frame))
+            XCTAssertGreaterThanOrEqual(control.frame.minX, window.frame.minX + 24)
+            XCTAssertLessThanOrEqual(control.frame.maxX, window.frame.maxX - 24)
+        }
+        XCTAssertEqual(code.frame.width, 342, accuracy: 1)
+        XCTAssertLessThanOrEqual(code.frame.maxY, app.buttons["Sign in"].frame.minY)
+        XCTAssertLessThanOrEqual(app.buttons["Sign in"].frame.maxY, app.buttons["Use a different email"].frame.minY)
         XCTAssertFalse(app.buttons["Sign in"].isEnabled)
+        code.hover(); app.buttons["Use a different email"].hover()
+        capture("390 six-character sign-in form and recovery controls", app: app)
         code.click(); code.typeText("ZZZZZ9")
         for attempt in 0..<3 {
             app.buttons["Sign in"].click()
@@ -3267,6 +3771,8 @@ import XCTest
         XCTAssertTrue(code.isEnabled)
         code.click(); code.typeText("abc234")
         XCTAssertEqual(code.value as? String, "ABC234")
+        resize(app, width: 1280)
+        XCTAssertEqual(code.value as? String, "ABC234", "Resizing the sign-in form preserves the normalized code")
         app.buttons["Sign in"].click()
         XCTAssertTrue(app.textViews["message-composer"].waitForExistence(timeout: 15))
         app.buttons["account-settings-menu"].click()
