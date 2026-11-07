@@ -28,6 +28,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -380,6 +381,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 // Android Keystore decryption is a binder round trip: keep it off the main thread at launch.
                 val stored = withContext(Dispatchers.IO) { tokens.read() }
+                // The space list and DMs need only the token: fetch them beside the account, not after it.
+                val spacesRequest = stored?.let { async { runCatching { api.spaces(it) } } }
+                val directsRequest = stored?.let { async { runCatching { api.directConversations(it) } } }
                 val account = if (stored == null) null else try {
                     api.me(stored).also { accountToken = stored }
                 } catch (error: CancellationException) { throw error } catch (error: Throwable) {
@@ -399,13 +403,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     mutable.value = AppUiState(screen = SessionScreen.SignedOut)
                     return@launch
                 }
-                val token = requireNotNull(accountToken)
-                val list = try { api.spaces(token) } catch (error: CancellationException) { throw error } catch (error: Throwable) {
+                val list = try { requireNotNull(spacesRequest).await().getOrThrow() } catch (error: CancellationException) { throw error } catch (error: Throwable) {
                     if (requestAccountGeneration == accountGeneration)
                         mutable.value = AppUiState(screen = SessionScreen.Unavailable(account, message(error)), account = account)
                     return@launch
                 }
-                val directs = runCatching { api.directConversations(token) }
+                val directs = requireNotNull(directsRequest).await()
                 if (requestAccountGeneration != accountGeneration) return@launch
                 mutable.value = AppUiState(
                     screen = SessionScreen.Home, restoring = true, account = account,
