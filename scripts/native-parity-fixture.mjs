@@ -2668,11 +2668,20 @@ export async function startFixture({
             alreadyMember: member,
           });
         if (joining && method === "POST") {
+          // The API lands in the link's channel while it is public, else the
+          // oldest public one, and joining fulfils a pending invitation.
+          const landing =
+            detail.channels.find((channel) => !channel.private && channel.id === link.channel?.id) ??
+            detail.channels.find((channel) => !channel.private) ??
+            null;
           if (!member) {
             link.uses += 1;
             detail.members.push({ ...clone(user), owner: false });
+            const invitation = state.invitations.get(`${spaceId}:${user.id}`);
+            if (invitation?.status === "pending") invitation.status = "accepted";
           }
-          return json(response, 200, { space: detail.space, channelId: link.channel?.id ?? null, joined: !member });
+          if (landing) state.joins.set(landing.id, [...new Set([...(state.joins.get(landing.id) ?? []), user.id])]);
+          return json(response, 200, { space: detail.space, channelId: landing?.id ?? null, joined: !member });
         }
         return reject(response, 405, "method not allowed");
       }
@@ -2947,7 +2956,7 @@ export async function startFixture({
           };
           detail.channels.push(next);
           state.messages.set(next.id, []);
-          state.grants.set(next.id, [state.account.id]);
+          state.grants.set(next.id, [user.id]);
           state.joins.set(next.id, [user.id]);
           return json(response, 201, channelDTO(next, user));
         }

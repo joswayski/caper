@@ -1960,3 +1960,36 @@ test("formatted bench rows are opt-in and deterministic", async (t) => {
   }
   assert.deepEqual((await page()).messages, first.messages);
 });
+
+test("an invite link lands in a public channel, fulfils the invitation, and its space's own channels invite you", async (t) => {
+  const { request } = await setup(t);
+  const maya = "fixture-member-token";
+  await request("/__fixture/control", { method: "POST", body: { spaceInvitation: true } });
+  const root = `/api/spaces/${ids.invitedSpace}`;
+  const link = await request(`${root}/invite-links`, { method: "POST", auth: maya, body: {} });
+  assert.equal(link.value.channel, null);
+  const joined = await request(`/api/invites/${link.value.code}/join`, { method: "POST", auth: true });
+  // Like the API: no landing channel on the link still opens the oldest public one, joined.
+  assert.equal(joined.value.channelId, ids.invitedChannel);
+  const spaces = (await request("/api/spaces", { auth: true })).value;
+  assert.deepEqual(spaces.invitations, [], "joining by link fulfils the pending invitation");
+  const detail = (await request(root, { auth: true })).value;
+  assert.equal(detail.channels.find((channel) => channel.id === ids.invitedChannel).joined, true);
+
+  // Maya's new private channel is hers, so she can invite the owner to it.
+  const secret = await request(`${root}/channels`, {
+    method: "POST",
+    auth: maya,
+    body: { name: "secret", private: true },
+  });
+  const invite = await request(`${root}/channels/${secret.value.id}/members`, {
+    method: "POST",
+    auth: maya,
+    body: { username: "fixture_owner" },
+  });
+  assert.equal(invite.response.status, 201);
+  assert.deepEqual(
+    (await request(root, { auth: true })).value.channelInvitations.map((item) => item.channel.name),
+    ["secret"],
+  );
+});
