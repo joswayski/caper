@@ -164,11 +164,12 @@ import CaperCore
         }
         timeline.makeAttachments = { [weak self] message in self?.media.messageAttachments(message) }
         timeline.makePending = { [weak self] pending in self?.media.pendingMessage(pending) }
+        timeline.messageMenu = { [weak self] message, anchor in self?.messageMenu(message, anchor: anchor) }
+        timeline.messageAction = { [weak self] message, action, anchor in self?.messageAction(message, action: action, anchor: anchor) }
         timeline.react = { [weak self] id, emoji in
-            guard let self, self.model.chat.canInteract,
+            guard let self,
                   let message = self.model.chat.displayedMessages.first(where: { $0.id == id }) else { return }
-            let active = !(message.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(self.model.chat.viewerID ?? "") ?? false)
-            Task { await self.model.chat.setReaction(messageID: id, emoji: emoji, active: active) }
+            self.messageAction(message, action: .reaction(emoji), anchor: self.timeline)
         }
         navigationObservation.start { [weak self] in
             guard let self else { return }
@@ -198,7 +199,8 @@ import CaperCore
             let visible = chat.displayedMessages.filter(\.isChannelMessage)
             self.timeline.update(visible, conversationID: self.model.selectedDirectMessageID ?? self.model.selectedChannelID,
                 viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs,
-                pending: chat.pendingMessage.flatMap { $0.threadRootId == nil ? $0 : nil })
+                pending: chat.pendingMessage.flatMap { $0.threadRootId == nil ? $0 : nil },
+                canInteract: chat.canInteract, reactionErrors: chat.reactionErrors)
         }
         composerObservation.start { [weak self] in self?.updateComposer() }
         attachmentObservation.start(reading: { [weak self] in
@@ -312,7 +314,10 @@ import CaperCore
         retry.isHidden = !(chat.loadFailed || chat.olderError != nil || chat.sessionError != nil || (chat.pendingMessage != nil && !chat.sending && !chat.sendRejected))
         retry.isEnabled = !chat.loadingOlder
         editRejected.isHidden = !chat.sendRejected
-        status.stringValue = chat.error ?? chat.olderError ?? chat.sessionError ?? model.navigationError
+        let error = chat.error ?? chat.olderError ?? chat.sessionError ?? model.navigationError
+        status.setAccessibilityIdentifier(error == nil ? "conversation-status" : "conversation-error")
+        status.textColor = error == nil ? NativeStyle.muted : NSColor(CaperTheme.error)
+        status.stringValue = error
             ?? (model.previewingChannel ? "Preview · Join #\(chat.channelName) to interact with people here" : chat.loading ? "Loading messages…" : chat.loadingOlder ? "Loading older messages…" : chat.typingNames.isEmpty ? (model.selectedDirectMessage?.status == .outgoing ? model.selectedDirectMessage.flatMap(NativePresentation.directMessageNotice) ?? "" : "") : "\(chat.typingNames.joined(separator: ", ")) typing…")
         refreshSuggestions()
     }
@@ -330,6 +335,92 @@ import CaperCore
     }
 
     @objc private func pickFiles() { media.pickFiles() }
+
+    private func messageAction(_ message: ChatMessage, action: MessageAction, anchor: NSView) {
+        let chat = model.chat
+        guard let current = dialogs.currentMessage(message), !current.isDeleted else { return }
+        let context = dialogs.messageContext
+        switch action {
+        case .history: dialogs.messageHistory(current, in: self)
+        case .addReaction: picker.reaction(to: current, from: anchor, composer: composer)
+        case .dismissReaction: chat.reactionErrors[current.id] = nil
+        case .retryReaction:
+            Task {
+                guard dialogs.messageContext == context, chat.canInteract,
+                      let latest = dialogs.currentMessage(current), !latest.isDeleted else { return }
+                await chat.retryReaction(messageID: latest.id)
+            }
+        case .reaction(let emoji):
+            Task {
+                guard dialogs.messageContext == context, chat.canInteract,
+                      let latest = dialogs.currentMessage(current), !latest.isDeleted else { return }
+                let own = latest.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(chat.viewerID ?? "") == true
+                await chat.setReaction(messageID: latest.id, emoji: emoji, active: !own)
+            }
+        }
+    }
+
+    private func messageMenu(_ message: ChatMessage, anchor: NSView) -> NSMenu? {
+        let chat = model.chat, context = dialogs.messageContext
+        guard let current = dialogs.currentMessage(message) else { return nil }
+        // A menu can outlive navigation or an incoming edit. Resolve again
+        // on activation instead of applying the snapshot that opened it.
+        func perform(_ action: @escaping (ChatMessage) -> Void) -> () -> Void {
+            { [weak self] in
+                guard let self, self.dialogs.messageContext == context,
+                      let latest = self.dialogs.currentMessage(current) else { return }
+                action(latest)
+            }
+        }
+        func copy(_ text: String) {
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+        }
+        let copyID = NavigationMenuItem("Copy message ID", action: perform { copy($0.id) })
+        if current.isDeleted { return NavigationMenus.menu([copyID]) }
+        var items: [NSMenuItem] = [NavigationMenuItem("Add reaction…", enabled: chat.canInteract, action: perform { [weak self, weak anchor] in
+            guard let self, let anchor else { return }; self.messageAction($0, action: .addReaction, anchor: anchor)
+        }), .separator()]
+        if dialogs.canEdit(current) {
+            items.append(NavigationMenuItem("Edit message", action: perform { [weak self] in
+                guard let self else { return }; self.dialogs.editMessage($0, in: self)
+            }))
+        }
+        if current.forward == nil, (current.revision ?? 1) > 1 {
+            items.append(NavigationMenuItem("Message history", action: perform { [weak self] in
+                guard let self else { return }; self.dialogs.messageHistory($0, in: self)
+            }))
+        }
+        if !current.content.text.isEmpty {
+            items.append(NavigationMenuItem("Copy text", action: perform { if !$0.isDeleted { copy($0.content.text) } }))
+        }
+        let links = NativePresentation.links(in: current.content.text)
+        for link in links {
+            func linkAction(_ action: @escaping () -> Void) -> () -> Void {
+                perform { latest in
+                    guard !latest.isDeleted, NativePresentation.links(in: latest.content.text).contains(where: { $0.url == link.url }) else { return }
+                    action()
+                }
+            }
+            let actions = [NavigationMenuItem("Open link", action: linkAction { NSWorkspace.shared.open(link.url) }),
+                NavigationMenuItem("Copy link", action: linkAction { copy(link.url.absoluteString) })]
+            if links.count == 1 { items += actions }
+            else { items.append(NavigationMenus.submenu(link.text, actions)) }
+        }
+        items.append(copyID)
+        if dialogs.canDelete(current) {
+            items += [.separator(), NavigationMenuItem("Delete message", action: perform { [weak self] in
+                guard let self else { return }; self.dialogs.deleteMessage($0, in: self)
+            })]
+        }
+        if dialogs.canBlock(current.author) {
+            items += [.separator(), NavigationMenuItem("Block \(current.author.name)…", action: perform { [weak self] in
+                self?.confirmBlock(BlockTarget(author: $0.author))
+            })]
+        } else if dialogs.canUnblock(current.author) {
+            items += [.separator(), NavigationMenuItem("Unblock \(current.author.name)", action: perform { chat.unblock($0.author) })]
+        }
+        return NavigationMenus.menu(items)
+    }
 
     private func confirmBlock(_ target: BlockTarget) {
         guard let window = view.window else { return }
