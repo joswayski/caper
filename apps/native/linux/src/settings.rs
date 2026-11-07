@@ -32,6 +32,7 @@ pub(super) struct SettingsDialog {
     window: gtk::Window,
     startup_error: gtk::Label,
     sounds: gtk::Switch,
+    voice_send: gtk::Switch,
     levels: Vec<(NotificationLevel, gtk::CheckButton)>,
     voice_started: gtk::CheckButton,
     notifications_status: gtk::Label,
@@ -136,6 +137,14 @@ impl App {
             "Play sounds for messages and app interactions.",
         );
         sounds.set_active(self.sound_effects());
+
+        section(&root, "Voice messages", false);
+        let voice_send = switch_row(
+            &root,
+            "Send voice messages as soon as I stop recording",
+            "Off: a stopped recording waits in the composer with your text and files until you press Send.",
+        );
+        voice_send.set_active(self.voice_send_on_stop());
         let updates = self.updates_section(&root);
 
         let signed_in = self.state.borrow().account.is_some();
@@ -247,6 +256,13 @@ impl App {
                 app.set_sound_effects(switch.is_active());
             }
         });
+        let weak = Rc::downgrade(self);
+        voice_send.connect_active_notify(move |switch| {
+            if let Some(app) = weak.upgrade() {
+                app.set_voice_send_on_stop(switch.is_active());
+                app.render();
+            }
+        });
 
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -276,6 +292,7 @@ impl App {
             window: window.clone(),
             startup_error,
             sounds,
+            voice_send,
             levels,
             voice_started,
             notifications_status,
@@ -391,6 +408,7 @@ impl App {
         };
         let settings = &state.settings;
         dialog.sounds.set_active(self.sound_effects());
+        dialog.voice_send.set_active(self.voice_send_on_stop());
         // Notifications: only enabled once loaded.
         let level = settings.notifications.account_level();
         let saving = settings.notifications.saving(&Scope::Account);

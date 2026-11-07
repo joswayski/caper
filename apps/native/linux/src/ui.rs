@@ -39,6 +39,9 @@ pub struct Composer {
     /// Transcribing (Cancel), or failed (Retry, Keep as voice note,
     /// Discard), above the input.
     pub dictation: DictationRow,
+    /// Voice messages sending on their own: progress with Cancel, or
+    /// \"not sent\" with Retry and Discard (`app::recording`).
+    pub sends: gtk::Box,
 }
 
 /// `[trash] ● 0:07 ▁▃▅▇▅ [Voice note] [done]` in the input row's place.
@@ -179,6 +182,9 @@ impl Composer {
         root.append(&preview);
         let dictation = DictationRow::new();
         root.append(&dictation.root);
+        let sends = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        sends.set_visible(false);
+        root.append(&sends);
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         root.append(&line);
         let recording = RecordingBar::new(images);
@@ -256,6 +262,7 @@ impl Composer {
             mic,
             recording,
             dictation,
+            sends,
         }
     }
 

@@ -50,6 +50,13 @@ impl Recording {
     }
 }
 
+/// A voice message sending on its own once uploaded, with the reply that
+/// was above its composer.
+pub(super) struct VoiceSend {
+    pub(super) file: DraftFile,
+    reply: Option<String>,
+}
+
 /// A finished dictation: transcribing, or failed with its audio kept.
 pub(super) struct Dictation {
     key: u64,
@@ -463,20 +470,152 @@ impl App {
     }
 
     /// A stopped voice message waits in its composer, uploading now (so
-    /// transcription starts) and going with the next Send.
+    /// transcription starts) and going with the next Send. With "Send voice
+    /// messages as soon as I stop recording" it goes on its own instead,
+    /// once uploaded, with the reply shown above.
     fn keep_voice(self: &Rc<Self>, origin: Origin, prepared: Arc<Prepared>) {
+        let send_on_stop = self.voice_send_on_stop();
         {
             let mut state = self.state.borrow_mut();
             let (Some(token), Some(settings)) = (state.token.clone(), state.uploads.clone()) else {
                 return;
             };
             state.file_keys += 1;
+            let thread = origin.root.is_some();
             let mut file =
                 DraftFile::recorded(state.file_keys, origin.channel, origin.root, prepared);
             if file.upload.restart().is_some() {
                 self.worker.send(file.command(token, settings));
             }
-            state.files.push(file);
+            if send_on_stop {
+                let reply = match (&state.compose, thread) {
+                    (Some(super::Compose::Reply { id, .. }), false) => Some(id.clone()),
+                    _ => None,
+                };
+                if reply.is_some() {
+                    state.compose = None;
+                }
+                state.voice_sends.push(VoiceSend { file, reply });
+            } else {
+                state.files.push(file);
+            }
+            state.files_revision += 1;
+        }
+        self.render();
+    }
+
+    /// "Send voice messages as soon as I stop recording", per device.
+    pub(super) fn voice_send_on_stop(&self) -> bool {
+        self.prefs
+            .get::<bool>("voice-send-on-stop-v1")
+            .unwrap_or(false)
+    }
+
+    pub(super) fn set_voice_send_on_stop(&self, enabled: bool) {
+        self.prefs.set("voice-send-on-stop-v1", enabled);
+    }
+
+    /// Sends the oldest uploaded voice message once the conversation has no
+    /// other send in flight: on its own, so the composer's text and files
+    /// stay where they are.
+    pub(super) fn send_voice_messages(&self, state: &mut State) {
+        if state.pending.is_some() {
+            return;
+        }
+        let (Some(chat_token), Some(channel)) = (
+            state.session.as_ref().map(|session| session.token.clone()),
+            state.channel.clone(),
+        ) else {
+            return;
+        };
+        let Some(index) = state.voice_sends.iter().position(|send| {
+            send.file.channel == channel
+                && send.file.attachment.is_some()
+                && send.file.error.is_none()
+        }) else {
+            return;
+        };
+        let send = state.voice_sends.remove(index);
+        let Some(id) = send.file.attachment.as_ref().map(|file| file.id.clone()) else {
+            return;
+        };
+        let client_id = uuid::Uuid::new_v4().to_string();
+        let thread_root_id = send.file.thread_root_id.clone();
+        state.pending = Some(super::Pending {
+            client_id: client_id.clone(),
+            text: String::new(),
+            created_at: chrono::Local::now().to_rfc3339(),
+            thread: thread_root_id.clone(),
+            files: vec![send.file],
+            gif: None,
+            share: None,
+        });
+        state.files_revision += 1;
+        self.worker.send(Command::Send {
+            generation: state.generation,
+            token: state.token.clone(),
+            chat_token,
+            channel,
+            client_id,
+            text: String::new(),
+            thread_root_id,
+            broadcast: false,
+            reply_to_id: send.reply,
+            attachment_ids: vec![id],
+            spoiler_attachment_ids: Vec::new(),
+            gif: None,
+            suppress_embeds: false,
+        });
+    }
+
+    /// Drops voice messages sending outside `channel`, the conversation
+    /// being opened.
+    pub(super) fn discard_voice_sends(&self, state: &mut State, channel: Option<&str>) {
+        let (kept, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut state.voice_sends)
+            .into_iter()
+            .partition(|send| Some(send.file.channel.as_str()) == channel);
+        state.voice_sends = kept;
+        self.cancel_voice_sends(state, gone);
+    }
+
+    /// Stops their uploads and gives back what was reserved.
+    fn cancel_voice_sends(&self, state: &State, sends: Vec<VoiceSend>) {
+        let ids: Vec<String> = sends
+            .iter()
+            .inspect(|send| send.file.stop())
+            .filter_map(|send| send.file.attachment.as_ref().map(|file| file.id.clone()))
+            .collect();
+        if let Some(token) = state.token.clone()
+            && !ids.is_empty()
+        {
+            self.worker.send(Command::CancelAssets { token, ids });
+        }
+    }
+
+    /// Retry (`retry`), or Cancel and Discard, for a voice message's send.
+    fn voice_send_action(self: &Rc<Self>, key: u64, retry: bool) {
+        {
+            let mut state = self.state.borrow_mut();
+            let Some(index) = state
+                .voice_sends
+                .iter()
+                .position(|send| send.file.key == key)
+            else {
+                return;
+            };
+            if retry {
+                let (Some(token), Some(settings)) = (state.token.clone(), state.uploads.clone())
+                else {
+                    return;
+                };
+                let file = &mut state.voice_sends[index].file;
+                if file.upload.restart().is_some() {
+                    self.worker.send(file.command(token, settings));
+                }
+            } else {
+                let send = state.voice_sends.remove(index);
+                self.cancel_voice_sends(&state, vec![send]);
+            }
             state.files_revision += 1;
         }
         self.render();
@@ -489,12 +628,13 @@ impl App {
     }
 
     /// Each composer's microphone, recording bar and dictation row.
-    pub(super) fn render_recording(&self) {
+    pub(super) fn render_recording(self: &Rc<Self>) {
         let Ok(state) = self.state.try_borrow() else {
             return;
         };
         let recording = self.recording.borrow();
         let dictation = self.dictation.borrow();
+        let send_on_stop = self.voice_send_on_stop();
         for thread in [false, true] {
             let composer = if thread {
                 &self.ui.thread_composer
@@ -526,6 +666,8 @@ impl App {
                 }
                 let note = if recording.sending && !recording.as_voice {
                     "Transcribing…"
+                } else if recording.sending && send_on_stop {
+                    "Sending…"
                 } else if recording.sending {
                     "Adding to your message…"
                 } else if !started {
@@ -540,7 +682,11 @@ impl App {
                 let blocked = state.voice_note_blocked(&recording.origin);
                 bar.voice_note.set_sensitive(live && blocked.is_none());
                 bar.voice_note
-                    .set_tooltip_text(Some(blocked.unwrap_or("Stop and keep as a voice message")));
+                    .set_tooltip_text(Some(blocked.unwrap_or(if send_on_stop {
+                        "Stop and send as a voice message"
+                    } else {
+                        "Stop and keep as a voice message"
+                    })));
                 bar.done.set_sensitive(live);
             }
             let row = &composer.dictation;
@@ -568,7 +714,90 @@ impl App {
                     .set_visible(failed && state.voice_note_blocked(&dictation.origin).is_none());
                 row.drop
                     .set_label(if failed { "Discard" } else { "Cancel" });
+                row.keep.set_label(if send_on_stop {
+                    "Send as voice note"
+                } else {
+                    "Keep as voice note"
+                });
             }
+            self.render_voice_sends(&state, thread);
+        }
+    }
+}
+
+impl App {
+    /// A composer's voice messages still uploading or failed, above it.
+    fn render_voice_sends(self: &Rc<Self>, state: &State, thread: bool) {
+        let root = Self::composer_root(state, thread);
+        let rows: Vec<_> = state
+            .voice_sends
+            .iter()
+            .filter(|send| {
+                state.channel.as_ref() == Some(&send.file.channel)
+                    && send.file.thread_root_id == root
+                    && thread == root.is_some()
+                    && (send.file.attachment.is_none() || send.file.error.is_some())
+            })
+            .map(|send| {
+                (
+                    send.file.key,
+                    (send.file.progress.clamp(0.0, 1.0) * 100.0).round() as u32,
+                    send.file.error.clone(),
+                )
+            })
+            .collect();
+        let shown = format!("{rows:?}");
+        if self.voice_send_rows.borrow()[usize::from(thread)] == shown {
+            return;
+        }
+        self.voice_send_rows.borrow_mut()[usize::from(thread)] = shown;
+        let sends = if thread {
+            &self.ui.thread_composer.sends
+        } else {
+            &self.ui.composer.sends
+        };
+        while let Some(child) = sends.first_child() {
+            sends.remove(&child);
+        }
+        sends.set_visible(!rows.is_empty());
+        for (key, percent, error) in rows {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            row.add_css_class("dictation-row");
+            let color = if error.is_some() {
+                "#ff9b82"
+            } else {
+                "#b9bcbe"
+            };
+            let icon = self.images.icon_image(crate::images::Icon::Mic, color, 16);
+            icon.set_valign(gtk::Align::Center);
+            row.append(&icon);
+            let text = gtk::Label::new(Some(&match &error {
+                Some(error) => format!("Voice message not sent. {error}"),
+                None => format!("Sending voice message… {percent}%"),
+            }));
+            text.add_css_class("small");
+            text.add_css_class(if error.is_some() { "error" } else { "muted" });
+            text.set_wrap(true);
+            text.set_xalign(0.0);
+            row.append(&text);
+            let buttons: &[(&str, bool)] = if error.is_some() {
+                &[("Retry", true), ("Discard", false)]
+            } else {
+                &[("Cancel", false)]
+            };
+            for &(name, retry) in buttons {
+                let button = gtk::Button::with_label(name);
+                button.add_css_class("small-button");
+                button.set_valign(gtk::Align::Center);
+                let app = Rc::downgrade(self);
+                button.connect_clicked(move |_| {
+                    if let Some(app) = app.upgrade() {
+                        app.voice_send_action(key, retry);
+                    }
+                });
+                row.append(&button);
+            }
+            sends.append(&row);
         }
     }
 }

@@ -231,6 +231,9 @@ struct State {
     file_keys: u64,
     /// Advanced when any file changes, so chips redraw.
     files_revision: u64,
+    /// Voice messages sending on their own (\"Send voice messages as soon
+    /// as I stop recording\"): uploading, failed, or waiting their turn.
+    voice_sends: Vec<recording::VoiceSend>,
     /// `GET /api/people`: `@` suggestions in DMs and the new DM field.
     people: Option<Vec<caper_client::model::Person>>,
     /// The new DM dialog: its lookup request, whether a lookup or the
@@ -527,6 +530,8 @@ pub struct App {
     recording: RefCell<Option<recording::Recording>>,
     dictation: RefCell<Option<recording::Dictation>>,
     recording_ticking: Cell<bool>,
+    /// What each composer's voice-send rows show, so they rebuild on change.
+    voice_send_rows: RefCell<[String; 2]>,
 }
 
 struct PinsView {
@@ -607,6 +612,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         recording: RefCell::default(),
         dictation: RefCell::default(),
         recording_ticking: Cell::new(false),
+        voice_send_rows: RefCell::default(),
         images,
         worker: Worker::new(api.clone(), Wakes(sender.clone())),
         state: RefCell::new(State::default()),
@@ -1226,6 +1232,7 @@ impl App {
             let uploaded: Vec<String> = state
                 .files
                 .iter()
+                .chain(state.voice_sends.iter().map(|send| &send.file))
                 .inspect(|file| file.stop())
                 .filter_map(|file| file.attachment.as_ref().map(|file| file.id.clone()))
                 .collect();
@@ -1392,6 +1399,8 @@ impl App {
     }
 
     fn prepare(&self, state: &mut State, space: Option<String>, channel: Option<String>) {
+        // A voice message sending on its own belongs to its conversation.
+        self.discard_voice_sends(state, channel.as_deref());
         self.worker.send(Command::PrepareNavigation {
             generation: state.generation,
             navigation: state.navigation,
@@ -2234,6 +2243,7 @@ impl App {
         update: caper_client::worker::UploadUpdate,
     ) {
         use caper_client::worker::UploadUpdate;
+        let voice = state.voice_sends.iter().any(|send| send.file.key == key);
         let file = state
             .files
             .iter_mut()
@@ -2243,6 +2253,7 @@ impl App {
                     .iter_mut()
                     .flat_map(|pending| pending.files.iter_mut()),
             )
+            .chain(state.voice_sends.iter_mut().map(|send| &mut send.file))
             .find(|file| file.key == key);
         let Some(file) = file else {
             // Removed while it uploaded: give its reservation back.
@@ -2274,6 +2285,9 @@ impl App {
             file.error = storage_full;
         }
         state.files_revision += 1;
+        if voice {
+            self.send_voice_messages(state);
+        }
     }
 
     fn chip_action(self: &Rc<Self>, action: ChipAction) {
@@ -3630,6 +3644,8 @@ impl App {
                         }
                     }
                 }
+                // A voice message waiting its turn goes next.
+                self.send_voice_messages(state);
             }
             Event::Reacted {
                 generation,
