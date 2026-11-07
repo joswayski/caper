@@ -714,6 +714,3443 @@
           "pending": -1
         }
       ]
+    },
+    {
+      "note": "a whole draft typed: a closed bold, then a space and plain words",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**h",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**he",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**hel",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**hell",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**hello",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**hello*",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**hello**",
+          "caret": 5,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**hello** ",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "w",
+          "placed": false,
+          "text": "**hello** w",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**hello** wo",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**hello** wor",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**hello** worl",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**hello** world",
+          "caret": 11,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: closed italic, then plain words",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "_",
+          "placed": false,
+          "text": "_",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "_s",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "_so",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "f",
+          "placed": false,
+          "text": "_sof",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "_soft",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "_soft_",
+          "caret": 4,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "_soft_ ",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "_soft_ a",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "_soft_ an",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "_soft_ and",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "_soft_ and ",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "m",
+          "placed": false,
+          "text": "_soft_ and m",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "_soft_ and mo",
+          "caret": 11,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "_soft_ and mor",
+          "caret": 12,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "_soft_ and more",
+          "caret": 13,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: italic inside bold, closed, then plain words",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "**b",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**bo",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**bot",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**both",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**both ",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**both _",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "**both _b",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "u",
+          "placed": false,
+          "text": "**both _bu",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**both _bui",
+          "caret": 11,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**both _buil",
+          "caret": 12,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**both _build",
+          "caret": 13,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**both _builds",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**both _builds_",
+          "caret": 13,
+          "pending": 0
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**both _builds_*",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**both _builds_**",
+          "caret": 11,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**both _builds_** ",
+          "caret": 12,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**both _builds_** a",
+          "caret": 13,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**both _builds_** an",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**both _builds_** and",
+          "caret": 15,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**both _builds_** and ",
+          "caret": 16,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**both _builds_** and a",
+          "caret": 17,
+          "pending": -1
+        },
+        {
+          "key": "f",
+          "placed": false,
+          "text": "**both _builds_** and af",
+          "caret": 18,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**both _builds_** and aft",
+          "caret": 19,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**both _builds_** and afte",
+          "caret": 20,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**both _builds_** and after",
+          "caret": 21,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: bold then italic then bold, each closed and followed by a space",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**a",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**a*",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**a**",
+          "caret": 1,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**a** ",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**a** _",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "**a** _b",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**a** _b_",
+          "caret": 3,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**a** _b_ ",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**a** _b_ *",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**a** _b_ **",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**a** _b_ **c",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**a** _b_ **c*",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**a** _b_ **c**",
+          "caret": 5,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**a** _b_ **c** ",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**a** _b_ **c** d",
+          "caret": 7,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: punctuation right after a closed style",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "D",
+          "placed": false,
+          "text": "**D",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Do",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Don",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Done",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Done*",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Done**",
+          "caret": 4,
+          "pending": 0
+        },
+        {
+          "key": ",",
+          "placed": false,
+          "text": "**Done**,",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Done**, ",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Done**, t",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**Done**, th",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Done**, the",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Done**, then",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Done**, then ",
+          "caret": 11,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**Done**, then _",
+          "caret": 12,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Done**, then _t",
+          "caret": 13,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**Done**, then _th",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**Done**, then _thi",
+          "caret": 15,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**Done**, then _this",
+          "caret": 16,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**Done**, then _this_",
+          "caret": 15,
+          "pending": 0
+        },
+        {
+          "key": ":",
+          "placed": false,
+          "text": "**Done**, then _this_:",
+          "caret": 16,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Done**, then _this_: ",
+          "caret": 17,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Done**, then _this_: o",
+          "caret": 18,
+          "pending": -1
+        },
+        {
+          "key": "k",
+          "placed": false,
+          "text": "**Done**, then _this_: ok",
+          "caret": 19,
+          "pending": -1
+        },
+        {
+          "key": ".",
+          "placed": false,
+          "text": "**Done**, then _this_: ok.",
+          "caret": 20,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: bold and italic closed together",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**_",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "**_b",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**_bo",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**_bot",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**_both",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**_both_",
+          "caret": 6,
+          "pending": 0
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**_both_*",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**_both_**",
+          "caret": 4,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**_both_** ",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "p",
+          "placed": false,
+          "text": "**_both_** p",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**_both_** pl",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**_both_** pla",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**_both_** plai",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**_both_** plain",
+          "caret": 10,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: a closed style then a link",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**s",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**se",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**see",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**see*",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**see**",
+          "caret": 3,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**see** ",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**see** h",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**see** ht",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**see** htt",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "p",
+          "placed": false,
+          "text": "**see** http",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**see** https",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": ":",
+          "placed": false,
+          "text": "**see** https:",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "/",
+          "placed": false,
+          "text": "**see** https:/",
+          "caret": 11,
+          "pending": -1
+        },
+        {
+          "key": "/",
+          "placed": false,
+          "text": "**see** https://",
+          "caret": 12,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**see** https://c",
+          "caret": 13,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**see** https://ca",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": "p",
+          "placed": false,
+          "text": "**see** https://cap",
+          "caret": 15,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**see** https://cape",
+          "caret": 16,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**see** https://caper",
+          "caret": 17,
+          "pending": -1
+        },
+        {
+          "key": ".",
+          "placed": false,
+          "text": "**see** https://caper.",
+          "caret": 18,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**see** https://caper.c",
+          "caret": 19,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**see** https://caper.ch",
+          "caret": 20,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**see** https://caper.cha",
+          "caret": 21,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**see** https://caper.chat",
+          "caret": 22,
+          "pending": -1
+        },
+        {
+          "key": "/",
+          "placed": false,
+          "text": "**see** https://caper.chat/",
+          "caret": 23,
+          "pending": -1
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "**see** https://caper.chat/x",
+          "caret": 24,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**see** https://caper.chat/x ",
+          "caret": 25,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**see** https://caper.chat/x a",
+          "caret": 26,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**see** https://caper.chat/x an",
+          "caret": 27,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**see** https://caper.chat/x and",
+          "caret": 28,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**see** https://caper.chat/x and ",
+          "caret": 29,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**see** https://caper.chat/x and o",
+          "caret": 30,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**see** https://caper.chat/x and on",
+          "caret": 31,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: strikethrough markers are plain text",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "~",
+          "placed": false,
+          "text": "~",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "~",
+          "placed": false,
+          "text": "~~",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "~~s",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "~~st",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "~~str",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "u",
+          "placed": false,
+          "text": "~~stru",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "~~struc",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "k",
+          "placed": false,
+          "text": "~~struck",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "~",
+          "placed": false,
+          "text": "~~struck~",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "~",
+          "placed": false,
+          "text": "~~struck~~",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "~~struck~~ ",
+          "caret": 11,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "~~struck~~ a",
+          "caret": 12,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "~~struck~~ an",
+          "caret": 13,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "~~struck~~ and",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "~~struck~~ and ",
+          "caret": 15,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "~~struck~~ and *",
+          "caret": 16,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "~~struck~~ and **",
+          "caret": 17,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "~~struck~~ and **b",
+          "caret": 18,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "~~struck~~ and **b*",
+          "caret": 19,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "~~struck~~ and **b**",
+          "caret": 16,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "~~struck~~ and **b** ",
+          "caret": 17,
+          "pending": -1
+        },
+        {
+          "key": "~",
+          "placed": false,
+          "text": "~~struck~~ and **b** ~",
+          "caret": 18,
+          "pending": -1
+        },
+        {
+          "key": "~",
+          "placed": false,
+          "text": "~~struck~~ and **b** ~~",
+          "caret": 19,
+          "pending": -1
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "~~struck~~ and **b** ~~x",
+          "caret": 20,
+          "pending": -1
+        },
+        {
+          "key": "~",
+          "placed": false,
+          "text": "~~struck~~ and **b** ~~x~",
+          "caret": 21,
+          "pending": -1
+        },
+        {
+          "key": "~",
+          "placed": false,
+          "text": "~~struck~~ and **b** ~~x~~",
+          "caret": 22,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "~~struck~~ and **b** ~~x~~ ",
+          "caret": 23,
+          "pending": -1
+        },
+        {
+          "key": "y",
+          "placed": false,
+          "text": "~~struck~~ and **b** ~~x~~ y",
+          "caret": 24,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: single-star emphasis is plain text",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "*s",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "*st",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "*sta",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "*star",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*star*",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "*star* ",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "*star* a",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "*star* an",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "*star* and",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "*star* and ",
+          "caret": 11,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*star* and *",
+          "caret": 12,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*star* and **",
+          "caret": 13,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "*star* and **b",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "*star* and **bo",
+          "caret": 15,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "*star* and **bol",
+          "caret": 16,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "*star* and **bold",
+          "caret": 17,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*star* and **bold*",
+          "caret": 18,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*star* and **bold**",
+          "caret": 15,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "*star* and **bold** ",
+          "caret": 16,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "*star* and **bold** a",
+          "caret": 17,
+          "pending": -1
+        },
+        {
+          "key": "f",
+          "placed": false,
+          "text": "*star* and **bold** af",
+          "caret": 18,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "*star* and **bold** aft",
+          "caret": 19,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "*star* and **bold** afte",
+          "caret": 20,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "*star* and **bold** after",
+          "caret": 21,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: styles in the middle of a word",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "a",
+          "placed": false,
+          "text": "a",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "a*",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "a**",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "a**b",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "a**b*",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "a**b**",
+          "caret": 2,
+          "pending": 0
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "a**b**c",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "a**b**c ",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "a**b**c a",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "a**b**c an",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "a**b**c and",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "a**b**c and ",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "a**b**c and _",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "a**b**c and _d",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "a**b**c and _d_",
+          "caret": 9,
+          "pending": 0
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "a**b**c and de",
+          "caret": 10,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: emoji and accents after a closed style",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**c",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**ca",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "f",
+          "placed": false,
+          "text": "**caf",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "é",
+          "placed": false,
+          "text": "**café",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**café*",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**café**",
+          "caret": 4,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**café** ",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "☕",
+          "placed": false,
+          "text": "**café** ☕",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**café** ☕ ",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**café** ☕ o",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "k",
+          "placed": false,
+          "text": "**café** ☕ ok",
+          "caret": 9,
+          "pending": -1
+        }
+      ]
+    },
+    {
+      "note": "a whole draft typed: the bench draft",
+      "text": "",
+      "caret": 0,
+      "steps": [
+        {
+          "key": "*",
+          "placed": false,
+          "text": "*",
+          "caret": 1,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**",
+          "caret": 2,
+          "pending": -1
+        },
+        {
+          "key": "R",
+          "placed": false,
+          "text": "**R",
+          "caret": 3,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Re",
+          "caret": 4,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**Rel",
+          "caret": 5,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Rele",
+          "caret": 6,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Relea",
+          "caret": 7,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**Releas",
+          "caret": 8,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release",
+          "caret": 9,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release ",
+          "caret": 10,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**Release c",
+          "caret": 11,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**Release ch",
+          "caret": 12,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release che",
+          "caret": 13,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**Release chec",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": "k",
+          "placed": false,
+          "text": "**Release check",
+          "caret": 15,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check*",
+          "caret": 16,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check**",
+          "caret": 13,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** ",
+          "caret": 14,
+          "pending": -1
+        },
+        {
+          "key": "f",
+          "placed": false,
+          "text": "**Release check** f",
+          "caret": 15,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** fo",
+          "caret": 16,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**Release check** for",
+          "caret": 17,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for ",
+          "caret": 18,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**Release check** for _",
+          "caret": 19,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Release check** for _t",
+          "caret": 20,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**Release check** for _th",
+          "caret": 21,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the",
+          "caret": 22,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the ",
+          "caret": 23,
+          "pending": -1
+        },
+        {
+          "key": "v",
+          "placed": false,
+          "text": "**Release check** for _the v",
+          "caret": 24,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the vo",
+          "caret": 25,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**Release check** for _the voi",
+          "caret": 26,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**Release check** for _the voic",
+          "caret": 27,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice",
+          "caret": 28,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice ",
+          "caret": 29,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "**Release check** for _the voice b",
+          "caret": 30,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice be",
+          "caret": 31,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Release check** for _the voice bet",
+          "caret": 32,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta",
+          "caret": 33,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_",
+          "caret": 32,
+          "pending": 0
+        },
+        {
+          "key": ":",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_:",
+          "caret": 33,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: ",
+          "caret": 34,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: s",
+          "caret": 35,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: se",
+          "caret": 36,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see",
+          "caret": 37,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see ",
+          "caret": 38,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see h",
+          "caret": 39,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see ht",
+          "caret": 40,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see htt",
+          "caret": 41,
+          "pending": -1
+        },
+        {
+          "key": "p",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see http",
+          "caret": 42,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https",
+          "caret": 43,
+          "pending": -1
+        },
+        {
+          "key": ":",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https:",
+          "caret": 44,
+          "pending": -1
+        },
+        {
+          "key": "/",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https:/",
+          "caret": 45,
+          "pending": -1
+        },
+        {
+          "key": "/",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://",
+          "caret": 46,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://e",
+          "caret": 47,
+          "pending": -1
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://ex",
+          "caret": 48,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://exa",
+          "caret": 49,
+          "pending": -1
+        },
+        {
+          "key": "m",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://exam",
+          "caret": 50,
+          "pending": -1
+        },
+        {
+          "key": "p",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://examp",
+          "caret": 51,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://exampl",
+          "caret": 52,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example",
+          "caret": 53,
+          "pending": -1
+        },
+        {
+          "key": ".",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.",
+          "caret": 54,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.c",
+          "caret": 55,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.co",
+          "caret": 56,
+          "pending": -1
+        },
+        {
+          "key": "m",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com",
+          "caret": 57,
+          "pending": -1
+        },
+        {
+          "key": "/",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/",
+          "caret": 58,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/d",
+          "caret": 59,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/do",
+          "caret": 60,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/doc",
+          "caret": 61,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs",
+          "caret": 62,
+          "pending": -1
+        },
+        {
+          "key": "/",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/",
+          "caret": 63,
+          "pending": -1
+        },
+        {
+          "key": "4",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/4",
+          "caret": 64,
+          "pending": -1
+        },
+        {
+          "key": "2",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42",
+          "caret": 65,
+          "pending": -1
+        },
+        {
+          "key": "?",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?",
+          "caret": 66,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?t",
+          "caret": 67,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?ta",
+          "caret": 68,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab",
+          "caret": 69,
+          "pending": -1
+        },
+        {
+          "key": "=",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=",
+          "caret": 70,
+          "pending": -1
+        },
+        {
+          "key": "v",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=v",
+          "caret": 71,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=vo",
+          "caret": 72,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voi",
+          "caret": 73,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voic",
+          "caret": 74,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice",
+          "caret": 75,
+          "pending": -1
+        },
+        {
+          "key": "#",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#",
+          "caret": 76,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s",
+          "caret": 77,
+          "pending": -1
+        },
+        {
+          "key": "-",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-",
+          "caret": 78,
+          "pending": -1
+        },
+        {
+          "key": "3",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3",
+          "caret": 79,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 ",
+          "caret": 80,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 a",
+          "caret": 81,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 an",
+          "caret": 82,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and",
+          "caret": 83,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and ",
+          "caret": 84,
+          "pending": -1
+        },
+        {
+          "key": "w",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and w",
+          "caret": 85,
+          "pending": -1
+        },
+        {
+          "key": "w",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and ww",
+          "caret": 86,
+          "pending": -1
+        },
+        {
+          "key": "w",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www",
+          "caret": 87,
+          "pending": -1
+        },
+        {
+          "key": ".",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.",
+          "caret": 88,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.e",
+          "caret": 89,
+          "pending": -1
+        },
+        {
+          "key": "x",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.ex",
+          "caret": 90,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.exa",
+          "caret": 91,
+          "pending": -1
+        },
+        {
+          "key": "m",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.exam",
+          "caret": 92,
+          "pending": -1
+        },
+        {
+          "key": "p",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.examp",
+          "caret": 93,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.exampl",
+          "caret": 94,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example",
+          "caret": 95,
+          "pending": -1
+        },
+        {
+          "key": ".",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.",
+          "caret": 96,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.o",
+          "caret": 97,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.or",
+          "caret": 98,
+          "pending": -1
+        },
+        {
+          "key": "g",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org",
+          "caret": 99,
+          "pending": -1
+        },
+        {
+          "key": "/",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/",
+          "caret": 100,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/s",
+          "caret": 101,
+          "pending": -1
+        },
+        {
+          "key": "p",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/sp",
+          "caret": 102,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/spe",
+          "caret": 103,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/spec",
+          "caret": 104,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs",
+          "caret": 105,
+          "pending": -1
+        },
+        {
+          "key": "/",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/",
+          "caret": 106,
+          "pending": -1
+        },
+        {
+          "key": "1",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/1",
+          "caret": 107,
+          "pending": -1
+        },
+        {
+          "key": "7",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17",
+          "caret": 108,
+          "pending": -1
+        },
+        {
+          "key": ".",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17.",
+          "caret": 109,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. ",
+          "caret": 110,
+          "pending": -1
+        },
+        {
+          "key": "@",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @",
+          "caret": 111,
+          "pending": -1
+        },
+        {
+          "key": "m",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @m",
+          "caret": 112,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @ma",
+          "caret": 113,
+          "pending": -1
+        },
+        {
+          "key": "y",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @may",
+          "caret": 114,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya",
+          "caret": 115,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya ",
+          "caret": 116,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya c",
+          "caret": 117,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya ca",
+          "caret": 118,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can",
+          "caret": 119,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can ",
+          "caret": 120,
+          "pending": -1
+        },
+        {
+          "key": "y",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can y",
+          "caret": 121,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can yo",
+          "caret": 122,
+          "pending": -1
+        },
+        {
+          "key": "u",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you",
+          "caret": 123,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you ",
+          "caret": 124,
+          "pending": -1
+        },
+        {
+          "key": "c",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you c",
+          "caret": 125,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you co",
+          "caret": 126,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you con",
+          "caret": 127,
+          "pending": -1
+        },
+        {
+          "key": "f",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you conf",
+          "caret": 128,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confi",
+          "caret": 129,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confir",
+          "caret": 130,
+          "pending": -1
+        },
+        {
+          "key": "m",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm",
+          "caret": 131,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm ",
+          "caret": 132,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm *",
+          "caret": 133,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **",
+          "caret": 134,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **b",
+          "caret": 135,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **bo",
+          "caret": 136,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **bot",
+          "caret": 137,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both",
+          "caret": 138,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both ",
+          "caret": 139,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _",
+          "caret": 140,
+          "pending": -1
+        },
+        {
+          "key": "b",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _b",
+          "caret": 141,
+          "pending": -1
+        },
+        {
+          "key": "u",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _bu",
+          "caret": 142,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _bui",
+          "caret": 143,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _buil",
+          "caret": 144,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _build",
+          "caret": 145,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds",
+          "caret": 146,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_",
+          "caret": 145,
+          "pending": 0
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_*",
+          "caret": 146,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_**",
+          "caret": 143,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** ",
+          "caret": 144,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** a",
+          "caret": 145,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** an",
+          "caret": 146,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and",
+          "caret": 147,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and ",
+          "caret": 148,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *",
+          "caret": 149,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *t",
+          "caret": 150,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *th",
+          "caret": 151,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the",
+          "caret": 152,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the ",
+          "caret": 153,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the n",
+          "caret": 154,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the na",
+          "caret": 155,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the nar",
+          "caret": 156,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narr",
+          "caret": 157,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narro",
+          "caret": 158,
+          "pending": -1
+        },
+        {
+          "key": "w",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow",
+          "caret": 159,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow ",
+          "caret": 160,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow l",
+          "caret": 161,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow la",
+          "caret": 162,
+          "pending": -1
+        },
+        {
+          "key": "y",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow lay",
+          "caret": 163,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layo",
+          "caret": 164,
+          "pending": -1
+        },
+        {
+          "key": "u",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layou",
+          "caret": 165,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout",
+          "caret": 166,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*",
+          "caret": 167,
+          "pending": -1
+        },
+        {
+          "key": "?",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*?",
+          "caret": 168,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? ",
+          "caret": 169,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? *",
+          "caret": 170,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **",
+          "caret": 171,
+          "pending": -1
+        },
+        {
+          "key": "D",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **D",
+          "caret": 172,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Do",
+          "caret": 173,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Don",
+          "caret": 174,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done",
+          "caret": 175,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done*",
+          "caret": 176,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done**",
+          "caret": 173,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** ",
+          "caret": 174,
+          "pending": -1
+        },
+        {
+          "key": "w",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** w",
+          "caret": 175,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** wh",
+          "caret": 176,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** whe",
+          "caret": 177,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when",
+          "caret": 178,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when ",
+          "caret": 179,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _",
+          "caret": 180,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _h",
+          "caret": 181,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _hi",
+          "caret": 182,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _his",
+          "caret": 183,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _hist",
+          "caret": 184,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _histo",
+          "caret": 185,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _histor",
+          "caret": 186,
+          "pending": -1
+        },
+        {
+          "key": "y",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history",
+          "caret": 187,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history ",
+          "caret": 188,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history l",
+          "caret": 189,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history lo",
+          "caret": 190,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loa",
+          "caret": 191,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history load",
+          "caret": 192,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loadi",
+          "caret": 193,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loadin",
+          "caret": 194,
+          "pending": -1
+        },
+        {
+          "key": "g",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading",
+          "caret": 195,
+          "pending": -1
+        },
+        {
+          "key": "_",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_",
+          "caret": 194,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ ",
+          "caret": 195,
+          "pending": -1
+        },
+        {
+          "key": "a",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ a",
+          "caret": 196,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ an",
+          "caret": 197,
+          "pending": -1
+        },
+        {
+          "key": "d",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and",
+          "caret": 198,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and ",
+          "caret": 199,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and *",
+          "caret": 200,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **",
+          "caret": 201,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **l",
+          "caret": 202,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **li",
+          "caret": 203,
+          "pending": -1
+        },
+        {
+          "key": "n",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **lin",
+          "caret": 204,
+          "pending": -1
+        },
+        {
+          "key": "k",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link",
+          "caret": 205,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link ",
+          "caret": 206,
+          "pending": -1
+        },
+        {
+          "key": "p",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link p",
+          "caret": 207,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link pr",
+          "caret": 208,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link pre",
+          "caret": 209,
+          "pending": -1
+        },
+        {
+          "key": "v",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link prev",
+          "caret": 210,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previ",
+          "caret": 211,
+          "pending": -1
+        },
+        {
+          "key": "e",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previe",
+          "caret": 212,
+          "pending": -1
+        },
+        {
+          "key": "w",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link preview",
+          "caret": 213,
+          "pending": -1
+        },
+        {
+          "key": "s",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews",
+          "caret": 214,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews*",
+          "caret": 215,
+          "pending": -1
+        },
+        {
+          "key": "*",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews**",
+          "caret": 212,
+          "pending": 0
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** ",
+          "caret": 213,
+          "pending": -1
+        },
+        {
+          "key": "l",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** l",
+          "caret": 214,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** lo",
+          "caret": 215,
+          "pending": -1
+        },
+        {
+          "key": "o",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** loo",
+          "caret": 216,
+          "pending": -1
+        },
+        {
+          "key": "k",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look",
+          "caret": 217,
+          "pending": -1
+        },
+        {
+          "key": " ",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look ",
+          "caret": 218,
+          "pending": -1
+        },
+        {
+          "key": "r",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look r",
+          "caret": 219,
+          "pending": -1
+        },
+        {
+          "key": "i",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look ri",
+          "caret": 220,
+          "pending": -1
+        },
+        {
+          "key": "g",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look rig",
+          "caret": 221,
+          "pending": -1
+        },
+        {
+          "key": "h",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look righ",
+          "caret": 222,
+          "pending": -1
+        },
+        {
+          "key": "t",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look right",
+          "caret": 223,
+          "pending": -1
+        },
+        {
+          "key": ".",
+          "placed": false,
+          "text": "**Release check** for _the voice beta_: see https://example.com/docs/42?tab=voice#s-3 and www.example.org/specs/17. @maya can you confirm **both _builds_** and *the narrow layout*? **Done** when _history loading_ and **link previews** look right.",
+          "caret": 224,
+          "pending": -1
+        }
+      ]
     }
   ]
 }
