@@ -315,9 +315,9 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         time.setContentHuggingPriority(.required, for: .horizontal)
         edited.setContentHuggingPriority(.required, for: .horizontal)
         header.addArrangedSubview(UIView())
-        // VoiceOver reads the header as one element: who and when.
+        // VoiceOver reads the header as one element: who and when. Not a
+        // heading, as in SwiftUI: the heading rotor steps through days.
         header.isAccessibilityElement = true
-        header.accessibilityTraits = .header
 
         note.numberOfLines = 0
         column.axis = .vertical
