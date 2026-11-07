@@ -91,7 +91,10 @@ struct WhatsNewDisplay: Identifiable {
 
 @MainActor struct WhatsNewPresentation: ViewModifier {
     @Bindable var model: AppModel
+    // NSApplication hosts have no SwiftUI Scene to own scenePhase.
+    var applicationActive: Bool? = nil
     @Environment(\.scenePhase) private var scenePhase
+    private var active: Bool { applicationActive ?? (scenePhase == .active) }
     private var ready: Bool { model.phase == .ready && model.account != nil && model.spacesLoaded && !model.restoringWorkspace }
 
     func body(content: Content) -> some View {
@@ -99,16 +102,16 @@ struct WhatsNewDisplay: Identifiable {
             .sheet(item: Binding(get: { model.whatsNew.settingsOpen ? nil : model.whatsNew.presentation }, set: { model.whatsNew.presentation = $0 })) { display in
                 WhatsNewSheet(notes: model.whatsNew, display: model.whatsNew.presentation ?? display)
             }
-            .task(id: "\(ready)-\(scenePhase == .active)") {
-                guard ready, scenePhase == .active else { return }
+            .task(id: "\(ready)-\(active)") {
+                guard ready, active else { return }
                 repeat {
                     await model.whatsNew.refresh()
                     if model.whatsNew.hasSnapshot { break }
                     do { try await Task.sleep(for: .seconds(60)) } catch { return }
                 } while !Task.isCancelled
             }
-            .task(id: "presentation-\(ready)-\(scenePhase == .active)") {
-                guard ready, scenePhase == .active else { return }
+            .task(id: "presentation-\(ready)-\(active)") {
+                guard ready, active else { return }
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
                     let notes = model.whatsNew
