@@ -450,7 +450,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         controls.isHidden = false
         controls.configure(message, canInteract: canInteract, viewerID: viewerID)
         updateControlsVisibility()
-        thread.isHidden = inThread || message.isDeleted || (message.threadRootId == nil && (message.thread?.replyCount ?? 0) == 0)
+        thread.isHidden = inThread || (message.threadRootId == nil && (message.thread?.replyCount ?? 0) == 0)
         let count = message.thread?.replyCount ?? 0
         thread.title = message.threadRootId != nil ? "View thread" : "\(count) \(count == 1 ? "reply" : "replies")"
         thread.setAccessibilityLabel(thread.title)
