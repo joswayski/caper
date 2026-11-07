@@ -202,6 +202,8 @@ pub struct Ui {
     pub new_direct: gtk::Button,
     /// The call card above the account bar, and the bar's voice toggles.
     pub call_card: gtk::Box,
+    /// "Update available" above the account bar.
+    pub update_dock: gtk::Button,
     pub mic: gtk::Button,
     pub deafen: gtk::Button,
     pub input_options: gtk::Button,
@@ -559,6 +561,11 @@ impl Ui {
         call_card.add_css_class("call-card");
         call_card.set_visible(false);
         sidebar.append(&call_card);
+        // A known update, above the account bar: opens its review.
+        let update_dock = gtk::Button::with_label("Update available");
+        update_dock.add_css_class("update-dock");
+        update_dock.set_visible(false);
+        sidebar.append(&update_dock);
         sidebar.append(&dock);
         chat.append(&sidebar);
 
@@ -816,6 +823,7 @@ impl Ui {
             settings,
             new_direct,
             call_card,
+            update_dock,
             mic,
             deafen,
             input_options,

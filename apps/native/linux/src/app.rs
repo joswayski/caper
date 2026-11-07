@@ -65,6 +65,8 @@ mod reactors;
 mod requests;
 #[path = "settings.rs"]
 mod settings;
+#[path = "updates.rs"]
+mod updates;
 
 const STYLE: &str = include_str!("style.css");
 /// Others' typing shows this long after their last update (desktop's).
@@ -311,6 +313,8 @@ struct State {
     arrival: Option<(u64, String, String, Option<String>)>,
     /// That message, ready to jump to.
     arrival_ready: Option<(String, Option<String>)>,
+    /// A failed install reported from the update review.
+    update_report: Option<updates::Report>,
     /// Privacy and notification settings.
     settings: settings::AccountSettings,
     /// Space and channel management, invites and membership.
@@ -490,6 +494,12 @@ pub struct App {
     history_window: RefCell<Option<history::HistoryWindow>>,
     gif_picker: RefCell<Option<gifs::Picker>>,
     inbox_window: RefCell<Option<inbox::InboxWindow>>,
+    /// Background update checks, this revision's What's new, and their
+    /// windows.
+    updates: RefCell<caper_client::updates::Updates>,
+    whats_new: RefCell<caper_client::whats_new::WhatsNew>,
+    whats_new_window: RefCell<Option<updates::WhatsNewWindow>>,
+    update_window: RefCell<Option<updates::UpdateWindow>>,
     /// The open View reactions window.
     reactors_window: RefCell<Option<reactors::ReactorsWindow>>,
     /// The open attachment editor.
@@ -594,6 +604,19 @@ pub fn start(application: &gtk::Application, base: &str) {
         reactors_window: RefCell::default(),
         history_window: RefCell::default(),
         inbox_window: RefCell::default(),
+        updates: RefCell::new(caper_client::updates::Updates::start(
+            {
+                let wakes = Wakes(sender.clone());
+                move || wakes.wake()
+            },
+            true,
+        )),
+        whats_new: RefCell::new(caper_client::whats_new::WhatsNew::new(
+            &api.base().origin().ascii_serialization(),
+            caper_client::whats_new::PLATFORM,
+        )),
+        whats_new_window: RefCell::default(),
+        update_window: RefCell::default(),
         gif_picker: RefCell::default(),
         members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
@@ -633,6 +656,7 @@ pub fn start(application: &gtk::Application, base: &str) {
     app.connect_requests();
     app.connect_gifs();
     app.connect_inbox();
+    app.start_updates();
     app.install_actions();
     app.install_shortcuts();
     app.install_notification_actions();
@@ -3116,6 +3140,8 @@ impl App {
         }
         self.render_profile();
         self.render_inbox();
+        self.render_updates();
+        self.poll_whats_new();
         self.render_settings();
         self.render_start_direct();
         self.start_membership_refresh();
@@ -3276,6 +3302,28 @@ impl App {
                     card.status = Some(status);
                 }
             }
+            // The update review's report: it stays in the review.
+            Event::ProfileSent {
+                epoch,
+                send,
+                result,
+                ..
+            } if epoch == state.epoch
+                && state
+                    .update_report
+                    .as_ref()
+                    .is_some_and(|report| report.client_id == send.client_id) =>
+            {
+                if let Some(direct) = result.as_ref().ok().or(send.direct.as_ref()) {
+                    state.directs.retain(|item| item.id != direct.id);
+                    state.directs.push(direct.clone());
+                    state.layout += 1;
+                }
+                if let Some(report) = state.update_report.as_mut() {
+                    report.state = result.map(|_| true).map_err(|error| error.message);
+                }
+            }
+            Event::WhatsNew(result) => self.whats_new_loaded(result),
             Event::ProfileSent {
                 epoch,
                 person,

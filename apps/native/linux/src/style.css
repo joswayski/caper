@@ -1602,3 +1602,49 @@ button.small-action {
   padding: 0 10px;
   font-size: 12px;
 }
+
+/* Updates and What's new. */
+button.update-dock {
+  margin: 0 8px 8px;
+  min-height: 36px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.update-title {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.update-rule {
+  color: @caper_text_muted;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+}
+
+.highlight-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.highlight-body {
+  font-size: 14px;
+}
+
+button.release-link,
+button.inline-link {
+  min-height: 0;
+  padding: 0;
+  color: @caper_text;
+  font-size: 12px;
+}
+
+button.release-link label,
+button.inline-link label {
+  text-decoration: underline;
+}
+
+button.inline-link {
+  font-size: inherit;
+}

@@ -40,6 +40,8 @@ pub(super) struct SettingsDialog {
     blocked: gtk::Box,
     /// The blocked accounts the list shows, so it rebuilds only on change.
     blocked_shown: Option<Vec<String>>,
+    /// The Updates section.
+    pub(super) updates: super::updates::UpdatesRow,
 }
 
 fn section(root: &gtk::Box, title: &str, first: bool) {
@@ -134,6 +136,7 @@ impl App {
             "Play sounds for messages and app interactions.",
         );
         sounds.set_active(self.sound_effects());
+        let updates = self.updates_section(&root);
 
         let signed_in = self.state.borrow().account.is_some();
         let mut levels = Vec::new();
@@ -280,8 +283,10 @@ impl App {
             privacy_status,
             blocked,
             blocked_shown: None,
+            updates,
         });
         self.render_settings();
+        self.render_updates();
         window.present();
     }
 

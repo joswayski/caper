@@ -390,7 +390,23 @@ fn render_svg(svg: &[u8], edge: u32) -> Option<gdk::Texture> {
 
 /// The Caper wordmark at `width`×`height` pixels.
 pub fn wordmark(width: u32, height: u32) -> Option<gdk::Texture> {
-    let svg = include_bytes!("../../../web/public/caper-wordmark.svg");
+    svg_texture(
+        include_bytes!("../../../web/public/caper-wordmark.svg"),
+        width,
+        height,
+    )
+}
+
+/// The Caper face that heads What's new and the update review.
+pub fn caper_face(size: u32) -> Option<gdk::Texture> {
+    svg_texture(
+        include_bytes!("../../../web/public/caper-face.svg"),
+        size,
+        size,
+    )
+}
+
+fn svg_texture(svg: &[u8], width: u32, height: u32) -> Option<gdk::Texture> {
     let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
     let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
     resvg::render(
