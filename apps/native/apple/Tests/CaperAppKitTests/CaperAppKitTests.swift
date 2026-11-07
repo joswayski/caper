@@ -469,6 +469,26 @@ import XCTest
         capture("thread newer replies loaded without changing channel draft", app: app)
         back.click(); openOtherRoot()
         XCTAssertEqual(editor.value as? String, otherDraft, "Sending and navigating the first root never consume the second root's draft")
+        back.click()
+        channel.scroll(byDeltaX: 0, deltaY: 10000)
+        let ownRoot = channel.textViews["message-\(otherRootID)"]
+        XCTAssertTrue(ownRoot.waitForExistence(timeout: 5)); ownRoot.rightClick()
+        messageMenuItem("Delete message", app: app, body: ownRoot).click()
+        XCTAssertTrue(app.staticTexts["Delete message?"].waitForExistence(timeout: 5)); app.buttons["Delete"].click()
+        let tombstone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "This message was deleted."), object: ownRoot)
+        XCTAssertEqual(XCTWaiter.wait(for: [tombstone], timeout: 10), .completed)
+        let survivingThread = channel.buttons["thread-summary-\(otherRootID)"]
+        XCTAssertTrue(survivingThread.exists, "Deleting a root preserves access to its replies")
+        ownRoot.rightClick()
+        let viewThread = messageMenuItem("View thread", app: app, body: ownRoot)
+        XCTAssertTrue(viewThread.waitForExistence(timeout: 5))
+        XCTAssertFalse(messageMenuItem("Reply", app: app, body: ownRoot).exists)
+        viewThread.click()
+        XCTAssertTrue(timeline.textViews.matching(NSPredicate(format: "value == %@", "Second root reply")).firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(editor.value as? String, otherDraft)
+        capture("surviving replies beneath a deleted root", app: app)
+        back.click(); survivingThread.click()
+        XCTAssertTrue(editor.waitForExistence(timeout: 5)); XCTAssertEqual(editor.value as? String, otherDraft)
     }
 
     func testOwnMessageActionsEditConflictHistoryAndDeleteConfirmation() async throws {
