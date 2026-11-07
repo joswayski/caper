@@ -6996,12 +6996,7 @@ private struct ReactionChip: View {
 
     /// Names once loaded; until then, or after a failure, the snapshot count.
     private var summary: String {
-        let name = EmojiArtwork.name(for: reaction.emoji)
-        if case .loaded(let people) = chat.reactorsState(for: message, emoji: reaction.emoji, viewerID: reactors.viewerID),
-           !people.isEmpty {
-            return ReactionSummary.text(authors: people, selfID: reactors.viewerID, emojiName: name, emoji: reaction.emoji)
-        }
-        return ReactionSummary.fallback(authorIDs: reaction.authorIds, selfID: reactors.viewerID, emojiName: name, emoji: reaction.emoji)
+        NativePresentation.reactionSummary(message, emoji: reaction.emoji, chat: chat, viewerID: reactors.viewerID)
     }
 
     #if os(macOS)
@@ -7134,7 +7129,7 @@ private struct ReactionTooltipKey: PreferenceKey {
 }
 
 /// Discord-style hover card: a large emoji beside who reacted.
-private struct ReactionTooltipBubble: View {
+struct ReactionTooltipBubble: View {
     let emoji: String
     let text: String
     var body: some View {

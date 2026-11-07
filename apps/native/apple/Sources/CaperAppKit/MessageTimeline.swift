@@ -38,6 +38,8 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     var makePending: ((PendingMessage) -> AppKitAttachmentSurface?)?
     var messageMenu: ((ChatMessage, NSView) -> NSMenu?)?
     var messageAction: ((ChatMessage, MessageAction, NSView) -> Void)?
+    var hoverReaction: ((ChatMessage, String, Bool, NSView) -> Void)?
+    var dismissHover: (() -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -89,6 +91,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         self.pinErrors = pinErrors
         self.pendingPins = pendingPins
         if changedConversation {
+            dismissHover?()
             geometry = NativeTimelineLayout()
             followEnd = true
             focusedID = nil
@@ -150,6 +153,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
 
     @objc private func scrolled() {
         guard !rendering else { return }
+        dismissHover?()
         followEnd = contentView.bounds.maxY >= geometry.contentHeight - 2
         realize(anchor: geometry.anchor(at: contentView.bounds.minY))
         if !followEnd { requestOlderIfNeeded() }
@@ -232,6 +236,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             row.makeReply = { [weak self] in self?.makeReply?($0) }
             row.messageMenu = { [weak self] message, view in self?.messageMenu?(message, view) }
             row.messageAction = { [weak self] message, action, view in self?.messageAction?(message, action, view) }
+            row.hoverReaction = { [weak self] message, emoji, entered, view in self?.hoverReaction?(message, emoji, entered, view) }
             row.heightChanged = { [weak self, weak row] in
                 guard let self, let row, self.rows[id] === row else { return }
                 let anchor = self.geometry.anchor(at: self.contentView.bounds.minY)
@@ -288,6 +293,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     var openAuthor: ((ChatAuthor, NSView) -> Void)?
     var messageMenu: ((ChatMessage, NSView) -> NSMenu?)?
     var messageAction: ((ChatMessage, MessageAction, NSView) -> Void)?
+    var hoverReaction: ((ChatMessage, String, Bool, NSView) -> Void)?
     private let controls = MessageActionBar()
     private var tracking: NSTrackingArea?
     private var hovered = false
@@ -399,6 +405,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         avatar.setAccessibilityElement(false)
         authorAction.layer?.backgroundColor = NSColor.clear.cgColor
         avatarAction.layer?.backgroundColor = NSColor.clear.cgColor
+        authorAction.profileFeedback = true; avatarAction.profileFeedback = true
         edited.layer?.backgroundColor = NSColor.clear.cgColor
         edited.font = NativeStyle.font(10); edited.contentTintColor = NativeStyle.muted
         edited.isHidden = true
@@ -409,6 +416,10 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
         pinnedBy.layer?.backgroundColor = NSColor.clear.cgColor
         pinnedBy.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: nil)
         pinnedBy.imagePosition = .imageLeading
+        pinnedBy.hoverChanged = { [weak self] entered in
+            guard entered, let self, let message = self.message, !message.isDeleted, let pin = message.pin else { return }
+            self.openAuthor?(pin.author, self.pinnedBy)
+        }
         pinFailure.textColor = NSColor(CaperTheme.error)
         pinFailure.maximumNumberOfLines = 2; pinFailure.lineBreakMode = .byWordWrapping
         thread.isHidden = true; thread.alignment = .left
@@ -464,7 +475,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             }
         }
         if self.message?.content.attachments != message.content.attachments || self.message?.content.gif != message.content.gif
-            || self.message?.isDeleted != message.isDeleted {
+            || self.message?.forward != message.forward || self.message?.isDeleted != message.isDeleted {
             attachments?.removeFromSuperview()
             attachments = makeAttachments?(message)
             if let attachments {
@@ -558,6 +569,10 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
             button.setAccessibilityLabel(button.title)
             button.isEnabled = canInteract
             button.setAccessibilityIdentifier(id)
+            button.hoverChanged = { [weak self, weak button] entered in
+                guard let self, let button, let message = self.message else { return }
+                self.hoverReaction?(message, reaction.emoji, entered, button)
+            }
             let showPeople = { [weak self, weak button] in
                 guard let self, let button, let message = self.message else { return }
                 self.messageAction?(message, .reactors(reaction.emoji), button)
