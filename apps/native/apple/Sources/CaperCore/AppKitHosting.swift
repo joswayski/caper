@@ -38,6 +38,36 @@ import SwiftUI
         show(AppKitWorkspaceDialogState(item: .leaveChannel(channel)), in: parent)
     }
 
+    public var messageContext: String { model.chat.editingContext }
+    public func currentMessage(_ message: ChatMessage) -> ChatMessage? {
+        guard message.channelId == model.chat.channelID else { return nil }
+        return model.chat.displayedMessages.first { $0.id == message.id }
+    }
+
+    public func canEdit(_ message: ChatMessage) -> Bool { model.chat.canEdit(message) }
+    public func canDelete(_ message: ChatMessage) -> Bool { model.chat.canDelete(message) }
+    public func canBlock(_ author: ChatAuthor) -> Bool {
+        BlockedMessages.canBlock(author, viewerID: model.chat.viewerID, blocked: model.chat.blockedAuthorIDs)
+    }
+    public func canUnblock(_ author: ChatAuthor) -> Bool {
+        BlockedMessages.canUnblock(author, viewerID: model.chat.viewerID, blocked: model.chat.blockedAuthorIDs)
+    }
+
+    public func editMessage(_ message: ChatMessage, in parent: NSViewController) {
+        guard canEdit(message) else { return }
+        show(AppKitWorkspaceDialogState(item: .edit(message)), in: parent)
+    }
+
+    public func messageHistory(_ message: ChatMessage, in parent: NSViewController) {
+        guard !message.isDeleted, message.forward == nil, message.channelId == model.chat.channelID else { return }
+        show(AppKitWorkspaceDialogState(item: .history(message)), in: parent)
+    }
+
+    public func deleteMessage(_ message: ChatMessage, in parent: NSViewController) {
+        guard canDelete(message) else { return }
+        show(AppKitWorkspaceDialogState(item: .delete(message)), in: parent)
+    }
+
     private func show(_ state: AppKitWorkspaceDialogState, in parent: NSViewController) {
         guard host == nil, let container = parent.view as? AppKitWorkspaceContainer, container.dialogView == nil else { return }
         let host = NSHostingController(rootView: AppKitWorkspaceDialog(model: model, state: state) { [weak self] in self?.close() })
@@ -69,10 +99,27 @@ import SwiftUI
 
 private enum AppKitWorkspaceDialogItem {
     case workspace(WorkspaceSheet), leaveChannel(Channel)
+    case edit(ChatMessage), history(ChatMessage), delete(ChatMessage)
     var id: String {
         switch self {
         case .workspace(let item): item.id
         case .leaveChannel(let channel): "leave-channel-\(channel.id)"
+        case .edit(let message): "edit-\(message.id)"
+        case .history(let message): "history-\(message.id)"
+        case .delete(let message): "delete-\(message.id)"
+        }
+    }
+    var messageID: String? {
+        switch self {
+        case .edit(let message), .history(let message), .delete(let message): message.id
+        default: nil
+        }
+    }
+    var width: CGFloat {
+        switch self {
+        case .edit: 520
+        case .history: 820
+        default: id.contains("manage") ? 600 : 560
         }
     }
 }
@@ -100,7 +147,7 @@ private struct AppKitWorkspaceDialog: View {
                 DialogHeight(maximum: min(680, max(1, geometry.size.height - top - 16))) {
                     content(item).id(item.id)
                 }
-                .frame(width: min(item.id.contains("manage") ? 600 : 560, geometry.size.width - 32))
+                .frame(width: min(item.width, geometry.size.width - 32))
                 .background(CaperTheme.surface.onTapGesture {})
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -113,6 +160,7 @@ private struct AppKitWorkspaceDialog: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onChange(of: state.item.id) { _, _ in state.dismissDisabled = false; state.profileDismissAction = nil }
+        .onChange(of: model.chat.editingContext) { _, _ in if state.item.messageID != nil { dismiss() } }
         .onDisappear { model.whatsNew.workspaceModalOpen = false }
         .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
     }
@@ -130,6 +178,13 @@ private struct AppKitWorkspaceDialog: View {
                     ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call."
                     : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.",
                 action: "Leave channel", pendingLabel: "Leaving…", close: dismiss) { try await model.leaveChannel(channel) }
+        case .edit(let message):
+            MessageEditorView(chat: model.chat, message: message, close: dismiss)
+        case .history(let message):
+            MessageHistoryView(chat: model.chat, message: message, close: dismiss)
+        case .delete(let message):
+            ConfirmationSheet(title: MessageDeletion.confirmTitle, detail: MessageDeletion.confirmMessage,
+                action: "Delete", pendingLabel: "Deleting…", close: dismiss) { await model.chat.deleteMessage(message) }
         }
     }
 
@@ -404,6 +459,21 @@ public enum AppKitComposerCounter {
     private var restoreFocus: (() -> Void)?
 
     public init(model: AppModel) { self.model = model; super.init() }
+
+    public func reaction(to message: ChatMessage, from anchor: NSView, composer: ComposerTextView) {
+        let chat = model.chat, context = model.chat.editingContext
+        guard chat.canInteract, !message.isDeleted, chat.channelID == message.channelId else { return }
+        show(from: anchor, composer: composer) { close in
+            ReactionPicker(close: close) { emoji in
+                close()
+                Task {
+                    guard chat.editingContext == context, chat.canInteract,
+                          chat.displayedMessages.contains(where: { $0.id == message.id && !$0.isDeleted }) else { return }
+                    await chat.setReaction(messageID: message.id, emoji: emoji, active: true)
+                }
+            }
+        }
+    }
 
     public func emoji(from anchor: NSView, composer: ComposerTextView) {
         guard composer.isEditable, !composer.hasMarkedText(), model.chat.canInteract else { return }
