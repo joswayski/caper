@@ -4397,6 +4397,12 @@ impl CaperApp {
                 } if generation == self.generation => {
                     self.directs = directs;
                 }
+                Event::SignedInDirects {
+                    token,
+                    result: Ok(directs),
+                } if self.token.as_ref() == Some(&token) => {
+                    self.directs = directs;
+                }
                 Event::ThreadUnread {
                     scope,
                     revision,
@@ -5232,7 +5238,9 @@ impl CaperApp {
         let needs_profile = account.username.is_none() || account.display_name.is_none();
         self.account = Some(account);
         self.set_spaces(spaces);
-        self.refresh_directs();
+        // The DM list arrives with the account (`SignedInDirects`).
+        self.refresh_unread();
+        self.directs_refreshed = Instant::now();
         self.account_op(AccountOperation::LoadBlocks);
         self.load_notifications();
         self.worker.send(Command::StartNotifications {

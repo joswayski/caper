@@ -821,6 +821,13 @@ pub enum Event {
         result: Result<(String, Account, Spaces), String>,
         attempts_remaining: Option<u64>,
     },
+    /// `GET /api/dms`, fetched beside the account and spaces by Restore and
+    /// VerifyCode and sent right after their `Restored` or `Verified`, so
+    /// the list needs no `LoadDirects` at launch. Fenced by the session.
+    SignedInDirects {
+        token: String,
+        result: Result<Vec<DirectConversation>, String>,
+    },
     Profiled {
         generation: u64,
         result: Result<(Account, Spaces), String>,
@@ -2071,14 +2078,32 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
             }
         }
         Command::Restore { generation } => {
-            let result = crate::credentials::load(api.base()).and_then(|token| {
-                token.map_or(Ok(None), |token| {
-                    let account = api.me(&token).map_err(|error| error.to_string())?;
-                    let spaces = api.spaces(&token).map_err(|error| error.to_string())?;
-                    Ok(Some((token, account, spaces)))
-                })
+            let token = match crate::credentials::load(api.base()) {
+                Ok(Some(token)) => token,
+                result => {
+                    let result = result.map(|_| None);
+                    send(events, host, Event::Restored { generation, result });
+                    return;
+                }
+            };
+            // The account, spaces and DMs at once; the account's failure
+            // (a 401 signs out) decides first, then the spaces'.
+            let (account, (spaces, directs)) = std::thread::scope(|scope| {
+                let after = scope.spawn(|| launch_lists(api, &token));
+                (api.me(&token), after.join().expect("launch requests"))
             });
-            Event::Restored { generation, result }
+            let result = account
+                .map_err(|error| error.to_string())
+                .and_then(|account| Ok(Some((token.clone(), account, spaces?))));
+            let signed_in = result.is_ok();
+            send(events, host, Event::Restored { generation, result });
+            if !signed_in {
+                return;
+            }
+            Event::SignedInDirects {
+                token,
+                result: directs,
+            }
         }
         Command::RequestCode { generation, email } => Event::CodeRequested {
             generation,
@@ -2092,11 +2117,13 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
             code,
         } => {
             let mut attempts_remaining = None;
+            let mut directs = None;
             let result = match api.verify_code(&challenge, &code) {
-                Ok((account, token)) => api
-                    .spaces(&token)
-                    .map(|spaces| (token, account, spaces))
-                    .map_err(|error| error.to_string()),
+                Ok((account, token)) => {
+                    let (spaces, dms) = launch_lists(api, &token);
+                    directs = Some((token.clone(), dms));
+                    spaces.map(|spaces| (token, account, spaces))
+                }
                 Err(error) => {
                     if error.status == Some(reqwest::StatusCode::UNAUTHORIZED) {
                         attempts_remaining = error.attempts_remaining;
@@ -2104,10 +2131,19 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, host: &impl Host
                     Err(login_error(&error))
                 }
             };
-            Event::Verified {
-                generation,
-                result,
-                attempts_remaining,
+            let signed_in = result.is_ok();
+            send(
+                events,
+                host,
+                Event::Verified {
+                    generation,
+                    result,
+                    attempts_remaining,
+                },
+            );
+            match directs {
+                Some((token, result)) if signed_in => Event::SignedInDirects { token, result },
+                _ => return,
             }
         }
         Command::Profile {
@@ -2706,6 +2742,25 @@ fn execute_admin(
             api.decline_channel_invitation(token, &space, &channel)?;
             AdminResult::ChannelInvitationDeclined(channel)
         }
+    })
+}
+
+/// A new session's spaces and DMs, requested together.
+fn launch_lists(
+    api: &Api,
+    token: &str,
+) -> (
+    Result<Spaces, String>,
+    Result<Vec<DirectConversation>, String>,
+) {
+    std::thread::scope(|scope| {
+        let directs = scope.spawn(|| {
+            api.direct_conversations(token)
+                .map(|value| value.conversations)
+                .map_err(|error| error.to_string())
+        });
+        let spaces = api.spaces(token).map_err(|error| error.to_string());
+        (spaces, directs.join().expect("DM request"))
     })
 }
 
