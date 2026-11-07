@@ -2,7 +2,7 @@ import AppKit
 import XCTest
 
 @MainActor final class CaperAppKitTests: XCTestCase {
-    private func launch(signedIn: Bool = true, fixture: String? = nil) -> XCUIApplication {
+    private func launch(signedIn: Bool = true, fixture: String? = nil, preservePanelWidths: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
@@ -12,6 +12,9 @@ import XCTest
             app.launchEnvironment["CAPER_TEST_SPACE_ID"] = "space0000001"
         }
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES", "-caper.space-landing.owner0000001", ""]
+        // Normal flows start at the shipping defaults. Persistence flows omit
+        // these argument-domain overrides on their second real app launch.
+        if !preservePanelWidths { app.launchArguments += ["-caper.membersWidth", "220", "-caper.channelSidebarWidth", "280"] }
         app.launch()
         return app
     }
@@ -2436,6 +2439,78 @@ import XCTest
         XCTAssertTrue(app.buttons["mention-card-close"].waitForNonExistence(timeout: 5))
         XCTAssertEqual(app.textViews["message-composer"].value as? String, "")
         capture("profile message delivered", app: app)
+    }
+
+    func testMemberWidthDragKeyboardOverlayAndRelaunchPreservePreferenceAndDraft() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        let handle = app.sliders["members-panel-resize"]
+        let list = app.scrollViews["member-list"]
+        let timeline = app.scrollViews["message-timeline"]
+        XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        XCTAssertEqual(list.frame.width, 220, accuracy: 1)
+        composer.click(); composer.typeText("TEST FIXTURE — resize keeps this draft")
+        capture("default member width", app: app)
+        app.buttons["Search members"].hover(); app.buttons["Close member list"].hover(); handle.hover()
+        let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: -93, dy: 0)))
+        XCTAssertEqual(list.frame.width, 313, accuracy: 3)
+        let draggedWidth = list.frame.width
+        handle.click(); handle.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(list.frame.width, draggedWidth + 10, accuracy: 1)
+        handle.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(list.frame.width, draggedWidth, accuracy: 1)
+        capture("member drag and keyboard width", app: app)
+        handle.typeKey(.home, modifierFlags: [])
+        XCTAssertEqual(list.frame.width, 220, accuracy: 1)
+        handle.typeKey(.end, modifierFlags: [])
+        XCTAssertEqual(list.frame.width, 440, accuracy: 1)
+        resize(app, width: 900)
+        XCTAssertTrue(list.exists, "Dock when there are 540 points after navigation, not only at 1100-point windows")
+        XCTAssertEqual(timeline.frame.width, 320, accuracy: 3)
+        XCTAssertLessThan(list.frame.width, 250)
+        capture("member width clamped with 320-point conversation", app: app)
+        resize(app, width: 840)
+        XCTAssertTrue(list.waitForNonExistence(timeout: 5), "Intermediate windows do not overlay members by default")
+        XCTAssertFalse(handle.exists)
+        let fullConversation = timeline.frame.width
+        app.buttons["toggle-members"].click()
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        XCTAssertEqual(timeline.frame.width, fullConversation, accuracy: 1, "The explicitly opened list overlays instead of shrinking the conversation")
+        XCTAssertEqual(app.buttons["Close member list"].frame.minY - app.buttons["toggle-members"].frame.minY, 51, accuracy: 2)
+        XCTAssertGreaterThanOrEqual(list.frame.minX - timeline.frame.minX, 63)
+        capture("explicit intermediate member overlay", app: app)
+        app.buttons["Close member list"].click()
+        resize(app, width: 1280)
+        XCTAssertFalse(list.exists, "An explicit close stays closed when the window widens")
+        app.buttons["toggle-members"].click()
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        XCTAssertEqual(list.frame.width, 440, accuracy: 1, "The narrow clamp did not replace the saved width")
+        handle.doubleClick()
+        XCTAssertEqual(list.frame.width, 220, accuracy: 1)
+        let reset = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        reset.press(forDuration: 0.1, thenDragTo: reset.withOffset(CGVector(dx: -87, dy: 0)))
+        XCTAssertEqual(list.frame.width, 307, accuracy: 3)
+        let savedWidth = list.frame.width
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE — resize keeps this draft")
+        composer.click(); composer.typeText(" and still edits")
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE — resize keeps this draft and still edits")
+        app.buttons["Close member list"].click()
+        app.terminate()
+        let relaunched = launch(preservePanelWidths: true)
+        defer { relaunched.terminate() }
+        XCTAssertTrue(relaunched.textViews["message-composer"].waitForExistence(timeout: 15))
+        resize(relaunched, width: 1280)
+        let restored = relaunched.scrollViews["member-list"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 5), "Visibility is session-local, unlike the saved width")
+        XCTAssertEqual(restored.frame.width, savedWidth, accuracy: 1)
+        capture("member preference restored after relaunch", app: relaunched)
+        relaunched.sliders["members-panel-resize"].doubleClick()
     }
 
     func testMemberSearchPrivateGroupsAndReopeningThePanel() async throws {

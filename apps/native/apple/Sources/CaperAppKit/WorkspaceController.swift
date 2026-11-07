@@ -34,6 +34,17 @@ import CaperCore
     private lazy var profiles = AppKitProfilePresenter(model: model)
     private lazy var reactionTooltip = AppKitReactionTooltipPresenter(model: model)
     private var membersPreference: Bool?
+    private var preferredMembersWidth = CGFloat(UserDefaults.standard.object(forKey: "caper.membersWidth") as? Double ?? 220)
+    private var membersDragWidth: CGFloat?
+    private lazy var membersResize = NativePanelResizeHandle("Member list width", identifier: "members-panel-resize", defaultWidth: 220, widensToLeft: true) { [weak self] width, commit in
+        guard let self else { return }
+        if commit {
+            self.preferredMembersWidth = width; self.membersDragWidth = nil
+            UserDefaults.standard.set(Double(width), forKey: "caper.membersWidth")
+        } else { self.membersDragWidth = width }
+        self.view.needsLayout = true
+        self.view.layoutSubtreeIfNeeded()
+    }
     private lazy var pinsButton: NativeButton = NativeButton.icon("Pins", symbol: "pin") { [weak self] in
         guard let self else { return }
         self.picker.close(restoringFocus: false)
@@ -129,7 +140,7 @@ import CaperCore
     override func viewDidLoad() {
         super.viewDidLoad()
         if inThread { view.addSubview(stage) }
-        else { [navigation, stage, members, threadDivider].forEach { view.addSubview($0) } }
+        else { [navigation, stage, members, threadDivider, membersResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
         [timeline, header, pinsButton, membersToggle, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
         pinsButton.setAccessibilityIdentifier("channel-pins")
@@ -398,31 +409,39 @@ import CaperCore
         super.viewDidLayout()
         let previousStage = stage.frame
         let width = view.bounds.width, height = view.bounds.height
-        let visible = !inThread && threadPane == nil && (membersPreference ?? (width >= 1100)) && model.selectedDirectMessageID == nil
-        let docked = width >= 1100
-        let memberWidth: CGFloat = visible && docked ? 220 : 0
+        let navigationWidth: CGFloat = 344
+        let docked = width > 760 && width - navigationWidth >= 540
+        let hasMembers = !inThread && threadPane == nil && model.selectedDirectMessageID == nil && model.visit == nil
+        let visible = hasMembers && (membersPreference ?? docked)
+        if !visible { membersDragWidth = nil }
+        let maximum = min(440, max(220, width - navigationWidth - (docked ? 320 : 64)))
+        // Clamping a small window never overwrites the user's saved width.
+        let memberWidth = min(maximum, max(220, membersDragWidth ?? preferredMembersWidth))
         if inThread { stage.frame = view.bounds }
         else {
-            navigation.frame = NSRect(x: 0, y: 0, width: 344, height: height)
+            navigation.frame = NSRect(x: 0, y: 0, width: navigationWidth, height: height)
             // Narrow windows keep the editor width and show one conversation
             // at a time; the native channel timeline retains its scroll anchor.
-            let available = max(0, width - 344 - memberWidth)
+            let available = max(0, width - navigationWidth - (visible && docked ? memberWidth : 0))
             let split = available >= 900
             let threadWidth: CGFloat = threadPane == nil ? 0 : split ? min(min(600, available - 300), max(300, preferredThreadWidth)) : available
             stage.isHidden = threadPane != nil && !split
-            stage.frame = NSRect(x: 344, y: 0, width: max(0, available - (split ? threadWidth : 0)), height: height)
+            stage.frame = NSRect(x: navigationWidth, y: 0, width: max(0, available - (split ? threadWidth : 0)), height: height)
             threadPane?.view.frame = NSRect(x: width - threadWidth, y: 0, width: threadWidth, height: height)
             threadDivider.isHidden = threadPane == nil || !split
             threadDivider.frame = NSRect(x: width - threadWidth - 3, y: 0, width: 6, height: height)
             threadDivider.setAccessibilityValue("\(Int(threadWidth)) points")
-            members.frame = NSRect(x: width - 220, y: docked ? 0 : 48, width: 220, height: height - (docked ? 0 : 48))
+            members.frame = NSRect(x: width - memberWidth, y: docked ? 0 : 50, width: memberWidth, height: height - (docked ? 0 : 50))
             members.setVisible(visible)
+            membersResize.isHidden = !visible
+            membersResize.frame = NSRect(x: members.frame.minX, y: members.frame.minY, width: 8, height: members.frame.height)
+            membersResize.update(width: memberWidth, maximum: maximum)
         }
         if stage.frame != previousStage || stage.isHidden { reactionTooltip.close() }
         let center = stage.bounds.width
         back.frame = NSRect(x: center - 170, y: 10, width: 150, height: 28)
         membersToggle.frame = NSRect(x: center - 48, y: 8, width: 32, height: 32)
-        membersToggle.isHidden = inThread || threadPane != nil || model.selectedDirectMessageID != nil
+        membersToggle.isHidden = !hasMembers
         pinsButton.frame = NSRect(x: center - (membersToggle.isHidden ? 48 : 88), y: 8, width: 32, height: 32)
         header.frame = NSRect(x: 20, y: 14, width: max(0, center - (inThread ? 195 : membersToggle.isHidden ? 80 : 120)), height: 26)
         membersToggle.setAccessibilityLabel(visible ? "Hide members" : "Show members")
