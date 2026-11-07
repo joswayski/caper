@@ -692,6 +692,11 @@ impl App {
             text.set_xalign(0.0);
             body.append(&text);
         }
+        if let Some(size) = update.download_label().filter(|_| update.can_apply) {
+            let text = label(&size, &["muted", "small"]);
+            text.set_xalign(0.0);
+            body.append(&text);
+        }
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         actions.set_halign(gtk::Align::End);
         actions.set_margin_top(4);

@@ -105,16 +105,7 @@ pub fn can_replace(layout: Layout, install: &Path) -> bool {
 /// Unpacks `archive` into a fresh `stage` folder and returns the new app root
 /// inside it, which replaces `install`.
 pub fn unpack(layout: Layout, archive: &Path, stage: &Path) -> io::Result<PathBuf> {
-    remove_if_present(stage)?;
-    // Private until swapped in. create() fails if something reappeared there.
-    #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut folder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        folder.mode(0o700);
-    }
-    folder.create(stage)?;
+    create_stage(stage)?;
     match layout {
         Layout::MacBundle => {
             // ditto preserves the bundle's symlinks, modes and signature exactly.
@@ -149,6 +140,20 @@ pub fn unpack(layout: Layout, archive: &Path, stage: &Path) -> io::Result<PathBu
             Ok(root)
         }
     }
+}
+
+/// Replaces anything at `stage` with a new, empty folder only this user can open.
+pub fn create_stage(stage: &Path) -> io::Result<()> {
+    remove_if_present(stage)?;
+    // Private until swapped in. create() fails if something reappeared there.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut folder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        folder.mode(0o700);
+    }
+    folder.create(stage)
 }
 
 fn unzip(archive: &Path, stage: &Path) -> io::Result<()> {

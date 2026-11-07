@@ -47,6 +47,27 @@ pub struct Artifact {
     pub url: String,
     pub sha256: String,
     pub size: u64,
+    /// Patches from earlier builds to this one (see `delta`). Updaters that
+    /// predate them ignore the field and download the full archive above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patches: Vec<Patch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Patch {
+    pub from_build: u64,
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
+impl Artifact {
+    /// The patch that turns `current_build` into this artifact's build.
+    pub fn patch_from(&self, current_build: u64) -> Option<&Patch> {
+        self.patches
+            .iter()
+            .find(|patch| patch.from_build == current_build)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -106,9 +127,22 @@ pub fn verify(
         .ok_or(ManifestError::BadSignature)?;
     key.verify(manifest, &Signature::from_bytes(&signature))
         .map_err(|_| ManifestError::SignatureMismatch)?;
-    let manifest: Manifest = serde_json::from_slice(manifest)
+    let mut manifest: Manifest = serde_json::from_slice(manifest)
         .map_err(|error| ManifestError::Malformed(error.to_string()))?;
     manifest.validate()?;
+    // A patch is only an optimization: drop one that is unusable instead of
+    // refusing the release, which still updates through the full archive.
+    let build = manifest.build;
+    for artifact in manifest.platforms.values_mut() {
+        let mut bases = std::collections::BTreeSet::new();
+        artifact.patches.retain(|patch| {
+            patch.url.starts_with("https://")
+                && is_sha256(&patch.sha256)
+                && patch.size > 0
+                && patch.from_build < build
+                && bases.insert(patch.from_build)
+        });
+    }
     Ok(manifest)
 }
 
@@ -128,12 +162,7 @@ impl Manifest {
             if !artifact.url.starts_with("https://") {
                 return malformed("artifact URLs must use HTTPS");
             }
-            if artifact.sha256.len() != 64
-                || !artifact
-                    .sha256
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            {
+            if !is_sha256(&artifact.sha256) {
                 return malformed("artifact SHA-256 must be 64 lowercase hex characters");
             }
             if artifact.size == 0 {
@@ -166,6 +195,13 @@ impl Manifest {
             .is_some_and(|oldest| current_build >= oldest)
             && self.changelog.iter().any(|entry| entry.build == self.build)
     }
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub const PLATFORMS: [&str; 4] = ["macos-arm64", "macos-x64", "windows-x64", "linux-x64"];
@@ -283,6 +319,54 @@ mod tests {
             Err(ManifestError::TooLarge)
         );
         assert_eq!(decode_public_key("AAAA"), Err(ManifestError::BadPublicKey));
+    }
+
+    #[test]
+    fn patches_are_offered_per_installed_build_and_unusable_ones_are_dropped() {
+        let patch = |from: u64, url: &str, size: u64| serde_json::json!({"from_build": from, "url": url, "sha256": SHA, "size": size});
+        let mut value: serde_json::Value = serde_json::from_slice(&manifest_json(42)).unwrap();
+        value["platforms"]["linux-x64"]["patches"] = serde_json::json!([
+            patch(41, "https://example.com/41.caperpatch", 5),
+            patch(39, "https://example.com/39.caperpatch", 7),
+            patch(39, "https://example.com/again.caperpatch", 7),
+            patch(38, "http://example.com/38.caperpatch", 5),
+            patch(37, "https://example.com/37.caperpatch", 0),
+            patch(42, "https://example.com/42.caperpatch", 5),
+            {"from_build": 36, "url": "https://example.com/36", "sha256": "ABC", "size": 5},
+        ]);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let manifest = verify(&bytes, &sign(&bytes, &key()), &key().verifying_key()).unwrap();
+        let linux = manifest.update_for("linux-x64", 39).unwrap();
+        assert_eq!(
+            linux
+                .patches
+                .iter()
+                .map(|patch| patch.from_build)
+                .collect::<Vec<_>>(),
+            vec![41, 39],
+            "only the first patch per build, over HTTPS, with a size and hash"
+        );
+        assert_eq!(linux.patch_from(39).unwrap().size, 7);
+        for build in [40, 42, 36] {
+            assert!(linux.patch_from(build).is_none());
+        }
+        assert!(manifest.platforms["windows-x64"].patches.is_empty());
+
+        // Updaters released before patches read the same signed bytes and
+        // still get the full archive.
+        #[derive(Deserialize)]
+        struct OldArtifact {
+            url: String,
+        }
+        #[derive(Deserialize)]
+        struct OldManifest {
+            platforms: BTreeMap<String, OldArtifact>,
+        }
+        let old: OldManifest = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            old.platforms["linux-x64"].url,
+            "https://example.com/Caper-Linux-x64.tar.gz"
+        );
     }
 
     #[test]

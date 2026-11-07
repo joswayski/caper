@@ -26,6 +26,8 @@ mod tests {
             sequence: None,
             last_error: None,
             can_apply: true,
+            download_size: None,
+            patch: false,
         }
     }
 

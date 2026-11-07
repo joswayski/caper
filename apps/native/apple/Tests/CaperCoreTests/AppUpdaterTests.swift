@@ -105,6 +105,15 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertEqual(update.commitURL?.absoluteString, "https://github.com/joswayski/caper/commit/377205cd7c68e109b0d77f31a97c2cb3b2d40c39")
     }
 
+    func testReviewNamesTheRealDownloadForAPatchOrTheFullArchive() throws {
+        let patch = try XCTUnwrap(AppUpdater.parse(Data(#"{"update":true,"version":"0.1.9","download_size":1259034,"patch":true}"#.utf8)))
+        XCTAssertEqual(patch.downloadLabel, "1.3 MB download, only what changed")
+        let full = try XCTUnwrap(AppUpdater.parse(Data(#"{"update":true,"version":"0.1.9","download_size":129753283}"#.utf8)))
+        XCTAssertEqual(full.downloadLabel, "129.8 MB download")
+        let older = try XCTUnwrap(AppUpdater.parse(Data(#"{"update":true,"version":"0.1.9"}"#.utf8)))
+        XCTAssertNil(older.downloadLabel)
+    }
+
     @MainActor
     func testReviewKeepsAllNotesNewestFirstAndPreservesErrorsAndHistoryGap() {
         let update = AppUpdater.Update(version: "0.1.42", notes: "Fallback",

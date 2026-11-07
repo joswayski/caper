@@ -30,15 +30,31 @@ public struct DesktopUpdate: Equatable, Sendable {
     public let revision: String?
     /// The update's highlights sequence, marked read when it is installed.
     public let sequence: Int64?
+    /// Bytes the update downloads: a patch from this build when the release
+    /// has one, else the full archive. `nil` from updaters that predate it.
+    public let downloadSize: Int64?
+    /// Whether `downloadSize` is a patch (only what changed).
+    public let patch: Bool
 
     public init(version: String, notes: String, changelog: [ChangelogEntry],
                 historyComplete: Bool, canApply: Bool, lastError: String?,
                 highlights: [Highlight]? = nil, released: String? = nil,
-                revision: String? = nil, sequence: Int64? = nil) {
+                revision: String? = nil, sequence: Int64? = nil,
+                downloadSize: Int64? = nil, patch: Bool = false) {
         self.version = version; self.notes = notes; self.changelog = changelog
         self.historyComplete = historyComplete; self.canApply = canApply; self.lastError = lastError
         self.highlights = highlights; self.released = released
         self.revision = revision; self.sequence = sequence
+        self.downloadSize = downloadSize; self.patch = patch
+    }
+
+    /// "1.5 MB download, only what changed" or "129.8 MB download", matching
+    /// the Windows and Linux review.
+    public var downloadLabel: String? {
+        guard let downloadSize else { return nil }
+        let megabytes = Double(downloadSize) / 1_000_000
+        let amount = megabytes < 0.1 ? "Under 0.1 MB" : String(format: "%.1f MB", megabytes)
+        return patch ? "\(amount) download, only what changed" : "\(amount) download"
     }
 
     /// This version's commit on GitHub, only for a full source SHA.
@@ -252,6 +268,9 @@ private struct UpdateButtonSweep: View, Animatable {
                     if !update.canApply {
                         Text("This copy can’t update in place. Download the installer and drag Caper into a writable Applications folder.")
                             .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    }
+                    if update.canApply, let size = update.downloadLabel {
+                        Text(size).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     }
                     HStack(spacing: 10) {
                         Button("Later", action: close).buttonStyle(CaperSecondaryButton())

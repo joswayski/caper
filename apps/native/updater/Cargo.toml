@@ -12,8 +12,11 @@ publish = false
 
 [dependencies]
 base64 = "0.22"
+# Patch updates (src/delta.rs): bsdiff patches and whole files, bzip2-compressed.
+bzip2 = "0.6"
 ed25519-dalek = { version = "2.2", features = ["pkcs8", "pem"] }
 flate2 = "1.1"
+qbsdiff = "1.4"
 reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

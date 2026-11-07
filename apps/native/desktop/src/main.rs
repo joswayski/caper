@@ -1822,6 +1822,9 @@ impl CaperApp {
                 revision: Some("377205cd7c68e109b0d77f31a97c2cb3b2d40c39".into()),
                 sequence: Some(4),
                 can_apply: name != "parity-update-download",
+                // Release 418 → 419's measured Linux patch.
+                download_size: Some(1_516_875),
+                patch: true,
                 last_error: (name == "parity-update-error").then(|| "Could not replace the installed app: Access denied (os error 5)".into()),
             });
         }
@@ -10523,6 +10526,10 @@ impl CaperApp {
                             .color(MUTED)
                             .size(13.0),
                     );
+                }
+                if let Some(size) = update.download_label().filter(|_| update.can_apply) {
+                    ui.add_space(12.0);
+                    ui.label(RichText::new(size).color(MUTED).size(13.0));
                 }
                 ui.add_space(12.0);
                 let in_call = !matches!(self.voice.state.phase, Phase::Idle);

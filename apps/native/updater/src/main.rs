@@ -12,6 +12,7 @@
 //! kept in AWS Secrets Manager. The public key is compiled in from
 //! `CAPER_UPDATE_PUBLIC_KEY`; builds without it report updates as unavailable.
 
+mod delta;
 mod install;
 mod manifest;
 
@@ -74,12 +75,14 @@ fn run(args: &[OsString]) -> Result<()> {
         "sign" => sign(&options),
         "public-key" => public_key(&options),
         "verify" => verify_file(&options),
+        "delta" => make_delta(&options),
+        "rebuild" => rebuild(&options),
         _ => Err(usage()),
     }
 }
 
 fn usage() -> Box<dyn std::error::Error> {
-    "usage: caper-updater check --current-build N | apply --current-build N --install PATH --wait-pid PID | sign --key PEM --manifest FILE | public-key --key PEM | verify --public-key B64 --manifest FILE".into()
+    "usage: caper-updater check --current-build N | apply --current-build N --install PATH --wait-pid PID | sign --key PEM --manifest FILE | public-key --key PEM | verify --public-key B64 --manifest FILE | delta --platform P --base ARCHIVE --from-build N --target ARCHIVE --to-build N --output FILE | rebuild --platform P --patch FILE --from-build N --to-build N --install PATH --output DIR".into()
 }
 
 #[derive(Default)]
@@ -92,6 +95,13 @@ struct Options {
     manifest: Option<PathBuf>,
     public_key: Option<String>,
     relocated: bool,
+    platform: Option<String>,
+    base: Option<PathBuf>,
+    target: Option<PathBuf>,
+    patch: Option<PathBuf>,
+    output: Option<PathBuf>,
+    from_build: Option<u64>,
+    to_build: Option<u64>,
 }
 
 impl Options {
@@ -122,6 +132,19 @@ impl Options {
                 "--manifest" => options.manifest = Some(PathBuf::from(value)),
                 "--public-key" => {
                     options.public_key = Some(value.to_str().ok_or("bad key")?.to_owned());
+                }
+                "--platform" => {
+                    options.platform = Some(value.to_str().ok_or("bad platform")?.to_owned());
+                }
+                "--base" => options.base = Some(PathBuf::from(value)),
+                "--target" => options.target = Some(PathBuf::from(value)),
+                "--patch" => options.patch = Some(PathBuf::from(value)),
+                "--output" => options.output = Some(PathBuf::from(value)),
+                "--from-build" => {
+                    options.from_build = Some(value.to_str().ok_or("bad build")?.parse()?);
+                }
+                "--to-build" => {
+                    options.to_build = Some(value.to_str().ok_or("bad build")?.parse()?);
                 }
                 _ => return Err(format!("unknown flag {flag}").into()),
             }
@@ -166,6 +189,12 @@ struct CheckResult<'a> {
     /// example a Linux .deb under /usr; the app offers a download link instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     can_apply: Option<bool>,
+    /// Bytes `apply` downloads: the patch from this build when the release has
+    /// one, else the full archive (also the fallback if the patch fails).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    download_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patch: Option<bool>,
 }
 
 fn check(options: &Options) -> Result<()> {
@@ -184,6 +213,8 @@ fn check(options: &Options) -> Result<()> {
             revision: None,
             sequence: None,
             can_apply: None,
+            download_size: None,
+            patch: None,
         });
     };
     let manifest = fetch_manifest(key)?;
@@ -223,7 +254,7 @@ fn check(options: &Options) -> Result<()> {
         None
     };
     match manifest.update_for(platform, current) {
-        Some(_) => print_json(&CheckResult {
+        Some(artifact) => print_json(&CheckResult {
             update: true,
             last_error: options
                 .install
@@ -259,6 +290,12 @@ fn check(options: &Options) -> Result<()> {
                 .as_ref()
                 .and_then(|highlights| highlights.sequence),
             can_apply,
+            download_size: Some(
+                artifact
+                    .patch_from(current)
+                    .map_or(artifact.size, |patch| patch.size),
+            ),
+            patch: Some(artifact.patch_from(current).is_some()),
         }),
         None => print_json(&CheckResult {
             update: false,
@@ -273,6 +310,8 @@ fn check(options: &Options) -> Result<()> {
             revision: None,
             sequence: None,
             can_apply: None,
+            download_size: None,
+            patch: None,
         }),
     }
 }
@@ -340,22 +379,20 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
         // shared /tmp could be pre-created or swapped between hashing and
         // unpacking by another local user.
         let download_folder = private_temp_folder("caper-update-")?;
-        let archive = download_folder
-            .path()
-            .join(format!("caper-update-{}", manifest.build));
-        download(&artifact.url, artifact.size, &archive)?;
-        let digest = install::sha256_file(&archive)?;
-        if digest != artifact.sha256 {
-            return Err(
-                format!("download checksum {digest} does not match the signed manifest").into(),
-            );
-        }
-
         let stage = install::sibling(&install, "update")?;
-        let replacement = install::unpack(layout, &archive, &stage)?;
-        if layout == Layout::MacBundle {
-            install::check_mac_signature(&install, &replacement)?;
-        }
+        let replacement = prepare(
+            &http()?,
+            &Target {
+                layout,
+                platform,
+                build: manifest.build,
+                artifact,
+            },
+            current,
+            &install,
+            &stage,
+            download_folder.path(),
+        )?;
         let old = install::swap(&install, &replacement)
             .map_err(|error| format!("Could not replace the installed app: {error}"))?;
         log(&format!("installed build {}", manifest.build));
@@ -373,6 +410,84 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
     remove_relocated_copy();
     relaunched?;
     result
+}
+
+/// The release `apply` installs.
+struct Target<'a> {
+    layout: Layout,
+    platform: &'a str,
+    build: u64,
+    artifact: &'a manifest::Artifact,
+}
+
+/// Builds the new app in `stage` and returns its root. A patch from the
+/// installed build rebuilds it from the installed files; anything missing,
+/// changed or unverifiable falls back to the full archive.
+fn prepare(
+    client: &reqwest::blocking::Client,
+    target: &Target,
+    current: u64,
+    install: &Path,
+    stage: &Path,
+    downloads: &Path,
+) -> Result<PathBuf> {
+    let Target {
+        layout,
+        platform,
+        build,
+        artifact,
+    } = *target;
+    if let Some(patch) = artifact.patch_from(current) {
+        let patched = (|| -> Result<PathBuf> {
+            let file = downloads.join(format!("caper-patch-{current}-{build}"));
+            download(client, &patch.url, patch.size, &file)?;
+            let digest = install::sha256_file(&file)?;
+            if digest != patch.sha256 {
+                return Err(
+                    format!("patch checksum {digest} does not match the signed manifest").into(),
+                );
+            }
+            let expected = delta::Expected {
+                platform,
+                from_build: current,
+                to_build: build,
+            };
+            let root = delta::apply(layout, &file, &expected, install, stage)?;
+            if layout == Layout::MacBundle {
+                install::check_mac_signature(install, &root)?;
+            }
+            Ok(root)
+        })();
+        match patched {
+            Ok(root) => {
+                log(&format!(
+                    "rebuilt build {build} from a {}-byte patch",
+                    patch.size
+                ));
+                return Ok(root);
+            }
+            Err(error) => log(&format!(
+                "patch update failed: {error}; downloading the full archive"
+            )),
+        }
+    }
+    let archive = downloads.join(format!("caper-update-{build}"));
+    download(client, &artifact.url, artifact.size, &archive)?;
+    let digest = install::sha256_file(&archive)?;
+    if digest != artifact.sha256 {
+        return Err(
+            format!("download checksum {digest} does not match the signed manifest").into(),
+        );
+    }
+    let replacement = install::unpack(layout, &archive, stage)?;
+    if layout == Layout::MacBundle {
+        install::check_mac_signature(install, &replacement)?;
+    }
+    log(&format!(
+        "downloaded the {}-byte full archive",
+        artifact.size
+    ));
+    Ok(replacement)
 }
 
 /// Unix lets a running program delete its own folder; Windows locks it, so
@@ -798,11 +913,11 @@ impl std::fmt::Display for RateLimited {
 
 impl std::error::Error for RateLimited {}
 
-fn download(url: &str, size: u64, target: &Path) -> Result<()> {
+fn download(client: &reqwest::blocking::Client, url: &str, size: u64, target: &Path) -> Result<()> {
     if size > MAX_ARCHIVE_BYTES {
         return Err("update archive is too large".into());
     }
-    let response = http()?.get(url).send()?.error_for_status()?;
+    let response = client.get(url).send()?.error_for_status()?;
     let mut file = fs::File::create_new(target)?;
     let copied = io::copy(&mut response.take(size + 1), &mut file)?;
     if copied != size {
@@ -818,6 +933,67 @@ fn sign(options: &Options) -> Result<()> {
     let mut signature_path = path.as_os_str().to_owned();
     signature_path.push(".sig");
     fs::write(signature_path, manifest::sign(&bytes, &key))?;
+    Ok(())
+}
+
+/// Release tooling: writes the patch from one published archive to the next,
+/// after proving it rebuilds the target exactly, and prints its summary.
+fn make_delta(options: &Options) -> Result<()> {
+    let missing = |flag: &str| format!("delta needs {flag}");
+    let summary = delta::generate(
+        options
+            .platform
+            .as_deref()
+            .ok_or_else(|| missing("--platform"))?,
+        options.base.as_deref().ok_or_else(|| missing("--base"))?,
+        options.from_build.ok_or_else(|| missing("--from-build"))?,
+        options
+            .target
+            .as_deref()
+            .ok_or_else(|| missing("--target"))?,
+        options.to_build.ok_or_else(|| missing("--to-build"))?,
+        options
+            .output
+            .as_deref()
+            .ok_or_else(|| missing("--output"))?,
+    )?;
+    print_json(&summary)
+}
+
+/// Release checks: rebuilds an install from a patch into `--output` exactly as
+/// `apply` would (including the Mac signature check), without swapping it in.
+fn rebuild(options: &Options) -> Result<()> {
+    let missing = |flag: &str| format!("rebuild needs {flag}");
+    let platform = options
+        .platform
+        .as_deref()
+        .ok_or_else(|| missing("--platform"))?;
+    let layout = Layout::for_platform(platform).ok_or("unknown platform")?;
+    let install = fs::canonicalize(
+        options
+            .install
+            .as_deref()
+            .ok_or_else(|| missing("--install"))?,
+    )?;
+    let expected = delta::Expected {
+        platform,
+        from_build: options.from_build.ok_or_else(|| missing("--from-build"))?,
+        to_build: options.to_build.ok_or_else(|| missing("--to-build"))?,
+    };
+    let root = delta::apply(
+        layout,
+        options.patch.as_deref().ok_or_else(|| missing("--patch"))?,
+        &expected,
+        &install,
+        options
+            .output
+            .as_deref()
+            .ok_or_else(|| missing("--output"))?,
+    )?;
+    if layout == Layout::MacBundle {
+        install::check_mac_signature(&install, &root)?;
+    }
+    println!("{}", root.display());
     Ok(())
 }
 
@@ -1358,6 +1534,83 @@ mod tests {
             .is_err()
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn updates_use_a_verified_patch_and_otherwise_fall_back_to_the_full_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let old = delta::tests::program(1);
+        let mut new = old.clone();
+        new[123] ^= 0x55;
+        let release = |name: &str, exe: &[u8]| {
+            let path = root.path().join(name);
+            delta::test_zip(
+                &path,
+                &[("Caper.exe", exe), ("caper-updater.exe", b"updater")],
+            );
+            path
+        };
+        let (base, full) = (release("base.zip", &old), release("full.zip", &new));
+        let patch = root.path().join("patch");
+        delta::generate("windows-x64", &base, 4, &full, 5, &patch).unwrap();
+        let (full_bytes, patch_bytes) = (fs::read(&full).unwrap(), fs::read(&patch).unwrap());
+        let mut tampered = patch_bytes.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        let client = reqwest::blocking::Client::new();
+        let run = |responses: Vec<(&'static str, u16, Vec<u8>)>, installed_exe: &[u8]| {
+            let work = tempfile::tempdir().unwrap();
+            let install = work.path().join("Caper");
+            fs::create_dir(&install).unwrap();
+            fs::write(install.join("Caper.exe"), installed_exe).unwrap();
+            fs::write(install.join("caper-updater.exe"), b"updater").unwrap();
+            let (url, server) = serve_metadata(responses);
+            let artifact = manifest::Artifact {
+                url: format!("{url}/full.zip"),
+                sha256: install::sha256_file(&full).unwrap(),
+                size: full_bytes.len() as u64,
+                patches: vec![manifest::Patch {
+                    from_build: 4,
+                    url: format!("{url}/patch"),
+                    sha256: install::sha256_file(&patch).unwrap(),
+                    size: patch_bytes.len() as u64,
+                }],
+            };
+            let target = Target {
+                layout: Layout::WindowsFolder,
+                platform: "windows-x64",
+                build: 5,
+                artifact: &artifact,
+            };
+            let stage = work.path().join("stage");
+            let downloads = work.path().join("downloads");
+            fs::create_dir(&downloads).unwrap();
+            let result = prepare(&client, &target, 4, &install, &stage, &downloads)
+                .map(|root| fs::read(root.join("Caper.exe")).unwrap());
+            // Every listed response, and only those, was requested.
+            server.join().unwrap();
+            result.unwrap()
+        };
+        // The patch alone: the full archive is never requested.
+        assert_eq!(run(vec![("/patch", 200, patch_bytes.clone())], &old), new);
+        // A patch that fails its signed checksum, that is missing, or whose
+        // base was changed locally: each falls back to the full archive.
+        for (patch_response, installed) in [
+            ((200, tampered), old.clone()),
+            ((404, Vec::new()), old.clone()),
+            ((200, patch_bytes.clone()), program_with_edit(&old)),
+        ] {
+            let responses = vec![
+                ("/patch", patch_response.0, patch_response.1),
+                ("/full.zip", 200, full_bytes.clone()),
+            ];
+            assert_eq!(run(responses, &installed), new);
+        }
+    }
+
+    fn program_with_edit(program: &[u8]) -> Vec<u8> {
+        let mut edited = program.to_vec();
+        edited[0] ^= 1;
+        edited
     }
 
     #[test]

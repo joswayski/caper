@@ -40,6 +40,29 @@ pub struct Available {
     pub last_error: Option<String>,
     /// False when the updater cannot replace this install, e.g. the .deb.
     pub can_apply: bool,
+    /// Bytes the update downloads: a patch from this build when the release
+    /// has one, else the full archive. `None` from updaters that predate it.
+    pub download_size: Option<u64>,
+    /// Whether `download_size` is a patch (only what changed).
+    pub patch: bool,
+}
+
+impl Available {
+    /// "1.5 MB download, only what changed" or "80.1 MB download".
+    pub fn download_label(&self) -> Option<String> {
+        let size = self.download_size?;
+        let megabytes = size as f64 / 1_000_000.0;
+        let amount = if megabytes < 0.1 {
+            "Under 0.1 MB".to_owned()
+        } else {
+            format!("{megabytes:.1} MB")
+        };
+        Some(if self.patch {
+            format!("{amount} download, only what changed")
+        } else {
+            format!("{amount} download")
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -79,6 +102,10 @@ struct CheckOutput {
     last_error: Option<String>,
     #[serde(default)]
     can_apply: bool,
+    #[serde(default)]
+    download_size: Option<u64>,
+    #[serde(default)]
+    patch: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -94,7 +121,7 @@ pub enum Status {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Outcome {
-    Checked(Option<Available>),
+    Checked(Box<Option<Available>>),
     Deferred,
 }
 
@@ -166,7 +193,7 @@ impl Updates {
                                 state.status = Status::Deferred;
                                 state.show_after_check = false;
                             }
-                            Ok(Outcome::Checked(found)) => state.finish(Ok(found)),
+                            Ok(Outcome::Checked(found)) => state.finish(Ok(*found)),
                             Err(error) => state.finish(Err(error)),
                         }
                         wake();
@@ -389,18 +416,22 @@ fn parse(stdout: &[u8]) -> Result<Outcome, String> {
     if output.deferred {
         return Ok(Outcome::Deferred);
     }
-    Ok(Outcome::Checked(output.update.then_some(Available {
-        version: output.version,
-        notes: output.notes,
-        changelog: output.changelog,
-        history_complete: output.history_complete,
-        highlights: output.highlights,
-        released: output.released,
-        revision: output.revision,
-        sequence: output.sequence,
-        last_error: output.last_error,
-        can_apply: output.can_apply,
-    })))
+    Ok(Outcome::Checked(Box::new(output.update.then_some(
+        Available {
+            version: output.version,
+            notes: output.notes,
+            changelog: output.changelog,
+            history_complete: output.history_complete,
+            highlights: output.highlights,
+            released: output.released,
+            revision: output.revision,
+            sequence: output.sequence,
+            last_error: output.last_error,
+            can_apply: output.can_apply,
+            download_size: output.download_size,
+            patch: output.patch,
+        },
+    ))))
 }
 
 #[cfg(windows)]
@@ -429,6 +460,8 @@ mod tests {
             sequence: None,
             last_error: None,
             can_apply: true,
+            download_size: None,
+            patch: false,
         }
     }
 
@@ -595,7 +628,7 @@ mod tests {
     fn parses_the_updater_check_line() {
         assert_eq!(
             parse(b"{\"update\":false}\n").unwrap(),
-            Outcome::Checked(None)
+            Outcome::Checked(Box::new(None))
         );
         assert_eq!(
             parse(br#"{"update":false,"deferred":true}"#).unwrap(),
@@ -606,7 +639,7 @@ mod tests {
                 b"{\"update\":true,\"build\":7,\"version\":\"0.1.7\",\"notes\":\"Screen sharing\",\"can_apply\":true}\n"
             )
             .unwrap(),
-            Outcome::Checked(Some(Available {
+            Outcome::Checked(Box::new(Some(Available {
                 version: "0.1.7".into(),
                 notes: "Screen sharing".into(),
                 changelog: Vec::new(),
@@ -617,7 +650,9 @@ mod tests {
                 sequence: None,
                 last_error: None,
                 can_apply: true,
-            }))
+                download_size: None,
+                patch: false,
+            })))
         );
         // Without --install permission details the app offers a direct download.
         assert!(
@@ -630,13 +665,41 @@ mod tests {
             parsed_update(br#"{"update":true,"version":"0.1.7","last_error":"Access denied"}"#)
                 .unwrap();
         assert_eq!(failed.last_error.as_deref(), Some("Access denied"));
+        assert_eq!(
+            failed.download_label(),
+            None,
+            "older updaters report no size"
+        );
+    }
+
+    #[test]
+    fn the_review_names_the_real_download_for_a_patch_or_the_full_archive() {
+        let patch = parsed_update(
+            br#"{"update":true,"version":"0.1.9","download_size":1516875,"patch":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            patch.download_label().as_deref(),
+            Some("1.5 MB download, only what changed")
+        );
+        let full = parsed_update(br#"{"update":true,"version":"0.1.9","download_size":80066856}"#)
+            .unwrap();
+        assert_eq!(full.download_label().as_deref(), Some("80.1 MB download"));
+        let tiny = parsed_update(
+            br#"{"update":true,"version":"0.1.9","download_size":2048,"patch":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            tiny.download_label().as_deref(),
+            Some("Under 0.1 MB download, only what changed")
+        );
     }
 
     fn parsed_update(bytes: &[u8]) -> Option<Available> {
         let Outcome::Checked(found) = parse(bytes).unwrap() else {
             panic!("expected a completed check")
         };
-        found
+        *found
     }
 
     #[test]

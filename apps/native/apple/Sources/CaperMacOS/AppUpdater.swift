@@ -51,7 +51,8 @@ import Observation
            let rawURL = environment["CAPER_API_BASE_URL"], let url = URL(string: rawURL),
            ["localhost", "127.0.0.1", "::1"].contains(url.host?.lowercased() ?? "") {
             availableUpdate = Update(version: "0.1.42", notes: "TEST FIXTURE — local update preview. No update will be installed.",
-                                     changelog: [], historyComplete: true, canApply: true, lastError: nil)
+                                     changelog: [], historyComplete: true, canApply: true, lastError: nil,
+                                     downloadSize: 1_259_034, patch: true)
         }
     }
 
@@ -263,13 +264,16 @@ import Observation
             let released: String?
             let revision: String?
             let sequence: Int64?
+            let download_size: Int64?
+            let patch: Bool?
         }
         guard let output = try? JSONDecoder().decode(Output.self, from: data), output.update else { return nil }
         return Update(version: output.version ?? "", notes: output.notes ?? "",
                       changelog: output.changelog ?? [], historyComplete: output.history_complete ?? false,
                       canApply: output.can_apply ?? false, lastError: output.last_error,
                       highlights: output.highlights, released: output.released,
-                      revision: output.revision, sequence: output.sequence)
+                      revision: output.revision, sequence: output.sequence,
+                      downloadSize: output.download_size, patch: output.patch ?? false)
     }
 
     private nonisolated static func run(_ executable: URL, _ arguments: [String]) -> Result<Data, Error> {
