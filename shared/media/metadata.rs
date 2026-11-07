@@ -241,7 +241,8 @@ impl<R: Read + Seek> Cleaner<'_, R> {
         Ok(result)
     }
 
-    fn trailing(&mut self, mut end: u64) -> io::Result<()> {
+    fn trailing(&mut self, floor: u64) -> io::Result<()> {
+        let mut end = self.len;
         loop {
             let total = if end >= 128 && self.is(end - 128, b"TAG")? {
                 if end >= 355 && self.is(end - 355, b"TAG+")? {
@@ -266,10 +267,10 @@ impl<R: Read + Seek> Cleaner<'_, R> {
             } else {
                 break;
             };
-            require(total <= end)?;
-            self.zero(end - total, total);
+            require(total <= end - floor)?;
             end -= total;
         }
+        self.delete(end, self.len - end);
         Ok(())
     }
 
@@ -296,7 +297,7 @@ impl<R: Read + Seek> Cleaner<'_, R> {
         if self.is(at, b"fLaC")? {
             self.flac(at)?;
         } else {
-            self.trailing(self.len)?;
+            self.trailing(at)?;
         }
         Ok(())
     }
@@ -316,7 +317,7 @@ impl<R: Read + Seek> Cleaner<'_, R> {
                 break;
             }
         }
-        self.trailing(self.len)
+        self.trailing(at)
     }
 
     fn chunk_audio(&mut self, aiff: bool) -> io::Result<()> {
@@ -1461,7 +1462,7 @@ impl<R: Read + Seek> Cleaner<'_, R> {
     fn tiff_value(
         &mut self,
         entry: u64,
-        base: u64,
+        base: i128,
         end: u64,
         little: bool,
     ) -> io::Result<Option<(u64, u64)>> {
@@ -1474,10 +1475,10 @@ impl<R: Read + Seek> Cleaner<'_, R> {
         let at = if len <= 4 {
             entry + 8
         } else {
-            base.checked_add(self.number(entry + 8, 4, little)?)
-                .ok_or_else(malformed)?
+            u64::try_from(base + i128::from(self.number(entry + 8, 4, little)?))
+                .map_err(|_| malformed())?
         };
-        require(at >= base && at <= end && len <= end - at)?;
+        require(i128::from(at) >= base && at <= end && len <= end - at)?;
         Ok(Some((at, len)))
     }
 
@@ -1507,7 +1508,8 @@ impl<R: Read + Seek> Cleaner<'_, R> {
                 for i in 0..count {
                     let entry = at + 2 + i * 12;
                     if self.number(entry, 2, little)? == 271
-                        && let Some((start, len)) = self.tiff_value(entry, base, end, little)?
+                        && let Some((start, len)) =
+                            self.tiff_value(entry, base.into(), end, little)?
                     {
                         make = self.bytes(start, len.min(128))?;
                     }
@@ -1518,14 +1520,9 @@ impl<R: Read + Seek> Cleaner<'_, R> {
             for i in 0..count {
                 let entry = at + 2 + i * 12;
                 let tag = self.number(entry, 2, little)?;
-                let value = match self.tiff_value(entry, base, end, little) {
-                    Err(error)
-                        if tag == 37500
-                            && role == 1
-                            && error.kind() == io::ErrorKind::InvalidData =>
-                    {
-                        None
-                    }
+                let is_maker = tag == 37500 && role == 1 || tag == 50740 && role == 0;
+                let value = match self.tiff_value(entry, base.into(), end, little) {
+                    Err(error) if is_maker && error.kind() == io::ErrorKind::InvalidData => None,
                     value => value?,
                 };
                 if role == 2 {
@@ -1552,12 +1549,27 @@ impl<R: Read + Seek> Cleaner<'_, R> {
                         ));
                     }
                 }
-                if tag == 37500
-                    && role == 1
-                    && let Some((start, len)) = value
-                {
+                if is_maker && let Some((start, len)) = value {
                     let before = self.edits.len();
-                    if let Err(error) = self.maker(start, len, base, end, little, &make) {
+                    let result = (|| {
+                        let (mut start, mut len, mut note_base, mut order) =
+                            (start, len, i128::from(base), little);
+                        if tag == 50740 && len >= 20 && self.is(start, b"Adobe\0MakN")? {
+                            let count = self.number(start + 10, 4, false)?;
+                            require(count >= 6)?;
+                            note_base = i128::from(start + 20)
+                                - i128::from(self.number(start + 16, 4, false)?);
+                            match self.bytes(start + 14, 2)?.as_slice() {
+                                b"II" => order = true,
+                                b"MM" => order = false,
+                                _ => {}
+                            }
+                            start += 20;
+                            len = (count - 6).min(len - 20);
+                        }
+                        self.maker(start, len, note_base, end, order, &make)
+                    })();
+                    if let Err(error) = result {
                         self.edits.truncate(before);
                         if !matches!(
                             error.kind(),
@@ -1566,6 +1578,14 @@ impl<R: Read + Seek> Cleaner<'_, R> {
                             return Err(error);
                         }
                     }
+                }
+                if tag == 46
+                    && role == 0
+                    && let Some((start, len)) = value
+                    && len >= 2
+                    && self.is(start, b"\xff\xd8")?
+                {
+                    self.embedded_jpeg(start, start + len)?;
                 }
                 if identifying(tag) || tag == 34853 {
                     if let Some((start, len)) = value
@@ -1605,37 +1625,37 @@ impl<R: Read + Seek> Cleaner<'_, R> {
         &mut self,
         start: u64,
         len: u64,
-        tiff_base: u64,
+        tiff_base: i128,
         end: u64,
         mut little: bool,
         make: &[u8],
     ) -> io::Result<()> {
         let header = self.bytes(start, len.min(20))?;
         let make = String::from_utf8_lossy(make).to_ascii_uppercase();
-        let (ifd, base, order, tags, olympus): (u64, u64, Option<usize>, &[u64], bool) =
+        let (ifd, base, order, tags, olympus): (u64, i128, Option<usize>, &[u64], bool) =
             if header.starts_with(b"Nikon\0\x02") {
-                (start + 18, start + 10, Some(10), &[29, 160], false)
+                (start + 18, (start + 10).into(), Some(10), &[29, 160], false)
             } else if header.starts_with(b"FUJIFILM") {
                 little = true;
                 (
                     start + self.number(start + 8, 4, true)?,
-                    start,
+                    start.into(),
                     None,
                     &[16],
                     false,
                 )
             } else if header.starts_with(b"OLYMPUS\0") {
-                (start + 12, start, Some(8), &[1028, 4122], true)
+                (start + 12, start.into(), Some(8), &[1028, 4122], true)
             } else if header.starts_with(b"OM SYSTEM\0\0\0") {
-                (start + 16, start, Some(12), &[1028, 4122], true)
+                (start + 16, start.into(), Some(12), &[1028, 4122], true)
             } else if header.starts_with(b"OLYMP\0") {
                 (start + 8, tiff_base, None, &[1028, 4122], true)
             } else if header.starts_with(b"Panasonic\0\0\0") {
                 (start + 12, tiff_base, None, &[37, 82, 84], false)
             } else if header.starts_with(b"AOC\0") {
-                (start + 6, start, Some(4), &[553], false)
+                (start + 6, start.into(), Some(4), &[553], false)
             } else if header.starts_with(b"PENTAX \0") {
-                (start + 10, start, Some(8), &[553], false)
+                (start + 10, start.into(), Some(8), &[553], false)
             } else if [
                 b"SONY DSC \0\0\0".as_slice(),
                 b"SONY CAM \0\0\0",
@@ -1667,7 +1687,9 @@ impl<R: Read + Seek> Cleaner<'_, R> {
             if !seen.insert(at) {
                 continue;
             }
-            require(seen.len() <= 1000 && at >= tiff_base && at <= end && end - at >= 2)?;
+            require(
+                seen.len() <= 1000 && i128::from(at) >= tiff_base && at <= end && end - at >= 2,
+            )?;
             let mut count = self.number(at, 2, little)?;
             if count == 0 || count > 500 {
                 little = !little;
@@ -1679,7 +1701,9 @@ impl<R: Read + Seek> Cleaner<'_, R> {
                 let tag = self.number(entry, 2, little)?;
                 let value = self.tiff_value(entry, base, end, little)?;
                 if olympus && !equipment && tag == 8208 {
-                    pending.push((base + self.number(entry + 8, 4, little)?, true));
+                    let sub = u64::try_from(base + i128::from(self.number(entry + 8, 4, little)?))
+                        .map_err(|_| malformed())?;
+                    pending.push((sub, true));
                 }
                 if if equipment {
                     [257, 258, 514, 770, 4099].contains(&tag)
@@ -1690,6 +1714,12 @@ impl<R: Read + Seek> Cleaner<'_, R> {
                         Some((offset, len)) if len > 4 => self.zero(offset, len),
                         _ => self.zero(entry + 8, 4),
                     }
+                } else if make.starts_with("CANON")
+                    && tag == 16409
+                    && let Some((offset, len)) = value
+                    && len >= 5
+                {
+                    self.zero(offset, 5);
                 }
             }
         }
@@ -1699,13 +1729,13 @@ impl<R: Read + Seek> Cleaner<'_, R> {
     fn raf(&mut self) -> io::Result<()> {
         let start = self.number(84, 4, false)?;
         let size = self.number(88, 4, false)?;
+        self.embedded_jpeg(start, start + size)
+    }
+
+    fn embedded_jpeg(&mut self, start: u64, end: u64) -> io::Result<()> {
         require(
-            start <= self.len
-                && size <= self.len - start
-                && size >= 2
-                && self.is(start, b"\xff\xd8")?,
+            start <= end && end <= self.len && end - start >= 2 && self.is(start, b"\xff\xd8")?,
         )?;
-        let end = start + size;
         let mut at = start + 2;
         while at < end {
             require(end - at >= 4 && self.number(at, 1, false)? == 255)?;
@@ -1713,7 +1743,7 @@ impl<R: Read + Seek> Cleaner<'_, R> {
                 at += 1;
             }
             let marker = self.number(at + 1, 1, false)?;
-            if marker == 0xda {
+            if matches!(marker, 0xda | 0xd9) {
                 break;
             }
             let len = self.number(at + 2, 2, false)?;
@@ -1731,9 +1761,24 @@ impl<R: Read + Seek> Cleaner<'_, R> {
         Ok(())
     }
 
+    fn cut_canon_trailer(&mut self) -> io::Result<u64> {
+        let signature = b"CANON OPTIONAL DATA\0";
+        if self.len < 92 || !self.is(self.len - 64, signature)? {
+            return Ok(self.len);
+        }
+        let size = self.number(self.len - 64 + 20, 4, false)?;
+        require(size <= self.len - 92)?;
+        let mut start = self.len - 92 - size;
+        require(self.is(start, signature)?)?;
+        start -= start % 2;
+        self.delete(start, self.len - start);
+        Ok(start)
+    }
+
     fn crw(&mut self) -> io::Result<()> {
         let root = self.number(2, 4, true)?;
-        let mut pending = vec![(root, self.len)];
+        let end = self.cut_canon_trailer()?;
+        let mut pending = vec![(root, end)];
         let mut seen = std::collections::HashSet::new();
         while let Some((start, end)) = pending.pop() {
             if !seen.insert((start, end)) {
@@ -1877,7 +1922,7 @@ pub fn clean<R: Read + Seek>(source: &mut R, len: u64, declared_type: &str) -> i
     .iter()
     .any(|magic| h.starts_with(magic))
     {
-        c.tiff(0, len)
+        c.cut_canon_trailer().and_then(|end| c.tiff(0, end))
     } else if h.starts_with(b"FUJIFILMCCD-RAW") {
         c.raf()
     } else if h.starts_with(b"II\x1a\0\0\0HEAPCCDR") {
@@ -1968,12 +2013,59 @@ mod tests {
         assert_eq!(&out[..10], b"ID3\x04\0\0\0\0\0\x0d");
         assert!(out[10..23].iter().all(|v| *v == 0));
         assert_eq!(&out[23..tag], b"\xff\xfbSAMPLES");
-        assert!(out[tag..].iter().all(|v| *v == 0));
+        assert_eq!(out.len(), tag);
         let flac = b"fLaC\0\0\0\x02ab\x84\0\0\x04nameSAMPLES";
         assert_eq!(
             cleaned(flac, "audio/flac"),
             b"fLaC\0\0\0\x02ab\x81\0\0\x04\0\0\0\0SAMPLES"
         );
+    }
+
+    #[test]
+    fn dng_private_lens_serial_uses_original_offset_and_byte_order() {
+        let mut dng = b"II\x2a\0\x08\0\0\0\x02\0".to_vec();
+        for (tag, kind, len, offset) in [(271u16, 2u16, 6u32, 38u32), (50740, 7, 46, 44)] {
+            dng.extend(tag.to_le_bytes());
+            dng.extend(kind.to_le_bytes());
+            dng.extend(len.to_le_bytes());
+            dng.extend(offset.to_le_bytes());
+        }
+        dng.extend([0; 4]);
+        dng.extend(b"Canon\0Adobe\0MakN");
+        dng.extend(32u32.to_be_bytes()); // six wrapper bytes and 26 maker-note bytes
+        dng.extend(b"MM");
+        dng.extend(4096u32.to_be_bytes()); // original offset; relocated base is negative
+        dng.extend(1u16.to_be_bytes()); // read in the wrong order, 256 also looks plausible
+        dng.extend(16409u16.to_be_bytes());
+        dng.extend(7u16.to_be_bytes());
+        dng.extend(8u32.to_be_bytes());
+        dng.extend(4114u32.to_be_bytes());
+        dng.extend([0; 4]);
+        dng.extend(b"12345xyz");
+        let mut expected = dng.clone();
+        expected[82..87].fill(0);
+        assert_eq!(cleaned(&dng, "image/dng"), expected);
+    }
+
+    #[test]
+    fn canon_trailer_is_cut_before_parsing_tiff_or_crw() {
+        let tiff = b"II\x2a\0\x08\0\0\0\0\0\0\0\0\0".to_vec();
+        let mut crw = b"II\x1a\0\0\0HEAPCCDR".to_vec();
+        crw.resize(32, 0); // empty root heap starts at 26
+        for original in [tiff, crw] {
+            for padding in [false, true] {
+                let mut tagged = original.clone();
+                if padding {
+                    tagged.push(b' ');
+                }
+                let start = tagged.len();
+                tagged.extend(b"CANON OPTIONAL DATA\0");
+                tagged.resize(start + 28, 0);
+                tagged.extend(b"CANON OPTIONAL DATA\0");
+                tagged.resize(start + 92, 0);
+                assert_eq!(cleaned(&tagged, "image/x-raw"), original);
+            }
+        }
     }
 
     fn iso_box(kind: &[u8], payload: &[u8]) -> Vec<u8> {
