@@ -11,6 +11,9 @@ struct NativeMessageComposer: View {
     var accessibilityID = "message-composer"
     var pasteAttachments: (() -> Bool)? = nil
     var highlightSource: MentionSource? = nil
+    /// The conversation (and thread) the draft belongs to: another one ends the
+    /// style typing carries, even with an identical draft.
+    var conversation = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -28,7 +31,8 @@ struct NativeMessageComposer: View {
             NativeMessageTextEditor(text: $text, placeholder: placeholder, controller: controller,
                                     mentions: mentions, submit: submit, submitOnReturn: submitOnReturn,
                                     editable: editable, accessibilityID: accessibilityID,
-                                    pasteAttachments: pasteAttachments, highlightSource: highlightSource)
+                                    pasteAttachments: pasteAttachments, highlightSource: highlightSource,
+                                    conversation: conversation)
         }
     }
 }

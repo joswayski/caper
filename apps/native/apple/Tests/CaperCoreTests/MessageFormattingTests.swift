@@ -50,6 +50,96 @@ final class MessageFormattingTests: XCTestCase {
         XCTAssertEqual(MessageFormatting.movedSelection("**a**b", selection: NSRange(location: 2, length: 0), backward: false, extending: false), NSRange(location: 5, length: 0))
     }
 
+    /// Every client types these same steps, generated from web; see
+    /// shared/messages/composer-cases.json. A placed step is a tap: a new caret
+    /// and a fresh ComposerTyping, so no style carries over.
+    func testComposerTypingFollowsTheSharedCases() throws {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("shared/messages/composer-cases.json"))) as! [String: Any]
+        let cases = json["cases"] as! [[String: Any]]
+        XCTAssertGreaterThan(cases.count, 20)
+        for fixture in cases {
+            var text = fixture["text"] as! String
+            var caret = MessageFormatting.projection(text).original(fixture["caret"] as! Int)
+            var typing = ComposerTyping()
+            for step in fixture["steps"] as! [[String: Any]] {
+                if step["placed"] as! Bool {
+                    caret = MessageFormatting.normalizedSelection(text, selection: NSRange(location: caret, length: 0)).location
+                    typing = ComposerTyping()
+                }
+                let key = step["key"] as! String, range = NSRange(location: caret, length: 0)
+                let proposed = (text as NSString).replacingCharacters(in: range, with: key)
+                let result = typing.repairEdit(text, text: proposed, selection: NSRange(location: caret + key.utf16.count, length: 0), replacing: range)
+                text = result.text
+                caret = MessageFormatting.normalizedSelection(text, selection: result.selection).location
+                // The selection notification typing itself posts keeps the style.
+                typing.observe(text, selection: NSRange(location: caret, length: 0))
+                let note = "\(fixture["note"] as! String): \(key.debugDescription)"
+                XCTAssertEqual(text, step["text"] as! String, note)
+                XCTAssertEqual(MessageFormatting.projection(text).displayed(caret), step["caret"] as! Int, note)
+            }
+        }
+    }
+
+    /// The style continues only while the composer shows what typing left:
+    /// moving the caret away and back, undo then redo, or another conversation
+    /// with an identical draft all type plain again.
+    func testComposerTypingEndsWhenTheComposerChangesUnderIt() {
+        func type(_ typing: inout ComposerTyping, _ text: String, _ key: String) -> String {
+            let caret = (text as NSString).length, range = NSRange(location: caret, length: 0)
+            let result = typing.repairEdit(text, text: text + key, selection: NSRange(location: caret + key.utf16.count, length: 0), replacing: range)
+            typing.observe(result.text, selection: result.selection)
+            return result.text
+        }
+        var typing = ComposerTyping(), text = type(&typing, "**bold**", " ")
+        XCTAssertEqual(type(&typing, text, "a"), "**bold** **a**", "continuous typing")
+        typing = ComposerTyping(); text = type(&typing, "**bold**", " ")
+        typing.observe(text, selection: NSRange(location: 0, length: 0))
+        typing.observe(text, selection: NSRange(location: 9, length: 0))
+        XCTAssertEqual(type(&typing, text, "a"), "**bold** a", "caret moved away and back")
+        typing = ComposerTyping(); text = type(&typing, "**bold**", " ")
+        typing.observe("**bold**", selection: NSRange(location: 8, length: 0))
+        typing.observe(text, selection: NSRange(location: 9, length: 0))
+        XCTAssertEqual(type(&typing, text, "a"), "**bold** a", "undo then redo")
+        typing = ComposerTyping(); text = type(&typing, "**bold**", " ")
+        typing.end()
+        XCTAssertEqual(type(&typing, text, "a"), "**bold** a", "identical draft in another conversation")
+    }
+
+    /// The SwiftUI editors reuse one text view and coordinator across
+    /// conversations and threads, handing the coordinator each update's
+    /// configuration. Typing on in the same conversation keeps the style; a
+    /// cached thread root or another conversation with the identical draft and
+    /// caret types plain.
+    @MainActor func testEditorCoordinatorEndsTypingInAnotherConversation() {
+        func editor(_ conversation: String) -> NativeMessageTextEditor {
+            NativeMessageTextEditor(text: .constant(""), placeholder: "Message", controller: ComposerAutocompleteController(),
+                                    mentions: .empty, submit: {}, conversation: conversation)
+        }
+        for (next, expected) in [("1:channel", "**bold** **a**"), ("1:channel:root-b", "**bold** a"), ("2:channel", "**bold** a")] {
+            let coordinator = NativeMessageTextEditor.Coordinator(editor("1:channel"))
+            #if os(macOS)
+            let view = ComposerTextView()
+            view.delegate = coordinator; coordinator.view = view
+            view.string = "**bold**"; view.setSelectedRange(NSRange(location: 8, length: 0))
+            func type(_ key: String) { view.insertText(key, replacementRange: view.selectedRange()) }
+            func text() -> String { view.string }
+            #else
+            let view = ComposerTextView(frame: .zero, textContainer: nil)
+            view.delegate = coordinator; coordinator.view = view
+            view.text = "**bold**"; view.selectedRange = NSRange(location: 8, length: 0)
+            func type(_ key: String) { view.insertText(key) }
+            func text() -> String { view.text }
+            #endif
+            type(" ")
+            XCTAssertEqual(text(), "**bold** ", next)
+            coordinator.adopt(editor(next))
+            type("a")
+            XCTAssertEqual(text(), expected, next)
+        }
+    }
+
     /// Types one character at a time the way both native composers do: each
     /// edit goes through repairEdit, then the caret through normalizedSelection.
     /// Closing a style at the end of the draft leaves the caret after it, so

@@ -540,6 +540,7 @@ struct NativeMessageTextEditor: UIViewRepresentable {
     var pasteAttachments: (() -> Bool)? = nil
     /// Quick-message cards suppress suggestions but still preview their recipient and team tags.
     var highlightSource: MentionSource? = nil
+    var conversation = ""
     @Environment(\.composerCovered) private var covered
     /// False while a workspace dialog covers the conversation.
     @Environment(\.isEnabled) private var isEnabled
@@ -586,8 +587,8 @@ struct NativeMessageTextEditor: UIViewRepresentable {
         // The conversation can change under the same editor (a channel, then a DM).
         view.accessibilityLabel = placeholder
         let mentionsChanged = context.coordinator.parent.mentions != mentions || context.coordinator.parent.highlightSource != highlightSource
-        context.coordinator.parent = self
-        if view.text != text { (view as? ComposerTextView)?.hideEmojiName(); view.text = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
+        context.coordinator.adopt(self)
+        if view.text != text { (view as? ComposerTextView)?.hideEmojiName(); view.text = text; context.coordinator.typing.end(); context.coordinator.dismissed = false; context.coordinator.refresh(view) }
         // Members can finish loading while an `@` query is open.
         else if mentionsChanged { context.coordinator.refresh(view) }
         view.accessibilityValue = text; view.accessibilityHint = "Use the Send button when composing with the iPhone keyboard."
@@ -600,12 +601,20 @@ struct NativeMessageTextEditor: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
         var parent: NativeMessageTextEditor; weak var view: UITextView?; var dismissed = false
         private var highlighting = false
+        var typing = ComposerTyping()
         init(_ parent: NativeMessageTextEditor) { self.parent = parent }
+        /// The editor's next configuration. The view is reused across
+        /// conversations and threads, so another one ends the style typing
+        /// carries, even when its draft and caret are identical.
+        func adopt(_ next: NativeMessageTextEditor) {
+            if parent.conversation != next.conversation { typing.end() }
+            parent = next
+        }
         func textView(_ view: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
             guard !highlighting, view.markedTextRange == nil,
                   view.undoManager?.isUndoing != true, view.undoManager?.isRedoing != true else { return true }
             let proposed = (view.text as NSString).replacingCharacters(in: range, with: replacement)
-            let result = MessageFormatting.repairEdit(view.text, text: proposed, selection: NSRange(location: range.location + replacement.utf16.count, length: 0))
+            let result = typing.repairEdit(view.text, text: proposed, selection: NSRange(location: range.location + replacement.utf16.count, length: 0), replacing: range)
             guard result.text != proposed,
                   let all = view.textRange(from: view.beginningOfDocument, to: view.endOfDocument) else { return true }
             highlighting = true
@@ -633,9 +642,9 @@ struct NativeMessageTextEditor: UIViewRepresentable {
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
         func scrollViewDidScroll(_ scrollView: UIScrollView) { (scrollView as? ComposerTextView)?.hideEmojiName() }
         func textViewDidBeginEditing(_ textView: UITextView) { refresh(textView) }
-        func textViewDidEndEditing(_ textView: UITextView) { (textView as? ComposerTextView)?.hideEmojiName(); parent.controller.update(nil) }
+        func textViewDidEndEditing(_ textView: UITextView) { typing.end(); (textView as? ComposerTextView)?.hideEmojiName(); parent.controller.update(nil) }
         func textViewDidChange(_ textView: UITextView) { guard !highlighting else { return }; (textView as? ComposerTextView)?.hideEmojiName(); parent.text = textView.text; dismissed = false; refresh(textView) }
-        func textViewDidChangeSelection(_ textView: UITextView) { guard !highlighting else { return }; dismissed = false; refresh(textView) }
+        func textViewDidChangeSelection(_ textView: UITextView) { guard !highlighting else { return }; typing.observe(textView.text, selection: textView.selectedRange); dismissed = false; refresh(textView) }
         func refresh(_ textView: UITextView) {
             guard !highlighting else { return }
             if textView.markedTextRange == nil {
@@ -807,6 +816,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
     var pasteAttachments: (() -> Bool)? = nil
     /// Quick-message cards suppress suggestions but still preview their recipient and team tags.
     var highlightSource: MentionSource? = nil
+    var conversation = ""
     /// False while a workspace dialog covers the conversation.
     @Environment(\.isEnabled) private var isEnabled
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -837,7 +847,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let mentionsChanged = context.coordinator.parent.mentions != mentions || context.coordinator.parent.highlightSource != highlightSource
-        context.coordinator.parent = self
+        context.coordinator.adopt(self)
         guard let view = scroll.documentView as? ComposerTextView else { return }
         view.pasteAttachments = pasteAttachments
         // A disabled composer (under a dialog) must not keep taking keystrokes.
@@ -854,7 +864,7 @@ struct NativeMessageTextEditor: NSViewRepresentable {
         view.setAccessibilityHelp(submitOnReturn ? "Return sends. Shift-Return adds a new line." : "Use the Send button. Return adds a new line.")
         // The text view reports its own text as its accessibility value; setting
         // it would replace the text on every update.
-        if view.string != text { view.string = text; context.coordinator.dismissed = false; context.coordinator.refresh(view) }
+        if view.string != text { view.string = text; context.coordinator.typing.end(); context.coordinator.dismissed = false; context.coordinator.refresh(view) }
         // Members can finish loading while an `@` query is open.
         else if mentionsChanged { context.coordinator.refresh(view) }
     }
@@ -878,13 +888,21 @@ struct NativeMessageTextEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: NativeMessageTextEditor; weak var view: ComposerTextView?; var dismissed = false
         private var highlighting = false
+        var typing = ComposerTyping()
         init(_ parent: NativeMessageTextEditor) { self.parent = parent }
+        /// The editor's next configuration. The view is reused across
+        /// conversations and threads, so another one ends the style typing
+        /// carries, even when its draft and caret are identical.
+        func adopt(_ next: NativeMessageTextEditor) {
+            if parent.conversation != next.conversation { typing.end() }
+            parent = next
+        }
         func textView(_ view: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
             MainActor.assumeIsolated {
                 guard !highlighting, !view.hasMarkedText(), let replacement = replacementString,
                       view.undoManager?.isUndoing != true, view.undoManager?.isRedoing != true else { return true }
                 let proposed = (view.string as NSString).replacingCharacters(in: affectedCharRange, with: replacement)
-                let result = MessageFormatting.repairEdit(view.string, text: proposed, selection: NSRange(location: affectedCharRange.location + replacement.utf16.count, length: 0))
+                let result = typing.repairEdit(view.string, text: proposed, selection: NSRange(location: affectedCharRange.location + replacement.utf16.count, length: 0), replacing: affectedCharRange)
                 guard result.text != proposed else { return true }
                 highlighting = true
                 view.insertText(result.text, replacementRange: NSRange(location: 0, length: view.string.utf16.count))
@@ -904,7 +922,8 @@ struct NativeMessageTextEditor: NSViewRepresentable {
                 dismissed = false; refresh(view)
             }
         }
-        func textViewDidChangeSelection(_ notification: Notification) { MainActor.assumeIsolated { guard !highlighting, let view else { return }; dismissed = false; refresh(view) } }
+        func textViewDidChangeSelection(_ notification: Notification) { MainActor.assumeIsolated { guard !highlighting, let view else { return }; typing.observe(view.string, selection: view.selectedRange()); dismissed = false; refresh(view) } }
+        func textDidEndEditing(_ notification: Notification) { MainActor.assumeIsolated { typing.end() } }
         @MainActor func refresh(_ view: ComposerTextView) {
             guard !highlighting else { return }
             if !view.hasMarkedText() {

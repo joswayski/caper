@@ -7,6 +7,40 @@ struct FormattedMessageRun: Equatable, Decodable {
     let italic: Bool
 }
 
+/// The style web carries from one typed key to the next one typed at the caret
+/// it left (shared/messages/composer.rs). Each composer keeps one.
+public struct ComposerTyping {
+    private var pending: Int32 = -1
+    private var left: (text: String, caret: Int)?
+    public init() {}
+
+    /// `MessageFormatting.repairEdit` for an edit that replaced `range` in
+    /// `previous`. The last key's style continues only when this edit types at
+    /// the caret it left, in the text it left: any edit made elsewhere (a draft
+    /// swap, undo, an IME) ends it.
+    public mutating func repairEdit(_ previous: String, text: String, selection: NSRange, replacing range: NSRange) -> (text: String, selection: NSRange) {
+        let continuing = range.length == 0 && left?.caret == range.location && left?.text == previous ? pending : -1
+        let result = MessageFormatting.edit(previous, text: text, selection: selection, continuing: continuing)
+        pending = result.pending
+        left = result.selection.length == 0 ? (result.text, result.selection.location) : nil
+        return (result.text, result.selection)
+    }
+
+    /// Call on every selection change: the style ends unless the composer still
+    /// shows the text and caret the last edit left (typing's own notifications
+    /// do), so a moved caret, undo, redo or an input method ends it.
+    public mutating func observe(_ text: String, selection: NSRange) {
+        guard let left, left.text == text, selection.length == 0, selection.location == left.caret else { return end() }
+    }
+
+    /// Ends the style: when the composer loses focus or shows another draft or
+    /// conversation, even an identical one.
+    public mutating func end() {
+        pending = -1
+        left = nil
+    }
+}
+
 /// The deliberately small Markdown subset shared with the web composer.
 public enum MessageFormatting {
     static func runs(_ text: String) -> [FormattedMessageRun] {
@@ -94,30 +128,29 @@ public enum MessageFormatting {
         }
     }
 
-    /// Edits may erase one side or all contents of a style. Drop only punctuation
-    /// that was hidden before the edit and would otherwise become an orphan marker.
+    /// One composer edit without a style carried from the previous key:
+    /// autocomplete and other replacements. Composers use `ComposerTyping`.
     public static func repairEdit(_ previous: String, text: String, selection: NSRange) -> (text: String, selection: NSRange) {
-        guard previous != text else { return (text, selection) }
-        let before = Array(previous.utf16), after = Array(text.utf16)
-        let oldVisible = Set(projection(previous).sourceIndices)
-        guard oldVisible.count != before.count else { return (text, selection) }
-        var prefix = 0, suffix = 0
-        while prefix < min(before.count, after.count), before[prefix] == after[prefix] { prefix += 1 }
-        while suffix < min(before.count, after.count) - prefix,
-              before[before.count - suffix - 1] == after[after.count - suffix - 1] { suffix += 1 }
-        let newVisible = Set(projection(text).sourceIndices)
-        let removed = Set(before.indices.filter { !oldVisible.contains($0) }.compactMap { index -> Int? in
-            let mapped: Int
-            if index < prefix { mapped = index }
-            else if index >= before.count - suffix { mapped = index + after.count - before.count }
-            else { return nil }
-            return newVisible.contains(mapped) ? mapped : nil
-        })
-        guard !removed.isEmpty else { return (text, selection) }
-        func offset(_ value: Int) -> Int { value - removed.filter { $0 < value }.count }
-        let start = offset(selection.location), end = offset(NSMaxRange(selection))
-        return repairEdit(previous, text: String(decoding: after.enumerated().filter { !removed.contains($0.offset) }.map(\.element), as: UTF16.self),
-                          selection: NSRange(location: start, length: end - start))
+        let result = edit(previous, text: text, selection: selection, continuing: -1)
+        return (result.text, result.selection)
+    }
+
+    /// One composer edit as web makes it (shared/messages/composer.rs, through
+    /// Rust). `continuing` is the previous edit's `pending` when this one types
+    /// at the caret it left, otherwise -1.
+    static func edit(_ previous: String, text: String, selection: NSRange, continuing: Int32) -> (text: String, selection: NSRange, pending: Int32) {
+        guard previous != text else { return (text, selection, -1) }
+        var old = previous, new = text
+        return old.withUTF8 { oldBytes in
+            new.withUTF8 { newBytes in
+                let result = caper_mobile_composer_edit(oldBytes.baseAddress, oldBytes.count, newBytes.baseAddress, newBytes.count,
+                                                        Int32(selection.location), Int32(NSMaxRange(selection)), continuing)
+                defer { caper_mobile_ints_free(result) }
+                let units = UnsafeBufferPointer(start: result.data.advanced(by: 3), count: result.len - 3).map { UInt16(truncatingIfNeeded: $0) }
+                let start = Int(result.data[0]), end = Int(result.data[1])
+                return (String(decoding: units, as: UTF16.self), NSRange(location: start, length: end - start), result.data[2])
+            }
+        }
     }
 
     public static func toggle(_ text: String, selection: NSRange, marker: String) -> (text: String, selection: NSRange)? {
