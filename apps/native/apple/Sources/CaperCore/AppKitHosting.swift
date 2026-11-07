@@ -471,6 +471,9 @@ public enum AppKitComposerCounter {
         popover?.animates = false
         popover?.close()
     }
+    public func closeIfUnavailable(composer: ComposerTextView) {
+        if !composer.isEditable || model.whatsNew.workspaceModalOpen { close(restoringFocus: false) }
+    }
     public func popoverShouldClose(_ popover: NSPopover) -> Bool { popover.animates = false; return true }
     public func popoverDidClose(_ notification: Notification) {
         guard let closed = notification.object as? NSPopover else { return }
