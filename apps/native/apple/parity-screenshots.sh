@@ -31,6 +31,8 @@ else
   # keyboard (the simulator default on CI hosts) keeps it offscreen.
   defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
   destination="${CAPER_IOS_SIMULATOR_DESTINATION:-platform=iOS Simulator,name=iPhone 16,OS=latest}"
+  # The attach drawer test picks photos from the simulator's library.
+  "$ROOT/seed-simulator-photos.sh" "$destination"
 fi
 set +e
 xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$scheme" -configuration Debug \

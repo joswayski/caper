@@ -7,6 +7,8 @@
 #
 # `test` starts scripts/native-parity-fixture.mjs with CAPER_BENCH_MESSAGES=3000
 # on 127.0.0.1:3001 and exports screenshots into ignored uikit-artifacts/.
+# The SwiftUI screenshot pairs run only with CAPER_PARITY_SWIFTUI=1, after the
+# shipping iOS app (chat.caper.ios) is installed on the same simulator.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -36,7 +38,10 @@ for _ in {1..50}; do curl --silent --fail http://127.0.0.1:3001/health >/dev/nul
 curl --silent --fail http://127.0.0.1:3001/health >/dev/null
 # The composer tests use the software keyboard, which a connected hardware keyboard hides.
 defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
+# The attach drawer test picks a photo from the simulator's library.
+"$ROOT/seed-simulator-photos.sh" "$destination"
 
+[[ "${CAPER_PARITY_SWIFTUI:-}" == 1 ]] && export TEST_RUNNER_CAPER_PARITY_SWIFTUI=1
 rm -rf "$ROOT/UIKitResults.xcresult" "$ROOT/uikit-artifacts"
 set +e
 xcodebuild -project "$ROOT/CaperUIKit.xcodeproj" -scheme CaperUIKit -configuration Debug \
