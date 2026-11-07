@@ -1445,13 +1445,20 @@ final class CaperParityUITests: XCTestCase {
         let collapsedHeight = drawer.frame.height
         capture("attach-drawer-open", app: app)
         app.buttons["attach-drawer-resize"].tap()
-        let expanded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "frame.height > %f", collapsedHeight + 40), object: drawer)
+        // A block predicate: a "frame.height" key path can't be read from the
+        // element's boxed CGRect, so that wait never succeeded.
+        func height(_ test: @escaping (CGFloat) -> Bool) -> XCTNSPredicateExpectation {
+            XCTNSPredicateExpectation(predicate: NSPredicate { element, _ in
+                (element as? XCUIElement).map { test($0.frame.height) } ?? false
+            }, object: drawer)
+        }
+        let expanded = height { $0 > collapsedHeight + 40 }
         XCTAssertEqual(XCTWaiter.wait(for: [expanded], timeout: 5), .completed)
         XCTAssertEqual(drawer.frame.minX, app.frame.minX, accuracy: 1)
         XCTAssertEqual(drawer.frame.maxX, app.frame.maxX, accuracy: 1)
         capture("attach-drawer-expanded", app: app)
         app.buttons["attach-drawer-resize"].tap()
-        let collapsed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "frame.height <= %f", collapsedHeight + 1), object: drawer)
+        let collapsed = height { $0 <= collapsedHeight + 1 }
         XCTAssertEqual(XCTWaiter.wait(for: [collapsed], timeout: 5), .completed)
         guard tiles.count >= 2 else { return }
         tiles.element(boundBy: 1).tap()
@@ -1465,7 +1472,9 @@ final class CaperParityUITests: XCTestCase {
         tiles.element(boundBy: 1).tap()
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Attached 1"), object: tiles.element(boundBy: 0))
         XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 5), .completed, "The remaining file moves up to first")
-        app.buttons["attach-drawer-resize"].swipeDown()
+        // A real drag: XCUITest's swipeDown travels too little for the close threshold.
+        let handle = app.buttons["attach-drawer-resize"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        handle.press(forDuration: 0.05, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 300)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(drawer.waitForNonExistence(timeout: 5), "Dragging down from the collapsed drawer dismisses it")
     }
     #endif
@@ -3551,6 +3560,8 @@ final class CaperParityUITests: XCTestCase {
         type("jordan", into: username)
         let submit = app.buttons["dm-create-submit"]
         let fieldFrame = username.frame, buttonFrame = submit.frame
+        let keyboardBefore = app.keyboards.firstMatch.exists
+        capture("new-dm-before-refusal", app: app)
         // Jordan isn't a suggestion, so the first press only finds the person
         // and the second opens the conversation, which the server refuses.
         submit.tap()
@@ -3560,7 +3571,8 @@ final class CaperParityUITests: XCTestCase {
         assertElement("dm-create-error", label: message, in: app)
         XCTAssertEqual(username.value as? String, "jordan")
         XCTAssertTrue(submit.isEnabled, "A refusal must leave the form retryable")
-        XCTAssertEqual(username.frame, fieldFrame, "The error must not move the username field")
+        XCTAssertEqual(username.frame, fieldFrame,
+                       "The error must not move the username field (keyboard before: \(keyboardBefore), after: \(app.keyboards.firstMatch.exists))")
         XCTAssertEqual(submit.frame, buttonFrame, "The error must not move or resize the action")
         capture("new-dm-refused", app: app)
         type("_other", into: username)
