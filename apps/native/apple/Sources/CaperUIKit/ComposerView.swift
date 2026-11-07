@@ -25,6 +25,8 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     }()
     /// Attribute and selection fixes made here, not by the person typing.
     private var highlighting = false
+    /// The style web carries between typed keys (shared/messages/composer.rs).
+    private var typing = ComposerTyping()
     private let placeholder = UIKitStyle.label(size: 14, color: UIKitStyle.muted)
     private let field = UIView()
     private let fieldRow = UIStackView()
@@ -264,6 +266,7 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
     /// and never while an input method is composing.
     func show(draft: String) {
         guard textView.markedTextRange == nil, textView.text != draft else { return }
+        typing.end()
         textView.hideEmojiName()
         textView.text = draft
         dismissed = false
@@ -290,8 +293,8 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
         guard !highlighting, textView.markedTextRange == nil,
               textView.undoManager?.isUndoing != true, textView.undoManager?.isRedoing != true else { return true }
         let proposed = (textView.text as NSString).replacingCharacters(in: range, with: replacement)
-        let result = MessageFormatting.repairEdit(textView.text, text: proposed,
-                                                  selection: NSRange(location: range.location + replacement.utf16.count, length: 0))
+        let result = typing.repairEdit(textView.text, text: proposed,
+                                       selection: NSRange(location: range.location + replacement.utf16.count, length: 0), replacing: range)
         guard result.text != proposed,
               let all = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument) else { return true }
         highlighting = true
@@ -310,12 +313,14 @@ final class ComposerView: UIView, UITextViewDelegate, UIGestureRecognizerDelegat
 
     func textViewDidChangeSelection(_ textView: UITextView) {
         guard !highlighting else { return }
+        typing.observe(textView.text, selection: textView.selectedRange)
         dismissed = false
         render()
     }
 
     func textViewDidBeginEditing(_ textView: UITextView) { render() }
     func textViewDidEndEditing(_ textView: UITextView) {
+        typing.end()
         self.textView.hideEmojiName()
         suggestions.show(nil)
     }
