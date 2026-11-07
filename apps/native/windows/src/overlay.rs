@@ -330,6 +330,10 @@ pub enum Part {
     Reset,
     SaveChanges,
     ManageRow(usize),
+    /// Member `k`'s Remove.
+    RemoveMember(usize),
+    /// The danger zone's Delete space or Delete channel.
+    DeleteOpen,
 }
 
 impl Part {
@@ -380,6 +384,8 @@ impl Part {
             Self::SaveChanges => 30_209,
             Self::Member(k) => 100_000 + k,
             Self::ManageRow(k) => 110_000 + k,
+            Self::RemoveMember(k) => 120_000 + k,
+            Self::DeleteOpen => 30_210,
         }
     }
 
@@ -780,7 +786,9 @@ impl Dialog {
             Part::Retry if self.kind == Kind::InvitePeople => self.invite_enabled(part),
             Part::CancelInvite(_) => !self.busy,
             Part::SaveName => self.can_save_name(),
-            Part::Reset | Part::SaveChanges => !self.busy,
+            Part::Reset | Part::SaveChanges | Part::RemoveMember(_) | Part::DeleteOpen => {
+                !self.busy
+            }
             Part::Member(_) | Part::Unsaved | Part::ManageRow(_) => true,
             Part::Cancel
             | Part::Reload
@@ -853,6 +861,8 @@ impl Dialog {
                         | Part::Reset
                         | Part::SaveChanges
                         | Part::ManageRow(_)
+                        | Part::RemoveMember(_)
+                        | Part::DeleteOpen
                 ) && contains(*r, x, y)
                     && match self.kind {
                         Kind::History | Kind::InvitePeople => {
@@ -1305,6 +1315,8 @@ pub(crate) enum Tone {
     Primary,
     Secondary,
     Danger,
+    /// `.danger-outline`: the danger zone's opener, on the card's surface.
+    DangerOutline,
 }
 
 impl Tone {
@@ -1324,6 +1336,10 @@ impl Tone {
             (Self::Danger, 1) => (0xB93646, 0xB93646, 0xFFFFFF),
             (Self::Danger, 2) => (0xD44355, 0xD44355, 0xFFFFFF),
             (Self::Danger, _) => (0xA02E3C, 0xFF8C9A, 0xFFFFFF),
+            // `--danger-wash` over the card on hover.
+            (Self::DangerOutline, 1) => (0x151719, 0xB93646, ERROR),
+            (Self::DangerOutline, 2) => (0x2F1C20, 0xD44355, ERROR),
+            (Self::DangerOutline, _) => (0x3C1E24, 0xFF8C9A, ERROR),
         }
     }
 }
@@ -1652,7 +1668,9 @@ impl App {
             | Part::Member(_)
             | Part::Unsaved
             | Part::Reset
-            | Part::SaveChanges => {}
+            | Part::SaveChanges
+            | Part::RemoveMember(_)
+            | Part::DeleteOpen => {}
         }
         self.dialog_changed();
         if let Err(e) = self.drain_live() {

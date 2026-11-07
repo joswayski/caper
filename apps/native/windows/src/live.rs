@@ -3029,6 +3029,18 @@ impl Live {
                 out.extend(settings.map(Update::ChannelSettings));
                 return;
             }
+            AdminResult::SpaceDeleted(id) => {
+                // The dialog closes, and the space goes as a left one does.
+                out.push(invite_answer(crate::invite_people::Answer::Deleted));
+                return self.left(AdminResult::SpaceLeft(id), out);
+            }
+            AdminResult::ChannelDeleted(channel) => {
+                if let Some(d) = &mut self.detail {
+                    d.channels.retain(|c| c.id != channel);
+                }
+                out.push(invite_answer(crate::invite_people::Answer::Deleted));
+                return self.left(AdminResult::ChannelLeft(channel), out);
+            }
             AdminResult::SpaceUpdated(space) => {
                 if let Some(d) = self.detail.as_mut().filter(|d| d.space.id == space.id) {
                     d.space.name = space.name.clone();
@@ -3078,6 +3090,18 @@ impl Live {
                 out.push(invite_answer(
                     crate::invite_people::Answer::ChannelInvited { channel, member },
                 ));
+                return;
+            }
+            AdminResult::MemberRemoved {
+                channel: None,
+                member,
+            } => {
+                if let Some(d) = &mut self.detail {
+                    d.members.retain(|m| m.id != member);
+                }
+                out.push(invite_answer(crate::invite_people::Answer::SpaceRemoved(
+                    member,
+                )));
                 return;
             }
             AdminResult::MemberRemoved {

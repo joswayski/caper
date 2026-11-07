@@ -38,6 +38,8 @@ pub const SHARE: u8 = 0;
 pub const PENDING: u8 = 1;
 pub const BY_NAME: u8 = 2;
 pub const CUSTOM_HEAD: u8 = 3;
+/// Manage space's and Channel settings' danger zone.
+pub const DANGER: u8 = 4;
 /// `Part::Line`s: the link's guidance, the note without public channels,
 /// the link's summary, the note without a link, why a link request
 /// failed, the username rules, "Invitation sent…", the confirmation's
@@ -59,6 +61,11 @@ pub const OPENS_LABEL: u8 = 13;
 pub const FORM_ERROR: u8 = 14;
 /// Why the name wasn't saved.
 pub const NAME_ERROR: u8 = 15;
+/// What removing a member means, in its confirmation.
+pub const REMOVAL: u8 = 16;
+/// The danger zone's line, and what deleting means in its confirmation.
+pub const DANGER_NOTE: u8 = 17;
+pub const DELETION: u8 = 18;
 /// `Part::LinkAction`s, More invite options' items.
 pub const REGENERATE: u8 = 0;
 pub const DEACTIVATE: u8 = 1;
@@ -112,6 +119,11 @@ pub struct InvitePeople {
     pub saved: String,
     pub name_error: Option<String>,
     pub saving: bool,
+    /// The member whose removal awaits confirmation (web's
+    /// RemoveMemberDialog).
+    pub removing: Option<String>,
+    /// Deleting the space or channel awaits confirmation.
+    pub deleting: bool,
 }
 
 impl InvitePeople {
@@ -159,6 +171,8 @@ impl InvitePeople {
             saved: String::new(),
             name_error: None,
             saving: false,
+            removing: None,
+            deleting: false,
         }
     }
 
@@ -196,6 +210,10 @@ pub enum Answer {
     /// Manage space's and Channel settings' saves, and a private channel's
     /// members, invitations and removals.
     SpaceSaved(caper_client::model::Space),
+    /// A member removed from the space.
+    SpaceRemoved(String),
+    /// The space or channel was deleted: the dialog closes.
+    Deleted,
     ChannelSaved(caper_client::model::Channel),
     Members {
         channel: String,
@@ -224,13 +242,16 @@ impl Dialog {
         d
     }
 
-    fn confirming(&self) -> bool {
+    pub(crate) fn confirming(&self) -> bool {
         self.inviting
             .as_ref()
-            .is_some_and(|ip| ip.confirm.is_some())
+            .is_some_and(|ip| ip.confirm.is_some() || ip.removing.is_some() || ip.deleting)
     }
 
     pub(crate) fn invite_people_title(&self) -> String {
+        if let Some((title, _)) = self.removal() {
+            return title;
+        }
         match self.inviting.as_deref() {
             Some(InvitePeople {
                 confirm: Some((_, true)),
@@ -262,6 +283,24 @@ impl Dialog {
     }
 
     pub(crate) fn invite_people_primary(&self) -> &'static str {
+        if self.inviting.as_ref().is_some_and(|ip| ip.deleting) {
+            return match (self.busy, self.settings_channel().is_some()) {
+                (true, _) => "Deleting\u{2026}",
+                (false, true) => "Delete channel",
+                (false, false) => "Delete space",
+            };
+        }
+        if self
+            .inviting
+            .as_ref()
+            .is_some_and(|ip| ip.removing.is_some())
+        {
+            return if self.busy {
+                "Removing\u{2026}"
+            } else {
+                "Remove"
+            };
+        }
         match self.inviting.as_ref().and_then(|ip| ip.confirm.as_ref()) {
             Some((_, true)) => "Regenerate link",
             Some(_) => "Deactivate link",
@@ -296,6 +335,7 @@ impl Dialog {
             SHARE => "Share an invite link".into(),
             PENDING => "Pending invitations".into(),
             CUSTOM_HEAD => "Create a separate link".into(),
+            DANGER => self.delete_label().into(),
             _ if self.managing().is_some() => "Members".into(),
             _ => "Or invite by username".into(),
         }
@@ -320,6 +360,8 @@ impl Dialog {
             REPLACEMENT => "The replacement allows 100 joins for 30 days.".into(),
             CUSTOM_GUIDE..=FORM_ERROR => self.custom_line(k),
  NAME_ERROR => ip.name_error.clone().unwrap_or_default(),
+ REMOVAL => self.removal().map(|(_, text)| text).unwrap_or_default(),
+ DANGER_NOTE | DELETION => self.deletion_line(k),
             _ => ip.confirm.as_ref().map_or_else(String::new, |(code, _)| {
                 format!("Current link: {}", ip.url(code))
             }),
@@ -387,18 +429,26 @@ impl Dialog {
     /// More invite options or a confirmation is showing (Escape and an
     /// outside click close it first).
     pub(crate) fn invite_layered(&self) -> bool {
-        self.inviting
-            .as_ref()
-            .is_some_and(|ip| ip.menu || ip.landing_open || ip.confirm.is_some())
+        self.inviting.as_ref().is_some_and(|ip| {
+            ip.menu
+                || ip.landing_open
+                || ip.confirm.is_some()
+                || ip.removing.is_some()
+                || ip.deleting
+        })
     }
 
     pub(crate) fn invite_back(&mut self) {
+        let busy = self.busy;
         if let Some(ip) = self.inviting.as_deref_mut() {
             if ip.menu || ip.landing_open {
                 ip.menu = false;
                 ip.landing_open = false;
             } else if ip.confirm.take().is_some() {
                 self.field.focused = true;
+            } else if !busy && (ip.removing.take().is_some() || std::mem::take(&mut ip.deleting)) {
+                // Back to the settings, without the removal's error.
+                self.error = None;
             }
         }
     }
@@ -549,7 +599,7 @@ impl Dialog {
     ) -> (&'g IDWriteTextFormat, &'g ID2D1SolidColorBrush) {
         match k {
             LINK_ERROR | FORM_ERROR | NAME_ERROR => (&g.formats.error, &g.brushes.error),
-            STOPS | REPLACEMENT => (&g.formats.dialog_note, &g.brushes.text),
+            STOPS | REPLACEMENT | REMOVAL | DELETION => (&g.formats.dialog_note, &g.brushes.text),
             _ => (&g.formats.direct_note, &g.brushes.muted),
         }
     }
@@ -571,6 +621,37 @@ impl Dialog {
             parts.push((part, (0.0, y, inner, h)));
             Ok::<f32, windows::core::Error>(h)
         };
+        if ip.removing.is_some() || ip.deleting {
+            // Web's RemoveMemberDialog and DeleteConfirmation: what it
+            // means, why it failed, Cancel and Remove or Delete.
+            let title = layout(g, &self.title(), &g.formats.dialog_title, inner)?;
+            parts.push((Part::Title, (0.0, 0.0, inner, height(&title))));
+            let mut y = height(&title) + 12.0;
+            let k = if ip.deleting { DELETION } else { REMOVAL };
+            let (format, _) = self.line_style(g, k);
+            y += line(&mut parts, Part::Line(k), &self.invite_line(k), format, y)? + 8.0;
+            if let Some(e) = &self.error {
+                y += line(&mut parts, Part::Error, e, &g.formats.error, y)? + 8.0;
+            }
+            y += 12.0;
+            let busy = if ip.deleting {
+                "Deleting\u{2026}"
+            } else {
+                "Removing\u{2026}"
+            };
+            let pw = width(&layout(g, busy, &g.formats.button, 1e6)?).max(width(&layout(
+                g,
+                self.primary_label(),
+                &g.formats.button,
+                1e6,
+            )?)) + 24.0;
+            let cancel = layout(g, "Cancel", &g.formats.button, 1e6)?;
+            let cw = width(&cancel) + 24.0;
+            parts.push((Part::Cancel, (inner - pw - 8.0 - cw, y, cw, BUTTON_H)));
+            parts.push((Part::Primary, (inner - pw, y, pw, BUTTON_H)));
+            let card_h = y + BUTTON_H + 2.0 * CARD_PAD;
+            return self.place(parts, card_w, card_h, w, h, (0.0, card_h));
+        }
         if let Some((_, regenerate)) = &ip.confirm {
             let title = layout(g, &self.title(), &g.formats.dialog_title, inner)?;
             parts.push((Part::Title, (0.0, 0.0, inner, height(&title))));
@@ -781,7 +862,28 @@ impl Dialog {
                     y,
                 )?;
             }
-            y = self.relayout_members(inner, y, &mut parts);
+            y = self.relayout_members(g, inner, y, &mut parts)?;
+        }
+        if ip.manage.is_some() {
+            // The danger zone, as web ends both dialogs with it.
+            y += 24.0;
+            y += line(
+                &mut parts,
+                Part::Heading(DANGER),
+                &self.invite_heading(DANGER),
+                &g.formats.direct_name,
+                y,
+            )? + 6.0;
+            y += line(
+                &mut parts,
+                Part::Line(DANGER_NOTE),
+                &self.invite_line(DANGER_NOTE),
+                &g.formats.direct_note,
+                y,
+            )? + 10.0;
+            let l = layout(g, self.delete_label(), &g.formats.button, 1e6)?;
+            parts.push((Part::DeleteOpen, (0.0, y, width(&l) + 24.0, BUTTON_H)));
+            y += BUTTON_H;
         }
         // The menu is hit first, and drawn last.
         menu.append(&mut parts);
@@ -1043,6 +1145,8 @@ impl Dialog {
             | Part::Toggle
             | Part::SaveName
             | Part::Member(_)
+            | Part::RemoveMember(_)
+            | Part::DeleteOpen
             | Part::Unsaved
             | Part::Reset
             | Part::SaveChanges => self.draw_manage_part(g, dc, part, (x, y, w, h))?,
@@ -1092,6 +1196,19 @@ impl App {
 
     pub fn invite_people_answer(&mut self, answer: Answer) {
         self.settings_saved(&answer);
+        if matches!(answer, Answer::Deleted) {
+            if self
+                .dialog
+                .as_ref()
+                .is_some_and(|d| d.kind == Kind::InvitePeople)
+            {
+                if let Some(live) = &self.live {
+                    live.effects.play(caper_client::effects::Effect::Delete);
+                }
+                self.close_dialog();
+            }
+            return;
+        }
         let Some(d) = self
             .dialog
             .as_mut()
@@ -1102,6 +1219,7 @@ impl App {
         if matches!(
             answer,
             Answer::SpaceSaved(_)
+                | Answer::SpaceRemoved(_)
                 | Answer::ChannelSaved(_)
                 | Answer::Members { .. }
                 | Answer::ChannelInvited { .. }
@@ -1130,6 +1248,7 @@ impl App {
     /// Clicks and UIA Invoke on the dialog's own parts.
     pub(crate) fn invite_people_activate(&mut self, part: Part) {
         let hwnd = self.hwnd;
+        let mut warn = false;
         let (Some(d), Some(live)) = (self.dialog.as_mut(), self.live.as_ref()) else {
             return;
         };
@@ -1176,7 +1295,52 @@ impl App {
                 }
                 Part::Cancel => {
                     ip.confirm = None;
-                    d.field.focused = true;
+                    if ip.removing.take().is_some() || std::mem::take(&mut ip.deleting) {
+                        d.error = None;
+                    } else {
+                        d.field.focused = true;
+                    }
+                }
+                Part::RemoveMember(k) => {
+                    if let Some(m) = ip.members.get(k).filter(|m| !m.owner) {
+                        ip.removing = Some(m.id.clone());
+                        ip.focus = None;
+                        d.error = None;
+                        d.field.focused = false;
+                        d.suggestions.clear();
+                    }
+                }
+                Part::DeleteOpen => {
+                    ip.deleting = true;
+                    ip.focus = None;
+                    d.error = None;
+                    d.field.focused = false;
+                    d.suggestions.clear();
+                    warn = true;
+                }
+                Part::Primary if ip.deleting => {
+                    d.busy = true;
+                    d.error = None;
+                    live.admin(match ip.channel() {
+                        Some(c) => AdminOperation::DeleteChannel {
+                            space: ip.space.clone(),
+                            channel: c.id.clone(),
+                        },
+                        None => AdminOperation::DeleteSpace {
+                            space: ip.space.clone(),
+                        },
+                    });
+                }
+                Part::Primary if ip.removing.is_some() => {
+                    if let Some(member) = ip.removing.clone() {
+                        d.busy = true;
+                        d.error = None;
+                        live.admin(AdminOperation::RemoveMember {
+                            space: ip.space.clone(),
+                            channel: ip.channel().map(|c| c.id.clone()),
+                            member,
+                        });
+                    }
                 }
                 Part::Primary => {
                     if let Some((code, regenerate)) = ip.confirm.take() {
@@ -1227,6 +1391,10 @@ impl App {
         self.dialog_changed();
         if let Err(e) = self.drain_live() {
             eprintln!("invite action failed: {e:?}");
+        }
+        // Web's DeleteConfirmation warns as it opens.
+        if warn && let Some(live) = &self.live {
+            live.effects.play(caper_client::effects::Effect::Warning);
         }
     }
 

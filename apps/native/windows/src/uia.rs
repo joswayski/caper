@@ -584,6 +584,8 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Reset => "Reset".into(),
                 DPart::SaveChanges => d.save_changes_label().into(),
                 DPart::ManageRow(k) => d.browse_manage_name(k),
+                DPart::RemoveMember(_) => "Remove".into(),
+                DPart::DeleteOpen => d.delete_label().into(),
                 DPart::Field | DPart::Label
                     if matches!(d.kind, Kind::CreateSpace | Kind::CreateChannel) =>
                 {
@@ -1169,7 +1171,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 | DPart::SaveName
                 | DPart::Reset
                 | DPart::SaveChanges
-                | DPart::ManageRow(_),
+                | DPart::ManageRow(_)
+                | DPart::RemoveMember(_)
+                | DPart::DeleteOpen,
             ) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Primary | Part::OtherEmail | Part::Resend) => {
                 pattern == UIA_InvokePatternId

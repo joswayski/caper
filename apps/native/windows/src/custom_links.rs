@@ -314,7 +314,9 @@ impl Dialog {
             Some(Part::More | Part::Landing | Part::LinkAction(_) | Part::LandingChoice(_))
         );
         (ip.menu || ip.landing_open) && !own
-            || ip.confirm.is_some() && part.is_none() && !self.on_card(x, y)
+            || (ip.confirm.is_some() || (ip.removing.is_some() || ip.deleting) && !self.busy)
+                && part.is_none()
+                && !self.on_card(x, y)
     }
 
     /// The Custom links button (web's summary), then, open, the form and
