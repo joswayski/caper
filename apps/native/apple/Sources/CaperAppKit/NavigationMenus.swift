@@ -13,6 +13,8 @@ final class NavigationMenuItem: NSMenuItem, NSMenuItemValidation {
         target = self
         isEnabled = enabled
         state = selected ? .on : .off
+        // The visible title alone can leave the custom action's AX label empty.
+        setAccessibilityLabel(title)
     }
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func invoke() { perform() }
