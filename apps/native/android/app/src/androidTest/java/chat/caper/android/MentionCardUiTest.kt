@@ -10,6 +10,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -72,6 +73,8 @@ class MentionCardUiTest {
         compose.runOnIdle { text.config[SemanticsActions.CustomActions].first().action() }
         compose.onNodeWithText("Maya Fixture").assertIsDisplayed()
         compose.onNodeWithText("@maya").assertIsDisplayed()
+        // TalkBack names the sheet like web's aria-label.
+        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Profile for Maya Fixture")).assertExists()
         compose.onNodeWithContentDescription("Open conversation").assertIsEnabled().performClick()
         compose.onNodeWithContentDescription("Opening…").assertIsNotEnabled()
         compose.runOnIdle { assertEquals("maya", requested); fail?.invoke("That account was not found.") }

@@ -232,7 +232,7 @@ private const val DOUBLE_TAP_ZOOM = 2f
             Modifier.fillMaxSize().swipeCancelsPresses()
                 // Drawn, not composed, so the backdrop fades with the finger without recomposing the viewer.
                 .drawBehind { drawRect(Blackout.copy(alpha = 0.92f * dismiss.backdrop(dismissAt))) }
-                .semantics { paneTitle = "Image viewer" }
+                .semantics { paneTitle = if (current?.kind == "video") "Video viewer" else "Image viewer" }
                 // Hardware keyboards: Left/Right move between files.
                 .onKeyEvent { event ->
                     if (event.type != KeyEventType.KeyDown) false else when (event.key) {

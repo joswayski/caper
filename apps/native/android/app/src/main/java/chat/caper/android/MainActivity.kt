@@ -4019,7 +4019,7 @@ internal fun counterTone(count: Int): Color = when {
         LaunchedEffect(busy) {
             if (busy) requested = true else if (requested) runCatching { emailFocus.requestFocus() }
         }
-        Text("Welcome to Caper", Modifier.padding(bottom = 4.dp), fontSize = 49.sp, lineHeight = 53.sp, fontWeight = FontWeight.Bold, letterSpacing = (-2.5).sp)
+        Text("Welcome to Caper", Modifier.padding(bottom = 4.dp).semantics { heading() }, fontSize = 49.sp, lineHeight = 53.sp, fontWeight = FontWeight.Bold, letterSpacing = (-2.5).sp)
         Text("Use your email to create an account or log back in.", color = TextMuted, lineHeight = 26.sp)
         Text("Email address", Modifier.padding(top = 20.dp, bottom = 8.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold)
         OutlinedTextField(
@@ -4029,7 +4029,8 @@ internal fun counterTone(count: Int): Color = when {
             // Named by the visible "Email address" above it (web: <label for>), not only by its placeholder.
             singleLine = true, readOnly = busy, modifier = Modifier.fillMaxWidth().focusRequester(emailFocus).semantics { contentDescription = "Email address" },
         )
-        if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp), color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) {
+        // Announced at once, like web's role="alert".
+        if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Assertive }, color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) {
             Text(error, Modifier.padding(horizontal = 14.dp, vertical = 12.dp), lineHeight = 24.sp)
         }
         PrimaryButton("Email me a code", "Sending…", busy, email.contains('@'), Modifier.align(Alignment.End).padding(top = 12.dp)) { submit(email) }
@@ -4047,7 +4048,7 @@ internal fun counterTone(count: Int): Color = when {
     val sendNewCode = { resending = true; resend() }
     AuthFrame {
         LaunchedEffect(busy, screen.challengeId) { if (!busy && !exhausted) runCatching { codeFocus.requestFocus() } }
-        Text("Check your email.", Modifier.padding(bottom = 4.dp), fontSize = 49.sp, lineHeight = 53.sp, fontWeight = FontWeight.Bold, letterSpacing = (-2.5).sp)
+        Text("Check your email.", Modifier.padding(bottom = 4.dp).semantics { heading() }, fontSize = 49.sp, lineHeight = 53.sp, fontWeight = FontWeight.Bold, letterSpacing = (-2.5).sp)
         Text("Enter the six-character code sent to ${screen.email}. It expires in 10 minutes.", color = TextMuted, lineHeight = 26.sp)
         Text("Sign-in code", Modifier.padding(top = 20.dp, bottom = 8.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold)
         // Done submits a complete code, like Continue (and the email field's Send).
@@ -4056,8 +4057,8 @@ internal fun counterTone(count: Int): Color = when {
             readOnly = busy, enabled = !exhausted, modifier = Modifier.fillMaxWidth().focusRequester(codeFocus).semantics { contentDescription = "Sign-in code" },
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { if (code.length == 6 && !busy) submit(screen.challengeId, code) }))
-        if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp), color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) { Text(error, Modifier.padding(14.dp)) }
-        if (screen.attemptsRemaining == 1) Text("One attempt left. Check the code carefully.", Modifier.padding(top = 12.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Assertive }, color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) { Text(error, Modifier.padding(14.dp)) }
+        if (screen.attemptsRemaining == 1) Text("One attempt left. Check the code carefully.", Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite }, fontSize = 14.sp, fontWeight = FontWeight.Bold)
         // Shown after a resend, announced politely; the new challenge also cleared the field and the attempts.
         if (screen.resends > 0) Text(RESENT_CODE_STATUS, Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 14.sp)
         // "Email me a new code" counts as a resend too, and restarts the wait.

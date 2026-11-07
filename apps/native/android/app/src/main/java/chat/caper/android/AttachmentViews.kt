@@ -45,6 +45,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -459,11 +461,11 @@ internal fun replyAttachmentPreviewUrl(attachment: ChatAttachment): String? = wh
 
 @Composable private fun ViewerFrame(title: String, close: () -> Unit, actions: @Composable RowScope.() -> Unit, content: @Composable BoxScope.() -> Unit) {
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(Modifier.fillMaxSize().swipeCancelsPresses().background(Blackout)) {
+        Column(Modifier.fillMaxSize().swipeCancelsPresses().background(Blackout).semantics { paneTitle = title }) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(title, Modifier.weight(1f), color = Text, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(title, Modifier.weight(1f).semantics { heading() }, color = Text, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 actions()
-                IconButton(close, Modifier.semantics { contentDescription = "Close" }) { Icon(painterResource(R.drawable.lucide_x), null, tint = Text) }
+                IconButton(close, Modifier.semantics { contentDescription = "Close viewer" }) { Icon(painterResource(R.drawable.lucide_x), null, tint = Text) }
             }
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center, content = content)
         }
