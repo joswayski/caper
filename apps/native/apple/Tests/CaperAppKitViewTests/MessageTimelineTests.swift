@@ -14,6 +14,78 @@ import XCTest
         timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? NSTextView } } ?? []
     }
 
+    func testReplyQuoteAndThreadSummaryKeepTextSelectionAndFitAtBothWidths() throws {
+        _ = NSApplication.shared
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let parent = NSViewController()
+        let media = AppKitMediaPresenter(model: model, parent: parent)
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 500))
+        timeline.makeReply = { media.replyContext($0) }
+        var original = message(0, author: "maya")
+        original.content = ChatContent(version: 1, type: "text",
+            text: String(repeating: "An asymmetric quote — 👩🏽‍💻 café 中文. ", count: 15))
+        var reply = message(1, author: "alex")
+        reply.replyTo = MessageReply(message: original)
+        reply.thread = ThreadSummary(replyCount: 2, participants: [original.author], seq: "7")
+        timeline.update([reply], conversationID: "channel")
+        let body = try XCTUnwrap(bodies(in: timeline).first)
+        let row = try XCTUnwrap(body.superview)
+        let selection = (body.string as NSString).range(of: "👩🏽‍💻")
+        body.setSelectedRange(selection)
+        for width in [CGFloat(640), CGFloat(300)] {
+            timeline.setFrameSize(NSSize(width: width, height: 500))
+            timeline.layoutSubtreeIfNeeded()
+            let quote = try XCTUnwrap(row.subviews.compactMap { $0 as? AppKitAttachmentSurface }.first)
+            let summary = try XCTUnwrap(row.subviews.compactMap { $0 as? NSButton }
+                .first { $0.accessibilityIdentifier() == "thread-summary-message-1" })
+            XCTAssertGreaterThan(quote.frame.height, 40, "Quotes must reserve visible space, not only an accessibility element")
+            XCTAssertTrue(row.bounds.contains(quote.frame))
+            XCTAssertGreaterThanOrEqual(body.frame.minY, quote.frame.maxY)
+            XCTAssertGreaterThanOrEqual(summary.frame.minY, body.frame.maxY)
+            XCTAssertTrue(row.bounds.contains(summary.frame))
+            XCTAssertEqual(summary.accessibilityLabel(), "2 replies")
+            XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+        }
+        original.content = ChatContent(version: 1, type: "text", text: "A replacement quote")
+        reply.replyTo = MessageReply(message: original)
+        reply.thread = ThreadSummary(replyCount: 3, participants: [original.author, reply.author], seq: "11")
+        timeline.update([reply], conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(body.selectedRange(), selection)
+        XCTAssertEqual(row.subviews.compactMap { $0 as? NSButton }
+            .first { $0.accessibilityIdentifier() == "thread-summary-message-1" }?.accessibilityLabel(), "3 replies")
+        reply.replyTo = nil
+        timeline.update([reply], conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertFalse(row.subviews.contains { $0 is AppKitAttachmentSurface })
+        XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+    }
+
+    func testOriginalMessageJumpRevealsBlockedTargetWithoutRealizingInterveningHistory() throws {
+        _ = NSApplication.shared
+        let timeline = MessageTimeline(frame: .zero)
+        let history = (0..<3000).map { message($0, author: $0 == 147 ? "blocked" : "peer") }
+        var visible: Set<String> = []
+        timeline.visibleMessagesChanged = { visible = $0 }
+        timeline.update(history, conversationID: "channel", blocked: ["blocked"])
+        XCTAssertTrue(timeline.focusMessage("message-147"), "A deep link may arrive before the window lays out")
+        timeline.setFrameSize(NSSize(width: 420, height: 360))
+        timeline.layoutSubtreeIfNeeded()
+        let target = try XCTUnwrap(bodies(in: timeline).first { $0.string == history[147].content.text })
+        let row = try XCTUnwrap(target.superview)
+        XCTAssertTrue(timeline.contentView.bounds.intersects(row.frame))
+        XCTAssertTrue(visible.contains("message-147"))
+        XCTAssertLessThan(timeline.documentView?.accessibilityChildren()?.count ?? 3000, 40)
+        XCTAssertFalse(bodies(in: timeline).contains { $0.string == history.last?.content.text })
+        XCTAssertFalse(timeline.focusMessage("missing-message"))
+        XCTAssertTrue(timeline.contentView.bounds.intersects(row.frame), "An unknown target must not move the reader")
+        timeline.showLatest()
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertTrue(visible.contains("message-2999"))
+        XCTAssertTrue(bodies(in: timeline).contains { $0.string == history.last?.content.text })
+        XCTAssertLessThan(timeline.documentView?.accessibilityChildren()?.count ?? 3000, 40)
+    }
+
     func testAttachmentLeavesHaveHeightAndStayInsideRealizedHistory() throws {
         _ = NSApplication.shared
         let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
