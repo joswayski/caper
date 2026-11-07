@@ -21,6 +21,10 @@ class AppleSimulatorScriptTests(unittest.TestCase):
         self.apple.mkdir(parents=True)
         for name in ("build.sh", "parity-screenshots.sh"):
             shutil.copyfile(APPLE / name, self.apple / name)
+        # The photo seeding needs a real simulator; record which one it was given.
+        seed = self.apple / "seed-simulator-photos.sh"
+        seed.write_text('#!/usr/bin/env bash\nprintf %s "$1" > "$(dirname "$0")/seeded"\n')
+        seed.chmod(0o755)
         prepare = self.apple / "prepare.sh"
         prepare.write_text('#!/usr/bin/env bash\ntouch "$(dirname "$0")/prepared"\n')
         prepare.chmod(0o755)
@@ -117,6 +121,7 @@ if tool == "xcrun":
                 args = commands[0]
                 self.assertEqual(args[args.index("-scheme") + 1], "CaperIOSParityTests")
                 self.assertEqual(args[args.index("-destination") + 1], destination or DEFAULT_DESTINATION)
+                self.assertEqual((self.apple / "seeded").read_text(), destination or DEFAULT_DESTINATION)
                 self.assertEqual(
                     commands[1],
                     [
