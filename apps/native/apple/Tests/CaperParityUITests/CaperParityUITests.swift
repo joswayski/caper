@@ -881,6 +881,74 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.textFields["reaction-picker-search"].exists, "Selection must dismiss the shared sheet")
     }
 
+    func testIPhoneDirectMessageKeyboardAndThreadKeepHeaderAnchored() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let app = launch()
+        let browse = try require(app.buttons["Back to Browse"], timeout: 30, "Missing conversation")
+        browse.tap()
+        try require(app.buttons["dm-self"], timeout: 5, "Missing notes to self").tap()
+        let composer = try require(app.textViews["message-composer"], timeout: 5, "Missing DM composer")
+        let send = app.buttons["send-message-button"]
+        let headerY = browse.frame.minY
+        let restingBottom = send.frame.maxY
+        capture("dm-keyboard-closed", app: app)
+
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+        app.typeText("Keyboard thread regression")
+        XCTAssertEqual(browse.frame.minY, headerY, accuracy: 2, "Opening the DM keyboard must not expose Browse above its header")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
+        capture("dm-keyboard-open", app: app)
+        send.tap()
+        let root = try require(app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "message-row-"))
+            .containing(.staticText, identifier: "Keyboard thread regression").firstMatch,
+            timeout: 10, "Missing sent DM")
+        hold(root)
+        let actions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5, "Missing DM actions")
+        try require(actions.buttons["Reply in thread"], timeout: 5, "Missing thread action").tap()
+        let back = try require(app.buttons["Back to conversation"], timeout: 5, "Missing DM thread")
+        let reply = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to thread")).firstMatch,
+                                timeout: 5, "Missing thread composer")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        reply.typeText("Keep my reply draft")
+        XCTAssertEqual(back.frame.minY, headerY, accuracy: 2, "The thread header must stay at the conversation's top edge")
+        XCTAssertEqual(try keyboardTop(in: app) - app.buttons["Send reply"].frame.maxY, 16, accuracy: 2)
+        capture("dm-thread-keyboard-open", app: app)
+        let timeline = try XCTUnwrap(visible(app.scrollViews), "Missing thread timeline")
+        timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).press(forDuration: 0.05,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)),
+            withVelocity: .slow, thenHoldForDuration: 0.2)
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
+        XCTAssertEqual(back.frame.minY, headerY, accuracy: 2)
+        XCTAssertEqual(app.buttons["Send reply"].frame.maxY, restingBottom, accuracy: 2)
+        XCTAssertEqual(reply.value as? String, "Keep my reply draft")
+        capture("dm-thread-keyboard-closed", app: app)
+        back.tap()
+        // A cover can restore the DM's previous first responder. Either way,
+        // returning must preserve its header and the system's available height.
+        XCTAssertEqual(browse.frame.minY, headerY, accuracy: 2)
+        if app.keyboards.firstMatch.exists {
+            XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
+        } else {
+            XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2)
+        }
+        browse.tap()
+        let browseDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [browseDismissed], timeout: 5), .completed)
+        try require(app.buttons["Close navigation"], timeout: 5, "Missing conversation return target").tap()
+        XCTAssertEqual(browse.frame.minY, headerY, accuracy: 2)
+        XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2)
+        capture("dm-returned-from-thread", app: app)
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(browse.frame.minY, headerY, accuracy: 2)
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
+        capture("dm-keyboard-reopened-after-thread", app: app)
+    }
+
     func testIPhoneThreadComposerDoesNotFillItsMaximumHeight() throws {
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,

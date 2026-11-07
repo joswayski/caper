@@ -969,9 +969,10 @@ private struct WorkspaceView: View {
                             .ignoresSafeArea(.container, edges: [.vertical, .trailing])
                     }
                     #if os(iOS)
-                    // Avoid the keyboard once, before transforming the conversation.
+                    // Size before the horizontal transform, but keep keyboard avoidance
+                    // enabled. Ignoring it on this fixed-height layer shifts the whole
+                    // conversation down on Duo instead of just leaving Browse full-height.
                     .frame(height: narrow ? viewport.size.height : nil, alignment: .top)
-                    .ignoresSafeArea(narrow ? .keyboard : [], edges: .bottom)
                     #endif
                     .modifier(BrowseLayer(showsBrowse: narrow && showsBrowse) { CGSize(width: narrow ? $0 * travel : 0, height: 0) })
                     .allowsHitTesting(!narrow || !showsBrowse)
