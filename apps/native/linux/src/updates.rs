@@ -362,7 +362,9 @@ impl App {
 
     /// The Updates section of Settings, after Sounds.
     pub(super) fn updates_section(self: &Rc<Self>, root: &gtk::Box) -> UpdatesRow {
-        root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+        rule.add_css_class("settings-rule");
+        root.append(&rule);
         root.append(&label("Updates", &["settings-section"]));
         let installed = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         installed.append(&label(&updates::installed_version(), &["muted"]));

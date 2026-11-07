@@ -4,6 +4,8 @@
 //! soon as they change and revert with an inline error. A child of `app`.
 
 use super::{App, State};
+use crate::app::named;
+use crate::images::Icon;
 use crate::ui::label;
 use caper_client::effects::{Effect, Effects};
 use caper_client::model::{DELETE_ACCOUNT_URL, DM_PRIVACY, NotificationLevel};
@@ -47,7 +49,9 @@ pub(super) struct SettingsDialog {
 
 fn section(root: &gtk::Box, title: &str, first: bool) {
     if !first {
-        root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+        rule.add_css_class("settings-rule");
+        root.append(&rule);
     }
     let heading = label(title, &["settings-section"]);
     root.append(&heading);
@@ -56,9 +60,9 @@ fn section(root: &gtk::Box, title: &str, first: bool) {
 /// A switch with its title and a quieter description, like the desktop's.
 fn switch_row(root: &gtk::Box, title: &str, detail: &str) -> gtk::Switch {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 8);
     text.set_hexpand(true);
-    text.append(&label(title, &["field"]));
+    text.append(&label(title, &["settings-label"]));
     let detail = label(detail, &["muted", "small"]);
     detail.set_wrap(true);
     text.append(&detail);
@@ -156,7 +160,7 @@ impl App {
         let blocked = gtk::Box::new(gtk::Orientation::Vertical, 6);
         if signed_in {
             section(&root, "Notifications", false);
-            root.append(&label("Notify me about", &["field"]));
+            root.append(&label("Notify me about", &["settings-label"]));
             let mut group: Option<gtk::CheckButton> = None;
             for level in LEVELS {
                 let check = gtk::CheckButton::with_label(notifications::account_level_label(level));
@@ -195,7 +199,7 @@ impl App {
             root.append(&notifications_status);
 
             section(&root, "Privacy", false);
-            root.append(&label("Who can start a DM with you", &["field"]));
+            root.append(&label("Who can start a DM with you", &["settings-label"]));
             let mut group: Option<gtk::CheckButton> = None;
             for (value, title, detail) in DM_PRIVACY {
                 let check = gtk::CheckButton::with_label(title);
@@ -219,9 +223,18 @@ impl App {
             }
             privacy_status.set_wrap(true);
             root.append(&privacy_status);
-            root.append(&label("Blocked accounts", &["field"]));
+            root.append(&label(
+                "Blocked accounts",
+                &["settings-label", "settings-gap"],
+            ));
             root.append(&blocked);
-            let delete = gtk::LinkButton::with_label(DELETE_ACCOUNT_URL, "Delete account");
+            // As desktop: the link leaves Caper, so it says so with an icon.
+            let delete: gtk::LinkButton = named("GtkLinkButton", "Delete account");
+            delete.set_uri(DELETE_ACCOUNT_URL);
+            let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            content.append(&label("Delete account", &[]));
+            content.append(&self.images.icon_image(Icon::ExternalLink, "#e5735a", 12));
+            delete.set_child(Some(&content));
             delete.add_css_class("danger-link");
             delete.set_halign(gtk::Align::Start);
             root.append(&delete);

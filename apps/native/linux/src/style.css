@@ -1316,11 +1316,11 @@ button.picture-badge:hover {
   color: @caper_text_muted;
   font-size: 12px;
   font-weight: 700;
-  margin-top: 8px;
+  margin: 8px 0 4px;
 }
 
 .radio-detail {
-  margin-left: 28px;
+  margin-left: 0;
 }
 
 .blocked-account {
@@ -1331,11 +1331,68 @@ button.picture-badge:hover {
 .danger-link label {
   color: #e5735a;
   padding: 0;
+  text-decoration-line: none;
 }
 
-/* Selection is terracotta, as everywhere in Caper. */
+/* As desktop's switch: a 42x24 pill, neutral off and terracotta on, with a
+   light 18px knob; hover lifts the track, focus rings it in terracotta. */
+window.caper switch {
+  min-width: 42px;
+  min-height: 24px;
+  border: none;
+  border-radius: 12px;
+  background: @caper_border;
+  outline: none;
+}
+
+window.caper switch:hover {
+  background: #484d51;
+}
+
 window.caper switch:checked {
   background: @caper_terracotta;
+}
+
+window.caper switch:checked:hover {
+  background: @caper_terracotta_bright;
+}
+
+window.caper switch:focus-visible {
+  outline: 1px solid @caper_terracotta_bright;
+  outline-offset: 3px;
+}
+
+window.caper switch slider {
+  min-width: 18px;
+  min-height: 18px;
+  margin: 3px;
+  border: none;
+  border-radius: 9px;
+  background: @caper_text;
+  box-shadow: none;
+}
+
+window.caper switch image {
+  opacity: 0;
+}
+
+window.caper checkbutton:focus-visible {
+  outline: 2px solid @caper_terracotta;
+  outline-offset: 1px;
+}
+
+/* Settings, as desktop: 18px (and the row spacing) around each rule, and
+   regular-weight switch titles. */
+.settings-rule {
+  margin: 16px 0 8px;
+}
+
+.settings-label {
+  font-size: 14px;
+}
+
+.settings-gap {
+  margin-top: 8px;
 }
 
 window.caper check:checked,
