@@ -13,7 +13,7 @@ import SwiftUI
     public override var isFlipped: Bool { true }
 
     static var dragTypes: [NSPasteboard.PasteboardType] {
-        NSFilePromiseReceiver.readableDraggedTypes.map(NSPasteboard.PasteboardType.init) + [.fileURL]
+        NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) } + [.fileURL]
     }
 
     public init(model: AppModel, inThread: Bool = false) {
@@ -137,7 +137,9 @@ private final class AppKitDropOverlay: NSHostingView<FileDropOverlay> {
     private var destination: URL?
     private var completed: (([LocalAttachmentFile], Bool, Bool) -> Void)?
 
-    init(objects: [NSPasteboardReading], limit: Int) {
+    // AppKit returns [Any]; classify the supported values below rather than
+    // force-casting the whole pasteboard result to a protocol array.
+    init(objects: [Any], limit: Int) {
         var sources: [Source] = [], count = 0, overflow = false
         for object in objects {
             let source: Source
