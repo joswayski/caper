@@ -792,7 +792,10 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
     private lazy var more: NativeButton = NativeButton.icon("Message options", symbol: "ellipsis") { [weak self] in self?.showMenu() }
     var hasFocus: Bool { subviews.contains { $0 === window?.firstResponder } }
-    var preferredWidth: CGFloat { CGFloat(subviews.filter { !$0.isHidden }.count * 24 + 6) }
+    // AppKit exposes a one-point focus/AX outset around these 24-point buttons.
+    // Leave room between their hit regions, not only between their artwork.
+    private let buttonPitch: CGFloat = 26
+    var preferredWidth: CGFloat { CGFloat(subviews.filter { !$0.isHidden }.count - 1) * buttonPitch + 30 }
 
     init() {
         super.init(NSColor(CaperTheme.surface))
@@ -843,7 +846,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     override func layout() {
         super.layout()
         for (index, button) in subviews.filter({ !$0.isHidden }).enumerated() {
-            button.frame = NSRect(x: CGFloat(3 + index * 24), y: 3, width: 24, height: 24)
+            button.frame = NSRect(x: 3 + CGFloat(index) * buttonPitch, y: 3, width: 24, height: 24)
         }
     }
     override func hitTest(_ point: NSPoint) -> NSView? { alphaValue == 0 ? nil : super.hitTest(point) }
