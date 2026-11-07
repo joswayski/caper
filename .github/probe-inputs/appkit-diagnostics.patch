@@ -1,0 +1,147 @@
+diff --git a/apps/native/apple/Sources/CaperAppKit/WorkspaceController.swift b/apps/native/apple/Sources/CaperAppKit/WorkspaceController.swift
+index 95f72ce1..baf48b43 100644
+--- a/apps/native/apple/Sources/CaperAppKit/WorkspaceController.swift
++++ b/apps/native/apple/Sources/CaperAppKit/WorkspaceController.swift
+@@ -912,6 +912,8 @@ import CaperCore
+             width: width, height: suggestions.height)
+     }
+     private func formatDraft(_ marker: String) {
++        composer.probeSelection("formatDraft-before-\(marker)")
++        defer { composer.probeSelection("formatDraft-after-\(marker)") }
+         guard composer.isEditable, !composer.hasMarkedText(),
+               let result = MessageFormatting.toggle(composer.string, selection: composer.selectedRange(), marker: marker),
+               result.text.unicodeScalars.count <= 4000, result.text != composer.string else { return }
+diff --git a/apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift b/apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift
+index 06e28f3a..3d11d066 100644
+--- a/apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift
++++ b/apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift
+@@ -748,10 +748,43 @@ public final class ComposerTextView: NSTextView {
+     public var handleKey: ((NSEvent) -> Bool)?
+     public var focusChanged: ((Bool) -> Void)?
+     public var formatSelection: ((String) -> Void)?
++    // Disposable hosted diagnostic overlay; never merge into either client.
++    public func probeSelection(_ phase: String, event: NSEvent? = nil) {
++        guard ProcessInfo.processInfo.environment["CAPER_PROBE_SELECTION"] == "1" else { return }
++        let range = selectedRange()
++        var record: [String: Any] = ["phase": phase, "time": Date().timeIntervalSince1970,
++            "location": range.location, "length": range.length, "text": string]
++        if let event {
++            let point = convert(event.locationInWindow, from: nil)
++            record["eventX"] = point.x; record["eventY"] = point.y
++        }
++        if phase == "select-all", range.length > 0 {
++            let glyph = firstRect(forCharacterRange: NSRange(location: range.location + range.length / 2, length: 1), actualRange: nil)
++            record["glyphX"] = glyph.midX
++            record["glyphY"] = (NSScreen.main?.frame.maxY ?? 0) - glyph.midY
++        }
++        guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
++        let url = URL(fileURLWithPath: "/tmp/caper-appkit-selection.jsonl")
++        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
++        if let file = try? FileHandle(forWritingTo: url) {
++            defer { try? file.close() }
++            _ = try? file.seekToEnd(); try? file.write(contentsOf: data + Data([10]))
++        }
++    }
++    public override func selectAll(_ sender: Any?) {
++        super.selectAll(sender)
++        probeSelection("select-all")
++    }
+     @objc public func formatBold(_ sender: Any?) { formatSelection?("**") }
+-    @objc public func formatItalic(_ sender: Any?) { formatSelection?("_") }
++    @objc public func formatItalic(_ sender: Any?) {
++        probeSelection("italic-action-before")
++        formatSelection?("_")
++        probeSelection("italic-action-after")
++    }
+     public override func menu(for event: NSEvent) -> NSMenu? {
++        probeSelection("menu-before-super", event: event)
+         let menu = super.menu(for: event) ?? NSMenu()
++        probeSelection("menu-after-super", event: event)
+         if isEditable {
+             let bold = NSMenuItem(title: "B — Bold", action: #selector(formatBold(_:)), keyEquivalent: "b")
+             let italic = NSMenuItem(title: "I — Italic", action: #selector(formatItalic(_:)), keyEquivalent: "i")
+diff --git a/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift b/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
+index a7202d6d..5c6ff6b6 100644
+--- a/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
++++ b/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
+@@ -4,6 +4,8 @@ import XCTest
+ @MainActor final class CaperAppKitTests: XCTestCase {
+     private func launch(signedIn: Bool = true, fixture: String? = nil, preservePanelWidths: Bool = false) -> XCUIApplication {
+         let app = XCUIApplication()
++        try? FileManager.default.removeItem(atPath: "/tmp/caper-appkit-selection.jsonl")
++        app.launchEnvironment["CAPER_PROBE_SELECTION"] = "1"
+         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
+         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
+         app.launchEnvironment["CAPER_UI_FIXTURE"] = fixture
+@@ -701,6 +703,11 @@ import XCTest
+         app.buttons["Forward (2)"].click()
+         let retry = app.buttons["Retry forwards (1)"]
+         XCTAssertTrue(retry.waitForExistence(timeout: 10))
++        let observedRetryAt = Date()
++        let initialLabelExists = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Forwarded to 1 destination.")).firstMatch.exists
++        print("PROBE AX initial-label=\(initialLabelExists) elapsed=\(Date().timeIntervalSince(observedRetryAt))")
++        probeForwardAX(app, since: observedRetryAt)
++        XCTAssertTrue(initialLabelExists, "The original immediate predicate must also pass; diagnostics cannot hide a timing failure")
+         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Forwarded to 1 destination.")).firstMatch.exists)
+         XCTAssertFalse(search.isEnabled); XCTAssertFalse(first.isEnabled); XCTAssertFalse(second.isEnabled)
+         XCTAssertEqual(first.value as? String, "Not selected"); XCTAssertEqual(second.value as? String, "Selected")
+@@ -3210,6 +3217,59 @@ import XCTest
+         capture("conversation, wide", app: app)
+     }
+ 
++    private func probeForwardAX(_ app: XCUIApplication, since start: Date) {
++        for index in 0..<3 {
++            if index > 0 { RunLoop.current.run(until: Date().addingTimeInterval(1)) }
++            print("PROBE AX sample=\(index) elapsed=\(Date().timeIntervalSince(start))")
++            for element in app.staticTexts.allElementsBoundByIndex {
++                print("PROBE AX elapsed=\(Date().timeIntervalSince(start)) id=\(element.identifier.debugDescription) label=\(element.label.debugDescription) value=\(String(describing: element.value)) frame=\(element.frame)")
++            }
++            print("PROBE AX prefix-label=\(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Forwarded to 1 destination.")).count) prefix-value=\(app.staticTexts.matching(NSPredicate(format: "value BEGINSWITH %@", "Forwarded to 1 destination.")).count) elapsed=\(Date().timeIntervalSince(start))")
++        }
++        print("PROBE AX hierarchy \(app.debugDescription)")
++    }
++
++    func testProbePlainFormattingInsideSelectedGlyph() async throws {
++        try await probePlainFormatting(inside: true)
++    }
++
++    func testProbePlainFormattingOutsideSelectedGlyph() async throws {
++        try await probePlainFormatting(inside: false)
++    }
++
++    private func probePlainFormatting(inside: Bool) async throws {
++        continueAfterFailure = false
++        try await Self.resetFixture()
++        let app = launch()
++        defer { app.terminate() }
++        let composer = app.textViews["message-composer"]
++        XCTAssertTrue(composer.waitForExistence(timeout: 15))
++        XCTAssertEqual(composer.value as? String, "")
++        composer.click(); composer.typeText("menu style")
++        XCTAssertEqual(composer.value as? String, "menu style", "Plain-text control starts without inherited delimiters")
++        composer.typeKey("a", modifierFlags: .command)
++        let lines = try String(contentsOfFile: "/tmp/caper-appkit-selection.jsonl", encoding: .utf8).split(separator: "\n")
++        let records = try lines.map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
++        let selected = try XCTUnwrap(records.last { $0["phase"] as? String == "select-all" })
++        XCTAssertEqual(selected["text"] as? String, "menu style")
++        XCTAssertEqual(selected["location"] as? Int, 0)
++        XCTAssertEqual(selected["length"] as? Int, 10)
++        let glyph = CGPoint(x: try XCTUnwrap(selected["glyphX"] as? Double), y: try XCTUnwrap(selected["glyphY"] as? Double))
++        XCTAssertTrue(composer.frame.contains(glyph))
++        let point = inside ? glyph : CGPoint(x: composer.frame.maxX - 20, y: composer.frame.midY)
++        XCTAssertGreaterThan(composer.frame.maxX - 20 - glyph.x, 100, "Blank control is well away from the selected glyph")
++        print("PROBE plain inside=\(inside) glyph=\(glyph) click=\(point) composer=\(composer.frame)")
++        capture("plain selection before context menu inside=\(inside)", app: app)
++        composer.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: point.x - composer.frame.minX, dy: point.y - composer.frame.minY)).rightClick()
++        let italic = composer.menuItems["I — Italic"]
++        XCTAssertTrue(italic.waitForExistence(timeout: 5))
++        capture("plain context menu inside=\(inside)", app: app)
++        composer.menuItems["B — Bold"].hover(); italic.hover(); italic.click()
++        print("PROBE plain after inside=\(inside) value=\(String(describing: composer.value))")
++        capture("plain after italic inside=\(inside)", app: app)
++        XCTAssertEqual(composer.value as? String, inside ? "_menu style_" : "menu style")
++    }
++
+     func testDraftFormattingCopyRepairUndoMenusAndSend() async throws {
+         continueAfterFailure = false
+         try await Self.resetFixture()
