@@ -531,6 +531,10 @@ fn platform_show(
         register,
     };
     const APP_ID: &str = "chat.caper.desktop";
+    // Removal names the toast by group, tag and app id: a tag-only removal
+    // finds nothing in a process without an explicit AppUserModelID (the
+    // installer's shortcut sets none), so the toast stayed in Action Center.
+    const GROUP: &str = "caper";
     register(APP_ID, "Caper", None)
         .map_err(|_| "Couldn’t register desktop notifications.".to_owned())?;
     let mut toast = Toast::new();
@@ -544,7 +548,11 @@ fn platform_show(
     } else {
         alert.message_id.clone().unwrap_or_default()
     };
-    toast.text1(&alert.title).text2(&alert.body).tag(&tag);
+    toast
+        .text1(&alert.title)
+        .text2(&alert.body)
+        .tag(&tag)
+        .group(GROUP);
     if let Some(image) = image.and_then(|path| Image::new_local(path).ok()) {
         toast.image(
             1,
@@ -569,14 +577,14 @@ fn platform_show(
         "Couldn’t show desktop notification. Check Windows notification settings.".to_owned()
     })?;
     let start = Instant::now();
-    // Removing the toast by tag also clears it from Action Center.
+    // Removing the toast also clears it from Action Center.
     while !lifetime.ended()
         && !activated.load(Ordering::Relaxed)
         && start.elapsed() < Duration::from_secs(86_400)
     {
         std::thread::sleep(Duration::from_millis(200));
     }
-    let _ = manager.remove(&tag);
+    let _ = manager.remove_grouped_tag(GROUP, &tag);
     Ok(())
 }
 
