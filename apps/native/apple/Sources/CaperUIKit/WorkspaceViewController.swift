@@ -28,7 +28,8 @@ final class WorkspaceViewController: UIViewController {
         }
         return panel
     }()
-    /// Wide: the open thread beside the conversation, as SwiftUI's resizable thread panel.
+    /// One thread controller across both layouts: full-width on the phone,
+    /// beside the conversation when wide. Resizing never recreates its state.
     private var threadPane: ThreadViewController?
     /// Wide: a drag's width before release saves it, for each resize handle.
     private var sidebarDrag: CGFloat?
@@ -126,6 +127,10 @@ final class WorkspaceViewController: UIViewController {
         model.narrowLayout = true
         observer.start { [weak self] in
             guard let self else { return }
+            // Both reads are unconditional: rotating a loaded workspace must
+            // resubscribe before the next thread or navigation change.
+            _ = (self.model.narrowLayout, self.model.chat.threadRootID)
+            self.view.setNeedsLayout()
             // Parity fixtures' local call rosters, as SwiftUI shows them; nothing otherwise.
             if !self.rosterShown, self.model.detail != nil, self.model.selectedChannelID != nil {
                 self.rosterShown = true
@@ -133,10 +138,8 @@ final class WorkspaceViewController: UIViewController {
                 DispatchQueue.main.async { CaperRuntime.showVoiceRosterPreview(model) }
             }
             if self.wide {
-                // Members follow the conversation: none for a DM or a visit. A thread opens beside it.
-                _ = (self.model.selectedDirectMessageID, self.model.visit?.channelID, self.model.detail?.space.id,
-                     self.model.chat.threadRootID)
-                self.view.setNeedsLayout()
+                // Members follow the conversation: none for a DM or a visit.
+                _ = (self.model.selectedDirectMessageID, self.model.visit?.channelID, self.model.detail?.space.id)
                 return
             }
             let hasChannel = self.hasConversation
@@ -195,7 +198,18 @@ final class WorkspaceViewController: UIViewController {
         }
         let safeWidth = view.bounds.width - view.safeAreaInsets.left - view.safeAreaInsets.right
         if (safeWidth > 760) != wide { setWide(safeWidth > 760) }
-        if wide { layoutWide() } else { update(progress: browsing ? 1 : 0) }
+        showThreadPane(model.chat.threadRootID != nil)
+        if wide { layoutWide() } else {
+            update(progress: browsing ? 1 : 0)
+            threadPane?.layout(frame: view.bounds, paned: false, topInset: inset)
+            if let threadPane { view.bringSubviewToFront(threadPane.view) }
+        }
+        let covered = !wide && threadPane != nil
+        browse.view.accessibilityElementsHidden = covered || (!wide && !browsing)
+        conversation.view.accessibilityElementsHidden = covered || (!wide && browsing)
+        browse.view.isUserInteractionEnabled = !covered && (wide || browsing)
+        conversation.view.isUserInteractionEnabled = !covered
+        view.bringSubviewToFront(banner)
     }
 
     /// Crossing the breakpoint (rotation, Split View, Stage Manager) keeps both
@@ -215,14 +229,14 @@ final class WorkspaceViewController: UIViewController {
         if wide {
             if dockedMembers.superview == nil { view.insertSubview(dockedMembers, aboveSubview: conversation.view) }
             for handle in [sidebarHandle, membersHandle, threadHandle] where handle.superview == nil { view.addSubview(handle) }
-            // The phone's full-screen thread becomes the panel beside the conversation.
-            if conversation.presentedViewController is ThreadViewController { conversation.dismiss(animated: false) }
             browse.view.isUserInteractionEnabled = true
             browse.view.accessibilityElementsHidden = false
             conversation.view.accessibilityElementsHidden = false
         } else {
-            showThreadPane(false)
-            for handle in [sidebarHandle, membersHandle, threadHandle] { handle.isHidden = true }
+            for handle in [sidebarHandle, membersHandle, threadHandle] {
+                handle.resignFirstResponder()
+                handle.isHidden = true
+            }
             showDockedMembers(false)
             // Back to the phone pose: the conversation, unless nothing is open.
             browsing = !hasConversation
@@ -263,10 +277,10 @@ final class WorkspaceViewController: UIViewController {
         threadWidth = CGFloat(min(threadMaximum, max(threadMinimum, threadDrag.map { Double($0) } ?? savedThread)))
         threadRange = CGFloat(threadMinimum)...CGFloat(max(threadMinimum, threadMaximum))
         let threadOpen = model.chat.threadRootID != nil
-        showThreadPane(threadOpen)
         let pane = threadOpen ? threadWidth : 0
         conversation.view.frame = CGRect(x: lead, y: 0, width: CGFloat(stage) - pane, height: bounds.height)
-        threadPane?.view.frame = CGRect(x: conversation.view.frame.maxX, y: 0, width: pane, height: bounds.height)
+        threadPane?.layout(frame: CGRect(x: conversation.view.frame.maxX, y: 0, width: pane, height: bounds.height),
+                           paned: true, topInset: bannerInset)
         sidebarHandle.frame = CGRect(x: lead - 8, y: 0, width: 8, height: bounds.height)
         threadHandle.frame = CGRect(x: conversation.view.frame.maxX, y: 0, width: 8, height: bounds.height)
         threadHandle.isHidden = !threadOpen
@@ -278,7 +292,10 @@ final class WorkspaceViewController: UIViewController {
         showDockedMembers(showsMembers)
         membersHandle.frame = CGRect(x: dockedMembers.frame.minX, y: top, width: 8, height: dockedMembers.frame.height)
         membersHandle.isHidden = !showsMembers
-        for handle in [sidebarHandle, membersHandle, threadHandle] { view.bringSubviewToFront(handle) }
+        for handle in [sidebarHandle, membersHandle, threadHandle] {
+            if handle.isHidden { handle.resignFirstResponder() }
+            view.bringSubviewToFront(handle)
+        }
         conversation.wideMembersShown = showsMembers
     }
 
@@ -297,16 +314,28 @@ final class WorkspaceViewController: UIViewController {
 
     private func showThreadPane(_ shows: Bool) {
         if shows, threadPane == nil {
+            view.endEditing(true)
+            if conversation.presentedViewController != nil { conversation.dismiss(animated: false) }
             let controller = ThreadViewController(model: model)
-            controller.paned = true
             controller.closed = { [weak self, weak controller] in
                 guard let self, let controller, self.threadPane === controller else { return }
                 self.showThreadPane(false)
+                self.view.setNeedsLayout()
             }
             addChild(controller)
             view.insertSubview(controller.view, aboveSubview: conversation.view)
             controller.didMove(toParent: self)
             threadPane = controller
+            if !UIKitStyle.reduceMotion {
+                controller.view.alpha = 0
+                DispatchQueue.main.async { [weak self, weak controller] in
+                    guard let controller, self?.threadPane === controller else { return }
+                    controller.view.transform = CGAffineTransform(translationX: 12, y: 0)
+                    let animator = UIViewPropertyAnimator(duration: UIKitStyle.motionFast, timingParameters: UIKitStyle.easeOut)
+                    animator.addAnimations { controller.view.alpha = 1; controller.view.transform = .identity }
+                    animator.startAnimation()
+                }
+            }
         } else if !shows, let controller = threadPane {
             threadPane = nil
             controller.willMove(toParent: nil)
@@ -370,8 +399,8 @@ final class WorkspaceViewController: UIViewController {
             animator.addAnimations(apply)
             animator.startAnimation()
         } else { apply() }
-        browse.view.accessibilityElementsHidden = !browsing
-        conversation.view.accessibilityElementsHidden = browsing
+        browse.view.accessibilityElementsHidden = threadPane != nil || !browsing
+        conversation.view.accessibilityElementsHidden = threadPane != nil || browsing
         UIAccessibility.post(notification: .screenChanged, argument: nil)
     }
 
@@ -411,15 +440,66 @@ final class PanelResizeHandle: UIView {
         accessibilityTraits = .adjustable
         accessibilityLabel = label
         accessibilityIdentifier = identifier
-        accessibilityHint = hint
+        accessibilityHint = hint + (widensToRight
+            ? " Left narrows and Right widens by 10 pixels; Home and End select the bounds."
+            : " Left widens and Right narrows by 10 pixels; Home and End select the bounds.")
         let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
         addGestureRecognizer(pan)
         let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
         double.numberOfTapsRequired = 2
         addGestureRecognizer(double)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(focusHandle))
+        tap.require(toFail: double)
+        addGestureRecognizer(tap)
         addInteraction(UIPointerInteraction(delegate: self))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var canBecomeFocused: Bool { true }
+    override var canBecomeFirstResponder: Bool { true }
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        setNeedsDisplay()
+        return accepted
+    }
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        setNeedsDisplay()
+        return accepted
+    }
+    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        super.didUpdateFocus(in: context, with: coordinator)
+        if isFocused { becomeFirstResponder() }
+        else if isFirstResponder { resignFirstResponder() }
+        setNeedsDisplay()
+    }
+    override func draw(_ rect: CGRect) {
+        guard isFirstResponder || isFocused else { return }
+        UIKitStyle.terracotta.setFill()
+        UIRectFill(CGRect(x: bounds.midX - 1, y: 0, width: 2, height: bounds.height))
+    }
+
+    @objc private func focusHandle() { becomeFirstResponder() }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow, UIKeyCommand.inputHome, UIKeyCommand.inputEnd].map {
+            let command = UIKeyCommand(input: $0, modifierFlags: [], action: #selector(resizeKey(_:)))
+            command.wantsPriorityOverSystemBehavior = true
+            return command
+        }
+    }
+
+    @objc private func resizeKey(_ command: UIKeyCommand) {
+        let width: CGFloat
+        switch command.input {
+        case UIKeyCommand.inputLeftArrow: width = current() + (widensToRight ? -10 : 10)
+        case UIKeyCommand.inputRightArrow: width = current() + (widensToRight ? 10 : -10)
+        case UIKeyCommand.inputHome: width = range().lowerBound
+        case UIKeyCommand.inputEnd: width = range().upperBound
+        default: return
+        }
+        changed(clamped(width), true)
+    }
 
     private func clamped(_ width: CGFloat) -> CGFloat {
         let range = range()
@@ -429,7 +509,7 @@ final class PanelResizeHandle: UIView {
     @objc private func panned(_ pan: UIPanGestureRecognizer) {
         let offset = pan.translation(in: superview).x * (widensToRight ? 1 : -1)
         switch pan.state {
-        case .began: start = current()
+        case .began: focusHandle(); start = current()
         case .changed: changed(clamped((start ?? current()) + offset), false)
         case .ended, .cancelled:
             changed(clamped((start ?? current()) + offset), true)
@@ -438,7 +518,7 @@ final class PanelResizeHandle: UIView {
         }
     }
 
-    @objc private func doubleTapped() { changed(clamped(reset), true) }
+    @objc private func doubleTapped() { focusHandle(); changed(clamped(reset), true) }
 
     override var accessibilityValue: String? {
         get { "\(Int(current())) pixels" }

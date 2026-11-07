@@ -145,6 +145,141 @@ final class CaperUIKitTests: XCTestCase {
         }
     }
 
+    /// Run on an iPad mini: portrait is below 760pt, landscape above it.
+    /// A revealed, scrolled thread must survive both crossings, not reopen at its tail.
+    func testThreadSurvivesNarrowWideRotationAndReopens() throws {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("Requires an iPad mini breakpoint-crossing gate") }
+        XCUIDevice.shared.orientation = .portrait
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for index in 1...36 {
+            control(["incomingReply": ["rootId": "b00000000003000", "text": "Resize reply \(index) — keep this revealed message while the thread reflows."]])
+        }
+        // Prepare disposable fixture state through its real block API; no new fixture controls.
+        var block = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/blocks/member000001")!)
+        block.httpMethod = "PUT"
+        block.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        let blocked = expectation(description: "fixture author blocked")
+        URLSession.shared.dataTask(with: block) { _, response, _ in
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 204)
+            blocked.fulfill()
+        }.resume()
+        wait(for: [blocked], timeout: 10)
+        let app = launch()
+        guard app.frame.width <= 760 else { throw XCTSkip("Requires an iPad whose portrait width is at most 760pt") }
+        let viewThread = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "View thread")).firstMatch
+        XCTAssertTrue(viewThread.waitForExistence(timeout: 30))
+        viewThread.tap()
+        let composer = app.textViews["thread-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        composer.tap()
+        composer.typeText("Keep the thread draft")
+        let timeline = app.collectionViews["thread-timeline"]
+        timeline.swipeDown()
+        let show = timeline.buttons["blocked-run-toggle"].firstMatch
+        XCTAssertTrue(show.waitForExistence(timeout: 10))
+        XCTAssertTrue(show.label.hasPrefix("Show "))
+        show.tap()
+        timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.2)).press(forDuration: 0.1,
+            thenDragTo: timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)), withVelocity: .slow, thenHoldForDuration: 0.2)
+        let rows = timeline.cells.matching(NSPredicate(format: "identifier BEGINSWITH %@", "message-row-"))
+        let visible = rows.allElementsBoundByIndex.filter { $0.frame.maxY > timeline.frame.minY && $0.frame.minY < timeline.frame.maxY }
+        let anchor = try XCTUnwrap(visible.sorted { $0.frame.minY < $1.frame.minY }.first)
+        XCTAssertTrue(anchor.textViews.matching(NSPredicate(format: "value CONTAINS %@", "Resize reply")).firstMatch.exists,
+                      "Anchor a revealed reply, not the unblocked root")
+        XCTAssertLessThanOrEqual(anchor.frame.minY, timeline.frame.minY + 3)
+        let anchorID = anchor.identifier
+        let offset = anchor.frame.minY - timeline.frame.minY
+        let tail = timeline.textViews.matching(NSPredicate(format: "value CONTAINS %@", "Resize reply 36")).firstMatch
+        XCTAssertFalse(tail.isHittable, "Exercise a history reader, not the tail-following case")
+
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            let previousWidth = app.frame.width
+            XCUIDevice.shared.orientation = orientation
+            let resized = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(app.frame.width - previousWidth) > 10 }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [resized], timeout: 5), .completed)
+            let panel = app.sliders["thread-panel-resize"]
+            if orientation == .landscapeLeft { XCTAssertTrue(panel.waitForExistence(timeout: 5)) }
+            else { XCTAssertTrue(panel.waitForNonExistence(timeout: 5)) }
+            let retained = timeline.cells[anchorID]
+            let preserved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                retained.exists && abs(retained.frame.minY - timeline.frame.minY - offset) <= 3
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [preserved], timeout: 5), .completed, "Keep the same revealed item under the reader's eye")
+            XCTAssertEqual(composer.value as? String, "Keep the thread draft")
+            XCTAssertFalse(tail.isHittable)
+            screenshot("uikit-thread-retained-\(orientation.rawValue)")
+        }
+        app.buttons["thread-back"].tap()
+        XCTAssertTrue(composer.waitForNonExistence(timeout: 5))
+        // Rotate an already-loaded workspace, then change only thread state.
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(app.sliders["channel-sidebar-resize"].waitForExistence(timeout: 5))
+        viewThread.tap()
+        XCTAssertTrue(app.sliders["thread-panel-resize"].waitForExistence(timeout: 5))
+        XCTAssertTrue(composer.waitForExistence(timeout: 5), "No unrelated model event is needed to open the wide thread")
+    }
+
+    func testWideResizeHandlesUseKeyboardBoundsAndReset() throws {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("Requires the wide iPad gate") }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        control(["incomingReply": ["rootId": "b00000000003000", "text": "Resize handle reply"]])
+        let app = launch()
+        let sidebar = app.sliders["channel-sidebar-resize"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 30))
+        func width(_ handle: XCUIElement) throws -> Int {
+            try XCTUnwrap((handle.value as? String).flatMap { Int($0.split(separator: " ").first ?? "") })
+        }
+        sidebar.doubleTap()
+        XCTAssertEqual(try width(sidebar), 280)
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(try width(sidebar), 290)
+        app.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(try width(sidebar), 280)
+        app.typeKey(.home, modifierFlags: [])
+        app.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(try width(sidebar), 220)
+        app.typeKey(.end, modifierFlags: [])
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(try width(sidebar), 440)
+        sidebar.doubleTap()
+        let members = app.sliders["members-panel-resize"]
+        XCTAssertTrue(members.waitForExistence(timeout: 5))
+        XCTAssertEqual(members.label, "Member list width")
+        members.doubleTap()
+        app.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(try width(members), 230, "The right-hand panel widens toward the left")
+        app.typeKey(.home, modifierFlags: [])
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(try width(members), 220)
+        app.typeKey(.end, modifierFlags: [])
+        app.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(try width(members), 440)
+        members.doubleTap()
+        XCTAssertEqual(try width(members), 220)
+        app.buttons["Hide member list"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "View thread")).firstMatch.tap()
+        let thread = app.sliders["thread-panel-resize"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 5))
+        XCTAssertEqual(thread.label, "Thread width")
+        thread.doubleTap()
+        XCTAssertEqual(try width(thread), 340)
+        app.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(try width(thread), 350)
+        app.typeKey(.home, modifierFlags: [])
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(try width(thread), 300)
+        app.typeKey(.end, modifierFlags: [])
+        let maximum = try width(thread)
+        XCTAssertGreaterThan(maximum, 340)
+        XCTAssertLessThanOrEqual(maximum, 600)
+        app.typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertEqual(try width(thread), maximum)
+        thread.doubleTap()
+        XCTAssertEqual(try width(thread), 340)
+        screenshot("uikit-resize-keyboard-focus")
+    }
+
     func testConversationOpensAtLatestAndSends() {
         let app = launch()
         let latest = row(Self.latest)

@@ -2,9 +2,8 @@ import CaperCore
 import SwiftUI
 import UIKit
 
-/// A thread on iPhone (SwiftUI's NativeThreadView in its full-screen cover):
-/// back, "Thread in #channel", the root message, its replies and a reply
-/// composer with "Also send to #channel". Closing ends the thread in the model.
+/// The workspace's retained thread: full-width on iPhone, a side panel when
+/// wide. Closing ends the thread in the model; resizing preserves the reader.
 final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     typealias Item = ConversationViewController.Item
 
@@ -44,12 +43,11 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     }()
     var closed: (() -> Void)?
     /// Wide: a panel beside the conversation rather than a full-screen cover.
-    var paned = false
+    private var paned = false
 
     init(model: AppModel) {
         self.model = model
         super.init(nibName: nil, bundle: nil)
-        modalPresentationStyle = .fullScreen
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -248,7 +246,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
                 UIView.animate(withDuration: UIKitStyle.reduceMotion ? 0 : UIKitStyle.motionFast) { self.view.transform = .identity }
                 return
             }
-            self.close(slid: true)
+            self.close()
         }
         view.addGestureRecognizer(swipeBack)
         view.addInteraction(fileDrop.interaction)
@@ -257,22 +255,43 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         composerObserver.start { [weak self] in self?.renderComposer() }
     }
 
+    /// Keep the first visible item at the same offset while text reflows. The
+    /// same controller retains revealed blocked rows, selection and its draft.
+    func layout(frame: CGRect, paned: Bool, topInset: CGFloat) {
+        guard view.frame != frame || self.paned != paned || additionalSafeAreaInsets.top != topInset else { return }
+        let top = collection.contentOffset.y + collection.adjustedContentInset.top
+        let anchor = collection.indexPathsForVisibleItems.sorted().compactMap { path -> (Item, CGFloat)? in
+            guard let item = dataSource.itemIdentifier(for: path),
+                  let attributes = collection.layoutAttributesForItem(at: path), attributes.frame.maxY > top else { return nil }
+            return (item, attributes.frame.minY - top)
+        }.first
+        let modeChanged = self.paned != paned
+        self.paned = paned
+        composer.minimumHeight = paned ? 52 : 42
+        voice.height = composer.minimumHeight
+        if modeChanged { renderComposer() }
+        additionalSafeAreaInsets.top = topInset
+        view.bounds.size = frame.size
+        view.center = CGPoint(x: frame.midX, y: frame.midY)
+        view.layoutIfNeeded()
+        if followingTail {
+            collection.contentOffset.y = max(-collection.adjustedContentInset.top,
+                collection.contentSize.height + collection.adjustedContentInset.bottom - collection.bounds.height)
+        } else if let (item, offset) = anchor, let path = dataSource.indexPath(for: item),
+                  let attributes = collection.layoutAttributesForItem(at: path) {
+            collection.contentOffset.y = max(-collection.adjustedContentInset.top,
+                attributes.frame.minY - offset - collection.adjustedContentInset.top)
+        }
+    }
 
     override func accessibilityPerformEscape() -> Bool { close(); return true }
 
-    /// `slid`: a swipe already moved the thread aside; it leaves without the
-    /// modal's slide down.
-    private func close(slid: Bool = false) {
+    private func close() {
         guard !closing else { return }
         closing = true
         model.threadVisibilityChanged(rootID: nil, seq: nil)
         chat.closeThread()
-        leave(animated: !slid && !UIKitStyle.reduceMotion)
-    }
-
-    /// A cover dismisses itself; the wide layout removes its panel.
-    private func leave(animated: Bool) {
-        if paned { closed?() } else { dismiss(animated: animated) { [weak self] in self?.closed?() } }
+        closed?()
     }
 
     // MARK: Rendering
@@ -282,7 +301,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
     private func render() {
         guard let rootID = chat.threadRootID else {
             // The model closed it (another conversation, a denied thread).
-            if !closing { closing = true; leave(animated: false) }
+            if !closing { closing = true; closed?() }
             return
         }
         subtitle.text = direct ? "with \(chat.channelName)" : "in #\(chat.channelName)"

@@ -550,27 +550,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             && !(model.chat.loading && model.chat.messages.isEmpty && cached?.messages.isEmpty == false)
     }
 
-    private weak var thread: ThreadViewController?
-
-    /// Opening a thread (View thread, Reply in thread, a jump) covers the conversation.
-    private func presentThreadIfNeeded() {
-        // Wide: the workspace shows the thread as a panel beside the conversation.
-        guard !wide, model.chat.threadRootID != nil, thread?.presentingViewController == nil, view.window != nil else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, !self.wide, self.thread?.presentingViewController == nil, self.model.chat.threadRootID != nil else { return }
-            let controller = ThreadViewController(model: self.model)
-            self.thread = controller
-            controller.closed = { [weak self] in self?.thread = nil }
-            self.view.endEditing(true)
-            let top = self.presentedViewController ?? self
-            if top !== self { self.dismiss(animated: false) { self.present(controller, animated: !UIKitStyle.reduceMotion) } }
-            else { self.present(controller, animated: !UIKitStyle.reduceMotion) }
-        }
-    }
-
     private func render() {
         let chat = model.chat
-        presentThreadIfNeeded()
         layoutStatusColumn()
         let live = isLive
         let channelID = live ? conversationID : cached?.channelID
