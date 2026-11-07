@@ -1,6 +1,9 @@
 import Foundation
 import XCTest
 @testable import CaperCore
+#if os(macOS)
+import AppKit
+#endif
 
 /// Voice messages with transcripts (the shared voice-message contract).
 final class VoiceMessageTests: XCTestCase {
@@ -458,4 +461,277 @@ final class VoiceMessageTests: XCTestCase {
         XCTAssertEqual(VoiceMessage.dictationError(status: 502), "Transcription failed. Try again.")
         XCTAssertTrue(VoiceMessage.dictationError(status: nil).contains("connection"))
     }
+
+    #if os(macOS)
+    @MainActor
+    private func appKitVoiceChat() async -> ChatModel {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [VoiceComposerURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let api = APIClient(baseURL: URL(string: "https://caper.invalid")!, session: session, tokenStore: VoiceComposerTokenStore())
+        let chat = ChatModel(api: api)
+        addTeardownBlock {
+            await chat.stop(discardingDrafts: true)
+            session.invalidateAndCancel()
+        }
+        await chat.open(channelID: "Chan12345678", displayName: "Me")
+        XCTAssertTrue(chat.canInteract, "obtain a real ChatModel session through the simulated API, not a preview or a forced flag")
+        XCTAssertEqual(chat.currentAuthor?.id, "self")
+        XCTAssertEqual(chat.channelID, "Chan12345678")
+        return chat
+    }
+
+    @MainActor
+    func testAppKitDictationReplacesUTF16SelectionWithNativeUndoAndRespectsEditingLimits() async throws {
+        let chat = await appKitVoiceChat()
+        let native = VoiceComposerNativeEditor(chat: chat, inThread: false)
+        defer { native.composer.cancel(); native.window.close() }
+        let prefix = "🧑🏽‍🚀left", selected = "old🧭", suffix = "RIGHT🦊!"
+        let original = prefix + selected + suffix
+        native.seed(original, selection: (original as NSString).range(of: selected))
+        let expected = prefix + " hello 🌿 " + suffix
+        let undo = try XCTUnwrap(native.editor.undoManager, "a window-backed text view must support native undo")
+        let groupsByEvent = undo.groupsByEvent
+        undo.groupsByEvent = false
+        undo.beginUndoGrouping()
+        native.assertInsertion("  hello 🌿 \n", expected: expected)
+        undo.endUndoGrouping()
+        XCTAssertEqual(native.editor.selectedRange(), NSRange(location: (prefix + " hello 🌿 ").utf16.count, length: 0))
+        XCTAssertTrue(undo.canUndo)
+        undo.undo()
+        XCTAssertEqual(native.editor.string, original)
+        XCTAssertEqual(chat.draft, original, "undo also reaches the model through textDidChange")
+        XCTAssertEqual(native.changes, [expected, original])
+        XCTAssertFalse(undo.canUndo, "one dictation is one native undo step")
+        undo.groupsByEvent = groupsByEvent
+
+        // Both sides survive replacement. Emoji and a combining mark distinguish
+        // Unicode scalars from both UTF-16 units and grapheme clusters.
+        let left = String(repeating: "🦊", count: 1_997) + " "
+        let right = " " + String(repeating: "z", count: 1_997)
+        native.seed(left + selected + right, selection: NSRange(location: left.utf16.count, length: selected.utf16.count))
+        native.assertRefusal("e\u{301}🌿🪴!", reason: "4,001 scalars is refused without touching either side")
+        XCTAssertFalse(undo.canUndo, "a refused insertion does not register an edit")
+        let atLimit = left + "e\u{301}🌿🪴" + right
+        native.assertInsertion("e\u{301}🌿🪴", expected: atLimit)
+        XCTAssertEqual(native.editor.string.unicodeScalars.count, 4_000)
+        XCTAssertGreaterThan(native.editor.string.utf16.count, 4_000)
+        XCTAssertLessThan(native.editor.string.count, 4_000)
+        XCTAssertEqual(native.editor.selectedRange(), NSRange(location: (left + "e\u{301}🌿🪴").utf16.count, length: 0))
+
+        native.seed("editable 🐙")
+        native.editor.isEditable = false
+        native.assertRefusal("read only", reason: "native read-only editors cannot accept dictation")
+        native.editor.isEditable = true
+        XCTAssertTrue(native.window.makeFirstResponder(native.editor))
+        native.editor.setMarkedText("かな", selectedRange: NSRange(location: 2, length: 0),
+                                    replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(native.editor.hasMarkedText(), "use a real native composition, not a hasMarkedText override")
+        native.assertRefusal("interrupt", reason: "an IME composition stays intact")
+        XCTAssertTrue(native.editor.hasMarkedText())
+        native.editor.unmarkText()
+        XCTAssertFalse(native.editor.hasMarkedText())
+        native.assertInsertion("again", expected: native.editor.string + " again")
+    }
+
+    @MainActor
+    func testAppKitDictationLifetimeRefusesStaleAndHiddenOwnersWithoutCancellingTheNeighbor() async throws {
+        let chat = await appKitVoiceChat()
+        await chat.openThread("Root00000001")
+        XCTAssertEqual(chat.threadRootID, "Root00000001")
+        XCTAssertNil(chat.threadError)
+        let channel = VoiceComposerNativeEditor(chat: chat, inThread: false)
+        let thread = VoiceComposerNativeEditor(chat: chat, inThread: true)
+        let recorder = VoiceMessageRecorder.shared
+        var simulatedFiles: [URL] = []
+        defer {
+            channel.composer.cancel(); thread.composer.cancel()
+            channel.window.close(); thread.window.close()
+            simulatedFiles.forEach { AttachmentStaging.remove($0) }
+        }
+        guard recorder.phase == .idle, recorder.dictation == nil, recorder.notice == nil else {
+            XCTFail("this no-microphone test requires an idle shared recorder"); return
+        }
+        @MainActor
+        func simulateCompletedDictation(inThread: Bool) throws -> URL {
+            // Explicit simulation: disposable bytes stand for a completed failed
+            // dictation. Never start capture, playback, transcription or upload.
+            let file = try AttachmentStaging.stage(data: Data("simulated recording".utf8), filename: VoiceMessage.uploadFilename)
+            simulatedFiles.append(file.url)
+            let target = VoiceTarget.chat(chat, inThread: inThread)
+            recorder.dictation = VoiceDictation(target: target,
+                recording: VoiceRecording(fileURL: file.url, durationMs: 1_000, waveform: []), error: "Simulated failure")
+            recorder.show("Simulated dictation notice", for: target.owner, seconds: 60)
+            return file.url
+        }
+
+        channel.seed("channel 🧩")
+        thread.seed("thread 🐙")
+        channel.assertInsertion("one", expected: "channel 🧩 one")
+        XCTAssertEqual(chat.threadDraft, "thread 🐙")
+        thread.assertInsertion("two", expected: "thread 🐙 two")
+        XCTAssertEqual(chat.draft, "channel 🧩 one")
+        let neighborFile = try simulateCompletedDictation(inThread: true)
+        XCTAssertTrue(thread.composer.hasNotice)
+        XCTAssertFalse(channel.composer.hasNotice)
+        channel.composer.cancel()
+        channel.composer.synchronize(visible: false)
+        channel.assertRefusal("hidden", reason: "a hidden channel composer is not an insertion destination")
+        XCTAssertTrue(thread.composer.hasNotice)
+        XCTAssertEqual(recorder.dictation?.recording.fileURL, neighborFile)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: neighborFile.path))
+        thread.assertInsertion("reply", expected: "thread 🐙 two reply")
+        channel.composer.synchronize(visible: true)
+        channel.assertInsertion("visible", expected: "channel 🧩 one visible")
+        thread.composer.cancel()
+        XCTAssertFalse(thread.composer.hasNotice)
+        XCTAssertNil(recorder.dictation)
+        XCTAssertNil(recorder.notice)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: neighborFile.path))
+        XCTAssertEqual(chat.draft, "channel 🧩 one visible")
+        XCTAssertEqual(chat.threadDraft, "thread 🐙 two reply", "cancel never clears typed text")
+
+        let rootFile = try simulateCompletedDictation(inThread: true)
+        await chat.openThread("Root00000002")
+        XCTAssertEqual(chat.threadRootID, "Root00000002")
+        XCTAssertNil(chat.threadError)
+        XCTAssertTrue(chat.canInteract)
+        thread.seed("new root 🐬")
+        thread.assertRefusal("old root", reason: "a changed root refuses insertion before synchronize runs")
+        channel.assertInsertion("independent", expected: "channel 🧩 one visible independent")
+        thread.composer.synchronize(visible: true)
+        XCTAssertNil(recorder.dictation)
+        XCTAssertNil(recorder.notice)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rootFile.path))
+        thread.assertInsertion("current", expected: "new root 🐬 current")
+
+        let contextFile = try simulateCompletedDictation(inThread: false)
+        let context = chat.editingContext, owner = VoiceComposerID(chat: chat, inThread: false)
+        await chat.open(channelID: "Chan12345678", displayName: "Me")
+        XCTAssertTrue(chat.canInteract)
+        XCTAssertNotEqual(chat.editingContext, context)
+        XCTAssertEqual(VoiceComposerID(chat: chat, inThread: false), owner, "same owner, but a new access generation")
+        channel.seed("reopened 🦋")
+        channel.assertRefusal("old context", reason: "same-channel reopening still invalidates the old context")
+        channel.composer.synchronize(visible: true)
+        XCTAssertNil(recorder.dictation)
+        XCTAssertNil(recorder.notice)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: contextFile.path))
+        channel.assertInsertion("fresh", expected: "reopened 🦋 fresh")
+
+        let hiddenFile = try simulateCompletedDictation(inThread: false)
+        channel.composer.synchronize(visible: false)
+        XCTAssertFalse(channel.composer.hasNotice)
+        XCTAssertNil(recorder.dictation)
+        XCTAssertNil(recorder.notice)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: hiddenFile.path))
+        channel.assertRefusal("hidden owner", reason: "hiding cancels only this owner's completed dictation")
+        channel.composer.synchronize(visible: true)
+        channel.assertInsertion("back", expected: "reopened 🦋 fresh back")
+
+        let history = try XCTUnwrap(chat.currentSnapshot())
+        await chat.preview(history: history)
+        channel.composer.synchronize(visible: true)
+        XCTAssertFalse(chat.canInteract)
+        XCTAssertTrue(channel.editor.isEditable)
+        channel.assertRefusal("preview", reason: "a current, editable native editor still needs permission to interact")
+    }
+    #endif
 }
+
+#if os(macOS)
+/// Real AppKit editing and delegate-to-model binding; only HTTP is simulated.
+@MainActor
+private final class VoiceComposerNativeEditor: NSObject, NSTextViewDelegate {
+    let chat: ChatModel
+    let inThread: Bool
+    let editor: NSTextView
+    let window: NSWindow
+    let composer: AppKitVoiceComposer
+    var changes: [String] = []
+    var draft: String { inThread ? chat.threadDraft : chat.draft }
+
+    init(chat: ChatModel, inThread: Bool) {
+        self.chat = chat; self.inThread = inThread
+        _ = NSApplication.shared
+        let editor = NSTextView(frame: NSRect(x: 0, y: 0, width: 480, height: 120))
+        self.editor = editor
+        window = NSWindow(contentRect: editor.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        composer = AppKitVoiceComposer(chat: chat, inThread: inThread, editor: editor)
+        super.init()
+        window.isReleasedWhenClosed = false
+        window.contentView = editor
+        editor.isRichText = false; editor.isEditable = true; editor.allowsUndo = true
+        editor.delegate = self
+        XCTAssertTrue(window.makeFirstResponder(editor))
+    }
+
+    func textDidChange(_ notification: Notification) {
+        changes.append(editor.string)
+        if inThread { chat.threadDraft = editor.string } else { chat.draft = editor.string }
+    }
+
+    func seed(_ text: String, selection: NSRange? = nil) {
+        editor.string = text
+        if inThread { chat.threadDraft = text } else { chat.draft = text }
+        editor.setSelectedRange(selection ?? NSRange(location: text.utf16.count, length: 0))
+        editor.undoManager?.removeAllActions()
+        changes = []
+    }
+
+    func assertInsertion(_ words: String, expected: String, file: StaticString = #filePath, line: UInt = #line) {
+        let count = changes.count
+        XCTAssertTrue(composer.insert(words), file: file, line: line)
+        XCTAssertEqual(editor.string, expected, file: file, line: line)
+        XCTAssertEqual(draft, expected, file: file, line: line)
+        XCTAssertEqual(changes.count, count + 1, "native textDidChange fires for each accepted edit", file: file, line: line)
+        XCTAssertEqual(changes.last, expected, file: file, line: line)
+    }
+
+    func assertRefusal(_ words: String, reason: String, file: StaticString = #filePath, line: UInt = #line) {
+        let text = editor.string, selection = editor.selectedRange(), modelText = draft, notifications = changes
+        let marked = editor.markedRange()
+        XCTAssertFalse(composer.insert(words), reason, file: file, line: line)
+        XCTAssertEqual(editor.string, text, reason, file: file, line: line)
+        XCTAssertEqual(editor.selectedRange(), selection, reason, file: file, line: line)
+        XCTAssertEqual(editor.markedRange(), marked, reason, file: file, line: line)
+        XCTAssertEqual(draft, modelText, reason, file: file, line: line)
+        XCTAssertEqual(changes, notifications, "refusals must not emit textDidChange", file: file, line: line)
+    }
+}
+
+private final class VoiceComposerTokenStore: TokenStore, @unchecked Sendable {
+    private var token: String? = "simulated-account-token"
+    func load() throws -> String? { token }
+    func save(_ token: String) throws { self.token = token }
+    func clear() throws { token = nil }
+}
+
+/// Stateless responses follow AttachmentTests' composer setup, without live HTTP.
+private final class VoiceComposerURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let path = request.url!.path
+        let components = path.split(separator: "/")
+        let body: String
+        switch (request.httpMethod ?? "GET", path) {
+        case ("POST", "/api/chat/session"):
+            body = #"{"token":"simulated-chat-token","author":{"id":"self","name":"Me","isGuest":false}}"#
+        case ("GET", _) where path.hasSuffix("/messages") && components.count == 5:
+            body = #"{"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\#(components[3])","name":"general"},"messages":[],"cursor":"0","hasMore":false}"#
+        case ("GET", _) where path.hasSuffix("/thread") && components.count == 7:
+            body = #"{"root":{"id":"\#(components[5])","channelId":"\#(components[3])","seq":"1","author":{"id":"self","name":"Me","isGuest":false},"content":{"version":1,"type":"text","text":"Root"},"createdAt":"now","clientMessageId":"root"},"messages":[],"cursor":"1","hasMore":false}"#
+        case ("GET", _) where path.hasSuffix("/threads/unread"):
+            body = #"{"threads":[]}"#
+        default:
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL)); return
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                                             headerFields: ["content-type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+#endif

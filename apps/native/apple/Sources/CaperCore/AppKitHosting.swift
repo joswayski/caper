@@ -65,6 +65,7 @@ import SwiftUI
     /// account/conversation. Native timeline anchors use this stable identity.
     public var conversationContext: String { "\(model.chat.channelID ?? ""):\(model.chat.viewerID ?? "")" }
     public var messageContext: String { model.chat.editingContext }
+    public var isPresenting: Bool { model.whatsNew.workspaceModalOpen }
     public func currentMessage(_ message: ChatMessage) -> ChatMessage? {
         guard message.channelId == model.chat.channelID else { return nil }
         return model.chat.displayedMessages.first { $0.id == message.id }
@@ -733,6 +734,7 @@ private struct AppKitComposerAttachments: View {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            VoiceComposerNotice(chat: chat, inThread: inThread)
             AttachmentDraftsView(chat: chat, inThread: inThread)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
