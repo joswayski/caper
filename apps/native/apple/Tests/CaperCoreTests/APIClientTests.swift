@@ -1287,7 +1287,9 @@ final class APIClientTests: XCTestCase {
         }
         let start = Task { await model.start() }
         await fulfillment(of: [spacesStarted], timeout: 1)
-        XCTAssertTrue(model.restoringWorkspace)
+        // The space list is asked for beside the account, so it can be pending
+        // before the account's answer starts restoring the workspace.
+        await waitUntil { model.restoringWorkspace }
         await model.logout()
         XCTAssertFalse(model.restoringWorkspace)
         // An account alone is insufficient: only the original generation may
