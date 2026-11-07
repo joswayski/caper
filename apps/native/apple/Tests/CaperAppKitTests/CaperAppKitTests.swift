@@ -2,10 +2,11 @@ import AppKit
 import XCTest
 
 @MainActor final class CaperAppKitTests: XCTestCase {
-    private func launch(signedIn: Bool = true) -> XCUIApplication {
+    private func launch(signedIn: Bool = true, fixture: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
+        app.launchEnvironment["CAPER_UI_FIXTURE"] = fixture
         if signedIn {
             app.launchEnvironment["CAPER_TEST_BEARER"] = "fixture-owner-token"
             app.launchEnvironment["CAPER_TEST_SPACE_ID"] = "space0000001"
@@ -44,6 +45,80 @@ import XCTest
     }
 
     private nonisolated static func resetFixture() async throws { try await control(["reset": true]) }
+
+    func testVoiceRosterControlsNavigationAndParticipantAudio() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch(fixture: "voice-crowd")
+        defer { app.terminate() }
+        let mute = app.buttons["voice-call-mute"]
+        XCTAssertTrue(mute.waitForExistence(timeout: 15))
+        capture("voice crowd", app: app)
+        app.buttons["channel-chan00000002"].hover(); app.buttons["channel-chan00000003"].hover()
+        app.buttons["channel-chan00000002"].click()
+        XCTAssertTrue(app.staticTexts["# design"].waitForExistence(timeout: 10))
+        mute.click()
+        let muted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Muted"), object: mute)
+        XCTAssertEqual(XCTWaiter.wait(for: [muted], timeout: 5), .completed)
+        XCTAssertEqual(app.buttons["microphone-toggle"].value as? String, "Muted")
+        XCTAssertTrue(app.staticTexts["# design"].exists, "Mute must not navigate to the call")
+        app.buttons["voice-call-deafen"].click()
+        let deafened = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Deafened"), object: app.buttons["deafen-toggle"])
+        XCTAssertEqual(XCTWaiter.wait(for: [deafened], timeout: 5), .completed)
+        let remote = app.buttons["voice-face-fixture-remote"]
+        remote.rightClick()
+        XCTAssertTrue(app.staticTexts["voice-list-title"].waitForExistence(timeout: 5))
+        let volume = app.sliders["TEST FIXTURE Maya volume"]
+        XCTAssertTrue(volume.waitForExistence(timeout: 5))
+        volume.click(); volume.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(app.staticTexts["User volume · 101%"].waitForExistence(timeout: 5), "Keyboard gain changes by one percent")
+        app.checkBoxes["Mute for me"].click()
+        XCTAssertTrue(app.staticTexts["participant-local-muted-fixture-remote"].waitForExistence(timeout: 5))
+        capture("participant volume and local mute", app: app)
+        app.buttons["voice-list-close"].click()
+        XCTAssertFalse(volume.exists)
+        remote.click()
+        XCTAssertTrue(app.staticTexts["# general"].waitForExistence(timeout: 10), "A face opens the call's chat")
+        app.buttons["channels-toggle"].click()
+        XCTAssertTrue(mute.exists)
+        XCTAssertFalse(app.buttons["channel-chan00000002"].exists)
+        capture("voice channels collapsed", app: app)
+        resize(app, width: 900)
+        capture("voice crowd narrow", app: app)
+        app.buttons["microphone-options"].click()
+        XCTAssertTrue(app.sliders["Input volume"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.popUpButtons["Microphone device"].exists)
+        capture("microphone options", app: app)
+        app.typeKey(.escape, modifierFlags: [])
+        app.buttons["output-options"].click()
+        XCTAssertTrue(app.sliders["Output volume"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.popUpButtons["Output device"].exists)
+        app.typeKey(.escape, modifierFlags: [])
+        app.buttons["voice-call-leave"].click()
+        XCTAssertTrue(mute.waitForNonExistence(timeout: 5))
+        let composer = app.textViews["message-composer"]
+        composer.click(); composer.typeText("TEST FIXTURE — call left, draft still usable")
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE — call left, draft still usable")
+    }
+
+    func testElsewhereVoiceRemainsAboveCollapsedChannels() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch(fixture: "voice-elsewhere")
+        defer { app.terminate() }
+        let call = app.buttons["voice-call-channel"]
+        XCTAssertTrue(call.waitForExistence(timeout: 15))
+        XCTAssertTrue(call.label.contains("TEST FIXTURE Elsewhere"))
+        XCTAssertLessThan(call.frame.maxY, app.buttons["channels-toggle"].frame.minY)
+        app.buttons["channels-toggle"].click()
+        XCTAssertTrue(app.buttons["voice-call-leave"].exists)
+        XCTAssertTrue(app.staticTexts["# general"].exists)
+        capture("voice elsewhere", app: app)
+        resize(app, width: 900)
+        capture("voice elsewhere narrow", app: app)
+        app.buttons["voice-call-leave"].click()
+        XCTAssertTrue(call.waitForNonExistence(timeout: 5))
+    }
 
     private func imageFile() throws -> URL {
         let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 240, pixelsHigh: 160,
