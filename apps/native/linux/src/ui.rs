@@ -355,11 +355,12 @@ pub struct List {
 }
 
 impl List {
-    fn new(name: &str, images: &Rc<Images>, handler: rows::Handler) -> Self {
+    /// `spare` rows are built ahead for pages of history (`rows::factory`).
+    fn new(name: &str, images: &Rc<Images>, handler: rows::Handler, spare: usize) -> Self {
         let store = gio::ListStore::new::<glib::BoxedAnyObject>();
         let view: gtk::ListView = crate::app::named("GtkListView", name);
         view.set_model(Some(&gtk::NoSelection::new(Some(store.clone()))));
-        view.set_factory(Some(&rows::factory(images.clone(), handler)));
+        view.set_factory(Some(&rows::factory(images.clone(), handler, spare)));
         view.add_css_class("messages");
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -954,7 +955,7 @@ impl Ui {
             .sync_create()
             .build();
         conversation.append(&error_bar);
-        let list = List::new("Messages", images, main_rows);
+        let list = List::new("Messages", images, main_rows, 64);
         // As desktop: a short conversation sits by the composer.
         list.view.set_valign(gtk::Align::End);
         let empty = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -1145,7 +1146,7 @@ impl Ui {
         thread_header.append(&thread_heading);
         thread_header.append(&thread_close);
         thread_panel.append(&thread_header);
-        let thread_list = List::new("Thread", images, thread_rows);
+        let thread_list = List::new("Thread", images, thread_rows, 0);
         thread_panel.append(&thread_list.scroller);
         let thread_error = label("", &["error", "composer-error"]);
         thread_error.set_wrap(true);

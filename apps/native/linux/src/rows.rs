@@ -901,21 +901,28 @@ struct Widgets {
     dismiss_reaction: gtk::Button,
     replies: gtk::Button,
     thread_context: gtk::Button,
-    /// Holds `group`, the toolbar: hover shows it, `offers` hides it.
+    /// Holds the toolbar: hover shows it, `offers` hides it.
     tools: gtk::Box,
-    /// Web's "Actions for {author}'s message" group, renamed in `fill`; its
-    /// widget name is the author it was last named for.
-    group: gtk::Box,
-    quick: Vec<gtk::Button>,
-    pick: gtk::Button,
-    reply_button: gtk::Button,
-    thread_button: gtk::Button,
-    more: gtk::Button,
+    /// Built when the pointer or keyboard focus first enters the row.
+    toolbar: RefCell<Option<Toolbar>>,
     /// The blocked run notice and its Show/Hide.
     blocked: gtk::Box,
     blocked_label: gtk::Label,
     blocked_toggle: gtk::Button,
     row: RefCell<Option<Row>>,
+}
+
+/// A row's hover toolbar. It is about a quarter of a row's widgets, and GTK
+/// 4.8 lays out every row a page of history adds in one frame, so a row
+/// builds it only when the pointer or keyboard focus first enters it; Tab
+/// still walks into it, as on web.
+struct Toolbar {
+    /// Web's "Actions for {author}'s message" group, renamed in `dress`; its
+    /// widget name is the author it was last named for.
+    group: gtk::Box,
+    thread: gtk::Button,
+    reply: gtk::Button,
+    more: gtk::Button,
 }
 
 /// The toolbar as an accessible group named `name`.
@@ -959,20 +966,71 @@ fn tool(images: &Images, icon: Icon, label: &str) -> gtk::Button {
 
 /// Recycled message row widgets: each list item builds its widgets once and
 /// fills them whenever it is bound to another row.
-pub fn factory(images: Rc<Images>, handler: Handler) -> gtk::SignalListItemFactory {
+///
+/// GTK 4.8 gives every row a page of history brings into range a new list
+/// item, all in the frame that page lands in (about 1 ms each). So torn-down
+/// rows' widgets are kept for new items, and idle time builds `spare` ahead.
+pub fn factory(images: Rc<Images>, handler: Handler, spare: usize) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
+    let pool: Rc<RefCell<Vec<Rc<Widgets>>>> = Rc::default();
+    let live: Rc<RefCell<HashMap<gtk::Widget, Rc<Widgets>>>> = Rc::default();
+    let filling = Rc::new(std::cell::Cell::new(false));
+    let refill = {
+        let (pool, images, handler) = (pool.clone(), images.clone(), handler.clone());
+        move || {
+            if filling.get() || pool.borrow().len() >= spare {
+                return;
+            }
+            filling.set(true);
+            let (pool, images, handler, filling) = (
+                pool.clone(),
+                images.clone(),
+                handler.clone(),
+                filling.clone(),
+            );
+            // One row per pass, after anything else waiting, frames included.
+            glib::idle_add_local_full(glib::Priority::LOW, move || {
+                let widgets = Rc::new(build_widgets());
+                connect(&widgets, &images, &handler);
+                pool.borrow_mut().push(widgets);
+                if pool.borrow().len() < spare {
+                    return glib::ControlFlow::Continue;
+                }
+                filling.set(false);
+                glib::ControlFlow::Break
+            });
+        }
+    };
+    refill();
+    let setup_live = live.clone();
+    let setup_pool = pool.clone();
     factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
         item.set_activatable(false);
         item.set_selectable(false);
-        let widgets = Rc::new(build_widgets(&images));
-        connect(&widgets, &handler);
+        let spare = setup_pool.borrow_mut().pop();
+        let widgets = spare.unwrap_or_else(|| {
+            let widgets = Rc::new(build_widgets());
+            connect(&widgets, &images, &handler);
+            widgets
+        });
         item.set_child(Some(&widgets.root));
+        setup_live
+            .borrow_mut()
+            .insert(widgets.root.clone().upcast(), widgets.clone());
+        refill();
         // GTK 4.12 names list rows; 4.8 has no such property, and the row's
-        // labels carry the same text there.
+        // labels carry the same text there. The description lists the
+        // toolbar, which a row builds once focus or the pointer enters it.
         let labelled = item.find_property("accessible-label").is_some();
+        if item.find_property("accessible-description").is_some() {
+            item.set_property(
+                "accessible-description",
+                "Press Tab for reactions, Reply in thread, Reply and Message actions",
+            );
+        }
         let (images, handler) = (images.clone(), handler.clone());
         item.connect_item_notify(move |item| {
             if let Some(object) = item.item().and_downcast::<glib::BoxedAnyObject>() {
@@ -985,6 +1043,22 @@ pub fn factory(images: Rc<Images>, handler: Handler) -> gtk::SignalListItemFacto
             }
         });
     });
+    // Twice the spares at most: a cleared list hands back every row it had.
+    factory.connect_teardown(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let Some(child) = item.child() else {
+            return;
+        };
+        item.set_child(None::<&gtk::Widget>);
+        if let Some(widgets) = live.borrow_mut().remove(&child)
+            && pool.borrow().len() < spare * 2
+        {
+            *widgets.row.borrow_mut() = None;
+            pool.borrow_mut().push(widgets);
+        }
+    });
     factory
 }
 
@@ -993,8 +1067,8 @@ pub struct Standalone(Rc<Widgets>);
 
 impl Standalone {
     pub fn new(images: &Rc<Images>, row: &Row, handler: &Handler) -> Self {
-        let widgets = Rc::new(build_widgets(images));
-        connect(&widgets, handler);
+        let widgets = Rc::new(build_widgets());
+        connect(&widgets, images, handler);
         fill(&widgets, images, row, handler);
         *widgets.row.borrow_mut() = Some(row.clone());
         Self(widgets)
@@ -1005,7 +1079,7 @@ impl Standalone {
     }
 }
 
-fn build_widgets(images: &Images) -> Widgets {
+fn build_widgets() -> Widgets {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     // As desktop: the date centered between two rules.
     let day = gtk::Label::builder().css_classes(["day"]).build();
@@ -1142,40 +1216,9 @@ fn build_widgets(images: &Images) -> Widgets {
     content.append(&reaction_error);
     content.append(&replies);
 
-    // Web's group, "Actions for {author}'s message" (named per message in
-    // `fill`), so a screen reader hears whose tools these are.
     let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     slot.set_halign(gtk::Align::End);
     slot.set_valign(gtk::Align::Start);
-    let tools = group("Message actions");
-    slot.append(&tools);
-    let quick: Vec<gtk::Button> = QUICK_REACTIONS
-        .iter()
-        .map(|emoji| {
-            let button =
-                crate::app::named::<gtk::Button>("GtkButton", &format!("React with {emoji}"));
-            // A child label, not `set_label`, which would rename the button.
-            button.set_child(Some(&gtk::Label::new(Some(emoji))));
-            tooltip(&button, &format!("React with {emoji}"));
-            button.add_css_class("flat");
-            button.add_css_class("tool");
-            button.add_css_class("quick");
-            button.set_focus_on_click(false);
-            tools.append(&button);
-            button
-        })
-        .collect();
-    let pick = tool(images, Icon::SmilePlus, "Add reaction");
-    let reply_button = tool(images, Icon::Reply, "Reply");
-    let thread_button = tool(images, Icon::Thread, "Reply in thread");
-    let more = tool(images, Icon::More, "More actions");
-    // Desktop's order: thread, reply, add reaction, more.
-    for button in [&thread_button, &reply_button, &pick, &more] {
-        // A click should not leave the toolbar pinned open by focus; keyboard
-        // focus still reveals it through `:focus-within`.
-        button.set_focus_on_click(false);
-        tools.append(button);
-    }
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&content));
     overlay.add_overlay(&avatar.root);
@@ -1253,19 +1296,47 @@ fn build_widgets(images: &Images) -> Widgets {
         replies,
         thread_context,
         tools: slot,
-        group: tools,
-        quick,
-        pick,
-        reply_button,
-        thread_button,
-        more,
+        toolbar: RefCell::new(None),
         row: RefCell::new(None),
     }
 }
 
-fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
-    let id = |widgets: &Widgets| widgets.row.borrow().as_ref().map(|row| row.id.clone());
-    for (button, emoji) in widgets.quick.iter().zip(QUICK_REACTIONS) {
+/// Builds `widgets`' toolbar if it has none yet, dressed for its row.
+fn toolbar(widgets: &Rc<Widgets>, images: &Images, handler: &Handler) {
+    if widgets.toolbar.borrow().is_some() {
+        return;
+    }
+    // Web's group, "Actions for {author}'s message" (named per message in
+    // `dress`), so a screen reader hears whose tools these are.
+    let tools = group("Message actions");
+    let quick: Vec<gtk::Button> = QUICK_REACTIONS
+        .iter()
+        .map(|emoji| {
+            let button =
+                crate::app::named::<gtk::Button>("GtkButton", &format!("React with {emoji}"));
+            // A child label, not `set_label`, which would rename the button.
+            button.set_child(Some(&gtk::Label::new(Some(emoji))));
+            tooltip(&button, &format!("React with {emoji}"));
+            button.add_css_class("flat");
+            button.add_css_class("tool");
+            button.add_css_class("quick");
+            button.set_focus_on_click(false);
+            tools.append(&button);
+            button
+        })
+        .collect();
+    let pick = tool(images, Icon::SmilePlus, "Add reaction");
+    let reply = tool(images, Icon::Reply, "Reply");
+    let thread = tool(images, Icon::Thread, "Reply in thread");
+    let more = tool(images, Icon::More, "More actions");
+    // Desktop's order: thread, reply, add reaction, more.
+    for button in [&thread, &reply, &pick, &more] {
+        // A click should not leave the toolbar pinned open by focus; keyboard
+        // focus still reveals it through `:focus-within`.
+        button.set_focus_on_click(false);
+        tools.append(button);
+    }
+    for (button, emoji) in quick.iter().zip(QUICK_REACTIONS) {
         let (weak, handler) = (Rc::downgrade(widgets), handler.clone());
         button.connect_clicked(move |_| {
             let Some(widgets) = weak.upgrade() else {
@@ -1285,8 +1356,62 @@ fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
             }
         });
     }
-    type Make = fn(String, gtk::Widget) -> Action;
-    let actions: [(&gtk::Button, Make); 10] = [
+    let actions: [(&gtk::Button, Make); 4] = [
+        (&pick, |id, anchor| Action::Pick { id, anchor }),
+        (&reply, |id, _| Action::Reply(id)),
+        (&thread, |id, _| Action::Thread(id)),
+        (&more, |id, anchor| Action::Menu { id, anchor }),
+    ];
+    connect_actions(widgets, handler, &actions);
+    widgets.tools.append(&tools);
+    let toolbar = Toolbar {
+        group: tools,
+        thread,
+        reply,
+        more,
+    };
+    if let Some(row) = widgets.row.borrow().as_ref() {
+        dress(&toolbar, row);
+    }
+    *widgets.toolbar.borrow_mut() = Some(toolbar);
+}
+
+type Make = fn(String, gtk::Widget) -> Action;
+
+/// Each button sends its action for the row it shows now.
+fn connect_actions(widgets: &Rc<Widgets>, handler: &Handler, actions: &[(&gtk::Button, Make)]) {
+    let id = |widgets: &Widgets| widgets.row.borrow().as_ref().map(|row| row.id.clone());
+    for (button, make) in actions {
+        let make = *make;
+        let (weak, handler) = (Rc::downgrade(widgets), handler.clone());
+        button.connect_clicked(move |button| {
+            if let Some(id) = weak.upgrade().and_then(|widgets| id(&widgets)) {
+                handler(make(id, button.clone().upcast()));
+            }
+        });
+    }
+}
+
+fn connect(widgets: &Rc<Widgets>, images: &Rc<Images>, handler: &Handler) {
+    let id = |widgets: &Widgets| widgets.row.borrow().as_ref().map(|row| row.id.clone());
+    // The toolbar, on first hover or focus.
+    let motion = gtk::EventControllerMotion::new();
+    let focus = gtk::EventControllerFocus::new();
+    for (controller, enter) in [
+        (motion.upcast_ref::<gtk::EventController>(), "enter"),
+        (focus.upcast_ref(), "enter"),
+    ] {
+        let (weak, images, handler) = (Rc::downgrade(widgets), images.clone(), handler.clone());
+        controller.connect_local(enter, false, move |_| {
+            if let Some(widgets) = weak.upgrade() {
+                toolbar(&widgets, &images, &handler);
+            }
+            None
+        });
+    }
+    widgets.root.add_controller(motion);
+    widgets.root.add_controller(focus);
+    let actions: [(&gtk::Button, Make); 6] = [
         (&widgets.edited, |id, _| Action::History(id)),
         (&widgets.edited_inline, |id, _| Action::History(id)),
         (&widgets.thread_context, |id, _| Action::Thread(id)),
@@ -1294,12 +1419,9 @@ fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
         (&widgets.dismiss_reaction, |id, _| {
             Action::DismissReaction(id)
         }),
-        (&widgets.pick, |id, anchor| Action::Pick { id, anchor }),
-        (&widgets.reply_button, |id, _| Action::Reply(id)),
-        (&widgets.thread_button, |id, _| Action::Thread(id)),
         (&widgets.replies, |id, _| Action::Thread(id)),
-        (&widgets.more, |id, anchor| Action::Menu { id, anchor }),
     ];
+    connect_actions(widgets, handler, &actions);
     for target in [
         widgets.author.clone().upcast::<gtk::Widget>(),
         widgets.avatar.root.clone().upcast(),
@@ -1376,14 +1498,6 @@ fn connect(widgets: &Rc<Widgets>, handler: &Handler) {
             toggle(Action::ToggleBlocked(key));
         }
     });
-    for (button, action) in actions {
-        let (weak, handler) = (Rc::downgrade(widgets), handler.clone());
-        button.connect_clicked(move |button| {
-            if let Some(id) = weak.upgrade().and_then(|widgets| id(&widgets)) {
-                handler(action(id, button.clone().upcast()));
-            }
-        });
-    }
 }
 
 /// The quote card, as desktop: a deleted original names its author and says
@@ -1647,36 +1761,39 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     {
         label.set_markup(row.replies.as_deref().unwrap_or_default());
     }
-    // Web's labels, per message (rows are recycled, so renamed when the
-    // author changes; the widget name remembers whose they are).
+    widgets.tools.set_visible(row.offers.act);
+    if let Some(toolbar) = widgets.toolbar.borrow().as_ref() {
+        dress(toolbar, row);
+    }
+}
+
+/// The toolbar for `row`: web's labels, renamed when the author changes
+/// (rows are recycled; the group's widget name remembers whose they are),
+/// and the actions it offers.
+fn dress(toolbar: &Toolbar, row: &Row) {
     let author = &row.author;
-    if widgets.group.widget_name() != author.as_str() {
-        widgets.group.set_widget_name(author);
+    if toolbar.group.widget_name() != author.as_str() {
+        toolbar.group.set_widget_name(author);
         for (widget, text) in [
             (
-                widgets.group.upcast_ref::<gtk::Widget>(),
+                toolbar.group.upcast_ref::<gtk::Widget>(),
                 format!("Actions for {author}'s message"),
             ),
             (
-                widgets.thread_button.upcast_ref(),
+                toolbar.thread.upcast_ref(),
                 format!("Reply in thread to {author}"),
             ),
+            (toolbar.reply.upcast_ref(), format!("Reply to {author}")),
             (
-                widgets.reply_button.upcast_ref(),
-                format!("Reply to {author}"),
-            ),
-            (
-                widgets.more.upcast_ref(),
+                toolbar.more.upcast_ref(),
                 format!("Message actions for {author}"),
             ),
         ] {
             crate::app::rename(widget, &text);
         }
     }
-    let offers = row.offers;
-    widgets.tools.set_visible(offers.act);
-    widgets.thread_button.set_visible(offers.thread);
-    widgets.more.set_visible(offers.act);
+    toolbar.thread.set_visible(row.offers.thread);
+    toolbar.more.set_visible(row.offers.act);
 }
 
 #[cfg(test)]

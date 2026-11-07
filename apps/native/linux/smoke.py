@@ -4,8 +4,8 @@ accessibility bus under Xvfb, against the parity fixture
 (scripts/native-parity-fixture.mjs).
 
 It signs in with the fixture's account, waits for #general's messages,
-checks that each row's toolbar is named for its author ("Reply to Maya"), and
-sends a message that must show up in the list. On GTK 4.12 or later, message
+checks that each row's toolbar, built on hover, is named for its author
+("Reply to Maya"), and sends a message that must show up in the list. On GTK 4.12 or later, message
 rows must also be named "author, time, text"; GTK 4.8 can't name them.
 
 Run under `xvfb-run -a dbus-run-session --` with `--binary` pointing at a
@@ -96,6 +96,18 @@ def click(node):
     time.sleep(0.3)
 
 
+def hover(node):
+    extents = node.get_extents(Atspi.CoordType.WINDOW)
+    x, y = extents.x + extents.width // 2, extents.y + extents.height // 2
+    subprocess.run(["xdotool", "mousemove", str(x), str(y)], check=True)
+
+
+def toolbar(row):
+    """The names of `row`'s buttons, once its toolbar is built."""
+    buttons = [node.get_name() or "" for node in nodes(row) if node.get_role_name() == "push button"]
+    return buttons if any(name.startswith("Reply to ") for name in buttons) else None
+
+
 def type_text(text, enter=True):
     subprocess.run(["xdotool", "type", "--delay", "20", text], check=True)
     if enter:
@@ -162,21 +174,19 @@ def main():
             names = [row.get_name() or "" for row in rows]
             print("first row:", names[0])
             unnamed = [name for name in names if not re.search(r", \d{1,2}:\d{2}", name)]
+            # The toolbar a row builds on hover or focus, listed for screen readers.
+            assert "Reply in thread" in (rows[0].get_description() or ""), rows[0].get_description()
             assert not unnamed, f"rows without 'author, time, text' names: {unnamed[:3]}"
-        # Rows are recycled, so a stale name would be another author's.
+        # A row builds its toolbar when the pointer first enters it. Rows are
+        # recycled, so a stale name would be another author's.
         for row in rows:
-            buttons = [node.get_name() or "" for node in nodes(row) if node.get_role_name() == "push button"]
-            replies = [name for name in buttons if name.startswith("Reply to ")]
-            if not replies:
-                continue
-            author = replies[0].removeprefix("Reply to ")
+            hover(row)
+            buttons = wait(lambda row=row: toolbar(row), f"the toolbar of {row.get_name()!r}", timeout=5)
+            author = next(name for name in buttons if name.startswith("Reply to ")).removeprefix("Reply to ")
             print(f"toolbar for {author}")
             assert f"Message actions for {author}" in buttons, f"toolbar names: {buttons}"
             if (major, minor) >= (4, 12):
                 assert (row.get_name() or "").startswith(f"{author}, "), (row.get_name(), author)
-        assert any((node.get_name() or "").startswith("Reply to ") for row in rows for node in nodes(row)), (
-            "no row toolbar named for its author"
-        )
 
         composer = wait(lambda: placed(find(app, role="text", name="Message")), "the composer")
         click(composer)
