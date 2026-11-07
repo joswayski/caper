@@ -7,15 +7,20 @@
 //! (Accept, Decline or Block) or a DM you blocked (Unblock), and the
 //! "Waiting for @x to accept" note above your own request's composer. The
 //! row rules are the shared `caper_client::model::DirectConversation` ones.
-use crate::gfx::{self, Gfx, fill_round, rect};
+//! Each conversation's options button opens its notification menu (on or
+//! off, mute for a while or unmute), and a muted one shows a bell-slash.
+use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::live::Live;
 use crate::overlay::{Rect, Tone};
 use crate::theme::*;
 use crate::{App, text};
 use caper_client::model::{DirectConversation, DirectStatus};
+use windows::Win32::Foundation::{LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
 /// A row and its pitch, egui's 28 + 2.
@@ -28,12 +33,63 @@ const GAP: f32 = 14.0;
 const LABEL_H: f32 = 28.0;
 
 /// What the pointer is over in the section: its heading, the heading's
-/// "New direct message" button, or a row.
+/// "New direct message" button, a row, or a row's options button.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Spot {
     Heading,
     New,
     Row(usize),
+    Options(usize),
+}
+
+/// The options menu's entries, as egui's `notification_items` words them
+/// for a conversation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuItem {
+    /// "Turn off notifications" while they are on, else "Turn on…".
+    Toggle(bool),
+    /// "Mute conversation", heading the mute presets.
+    MuteHeading,
+    /// `caper_client::notifications::MUTE_PRESETS` entry `k`.
+    Mute(usize),
+    Unmute,
+    /// Text only: when the mute ends, "Loading…", or an error (true).
+    Note(String, bool),
+}
+
+impl MenuItem {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Toggle(true) => "Turn off notifications".into(),
+            Self::Toggle(false) => "Turn on notifications".into(),
+            Self::MuteHeading => "Mute conversation".into(),
+            Self::Mute(k) => caper_client::notifications::MUTE_PRESETS
+                .get(*k)
+                .map_or("", |p| p.0)
+                .into(),
+            Self::Unmute => "Unmute conversation".into(),
+            Self::Note(text, _) => text.clone(),
+        }
+    }
+
+    /// Whether choosing it changes something.
+    pub fn action(&self) -> bool {
+        matches!(self, Self::Toggle(_) | Self::Mute(_) | Self::Unmute)
+    }
+}
+
+/// A conversation's open options menu, by its id, and the item under the
+/// pointer or keyboard.
+pub struct DmMenu {
+    pub id: String,
+    pub hover: Option<usize>,
+}
+
+const MENU_W: f32 = 232.0;
+const MENU_ITEM_H: f32 = 32.0;
+
+fn contains((x, y, w, h): Rect, px: f32, py: f32) -> bool {
+    px >= x && px < x + w && py >= y && py < y + h
 }
 
 /// What a row of the section is.
@@ -64,9 +120,18 @@ pub struct Row {
     pub color: u32,
     pub initials: String,
     pub active: bool,
+    /// The bell-slash label while muted, and why the last notification
+    /// change failed.
+    pub muted: Option<String>,
+    pub error: Option<String>,
 }
 
 impl Row {
+    /// Whether it has an options menu: another person's conversation.
+    pub fn menu(&self) -> bool {
+        self.kind == RowKind::Direct && !self.own && self.id.is_some()
+    }
+
     /// Its accessible name, as egui's `channel_button` words it.
     pub fn label(&self) -> String {
         match self.kind {
@@ -111,6 +176,8 @@ impl Live {
                 color: p.color,
                 initials: p.initials,
                 active: d.is_some_and(|d| open == Some(d.id.as_str())),
+                muted: None,
+                error: None,
             }
         };
         let mut out = Vec::new();
@@ -133,6 +200,8 @@ impl Live {
                 color: 0,
                 initials: String::new(),
                 active: false,
+                muted: None,
+                error: None,
             });
             if shown {
                 // Requests never show unread, as in egui.
@@ -157,9 +226,19 @@ impl Live {
             self.directs
                 .iter()
                 .filter(|d| &d.peer.id != me && d.status != DirectStatus::Incoming)
-                .map(|d| Row {
-                    note: d.row_suffix(false).map(str::to_owned),
-                    ..row(Some(d), &d.peer.display_name, &d.peer.id)
+                .map(|d| {
+                    // A muted or blocked DM shows no unread, as in egui.
+                    let muted = self.direct_muted(&d.id);
+                    let blocked = self.is_blocked(&d.peer.id);
+                    let unread = muted.is_none() && !d.blocked && !blocked && d.has_unread();
+                    Row {
+                        note: d.row_suffix(blocked).map(str::to_owned),
+                        unread,
+                        count: d.unread_count.filter(|n| unread && *n > 0),
+                        muted,
+                        error: self.direct_notify_error(&d.id),
+                        ..row(Some(d), &d.peer.display_name, &d.peer.id)
+                    }
                 }),
         );
         out
@@ -173,6 +252,7 @@ pub fn draw(
     rows: &[Row],
     top: f32,
     hover: Option<Spot>,
+    menu: Option<usize>,
 ) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
@@ -199,7 +279,7 @@ pub fn draw(
     for (k, row) in rows.iter().enumerate() {
         let y = top + GAP + LABEL_H + PITCH * k as f32;
         let r = rect(12.0, y, SIDEBAR_W - 12.0, y + ROW_H);
-        let lit = hover == Some(Spot::Row(k));
+        let lit = matches!(hover, Some(Spot::Row(j) | Spot::Options(j)) if j == k);
         if row.active {
             fill_round(dc, r, 6.0, &g.brushes.selected);
         } else if lit {
@@ -225,8 +305,23 @@ pub fn draw(
             cy - m.height / 2.0,
             &g.brushes.text,
         );
-        // From the right: the unread count or dot, then the name.
+        // From the right: the options button while revealed, the unread
+        // count or dot, the bell-slash, then the name.
         let mut right = r.right - 8.0;
+        if row.menu() && (lit || menu == Some(k)) {
+            let b = rect(r.right - 32.0, cy - 12.0, r.right - 8.0, cy + 12.0);
+            if hover == Some(Spot::Options(k)) || menu == Some(k) {
+                fill_round(dc, b, 6.0, &g.brushes.hover);
+            }
+            crate::icons::draw(
+                dc,
+                crate::icons::Icon::More,
+                rect(b.left + 4.0, b.top + 4.0, b.right - 4.0, b.bottom - 4.0),
+                TEXT,
+                1.0,
+            );
+            right = b.left - 4.0;
+        }
         if let Some(n) = row.count {
             let label = if n > 99 { "99+".into() } else { n.to_string() };
             let l = g.layout(&gfx::wide(&label), &g.formats.badge, 1e6)?;
@@ -251,6 +346,16 @@ pub fn draw(
             };
             unsafe { dc.FillEllipse(&e, &g.brushes.terracotta_bright) };
             right -= 16.0;
+        }
+        if row.muted.is_some() {
+            crate::icons::draw(
+                dc,
+                crate::icons::Icon::BellOff,
+                rect(right - 14.0, cy - 7.0, right, cy + 7.0),
+                TEXT_MUTED,
+                1.0,
+            );
+            right -= 20.0;
         }
         let x = r.left + 32.0;
         let format = if row.unread {
@@ -277,12 +382,18 @@ pub fn draw(
             &g.brushes.muted
         };
         text::draw(dc, &name, x, cy - 1.0 - m.height / 2.0, brush);
-        if let Some(note) = &row.note {
+        // A failed notification change shows in place of the note.
+        if let Some(note) = row.error.as_ref().or(row.note.as_ref()) {
             let nx = x + m.widthIncludingTrailingWhitespace.min(right - x) + 5.0;
             if nx < right {
                 let l = g.layout(&gfx::wide(note), &g.formats.direct_note, right - nx)?;
                 let nm = gfx::metrics(&l);
-                text::draw(dc, &l, nx, cy - 1.0 - nm.height / 2.0, &g.brushes.muted);
+                let brush = if row.error.is_some() {
+                    &g.brushes.error
+                } else {
+                    &g.brushes.muted
+                };
+                text::draw(dc, &l, nx, cy - 1.0 - nm.height / 2.0, brush);
             }
         }
     }
@@ -713,7 +824,8 @@ impl App {
     }
 
     pub fn direct_at(&self, x: f32, y: f32) -> Option<Spot> {
-        let n = self.direct_rows().len();
+        let rows = self.direct_rows();
+        let n = rows.len();
         let inside = |(l, t, w, h): Rect| x >= l && x < l + w && y >= t && y < t + h;
         if n == 0 {
             return None;
@@ -725,13 +837,237 @@ impl App {
         if inside((RAIL_W, top, SIDEBAR_W, LABEL_H)) {
             return Some(Spot::Heading);
         }
+        if let Some(k) = (0..n).find(|&k| rows[k].menu() && inside(self.direct_options_rect(k))) {
+            return Some(Spot::Options(k));
+        }
         (0..n).find(|&k| inside(self.direct_rect(k))).map(Spot::Row)
+    }
+
+    /// Row `k`'s options button (client DIPs), shown while it is hovered.
+    pub fn direct_options_rect(&self, k: usize) -> Rect {
+        let (x, y, w, _) = self.direct_rect(k);
+        (x + w - 32.0, y + 2.0, 24.0, 24.0)
+    }
+
+    /// The row whose options menu is open.
+    pub fn dm_menu_row(&self) -> Option<usize> {
+        let id = &self.dm_menu.as_ref()?.id;
+        self.direct_rows()
+            .iter()
+            .position(|r| r.id.as_ref() == Some(id))
+    }
+
+    /// The open menu's items and whether they can change now.
+    pub fn dm_menu_items(&self) -> (bool, Vec<MenuItem>) {
+        match (&self.dm_menu, &self.live) {
+            (Some(m), Some(live)) => live.direct_menu(&m.id),
+            _ => (false, Vec::new()),
+        }
+    }
+
+    /// The menu (client DIPs), beside its row, kept in the window.
+    pub fn dm_menu_rect(&self) -> Rect {
+        let h = self.dm_menu_items().1.len() as f32 * MENU_ITEM_H + 12.0;
+        let y = self.dm_menu_row().map_or(0.0, |k| self.direct_rect(k).1);
+        (
+            RAIL_W + SIDEBAR_W - 8.0,
+            y.min(self.h - 8.0 - h).max(8.0),
+            MENU_W,
+            h,
+        )
+    }
+
+    pub fn dm_item_rect(&self, k: usize) -> Rect {
+        let (x, y, w, _) = self.dm_menu_rect();
+        (
+            x + 6.0,
+            y + 6.0 + k as f32 * MENU_ITEM_H,
+            w - 12.0,
+            MENU_ITEM_H,
+        )
+    }
+
+    /// Opens or closes row `k`'s options menu; opening loads the
+    /// notification settings, as egui's row menu does.
+    pub fn toggle_dm_menu(&mut self, k: usize) {
+        let id = self
+            .direct_rows()
+            .get(k)
+            .filter(|r| r.menu())
+            .and_then(|r| r.id.clone());
+        let open = self.dm_menu.as_ref().map(|m| m.id.clone());
+        self.dm_menu = match id {
+            Some(id) if open.as_ref() != Some(&id) => {
+                if let Some(live) = &mut self.live {
+                    live.load_notifications();
+                }
+                Some(DmMenu { id, hover: None })
+            }
+            _ => None,
+        };
+        self.dm_menu_changed();
+    }
+
+    pub fn close_dm_menu(&mut self) {
+        if self.dm_menu.take().is_some() {
+            self.dm_menu_changed();
+        }
+    }
+
+    pub fn dm_menu_changed(&mut self) {
+        self.dirty.dm_menu = true;
+        self.dirty.sidebar = true;
+        self.events |= crate::EV_SCREEN;
+        self.need = true;
+    }
+
+    /// Chooses item `k`; the menu closes, as egui's does.
+    pub fn dm_menu_activate(&mut self, k: usize) {
+        let (enabled, items) = self.dm_menu_items();
+        let Some(item) = items.get(k).filter(|i| enabled && i.action()) else {
+            return;
+        };
+        let Some(id) = self.dm_menu.as_ref().map(|m| m.id.clone()) else {
+            return;
+        };
+        if let Some(live) = &mut self.live {
+            live.direct_notify(&id, item);
+        }
+        self.dm_menu = None;
+        self.dm_menu_changed();
+    }
+
+    /// Input while a conversation's options menu is open.
+    pub fn dm_menu_input(
+        &mut self,
+        msg: u32,
+        wp: WPARAM,
+        x: f32,
+        y: f32,
+    ) -> Option<Option<LRESULT>> {
+        let done = Some(Some(LRESULT(0)));
+        let (enabled, items) = self.dm_menu_items();
+        let hit = (0..items.len())
+            .find(|&k| contains(self.dm_item_rect(k), x, y))
+            .filter(|&k| enabled && items[k].action());
+        let inside = contains(self.dm_menu_rect(), x, y);
+        // The open row's own button only closes it.
+        let own =
+            matches!(self.direct_at(x, y), Some(Spot::Options(k)) if Some(k) == self.dm_menu_row());
+        let m = self.dm_menu.as_mut()?;
+        match msg {
+            WM_MOUSEMOVE => {
+                if hit != m.hover {
+                    m.hover = hit;
+                    self.dirty.dm_menu = true;
+                    self.need = true;
+                }
+                None
+            }
+            WM_LBUTTONDOWN => {
+                if let Some(k) = hit {
+                    self.dm_menu_activate(k);
+                    return done;
+                }
+                if inside {
+                    return done;
+                }
+                self.close_dm_menu();
+                if own { done } else { None }
+            }
+            WM_KEYDOWN => {
+                let vk = VIRTUAL_KEY(wp.0 as u16);
+                let choices: Vec<usize> = (0..items.len()).filter(|&k| items[k].action()).collect();
+                let at = m.hover.and_then(|h| choices.iter().position(|&c| c == h));
+                let n = choices.len();
+                match vk {
+                    VK_ESCAPE => {
+                        self.close_dm_menu();
+                        return done;
+                    }
+                    VK_DOWN if n > 0 => m.hover = Some(choices[at.map_or(0, |p| (p + 1) % n)]),
+                    VK_UP if n > 0 => {
+                        m.hover = Some(choices[at.map_or(n - 1, |p| (p + n - 1) % n)])
+                    }
+                    VK_RETURN | VK_SPACE => {
+                        if let Some(k) = m.hover {
+                            self.dm_menu_activate(k);
+                        }
+                        return done;
+                    }
+                    _ => return done,
+                }
+                self.dirty.dm_menu = true;
+                self.need = true;
+                done
+            }
+            WM_MOUSEWHEEL => {
+                self.close_dm_menu();
+                None
+            }
+            WM_SETCURSOR if hit.is_some() => {
+                unsafe { SetCursor(LoadCursorW(None, IDC_HAND).ok()) };
+                Some(Some(LRESULT(1)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Redraws the options menu when it or the sidebar changed.
+    pub fn draw_dm_menu(&mut self) -> Result<()> {
+        if !(std::mem::take(&mut self.dirty.dm_menu) || self.dirty.sidebar) {
+            return Ok(());
+        }
+        if self.dm_menu.is_none() || self.dm_menu_row().is_none() {
+            return self.dm_menu_p.offset(-100_000.0, 0.0);
+        }
+        let s = self.scale;
+        let px = |v: f32| (v * s).ceil().max(1.0) as u32;
+        let (enabled, items) = self.dm_menu_items();
+        let hover = self.dm_menu.as_ref().and_then(|m| m.hover);
+        let (mx, my, mw, mh) = self.dm_menu_rect();
+        let g = &self.g;
+        self.dm_menu_p.ensure(g, px(mw), px(mh))?;
+        self.dm_menu_p.offset((mx * s).round(), (my * s).round())?;
+        self.dm_menu_p.draw(s, |dc| {
+            unsafe { dc.Clear(Some(&D2D1_COLOR_F::default())) };
+            let r = rect(0.5, 0.5, mw - 0.5, mh - 0.5);
+            fill_round(dc, r, RADIUS, &g.brushes.surface);
+            stroke_round(dc, r, RADIUS, &g.brushes.border);
+            for (k, item) in items.iter().enumerate() {
+                let (x, y, w, h) = (6.0, 6.0 + k as f32 * MENU_ITEM_H, mw - 12.0, MENU_ITEM_H);
+                let live = enabled && item.action();
+                if live && hover == Some(k) {
+                    fill_round(dc, rect(x, y, x + w, y + h), 6.0, &g.brushes.hover);
+                }
+                // The presets sit under "Mute conversation".
+                let indent = if matches!(item, MenuItem::Mute(_)) {
+                    22.0
+                } else {
+                    10.0
+                };
+                let l = g.layout(
+                    &gfx::wide(&item.label()),
+                    &g.formats.dialog_note,
+                    (w - indent - 6.0).max(1.0),
+                )?;
+                let lm = gfx::metrics(&l);
+                let brush = match item {
+                    MenuItem::Note(_, true) => &g.brushes.error,
+                    _ if !live => &g.brushes.muted,
+                    _ => &g.brushes.text,
+                };
+                text::draw(dc, &l, x + indent, y + (h - lm.height) / 2.0, brush);
+            }
+            Ok(())
+        })
     }
 
     pub fn direct_click(&mut self, spot: Spot) {
         match spot {
             Spot::New => self.open_start_direct(),
             Spot::Row(k) => self.open_direct_row(k),
+            Spot::Options(k) => self.toggle_dm_menu(k),
             Spot::Heading => {}
         }
     }
@@ -834,6 +1170,8 @@ mod tests {
             color: 0,
             initials: "M".into(),
             active: false,
+            muted: None,
+            error: None,
         };
         assert_eq!(row.label(), "Maya, 3 unread messages");
         let row = Row {

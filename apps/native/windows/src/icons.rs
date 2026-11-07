@@ -25,6 +25,7 @@ macro_rules! icons {
 }
 
 icons! {
+    BellOff => "bell-off.svg",
     Check => "check.svg",
     Close => "x.svg",
     Copy => "copy.svg",

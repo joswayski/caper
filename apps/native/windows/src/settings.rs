@@ -726,6 +726,7 @@ impl App {
     /// loads the account's choices.
     pub fn open_settings(&mut self) {
         self.account_menu = None;
+        self.close_dm_menu();
         self.close_menu();
         self.close_dialog();
         self.close_gifs(false);
@@ -1037,6 +1038,7 @@ impl App {
         self.close_settings();
         self.close_dialog();
         self.close_menu();
+        self.close_dm_menu();
         self.close_gifs(false);
         self.cancel_reply();
         self.close_thread();

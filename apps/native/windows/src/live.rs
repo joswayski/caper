@@ -550,6 +550,72 @@ impl Live {
         }
     }
 
+    /// A DM's bell-slash label while it is muted.
+    pub fn direct_muted(&self, id: &str) -> Option<String> {
+        self.notifications
+            .muted_label(&Scope::Direct(id.to_owned()), &chrono::Local::now())
+    }
+
+    /// Why a DM's last notification change failed.
+    pub fn direct_notify_error(&self, id: &str) -> Option<String> {
+        self.notifications
+            .error(&Scope::Direct(id.to_owned()))
+            .map(str::to_owned)
+    }
+
+    /// A DM's options menu, as egui's `notification_items` for a
+    /// conversation: whether its choices can change now, and its items.
+    pub fn direct_menu(&self, id: &str) -> (bool, Vec<crate::directs::MenuItem>) {
+        use crate::directs::MenuItem;
+        let n = &self.notifications;
+        let scope = Scope::Direct(id.to_owned());
+        let now = chrono::Local::now();
+        let enabled = n.ready() && !n.saving(&scope);
+        let mut items = vec![MenuItem::Toggle(
+            n.level(&scope) != Some(core::NotificationLevel::Nothing),
+        )];
+        match n.mute(&scope, now.with_timezone(&chrono::Utc)) {
+            Some(mute) => {
+                items.push(MenuItem::Unmute);
+                items.push(MenuItem::Note(
+                    caper_client::notifications::mute_label(mute, &now),
+                    false,
+                ));
+            }
+            None => {
+                items.push(MenuItem::MuteHeading);
+                items.extend(
+                    (0..caper_client::notifications::MUTE_PRESETS.len()).map(MenuItem::Mute),
+                );
+            }
+        }
+        if !n.ready() {
+            items.push(match n.load_error() {
+                Some(e) => MenuItem::Note(e.to_owned(), true),
+                None => MenuItem::Note("Loading\u{2026}".into(), false),
+            });
+        }
+        if let Some(e) = n.error(&scope) {
+            items.push(MenuItem::Note(e.to_owned(), true));
+        }
+        (enabled, items)
+    }
+
+    /// A choice in a DM's options menu, applied at once and saved.
+    pub fn direct_notify(&mut self, id: &str, item: &crate::directs::MenuItem) {
+        use crate::directs::MenuItem;
+        use caper_client::notifications::{MUTE_PRESETS, mute_value};
+        let change = match item {
+            MenuItem::Toggle(on) => Change::Level(on.then_some(core::NotificationLevel::Nothing)),
+            MenuItem::Mute(k) => {
+                Change::Mute(Some(mute_value(MUTE_PRESETS[*k].1, chrono::Utc::now())))
+            }
+            MenuItem::Unmute => Change::Mute(None),
+            MenuItem::MuteHeading | MenuItem::Note(..) => return,
+        };
+        self.change_notifications(Scope::Direct(id.to_owned()), change);
+    }
+
     /// Who can start a DM with you: shown at once, reverted if the save
     /// fails.
     pub fn save_privacy(&mut self, value: &str) {
@@ -774,8 +840,9 @@ impl Live {
         self.token = Some(token);
         self.check_klipy();
         self.load_directs();
-        // Blocked people's DMs show the blocked bar.
+        // Blocked people's DMs show the blocked bar; muted ones their bell.
         self.load_blocks();
+        self.load_notifications();
         self.spaces = Some(spaces);
         self.navigate(Some(space), None);
     }

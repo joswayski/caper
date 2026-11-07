@@ -131,6 +131,8 @@ struct Dirty {
     thread_box: bool,
     /// The who-reacted card.
     card: bool,
+    /// A conversation's options menu.
+    dm_menu: bool,
 }
 
 impl Dirty {
@@ -152,6 +154,7 @@ impl Dirty {
             thread: true,
             thread_box: true,
             card: true,
+            dm_menu: true,
         }
     }
 }
@@ -242,6 +245,9 @@ pub struct App {
     /// hovered, and their surface.
     pub settings: Option<settings::Settings>,
     pub account_menu: Option<settings::AccountMenu>,
+    /// A conversation's open options menu, and its surface.
+    pub dm_menu: Option<directs::DmMenu>,
+    dm_menu_p: Panel,
     gear_hover: bool,
     settings_p: Panel,
     pointer: Option<(f32, f32)>,
@@ -360,6 +366,7 @@ impl App {
             let thread_box_p = Panel::new(&g)?;
             let card_p = Panel::new(&g)?;
             let settings_p = Panel::new(&g)?;
+            let dm_menu_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
             let content = g.visual()?;
             let vs = g.dcomp.CreateVirtualSurface(
@@ -393,7 +400,8 @@ impl App {
             root.AddVisual(&menu_p.visual, true, &card_p.visual)?;
             root.AddVisual(&picker_p.visual, true, &menu_p.visual)?;
             root.AddVisual(&gifs_p.visual, true, &picker_p.visual)?;
-            root.AddVisual(&dialog_p.visual, true, &gifs_p.visual)?;
+            root.AddVisual(&dm_menu_p.visual, true, &gifs_p.visual)?;
+            root.AddVisual(&dialog_p.visual, true, &dm_menu_p.visual)?;
             root.AddVisual(&settings_p.visual, true, &dialog_p.visual)?;
             root.AddVisual(&signin_p.visual, true, &settings_p.visual)?;
             let (channel_layouts, member_layouts) = side_layouts(&g, &c)?;
@@ -437,6 +445,8 @@ impl App {
                 bar_pressed: None,
                 settings: None,
                 account_menu: None,
+                dm_menu: None,
+                dm_menu_p,
                 gear_hover: false,
                 settings_p,
                 pointer: None,
@@ -649,6 +659,11 @@ impl App {
                     if self.settings.is_some() {
                         self.settings_changed();
                     }
+                    // Mutes and failed changes show in the DM rows and menu.
+                    self.dirty.sidebar = true;
+                    self.dirty.dm_menu = true;
+                    self.events |= EV_ROWS;
+                    self.need = true;
                 }
                 live::Update::DirectCreated(error) => self.direct_created(error),
                 live::Update::Badges => {
@@ -1366,6 +1381,11 @@ impl App {
         }
         if self.settings.is_some()
             && let Some(r) = self.settings_input(msg, wp, x, y)
+        {
+            return r;
+        }
+        if self.dm_menu.is_some()
+            && let Some(r) = self.dm_menu_input(msg, wp, x, y)
         {
             return r;
         }
@@ -2627,6 +2647,7 @@ impl App {
         if d.sidebar {
             let (hover, layouts) = (self.hover_channel, &self.channel_layouts);
             let (drows, dtop, dhover) = (self.direct_rows(), self.directs_top(), self.hover_direct);
+            let dmenu = self.dm_menu_row();
             self.sidebar.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
                 let t = g.layout(
@@ -2697,7 +2718,7 @@ impl App {
                         },
                     );
                 }
-                directs::draw(g, dc, &drows, dtop, dhover)?;
+                directs::draw(g, dc, &drows, dtop, dhover, dmenu)?;
                 self.draw_foot(g, dc, self.h)?;
                 Ok(())
             })?;
@@ -2876,6 +2897,7 @@ impl App {
         self.draw_empty()?;
         self.draw_overlays()?;
         self.draw_settings()?;
+        self.draw_dm_menu()?;
         self.draw_thread()?;
         self.track_card();
         self.draw_card()?;

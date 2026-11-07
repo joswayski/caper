@@ -43,6 +43,11 @@ pub enum Id {
     Waiting,
     /// A part of Settings, which replaces the tree while shown.
     Settings(crate::settings::SPart),
+    /// Row `k`'s options button, and the conversation menu it opens with
+    /// its items.
+    DirectOptions(usize),
+    DmMenu,
+    DmItem(usize),
     /// The account footer's gear, its menu and the menu's items.
     Gear,
     AccountMenu,
@@ -214,6 +219,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                 out.push(Id::Gear);
             }
             out.extend(a.account_menu.as_ref().map(|_| Id::AccountMenu));
+            out.extend(a.dm_menu.as_ref().map(|_| Id::DmMenu));
             out.extend(a.menu.as_ref().map(|_| Id::Menu));
             out.extend(a.picker.as_ref().map(|_| Id::Picker));
             out.extend(a.gifs.as_ref().map(|_| Id::Gifs));
@@ -226,6 +232,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
         Id::AccountMenu => (0..crate::settings::MENU_ITEMS.len())
             .map(Id::AccountItem)
             .collect(),
+        Id::DmMenu => (0..a.dm_menu_items().1.len()).map(Id::DmItem).collect(),
         Id::Menu => a.menu.as_ref().map_or_else(Vec::new, |m| {
             std::iter::once(Id::MenuClose)
                 .chain((0..m.items.len()).map(Id::MenuItem))
@@ -238,7 +245,9 @@ fn children(a: &App, id: Id) -> Vec<Id> {
         Id::Rail => (0..a.c.spaces.len()).map(Id::Space).collect(),
         Id::Channels => (0..a.c.channels.len()).map(Id::Channel).collect(),
         Id::Directs => std::iter::once(Id::NewDirect)
-            .chain((0..a.direct_rows().len()).map(Id::Direct))
+            .chain(a.direct_rows().iter().enumerate().flat_map(|(k, r)| {
+                std::iter::once(Id::Direct(k)).chain(r.menu().then_some(Id::DirectOptions(k)))
+            }))
             .collect(),
         Id::History => a
             .head_rect()
@@ -280,8 +289,9 @@ fn parent(id: Id) -> Option<Id> {
         Id::Root => return None,
         Id::Space(_) => Id::Rail,
         Id::Channel(_) => Id::Channels,
-        Id::Direct(_) | Id::NewDirect => Id::Directs,
+        Id::Direct(_) | Id::NewDirect | Id::DirectOptions(_) => Id::Directs,
         Id::AccountItem(_) => Id::AccountMenu,
+        Id::DmItem(_) => Id::DmMenu,
         Id::Row(_) => Id::History,
         Id::Control(i, _) | Id::Tool(i, _) => Id::Row(i),
         Id::Older | Id::Newer(_) => Id::History,
@@ -313,6 +323,12 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.parts().contains(&p)),
         Id::Gear => a.foot_shown(),
         Id::AccountMenu => a.account_menu.is_some(),
+        Id::DirectOptions(k) => a
+            .direct_rows()
+            .get(k)
+            .is_some_and(crate::directs::Row::menu),
+        Id::DmMenu => a.dm_menu.is_some(),
+        Id::DmItem(k) => a.dm_menu.is_some() && k < a.dm_menu_items().1.len(),
         Id::AccountItem(k) => a.account_menu.is_some() && k < crate::settings::MENU_ITEMS.len(),
         Id::Direct(k) => k < a.direct_rows().len(),
         Id::Member(i) => i < a.c.members.len(),
@@ -389,6 +405,15 @@ fn name(a: &App, id: Id) -> String {
         Id::Waiting => a.note.as_ref().map_or_else(String::new, |(t, _)| t.clone()),
         Id::Settings(p) => a.settings.as_ref().map_or_else(String::new, |s| s.name(p)),
         Id::Gear | Id::AccountMenu => "User Settings".into(),
+        Id::DirectOptions(k) => a.direct_rows().get(k).map_or_else(String::new, |r| {
+            format!("Conversation options for {}", r.name)
+        }),
+        Id::DmMenu => "Conversation options".into(),
+        Id::DmItem(k) => a
+            .dm_menu_items()
+            .1
+            .get(k)
+            .map_or_else(String::new, crate::directs::MenuItem::label),
         Id::AccountItem(k) => crate::settings::MENU_ITEMS
             .get(k)
             .map_or_else(String::new, |s| (*s).into()),
@@ -573,7 +598,9 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Settings(p) if p.is_radio() => UIA_RadioButtonControlTypeId,
         Id::Settings(p) if p.is_toggle() => UIA_CheckBoxControlTypeId,
         Id::Settings(_) | Id::Gear => UIA_ButtonControlTypeId,
-        Id::AccountMenu => UIA_MenuControlTypeId,
+        Id::AccountMenu | Id::DmMenu => UIA_MenuControlTypeId,
+        Id::DmItem(_) => UIA_MenuItemControlTypeId,
+        Id::DirectOptions(_) => UIA_ButtonControlTypeId,
         Id::AccountItem(_) => UIA_MenuItemControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Thread => UIA_PaneControlTypeId,
@@ -610,6 +637,9 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Settings(p) => (38, p.index()),
         Id::Gear => (39, 0),
         Id::AccountMenu => (40, 0),
+        Id::DirectOptions(k) => (43, k),
+        Id::DmMenu => (44, 0),
+        Id::DmItem(k) => (45, k),
         Id::AccountItem(k) => (41, k),
         Id::Waiting => (42, 0),
         Id::History => (5, 0),
@@ -721,6 +751,9 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Gear => a.gear_rect(),
         Id::AccountMenu => a.account_menu_rect(),
+        Id::DirectOptions(k) => a.direct_options_rect(k),
+        Id::DmMenu => a.dm_menu_rect(),
+        Id::DmItem(k) => a.dm_item_rect(k),
         Id::AccountItem(k) => a.account_item_rect(k),
         Id::History => (a.list_x(), crate::theme::HEADER_H, a.list_w(), a.vh()),
         Id::Row(i) => a.row_rect(i),
@@ -886,7 +919,11 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             }
             Id::Settings(p) if p.is_toggle() => pattern == UIA_TogglePatternId,
             Id::Settings(crate::settings::SPart::Text(_)) => false,
-            Id::Settings(_) | Id::Gear | Id::AccountItem(_) => pattern == UIA_InvokePatternId,
+            Id::Settings(_)
+            | Id::Gear
+            | Id::AccountItem(_)
+            | Id::DirectOptions(_)
+            | Id::DmItem(_) => pattern == UIA_InvokePatternId,
             Id::Sign(Part::Title | Part::Message) => false,
             Id::MenuItem(_)
             | Id::NewDirect
@@ -1006,6 +1043,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::NewDirect
                         | Id::Gear
                         | Id::AccountItem(_)
+                        | Id::DirectOptions(_)
+                        | Id::DmItem(_)
                         | Id::Bar(
                             crate::directs::BarPart::Accept
                                 | crate::directs::BarPart::Decline
@@ -1024,6 +1063,10 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     (Id::Sign(Part::Title | Part::Message), _) => true,
                     (Id::Dialog(p), _) => a.dialog.as_ref().is_some_and(|d| d.enabled(p)),
                     (Id::Settings(p), _) => a.settings.as_ref().is_some_and(|s| s.enabled(p)),
+                    (Id::DmItem(k), _) => {
+                        let (on, items) = a.dm_menu_items();
+                        on && items.get(k).is_some_and(crate::directs::MenuItem::action)
+                    }
                     (Id::MenuItem(k), _) => a
                         .menu
                         .as_ref()
@@ -1178,6 +1221,8 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Settings(p) => a.settings_activate(p),
                 Id::Gear => a.toggle_account_menu(),
                 Id::AccountItem(k) => a.account_activate(k),
+                Id::DirectOptions(k) => a.toggle_dm_menu(k),
+                Id::DmItem(k) => a.dm_menu_activate(k),
                 Id::Sign(p) => a.signin_activate(Some(p)),
                 Id::MenuItem(k) => a.menu_activate(k),
                 Id::Dialog(p) => a.dialog_activate(p),
