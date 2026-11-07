@@ -1150,6 +1150,55 @@ export async function startFixture({
           state.messages.set(channelId, messages);
           created(message);
         }
+        if (body.imageMessage) {
+          // Maya posts the image at `file` in #general:
+          // `{ file, contentType?, width?, height? }` (PNG by default).
+          const image = body.imageMessage;
+          const contentType = image.contentType ?? "image/png";
+          if (!imageTypes.includes(contentType)) return reject(response, 400, "Unsupported fixture image.");
+          const data = readFileSync(image.file);
+          const id = `image${String(state.assets.size).padStart(7, "0")}`;
+          const url = `${advertised(port)}/api/assets/${id}/fixture-file`;
+          state.assets.set(id, {
+            ownerId: ids.member,
+            purpose: "attachment",
+            contentType,
+            size: data.length,
+            data,
+            url,
+          });
+          const channelId = ids.general;
+          const messages = state.messages.get(channelId) ?? [];
+          const message = {
+            id: `fixture${String(messages.length + 1).padStart(8, "0")}`,
+            channelId,
+            seq: String(BigInt(channelHead(channelId)) + 1n),
+            author: author(members[1]),
+            content: {
+              version: 1,
+              type: "text",
+              text: "",
+              attachments: [
+                {
+                  id,
+                  name: `picture.${contentType.slice("image/".length)}`,
+                  contentType,
+                  size: data.length,
+                  kind: "image",
+                  status: "ready",
+                  width: image.width ?? 640,
+                  height: image.height ?? 400,
+                  url,
+                },
+              ],
+            },
+            clientMessageId: randomUUID(),
+            createdAt: new Date().toISOString(),
+          };
+          messages.push(message);
+          state.messages.set(channelId, messages);
+          created(message);
+        }
         if (body.notification) {
           // `kind: "space.invitation"` announces the pending space invitation
           // (control `spaceInvitation`) instead of a channel message.
