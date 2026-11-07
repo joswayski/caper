@@ -5665,17 +5665,6 @@ impl CaperApp {
         })
     }
 
-    fn peer_account(peer: &model::DirectPeer) -> model::BlockedAccount {
-        model::BlockedAccount {
-            id: peer.id.clone(),
-            username: peer.username.clone(),
-            display_name: peer.display_name.clone(),
-            avatar_id: peer.avatar_id,
-            avatar_asset: peer.avatar_asset.clone(),
-            avatar_url: peer.avatar_url.clone(),
-        }
-    }
-
     /// Blocking always confirms first; unblocking does not.
     fn confirm_block(&mut self, account: model::BlockedAccount, request: Option<String>) {
         if self.protected_account(&account.id) {
@@ -13172,7 +13161,7 @@ impl CaperApp {
             if !self.protected_account(&direct.peer.id)
                 && secondary_button(ui, "Block", !busy).clicked()
             {
-                self.confirm_block(Self::peer_account(&direct.peer), Some(direct.id.clone()));
+                self.confirm_block((&direct.peer).into(), Some(direct.id.clone()));
             }
         });
         if let Some(error) = &self.request_error {
@@ -13198,7 +13187,7 @@ impl CaperApp {
             )
             .clicked()
             {
-                self.unblock(Self::peer_account(&direct.peer));
+                self.unblock((&direct.peer).into());
             }
         });
         if let Some(error) = &self.block_error {

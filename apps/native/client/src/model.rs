@@ -477,6 +477,20 @@ pub struct BlockedAccount {
     pub avatar_url: Option<String>,
 }
 
+impl From<&DirectPeer> for BlockedAccount {
+    /// The DM's other person, as Block and Unblock name them.
+    fn from(peer: &DirectPeer) -> Self {
+        Self {
+            id: peer.id.clone(),
+            username: peer.username.clone(),
+            display_name: peer.display_name.clone(),
+            avatar_id: peer.avatar_id,
+            avatar_asset: peer.avatar_asset.clone(),
+            avatar_url: peer.avatar_url.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct Blocks {
     pub blocks: Vec<BlockedAccount>,
