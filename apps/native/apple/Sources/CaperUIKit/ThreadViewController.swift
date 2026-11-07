@@ -357,7 +357,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
                            canAttach: chat.canAttach,
                            attachReason: chat.canAttach ? AttachCapacity.hint(chat.threadAttachmentDrafts.count) : chat.attachUnavailableReason,
                            canPickExpressions: ready)
-        composer.show(draft: chat.threadDraft)
+        composer.show(draft: chat.threadDraft, conversation: "\(chat.editingContext):\(chat.threadRootID ?? "")")
         composer.refreshContext()
         composer.textView.pasteAttachments = chat.canAttach ? { [weak chat] in chat?.pasteAttachments(inThread: true) ?? false } : nil
         composer.showAccessories(ready && UIKitComposerAccessories.shows(chat: chat, inThread: true)

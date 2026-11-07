@@ -4697,7 +4697,7 @@ private struct ChatView: View {
         return NativeMessageComposer(text: $chat.draft, placeholder: composerPlaceholder,
                                      controller: composerAutocomplete, mentions: mentionSource,
                                      submit: { Task { await chat.send() } },
-                                     pasteAttachments: pasteAttachments)
+                                     pasteAttachments: pasteAttachments, conversation: chat.editingContext)
             .modifier(ReplyComposerFocus(chat: chat, controller: composerAutocomplete, inThread: false))
     }
     /// `@` suggestions: the open space's members as `GET /api/spaces/{space}`
@@ -5245,7 +5245,8 @@ private struct NativeThreadView: View {
     private var threadComposer: some View {
         let paste: (() -> Bool)? = chat.canAttach ? { chat.pasteAttachments(inThread: true) } : nil
         return NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
-                                     mentions: mentions, submit: { Task { await chat.send(inThread: true) } }, pasteAttachments: paste)
+                                     mentions: mentions, submit: { Task { await chat.send(inThread: true) } }, pasteAttachments: paste,
+                                     conversation: "\(chat.editingContext):\(chat.threadRootID ?? "")")
             .modifier(ReplyComposerFocus(chat: chat, controller: composerAutocomplete, inThread: true))
     }
 }
