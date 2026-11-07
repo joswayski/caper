@@ -365,6 +365,22 @@ impl Notifications {
                 if self.mute(&Scope::Space(space.clone()), now).is_some())
     }
 
+    /// The bell-slash label for a muted space, channel or DM as of `now`
+    /// (in the zone to show times in): its own mute, or "Muted with the
+    /// space" for a channel in a muted space.
+    pub fn muted_label<Tz: TimeZone>(&self, scope: &Scope, now: &DateTime<Tz>) -> Option<String>
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        let utc = now.with_timezone(&Utc);
+        match self.mute(scope, utc) {
+            Some(mute) => Some(mute_label(mute, now)),
+            None => self
+                .muted(scope, utc)
+                .then(|| "Muted with the space".into()),
+        }
+    }
+
     /// How long until the next timed mute ends, to redraw when it does.
     pub fn next_expiry(&self, now: DateTime<Utc>) -> Option<std::time::Duration> {
         self.settings

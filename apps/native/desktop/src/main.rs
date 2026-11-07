@@ -6045,14 +6045,7 @@ impl CaperApp {
     /// The bell-slash tooltip for a muted space, channel or DM: its own mute,
     /// or "Muted with the space" for a channel in a muted space.
     fn muted_label(&self, scope: &Scope) -> Option<String> {
-        let now = chrono::Utc::now();
-        match self.notifications.mute(scope, now) {
-            Some(mute) => Some(notifications::mute_label(mute, &now.with_timezone(&Local))),
-            None => self
-                .notifications
-                .muted(scope, now)
-                .then(|| "Muted with the space".into()),
-        }
+        self.notifications.muted_label(scope, &Local::now())
     }
 
     /// A failed notification change, inline under its sidebar row.
