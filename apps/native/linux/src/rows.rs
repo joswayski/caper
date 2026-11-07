@@ -268,6 +268,42 @@ impl Original {
 }
 
 impl Row {
+    /// What a screen reader announces for the row (GTK 4.12's list item
+    /// label): "Maya, 2:15 AM, see you at noon", then its files, edits and
+    /// sending state; a blocked run reads its notice.
+    pub fn accessible_label(&self) -> String {
+        if let Some((_, notice, _)) = &self.blocked_run {
+            return notice.clone();
+        }
+        // Tags out first: links (`<a>`) are GtkLabel markup, which Pango's
+        // parser rejects. Text is escaped, so every `<` opens a tag.
+        let mut plain = String::with_capacity(self.markup.len());
+        let mut tag = false;
+        for c in self.markup.chars() {
+            match c {
+                '<' => tag = true,
+                '>' if tag => tag = false,
+                c if !tag => plain.push(c),
+                _ => {}
+            }
+        }
+        let text = pango::parse_markup(&plain, '\0')
+            .map(|(_, text, _)| text.to_string())
+            .unwrap_or_default();
+        let files = self.content.attachments.len() + usize::from(self.content.gif.is_some());
+        let mut parts = vec![self.author.clone(), self.time.clone()];
+        parts.extend((!text.trim().is_empty()).then(|| text.trim().to_owned()));
+        parts.extend(match files {
+            0 => None,
+            1 => Some("1 attachment".to_owned()),
+            n => Some(format!("{n} attachments")),
+        });
+        parts.extend(self.edited.then(|| "edited".to_owned()));
+        parts.extend(self.pending.then(|| "sending".to_owned()));
+        parts.retain(|part| !part.is_empty());
+        parts.join(", ")
+    }
+
     /// "⊘ N blocked messages — Show" for a run by blocked accounts.
     fn notice(key: String, label: String, shown: bool, author: &Author) -> Self {
         Self {
@@ -867,9 +903,9 @@ struct Widgets {
     thread_context: gtk::Button,
     /// Holds `group`, the toolbar: hover shows it, `offers` hides it.
     tools: gtk::Box,
-    /// Web's "Actions for {author}'s message" group, renamed (replaced) in
-    /// `fill`; its widget name keeps the name it was given.
-    group: RefCell<gtk::Box>,
+    /// Web's "Actions for {author}'s message" group, renamed in `fill`; its
+    /// widget name is the author it was last named for.
+    group: gtk::Box,
     quick: Vec<gtk::Button>,
     pick: gtk::Button,
     reply_button: gtk::Button,
@@ -882,8 +918,7 @@ struct Widgets {
     row: RefCell<Option<Row>>,
 }
 
-/// The toolbar as an accessible group named `name`. GTK 4.8 can't rename
-/// one safely, so `fill` builds another when the author changes.
+/// The toolbar as an accessible group named `name`.
 fn group(name: &str) -> gtk::Box {
     let xml = format!(
         "<interface><object class=\"GtkBox\" id=\"widget\"><property name=\"accessible-role\">group</property><accessibility><property name=\"label\">{}</property></accessibility></object></interface>",
@@ -893,7 +928,6 @@ fn group(name: &str) -> gtk::Box {
         .object("widget")
         .expect("a GTK box");
     group.add_css_class("tools");
-    group.set_widget_name(name);
     group
 }
 
@@ -936,10 +970,16 @@ pub fn factory(images: Rc<Images>, handler: Handler) -> gtk::SignalListItemFacto
         let widgets = Rc::new(build_widgets(&images));
         connect(&widgets, &handler);
         item.set_child(Some(&widgets.root));
+        // GTK 4.12 names list rows; 4.8 has no such property, and the row's
+        // labels carry the same text there.
+        let labelled = item.find_property("accessible-label").is_some();
         let (images, handler) = (images.clone(), handler.clone());
         item.connect_item_notify(move |item| {
             if let Some(object) = item.item().and_downcast::<glib::BoxedAnyObject>() {
                 let row = object.borrow::<Row>().clone();
+                if labelled {
+                    item.set_property("accessible-label", row.accessible_label());
+                }
                 fill(&widgets, &images, &row, &handler);
                 *widgets.row.borrow_mut() = Some(row);
             }
@@ -1213,7 +1253,7 @@ fn build_widgets(images: &Images) -> Widgets {
         replies,
         thread_context,
         tools: slot,
-        group: RefCell::new(tools),
+        group: tools,
         quick,
         pick,
         reply_button,
@@ -1607,33 +1647,31 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     {
         label.set_markup(row.replies.as_deref().unwrap_or_default());
     }
-    // Web's labels, per message (rows are recycled, so set at each fill).
-    // GTK 4.8 has no safe way to rename an accessible, but a button's
-    // `set_label` names it; its icon goes back in afterwards.
+    // Web's labels, per message (rows are recycled, so renamed when the
+    // author changes; the widget name remembers whose they are).
     let author = &row.author;
-    let name = format!("Actions for {author}'s message");
-    let old = widgets.group.borrow().clone();
-    if old.widget_name() != name {
-        let new = group(&name);
-        while let Some(child) = old.first_child() {
-            old.remove(&child);
-            new.append(&child);
+    if widgets.group.widget_name() != author.as_str() {
+        widgets.group.set_widget_name(author);
+        for (widget, text) in [
+            (
+                widgets.group.upcast_ref::<gtk::Widget>(),
+                format!("Actions for {author}'s message"),
+            ),
+            (
+                widgets.thread_button.upcast_ref(),
+                format!("Reply in thread to {author}"),
+            ),
+            (
+                widgets.reply_button.upcast_ref(),
+                format!("Reply to {author}"),
+            ),
+            (
+                widgets.more.upcast_ref(),
+                format!("Message actions for {author}"),
+            ),
+        ] {
+            crate::app::rename(widget, &text);
         }
-        widgets.tools.remove(&old);
-        widgets.tools.append(&new);
-        *widgets.group.borrow_mut() = new;
-    }
-    for (button, text) in [
-        (
-            &widgets.thread_button,
-            format!("Reply in thread to {author}"),
-        ),
-        (&widgets.reply_button, format!("Reply to {author}")),
-        (&widgets.more, format!("Message actions for {author}")),
-    ] {
-        let icon = button.child();
-        button.set_label(&text);
-        button.set_child(icon.as_ref());
     }
     let offers = row.offers;
     widgets.tools.set_visible(offers.act);
@@ -1716,6 +1754,34 @@ mod tests {
                 insert: 2..3
             }]
         );
+    }
+
+    #[test]
+    fn rows_are_named_by_author_time_and_plain_text() {
+        let mut message = row("a", "see <b>you</b> at noon &amp; bring <i>snacks</i>");
+        message.time = "2:15 AM".into();
+        assert_eq!(
+            message.accessible_label(),
+            "Maya, 2:15 AM, see you at noon & bring snacks"
+        );
+        let maya = Mention {
+            kind: "user".into(),
+            id: Some("id".into()),
+            username: Some("maya".into()),
+        };
+        // A mention pill and a link: both `<a>` tags.
+        message.markup = crate::markup::message("hi @maya, see www.caper.chat", &[maya]);
+        assert!(message.markup.contains("<a href"));
+        assert_eq!(
+            message.accessible_label(),
+            "Maya, 2:15 AM, hi @maya, see www.caper.chat"
+        );
+        message.markup.clear();
+        message.edited = true;
+        message.pending = true;
+        assert_eq!(message.accessible_label(), "Maya, 2:15 AM, edited, sending");
+        message.blocked_run = Some(("k".into(), "2 blocked messages".into(), false));
+        assert_eq!(message.accessible_label(), "2 blocked messages");
     }
 
     #[test]

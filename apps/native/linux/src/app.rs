@@ -99,6 +99,22 @@ pub fn named<T: IsA<glib::Object>>(class: &str, name: &str) -> T {
         .expect("a GTK widget class")
 }
 
+/// Gives an existing widget the accessible name `name`, the same way: a
+/// template's `<accessibility>` element applied to it.
+pub fn rename(widget: &gtk::Widget, name: &str) {
+    let class = widget.type_();
+    let parent = class.parent().unwrap_or(gtk::Widget::static_type());
+    let xml = format!(
+        "<interface><template class=\"{}\" parent=\"{}\"><accessibility><property name=\"label\">{}</property></accessibility></template></interface>",
+        class.name(),
+        parent.name(),
+        glib::markup_escape_text(name)
+    );
+    if let Err(error) = gtk::Builder::new().extend_with_template(widget, class, &xml) {
+        eprintln!("caper: could not rename a widget: {error}");
+    }
+}
+
 /// Direct messages rows that aren't DMs: your notes before they exist, and
 /// New message. Neither is a valid conversation id.
 const SELF_NOTES: &str = "\u{0}self-notes";
