@@ -6,6 +6,7 @@ import CaperCore
     static let railWidth: CGFloat = 60
     private let model: AppModel
     var show: ((WorkspaceSheet) -> Void)?
+    var showActivity: (() -> Void)?
     var leaveChannel: ((Channel) -> Void)?
     var block: ((BlockTarget) -> Void)?
     private let observation = NativeObservation()
@@ -29,6 +30,7 @@ import CaperCore
     private var externalCards: [String: NativeVoiceCard] = [:]
     private var externalOrder: [NativeVoiceCard] = []
     private lazy var voicePanels = NativeVoicePanels(model: model)
+    private lazy var activity = NativeActivityEntry { [weak self] in self?.showActivity?() }
     private lazy var requests = NativeButton("") { [weak self] in
         guard let self else { return }; self.model.showingMessageRequests.toggle()
     }
@@ -203,6 +205,8 @@ import CaperCore
             })
         }
         addRow(NativeStyle.label("Direct messages", size: 12, bold: true), height: 28)
+        activity.update(unread: AppKitWorkspacePresenter.activityUnread(model))
+        addRow(activity, height: 36)
         var nextRequests: [String: NativeButton] = [:]
         if !model.messageRequests.isEmpty {
             requests.title = "\(model.showingMessageRequests ? "⌄" : "›")  Message requests  \(model.messageRequests.count)"
@@ -399,6 +403,42 @@ import CaperCore
     }
 
     func controlTextDidChange(_ notification: Notification) { render() }
+}
+
+/// The unread count belongs to the same action, not a second focus stop.
+private final class NativeActivityEntry: NativeView {
+    private let open: NativeButton
+    private let count = NativeStyle.label("", size: 13)
+
+    init(action: @escaping () -> Void) {
+        open = NativeButton("Notifications", action: action)
+        super.init()
+        open.image = NSImage(systemSymbolName: "bell", accessibilityDescription: nil)
+        open.imagePosition = .imageLeft; open.alignment = .left
+        open.font = NativeStyle.font(13); open.profileFeedback = true
+        open.layer?.backgroundColor = NSColor.clear.cgColor
+        open.setAccessibilityIdentifier("activity-inbox")
+        count.textColor = NativeStyle.accent; count.alignment = .right
+        count.setAccessibilityElement(false)
+        addSubview(open); addSubview(count)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func update(unread: Int) {
+        count.stringValue = unread > 0 ? String(unread) : ""
+        open.setAccessibilityValue("\(unread) unread")
+        needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        open.frame = bounds
+        let width = count.cell?.cellSize.width ?? 0
+        count.frame = NSRect(x: bounds.width - width - 6, y: (bounds.height - 20) / 2, width: width, height: 20)
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard super.hitTest(point) != nil else { return nil }
+        return open
+    }
 }
 
 /// A channel or DM keeps its own options separate from opening the conversation.
