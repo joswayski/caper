@@ -1059,10 +1059,13 @@ final class CaperUIKitParityTests: XCTestCase {
         return app
     }
 
+    /// The pairs need the shipping SwiftUI app on the same simulator. XCUITest
+    /// can't tell an uninstalled app from a stopped one, so the run says so:
+    /// `CAPER_PARITY_SWIFTUI=1 uikit.sh test` (TEST_RUNNER_CAPER_PARITY_SWIFTUI=1 for xcodebuild).
     private func requireSwiftUI() throws {
-        let app = XCUIApplication(bundleIdentifier: Self.swiftUI)
-        // An app that is not installed reports .unknown before any launch.
-        if app.state == .unknown { throw XCTSkip("Install the SwiftUI iOS app (chat.caper.ios) on this simulator to capture references.") }
+        guard ProcessInfo.processInfo.environment["CAPER_PARITY_SWIFTUI"] == "1" else {
+            throw XCTSkip("Install the SwiftUI iOS app (chat.caper.ios) on this simulator and set CAPER_PARITY_SWIFTUI=1 to capture references.")
+        }
     }
 
     private func capture(_ name: String) {

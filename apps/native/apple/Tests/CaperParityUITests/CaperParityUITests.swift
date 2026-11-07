@@ -332,6 +332,12 @@ final class CaperParityUITests: XCTestCase {
     /// test while the abandoned test keeps driving the app, hanging the suite.
     /// Throwing ends the test normally and lets its cleanup run.
     @discardableResult
+    /// A message's thread link. Its label reads "View thread, unread" while
+    /// the thread has replies the reader hasn't seen.
+    private func threadLink(in element: XCUIElement) -> XCUIElement {
+        element.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "View thread")).firstMatch
+    }
+
     private func require(_ element: XCUIElement, timeout: TimeInterval, _ message: String,
                          line: UInt = #line) throws -> XCUIElement {
         guard element.waitForExistence(timeout: timeout) else {
@@ -437,7 +443,7 @@ final class CaperParityUITests: XCTestCase {
         // not to wrap on the hosted Mac. Wrapping legitimately grows the editor.
         try hideMembers(in: app)
         for inThread in [false, true] {
-            if inThread { try require(root.buttons["View thread"], timeout: 5, "Missing thread link").click() }
+            if inThread { try require(threadLink(in: root), timeout: 5, "Missing thread link").click() }
             let timeline = try require(app.scrollViews[inThread ? "thread-timeline" : "chat-timeline"], timeout: 5,
                                        "Missing conversation viewport")
             let composer = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", inThread ? "Reply to thread" : "Message #")).firstMatch,
@@ -1000,7 +1006,7 @@ final class CaperParityUITests: XCTestCase {
         capture("thread-reply-actions-fixture", app: app)
         replyActions.buttons["Copy text"].tap()
         try require(app.buttons["Back to channel"], timeout: 5, "Missing thread navigation").tap()
-        try require(app.buttons["View thread"], timeout: 5, "Existing thread links must remain available")
+        try require(threadLink(in: app), timeout: 5, "Existing thread links must remain available")
         XCTAssertFalse(app.buttons["Reply in thread"].exists)
     }
     #endif
@@ -1210,7 +1216,7 @@ final class CaperParityUITests: XCTestCase {
         try hideMembers(in: app)
         let selectedRow = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
                                       "Missing fixture thread root")
-        try require(selectedRow.buttons["View thread"], timeout: 5, "Missing existing thread link").click()
+        try require(threadLink(in: selectedRow), timeout: 5, "Missing existing thread link").click()
         try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
 
         // Focusing the list must not outline every descendant link. Clicking a
@@ -1229,7 +1235,7 @@ final class CaperParityUITests: XCTestCase {
         for rootID in ["chan00000001m02", "chan00000001m03"] {
             let row = try require(app.descendants(matching: .any)["message-row-\(rootID)"], timeout: 5,
                                   "Missing unrelated thread root")
-            let link = try require(row.buttons["View thread"], timeout: 5, "Missing unrelated thread link")
+            let link = try require(threadLink(in: row), timeout: 5, "Missing unrelated thread link")
             XCTAssertTrue(link.isHittable)
             let x = Int((link.frame.midX - window.frame.minX) * scaleX)
             let y = Int((link.frame.minY - window.frame.minY) * scaleY)
@@ -2216,7 +2222,7 @@ final class CaperParityUITests: XCTestCase {
         app.launch(); launchedApp = app
         func openThread(_ application: XCUIApplication) throws {
             let row = try require(application.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30, "Missing thread root")
-            try require(row.buttons["View thread"], timeout: 5, "Missing thread link").click()
+            try require(threadLink(in: row), timeout: 5, "Missing thread link").click()
         }
         // Members would take the room the thread widens into; it opens again on relaunch.
         try hideMembers(in: app)
