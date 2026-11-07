@@ -1445,23 +1445,25 @@ final class CaperParityUITests: XCTestCase {
         let drawer = try require(app.otherElements["attach-drawer"], timeout: 5, "Missing attachment drawer")
         XCTAssertEqual(drawer.frame.minX, app.frame.minX, accuracy: 1, "The collapsed drawer reaches the left edge")
         XCTAssertEqual(drawer.frame.maxX, app.frame.maxX, accuracy: 1, "The collapsed drawer reaches the right edge")
-        let collapsedHeight = drawer.frame.height
         capture("attach-drawer-open", app: app)
-        app.buttons["attach-drawer-resize"].tap()
-        // A block predicate: a "frame.height" key path can't be read from the
-        // element's boxed CGRect, so that wait never succeeded.
-        func height(_ test: @escaping (CGFloat) -> Bool) -> XCTNSPredicateExpectation {
+        // The drawer element keeps its first height, so follow its handle, which
+        // rises with the panel. A block predicate: a "frame.minY" key path can't be
+        // read from the element's boxed CGRect.
+        let handle = app.buttons["attach-drawer-resize"]
+        let collapsedTop = handle.frame.minY
+        handle.tap()
+        func top(_ test: @escaping (CGFloat) -> Bool) -> XCTNSPredicateExpectation {
             XCTNSPredicateExpectation(predicate: NSPredicate { element, _ in
-                (element as? XCUIElement).map { test($0.frame.height) } ?? false
-            }, object: drawer)
+                (element as? XCUIElement).map { test($0.frame.minY) } ?? false
+            }, object: handle)
         }
-        let expanded = height { $0 > collapsedHeight + 40 }
+        let expanded = top { $0 < collapsedTop - 40 }
         XCTAssertEqual(XCTWaiter.wait(for: [expanded], timeout: 5), .completed)
         XCTAssertEqual(drawer.frame.minX, app.frame.minX, accuracy: 1)
         XCTAssertEqual(drawer.frame.maxX, app.frame.maxX, accuracy: 1)
         capture("attach-drawer-expanded", app: app)
         app.buttons["attach-drawer-resize"].tap()
-        let collapsed = height { $0 <= collapsedHeight + 1 }
+        let collapsed = top { $0 >= collapsedTop - 1 }
         XCTAssertEqual(XCTWaiter.wait(for: [collapsed], timeout: 5), .completed)
         guard tiles.count >= 2 else { return }
         tiles.element(boundBy: 1).tap()
@@ -1476,8 +1478,8 @@ final class CaperParityUITests: XCTestCase {
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Attached 1"), object: tiles.element(boundBy: 0))
         XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 5), .completed, "The remaining file moves up to first")
         // A real drag: XCUITest's swipeDown travels too little for the close threshold.
-        let handle = app.buttons["attach-drawer-resize"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        handle.press(forDuration: 0.05, thenDragTo: handle.withOffset(CGVector(dx: 0, dy: 300)), withVelocity: .fast, thenHoldForDuration: 0)
+        let grip = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        grip.press(forDuration: 0.05, thenDragTo: grip.withOffset(CGVector(dx: 0, dy: 300)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(drawer.waitForNonExistence(timeout: 5), "Dragging down from the collapsed drawer dismisses it")
     }
     #endif
