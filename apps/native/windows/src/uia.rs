@@ -104,6 +104,9 @@ pub enum Id {
     ThreadPart(TPart),
     /// A channel's Join, or your call's card and its buttons.
     Voice(crate::call::VPart),
+    /// An invited space's rail tile, Join with invite link, or a
+    /// private channel invitation in the sidebar.
+    Invite(crate::invites::Spot),
 }
 
 fn na() -> Error {
@@ -253,7 +256,15 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .picker
             .as_ref()
             .map_or_else(Vec::new, |p| p.parts().into_iter().map(Id::Pick).collect()),
-        Id::Rail => (0..a.c.spaces.len()).map(Id::Space).collect(),
+        Id::Rail => (0..a.c.spaces.len())
+            .map(Id::Space)
+            .chain(
+                a.invite_spots()
+                    .into_iter()
+                    .filter(|s| !matches!(s, crate::invites::Spot::Channel(_)))
+                    .map(Id::Invite),
+            )
+            .collect(),
         Id::Channels => a
             .space_scope()
             .map(|_| Id::SpaceOptions)
@@ -266,6 +277,12 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                     )
                     .chain(a.channel_scope(i).map(|_| Id::ChannelOptions(i)))
             }))
+            .chain(
+                a.invite_spots()
+                    .into_iter()
+                    .filter(|s| matches!(s, crate::invites::Spot::Channel(_)))
+                    .map(Id::Invite),
+            )
             .collect(),
         Id::Directs => std::iter::once(Id::NewDirect)
             .chain(a.direct_rows().iter().enumerate().flat_map(|(k, r)| {
@@ -311,6 +328,8 @@ fn parent(id: Id) -> Option<Id> {
     Some(match id {
         Id::Root => return None,
         Id::Space(_) => Id::Rail,
+        Id::Invite(crate::invites::Spot::Channel(_)) => Id::Channels,
+        Id::Invite(_) => Id::Rail,
         Id::Channel(_)
         | Id::ChannelOptions(_)
         | Id::SpaceOptions
@@ -364,6 +383,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Direct(k) => k < a.direct_rows().len(),
         Id::Member(i) => i < a.c.members.len(),
         Id::Space(i) => i < a.c.spaces.len(),
+        Id::Invite(s) => a.invite_spots().contains(&s),
         Id::Sign(p) => a.signin.as_ref().is_some_and(|s| s.part_rect(p).is_some()),
         Id::Dialog(p) => a.dialog.as_ref().is_some_and(|d| d.part_rect(p).is_some()),
         Id::Menu => a.menu.is_some() && a.dialog.is_none(),
@@ -437,6 +457,7 @@ fn name(a: &App, id: Id) -> String {
         ),
         Id::Directs => "Direct messages".into(),
         Id::NewDirect => "New direct message".into(),
+        Id::Invite(s) => a.invite_name(s),
         Id::Bar(p) => a.dm_bar().map_or_else(String::new, |b| b.label(p)),
         Id::Rec(p) => a.rec_label(p),
         Id::Waiting => a.note.as_ref().map_or_else(String::new, |(t, _)| t.clone()),
@@ -540,15 +561,17 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Note => d.note(),
                 DPart::Field if d.kind == Kind::StartDirect => "Username".into(),
                 DPart::Field if d.kind == Kind::Browse => "Search channels".into(),
+                DPart::Field if d.kind == Kind::JoinInvite => "Invite link".into(),
+                DPart::Preview => d.preview_label(),
                 DPart::Hint if d.kind == Kind::Browse => d.browse_empty().into(),
                 DPart::Channel(k) => d.browse_row_name(k),
                 DPart::Field => "Message".into(),
-                DPart::Hint if d.kind == Kind::StartDirect => {
-                    d.recipient_label().unwrap_or_default()
+                DPart::Hint if matches!(d.kind, Kind::StartDirect | Kind::Invitation) => {
+                    d.hint_text()
                 }
                 DPart::Error => d.error.clone().unwrap_or_default(),
                 DPart::Reload => "Discard draft and load latest".into(),
-                DPart::Cancel => "Cancel".into(),
+                DPart::Cancel => d.cancel_label().into(),
                 DPart::Primary => d.primary_label().into(),
                 DPart::Suggest(k) => d.suggestion_name(k),
                 DPart::Version(k) if d.version_selected(k) => {
@@ -645,9 +668,12 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Older | Id::Newer(_) => UIA_ButtonControlTypeId,
         Id::Original(_) | Id::Embed(..) => UIA_HyperlinkControlTypeId,
         Id::Edited(_) | Id::File(..) | Id::BoxPart(_) => UIA_ButtonControlTypeId,
-        Id::Tool(..) | Id::MenuClose | Id::Pick(_) | Id::ReplyCancel | Id::NewDirect => {
-            UIA_ButtonControlTypeId
-        }
+        Id::Tool(..)
+        | Id::MenuClose
+        | Id::Pick(_)
+        | Id::ReplyCancel
+        | Id::NewDirect
+        | Id::Invite(_) => UIA_ButtonControlTypeId,
         Id::Bar(crate::directs::BarPart::Text | crate::directs::BarPart::Error) | Id::Waiting => {
             UIA_TextControlTypeId
         }
@@ -682,7 +708,8 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
             | DPart::Column(_)
             | DPart::Choose
             | DPart::Hint
-            | DPart::Loading,
+            | DPart::Loading
+            | DPart::Preview,
         ) => UIA_TextControlTypeId,
         Id::Dialog(_) => UIA_ButtonControlTypeId,
         Id::Sign(_) | Id::Control(..) => UIA_ButtonControlTypeId,
@@ -699,6 +726,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Directs => (34, 0),
         Id::Direct(k) => (35, k),
         Id::NewDirect => (36, 0),
+        Id::Invite(s) => (50, s.index()),
         Id::Bar(p) => (37, p.index()),
         Id::Rec(p) => (49, p.index()),
         Id::Settings(p) => (38, p.index()),
@@ -814,6 +842,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Directs => a.directs_rect(a.direct_rows().len()),
         Id::Direct(k) => a.direct_rect(k),
         Id::NewDirect => a.new_direct_rect(),
+        Id::Invite(s) => a.invite_rect(s),
         Id::Bar(p) => a
             .bar_parts()
             .into_iter()
@@ -1018,6 +1047,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             Id::Rec(p) => p.button() && pattern == UIA_InvokePatternId,
             Id::MenuItem(_)
             | Id::NewDirect
+            | Id::Invite(_)
             | Id::Bar(
                 crate::directs::BarPart::Accept
                 | crate::directs::BarPart::Decline
@@ -1134,6 +1164,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::Channel(_)
                         | Id::Direct(_)
                         | Id::NewDirect
+                        | Id::Invite(_)
                         | Id::Gear
                         | Id::AccountItem(_)
                         | Id::DirectOptions(_)
@@ -1323,6 +1354,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Channel(i) => a.select_channel(i),
                 Id::Direct(k) => a.open_direct_row(k),
                 Id::NewDirect => a.open_start_direct(),
+                Id::Invite(s) => a.invite_activate(s),
                 Id::Bar(p) => a.bar_activate(p),
                 Id::Rec(p) => a.rec_activate(p),
                 Id::Settings(p) => a.settings_activate(p),
@@ -2057,9 +2089,13 @@ fn editable() -> Id {
             a.thread.as_ref().is_some_and(|t| t.composer.focused),
         )
     }) {
-        Some((Some(Kind::Edit | Kind::StartDirect | Kind::Browse), _, _, _, _)) => {
-            Id::Dialog(DPart::Field)
-        }
+        Some((
+            Some(Kind::Edit | Kind::StartDirect | Kind::Browse | Kind::JoinInvite),
+            _,
+            _,
+            _,
+            _,
+        )) => Id::Dialog(DPart::Field),
         Some((_, true, _, _, _)) => Id::Sign(Part::Field),
         Some((_, _, true, _, _)) => Id::Pick(PPart::Search),
         Some((_, _, _, true, _)) => Id::Gif(GPart::Search),

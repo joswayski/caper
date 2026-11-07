@@ -250,6 +250,11 @@ pub enum Kind {
     LeaveChannel,
     /// Browse channels: the open space's channels under a search.
     Browse,
+    /// Join with invite link: a pasted link, then its space's preview.
+    JoinInvite,
+    /// "You\u{2019}re invited!" to a space, or a private channel's
+    /// invitation: Decline or Accept invitation.
+    Invitation,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -278,6 +283,8 @@ pub enum Part {
     Suggest(usize),
     /// Browse's shown channel `k`.
     Channel(usize),
+    /// The invite link's space, who invited you and what joining opens.
+    Preview,
 }
 
 impl Part {
@@ -297,6 +304,7 @@ impl Part {
             Self::Loading => 10,
             Self::Retry => 11,
             Self::Older => 12,
+            Self::Preview => 13,
             Self::Column(k) => 16 + k as usize,
             Self::Version(k) => 32 + k,
             Self::Suggest(k) => 10_000 + k,
@@ -369,6 +377,11 @@ pub struct Dialog {
     pub leave: Option<Leave>,
     /// What Browse channels lists.
     pub browse: Option<Box<crate::browse::Browse>>,
+    /// The invite link's preview, once the pasted link checked out.
+    pub invite: Option<Box<caper_client::invites::InvitePreview>>,
+    /// The invitation answered, and whether Decline was the answer.
+    pub invitation: Option<Box<crate::live::Invitation>>,
+    pub declining: bool,
     pub(crate) parts: Vec<(Part, Rect)>,
     pub(crate) card: Rect,
 }
@@ -438,6 +451,9 @@ impl Dialog {
             block: None,
             leave: None,
             browse: None,
+            invite: None,
+            invitation: None,
+            declining: false,
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -460,6 +476,7 @@ impl Dialog {
                     .map_or("", |(a, _)| a.display_name.as_str())
             ),
             Kind::Browse => "Browse channels".into(),
+            Kind::JoinInvite | Kind::Invitation => self.invite_title().into(),
             Kind::LeaveSpace | Kind::LeaveChannel => {
                 let name = self.leave.as_ref().map_or("", |l| l.name.as_str());
                 if self.kind == Kind::LeaveChannel {
@@ -489,6 +506,7 @@ impl Dialog {
                 "Find conversations in {}. Previewing a channel doesn\u{2019}t join it.",
                 self.browse.as_ref().map_or("", |b| b.space_name.as_str())
             ),
+            Kind::JoinInvite | Kind::Invitation => self.invite_note(),
             Kind::LeaveSpace => "You will lose access to its channels and conversations. An owner can add you again later.".into(),
             Kind::LeaveChannel if self.leave.as_ref().is_some_and(|l| l.private) => {
                 "You\u{2019}ll lose access and need another invitation to return. You\u{2019}ll disconnect from this channel\u{2019}s voice call.".into()
@@ -573,6 +591,7 @@ impl Dialog {
             (Kind::LeaveSpace, false) => "Leave space",
             (Kind::LeaveChannel, false) => "Leave channel",
             (Kind::LeaveSpace | Kind::LeaveChannel, true) => "Leaving\u{2026}",
+            (Kind::JoinInvite | Kind::Invitation, _) => self.invite_primary(),
         }
     }
 
@@ -595,6 +614,10 @@ impl Dialog {
                         Kind::Delete | Kind::Block | Kind::LeaveSpace | Kind::LeaveChannel => true,
                         Kind::History | Kind::Browse => false,
                         Kind::StartDirect => self.draft().len() >= 3,
+                        Kind::JoinInvite => {
+                            self.invite.is_some() || !self.draft().trim().is_empty()
+                        }
+                        Kind::Invitation => true,
                     }
             }
             Part::Cancel | Part::Reload | Part::Field | Part::Suggest(_) | Part::Channel(_) => {
@@ -609,7 +632,8 @@ impl Dialog {
             | Part::Choose
             | Part::Version(_)
             | Part::Hint
-            | Part::Loading => true,
+            | Part::Loading
+            | Part::Preview => true,
         }
     }
 
@@ -688,13 +712,39 @@ impl Dialog {
         let title = layout(g, &self.title(), &g.formats.dialog_title, inner)?;
         parts.push((Part::Title, (0.0, y, inner, height(&title))));
         y += height(&title) + 4.0;
+        if self.kind == Kind::Invitation {
+            y += 8.0;
+            let l = layout(g, &self.hint_text(), &g.formats.direct_name, inner)?;
+            parts.push((Part::Hint, (0.0, y, inner, height(&l))));
+            y += height(&l) + 4.0;
+        }
         let note_format = match self.kind {
             Kind::Delete => &g.formats.note,
             _ => &g.formats.dialog_note,
         };
-        let note = layout(g, &self.note(), note_format, inner)?;
-        parts.push((Part::Note, (0.0, y, inner, height(&note))));
-        y += height(&note);
+        let note_text = self.note();
+        if !note_text.is_empty() {
+            let note = layout(g, &note_text, note_format, inner)?;
+            parts.push((Part::Note, (0.0, y, inner, height(&note))));
+            y += height(&note);
+        }
+        if self.kind == Kind::JoinInvite {
+            y += 12.0;
+            if self.invite.is_some() {
+                let h = self.preview_height(g, inner)?;
+                parts.push((Part::Preview, (0.0, y, inner, h)));
+                y += h;
+            } else {
+                self.field.relayout_with(
+                    g,
+                    &g.formats.composer,
+                    15.0,
+                    inner - 2.0 * FIELD_PAD_X,
+                )?;
+                parts.push((Part::Field, (0.0, y, inner, DIRECT_FIELD_H)));
+                y += DIRECT_FIELD_H;
+            }
+        }
         if self.kind == Kind::Edit {
             y += 12.0;
             self.field
@@ -741,7 +791,7 @@ impl Dialog {
         y += 20.0;
         let primary = layout(g, self.primary_label(), &g.formats.button, 1e6)?;
         let pw = (width(&primary) + 24.0).max(112.0);
-        let cancel = layout(g, "Cancel", &g.formats.button, 1e6)?;
+        let cancel = layout(g, self.cancel_label(), &g.formats.button, 1e6)?;
         let cw = width(&cancel) + 24.0;
         parts.push((Part::Cancel, (inner - pw - 8.0 - cw, y, cw, BUTTON_H)));
         parts.push((Part::Primary, (inner - pw, y, pw, BUTTON_H)));
@@ -759,7 +809,7 @@ impl Dialog {
         self.parts = parts;
         if let Some((fx, fy, _, fh)) = self.part_rect(Part::Field) {
             let pad = match self.kind {
-                Kind::StartDirect => (fh - LINE) / 2.0,
+                Kind::StartDirect | Kind::JoinInvite => (fh - LINE) / 2.0,
                 _ => FIELD_PAD_Y,
             };
             self.field_origin = (fx + FIELD_PAD_X, fy + pad);
@@ -828,6 +878,13 @@ impl Dialog {
                             Kind::StartDirect => {
                                 Some(layout(g, "Username", &g.formats.composer, 1e6)?)
                             }
+                            // web's and egui's example under an empty field.
+                            Kind::JoinInvite => Some(layout(
+                                g,
+                                "it looks like \u{2192} caper.chat/invite/AbCdE12345",
+                                &g.formats.composer,
+                                1e6,
+                            )?),
                             _ => None,
                         };
                         self.field.draw_text(
@@ -850,10 +907,14 @@ impl Dialog {
                         }
                     }
                     Part::Hint => {
-                        let label = self.recipient_label().unwrap_or_default();
-                        let l = layout(g, &label, &g.formats.dialog_note, pw)?;
+                        let format = match self.kind {
+                            Kind::Invitation => &g.formats.direct_name,
+                            _ => &g.formats.dialog_note,
+                        };
+                        let l = layout(g, &self.hint_text(), format, pw)?;
                         crate::text::draw(dc, &l, x, y, &g.brushes.text);
                     }
+                    Part::Preview => self.draw_preview(g, dc, (x, y, pw, ph))?,
                     Part::Error => {
                         let l = layout(
                             g,
@@ -871,9 +932,14 @@ impl Dialog {
                         (x, y, pw, ph),
                         Tone::Secondary,
                     )?,
-                    Part::Cancel => {
-                        self.button(g, dc, *part, "Cancel", (x, y, pw, ph), Tone::Secondary)?
-                    }
+                    Part::Cancel => self.button(
+                        g,
+                        dc,
+                        *part,
+                        self.cancel_label(),
+                        (x, y, pw, ph),
+                        Tone::Secondary,
+                    )?,
                     Part::Primary => {
                         let tone = match self.kind {
                             // Leaving a channel is neutral, as on web.
@@ -1103,7 +1169,10 @@ impl App {
 
     pub(crate) fn open_dialog(&mut self, d: Dialog) {
         self.set_composer_focus(false);
-        let editing = matches!(d.kind, Kind::Edit | Kind::StartDirect | Kind::Browse);
+        let editing = matches!(
+            d.kind,
+            Kind::Edit | Kind::StartDirect | Kind::Browse | Kind::JoinInvite
+        );
         self.dialog = Some(d);
         if editing {
             unsafe {
@@ -1142,6 +1211,14 @@ impl App {
             if d.kind == Kind::StartDirect {
                 d.username_changed(self.live.as_ref());
             }
+            // Editing the link clears why the last one failed.
+            if d.kind == Kind::JoinInvite {
+                let typed = d.draft();
+                if typed != d.resolved {
+                    d.error = None;
+                    d.resolved = typed;
+                }
+            }
             d.field.caret_on = true;
             if let Err(e) = d.relayout(g, w, h) {
                 eprintln!("dialog layout failed: {e:?}");
@@ -1160,6 +1237,34 @@ impl App {
             return;
         }
         match part {
+            Part::Primary | Part::Cancel if d.kind == Kind::Invitation => {
+                let (Some(live), Some(invitation)) = (&mut self.live, d.invitation.as_deref())
+                else {
+                    return;
+                };
+                d.busy = true;
+                d.declining = part == Part::Cancel;
+                d.error = None;
+                live.answer_invitation(invitation, part == Part::Primary);
+            }
+            Part::Primary if d.kind == Kind::JoinInvite => {
+                let Some(live) = &mut self.live else { return };
+                d.error = None;
+                match d.invite.as_ref().map(|p| p.code.clone()) {
+                    Some(code) => {
+                        d.busy = true;
+                        d.creating = true;
+                        d.request = live.join_invite(code);
+                    }
+                    None => match caper_client::invites::invite_code(&d.draft()) {
+                        Some(code) => {
+                            d.busy = true;
+                            d.request = live.preview_invite(code);
+                        }
+                        None => d.error = Some(caper_client::invites::INVALID_LINK.into()),
+                    },
+                }
+            }
             Part::Cancel | Part::Close => return self.close_dialog(),
             Part::Version(k) => {
                 if let Some(v) = &mut d.history {
@@ -1231,7 +1336,8 @@ impl App {
             | Part::Column(_)
             | Part::Choose
             | Part::Hint
-            | Part::Loading => {}
+            | Part::Loading
+            | Part::Preview => {}
         }
         self.dialog_changed();
         if let Err(e) = self.drain_live() {
@@ -1350,20 +1456,22 @@ impl App {
         self.dialog_changed();
     }
 
-    /// The Leave dialog's leave finished: it closes (the app has moved
-    /// on), or says why not.
+    /// The Leave or invitation dialog's request finished: it closes (the
+    /// app has moved on), or says why not.
     pub fn left(&mut self, error: Option<String>) {
-        let Some(d) = self
-            .dialog
-            .as_mut()
-            .filter(|d| matches!(d.kind, Kind::LeaveSpace | Kind::LeaveChannel) && d.busy)
-        else {
+        let Some(d) = self.dialog.as_mut().filter(|d| {
+            matches!(
+                d.kind,
+                Kind::LeaveSpace | Kind::LeaveChannel | Kind::Invitation
+            ) && d.busy
+        }) else {
             return;
         };
         match error {
             None => return self.close_dialog(),
             Some(e) => {
                 d.busy = false;
+                d.declining = false;
                 d.error = Some(e);
             }
         }
@@ -1583,7 +1691,7 @@ impl App {
                     }
                     // Ctrl+Enter saves, as in the egui client; Enter finds or
                     // opens the New DM's person.
-                    VK_RETURN if ctrl || d.kind == Kind::StartDirect => {
+                    VK_RETURN if ctrl || matches!(d.kind, Kind::StartDirect | Kind::JoinInvite) => {
                         self.dialog_activate(Part::Primary)
                     }
                     VK_RETURN if d.kind == Kind::Edit && d.field.focused && !d.busy => {
@@ -1598,7 +1706,8 @@ impl App {
                     }
                     _ if d.field.focused
                         && !d.busy
-                        && d.field.edit_key(hwnd, vk, ctrl, shift, true) =>
+                        && d.field
+                            .edit_key(hwnd, vk, ctrl, shift, d.kind == Kind::Edit) =>
                     {
                         self.dialog_changed();
                     }
@@ -1608,8 +1717,10 @@ impl App {
             }
             WM_CHAR => {
                 let c = wp.0 as u16;
-                if matches!(d.kind, Kind::Edit | Kind::StartDirect | Kind::Browse)
-                    && d.field.focused
+                if matches!(
+                    d.kind,
+                    Kind::Edit | Kind::StartDirect | Kind::Browse | Kind::JoinInvite
+                ) && d.field.focused
                     && !d.busy
                     && !ctrl
                     && c >= 0x20

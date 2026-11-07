@@ -943,9 +943,10 @@ impl App {
             .map_or_else(Vec::new, Live::direct_rows)
     }
 
-    /// The section's top, under the channels.
+    /// The section's top, under the channels and channel invitations.
     pub fn directs_top(&self) -> f32 {
-        CHANNEL_TOP + CHANNEL_H * self.c.channels.len() as f32
+        // Under the channels and their invitations.
+        self.invites_top() + self.invites_h()
     }
 
     /// Row `k`'s rectangle in client DIPs.

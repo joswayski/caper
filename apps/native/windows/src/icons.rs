@@ -38,6 +38,8 @@ icons! {
     Hash => "hash.svg",
     Headphones => "headphones.svg",
     History => "history.svg",
+    Link => "link.svg",
+    Lock => "lock.svg",
     Mic => "mic.svg",
     MicOff => "mic-off.svg",
     More => "ellipsis.svg",

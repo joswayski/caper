@@ -24,6 +24,7 @@ mod embeds;
 mod emoji;
 mod files;
 mod gifs;
+mod invites;
 mod overlay;
 mod playback;
 mod preview;
@@ -249,6 +250,9 @@ pub struct App {
     hover_member: Option<usize>,
     /// The sidebar's DM row under the pointer.
     hover_direct: Option<directs::Spot>,
+    /// The invitation tile, Join with invite link or channel
+    /// invitation under the pointer.
+    hover_invite: Option<invites::Spot>,
     /// A channel row's Join or a call card button under the pointer.
     voice_hover: Option<call::VPart>,
     /// The request bar's hovered and pressed buttons.
@@ -463,6 +467,7 @@ impl App {
                 space_options_hover: false,
                 hover_member: None,
                 hover_direct: None,
+                hover_invite: None,
                 bar_hover: None,
                 bar_pressed: None,
                 settings: None,
@@ -693,6 +698,11 @@ impl App {
                 live::Update::Blocked(error) => self.blocked(error),
                 live::Update::Left(error) => self.left(error),
                 live::Update::Joining => self.bar_changed(),
+                live::Update::InviteLink { request, result } => self.invite_link(request, result),
+                live::Update::Invitation(invitation) => {
+                    self.open_dialog(overlay::Dialog::invitation(invitation));
+                }
+                live::Update::Invitations => self.invitations_changed(),
                 live::Update::Settings => {
                     if self.settings.is_some() {
                         self.settings_changed();
@@ -1192,7 +1202,14 @@ impl App {
     fn focused_field_mut(&mut self) -> Option<&mut Composer> {
         if let Some(d) = &mut self.dialog {
             return Some(&mut d.field).filter(|f| {
-                f.focused && matches!(d.kind, overlay::Kind::Edit | overlay::Kind::StartDirect)
+                f.focused
+                    && matches!(
+                        d.kind,
+                        overlay::Kind::Edit
+                            | overlay::Kind::StartDirect
+                            | overlay::Kind::Browse
+                            | overlay::Kind::JoinInvite
+                    )
             });
         }
         if let Some(s) = &mut self.signin {
@@ -1375,6 +1392,13 @@ impl App {
         }
         if direct != self.hover_direct {
             self.hover_direct = direct;
+            self.dirty.sidebar = true;
+            self.need = true;
+        }
+        let invite = self.pointer.and_then(|(x, y)| self.invite_at(x, y));
+        if invite != self.hover_invite {
+            self.hover_invite = invite;
+            self.dirty.rail = true;
             self.dirty.sidebar = true;
             self.need = true;
         }
@@ -1694,6 +1718,8 @@ impl App {
                     } else if let Some(p) = self.voice_at(x, y) {
                         self.voice_activate(p);
                     } else if self.on_call(x, y) {
+                    } else if let Some(spot) = self.hover_invite {
+                        self.invite_activate(spot);
                     } else if self.space_options_hover {
                         let scope = self.space_scope();
                         self.toggle_scope_menu(scope);
@@ -1784,6 +1810,7 @@ impl App {
                         .hover_direct
                         .is_some_and(|s| s != directs::Spot::Heading)
                     || self.hover_space.is_some()
+                    || self.hover_invite.is_some()
                     || self.pointer.is_some_and(|(x, y)| {
                         self.link_at(x, y).is_some()
                             || self.action_at(x, y).is_some()
@@ -2728,6 +2755,14 @@ impl App {
         let g = &self.g;
         let c = &self.c;
         let d = std::mem::take(&mut self.dirty);
+        // Invitations: the rail's tiles and Join with invite link (while
+        // signed in), and the sidebar's private channel invitations.
+        let (rail_invites, side_invites) = self.invite_names();
+        let rail_invites = self
+            .invite_spots()
+            .contains(&invites::Spot::Join)
+            .then_some(rail_invites);
+        let (invite_hover, invites_top) = (self.hover_invite, self.invites_top());
         if d.rail {
             let hover = self.hover_space;
             self.rail.draw(s, |dc| unsafe {
@@ -2818,6 +2853,9 @@ impl App {
                         n.SetMaxHeight(inner.bottom - inner.top)?;
                         text::draw(dc, &n, inner.left, inner.top, &g.brushes.text);
                     }
+                }
+                if let Some(names) = &rail_invites {
+                    invites::draw_rail(g, dc, names, c.spaces.len(), invite_hover)?;
                 }
                 Ok(())
             })?;
@@ -3022,6 +3060,7 @@ impl App {
                         }
                     }
                 }
+                invites::draw_sidebar(g, dc, &side_invites, invites_top, invite_hover)?;
                 directs::draw(g, dc, &drows, dtop, dhover, dmenu)?;
                 self.draw_call(g, dc)?;
                 self.draw_foot(g, dc, self.h)?;

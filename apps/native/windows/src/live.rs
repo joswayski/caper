@@ -137,11 +137,24 @@ pub enum Update {
     /// A block asked for in the Block dialog finished: None once blocked,
     /// else why not.
     Blocked(Option<String>),
-    /// A leave asked for in the Leave dialog finished: None once left
-    /// (another space or channel is opening), else why not.
+    /// A leave or an invitation's answer asked for in a dialog finished:
+    /// None once done (another space or channel may be opening), else
+    /// why not.
     Left(Option<String>),
     /// Joining the previewed channel failed: its bar shows why.
     Joining,
+    /// The Join with invite link dialog's request `request` answered:
+    /// the link's preview, None once joined (the space is opening), or
+    /// why not.
+    InviteLink {
+        request: u64,
+        result: Result<Option<caper_client::invites::InvitePreview>, String>,
+    },
+    /// A notification opened an invitation: its dialog shows.
+    Invitation(Invitation),
+    /// Your space or channel invitations changed: the rail and sidebar
+    /// redraw.
+    Invitations,
     /// The open thread's messages or state changed (or it closed): the
     /// pane rebuilds from `Live::thread_view`.
     Thread,
@@ -178,6 +191,17 @@ pub enum Update {
     Connection(Option<String>),
     Failed(String),
 }
+
+/// An invitation to answer: to a space, or to one of its private
+/// channels.
+#[derive(Clone)]
+pub enum Invitation {
+    Space(core::Space),
+    Channel(core::ChannelInvitation),
+}
+
+/// How often invitations and memberships are read again (web's 15 s).
+const MEMBERSHIP_EVERY: Duration = Duration::from_secs(15);
 
 /// Server ids behind the displayed conversation.
 #[derive(Clone, Default)]
@@ -412,6 +436,16 @@ pub struct Live {
     /// A previewed channel's Join in flight, and why the last one failed.
     pub joining: bool,
     pub join_error: Option<String>,
+    /// Spaces you're invited to (the rail's tiles), the last invite link
+    /// request (answers to earlier ones drop), the background membership
+    /// refresh (when it last went, the one in flight), and the channel
+    /// invitation a notification opens once its space has loaded.
+    pub invitations: Vec<core::Space>,
+    invite_request: u64,
+    membership_at: Option<Instant>,
+    membership_request: u64,
+    membership_pending: bool,
+    invite_focus: Option<(u64, String)>,
 }
 
 /// What a channel's voice offers now (egui's `VoiceAction`).
@@ -624,6 +658,12 @@ impl Live {
             voice_seen: String::new(),
             joining: false,
             join_error: None,
+            invitations: Vec::new(),
+            invite_request: 0,
+            membership_at: None,
+            membership_request: 0,
+            membership_pending: false,
+            invite_focus: None,
         }
     }
 
@@ -964,6 +1004,25 @@ impl Live {
             AccountResult::NotificationsSaved { scope, result } => {
                 self.notifications.finish_save(&scope, result);
             }
+            AccountResult::InvitePreview { request, result } => {
+                if request == self.invite_request {
+                    out.push(Update::InviteLink {
+                        request,
+                        result: result.map(Some),
+                    });
+                }
+                return;
+            }
+            AccountResult::InviteJoined { request, result } => {
+                if request == self.invite_request {
+                    let result = result.map(|joined| {
+                        self.joined_invite(joined, out);
+                        None
+                    });
+                    out.push(Update::InviteLink { request, result });
+                }
+                return;
+            }
             _ => return,
         }
         out.push(Update::Settings);
@@ -1050,6 +1109,9 @@ impl Live {
                 token,
             });
         }
+        self.invitations = spaces.invitations.clone();
+        self.membership_at = Some(Instant::now());
+        self.host.wake_after(MEMBERSHIP_EVERY);
         self.spaces = Some(spaces);
         self.navigate(Some(space), None);
     }
@@ -2218,6 +2280,7 @@ impl Live {
         self.foreground = visible;
         if gained {
             self.mark_read();
+            self.refresh_membership();
         }
     }
 
@@ -2357,13 +2420,16 @@ impl Live {
     }
 
     /// egui's `open_activity_item`: the inbox closes over the notification's
-    /// conversation, at its message. Invitations aren't answered here yet.
+    /// conversation, at its message; an invitation's dialog opens.
     fn open_activity_item(&mut self, item: caper_client::activity::Item, out: &mut Vec<Update>) {
         self.activity.shown = false;
         if item.kind == "space.invitation" || item.kind == "channel.invitation" {
-            out.push(Update::Warning(
-                "Invitations can't be answered in this app yet.".into(),
-            ));
+            match item.space_id {
+                Some(space) => self.open_invitation(space, item.channel_id),
+                None => out.push(Update::Warning(
+                    "This invitation is no longer available.".into(),
+                )),
+            }
             return;
         }
         let Some(channel) = item.channel().map(str::to_owned) else {
@@ -2470,6 +2536,170 @@ impl Live {
         });
     }
 
+    /// The open space's private channels you're invited to.
+    pub fn channel_invitations(&self) -> &[core::ChannelInvitation] {
+        self.detail
+            .as_ref()
+            .map_or(&[], |d| d.channel_invitations.as_slice())
+    }
+
+    /// Whether `invitation` is still offered (one answered elsewhere or
+    /// withdrawn closes its dialog).
+    pub fn offered(&self, invitation: &Invitation) -> bool {
+        match invitation {
+            Invitation::Space(s) => self.invitations.iter().any(|i| i.id == s.id),
+            Invitation::Channel(c) => self
+                .channel_invitations()
+                .iter()
+                .any(|i| i.channel.id == c.channel.id),
+        }
+    }
+
+    /// Accepts or declines `invitation`; `Update::Left` answers.
+    pub fn answer_invitation(&mut self, invitation: &Invitation, accept: bool) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        let operation = match (invitation, accept) {
+            (Invitation::Space(s), true) => AdminOperation::AcceptInvitation {
+                space: s.id.clone(),
+            },
+            (Invitation::Space(s), false) => AdminOperation::DeclineInvitation {
+                space: s.id.clone(),
+            },
+            (Invitation::Channel(c), true) => AdminOperation::AcceptChannelInvitation {
+                space: c.channel.space_id.clone(),
+                channel: c.channel.id.clone(),
+            },
+            (Invitation::Channel(c), false) => AdminOperation::DeclineChannelInvitation {
+                space: c.channel.space_id.clone(),
+                channel: c.channel.id.clone(),
+            },
+        };
+        self.worker.send(Command::Admin {
+            generation: self.account_epoch,
+            token,
+            operation,
+        });
+    }
+
+    /// Join with invite link: the pasted link's preview, then joining
+    /// it. Returns the request, which `Update::InviteLink` answers.
+    pub fn preview_invite(&mut self, code: String) -> u64 {
+        self.invite_request += 1;
+        let request = self.invite_request;
+        self.account(AccountOperation::PreviewInvite { request, code });
+        request
+    }
+
+    pub fn join_invite(&mut self, code: String) -> u64 {
+        self.invite_request += 1;
+        let request = self.invite_request;
+        self.account(AccountOperation::JoinInvite { request, code });
+        request
+    }
+
+    /// Web's invite join: the space joins the list (a member just opens
+    /// it), then opens at the link's channel or its first joined one.
+    fn joined_invite(
+        &mut self,
+        joined: caper_client::invites::JoinedInvite,
+        out: &mut Vec<Update>,
+    ) {
+        let space = joined.space;
+        self.invitations.retain(|s| s.id != space.id);
+        if let Some(s) = &mut self.spaces {
+            match s.spaces.iter_mut().find(|s| s.id == space.id) {
+                Some(existing) => *existing = space.clone(),
+                None => s.spaces.push(space.clone()),
+            }
+        }
+        self.navigate(Some(space.id), joined.channel_id);
+        out.push(Update::Invitations);
+    }
+
+    /// Web's membership reconcile, every 15 seconds and when the window
+    /// regains focus: invitations made meanwhile appear.
+    fn refresh_membership(&mut self) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        self.membership_at = Some(Instant::now());
+        self.host.wake_after(MEMBERSHIP_EVERY);
+        if self.membership_pending {
+            return;
+        }
+        self.membership_pending = true;
+        self.membership_request += 1;
+        self.worker.send(Command::RefreshMembership {
+            epoch: self.account_epoch,
+            request: self.membership_request,
+            revision: 0,
+            navigation: self.navigation,
+            token,
+            space: self.space.clone().filter(|_| self.direct.is_none()),
+        });
+    }
+
+    /// A notification's invitation (egui's `OpenInvitation`): the
+    /// account's spaces are read again first, so a withdrawn one says so.
+    fn open_invitation(&mut self, space: String, channel: Option<String>) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        self.navigation += 1;
+        self.worker.send(Command::OpenInvitation {
+            epoch: self.account_epoch,
+            navigation: self.navigation,
+            token,
+            space,
+            channel,
+        });
+    }
+
+    /// The notification's invitation, still offered: a space's dialog
+    /// shows; a channel's once its space is open.
+    fn invitation_loaded(
+        &mut self,
+        space: String,
+        channel: Option<String>,
+        result: Result<(core::Spaces, Option<core::SpaceDetail>), String>,
+        out: &mut Vec<Update>,
+    ) {
+        let gone = || Update::Warning("This invitation is no longer available.".into());
+        let (spaces, detail) = match result {
+            Ok(loaded) => loaded,
+            Err(e) => return out.push(Update::Warning(e)),
+        };
+        self.invitations = spaces.invitations;
+        out.push(Update::Invitations);
+        let Some(channel) = channel else {
+            match self.invitations.iter().find(|s| s.id == space) {
+                Some(s) => out.push(Update::Invitation(Invitation::Space(s.clone()))),
+                None => out.push(gone()),
+            }
+            return;
+        };
+        let Some(detail) = detail else {
+            return out.push(gone());
+        };
+        let Some(invite) = detail
+            .channel_invitations
+            .iter()
+            .find(|i| i.channel.id == channel)
+            .cloned()
+        else {
+            return out.push(gone());
+        };
+        if self.direct.is_none() && self.space.as_deref() == Some(detail.space.id.as_str()) {
+            self.detail = Some(detail);
+            out.push(Update::Invitation(Invitation::Channel(invite)));
+        } else {
+            self.navigate(Some(space), None);
+            self.invite_focus = Some((self.navigation, channel));
+        }
+    }
+
     /// Whether you can leave the open space: it is someone else's (an
     /// owner manages or deletes theirs), as in egui.
     pub fn can_leave_space(&self) -> bool {
@@ -2558,10 +2788,30 @@ impl Live {
                 channel,
                 joined: true,
             } => {
-                // It opens again, now in the sidebar with its composer.
+                // It opens, now in the sidebar with its composer (joined
+                // from a preview or an accepted invitation).
                 self.joining = false;
                 self.navigate(Some(detail.space.id.clone()), Some(channel));
-                return;
+            }
+            AdminResult::InvitationAccepted(space) => {
+                self.invitations.retain(|s| s.id != space.id);
+                if let Some(s) = &mut self.spaces
+                    && !s.spaces.iter().any(|s| s.id == space.id)
+                {
+                    s.spaces.push(space.clone());
+                }
+                self.navigate(Some(space.id), None);
+                out.push(Update::Invitations);
+            }
+            AdminResult::InvitationDeclined(space) => {
+                self.invitations.retain(|s| s.id != space);
+                out.push(Update::Invitations);
+            }
+            AdminResult::ChannelInvitationDeclined(channel) => {
+                if let Some(d) = &mut self.detail {
+                    d.channel_invitations.retain(|i| i.channel.id != channel);
+                }
+                out.push(Update::Invitations);
             }
             _ => return,
         }
@@ -2995,6 +3245,12 @@ impl Live {
         {
             self.refresh_unread();
         }
+        if self
+            .membership_at
+            .is_some_and(|at| at.elapsed() + Duration::from_millis(50) >= MEMBERSHIP_EVERY)
+        {
+            self.refresh_membership();
+        }
         let voice = self.receive_voice();
         let events: Vec<Event> = self.worker.events.try_iter().collect();
         let mut out = std::mem::take(&mut self.queued);
@@ -3153,6 +3409,20 @@ impl Live {
                             .collect(),
                     };
                     out.push(Update::Loaded(Box::new((conversation, ids))));
+                    if let Some((_, channel)) =
+                        self.invite_focus.take().filter(|(n, _)| *n == navigation)
+                    {
+                        match detail
+                            .channel_invitations
+                            .iter()
+                            .find(|i| i.channel.id == channel)
+                        {
+                            Some(i) => out.push(Update::Invitation(Invitation::Channel(i.clone()))),
+                            None => out.push(Update::Warning(
+                                "This invitation is no longer available.".into(),
+                            )),
+                        }
+                    }
                     if let Some((_, message, thread)) =
                         self.focus.take().filter(|(n, ..)| *n == navigation)
                     {
@@ -3783,6 +4053,34 @@ impl Live {
                 }
                 Err(e) => out.push(Update::Left(Some(e))),
             },
+            Event::MembershipRefreshed {
+                epoch,
+                request,
+                navigation,
+                result,
+                ..
+            } if epoch == self.account_epoch && request == self.membership_request => {
+                self.membership_pending = false;
+                if let Ok((spaces, detail)) = result {
+                    self.invitations = spaces.invitations;
+                    if let (Some(fresh), Some(open)) = (detail, &mut self.detail)
+                        && navigation == self.navigation
+                        && fresh.space.id == open.space.id
+                    {
+                        open.channel_invitations = fresh.channel_invitations;
+                    }
+                    out.push(Update::Invitations);
+                }
+            }
+            Event::InvitationLoaded {
+                epoch,
+                navigation,
+                space,
+                channel,
+                result,
+            } if epoch == self.account_epoch && navigation == self.navigation => {
+                self.invitation_loaded(space, channel, result, out);
+            }
             Event::Klipy { token, config } if self.token.as_ref() == Some(&token) => {
                 self.klipy = config;
                 out.push(Update::Drafts);
@@ -3843,9 +4141,9 @@ impl Live {
                     Some(Route::Channel { space, channel }) => {
                         self.navigate(Some(space), Some(channel));
                     }
-                    Some(Route::Invitation { .. }) => out.push(Update::Warning(
-                        "Invitations can't be answered in this app yet.".into(),
-                    )),
+                    Some(Route::Invitation { space, channel }) => {
+                        self.open_invitation(space, channel);
+                    }
                     Some(Route::Visit(_)) | None => {}
                 }
                 out.push(Update::Notified);
