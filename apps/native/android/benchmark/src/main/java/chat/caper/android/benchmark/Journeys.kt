@@ -32,13 +32,17 @@ internal fun MacrobenchmarkScope.signIn() {
 
 /**
  * Opens a Fixture Studio channel from the sidebar, or from Browse on narrow screens: the open
- * conversation's back arrow, or an empty channel's "Browse spaces".
+ * conversation's back arrow (Browse's channel list stays in the tree off screen behind it), or an
+ * empty channel's "Browse spaces".
  */
 internal fun MacrobenchmarkScope.openChannel(name: String) {
     if (device.wait(Until.hasObject(By.text("Message #$name")), 2_000)) return
-    if (!device.hasObject(By.text(name))) (device.findObject(By.desc("Back to Browse")) ?: device.findObject(By.text("Browse spaces")))?.click()
+    val back = device.findObject(By.desc("Back to Browse"))
+    if (back != null) { back.click(); device.waitForIdle() }
+    else if (!device.hasObject(By.text(name))) device.findObject(By.text("Browse spaces"))?.click()
     check(waitFor(name)) { "Channel #$name isn't listed." }
-    device.findObject(By.text(name)).click()
+    // The first visible match: an off-screen list or a message may hold the same text.
+    checkNotNull(device.findObjects(By.text(name)).firstOrNull { !it.visibleBounds.isEmpty }) { "Channel #$name isn't on screen." }.click()
     check(waitFor("Message #$name")) { "#$name didn't open." }
     device.waitForIdle()
 }
