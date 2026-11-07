@@ -1,8 +1,12 @@
 package chat.caper.android.benchmark
 
+import android.graphics.Rect
 import androidx.benchmark.macro.MacrobenchmarkScope
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
+import java.io.File
 
 /** The app's `benchmarkRelease` and `nonMinifiedRelease` builds install beside the shipped app. */
 internal const val PACKAGE = "chat.caper.android.benchmark"
@@ -14,6 +18,29 @@ internal const val OTHER_CHANNEL = "design"
 private const val WAIT_MS = 15_000L
 
 private fun MacrobenchmarkScope.waitFor(text: String): Boolean = device.wait(Until.hasObject(By.text(text)), WAIT_MS)
+
+/** Fails with [message], leaving the screen's hierarchy in the test's additional output for diagnosis. */
+private fun MacrobenchmarkScope.fail(message: String): Nothing {
+    InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")?.let { dir ->
+        runCatching { device.dumpWindowHierarchy(File(dir, "journey-failure-${System.currentTimeMillis()}.xml")) }
+    }
+    error(message)
+}
+
+/** The first on-screen node with [text], once it has stopped moving (a drawer may still be sliding in). */
+private fun MacrobenchmarkScope.settled(text: String): UiObject2 {
+    var last: Rect? = null
+    val deadline = System.currentTimeMillis() + WAIT_MS
+    while (System.currentTimeMillis() < deadline) {
+        // A node that leaves the screen mid-check is stale; look again.
+        val node = device.findObjects(By.text(text)).firstOrNull { runCatching { !it.visibleBounds.isEmpty }.getOrDefault(false) }
+        val bounds = node?.let { runCatching { it.visibleBounds }.getOrNull() }
+        if (node != null && bounds == last) return node
+        last = bounds
+        Thread.sleep(200)
+    }
+    fail("\"$text\" isn't on screen.")
+}
 
 /** Signs in with the fixture's account when the app shows its login screen; otherwise does nothing. */
 internal fun MacrobenchmarkScope.signIn() {
@@ -40,10 +67,9 @@ internal fun MacrobenchmarkScope.openChannel(name: String) {
     val back = device.findObject(By.desc("Back to Browse"))
     if (back != null) { back.click(); device.waitForIdle() }
     else if (!device.hasObject(By.text(name))) device.findObject(By.text("Browse spaces"))?.click()
-    check(waitFor(name)) { "Channel #$name isn't listed." }
-    // The first visible match: an off-screen list or a message may hold the same text.
-    checkNotNull(device.findObjects(By.text(name)).firstOrNull { !it.visibleBounds.isEmpty }) { "Channel #$name isn't on screen." }.click()
-    check(waitFor("Message #$name")) { "#$name didn't open." }
+    // The first visible match, once still: an off-screen list or a message may hold the same text.
+    settled(name).click()
+    if (!waitFor("Message #$name")) fail("#$name didn't open.")
     device.waitForIdle()
 }
 
