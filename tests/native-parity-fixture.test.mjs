@@ -29,6 +29,28 @@ async function setup(t) {
   return { fixture, base, request };
 }
 
+function activityItem(id, changes = {}) {
+  return {
+    id,
+    kind: "message",
+    createdAt: "2026-09-23T09:44:00.000Z",
+    unread: true,
+    actorId: ids.member,
+    actorName: "Maya",
+    avatarId: 31,
+    body: "TEST FIXTURE — activity inbox",
+    spaceId: ids.space,
+    spaceName: "Fixture Studio",
+    channelId: ids.general,
+    channelName: "general",
+    conversationId: null,
+    messageId: `${ids.general}m02`,
+    threadRootId: null,
+    emoji: null,
+    ...changes,
+  };
+}
+
 function socket(url, options) {
   const ws = new WebSocket(url, options);
   const queued = [];
@@ -1793,6 +1815,583 @@ test("push config and device registration follow the API contract", async (t) =>
   await request("/__fixture/control", { method: "POST", body: { reset: true } });
   assert.deepEqual((await request("/api/push/config", { auth: true })).value, { platforms: [] });
   assert.deepEqual(await devices(), { devices: [], requests: [] });
+});
+
+test("activity inbox control validates owner-only rows, replaces atomically and preserves default seeds", async (t) => {
+  const { request } = await setup(t);
+  const control = (body) => request("/__fixture/control", { method: "POST", body });
+  const list = () => request("/api/notifications/inbox", { auth: true }).then(({ value }) => value);
+  const defaults = await list();
+  assert.deepEqual(
+    defaults.items.map(({ id }) => id),
+    ["inbox0000002", "inbox0000001"],
+  );
+  assert.equal(defaults.unreadCount, 2);
+  assert.equal(defaults.nextCursor, null);
+  assert.equal(defaults.items[0].messageId, `${ids.general}m04`);
+  assert.equal(defaults.items[1].emoji, "🎉");
+  const item = activityItem("m:control");
+  assert.equal((await control({ activityInbox: [item] })).response.status, 200);
+  const expected = { items: [item], unreadCount: 1, nextCursor: null };
+  assert.deepEqual(await list(), expected);
+  for (const activityInbox of [
+    null,
+    {},
+    [null],
+    [item, item],
+    ...[
+      { id: "" },
+      { id: "x".repeat(201) },
+      { kind: "unknown" },
+      { createdAt: "yesterday" },
+      { createdAt: "2026-99-23T09:44:00Z" },
+      { createdAt: "2026-02-30T09:44:00Z" },
+      { createdAt: "2026-09-23T24:00:00Z" },
+      { unread: "true" },
+      { actorId: null },
+      { actorName: null },
+      { body: null },
+      { body: "x".repeat(281) },
+      { avatarId: "31" },
+      { channelId: 4 },
+      { messageId: null },
+      { conversationId: ids.direct },
+      { kind: "reply" },
+      { kind: "reaction" },
+      { kind: "space.invitation" },
+      { userId: ids.member },
+      { ownerId: ids.member },
+    ].map((changes) => [activityItem("m:invalid", changes)]),
+  ]) {
+    const invalid = await control({ reset: true, activityInbox });
+    assert.equal(invalid.response.status, 400, JSON.stringify(activityInbox));
+    assert.deepEqual(invalid.value, { error: "Invalid fixture activity inbox." });
+    assert.deepEqual(await list(), expected, "invalid rows must not replace or reset existing data");
+  }
+  assert.equal((await control({ activityInbox: [] })).response.status, 200);
+  assert.deepEqual(await list(), { items: [], unreadCount: 0, nextCursor: null });
+  await control({ reset: true });
+  assert.deepEqual(await list(), defaults);
+  await control({ spaceInvitation: { inbox: true } });
+  assert.deepEqual(
+    (await list()).items.map(({ id }) => id),
+    ["inbox0000003", "inbox0000002", "inbox0000001"],
+  );
+  await control({ spaceInvitation: { inbox: true } });
+  assert.equal((await list()).items.length, 3, "the existing invitation control stays idempotent");
+});
+
+test("activity inbox filters overlap, unread is optional and counts stay account-wide without acknowledging", async (t) => {
+  const { request } = await setup(t);
+  await request("/api/dms", { auth: true, method: "POST", body: { username: "alex" } });
+  const direct = { spaceId: null, spaceName: null, channelId: null, conversationId: ids.direct };
+  const activityInbox = [
+    activityItem("m:10", { unread: false }),
+    activityItem("m:20", { kind: "mention" }),
+    activityItem("m:30", { kind: "reply", threadRootId: `${ids.general}m01` }),
+    activityItem("m:40", { kind: "mention", threadRootId: `${ids.general}m01` }),
+    activityItem("r:50", { kind: "reaction", emoji: "🎉", threadRootId: `${ids.general}m01` }),
+    activityItem("m:60", { ...direct, messageId: `${ids.direct}m01`, actorId: ids.other }),
+    activityItem("r:70", {
+      ...direct,
+      messageId: `${ids.direct}m02`,
+      actorId: ids.other,
+      kind: "reaction",
+      emoji: "👍",
+      unread: false,
+    }),
+    activityItem("d:80", {
+      ...direct,
+      conversationId: ids.request,
+      messageId: null,
+      kind: "direct.request",
+      actorId: ids.stranger,
+    }),
+  ];
+  assert.equal(
+    (
+      await request("/__fixture/control", {
+        method: "POST",
+        body: { activityInbox, spaceInvitation: { inbox: true }, messageRequest: {} },
+      })
+    ).response.status,
+    200,
+  );
+  for (const [filter, expected] of [
+    ["all", ["inbox0000003", "r:70", "r:50", "m:60", "m:40", "m:30", "m:20", "m:10", "d:80"]],
+    ["dms", ["r:70", "m:60", "d:80"]],
+    ["mentions", ["m:40", "m:20"]],
+    ["threads", ["m:40", "m:30"]],
+    ["reactions", ["r:70", "r:50"]],
+    ["invitations", ["inbox0000003", "d:80"]],
+  ]) {
+    for (const unread of [undefined, "false", "true"]) {
+      const query = new URLSearchParams({ filter, ...(unread ? { unread } : {}) });
+      const { response, value } = await request(`/api/notifications/inbox?${query}`, { auth: true });
+      assert.equal(response.status, 200);
+      assert.deepEqual(
+        value.items.map(({ id }) => id),
+        unread === "true" ? expected.filter((id) => !["m:10", "r:70"].includes(id)) : expected,
+        String(query),
+      );
+      assert.equal(value.unreadCount, 7, "neither filtering nor listing changes the global count");
+      assert.equal(value.nextCursor, null);
+    }
+  }
+  const alias = await request("/api/v1/notifications/inbox?filter=threads", { auth: true });
+  assert.deepEqual(
+    alias.value.items,
+    [activityInbox[3], activityInbox[2]],
+    "destinations and thread roots survive unchanged",
+  );
+});
+
+test("activity inbox keyset paging crosses timestamp ties after reads and newer arrivals without skipping", async (t) => {
+  const { request } = await setup(t);
+  const control = (activityInbox) => request("/__fixture/control", { method: "POST", body: { activityInbox } });
+  const rows = Array.from({ length: 45 }, (_, index) => activityItem(`m:${index + 1}`));
+  await control([
+    activityItem("m:old-read", { unread: false, createdAt: "2026-09-23T09:43:00Z" }),
+    ...rows,
+    activityItem("m:new-read", { unread: false, createdAt: "2026-09-23T09:45:00Z" }),
+  ]);
+  const first = await request("/api/notifications/inbox?unread=true", { auth: true });
+  assert.equal(first.response.status, 200);
+  assert.equal(first.value.items.length, 40);
+  assert.equal(first.value.unreadCount, 45);
+  const firstIds = first.value.items.map(({ id }) => id);
+  assert.deepEqual(
+    firstIds,
+    rows
+      .map(({ id }) => id)
+      .sort()
+      .reverse()
+      .slice(0, 40),
+    "IDs order as text, not numbers",
+  );
+  assert.equal(firstIds[0], "m:9");
+  assert.deepEqual(JSON.parse(first.value.nextCursor), [rows[0].createdAt, "m:14"]);
+  assert.equal(
+    (
+      await request("/api/notifications/inbox/read", {
+        auth: true,
+        method: "POST",
+        body: { ids: firstIds },
+      })
+    ).value.unreadCount,
+    5,
+  );
+  // Replacing the snapshot supplies a new arrival while retaining explicit reads.
+  await control([
+    activityItem("m:arrival", { createdAt: "2026-09-23T09:45:00Z" }),
+    ...rows.map((row) => ({ ...row, unread: !firstIds.includes(row.id) })),
+  ]);
+  const query = new URLSearchParams({ unread: "true", cursor: first.value.nextCursor });
+  const second = await request(`/api/notifications/inbox?${query}`, { auth: true });
+  assert.equal(second.response.status, 200);
+  assert.deepEqual(
+    second.value.items.map(({ id }) => id),
+    ["m:13", "m:12", "m:11", "m:10", "m:1"],
+  );
+  assert.equal(new Set([...firstIds, ...second.value.items.map(({ id }) => id)]).size, 45);
+  assert.equal(second.value.unreadCount, 6, "the newer arrival counts but cannot leak into an older page");
+  assert.equal(second.value.nextCursor, null);
+  assert.equal((await request("/api/notifications/inbox?unread=true", { auth: true })).value.items[0].id, "m:arrival");
+  await control(rows.slice(0, 40));
+  const exact = await request("/api/notifications/inbox", { auth: true });
+  assert.equal(exact.value.items.length, 40);
+  assert.equal(exact.value.nextCursor, null, "exactly forty rows is the last page");
+
+  // Equivalent timezone offsets tie; distinct microseconds must not tie.
+  await control([
+    activityItem("m:z", { createdAt: "2026-09-23T09:44:00.000001Z" }),
+    activityItem("m:a", { createdAt: "2026-09-23T09:44:00.000002Z" }),
+    activityItem("m:b", { createdAt: "2026-09-23T10:44:00.000002+01:00" }),
+  ]);
+  assert.deepEqual(
+    (await request("/api/notifications/inbox", { auth: true })).value.items.map(({ id }) => id),
+    ["m:b", "m:a", "m:z"],
+  );
+  const precise = new URLSearchParams({ cursor: JSON.stringify(["2026-09-23T09:44:00.000002Z", "m:b"]) });
+  assert.deepEqual(
+    (await request(`/api/notifications/inbox?${precise}`, { auth: true })).value.items.map(({ id }) => id),
+    ["m:a", "m:z"],
+  );
+});
+
+test("activity inbox rejects malformed queries and read bodies without mutating attention", async (t) => {
+  const { request } = await setup(t);
+  const before = (await request("/api/notifications/inbox", { auth: true })).value;
+  for (const query of [
+    "filter=unknown",
+    "filter=constructor",
+    "filter=toString",
+    "filter=",
+    "unread=1",
+    "unread=TRUE",
+    "unread=",
+    "limit=1",
+    "filter=all&filter=mentions",
+    "unread=true&unread=false",
+    "cursor=x&cursor=y",
+    ...[
+      "bad",
+      "",
+      "null",
+      "{}",
+      "[]",
+      '["2026-09-23T09:44:00Z"]',
+      '["bad","m:1"]',
+      '["2026-02-30T09:44:00Z","m:1"]',
+      '["2026-09-23T24:00:00Z","m:1"]',
+      '["2026-09-23T09:44:00Z",4]',
+      '["2026-09-23T09:44:00Z","m:1",0]',
+      JSON.stringify(["2026-09-23T09:44:00Z", "é".repeat(250)]),
+    ].map((cursor) => new URLSearchParams({ cursor }).toString()),
+  ])
+    assert.equal((await request(`/api/notifications/inbox?${query}`, { auth: true })).response.status, 400, query);
+  for (const [body, status] of [
+    [null, 422],
+    [[], 422],
+    [{}, 422],
+    [{ ids: "inbox0000002" }, 422],
+    [{ ids: [null] }, 422],
+    [{ ids: ["inbox0000002"], extra: true }, 422],
+    [{ ids: [] }, 400],
+    [{ ids: Array(101).fill("inbox0000002") }, 400],
+    [{ ids: ["x".repeat(201)] }, 400],
+    [{ ids: ["inbox0000002", "x".repeat(201)] }, 400],
+    [{ ids: ["é".repeat(101)] }, 400],
+  ]) {
+    assert.equal(
+      (await request("/api/notifications/inbox/read", { auth: true, method: "POST", body })).response.status,
+      status,
+      JSON.stringify(body),
+    );
+    assert.deepEqual((await request("/api/notifications/inbox", { auth: true })).value, before);
+  }
+  assert.deepEqual(
+    (
+      await request("/api/notifications/inbox/read", {
+        auth: true,
+        method: "POST",
+        body: { ids: Array(100).fill("é".repeat(100)) },
+      })
+    ).value,
+    { unreadCount: 2 },
+    "valid unknown IDs are harmless, even at the byte/count limits",
+  );
+});
+
+test("activity inbox read failures leave a rollback-safe snapshot and retries acknowledge only explicit visible IDs", async (t) => {
+  const { request } = await setup(t);
+  const control = (body) => request("/__fixture/control", { method: "POST", body });
+  const path = "/api/notifications/inbox";
+  const list = (query = "") => request(path + query, { auth: true });
+  const read = () =>
+    request(`${path}/read`, {
+      auth: true,
+      method: "POST",
+      body: { ids: ["m:reply", "m:reply", "unknown"] },
+    });
+  await control({
+    activityInbox: [
+      activityItem("m:reply", { kind: "reply", threadRootId: `${ids.general}m01` }),
+      activityItem("m:unseen"),
+    ],
+    channelReads: { [ids.general]: "0" },
+    channelMentions: { [ids.general]: 1 },
+  });
+  const before = (await list()).value;
+  const channelReads = (await request("/__fixture/channel-reads")).value;
+  const badges = (await request("/api/spaces/unread", { auth: true })).value;
+  await control({ failure: { path: `${path}/read`, method: "POST", status: 503, persistent: true } });
+  assert.equal(
+    (await request(`${path}/read`, { auth: true })).response.status,
+    404,
+    "wrong method cannot consume the failure",
+  );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    assert.equal((await read()).response.status, 503);
+    assert.deepEqual((await list()).value, before, "failed acknowledgement is safe for a client to roll back");
+  }
+  await control({ clearFailures: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await read();
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(result.value, { unreadCount: 1 }, "duplicate, unknown and retried IDs never read the next item");
+  }
+  const history = (await list("?filter=threads")).value;
+  assert.equal(history.items[0].id, "m:reply");
+  assert.equal(history.items[0].unread, false);
+  assert.equal(history.unreadCount, 1);
+  assert.deepEqual((await list("?filter=threads&unread=true")).value, { items: [], unreadCount: 1, nextCursor: null });
+  assert.deepEqual(
+    (await list("?unread=true")).value.items.map(({ id }) => id),
+    ["m:unseen"],
+  );
+  assert.deepEqual(
+    (await request("/__fixture/channel-reads")).value,
+    channelReads,
+    "no whole-channel read or read log entry",
+  );
+  assert.deepEqual(
+    (await request("/api/spaces/unread", { auth: true })).value,
+    { ...badges, badgeCount: 1 },
+    "the activity badge falls without changing unseen channel attention",
+  );
+  await control({ failure: { path, method: "GET", status: 502 } });
+  assert.equal((await list()).response.status, 502);
+  assert.equal((await list()).value.unreadCount, 1, "the existing one-shot load failure is retryable");
+});
+
+test("activity inbox badges survive unread refresh in existing opt-in snapshots without changing the default fallback", async (t) => {
+  const { request } = await setup(t);
+  const snapshot = (auth = true) => request("/api/spaces/unread", { auth });
+  const read = (id) => request("/api/notifications/inbox/read", { auth: true, method: "POST", body: { ids: [id] } });
+  const control = (body) => request("/__fixture/control", { method: "POST", body });
+  assert.equal((await snapshot(false)).response.status, 401);
+  const fallback = await snapshot();
+  assert.equal(fallback.response.status, 404, "without opt-in state, unread falls through to an unknown space");
+  assert.deepEqual(fallback.value, { error: "resource not found" });
+  await read("inbox0000002");
+  assert.equal((await snapshot()).response.status, 404, "do not invent new default channel unread behavior");
+  assert.equal((await request("/api/notifications/inbox", { auth: true })).value.unreadCount, 1);
+
+  for (const options of [
+    { channelReads: { [ids.general]: "0" } },
+    { feedbackTeam: true },
+    { channelReads: { [ids.general]: "0" }, feedbackTeam: true },
+  ]) {
+    await control({ reset: true, ...options });
+    const initial = await snapshot();
+    assert.equal(initial.response.status, 200);
+    assert.equal(initial.value.badgeCount, 2, "count the two owner inbox seeds, not channel heads or waiting reports");
+    assert.equal(initial.value.feedbackWaiting, options.feedbackTeam ? 1 : 0);
+    const other = await snapshot("fixture-other-token");
+    assert.equal(other.response.status, options.channelReads ? 200 : 404);
+    if (options.channelReads) assert.equal(other.value.badgeCount, 0, "badge counts are account-scoped");
+    await control({ failure: { path: "/api/notifications/inbox/read", method: "POST", status: 503 } });
+    assert.equal((await read("inbox0000002")).response.status, 503);
+    assert.deepEqual((await snapshot()).value, initial.value, "a failed read cannot be cemented by unread polling");
+    for (const [id, badgeCount] of [
+      ["inbox0000002", 1],
+      ["inbox0000001", 0],
+    ]) {
+      assert.deepEqual((await read(id)).value, { unreadCount: badgeCount });
+      for (let refresh = 0; refresh < 2; refresh++)
+        assert.deepEqual(
+          (await snapshot()).value,
+          { ...initial.value, badgeCount },
+          "normal refresh keeps the saved activity count",
+        );
+    }
+    assert.equal((await request("/api/notifications/inbox", { auth: true })).value.unreadCount, 0);
+  }
+});
+
+test("activity inbox is account-isolated and rechecks blocks, mutes, membership and deleted destinations", async (t) => {
+  const { request } = await setup(t);
+  const path = "/api/notifications/inbox";
+  const before = (await request(path, { auth: true })).value;
+  for (const auth of [false, "unknown-token"]) {
+    assert.equal((await request(path, { auth })).response.status, 401);
+    assert.equal(
+      (await request(`${path}/read`, { auth, method: "POST", body: { ids: ["inbox0000002"] } })).response.status,
+      401,
+    );
+  }
+  for (const auth of ["fixture-member-token", "fixture-other-token"]) {
+    assert.deepEqual((await request(path, { auth })).value, { items: [], unreadCount: 0, nextCursor: null });
+    assert.deepEqual(
+      (await request(`${path}/read`, { auth, method: "POST", body: { ids: before.items.map(({ id }) => id) } })).value,
+      { unreadCount: 0 },
+    );
+  }
+  assert.deepEqual((await request(path, { auth: true })).value, before);
+  await request(`/api/blocks/${ids.other}`, { auth: true, method: "PUT" });
+  assert.deepEqual(
+    (await request(path, { auth: true })).value.items.map(({ id }) => id),
+    ["inbox0000001"],
+  );
+  await request(`${path}/read`, { auth: true, method: "POST", body: { ids: ["inbox0000002"] } });
+  await request(`/api/blocks/${ids.other}`, { auth: true, method: "DELETE" });
+  assert.deepEqual((await request(path, { auth: true })).value, before, "hidden IDs cannot be acknowledged");
+  await request(`/api/spaces/${ids.space}/notifications`, {
+    auth: true,
+    method: "PUT",
+    body: { mutedUntil: "forever" },
+  });
+  const muted = (await request(path, { auth: true })).value;
+  assert.deepEqual(
+    muted.items.map(({ id }) => id),
+    ["inbox0000002"],
+    "explicit mentions survive mutes, reactions do not",
+  );
+  assert.equal(muted.unreadCount, 1);
+  await request(`/api/spaces/${ids.space}/notifications`, { auth: true, method: "PUT", body: { mutedUntil: null } });
+  assert.deepEqual((await request(path, { auth: true })).value, before);
+  await request("/__fixture/control", {
+    method: "POST",
+    body: {
+      feedbackTeam: true,
+      activityInbox: [
+        activityItem("m:demo", { spaceId: ids.demoSpace, channelId: ids.demo }),
+        activityItem("m:visit", { spaceId: ids.visitSpace, channelId: ids.visitChannel }),
+        activityItem("m:self", { actorId: ids.owner }),
+        activityItem("m:visible"),
+      ],
+    },
+  });
+  assert.deepEqual(
+    (await request(path, { auth: true })).value.items.map(({ id }) => id),
+    ["m:visible"],
+    "demo, own activity and team visits are not inbox membership",
+  );
+  await request(`/api/spaces/${ids.space}/channels/${ids.general}`, { auth: true, method: "DELETE" });
+  assert.deepEqual((await request(path, { auth: true })).value, { items: [], unreadCount: 0, nextCursor: null });
+});
+
+test("activity inbox invitation destinations preserve consent and withdraw after acceptance or decline", async (t) => {
+  const { request } = await setup(t);
+  const path = "/api/notifications/inbox";
+  const direct = activityItem("d:request", {
+    kind: "direct.request",
+    actorId: ids.stranger,
+    actorName: "Jordan",
+    spaceId: null,
+    spaceName: null,
+    channelId: null,
+    channelName: null,
+    conversationId: ids.request,
+    messageId: null,
+  });
+  const message = { ...direct, id: "m:request", kind: "message", messageId: `${ids.request}m01` };
+  for (const accept of [true, false]) {
+    await request("/__fixture/control", {
+      method: "POST",
+      body: { reset: true, activityInbox: [direct, message], spaceInvitation: { inbox: true }, messageRequest: {} },
+    });
+    const list = (await request(`${path}?filter=invitations`, { auth: true })).value;
+    assert.deepEqual(
+      list.items.map(({ id }) => id),
+      ["inbox0000003", "d:request"],
+    );
+    assert.equal(list.unreadCount, 2);
+    assert.equal(list.items[0].spaceId, ids.invitedSpace);
+    assert.equal(list.items[0].channelId, undefined, "a space invitation has no accessible channel destination yet");
+    assert.equal(list.items[1].conversationId, ids.request);
+    assert.deepEqual(
+      (
+        await request(`${path}/read`, {
+          auth: true,
+          method: "POST",
+          body: { ids: [...list.items.map(({ id }) => id), "m:request"] },
+        })
+      ).value,
+      { unreadCount: 0 },
+    );
+    assert.ok((await request(path, { auth: true })).value.items.every(({ unread }) => !unread));
+    assert.equal((await request(`/api/spaces/${ids.invitedSpace}`, { auth: true })).response.status, 404);
+    assert.equal((await request("/api/spaces", { auth: true })).value.invitations[0].id, ids.invitedSpace);
+    assert.equal(
+      (await request("/api/dms", { auth: true })).value.conversations[0].status,
+      "incoming",
+      "read is not consent",
+    );
+    assert.equal(
+      (await request(`/api/spaces/${ids.invitedSpace}/invitation`, { auth: true, method: accept ? "POST" : "DELETE" }))
+        .response.status,
+      accept ? 200 : 204,
+    );
+    assert.equal(
+      (await request(`/api/dms/${ids.request}/${accept ? "accept" : "decline"}`, { auth: true, method: "POST" }))
+        .response.status,
+      accept ? 200 : 204,
+    );
+    assert.deepEqual(
+      (await request(path, { auth: true })).value,
+      {
+        items: accept ? [message] : [],
+        unreadCount: accept ? 1 : 0,
+        nextCursor: null,
+      },
+      "requests withdraw; their inaccessible messages were never acknowledged",
+    );
+  }
+});
+
+test("activity inbox private invitations grant no access until accepted and reads disappear after revocation", async (t) => {
+  const { request } = await setup(t);
+  const path = "/api/notifications/inbox";
+  const root = `/api/spaces/${ids.invitedSpace}`;
+  const channel = `${root}/channels/${ids.invitedChannel}`;
+  const maya = "fixture-member-token";
+  await request("/__fixture/control", { method: "POST", body: { spaceInvitation: true } });
+  await request(`${root}/invitation`, { auth: true, method: "POST" });
+  // Maya's existing channel has no private grant for the owner.
+  assert.equal(
+    (await request(channel, { auth: maya, method: "PATCH", body: { name: "general", private: true } })).response.status,
+    200,
+  );
+  assert.equal(
+    (await request(`${channel}/members`, { auth: maya, method: "POST", body: { username: "fixture_owner" } })).response
+      .status,
+    201,
+  );
+  const destination = { spaceId: ids.invitedSpace, spaceName: "Maya's Book Club", channelId: ids.invitedChannel };
+  await request("/__fixture/control", {
+    method: "POST",
+    body: {
+      activityInbox: [
+        activityItem("c:invite", { ...destination, kind: "channel.invitation", messageId: null }),
+        activityItem("m:private", { ...destination, messageId: `${ids.invitedChannel}m01` }),
+      ],
+    },
+  });
+  const pending = (await request(path, { auth: true })).value;
+  assert.deepEqual(
+    pending.items.map(({ id }) => id),
+    ["c:invite"],
+  );
+  assert.equal(pending.items[0].spaceId, ids.invitedSpace);
+  assert.equal(pending.items[0].channelId, ids.invitedChannel);
+  assert.equal(
+    (await request(`${path}/read`, { auth: true, method: "POST", body: { ids: ["m:private"] } })).value.unreadCount,
+    1,
+  );
+  assert.equal(
+    (await request(`${path}/read`, { auth: true, method: "POST", body: { ids: ["c:invite"] } })).value.unreadCount,
+    0,
+  );
+  assert.equal((await request(root, { auth: true })).value.channelInvitations[0].channel.id, ids.invitedChannel);
+  assert.deepEqual((await request(root, { auth: true })).value.channels, [], "acknowledgement is not a private grant");
+  assert.equal((await request(`${channel}/invitation`, { auth: true, method: "POST" })).response.status, 200);
+  const accepted = (await request(path, { auth: true })).value;
+  assert.deepEqual(
+    accepted.items.map(({ id, unread }) => [id, unread]),
+    [["m:private", true]],
+  );
+  assert.equal(accepted.unreadCount, 1, "the earlier inaccessible ID was not acknowledged");
+  await request(`${path}/read`, { auth: true, method: "POST", body: { ids: ["m:private"] } });
+  assert.equal((await request(path, { auth: true })).value.items[0].unread, false);
+  assert.equal(
+    (await request(`${channel}/members/${ids.owner}`, { auth: maya, method: "DELETE" })).response.status,
+    204,
+  );
+  assert.deepEqual(
+    (await request(path, { auth: true })).value,
+    { items: [], unreadCount: 0, nextCursor: null },
+    "even read history requires a private grant",
+  );
+  await request(channel, { auth: maya, method: "PATCH", body: { name: "general", private: false } });
+  assert.equal((await request(path, { auth: true })).value.items[0].unread, false);
+  assert.equal((await request(`${root}/members/${ids.owner}`, { auth: maya, method: "DELETE" })).response.status, 204);
+  assert.deepEqual(
+    (await request(path, { auth: true })).value,
+    { items: [], unreadCount: 0, nextCursor: null },
+    "membership revocation also removes read history",
+  );
 });
 
 test("notification settings and overrides validate, persist in memory and reset", async (t) => {

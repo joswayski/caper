@@ -27,11 +27,34 @@ import SwiftUI
     private let model: AppModel
     private var host: NSHostingController<AppKitWorkspaceDialog>?
     private weak var previousResponder: NSResponder?
+    private var previousContext: String?
+    private var focusContext: String { [model.chat.editingContext, model.chat.threadRootID ?? "channel"].joined(separator: ":") }
 
     public init(model: AppModel) { self.model = model }
 
     public func show(_ item: WorkspaceSheet, in parent: NSViewController) {
         show(AppKitWorkspaceDialogState(item: .workspace(item)), in: parent)
+    }
+
+    public static func activityUnread(_ model: AppModel) -> Int { model.activityUnread }
+
+    public func activityInbox(in parent: NSViewController) {
+        guard model.account != nil else { return }
+        show(AppKitWorkspaceDialogState(item: .activity), in: parent)
+    }
+
+    /// Notification routes can arrive while another modal is open. Consume the
+    /// destination only after it can be presented, including an inbox handoff.
+    public func presentInvitations(in parent: NSViewController) {
+        guard model.account != nil, host == nil,
+              (parent.view as? AppKitWorkspaceContainer)?.dialogView == nil else { return }
+        if let invitation = model.notificationInvitation {
+            show(.invitation(invitation), in: parent)
+            if host != nil { model.notificationInvitation = nil }
+        } else if let invitation = model.notificationChannelInvitation {
+            show(.channelInvitation(invitation), in: parent)
+            if host != nil { model.notificationChannelInvitation = nil }
+        }
     }
 
     public func leaveChannel(_ channel: Channel, in parent: NSViewController) {
@@ -93,9 +116,14 @@ import SwiftUI
 
     private func show(_ state: AppKitWorkspaceDialogState, in parent: NSViewController) {
         guard host == nil, let container = parent.view as? AppKitWorkspaceContainer, container.dialogView == nil else { return }
-        let host = NSHostingController(rootView: AppKitWorkspaceDialog(model: model, state: state) { [weak self] in self?.close() })
+        let host = NSHostingController(rootView: AppKitWorkspaceDialog(model: model, state: state) { [weak self] in
+            guard let self, self.host?.rootView.state === state else { return }
+            self.close()
+        })
         self.host = host
         previousResponder = parent.view.window?.firstResponder
+        previousContext = focusContext
+        if case .activity = state.item { model.activityShown = true }
         parent.addChild(host)
         host.view.frame = parent.view.bounds
         host.view.autoresizingMask = [.width, .height]
@@ -111,25 +139,36 @@ import SwiftUI
         guard let host else { return }
         let item = host.rootView.state.item
         let window = host.view.window
+        let parent = host.parent
+        host.rootView.state.closed = true
         (host.parent?.view as? AppKitWorkspaceContainer)?.dialogView = nil
         host.view.removeFromSuperview()
         host.removeFromParent()
         self.host = nil
         switch item {
+        case .activity: model.activityShown = false
         case .forward(let message):
             if model.chat.forwardTarget?.id == message.id { model.chat.forwardTarget = nil }
         case .forwardConversation(let message):
             if model.chat.forwardConversationTarget?.id == message.id { model.chat.forwardConversationTarget = nil }
         default: break
         }
-        window?.makeFirstResponder(previousResponder)
+        // Opening an inbox destination can replace the old conversation/root.
+        // Never put focus back into a detached or different conversation editor.
+        if previousContext == focusContext,
+           let responder = previousResponder as? NSView, responder.window === window, !responder.isHiddenOrHasHiddenAncestor {
+            window?.makeFirstResponder(responder)
+        }
         previousResponder = nil
+        previousContext = nil
         model.whatsNew.workspaceModalOpen = false
+        if let parent { presentInvitations(in: parent) }
     }
 }
 
 private enum AppKitWorkspaceDialogItem {
     case workspace(WorkspaceSheet), leaveChannel(Channel)
+    case activity
     case edit(ChatMessage), history(ChatMessage), delete(ChatMessage)
     case reactions(ChatMessage, String)
     case forward(ChatMessage), forwardConversation(ChatMessage)
@@ -137,6 +176,7 @@ private enum AppKitWorkspaceDialogItem {
         switch self {
         case .workspace(let item): item.id
         case .leaveChannel(let channel): "leave-channel-\(channel.id)"
+        case .activity: "activity-inbox"
         case .edit(let message): "edit-\(message.id)"
         case .history(let message): "history-\(message.id)"
         case .delete(let message): "delete-\(message.id)"
@@ -154,6 +194,7 @@ private enum AppKitWorkspaceDialogItem {
     }
     var width: CGFloat {
         switch self {
+        case .activity: 680
         case .edit: 520
         case .history: 820
         case .forward: 460
@@ -165,6 +206,7 @@ private enum AppKitWorkspaceDialogItem {
 
 @MainActor @Observable private final class AppKitWorkspaceDialogState {
     var item: AppKitWorkspaceDialogItem
+    var closed = false
     var dismissDisabled = false
     var profileDismissAction: ProfileDismissAction?
     init(item: AppKitWorkspaceDialogItem) { self.item = item }
@@ -200,7 +242,14 @@ private struct AppKitWorkspaceDialog: View {
         }
         .onChange(of: state.item.id) { _, _ in state.dismissDisabled = false; state.profileDismissAction = nil }
         .onChange(of: model.chat.editingContext) { _, _ in if state.item.messageID != nil { dismiss() } }
-        .onDisappear { model.whatsNew.workspaceModalOpen = false }
+        .onChange(of: model.account?.id) { _, _ in dismiss() }
+        .onDisappear {
+            // Explicit close already cleaned up; its delayed disappearance must
+            // not clear the modal flag of an invitation replacing this inbox.
+            guard !state.closed else { return }
+            model.whatsNew.workspaceModalOpen = false
+            if case .activity = state.item { model.activityShown = false }
+        }
         .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
     }
 
@@ -211,6 +260,8 @@ private struct AppKitWorkspaceDialog: View {
                 // An old request must not close the dialog replacing it.
                 if state.item.id == item.id { dismiss() }
             }
+        case .activity:
+            ActivityInboxView(model: model, close: dismiss)
         case .leaveChannel(let channel):
             ConfirmationSheet(title: "Leave #\(channel.name)?",
                 detail: channel.private && !model.isOwner

@@ -3,6 +3,50 @@ import XCTest
 @testable import CaperCore
 
 @MainActor final class NavigationSidebarTests: XCTestCase {
+    func testActivityEntryRetainsFocusAndUpdatesUnreadWithoutAcknowledging() async throws {
+        _ = NSApplication.shared
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        model.account = Account(id: "owner", username: "owner", displayName: "Owner")
+        model.activityUnread = 17
+        let sidebar = NavigationSidebar(model: model)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = sidebar
+        defer { window.close() }
+        var opens = 0
+        sidebar.showActivity = { opens += 1 }
+        sidebar.layoutSubtreeIfNeeded()
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        func entry() -> NSButton? {
+            descendants(sidebar).compactMap { $0 as? NSButton }.first { $0.accessibilityIdentifier() == "activity-inbox" }
+        }
+        let button = try XCTUnwrap(entry())
+        XCTAssertEqual(button.accessibilityLabel(), "Notifications")
+        XCTAssertEqual(button.accessibilityValue() as? String, "17 unread")
+        XCTAssertTrue(window.makeFirstResponder(button))
+        button.performClick(nil)
+        XCTAssertEqual(opens, 1)
+        XCTAssertEqual(model.activityUnread, 17, "Opening the inbox is not a mark-read action")
+        for unread in [0, 2] {
+            model.activityUnread = unread
+            let updated = expectation(for: NSPredicate { _, _ in
+                MainActor.assumeIsolated { entry()?.accessibilityValue() as? String == "\(unread) unread" }
+            }, evaluatedWith: sidebar)
+            await fulfillment(of: [updated], timeout: 3)
+            sidebar.frame.size.width = 280
+            sidebar.layoutSubtreeIfNeeded()
+            XCTAssertTrue(entry() === button)
+            XCTAssertTrue(window.firstResponder === button, "An unread refresh must not replace the keyboard-focused entry")
+            XCTAssertEqual(button.accessibilityLabel(), "Notifications")
+            let visibleCounts = try XCTUnwrap(button.superview).subviews.compactMap { $0 as? NSTextField }
+            XCTAssertEqual(visibleCounts.map(\.stringValue), [unread > 0 ? String(unread) : ""])
+            XCTAssertTrue(visibleCounts.allSatisfy { !$0.isAccessibilityElement() })
+            XCTAssertTrue(visibleCounts.allSatisfy { $0.frame.minX >= 0 && $0.frame.maxX <= button.frame.maxX })
+        }
+        button.performClick(nil)
+        XCTAssertEqual(opens, 2)
+        XCTAssertEqual(model.activityUnread, 2)
+    }
+
     func testVoiceCardPreservesFocusAndLiveRowWhenChannelsCollapse() async throws {
         _ = NSApplication.shared
         let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))

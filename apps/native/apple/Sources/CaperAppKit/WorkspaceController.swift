@@ -27,6 +27,7 @@ import CaperCore
     private let composerObservation = NativeObservation()
     private let attachmentObservation = NativeObservation()
     private let forwardingObservation = NativeObservation()
+    private let invitationObservation = NativeObservation()
     private lazy var navigation = NavigationSidebar(model: model)
     private var preferredSidebarWidth = CGFloat(UserDefaults.standard.object(forKey: "caper.channelSidebarWidth") as? Double ?? 280)
     private var sidebarDragWidth: CGFloat?
@@ -186,6 +187,16 @@ import CaperCore
         if !inThread {
             navigation.show = { [weak self] item in
                 guard let self else { return }; self.dialogs.show(item, in: self)
+            }
+            navigation.showActivity = { [weak self] in
+                guard let self else { return }
+                self.picker.close(restoringFocus: false)
+                self.threadPane?.picker.close(restoringFocus: false)
+                self.pins.close(restoringFocus: false)
+                self.threadPane?.pins.close(restoringFocus: false)
+                self.reactionTooltip.close()
+                self.threadPane?.reactionTooltip.close()
+                self.dialogs.activityInbox(in: self)
             }
             navigation.leaveChannel = { [weak self] channel in
                 guard let self else { return }; self.dialogs.leaveChannel(channel, in: self)
@@ -348,6 +359,11 @@ import CaperCore
             self.view.needsLayout = true
         })
         if !inThread {
+            invitationObservation.start(reading: { [weak self] in
+                (self?.model.notificationInvitation?.id, self?.model.notificationChannelInvitation?.id)
+            }, update: { [weak self] _ in
+                guard let self else { return }; self.dialogs.presentInvitations(in: self)
+            })
             threadObservation.start(reading: { [weak self] in self?.model.chat.threadRootID }, update: { [weak self] root in
                 self?.updateThreadPane(root)
             })
