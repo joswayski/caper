@@ -68,6 +68,59 @@ pub fn projection(text: &str) -> (String, Vec<usize>) {
     (visible, indices)
 }
 
+/// The source selection for visible offsets `primary` and `secondary`
+/// (`indices` and `len` from `projection` and the source's scalar count). A
+/// caret sits just before the next visible character, or at the end of the
+/// source past the last one, so typing at the end of a styled run keeps its
+/// markers; a range's far end sits just after its last visible character.
+pub fn source_selection(
+    indices: &[usize],
+    len: usize,
+    primary: usize,
+    secondary: usize,
+) -> (usize, usize) {
+    let source = |offset: usize| {
+        if primary != secondary && offset == primary.max(secondary) {
+            indices[offset - 1] + 1
+        } else {
+            indices.get(offset).copied().unwrap_or(len)
+        }
+    };
+    (source(primary), source(secondary))
+}
+
+/// A source selection with each end moved to its visible place
+/// (`source_selection`), so no edit lands among hidden delimiters.
+pub fn normalized_selection(text: &str, primary: usize, secondary: usize) -> (usize, usize) {
+    let (_, indices) = projection(text);
+    let visible = |source: usize| indices.partition_point(|index| *index < source);
+    source_selection(
+        &indices,
+        text.chars().count(),
+        visible(primary),
+        visible(secondary),
+    )
+}
+
+/// The grapheme boundary before (`backward`) or after scalar offset `offset`
+/// of `text`, where moving and deleting by one character lands.
+pub fn adjacent_grapheme(text: &str, offset: usize, backward: bool) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut boundary = 0;
+    let mut previous = 0;
+    for grapheme in text.graphemes(true) {
+        boundary += grapheme.chars().count();
+        if backward && boundary >= offset {
+            return previous;
+        }
+        if !backward && boundary > offset {
+            return boundary;
+        }
+        previous = boundary;
+    }
+    boundary
+}
+
 pub use composer::{Edited, edit};
 
 /// One composer edit without a style carried from the previous key

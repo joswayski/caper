@@ -2,14 +2,9 @@
 use crate::egui;
 #[cfg(test)]
 use caper_client::formatting::parser;
-pub use caper_client::formatting::{edit, projection, runs, source_runs, toggle};
-
-/// The source position for a visible caret: just before the next visible character,
-/// or the end of the source (after any closing delimiters) past the last one, so
-/// typing at the end of a styled run keeps its markers.
-fn source_cursor(indices: &[usize], len: usize, offset: usize) -> usize {
-    indices.get(offset).copied().unwrap_or(len)
-}
+pub use caper_client::formatting::{
+    adjacent_grapheme, edit, projection, runs, source_runs, toggle,
+};
 
 fn source_selection(
     indices: &[usize],
@@ -17,16 +12,11 @@ fn source_selection(
     primary: usize,
     secondary: usize,
 ) -> egui::text::CCursorRange {
-    let source = |offset: usize| {
-        if primary != secondary && offset == primary.max(secondary) {
-            indices[offset - 1] + 1
-        } else {
-            source_cursor(indices, len, offset)
-        }
-    };
+    let (primary, secondary) =
+        caper_client::formatting::source_selection(indices, len, primary, secondary);
     egui::text::CCursorRange {
-        primary: egui::text::CCursor::new(source(primary)),
-        secondary: egui::text::CCursor::new(source(secondary)),
+        primary: egui::text::CCursor::new(primary),
+        secondary: egui::text::CCursor::new(secondary),
         ..Default::default()
     }
 }
@@ -35,13 +25,16 @@ pub fn normalized_selection(
     text: &str,
     range: egui::text::CCursorRange,
 ) -> egui::text::CCursorRange {
-    let (_, indices) = projection(text);
-    source_selection(
-        &indices,
-        text.chars().count(),
-        indices.partition_point(|index| *index < range.primary.index.0),
-        indices.partition_point(|index| *index < range.secondary.index.0),
-    )
+    let (primary, secondary) = caper_client::formatting::normalized_selection(
+        text,
+        range.primary.index.0,
+        range.secondary.index.0,
+    );
+    egui::text::CCursorRange {
+        primary: egui::text::CCursor::new(primary),
+        secondary: egui::text::CCursor::new(secondary),
+        ..Default::default()
+    }
 }
 
 pub fn copied_text(text: &str, range: egui::text::CCursorRange) -> String {
@@ -50,23 +43,6 @@ pub fn copied_text(text: &str, range: egui::text::CCursorRange) -> String {
         .sorted_cursors()
         .map(|cursor| indices.partition_point(|index| *index < cursor.index.0));
     visible.chars().skip(start).take(end - start).collect()
-}
-
-fn adjacent_grapheme(text: &str, offset: usize, backward: bool) -> usize {
-    use unicode_segmentation::UnicodeSegmentation;
-    let mut boundary = 0;
-    let mut previous = 0;
-    for grapheme in text.graphemes(true) {
-        boundary += grapheme.chars().count();
-        if backward && boundary >= offset {
-            return previous;
-        }
-        if !backward && boundary > offset {
-            return boundary;
-        }
-        previous = boundary;
-    }
-    boundary
 }
 
 /// Run before TextEdit: movement and deletion target visible graphemes. Actual text
