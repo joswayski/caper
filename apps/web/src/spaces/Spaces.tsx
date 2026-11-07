@@ -1580,7 +1580,7 @@ function BrowseChannelsDialog({
             <li key={item.id}>
               <button
                 type="button"
-                aria-label={`Preview #${item.name}${unread(item.id) ? ", unread activity" : ""}`}
+                aria-label={`Preview #${item.name}${item.private ? ", private" : ""}${unread(item.id) ? ", unread activity" : ""}`}
                 onClick={() => onPreview(item)}
               >
                 {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
@@ -3574,6 +3574,7 @@ export default function Spaces({
                 >
                   {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
                   <span>{item.name}</span>
+                  {item.private && <span className="sr-only">, private</span>}
                   {unreadSpaces.some((space) => space.channels.some((entry) => entry.id === item.id)) && (
                     <>
                       <i className="channel-unread" aria-hidden="true" />
