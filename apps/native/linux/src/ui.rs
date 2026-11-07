@@ -910,13 +910,13 @@ impl Ui {
         // its header, over a backdrop that closes it (`app::narrow`).
         let members_backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
         members_backdrop.add_css_class("drawer-backdrop");
-        members_backdrop.set_margin_top(53);
+        members_backdrop.set_margin_top(54);
         members_backdrop.set_visible(false);
         stage.add_overlay(&members_backdrop);
         let members_drawer = gtk::Revealer::new();
         members_drawer.set_transition_type(gtk::RevealerTransitionType::SlideLeft);
         members_drawer.set_halign(gtk::Align::End);
-        members_drawer.set_margin_top(53);
+        members_drawer.set_margin_top(54);
         members_drawer.add_css_class("members-drawer");
         stage.add_overlay(&members_drawer);
 

@@ -180,19 +180,20 @@ popover.menu .title {
   padding: 0;
   border-radius: 12px;
   border: none;
-  box-shadow: none;
+  box-shadow: inset 0 0 0 1px @caper_border;
   background: @caper_surface;
   color: @caper_text;
-  font-weight: 700;
-  font-size: 13px;
+  font-weight: 400;
+  font-size: 16px;
 }
 
 .rail button:hover {
   background: @caper_surface_raised;
 }
 
+/* As desktop: the open space is outlined, not filled. */
 .rail button.selected {
-  background: @caper_terracotta;
+  box-shadow: inset 0 0 0 2px @caper_terracotta;
 }
 
 /* Channels */
@@ -239,7 +240,6 @@ list.channels > row:hover {
 
 list.channels > row:selected {
   background: alpha(@caper_terracotta, 0.22);
-  box-shadow: inset 2px 0 @caper_terracotta;
   color: @caper_text;
 }
 
@@ -249,14 +249,13 @@ list.channels > row:selected {
 }
 
 .header {
-  min-height: 52px;
+  min-height: 53px;
   padding: 0 12px 0 20px;
   border-bottom: 1px solid @caper_border;
 }
 
 .channel-title {
-  font-weight: 700;
-  font-size: 16px;
+  font-size: 13.76px;
 }
 
 .status {

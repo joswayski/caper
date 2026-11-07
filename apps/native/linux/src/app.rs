@@ -5153,7 +5153,7 @@ impl App {
                     button.set_child(Some(&view.root));
                     button.add_css_class("icon");
                 }
-                None => button.set_label(&space_initials(&space.name)),
+                None => button.set_label(&caper_client::space_initial(&space.name)),
             }
             button.set_tooltip_text(Some(&space.name));
             if state.space.as_deref() == Some(&space.id) && state.direct.is_none() {
@@ -5229,7 +5229,8 @@ impl App {
                 } else {
                     Icon::Hash
                 },
-                "#b9bcbe",
+                // As desktop: the open channel's mark is terracotta.
+                if open { "#db6849" } else { "#b9bcbe" },
                 14,
             ));
             let name = label(&channel.name, &[]);
@@ -5442,11 +5443,3 @@ pub fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {
     popover.popup();
 }
 
-/// The rail's label: the first word's first two letters, as desktop shows.
-fn space_initials(name: &str) -> String {
-    let mut chars = name.split_whitespace().next().unwrap_or("?").chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars.take(1)).collect())
-        .unwrap_or_default()
-}

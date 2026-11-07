@@ -2780,7 +2780,7 @@ impl App {
         };
         root.set_visible(true);
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        let tile = label(&super::space_initials(&preview.space.name), &["space-tile"]);
+        let tile = label(&caper_client::space_initial(&preview.space.name), &["space-tile"]);
         tile.set_xalign(0.5);
         line.append(&tile);
         line.append(&label(&preview.space.name, &["admin-heading"]));
@@ -3123,7 +3123,7 @@ impl App {
         for space in &state.admin.invitations {
             let tile: gtk::Button =
                 crate::app::named("GtkButton", &format!("Invitation to {}", space.name));
-            tile.set_label(&super::space_initials(&space.name));
+            tile.set_label(&caper_client::space_initial(&space.name));
             tile.set_tooltip_text(Some(&format!("Invitation to {}", space.name)));
             tile.add_css_class("invited");
             let weak = Rc::downgrade(self);
