@@ -205,95 +205,29 @@ pub fn name(value: &str) -> Option<&'static str> {
         .map(|entry| entry.name.as_str())
 }
 
-fn normalized(value: &str) -> String {
-    value.to_lowercase().replace(['_', '-'], " ")
-}
+/// Web's emoji autocomplete (`shared/messages/emoji.rs`); it finds the
+/// formatting grammar as `super::parser`.
+#[path = "../../../../shared/messages/emoji.rs"]
+mod autocomplete;
+use crate::formatting::parser;
+pub use autocomplete::{Token, token};
 
+/// Up to six entries web offers for a `:` query (`autocomplete::Search`).
 pub fn suggestions(query: &str) -> Vec<&'static Entry> {
-    if query.is_empty() {
-        return ["1f44d", "1f600", "2764", "1f389", "1f680", "1f440"]
-            .iter()
-            .filter_map(|id| {
-                catalog()
-                    .iter()
-                    .find(|entry| entry.selectable && entry.id == *id)
-            })
-            .collect();
-    }
-    let needle = normalized(query);
-    let mut matches: Vec<_> = catalog()
-        .iter()
-        .filter(|entry| entry.selectable)
-        .filter_map(|entry| {
-            let name = normalized(&entry.name);
-            let keywords = normalized(&entry.keywords);
-            let rank = if name == needle {
-                0
-            } else if name.starts_with(&needle) {
-                1
-            } else if keywords.starts_with(&needle) || keywords.contains(&format!(" {needle}")) {
-                2
-            } else if name.contains(&needle) || keywords.contains(&needle) {
-                3
-            } else {
-                return None;
-            };
-            Some((rank, entry))
-        })
-        .collect();
-    // Within a rank the shorter name is the closer match: ":fi" offers fire before film-frames.
-    matches.sort_by_key(|(rank, entry)| (*rank, entry.name.chars().count()));
-    matches
+    static SEARCH: OnceLock<autocomplete::Search> = OnceLock::new();
+    let search = SEARCH.get_or_init(|| {
+        autocomplete::Search::new(catalog().iter().map(|entry| autocomplete::Choice {
+            id: &entry.id,
+            name: &entry.name,
+            keywords: &entry.keywords,
+            selectable: entry.selectable,
+        }))
+    });
+    search
+        .suggestions(query)
         .into_iter()
-        .take(6)
-        .map(|(_, entry)| entry)
+        .map(|index| &catalog()[index])
         .collect()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Token {
-    pub start: usize,
-    pub end: usize,
-    pub query: String,
-}
-
-fn query_character(value: char) -> bool {
-    value.is_ascii_alphanumeric() || matches!(value, '_' | '+' | '-')
-}
-
-// egui cursors count Unicode scalars, not UTF-8 bytes or grapheme clusters.
-pub fn token(text: &str, caret: usize) -> Option<Token> {
-    if caret > text.chars().count() {
-        return None;
-    }
-    let (visible, indices) = crate::formatting::projection(text);
-    let caret = indices.partition_point(|index| *index < caret);
-    let chars: Vec<_> = visible.chars().collect();
-    if chars
-        .get(caret)
-        .is_some_and(|c| *c == ':' || query_character(*c))
-    {
-        return None;
-    }
-    let mut start = caret;
-    while start > 0 && query_character(chars[start - 1]) {
-        start -= 1;
-    }
-    let colon = start.checked_sub(1)?;
-    if chars[colon] != ':'
-        || (colon > 0 && !chars[colon - 1].is_whitespace() && !"([{".contains(chars[colon - 1]))
-    {
-        return None;
-    }
-    // One character is an emoticon (":D", ":P", ":3"), not a search; Enter sends it as typed.
-    if caret - start == 1 {
-        return None;
-    }
-    Some(Token {
-        start: indices[colon],
-        end: indices[caret - 1] + 1,
-        query: chars[start..caret].iter().collect(),
-    })
 }
 
 pub fn insert(text: &str, token: &Token, emoji: &str) -> Option<(String, usize)> {
@@ -455,6 +389,54 @@ mod tests {
         assert_eq!(name("\u{1f3f3}\u{200d}\u{1f308}"), Some("rainbow-flag"));
         assert_eq!(name("👍🏽"), None, "skin tones have no catalog name");
         assert_eq!(name("not an emoji"), None);
+    }
+
+    /// Every client replays these, generated from web; see shared/messages/emoji-cases.json.
+    #[test]
+    fn autocomplete_follows_the_shared_cases() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../shared/messages/emoji-cases.json"))
+                .unwrap();
+        // The cases count UTF-16 units; egui cursors count scalars.
+        let scalar = |text: &str, unit: u64| {
+            text.chars()
+                .scan(0, |units, c| {
+                    let at = *units;
+                    *units += c.len_utf16() as u64;
+                    Some(at)
+                })
+                .take_while(|at| *at < unit)
+                .count()
+        };
+        let tokens = cases["tokens"].as_array().unwrap();
+        assert!(tokens.len() > 400);
+        for case in tokens {
+            let text = case["text"].as_str().unwrap();
+            let expected = case["token"].as_object().map(|token| Token {
+                start: scalar(text, token["start"].as_u64().unwrap()),
+                end: scalar(text, token["end"].as_u64().unwrap()),
+                query: token["query"].as_str().unwrap().to_owned(),
+            });
+            let caret = scalar(text, case["caret"].as_u64().unwrap());
+            assert_eq!(token(text, caret), expected, "{text:?} at {caret}");
+        }
+        for case in cases["suggestions"].as_array().unwrap() {
+            let query = case["query"].as_str().unwrap();
+            let ids: Vec<_> = suggestions(query)
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect();
+            assert_eq!(
+                ids,
+                case["ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|id| id.as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                "{query:?}"
+            );
+        }
     }
 
     #[test]
