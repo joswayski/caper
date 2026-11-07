@@ -7,8 +7,8 @@ workspace, so mobile builds never compile the desktop client's media stack.
 
 | Module | Sources | Android | Apple |
 | --- | --- | --- | --- |
-| Bold/italic formatting | `shared/messages/formatting.rs` | `data/Formatting.kt` | |
-| Links | `shared/messages/links.rs` | `data/Links.kt` | |
+| Bold/italic formatting | `shared/messages/formatting.rs` | `data/Formatting.kt` | `MessageFormatting.swift` |
+| Links | `shared/messages/links.rs` | `data/Links.kt` | `MessageLinks.swift` |
 | Mention tokens | `shared/messages/mentions.rs` | `MentionAutocomplete.kt` (`mentionSpans`) | |
 | Name characters | `apps/native/client/src/names.rs` | `model/Names.kt` | |
 
