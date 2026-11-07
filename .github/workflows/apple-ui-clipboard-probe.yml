@@ -1,5 +1,5 @@
-# Focused test-only successor validation. Never merge this workflow.
-# No diagnostic overlay and no frozen-subset rerun.
+# Prepared root-Escape and replacement diagnostics. Never merge this workflow.
+# Publishing apple-root-escape-diagnostic does not trigger a run.
 name: Apple isolated UI clipboard probe
 on:
   push:
@@ -12,13 +12,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: successor-ed30d156
-            source: ed30d15602f665539f1f5f9d510881248676f4cb
+          - name: root-escape-9c208156
+            source: 9c208156bafa0a7be6c0863ed5c885c1c71cc31b
     runs-on: macos-15-intel
     timeout-minutes: 90
     env:
       SOURCE_SHA: ${{ matrix.source }}
-      SOURCE_TREE: e2ecd15c9c47f3da35169a83c8dc5c8371a213db
+      SOURCE_TREE: 294801d192b1ff8ddf89e8fde7d60210d230ff9b
+      OVERLAY_SHA256: 4a5795bf141671eaa4e756f94d4a5b41a30abf8edafe4c029cfd33c647771637
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
@@ -58,9 +59,18 @@ jobs:
           git rev-parse HEAD 'HEAD^{tree}' | tee -a ui/environment.txt
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          git diff --exit-code
           shasum -a 256 scripts/native-parity-fixture.mjs apps/native/apple/native-project.yml apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift > ui/source-hashes.txt
           swift -e 'import AppKit; print("Effective AppKit Keyboard navigation: \(NSApplication.shared.isFullKeyboardAccessEnabled)")' | tee -a ui/environment.txt
           git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA:.github/probe-inputs/appkit-replacement-trace.patch" > ui/trace.patch
+          echo "$OVERLAY_SHA256  ui/trace.patch" | shasum -a 256 -c -
+          shasum -a 256 apps/native/apple/Sources/CaperAppKit/WorkspaceController.swift apps/native/apple/Sources/CaperCore/MessageFormatting.swift apps/native/apple/Sources/CaperCore/AppKitHosting.swift > ui/original-source-hashes.txt
+          git apply --check ui/trace.patch
+          git apply ui/trace.patch
+          git diff --check
+          git diff --binary > ui/applied-overlay.patch
+          shasum -a 256 apps/native/apple/Sources/CaperAppKit/WorkspaceController.swift apps/native/apple/Sources/CaperCore/MessageFormatting.swift apps/native/apple/Sources/CaperCore/AppKitHosting.swift > ui/overlaid-source-hashes.txt
           mkdir -p apps/native/apple/.build/rnnoise
           git show "$GITHUB_SHA:.github/probe-inputs/rnnoise-model.tar.gz" > apps/native/apple/.build/rnnoise-model.tar.gz
           echo '0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37  apps/native/apple/.build/rnnoise-model.tar.gz' | shasum -a 256 -c -
@@ -68,10 +78,10 @@ jobs:
           echo 'f61ee0b3f4c4cd337303e003d333357c5eaf25ef5d75a742109ee59e9a0a3932  apps/native/apple/.build/rnnoise-source.tar.gz' | shasum -a 256 -c -
           tar -xzf apps/native/apple/.build/rnnoise-source.tar.gz -C apps/native/apple/.build/rnnoise --strip-components=1
           tar -xzf apps/native/apple/.build/rnnoise-model.tar.gz -C apps/native/apple/.build/rnnoise src/rnnoise_data.c src/rnnoise_data.h
-      - name: Run only the corrected forwarding and formatting methods
+      - name: Run forwarding, profile guard and replacement trace separately
         continue-on-error: true
         run: |
-          git diff --exit-code
+          git diff --exit-code -- apps/native/apple/Tests scripts/native-parity-fixture.mjs apps/native/apple/native-project.yml
           bash apps/native/apple/prepare.sh
           generator=(apps/native/apple/.build/xcodegen-*)
           swift run --package-path "${generator[0]}" xcodegen --spec apps/native/apple/native-project.yml --project apps/native/apple
@@ -82,12 +92,13 @@ jobs:
           curl --silent --fail http://127.0.0.1:3001/health >/dev/null
           tests=(
             testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts
+            testAccountDialogsProtectProfileAndRestoreComposerFocus
             testDraftFormattingCopyRepairUndoMenusAndSend
           )
           printf '%s\n' "${tests[@]}" > ui/selected-tests.txt
           # A failed async XCTest continued into the next method in the original
           # run. Separate runner processes keep its assertions from contaminating
-          # the next result; each of the two approved methods runs once.
+          # the next result; each selected method runs once.
           arguments=(-project apps/native/apple/CaperNative.xcodeproj -scheme CaperAppKitTests
             -destination "platform=macOS,arch=$(uname -m)" -derivedDataPath apps/native/apple/DerivedData-UI)
           xcodebuild "${arguments[@]}" build-for-testing 2>&1 | tee ui/build.log
@@ -119,7 +130,7 @@ jobs:
           name: clipboard-ui-${{ matrix.name }}
           path: ui/
           retention-days: 7
-      - name: Require the exact two corrected methods without skips
+      - name: Require the exact three methods without skips
         if: always()
         run: |
           python3 - <<'PY'
@@ -128,6 +139,7 @@ jobs:
           expected = set((path / 'selected-tests.txt').read_text().splitlines())
           assert expected == {
               'testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts',
+              'testAccountDialogsProtectProfileAndRestoreComposerFocus',
               'testDraftFormattingCopyRepairUndoMenusAndSend',
           }, expected
           assert {p.parent.name for p in path.glob('*/summary.json')} == expected

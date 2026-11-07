@@ -1,0 +1,62 @@
+diff --git a/apps/native/apple/Sources/CaperAppKit/WorkspaceController.swift b/apps/native/apple/Sources/CaperAppKit/WorkspaceController.swift
+index 95f72ce1..b3ba60eb 100644
+--- a/apps/native/apple/Sources/CaperAppKit/WorkspaceController.swift
++++ b/apps/native/apple/Sources/CaperAppKit/WorkspaceController.swift
+@@ -850,11 +850,19 @@ import CaperCore
+     }
+ 
+     func textView(_ view: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
++        if ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity" {
++            let event = NSApp.currentEvent
++            let key = event?.type == .keyDown ? event?.characters : nil
++            print("CAPER_REPLACE callback previous=\(String(reflecting: view.string)) selected=\(view.selectedRange()) affected=\(affectedCharRange) replacement=\(String(reflecting: replacementString)) event=\(String(describing: event?.type)) key=\(String(reflecting: key)) formatting=\(formattingDraft) marked=\(view.hasMarkedText()) undo=\(view.undoManager?.isUndoing == true) redo=\(view.undoManager?.isRedoing == true)")
++        }
+         guard !formattingDraft, !view.hasMarkedText(), let replacement = replacementString,
+               view.undoManager?.isUndoing != true, view.undoManager?.isRedoing != true else { return true }
+         let proposed = (view.string as NSString).replacingCharacters(in: affectedCharRange, with: replacement)
+         let result = typing.repairEdit(view.string, text: proposed,
+             selection: NSRange(location: affectedCharRange.location + replacement.utf16.count, length: 0), replacing: affectedCharRange)
++        if ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity" {
++            print("CAPER_REPLACE result proposed=\(String(reflecting: proposed)) text=\(String(reflecting: result.text)) selection=\(result.selection)")
++        }
+         guard result.text != proposed else { return true }
+         formattingDraft = true
+         view.insertText(result.text, replacementRange: NSRange(location: 0, length: view.string.utf16.count))
+@@ -880,6 +888,9 @@ import CaperCore
+     }
+ 
+     func textViewDidChangeSelection(_ notification: Notification) {
++        if ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity" {
++            print("CAPER_REPLACE selection text=\(String(reflecting: composer.string)) range=\(composer.selectedRange()) formatting=\(formattingDraft)")
++        }
+         guard !formattingDraft else { return }
+         typing.observe(composer.string, selection: composer.selectedRange())
+         suggestionsDismissed = false
+diff --git a/apps/native/apple/Sources/CaperCore/AppKitHosting.swift b/apps/native/apple/Sources/CaperCore/AppKitHosting.swift
+index d293006c..fdee538a 100644
+--- a/apps/native/apple/Sources/CaperCore/AppKitHosting.swift
++++ b/apps/native/apple/Sources/CaperCore/AppKitHosting.swift
+@@ -291,6 +291,9 @@ private struct AppKitWorkspaceDialog: View {
+     }
+ 
+     private func requestClose() {
++        if ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity" {
++            print("CAPER_ESCAPE requestClose item=\(state.item.id) dismissDisabled=\(state.dismissDisabled) profileGuard=\(state.profileDismissAction != nil) responder=\(String(describing: NSApp.keyWindow?.firstResponder))")
++        }
+         if state.item.id == "profile" { state.profileDismissAction?.action() }
+         else if !state.dismissDisabled { dismiss() }
+     }
+diff --git a/apps/native/apple/Sources/CaperCore/MessageFormatting.swift b/apps/native/apple/Sources/CaperCore/MessageFormatting.swift
+index 86511b01..8dcad463 100644
+--- a/apps/native/apple/Sources/CaperCore/MessageFormatting.swift
++++ b/apps/native/apple/Sources/CaperCore/MessageFormatting.swift
+@@ -20,6 +20,9 @@ public struct ComposerTyping {
+     /// swap, undo, an IME) ends it.
+     public mutating func repairEdit(_ previous: String, text: String, selection: NSRange, replacing range: NSRange) -> (text: String, selection: NSRange) {
+         let continuing = range.length == 0 && left?.caret == range.location && left?.text == previous ? pending : -1
++        if ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] == "parity" {
++            print("CAPER_REPLACE bridge previous=\(String(reflecting: previous)) proposed=\(String(reflecting: text)) replacing=\(range) selection=\(selection) pending=\(pending) continuing=\(continuing) leftCaret=\(String(describing: left?.caret)) leftMatches=\(left?.text == previous)")
++        }
+         let result = MessageFormatting.edit(previous, text: text, selection: selection, continuing: continuing)
+         // The caret the composer shows: every composer normalizes it past a
+         // closed style's delimiters (and lets the system place it there when
