@@ -3677,6 +3677,25 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.textFields["invite-link-expiry-number"].exists)
         let username = app.textFields["Exact username"]
         XCTAssertTrue(username.isEnabled, "The dialog must not inherit the disabled workspace")
+        #if os(iOS)
+        func assertInviteControlsVisible(_ state: String) {
+            let keyboard = app.keyboards.firstMatch
+            let scroll = app.scrollViews["space-settings-scroll"]
+            let invite = app.buttons["Invite"]
+            XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+            let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let viewport = scroll.frame.intersection(app.frame)
+                return !viewport.isEmpty && username.frame.height > 0 && invite.frame.height >= 41
+                    && viewport.contains(username.frame) && viewport.contains(invite.frame)
+                    && max(username.frame.maxY, invite.frame.maxY) <= keyboard.frame.minY
+            }, object: nil)
+            let result = XCTWaiter.wait(for: [visible], timeout: 3)
+            let geometry = XCTAttachment(string: "username=\(username.frame) invite=\(invite.frame) viewport=\(scroll.frame) keyboard=\(keyboard.frame)")
+            geometry.name = "manage-space-\(state)-geometry"; geometry.lifetime = .keepAlways; add(geometry)
+            capture("manage-space-\(state)", app: app)
+            XCTAssertEqual(result, .completed, "The entire username field and Invite button must fit inside the visible dialog above the keyboard")
+        }
+        #endif
         let remove = app.buttons["Remove"].firstMatch
         #if os(macOS)
         // The space icon section above can push members below the fold, and a
@@ -3707,7 +3726,7 @@ final class CaperParityUITests: XCTestCase {
         // existing fixture account that has never belonged to this space.
         type("sam", into: username)
         #if os(iOS)
-        capture("manage-space-keyboard", app: app)
+        assertInviteControlsVisible("keyboard")
         username.typeText("\n")
         #else
         app.buttons["Invite"].tap()
@@ -3722,7 +3741,11 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("@sam", in: app)
         XCTAssertTrue(username.value as? String == "" || username.value as? String == username.placeholderValue,
             "Successful invitation clears the editable field")
+        #if os(iOS)
+        assertInviteControlsVisible("pending-invitation")
+        #else
         capture("manage-space-pending-invitation", app: app)
+        #endif
         app.buttons["Close"].firstMatch.tap()
         XCTAssertFalse(app.textFields["Exact username"].exists)
         XCTAssertTrue(app.buttons["Back to Browse"].exists || app.buttons["account-profile"].isHittable)

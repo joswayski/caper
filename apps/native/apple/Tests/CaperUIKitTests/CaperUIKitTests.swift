@@ -816,6 +816,31 @@ final class CaperUIKitTests: XCTestCase {
         app.buttons["Space settings"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Manage space"].firstMatch.waitForExistence(timeout: 10))
         screenshot("uikit-space-settings")
+        let username = app.textFields["Exact username"]
+        func assertInviteControlsVisible(_ state: String) {
+            let keyboard = app.keyboards.firstMatch
+            let scroll = app.scrollViews["space-settings-scroll"]
+            let invite = app.buttons["Invite"]
+            XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+            let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let viewport = scroll.frame.intersection(app.frame)
+                return !viewport.isEmpty && username.frame.height > 0 && invite.frame.height >= 41
+                    && viewport.contains(username.frame) && viewport.contains(invite.frame)
+                    && max(username.frame.maxY, invite.frame.maxY) <= keyboard.frame.minY
+            }, object: nil)
+            let result = XCTWaiter.wait(for: [visible], timeout: 3)
+            let geometry = XCTAttachment(string: "username=\(username.frame) invite=\(invite.frame) viewport=\(scroll.frame) keyboard=\(keyboard.frame)")
+            geometry.name = "uikit-space-settings-\(state)-geometry"; geometry.lifetime = .keepAlways; add(geometry)
+            screenshot("uikit-space-settings-\(state)")
+            XCTAssertEqual(result, .completed, "The entire username field and Invite button must fit inside the visible dialog above the keyboard")
+        }
+        username.tap(); username.typeText("sam")
+        assertInviteControlsVisible("keyboard")
+        username.typeText("\n")
+        XCTAssertTrue(app.staticTexts["Pending invitations  1"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Invitation sent. They must accept before joining."].exists)
+        XCTAssertTrue(username.value as? String == "" || username.value as? String == username.placeholderValue)
+        assertInviteControlsVisible("pending-invitation")
         app.buttons["Close"].firstMatch.tap()
 
         app.buttons["create-channel"].tap()
