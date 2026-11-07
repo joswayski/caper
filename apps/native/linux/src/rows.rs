@@ -802,6 +802,12 @@ pub enum Action {
     View(Vec<caper_client::model::Attachment>, usize),
     /// Open the full file in the browser or the system's player.
     Open(caper_client::model::Attachment),
+    /// An image's own menu (Copy image, Copy image link, Open image in
+    /// browser), anchored to its tile.
+    ImageMenu {
+        attachment: caper_client::model::Attachment,
+        anchor: gtk::Widget,
+    },
     /// Open an http(s) link.
     OpenUrl(String),
     /// Show or hide a run of blocked messages.

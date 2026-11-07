@@ -3136,6 +3136,7 @@ impl App {
                 crate::viewer::open(&self.ui.window, &self.images, files, index)
             }
             Action::Open(attachment) => self.images.media.open(&attachment),
+            Action::ImageMenu { attachment, anchor } => self.image_menu(attachment, &anchor),
             Action::OpenUrl(url) => crate::media::open_uri(&url),
             Action::ToggleBlocked(key) => {
                 {
@@ -3237,6 +3238,91 @@ impl App {
             menu.append_section(None, &danger);
         }
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        popup(&popover, anchor);
+    }
+
+    /// Desktop's menu on an image: Copy image (the original, once loaded),
+    /// Copy image link and Open image in browser, with what copying did.
+    fn image_menu(
+        self: &Rc<Self>,
+        attachment: caper_client::model::Attachment,
+        anchor: &gtk::Widget,
+    ) {
+        let attachment = self.images.media.resolve(&attachment);
+        let popover = gtk::Popover::new();
+        popover.add_css_class("menu");
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let status = label("", &["muted", "small", "image-menu-status"]);
+        status.set_visible(false);
+        // Loads the original off screen, as the viewer does.
+        let original = gtk::Picture::new();
+        original.set_visible(false);
+        for (text, item) in [
+            ("Copy image", 0),
+            ("Copy image link", 1),
+            ("Open image in browser", 2),
+        ] {
+            let button = gtk::Button::with_label(text);
+            button.add_css_class("flat");
+            button.add_css_class("menu-item");
+            if let Some(label) = button.child().and_downcast::<gtk::Label>() {
+                label.set_xalign(0.0);
+            }
+            let (app, menu, status, original, attachment) = (
+                self.clone(),
+                popover.clone(),
+                status.clone(),
+                original.clone(),
+                attachment.clone(),
+            );
+            button.connect_clicked(move |button| match item {
+                0 => {
+                    let Some(url) = (if attachment.content_type == "image/gif" {
+                        caper_client::attachments::inline_source(&attachment).map(str::to_owned)
+                    } else {
+                        attachment.url.clone()
+                    }) else {
+                        return;
+                    };
+                    status.set_label("Copying image…");
+                    status.set_visible(true);
+                    button.set_sensitive(false);
+                    let (status, button, copied) =
+                        (status.clone(), button.clone(), Cell::new(false));
+                    original.connect_paintable_notify(move |picture| {
+                        let texture = picture
+                            .paintable()
+                            .and_then(|paintable| paintable.downcast::<gdk::Texture>().ok());
+                        // An animation's first frame only.
+                        if let Some(texture) = texture.filter(|_| !copied.replace(true)) {
+                            button.clipboard().set_texture(&texture);
+                            status.set_label("Image copied");
+                            button.set_sensitive(true);
+                        }
+                    });
+                    let key = if attachment.content_type == "image/gif" {
+                        attachment.id.clone()
+                    } else {
+                        crate::media::Media::full_key(&attachment.id)
+                    };
+                    app.images.media.bind(&original, &key, &url);
+                }
+                1 => {
+                    if let Some(url) = &attachment.url {
+                        button.clipboard().set_text(url);
+                    }
+                    menu.popdown();
+                }
+                _ => {
+                    menu.popdown();
+                    app.images.media.open(&attachment);
+                }
+            });
+            list.append(&button);
+        }
+        list.append(&status);
+        list.append(&original);
+        popover.set_child(Some(&list));
         popup(&popover, anchor);
     }
 

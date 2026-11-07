@@ -255,6 +255,41 @@ fn tile(
     if video && ready {
         return inline_video(images, attachment, &tile, size, view);
     }
+    if ready {
+        // Desktop's image menu: a right click, or the keyboard's menu key.
+        let menu = {
+            let (handler, attachment) = (handler.clone(), attachment.clone());
+            move |anchor: &gtk::Widget| {
+                handler(Action::ImageMenu {
+                    attachment: attachment.clone(),
+                    anchor: anchor.clone(),
+                })
+            }
+        };
+        let click = gtk::GestureClick::new();
+        click.set_button(gtk::gdk::BUTTON_SECONDARY);
+        let open = menu.clone();
+        click.connect_pressed(move |gesture, _, _, _| {
+            if let Some(tile) = gesture.widget() {
+                open(&tile);
+            }
+        });
+        tile.add_controller(click);
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(move |keys, key, _, modifiers| {
+            let menu_key = key == gtk::gdk::Key::Menu
+                || (key == gtk::gdk::Key::F10
+                    && modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK));
+            match keys.widget() {
+                Some(tile) if menu_key => {
+                    menu(&tile);
+                    gtk::glib::Propagation::Stop
+                }
+                _ => gtk::glib::Propagation::Proceed,
+            }
+        });
+        tile.add_controller(keys);
+    }
     tile.connect_clicked(move |_| view());
     tile.upcast()
 }

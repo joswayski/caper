@@ -2411,3 +2411,8 @@ popover.format-bar button:hover {
 .format-italic {
   font-style: italic;
 }
+
+/* What Copy image did, under the image menu's items. */
+.image-menu-status {
+  margin: 2px 12px 4px;
+}
