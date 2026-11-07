@@ -46,6 +46,153 @@ import XCTest
 
     private nonisolated static func resetFixture() async throws { try await control(["reset": true]) }
 
+    func testComposerEmojiPickerSelectionUndoCancelAndScalarLimit() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch(fixture: "klipy")
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        let emoji = app.buttons["composer-emoji"]
+        XCTAssertTrue(app.buttons["composer-gif"].waitForExistence(timeout: 10))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: emoji)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        capture("composer accessories", app: app)
+        func replaceDraft(_ text: String) {
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+            composer.click(); composer.typeKey("a", modifierFlags: .command); composer.typeKey("v", modifierFlags: .command)
+            XCTAssertEqual(composer.value as? String, text)
+        }
+        let original = "🚀 replace tail"
+        replaceDraft(original)
+        composer.typeKey(.leftArrow, modifierFlags: .command)
+        composer.typeKey(.rightArrow, modifierFlags: []); composer.typeKey(.rightArrow, modifierFlags: [])
+        for _ in 0..<7 { composer.typeKey(.rightArrow, modifierFlags: .shift) }
+        app.buttons["composer-gif"].hover(); emoji.hover(); emoji.click()
+        let search = app.textFields["reaction-picker-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.click(); search.typeText("tomato")
+        XCTAssertTrue(app.buttons["tomato"].waitForExistence(timeout: 5))
+        capture("emoji search with saved selection", app: app)
+        app.buttons["tomato"].click()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "🚀 🍅 tail", "Insert at the saved UTF-16 selection, not the end")
+        app.typeText("!")
+        XCTAssertEqual(composer.value as? String, "🚀 🍅! tail", "Selection restores the composer and caret")
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertEqual(composer.value as? String, "🚀 🍅 tail")
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertEqual(composer.value as? String, original, "Emoji insertion must be one native undo step")
+        emoji.click()
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.click(); search.typeText("no-such-emoji-zzzz")
+        XCTAssertTrue(app.descendants(matching: .any)["reaction-picker-empty"].waitForExistence(timeout: 5))
+        capture("emoji empty search", app: app)
+        app.buttons["Cancel"].click()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, original)
+        emoji.click()
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        app.buttons["channel-chan00000002"].click()
+        XCTAssertTrue(app.staticTexts["# design"].waitForExistence(timeout: 10))
+        XCTAssertFalse(search.exists)
+        XCTAssertEqual(composer.value as? String, "", "Closing a picker during navigation must not change the new draft")
+        app.buttons["channel-chan00000001"].click()
+        XCTAssertTrue(app.staticTexts["# general"].waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, original)
+        // A combining sequence is two Unicode scalars, but one grapheme.
+        replaceDraft(String(repeating: "e\u{301}", count: 1499) + "🚀")
+        XCTAssertFalse(app.staticTexts["composer-counter"].exists)
+        composer.typeText("x")
+        XCTAssertTrue(app.staticTexts["3,000 / 4,000"].waitForExistence(timeout: 5))
+        let full = String(repeating: "x", count: 3999) + "🚀"
+        replaceDraft(full)
+        XCTAssertTrue(app.buttons["send-message"].isEnabled)
+        emoji.click()
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.click(); search.typeText("tomato"); app.buttons["tomato"].click()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, full, "A picker must not insert a 4,001st scalar")
+        app.typeText("x")
+        XCTAssertTrue(app.staticTexts["4,001 / 4,000"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["send-message"].isEnabled)
+        resize(app, width: 900)
+        capture("composer counter over limit narrow", app: app)
+        XCTAssertLessThanOrEqual(composer.frame.maxX, app.buttons["composer-gif"].frame.minX)
+        XCTAssertLessThanOrEqual(app.buttons["composer-gif"].frame.maxX, emoji.frame.minX)
+        XCTAssertLessThanOrEqual(emoji.frame.maxX, app.buttons["send-message"].frame.minX)
+    }
+
+    func testGifPickerRecoverySendViewerAndDraftRetention() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        try await Self.control(["uploadsEnabled": true])
+        let source = try imageFile()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let app = launch(fixture: "klipy")
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        let gif = app.buttons["composer-gif"]
+        XCTAssertTrue(gif.waitForExistence(timeout: 10))
+        let available = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["attach-files-button"])
+        XCTAssertEqual(XCTWaiter.wait(for: [available], timeout: 10), .completed)
+        composer.click(); composer.typeText("TEST FIXTURE — keep this draft")
+        NSPasteboard.general.clearContents(); NSPasteboard.general.writeObjects([source as NSURL])
+        composer.typeKey("v", modifierFlags: .command)
+        XCTAssertTrue(app.buttons["staged-file-remove"].waitForExistence(timeout: 10))
+        gif.click()
+        let search = app.textFields["gif-picker-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["gif-picker-item-caper-fixture-gif"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["gif-picker-attribution"].exists)
+        capture("GIF picker trending", app: app)
+        search.click(); search.typeText("fail")
+        XCTAssertTrue(app.buttons["gif-picker-retry"].waitForExistence(timeout: 10))
+        capture("GIF picker provider error", app: app)
+        app.buttons["gif-picker-retry"].click()
+        XCTAssertTrue(app.buttons["gif-picker-retry"].waitForExistence(timeout: 10))
+        search.click(); search.typeKey("a", modifierFlags: .command); search.typeText("empty")
+        XCTAssertTrue(app.staticTexts["gif-picker-empty"].waitForExistence(timeout: 10))
+        search.click(); search.typeKey("a", modifierFlags: .command); search.typeText("hello")
+        let tile = app.buttons["gif-picker-item-caper-fixture-gif"]
+        XCTAssertTrue(tile.waitForExistence(timeout: 10))
+        try await Self.control(["holdSends": true])
+        tile.click()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        let pending = app.groups.matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-message-")).firstMatch
+        XCTAssertTrue(pending.waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE — keep this draft")
+        XCTAssertTrue(app.buttons["staged-file-remove"].exists, "A GIF sends alone and keeps staged files")
+        capture("GIF pending without clearing composer", app: app)
+        try await Self.control(["holdSends": false])
+        XCTAssertTrue(pending.waitForNonExistence(timeout: 15))
+        let delivered = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Open TEST FIXTURE")).firstMatch
+        XCTAssertTrue(delivered.waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE — keep this draft")
+        XCTAssertTrue(app.buttons["staged-file-remove"].exists)
+        delivered.click()
+        XCTAssertTrue(app.images["media-viewer-image"].waitForExistence(timeout: 10), "The delivered GIF must decode in the real viewer")
+        capture("decoded GIF viewer", app: app)
+        app.buttons["media-viewer-close"].click()
+        resize(app, width: 900)
+        gif.click()
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        app.segmentedControls["gif-picker-kind"].buttons["Stickers"].click()
+        let sticker = app.buttons["gif-picker-item-caper-fixture-sticker"]
+        XCTAssertTrue(sticker.waitForExistence(timeout: 10))
+        capture("sticker picker narrow", app: app)
+        sticker.click()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        let confirmed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Open TEST FIXTURE")).count == 2
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [confirmed], timeout: 15), .completed)
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE — keep this draft")
+        XCTAssertTrue(app.buttons["staged-file-remove"].exists)
+        capture("GIF and sticker delivered narrow", app: app)
+    }
+
     func testVoiceRosterControlsNavigationAndParticipantAudio() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
