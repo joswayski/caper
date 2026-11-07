@@ -103,6 +103,46 @@ pub unsafe extern "C" fn caper_mobile_composer_edit(
     crate::composer_edit(previous, next, start, end, continuing).into()
 }
 
+/// `crate::emoji_catalog(json)`: loads the catalog the app ships.
+///
+/// # Safety
+/// `json` must point to `len` readable bytes, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_emoji_catalog(json: *const u8, len: usize) -> bool {
+    if len == 0 {
+        return false;
+    }
+    // SAFETY: the caller passes `len` readable bytes.
+    crate::emoji_catalog(unsafe { std::slice::from_raw_parts(json, len) })
+}
+
+/// `crate::emoji_token(text, caret)`: the UTF-16 token range, then its query.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_emoji_token(
+    utf8: *const u8,
+    len: usize,
+    caret: i32,
+) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    crate::emoji_token(unsafe { text(utf8, len) }, caret).into()
+}
+
+/// `crate::emoji_suggestions(query)`: catalog positions, best first.
+///
+/// # Safety
+/// `utf8` must point to `len` bytes of UTF-8, or may be null when `len` is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_emoji_suggestions(
+    utf8: *const u8,
+    len: usize,
+) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    crate::emoji_suggestions(unsafe { text(utf8, len) }).into()
+}
+
 /// `crate::names::has_hidden(text)`: whether a display or space name holds a
 /// character names may not.
 ///

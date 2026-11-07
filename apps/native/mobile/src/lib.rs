@@ -14,6 +14,9 @@
 /// Composer edits as web makes them; it finds the grammar as `super::parser`.
 #[path = "../../../../shared/messages/composer.rs"]
 pub mod composer;
+/// Web's emoji autocomplete; it finds the grammar as `super::parser`.
+#[path = "../../../../shared/messages/emoji.rs"]
+pub mod emoji;
 #[path = "../../../../shared/messages/formatting.rs"]
 pub mod formatting;
 use formatting as parser;
@@ -205,6 +208,58 @@ pub fn composer_edit(
     ];
     out.extend(edited.text.encode_utf16().map(i32::from));
     out
+}
+
+/// The host's catalog search, from the bytes it ships (`emoji_catalog`).
+static EMOJI: std::sync::OnceLock<emoji::Search> = std::sync::OnceLock::new();
+
+/// Loads `shared/emoji/catalog.json` as the app ships it, for
+/// `emoji_suggestions`. The first catalog stays; false when `json` is not one.
+pub fn emoji_catalog(json: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        id: String,
+        name: String,
+        keywords: String,
+        selectable: bool,
+    }
+    if EMOJI.get().is_some() {
+        return true;
+    }
+    let Ok(entries) = serde_json::from_slice::<Vec<Entry>>(json) else {
+        return false;
+    };
+    let _ = EMOJI.set(emoji::Search::new(entries.iter().map(|entry| {
+        emoji::Choice {
+            id: &entry.id,
+            name: &entry.name,
+            keywords: &entry.keywords,
+            selectable: entry.selectable,
+        }
+    })));
+    true
+}
+
+/// The `:` token with the caret at UTF-16 offset `caret`: `[start, end]` as a
+/// UTF-16 source range, then the query's characters (ASCII), or nothing.
+pub fn emoji_token(text: &str, caret: i32) -> Vec<i32> {
+    let caret = scalar(text, usize::try_from(caret).unwrap_or_default());
+    emoji::token(text, caret).map_or_else(Vec::new, |token| {
+        let mut out = vec![
+            offset(utf16(text, token.start)),
+            offset(utf16(text, token.end)),
+        ];
+        out.extend(token.query.chars().map(|c| c as i32));
+        out
+    })
+}
+
+/// Positions in the loaded catalog web offers for `query`, best first; none
+/// before `emoji_catalog`.
+pub fn emoji_suggestions(query: &str) -> Vec<i32> {
+    EMOJI.get().map_or_else(Vec::new, |search| {
+        search.suggestions(query).into_iter().map(offset).collect()
+    })
 }
 
 #[cfg(test)]
@@ -420,6 +475,47 @@ mod tests {
                     .collect();
                 assert_eq!(actual, expected, "{text}");
             }
+        }
+    }
+
+    /// The hosts pass the catalog they ship; every shared case agrees.
+    #[test]
+    fn emoji_autocomplete_follows_the_shared_cases() {
+        // Only this test loads the catalog.
+        assert!(emoji_suggestions("fire").is_empty());
+        assert!(!emoji_catalog(b"not a catalog"));
+        let bytes = include_bytes!("../../../../shared/emoji/catalog.json");
+        assert!(emoji_catalog(bytes));
+        let catalog: Vec<serde_json::Value> = serde_json::from_slice(bytes).unwrap();
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../shared/messages/emoji-cases.json"))
+                .unwrap();
+        for case in cases["tokens"].as_array().unwrap() {
+            let text = case["text"].as_str().unwrap();
+            let caret = case["caret"].as_i64().unwrap() as i32;
+            let expected: Vec<i32> = case["token"].as_object().map_or_else(Vec::new, |token| {
+                let mut out = vec![
+                    token["start"].as_i64().unwrap() as i32,
+                    token["end"].as_i64().unwrap() as i32,
+                ];
+                out.extend(token["query"].as_str().unwrap().chars().map(|c| c as i32));
+                out
+            });
+            assert_eq!(emoji_token(text, caret), expected, "{text:?} at {caret}");
+        }
+        for case in cases["suggestions"].as_array().unwrap() {
+            let query = case["query"].as_str().unwrap();
+            let ids: Vec<&str> = emoji_suggestions(query)
+                .into_iter()
+                .map(|index| catalog[index as usize]["id"].as_str().unwrap())
+                .collect();
+            let expected: Vec<&str> = case["ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap())
+                .collect();
+            assert_eq!(ids, expected, "{query:?}");
         }
     }
 

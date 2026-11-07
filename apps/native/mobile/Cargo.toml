@@ -24,8 +24,7 @@ jni = ["dep:jni-sys"]
 jni-sys = { version = "=0.3.0", optional = true }
 # shared/messages/formatting.rs derives Deserialize for its contract tests.
 serde = { version = "1.0", features = ["derive"] }
-
-[dev-dependencies]
+# Reads the emoji catalog the host already ships (`emoji_catalog`).
 serde_json = "1.0"
 
 [lints.clippy]

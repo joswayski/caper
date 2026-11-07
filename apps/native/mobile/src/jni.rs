@@ -3,7 +3,10 @@
 //! every offset still lines up with the Kotlin string.
 #![allow(unsafe_code)]
 
-use jni_sys::{JNI_FALSE, JNI_TRUE, JNIEnv, jboolean, jclass, jint, jintArray, jsize, jstring};
+use jni_sys::{
+    JNI_FALSE, JNI_TRUE, JNIEnv, jboolean, jbyte, jbyteArray, jclass, jint, jintArray, jsize,
+    jstring,
+};
 
 /// # Safety
 /// `env` must be the calling thread's JNI environment and `text` a live string.
@@ -144,6 +147,72 @@ pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_composerE
             )
         },
         _ => std::ptr::null_mut(),
+    }
+}
+
+/// `CaperMobile.emojiCatalog(json)`: `crate::emoji_catalog`, from the bytes
+/// of the catalog asset the app ships.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live byte array.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_emojiCatalog(
+    env: *mut JNIEnv,
+    _class: jclass,
+    json: jbyteArray,
+) -> jboolean {
+    // SAFETY: a JNI environment always carries its function table.
+    let functions = unsafe { &**env };
+    let (Some(length), Some(region)) = (functions.GetArrayLength, functions.GetByteArrayRegion)
+    else {
+        return JNI_FALSE;
+    };
+    // SAFETY: `json` is a live array reference for this native call.
+    let len = unsafe { length(env, json) };
+    let mut bytes = vec![0u8; usize::try_from(len).unwrap_or_default()];
+    // SAFETY: `bytes` holds exactly `len` bytes.
+    unsafe { region(env, json, 0, len, bytes.as_mut_ptr().cast::<jbyte>()) };
+    if crate::emoji_catalog(&bytes) {
+        JNI_TRUE
+    } else {
+        JNI_FALSE
+    }
+}
+
+/// `CaperMobile.emojiToken(text, caret)`: `crate::emoji_token`.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live string.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_emojiToken(
+    env: *mut JNIEnv,
+    _class: jclass,
+    text: jstring,
+    caret: jint,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    match unsafe { string(env, text) } {
+        // SAFETY: forwarded from the JVM's call.
+        Some(text) => unsafe { int_array(env, &crate::emoji_token(&text, caret)) },
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// `CaperMobile.emojiSuggestions(query)`: `crate::emoji_suggestions`.
+///
+/// # Safety
+/// Called by the JVM with its environment and a live string.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_emojiSuggestions(
+    env: *mut JNIEnv,
+    _class: jclass,
+    query: jstring,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    match unsafe { string(env, query) } {
+        // SAFETY: forwarded from the JVM's call.
+        Some(query) => unsafe { int_array(env, &crate::emoji_suggestions(&query)) },
+        None => std::ptr::null_mut(),
     }
 }
 
