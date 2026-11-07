@@ -824,15 +824,19 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             mutable.value = mutable.value.copy(selectedChannel = channel, messagesLoading = true)
         conversationHistoryJob = viewModelScope.launch {
             try {
-                // Fetch before installing history or allowing any automatic read acknowledgement.
-                // A background badge refresh may already have replaced the cached unread snapshot.
-                val visitUnread = if (!channel.direct) runCatching {
-                    api.unreadSpaces(requireAccountToken()).spaces.flatMap { it.channels }
-                        .firstOrNull { it.id == channel.id }
-                }.getOrElse { if (it is CancellationException) throw it else null } else null
+                // Fetched beside the history, and awaited before installing it or allowing any automatic
+                // read acknowledgement. A background badge refresh may already have replaced the cached
+                // unread snapshot.
+                val visitUnreadRequest = if (!channel.direct) async {
+                    runCatching {
+                        api.unreadSpaces(requireAccountToken()).spaces.flatMap { it.channels }
+                            .firstOrNull { it.id == channel.id }
+                    }
+                } else null
                 val report = pendingFocus?.takeIf { it.channelId == channel.id }
                 val history = if (report != null) api.history(accountToken, channel.id, around = report.thread)
                     else conversationHistories[channel.id] ?: api.history(accountToken, channel.id)
+                val visitUnread = visitUnreadRequest?.await()?.getOrElse { if (it is CancellationException) throw it else null }
                 if (request != generation || accountRequest != accountGeneration || navigation != conversationOpeningRevision) return@launch
                 require(history.channel?.id == channel.id && history.space?.id == channel.spaceId) { "Caper returned another conversation." }
                 rememberConversationHistory()
