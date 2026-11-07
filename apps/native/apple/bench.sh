@@ -58,6 +58,8 @@ for _ in {1..50}; do curl --silent --fail "$fixture/health" >/dev/null && break;
 curl --silent --fail "$fixture/health" >/dev/null || { cat "${TMPDIR:-/tmp}/caper-bench-fixture.log" >&2; exit 1; }
 
 export TEST_RUNNER_CAPER_FIXTURE_URL="$fixture"
+# The journeys check #bench-formatting's newest row and page boundaries.
+export TEST_RUNNER_CAPER_BENCH_FORMATTED_MESSAGES="${CAPER_BENCH_FORMATTED_MESSAGES:-400}"
 results="$ROOT/BenchResults-$APP.xcresult"
 rm -rf "$results"
 "${build[@]}" -resultBundlePath "$results" -test-timeouts-enabled YES \
