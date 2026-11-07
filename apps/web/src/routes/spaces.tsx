@@ -19,9 +19,9 @@ export const Route = createFileRoute("/spaces")({
   loader: {
     staleReloadMode: "blocking",
     handler: async ({ location }) => {
-      const account = await getAccount();
-      if (!account) throw redirect({ to: "/login", replace: true });
-      if (!account.username || !account.displayName) throw redirect({ to: "/profile", replace: true });
+      // Start spaces and DMs with the account read instead of after it, saving a
+      // round trip; a signed-out visitor's extra requests are ignored.
+      const spaces = listSpaces().catch(() => undefined);
       // Read DMs beside the landing conversation so the sidebar arrives whole,
       // but never hold the conversation for them: Spaces fetches a late list itself.
       let initialDirects: DirectConversation[] | undefined;
@@ -29,7 +29,10 @@ export const Route = createFileRoute("/spaces")({
         (result) => (initialDirects = result.conversations),
         () => undefined,
       );
-      const initialSpaceList = await listSpaces().catch(() => undefined);
+      const account = await getAccount();
+      if (!account) throw redirect({ to: "/login", replace: true });
+      if (!account.username || !account.displayName) throw redirect({ to: "/profile", replace: true });
+      const initialSpaceList = await spaces;
       const landing = initialSpaceList
         ? await prepareSpaceLanding(account.id, initialSpaceList.spaces, new URLSearchParams(location.searchStr))
         : undefined;
