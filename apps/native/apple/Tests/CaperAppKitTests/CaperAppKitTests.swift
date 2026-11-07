@@ -46,6 +46,294 @@ import XCTest
 
     private nonisolated static func resetFixture() async throws { try await control(["reset": true]) }
 
+    private func messageMenuItem(_ title: String, app: XCUIApplication, body: XCUIElement) -> XCUIElement {
+        let item = app.menuItems[title]
+        return item.exists ? item : body.menuItems[title]
+    }
+
+    func testOwnMessageActionsEditConflictHistoryAndDeleteConfirmation() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        func replace(_ field: XCUIElement, with text: String) {
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+            field.click(); field.typeKey("a", modifierFlags: .command); field.typeKey("v", modifierFlags: .command)
+            XCTAssertEqual(field.value as? String, text)
+        }
+        let link = "https://example.test/left?q=one#tail"
+        let original = "TEST FIXTURE — α-left 👩🏽‍💻 café e\u{301}\n東京 → \(link)\nيمين — END-7"
+        replace(composer, with: original)
+        app.buttons["send-message"].click()
+        let delivered = app.textViews.matching(NSPredicate(format: "value == %@ AND identifier != %@", original, "message-composer")).firstMatch
+        XCTAssertTrue(delivered.waitForExistence(timeout: 10), "Send must reach the fixture API and gateway")
+        XCTAssertTrue(delivered.identifier.hasPrefix("message-"))
+        let id = String(delivered.identifier.dropFirst("message-".count))
+        XCTAssertEqual(id.count, 15, "Actions must target the confirmed server ID, not a pending row")
+        let body = app.textViews["message-\(id)"]
+        let row = app.descendants(matching: .any)["message-row-\(id)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "")
+        func item(_ title: String) -> XCUIElement { messageMenuItem(title, app: app, body: body) }
+        func options() {
+            row.hover()
+            let button = app.buttons["message-options-\(id)"]
+            XCTAssertTrue(button.waitForExistence(timeout: 5)); XCTAssertTrue(button.isHittable)
+            button.hover(); button.click()
+            XCTAssertTrue(item("Copy message ID").waitForExistence(timeout: 5))
+        }
+        options()
+        for title in ["Add reaction…", "Edit message", "Copy text", "Open link", "Copy link", "Copy message ID", "Delete message"] {
+            XCTAssertTrue(item(title).exists, "Missing own-message action: \(title)")
+            XCTAssertTrue(item(title).isEnabled)
+        }
+        XCTAssertFalse(item("Message history").exists, "An unedited message has no history action")
+        XCTAssertFalse(app.buttons["message-history-\(id)"].exists)
+        for title in ["Reply", "Reply in thread", "Pin message", "Unpin message", "Forward message", "Forward…"] {
+            XCTAssertFalse(item(title).exists, "Unimplemented actions must not appear as placeholders")
+        }
+        capture("own message options wide", app: app)
+        NSPasteboard.general.clearContents(); item("Copy text").click()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), original, "Copy text preserves asymmetric Unicode and line breaks")
+        options(); NSPasteboard.general.clearContents(); item("Copy message ID").click()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), id)
+        body.rightClick()
+        XCTAssertTrue(item("Copy link").waitForExistence(timeout: 5))
+        // Check the real Open target's availability, but never launch an external browser.
+        XCTAssertTrue(item("Open link").isEnabled)
+        NSPasteboard.general.clearContents(); item("Copy link").click()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), link, "Copy link must exclude surrounding non-ASCII text")
+
+        options(); item("Edit message").click()
+        let editor = app.textViews["message-edit-text"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertEqual(editor.value as? String, original)
+        XCTAssertFalse(composer.exists, "The on-demand editor hides background controls from accessibility")
+        let save = app.buttons["Save changes"]
+        replace(editor, with: " \n\t")
+        XCTAssertFalse(save.isEnabled, "Whitespace-only edits cannot be saved")
+        replace(editor, with: String(repeating: "e\u{301}", count: 2000) + "🚀")
+        XCTAssertFalse(save.isEnabled, "The 4,000-character limit counts Unicode scalars, not graphemes")
+        capture("message editor invalid draft wide", app: app)
+        app.buttons["Cancel"].click()
+        XCTAssertTrue(editor.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(body.value as? String, original, "Cancelling an edit must retain the original")
+        XCTAssertFalse(app.buttons["message-history-\(id)"].exists)
+
+        options(); item("Edit message").click()
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        let edited = "TEST FIXTURE — β-right 🥑\n\(link)\n終わり — END-29"
+        replace(editor, with: edited)
+        XCTAssertTrue(save.isEnabled)
+        let latest = original + "\nTEST FIXTURE — changed in another client"
+        try await Self.control(["incomingEdit": ["channelId": "chan00000001", "messageId": id, "text": latest]])
+        save.click()
+        let conflict = app.staticTexts["message changed; reload it before editing again"]
+        XCTAssertTrue(conflict.waitForExistence(timeout: 10), "The fixture must reject the stale expectedRevision")
+        XCTAssertEqual(editor.value as? String, edited, "A conflict must not discard the local draft")
+        capture("message edit conflict wide", app: app)
+        app.buttons["Discard draft and load latest"].click()
+        let reloaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", latest), object: editor)
+        XCTAssertEqual(XCTWaiter.wait(for: [reloaded], timeout: 10), .completed)
+        XCTAssertFalse(conflict.exists)
+        replace(editor, with: edited); save.click()
+        XCTAssertTrue(editor.waitForNonExistence(timeout: 10))
+        let saved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", edited), object: body)
+        XCTAssertEqual(XCTWaiter.wait(for: [saved], timeout: 10), .completed)
+        let history = app.buttons["message-history-\(id)"]
+        XCTAssertTrue(history.waitForExistence(timeout: 5)); history.click()
+        XCTAssertTrue(app.staticTexts["Message history"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Previous version"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Current version"].exists)
+        for text in [latest, edited] {
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", text, text)).firstMatch.exists,
+                "History must show both the previous and current text, not just revision labels")
+        }
+        capture("message history old and new wide", app: app)
+        app.buttons["Close"].click()
+        XCTAssertTrue(body.waitForExistence(timeout: 5))
+        resize(app, width: 900)
+        options(); XCTAssertTrue(item("Message history").exists)
+        capture("edited message options narrow", app: app)
+        item("Message history").click()
+        XCTAssertTrue(app.staticTexts["Previous version"].waitForExistence(timeout: 10))
+        capture("message history narrow", app: app)
+        app.buttons["Close"].click()
+
+        options(); item("Delete message").click()
+        XCTAssertTrue(app.staticTexts["Delete message?"].waitForExistence(timeout: 5))
+        capture("delete message confirmation narrow", app: app)
+        app.buttons["Cancel"].click()
+        XCTAssertTrue(body.waitForExistence(timeout: 5))
+        XCTAssertEqual(body.value as? String, edited, "Cancel leaves the saved message intact")
+        try await Self.control(["failure": ["path": "/api/chat/channels/chan00000001/messages/\(id)", "method": "DELETE",
+            "status": 503, "error": "TEST FIXTURE: deletion unavailable."]])
+        options(); item("Delete message").click(); app.buttons["Delete"].click()
+        let error = app.staticTexts["conversation-error"]
+        XCTAssertTrue(error.waitForExistence(timeout: 10))
+        XCTAssertEqual(error.value as? String, "Couldn’t delete the message. Try again.")
+        XCTAssertEqual(body.value as? String, edited, "A rejected deletion must not manufacture a tombstone")
+        capture("delete request failed narrow", app: app)
+        options(); item("Delete message").click(); app.buttons["Delete"].click()
+        let deleted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "This message was deleted."), object: body)
+        XCTAssertEqual(XCTWaiter.wait(for: [deleted], timeout: 10), .completed)
+        XCTAssertTrue(row.exists, "Deletion keeps the server row as a tombstone")
+        XCTAssertFalse(history.exists)
+        options()
+        XCTAssertTrue(item("Copy message ID").waitForExistence(timeout: 5))
+        let tombstoneMenu = app.menus.containing(.menuItem, identifier: "Copy message ID").firstMatch
+        XCTAssertEqual(tombstoneMenu.menuItems.allElementsBoundByIndex.map(\.label), ["Copy message ID"])
+        for title in ["Add reaction…", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message"] {
+            XCTAssertFalse(item(title).exists, "A tombstone only offers Copy message ID")
+        }
+        capture("tombstone options menu narrow", app: app)
+        NSPasteboard.general.clearContents(); item("Copy message ID").click()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), id)
+        body.rightClick()
+        XCTAssertTrue(item("Copy message ID").waitForExistence(timeout: 5))
+        // Native text-selection commands may remain for the placeholder. Only
+        // message actions are restricted; they must not resurrect deleted text.
+        for title in ["Add reaction…", "Edit message", "Message history", "Copy text", "Open link", "Copy link", "Delete message"] {
+            XCTAssertFalse(item(title).exists, "Right-click must not restore actions on deleted content")
+        }
+        app.typeKey(.escape, modifierFlags: [])
+        let peer = app.textViews["message-chan00000001m02"] // Maya, not the signed-in owner.
+        XCTAssertTrue(peer.waitForExistence(timeout: 5)); peer.rightClick()
+        XCTAssertTrue(messageMenuItem("Copy text", app: app, body: peer).waitForExistence(timeout: 5))
+        XCTAssertTrue(messageMenuItem("Add reaction…", app: app, body: peer).exists)
+        XCTAssertTrue(messageMenuItem("Block Maya…", app: app, body: peer).exists)
+        for title in ["Edit message", "Delete message", "Message history"] {
+            XCTAssertFalse(messageMenuItem(title, app: app, body: peer).exists, "Ownership must be checked for the menu's target")
+        }
+        capture("peer context menu narrow", app: app)
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
+    func testMessageQuickReactionsPickerAndTextSelectionStayIndependent() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let id = "chan00000001m01" // Labelled owner message in the HTTP fixture, not a local reaction overlay.
+        try await Self.control(["incomingReaction": ["channelId": "chan00000001", "messageId": id,
+            "emoji": "👍", "userId": "member000001", "active": true]])
+        let app = launch()
+        defer { app.terminate() }
+        let body = app.textViews["message-\(id)"]
+        XCTAssertTrue(body.waitForExistence(timeout: 15))
+        let row = app.descendants(matching: .any)["message-row-\(id)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let composer = app.textViews["message-composer"]
+        composer.click(); composer.typeText("TEST FIXTURE — leave this draft alone")
+        row.hover()
+        let quick = ["👍", "❤️", "😂"].map { app.buttons["quick-reaction-\(id)-\($0)"] }
+        for button in quick {
+            XCTAssertTrue(button.waitForExistence(timeout: 5)); XCTAssertTrue(button.isHittable)
+            XCTAssertEqual(button.frame.midY, quick[0].frame.midY, accuracy: 1)
+            // A live pixel check catches missing/blank artwork without an OS-dependent golden image.
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: button.screenshot().pngRepresentation))
+            var coloured = 0
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    if let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                       colour.saturationComponent > 0.4, colour.brightnessComponent > 0.5 { coloured += 1 }
+                }
+            }
+            XCTAssertGreaterThan(coloured, 10, "Quick reactions must render colourful emoji artwork, not empty controls")
+        }
+        let add = app.buttons["add-reaction-\(id)"]
+        let options = app.buttons["message-options-\(id)"]
+        XCTAssertLessThanOrEqual(quick[2].frame.maxX, add.frame.minX)
+        XCTAssertLessThanOrEqual(add.frame.maxX, options.frame.minX)
+        let thumbBefore = quick[0].screenshot().pngRepresentation
+        quick[1].hover()
+        XCTAssertEqual(quick[0].screenshot().pngRepresentation, thumbBefore, "Hover must not highlight its neighbor")
+        capture("quick reaction artwork and neighbor hover wide", app: app)
+        let thumb = app.buttons["reaction-\(id)-👍"]
+        XCTAssertEqual(thumb.label, "👍 1")
+        for count in [2, 1] {
+            row.hover(); quick[0].hover(); quick[0].click()
+            let toggled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "👍 \(count)"), object: thumb)
+            XCTAssertEqual(XCTWaiter.wait(for: [toggled], timeout: 10), .completed, "Quick reaction toggles only the current account")
+        }
+        row.hover(); add.hover(); options.hover(); add.click()
+        let search = app.textFields["reaction-picker-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.click(); search.typeText("no-such-emoji-zzzz")
+        XCTAssertTrue(app.descendants(matching: .any)["reaction-picker-empty"].waitForExistence(timeout: 5))
+        capture("message reaction picker empty wide", app: app)
+        app.buttons["Cancel"].click()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(thumb.label, "👍 1")
+        XCTAssertFalse(app.buttons["reaction-\(id)-🍅"].exists, "Cancel must not add a reaction")
+        resize(app, width: 900)
+        body.rightClick()
+        let menuAdd = messageMenuItem("Add reaction…", app: app, body: body)
+        XCTAssertTrue(menuAdd.waitForExistence(timeout: 5)); menuAdd.click()
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        XCTAssertEqual(search.value as? String, "", "A new picker clears the cancelled query")
+        search.click(); search.typeText("tomato")
+        // The Touch Bar can also expose the catalog name; choose the actual grid button.
+        let tomato = app.scrollViews["reaction-picker-grid"].buttons["tomato"]
+        XCTAssertTrue(tomato.waitForExistence(timeout: 5)); XCTAssertTrue(tomato.isHittable)
+        capture("message reaction tomato search narrow", app: app)
+        tomato.click()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        let chip = app.buttons["reaction-\(id)-🍅"]
+        XCTAssertTrue(chip.waitForExistence(timeout: 10)); XCTAssertEqual(chip.label, "🍅 1")
+        // Re-enter through HTTP history so an optimistic-only chip cannot pass.
+        app.buttons["channel-chan00000002"].click()
+        XCTAssertTrue(app.staticTexts["# design"].waitForExistence(timeout: 10))
+        app.buttons["channel-chan00000001"].click()
+        XCTAssertTrue(chip.waitForExistence(timeout: 10)); XCTAssertEqual(chip.label, "🍅 1")
+        XCTAssertEqual(thumb.label, "👍 1")
+
+        let start = body.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 2, dy: 10))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 90, dy: 0)))
+        NSPasteboard.general.clearContents(); app.typeKey("c", modifierFlags: .command)
+        let selection = try XCTUnwrap(NSPasteboard.general.string(forType: .string))
+        let text = try XCTUnwrap(body.value as? String)
+        XCTAssertFalse(selection.isEmpty); XCTAssertLessThan(selection.count, text.count)
+        XCTAssertTrue(text.contains(selection), "Dragging must select text, not invoke Copy text for the entire row")
+        row.hover(); quick[0].hover(); quick[1].hover(); quick[2].hover(); add.hover(); options.hover()
+        app.buttons["profile-author-chan00000001m02"].hover()
+        NSPasteboard.general.clearContents(); app.typeKey("c", modifierFlags: .command)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), selection, "Neighbor hovers must not steal the text selection or responder")
+        try await Self.control(["incomingReaction": ["channelId": "chan00000001", "messageId": id,
+            "emoji": "🍅", "userId": "member000002", "active": true]])
+        let incoming = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "🍅 2"), object: chip)
+        XCTAssertEqual(XCTWaiter.wait(for: [incoming], timeout: 10), .completed, "A peer reaction must arrive over the real fixture WebSocket")
+        NSPasteboard.general.clearContents(); app.typeKey("c", modifierFlags: .command)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), selection, "Live reaction updates preserve the native text selection")
+        XCTAssertEqual(composer.value as? String, "TEST FIXTURE — leave this draft alone")
+        XCTAssertFalse(search.exists); XCTAssertFalse(app.textViews["message-edit-text"].exists)
+        XCTAssertFalse(app.buttons["reaction-chan00000001m02-🍅"].exists, "Reactions belong to the original target, not a hovered neighbor")
+        capture("live reaction with selected message text narrow", app: app)
+        chip.click()
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "🍅 1"), object: chip)
+        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed, "Clicking the chip removes only your own reaction")
+
+        let failure: [String: Any] = ["path": "/api/chat/channels/chan00000001/messages/\(id)/reactions", "method": "PUT",
+            "status": 503, "error": "TEST FIXTURE: reaction unavailable."]
+        try await Self.control(["failure": failure])
+        row.hover(); quick[0].click()
+        let retry = app.buttons["reaction-retry-\(id)"]
+        let dismiss = app.buttons["reaction-dismiss-\(id)"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10)); XCTAssertTrue(dismiss.exists)
+        XCTAssertEqual(thumb.label, "👍 1", "A failed mutation must roll back the optimistic count")
+        capture("reaction failure retry narrow", app: app)
+        retry.click()
+        XCTAssertTrue(retry.waitForNonExistence(timeout: 10))
+        let retried = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "👍 2"), object: thumb)
+        XCTAssertEqual(XCTWaiter.wait(for: [retried], timeout: 10), .completed)
+        try await Self.control(["failure": failure])
+        row.hover(); quick[0].click()
+        XCTAssertTrue(dismiss.waitForExistence(timeout: 10))
+        dismiss.click()
+        XCTAssertTrue(dismiss.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(thumb.label, "👍 2", "Dismiss clears the error, not the stored reaction")
+    }
+
     func testComposerEmojiPickerSelectionUndoCancelAndScalarLimit() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
