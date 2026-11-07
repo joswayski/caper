@@ -65,12 +65,12 @@ import CaperCore
     private lazy var latest = NativeButton("Back to latest") { [weak self] in
         guard let self else { return }
         let context = self.dialogs.messageContext, root = self.model.chat.threadRootID
-        let channel = self.model.chat.channelID, viewer = self.model.chat.viewerID
+        let conversation = self.dialogs.conversationContext
         Task {
             if self.inThread { await self.model.chat.loadThread() }
             else { await self.model.chat.retryLoad() }
             guard self.inThread ? self.dialogs.messageContext == context && self.model.chat.threadRootID == root
-                : self.model.chat.channelID == channel && self.model.chat.viewerID == viewer else { return }
+                : self.dialogs.conversationContext == conversation else { return }
             guard self.inThread ? self.model.chat.threadError == nil : !self.model.chat.loadFailed else { return }
             self.model.chat.focusedMessageID = nil
             self.timeline.showLatest()
@@ -281,7 +281,7 @@ import CaperCore
             let projected = chat.displayedMessages
             let visible = (root.flatMap { id in projected.first { $0.id == id }.map { [$0] } } ?? [])
                 + projected.filter { ids.contains($0.id) }
-            let identity = [chat.channelID ?? "", root ?? "channel"].joined(separator: ":")
+            let identity = [self.dialogs.conversationContext, root ?? "channel"].joined(separator: ":")
             self.timeline.update(visible, conversationID: identity,
                 viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs,
                 pending: chat.pendingMessage.flatMap { $0.threadRootId == root ? $0 : nil },
@@ -463,7 +463,7 @@ import CaperCore
         }
         composer.placeholder = inThread ? "Reply to thread…" : "Message \(model.selectedDirectMessage?.peer.displayName ?? "#\(chat.channelName)")"
         let ready = !inThread || (root != nil && !chat.threadLoading)
-        pinsButton.isEnabled = chat.channelID != nil
+        pinsButton.isEnabled = pins.isAvailable
         composer.isEditable = ready && directBar.isHidden && chat.canInteract && !chat.sending && !chat.sendRejected && chat.pendingMessage == nil
         send.isEnabled = ready && directBar.isHidden && chat.canInteract && chat.canPressSend(inThread: inThread)
         send.title = chat.sending ? "Sending…" : inThread ? "Send reply" : "Send"
