@@ -98,29 +98,12 @@ class AttachmentPreparer(private val context: Context) {
     ): PreparedAttachment {
         val base = PreparedAttachment(picked.source, picked.name, picked.contentType, AttachmentPolicy.kind(picked.contentType), picked.source.length())
         if (AttachmentEdits.isEdited(edit)) return prepareEdited(base, settings, directory, requireNotNull(edit), transcodeProgress)
-        val prepared = when {
+        return when {
             picked.contentType.startsWith("image/") -> withContext(Dispatchers.Default) { prepareImage(base, settings, directory) }
             picked.contentType.startsWith("video/") -> prepareVideo(base, settings, directory, transcodeProgress)
             base.kind == "audio" -> withContext(Dispatchers.IO) { base.copy(durationMs = metadata(base.file)?.durationMs) }
             else -> base
         }
-        return if (prepared.file == base.file) withContext(Dispatchers.IO) { stripOriginal(prepared, directory) } else prepared
-    }
-
-    /**
-     * A file uploading as its original still drops location and camera metadata, losslessly:
-     * JPEG Exif/XMP (orientation kept), PNG text/Exif chunks, MP4/MOV `udta`/`meta` boxes.
-     */
-    private fun stripOriginal(prepared: PreparedAttachment, directory: File): PreparedAttachment {
-        val type = AttachmentPolicy.normalizedType(prepared.contentType)
-        val output = File(directory, "clean")
-        val stripped = when {
-            type == "image/jpeg" -> MetadataStrip.jpeg(prepared.file, output)
-            type == "image/png" -> MetadataStrip.png(prepared.file, output)
-            type.startsWith("video/") -> MetadataStrip.mp4(prepared.file, output)
-            else -> false
-        }
-        return if (stripped && output.length() > 0) prepared.copy(file = output) else prepared.also { output.delete() }
     }
 
     // --- Stills -------------------------------------------------------------------------------

@@ -49,14 +49,14 @@ class ProfileSaveTest {
         server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"not ready"}"""))
         server.enqueue(MockResponse().setBody("""{"id":"$id","account":$account}"""))
         val result = PictureUploader(api, listOf(1)).upload("secret", PictureTarget.Avatar,
-            PreparedPicture(byteArrayOf(1, 2, 3), "image/webp", 1, 1), draft = true)
+            PreparedPicture(MetadataFixtures.taggedWebp, "image/webp", 1, 1), draft = true)
         assertEquals(id, result.id)
         assertNull(result.account!!.avatarAsset)
         assertEquals(17, result.account!!.avatarId)
         assertEquals("/api/assets", server.takeRequest().path)
         val storage = server.takeRequest()
         assertNull(storage.getHeader("Authorization"))
-        assertArrayEquals(byteArrayOf(1, 2, 3), storage.body.readByteArray())
+        assertArrayEquals(MetadataFixtures.webp, storage.body.readByteArray())
         repeat(2) { assertEquals("/api/assets/$id/complete?draft=true", server.takeRequest().path) }
         assertEquals(4, server.requestCount)
 

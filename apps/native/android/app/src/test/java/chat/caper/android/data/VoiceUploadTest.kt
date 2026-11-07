@@ -57,12 +57,15 @@ class VoiceUploadTest {
             "upload":{"method":"PUT","url":"${server.url("/r2/original/$id?X-Amz-Signature=abc")}","headers":{}}}"""))
         server.enqueue(MockResponse().setResponseCode(200))
         server.enqueue(MockResponse().setBody("""{"id":"$id","kind":"audio","contentType":"audio/mpeg","name":"song.mp3","size":10}"""))
-        val song = folder.newFile("song.mp3").apply { writeBytes(ByteArray(10)) }
+        val frames = byteArrayOf(0xFF.toByte(), 0xFB.toByte()) + ByteArray(98)
+        val song = folder.newFile("song.mp3").apply { writeBytes(frames + "TAG".toByteArray() + ByteArray(125) { 65 }) }
         // A waveform without the voice flag is ignored.
         AttachmentUploader(CaperApi(baseUrl = server.url("/").toString())).upload("account-secret", "channel00001",
-            PreparedAttachment(song, "song.mp3", "audio/mpeg", "audio", 10, durationMs = 1_000, waveform = "AAAA"))
+            PreparedAttachment(song, "song.mp3", "audio/mpeg", "audio", song.length(), durationMs = 1_000, waveform = "AAAA"))
         val create = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
         assertFalse("voice" in create.keys)
         assertFalse("waveform" in create.keys)
+        assertEquals(frames.size.toLong(), create["byteSize"]!!.jsonPrimitive.long)
+        assertArrayEquals("imported audio is cleaned, unlike a composer recording", frames, server.takeRequest().body.readByteArray())
     }
 }

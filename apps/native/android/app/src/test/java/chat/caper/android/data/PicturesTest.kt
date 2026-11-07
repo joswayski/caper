@@ -123,7 +123,7 @@ class PicturesTest {
         server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"upload not finished"}"""))
         server.enqueue(MockResponse().setBody("""{"id":"$id","kind":"image","contentType":"image/webp","name":"avatar.webp","size":3,"account":$account}"""))
         val api = CaperApi(baseUrl = server.url("/").toString())
-        val bytes = byteArrayOf(1, 2, 3)
+        val bytes = MetadataFixtures.taggedWebp
 
         val result = PictureUploader(api, completeRetryDelaysMs = listOf(1)).upload("account-secret", PictureTarget.Avatar, PreparedPicture(bytes, "image/webp", 512, 512))
 
@@ -137,7 +137,7 @@ class PicturesTest {
         assertEquals("avatar", body["purpose"]!!.jsonPrimitive.content)
         assertEquals("avatar.webp", body["filename"]!!.jsonPrimitive.content)
         assertEquals("image/webp", body["contentType"]!!.jsonPrimitive.content)
-        assertEquals(3L, body["byteSize"]!!.jsonPrimitive.long)
+        assertEquals(MetadataFixtures.webp.size.toLong(), body["byteSize"]!!.jsonPrimitive.long)
         assertEquals(512, body["width"]!!.jsonPrimitive.int)
         val put = server.takeRequest()
         assertEquals("PUT", put.method)
@@ -145,7 +145,7 @@ class PicturesTest {
         assertEquals("image/webp", put.headers["Content-Type"])
         assertEquals("inline; filename=\"avatar.webp\"", put.headers["Content-Disposition"])
         assertNull("no credentials go to storage", put.headers["Authorization"])
-        assertArrayEquals(bytes, put.body.readByteArray())
+        assertArrayEquals(MetadataFixtures.webp, put.body.readByteArray())
         assertEquals("/api/assets/$id/complete", server.takeRequest().path)
         assertEquals("/api/assets/$id/complete", server.takeRequest().path)
         assertEquals(4, server.requestCount)
@@ -158,7 +158,7 @@ class PicturesTest {
             "iconAsset":"$id","iconUrl":"https://cdn.caper.chat/assets/$id?exp=1&sig=i"}}"""))
         val api = CaperApi(baseUrl = server.url("/").toString())
         val target = PictureTarget.SpaceIcon("space0000001")
-        val gif = PreparedPicture(gif("GIF89a", 480, 480), "image/gif", 480, 480)
+        val gif = PreparedPicture(gif("GIF89a", 480, 480) + byteArrayOf(0x3b), "image/gif", 480, 480)
 
         val result = PictureUploader(api).upload("account-secret", target, gif)
 
@@ -183,7 +183,7 @@ class PicturesTest {
         server.enqueue(MockResponse().setResponseCode(429).setBody("""{"error":"too many pictures","code":"picture_rate_limited"}"""))
         val api = CaperApi(baseUrl = server.url("/").toString())
         val error = runCatching {
-            PictureUploader(api).upload("account-secret", PictureTarget.Avatar, PreparedPicture(byteArrayOf(1), "image/webp", 1, 1))
+            PictureUploader(api).upload("account-secret", PictureTarget.Avatar, PreparedPicture(MetadataFixtures.webp, "image/webp", 1, 1))
         }.exceptionOrNull()!!
         assertEquals("picture_rate_limited", (error as ApiException).code)
         assertEquals(1, server.requestCount)

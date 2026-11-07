@@ -131,7 +131,9 @@ class PictureUploader(
 ) {
     suspend fun upload(token: String, target: PictureTarget, picture: PreparedPicture, draft: Boolean = false): PictureCompletion {
         require(!draft || target == PictureTarget.Avatar)
-        val size = picture.bytes.size.toLong()
+        if (picture.bytes.isEmpty()) throw PictureException(PicturePolicy.UNUSABLE)
+        val bytes = MetadataStrip.cleanPicture(picture.bytes, picture.contentType)
+        val size = bytes.size.toLong()
         if (size < 1) throw PictureException(PicturePolicy.UNUSABLE)
         val reservation = api.createPicture(
             token, (target as? PictureTarget.SpaceIcon)?.spaceId, pictureFilename(target, picture.contentType),
@@ -139,7 +141,7 @@ class PictureUploader(
         )
         try {
             currentCoroutineContext().ensureActive()
-            api.putUpload(checkNotNull(reservation.upload), size, { ByteArrayInputStream(picture.bytes) })
+            api.putUpload(checkNotNull(reservation.upload), size, { ByteArrayInputStream(bytes) })
             val result = complete(token, reservation.id, draft)
             currentCoroutineContext().ensureActive()
             val applied = when (target) {
