@@ -49,18 +49,39 @@ private fun parseFormattedMessage(text: String): FormattedMessage {
 
 internal data class FormatSelection(val text: String, val start: Int, val end: Int)
 
-/** Native undo restores snapshots, not a new edit to repair against the latest draft. */
+/**
+ * Native undo restores snapshots, not a new edit to repair against the latest draft. It also keeps the
+ * style web carries from one key to the next one typed at the caret it left, in the text it left
+ * (shared/messages/composer.rs): an edit made elsewhere, such as an IME composition, ends it.
+ */
 internal class FormatEditHistory {
     private val snapshots = ArrayDeque<String>()
+    private var pending = -1
+    private var caret = -1
+    private var left: String? = null
     fun remember(text: String) {
         if (text !in snapshots) snapshots.addLast(text)
         while (snapshots.size > 100) snapshots.removeFirst()
     }
     fun edit(previous: String, next: FormatSelection, restoringHistory: Boolean = false): FormatSelection {
         remember(previous)
-        val result = if (restoringHistory || next.text in snapshots) next else repairFormatEdit(previous, next)
+        val typed = next.text.length - previous.length
+        val continuing = if (typed > 0 && next.start == next.end && next.start - typed == caret && previous == left) pending else -1
+        val result = when {
+            previous == next.text -> next.also { if (it.start != caret || it.end != caret) pending = -1 }
+            restoringHistory || next.text in snapshots -> next.also { pending = -1 }
+            else -> composerEdit(previous, next, continuing).let { pending = it.pending; it.selection }
+        }
+        caret = if (result.start == result.end) result.start else -1
+        left = result.text
         remember(result.text)
         return result
+    }
+
+    /** Ends the carried style: the field shows another draft or conversation, even an identical one. */
+    fun endTyping() {
+        pending = -1
+        left = null
     }
 }
 
@@ -69,39 +90,21 @@ internal fun copiedFormatText(text: String, start: Int, end: Int): String {
     return projection.text.substring(projection.displayed(start), projection.displayed(end))
 }
 
-/** Remove formerly hidden delimiters that an edit orphaned, never literal user punctuation. */
-internal fun repairFormatEdit(previous: String, next: FormatSelection): FormatSelection {
-    if (previous == next.text) return next
-    val before = formattedMessage(previous).sourceIndices.toSet()
-    if (before.size == previous.length) return next
-    // At the end of a styled draft the caret sits inside the closing delimiters, so typing extends
-    // the style. Whitespace can't end a style, so it goes after them, as web serializes it:
-    // "**bold**" + " and" keeps "**bold** and" rather than losing both markers.
-    val typed = next.text.length - previous.length
-    if (typed > 0 && next.start == next.end) {
-        val at = next.start - typed
-        if (at > 0 && next.text.startsWith(previous.substring(0, at)) && next.text.endsWith(previous.substring(at)) &&
-            next.text.substring(at, next.start).all(::formatSpace) && (at until previous.length).none { it in before }) {
-            val moved = previous + next.text.substring(at, next.start)
-            if (formattedMessage(moved).sourceIndices.size == before.size + typed) return FormatSelection(moved, moved.length, moved.length)
-        }
-    }
-    var prefix = 0
-    while (prefix < minOf(previous.length, next.text.length) && previous[prefix] == next.text[prefix]) prefix++
-    var suffix = 0
-    while (suffix < minOf(previous.length, next.text.length) - prefix && previous[previous.lastIndex - suffix] == next.text[next.text.lastIndex - suffix]) suffix++
-    val visible = formattedMessage(next.text).sourceIndices.toSet()
-    val removed = previous.indices.filter { it !in before }.mapNotNull { index ->
-        when {
-            index < prefix -> index
-            index >= previous.length - suffix -> index + next.text.length - previous.length
-            else -> null
-        }
-    }.filter { it in visible }.toSet()
-    if (removed.isEmpty()) return next
-    fun offset(value: Int) = value - removed.count { it < value }
-    return repairFormatEdit(previous, FormatSelection(next.text.filterIndexed { index, _ -> index !in removed }, offset(next.start), offset(next.end)))
+internal data class FormatEdit(val selection: FormatSelection, val pending: Int)
+
+/**
+ * One composer edit as web makes it (shared/messages/composer.rs, through Rust). [continuing] is the
+ * previous edit's [FormatEdit.pending] when this one types at the caret it left, otherwise -1.
+ */
+internal fun composerEdit(previous: String, next: FormatSelection, continuing: Int): FormatEdit {
+    val result = CaperMobile.composerEdit(previous, next.text, next.start, next.end, continuing)
+    val text = String(CharArray(result.size - 3) { result[it + 3].toChar() })
+    return FormatEdit(FormatSelection(text, result[0], result[1]), result[2])
 }
+
+/** An edit without a style carried from the previous key: autocomplete and other replacements. */
+internal fun repairFormatEdit(previous: String, next: FormatSelection): FormatSelection =
+    if (previous == next.text) next else composerEdit(previous, next, -1).selection
 
 internal fun toggleFormat(text: String, selectionStart: Int, selectionEnd: Int, marker: String): FormatSelection {
     var start = selectionStart

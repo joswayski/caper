@@ -3,6 +3,7 @@ package chat.caper.android.data
 import java.io.File
 import kotlinx.serialization.json.*
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FormattingTest {
@@ -13,6 +14,52 @@ class FormattingTest {
         assertEquals(FormatSelection("**", 2, 2), history.edit("**x**", FormatSelection("**", 2, 2)))
         assertEquals(FormatSelection("**x**", 3, 3), history.edit("**", FormatSelection("**x**", 3, 3), true))
         assertEquals(FormatSelection("", 0, 0), history.edit("**x**", FormatSelection("****", 2, 2)))
+    }
+
+    /** Every client types these same steps, generated from web; see shared/messages/composer-cases.json. */
+    @Test fun `composer typing follows the shared cases`() {
+        val file = generateSequence(java.io.File("").absoluteFile) { it.parentFile }
+            .map { java.io.File(it, "shared/messages/composer-cases.json") }.first { it.isFile }
+        val cases = Json.parseToJsonElement(file.readText()).jsonObject.getValue("cases").jsonArray
+        assertTrue(cases.size > 20)
+        for (case in cases.map { it.jsonObject }) {
+            var text = case.getValue("text").jsonPrimitive.content
+            var caret = formattedMessage(text).original(case.getValue("caret").jsonPrimitive.int)
+            var history = FormatEditHistory()
+            for (step in case.getValue("steps").jsonArray.map { it.jsonObject }) {
+                if (step.getValue("placed").jsonPrimitive.boolean) {
+                    // A tap: a new caret, so no style carries over from the last key.
+                    caret = formattedMessage(text).let { it.original(it.displayed(caret)) }
+                    history = FormatEditHistory()
+                }
+                val key = step.getValue("key").jsonPrimitive.content
+                val typed = history.edit(text, FormatSelection(text.substring(0, caret) + key + text.substring(caret), caret + key.length, caret + key.length))
+                text = typed.text
+                caret = typed.start
+                val note = case.getValue("note").jsonPrimitive.content + ": " + key
+                assertEquals(note, step.getValue("text").jsonPrimitive.content, text)
+                assertEquals(note, step.getValue("caret").jsonPrimitive.int, formattedMessage(text).displayed(caret))
+            }
+        }
+    }
+
+    /** The style continues only while the field shows what typing left, as in every client's composer. */
+    @Test fun `composer typing ends when the field changes under it`() {
+        fun FormatEditHistory.type(text: String, key: String) =
+            edit(text, FormatSelection(text + key, text.length + key.length, text.length + key.length)).text
+        var history = FormatEditHistory()
+        var text = history.type("**bold**", " ")
+        assertEquals("continuous typing", "**bold** **a**", history.type(text, "a"))
+        history = FormatEditHistory(); text = history.type("**bold**", " ")
+        history.edit(text, FormatSelection(text, 0, 0)); history.edit(text, FormatSelection(text, 9, 9))
+        assertEquals("caret moved away and back", "**bold** a", history.type(text, "a"))
+        history = FormatEditHistory(); text = history.type("**bold**", " ")
+        history.edit(text, FormatSelection("**bold**", 8, 8), restoringHistory = true)
+        history.edit("**bold**", FormatSelection(text, 9, 9), restoringHistory = true)
+        assertEquals("undo then redo", "**bold** a", history.type(text, "a"))
+        history = FormatEditHistory(); text = history.type("**bold**", " ")
+        history.endTyping()
+        assertEquals("identical draft in another conversation", "**bold** a", history.type(text, "a"))
     }
 
     @Test fun `typing on at the end of a styled draft keeps the style`() {

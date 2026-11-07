@@ -25,6 +25,12 @@ internal object CaperMobile {
      */
     @JvmStatic external fun historyDiffSpans(before: String, after: String): IntArray
 
+    /**
+     * One composer edit (shared/messages/composer.rs): `[start, end, pending]` and then the edited
+     * text's UTF-16 units. [start] and [end] are offsets into [next].
+     */
+    @JvmStatic external fun composerEdit(previous: String, next: String, start: Int, end: Int, continuing: Int): IntArray
+
     /** Whether a display or space name holds a character names may not (shared/names/cases.json). */
     @JvmStatic external fun nameHasHidden(text: String): Boolean
 }

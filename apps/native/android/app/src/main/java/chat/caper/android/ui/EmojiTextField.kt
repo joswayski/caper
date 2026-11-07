@@ -67,6 +67,8 @@ import kotlin.math.roundToInt
     val context = LocalContext.current
     val density = LocalDensity.current
     val history = remember { chat.caper.android.data.FormatEditHistory() }
+    // The last value this field emitted: any other value came from outside (a draft swap, a send).
+    val emitted = remember { arrayOfNulls<TextFieldValue>(1) }
     var restoringHistory by remember { mutableStateOf(false) }
     SideEffect { history.remember(value.text) }
     val clipboard = androidx.compose.ui.platform.LocalClipboard.current
@@ -135,9 +137,12 @@ import kotlin.math.roundToInt
             // that were previously hidden and are no longer valid after the edit.
             if (next.composition != null || value.composition != null) onValueChange(next)
             else {
+                if (value !== emitted[0]) history.endTyping()
                 val repaired = history.edit(value.text,
                     chat.caper.android.data.FormatSelection(next.text, next.selection.start, next.selection.end), restoringHistory)
-                onValueChange(if (repaired.text == next.text) next else TextFieldValue(repaired.text, TextRange(repaired.start, repaired.end)))
+                val emit = if (repaired == chat.caper.android.data.FormatSelection(next.text, next.selection.start, next.selection.end)) next else TextFieldValue(repaired.text, TextRange(repaired.start, repaired.end))
+                emitted[0] = emit
+                onValueChange(emit)
             }
             restoringHistory = false
         }, modifier.onPreviewKeyEvent { event ->
