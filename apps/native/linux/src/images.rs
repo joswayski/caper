@@ -158,6 +158,8 @@ struct Pictures {
 pub struct Images {
     /// Message media: attachments, link previews and GIFs.
     pub media: crate::media::Media,
+    /// The one voice message playing, app-wide (`crate::playback`).
+    pub voice: std::rc::Rc<crate::playback::Voice>,
     api: Api,
     signals: async_channel::Sender<Signal>,
     icons: RefCell<HashMap<(Icon, &'static str), gdk::Texture>>,
@@ -173,6 +175,7 @@ impl Images {
     pub fn new(api: Api, signals: async_channel::Sender<Signal>) -> Self {
         Self {
             media: crate::media::Media::new(api.clone(), signals.clone()),
+            voice: std::rc::Rc::default(),
             api,
             signals,
             icons: RefCell::default(),

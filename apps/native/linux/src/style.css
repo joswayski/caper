@@ -755,6 +755,89 @@ button.file-card:hover {
   font-size: 13px;
 }
 
+.voice-bar {
+  min-height: 46px;
+  padding: 0 12px 0 10px;
+  border-radius: 8px;
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+}
+
+button.voice-play {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 999px;
+  border: none;
+  box-shadow: none;
+  background: @caper_action;
+}
+
+button.voice-play:hover {
+  background: @caper_action_hover;
+}
+
+button.voice-play:active {
+  background: @caper_action_press;
+}
+
+/* The play glyph sits a pixel right, to look centred. */
+button.voice-play image {
+  margin-left: 2px;
+}
+
+button.voice-play.pause image {
+  margin-left: 0;
+}
+
+.voice-message .error {
+  font-size: 11px;
+}
+
+/* A 2px rule, then the muted transcript. */
+.voice-transcript {
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid @caper_border;
+}
+
+.voice-transcript .transcript {
+  color: @caper_text_muted;
+  font-size: 12.5px;
+}
+
+/* Still breathes with reduced motion, as on every client. */
+@keyframes caper-breathe {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.transcribing {
+  font-size: 12px;
+  animation: caper-breathe 2s ease-in-out infinite;
+}
+
+button.transcript-toggle {
+  padding: 0;
+  min-height: 18px;
+  font-size: 12px;
+  font-weight: 700;
+  color: @caper_text;
+  background: none;
+  box-shadow: none;
+  border: none;
+}
+
+button.transcript-toggle:hover label {
+  text-decoration: underline;
+}
+
 .embed {
   background: @caper_surface;
   border: 1px solid @caper_border;

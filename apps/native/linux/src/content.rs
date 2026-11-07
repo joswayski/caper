@@ -118,7 +118,11 @@ pub fn view(images: &Images, content: &Content, handler: &Handler) -> Option<gtk
         .iter()
         .filter(|(attachment, _)| !media(attachment))
     {
-        root.append(&file_card(images, attachment, *hidden, handler));
+        if !attachment.spoiler && voice_playable(attachment) {
+            root.append(&crate::playback::card(images, attachment));
+        } else {
+            root.append(&file_card(images, attachment, *hidden, handler));
+        }
     }
     for embed in &content.embeds {
         root.append(&card(images, embed, handler));
@@ -127,6 +131,12 @@ pub fn view(images: &Images, content: &Content, handler: &Handler) -> Option<gtk
         root.append(&gif_view(images, gif, handler));
     }
     Some(root)
+}
+
+/// A ready voice message plays in place; a failed, processing or expired
+/// one keeps its file card and notice.
+fn voice_playable(attachment: &Attachment) -> bool {
+    attachment.voice && tile_notice(attachment).is_none() && attachment.url.is_some()
 }
 
 /// A picture filling `size`, cropped to cover it.
