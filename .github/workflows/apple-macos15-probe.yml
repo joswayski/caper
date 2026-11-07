@@ -13,7 +13,7 @@ jobs:
       matrix:
         include:
           - name: main
-            ref: 441e0f17ef69da1bc4cbe5f3f08f0bdd81cc8c11
+            ref: 441e0f17e06d0c32467d448f6bebe49a7eccdbe6
           - name: escape-fix
             ref: b3c4bdf67756a04aaa09502a4717b4ed961196c5
     runs-on: macos-15
