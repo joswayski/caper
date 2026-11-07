@@ -309,11 +309,11 @@ public actor APIClient {
     public func space(_ id: String) async throws -> SpaceDetail { try await request("api/spaces/\(try pathID(id))") }
 
     public func createSpace(name: String) async throws -> Space {
-        try await request("api/spaces", method: "POST", body: SpaceInput(name: name.trimmingCharacters(in: .whitespacesAndNewlines)))
+        try await request("api/spaces", method: "POST", body: SpaceInput(name: WorkspaceValidation.spaceName(name)))
     }
 
     public func updateSpace(id: String, name: String) async throws -> Space {
-        try await request("api/spaces/\(try pathID(id))", method: "PATCH", body: SpaceInput(name: name.trimmingCharacters(in: .whitespacesAndNewlines)))
+        try await request("api/spaces/\(try pathID(id))", method: "PATCH", body: SpaceInput(name: WorkspaceValidation.spaceName(name)))
     }
 
     public func deleteSpace(id: String) async throws {

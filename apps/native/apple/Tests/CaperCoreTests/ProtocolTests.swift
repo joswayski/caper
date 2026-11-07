@@ -721,6 +721,24 @@ final class ProtocolTests: XCTestCase {
         }
     }
 
+    /// Generated from web; every client runs them (shared/names/channel-cases.json).
+    func testSpaceAndChannelNamesFollowTheSharedCases() throws {
+        struct Normalize: Decodable { let input: String; let output: String }
+        struct ChannelError: Decodable { let name: String; let error: String? }
+        struct SpaceName: Decodable { let name: String; let trimmed: String; let error: String? }
+        struct Cases: Decodable { let normalize: [Normalize]; let channelErrors: [ChannelError]; let spaceNames: [SpaceName] }
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        // JSONDecoder, not JSONSerialization: Darwin's JSONSerialization drops a leading U+FEFF.
+        let cases = try JSONDecoder().decode(Cases.self, from: Data(contentsOf: root.appendingPathComponent("shared/names/channel-cases.json")))
+        for item in cases.normalize { XCTAssertEqual(WorkspaceValidation.normalizeChannelName(item.input), item.output, item.input.debugDescription) }
+        for item in cases.channelErrors { XCTAssertEqual(WorkspaceValidation.channelNameError(item.name), item.error, item.name.debugDescription) }
+        for item in cases.spaceNames {
+            XCTAssertEqual(WorkspaceValidation.spaceName(item.name), item.trimmed, item.name.debugDescription)
+            XCTAssertEqual(WorkspaceValidation.spaceNameError(item.name), item.error, item.name.debugDescription)
+        }
+    }
+
     func testMessageValidationCountsCharactersAndRejectsControls() {
         XCTAssertNil(MessageValidation.error(for: String(repeating: "🪐", count: 4_000)))
         XCTAssertEqual(MessageValidation.error(for: String(repeating: "🪐", count: 4_001)), "Messages can be at most 4,000 characters.")
