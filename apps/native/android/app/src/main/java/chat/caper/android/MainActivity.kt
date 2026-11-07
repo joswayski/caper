@@ -240,6 +240,9 @@ class MainActivity : ComponentActivity() {
         val bars = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
         CaperEffects.init(applicationContext)
+        // The emoji catalog (~700 KB of JSON) is decoded off the main thread while the account loads;
+        // the composer's first frame would otherwise decode it there.
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Default) { EmojiArtwork.catalog(applicationContext) }
         // A recreated activity or a relaunch from Recents must not reopen an old tap or link.
         if (savedInstanceState == null) openFromIntent(intent)
         setContent { CompositionLocalProvider(LocalBrandAvatar provides brandingAvatar) { CaperTheme { CaperApp(viewModel) } } }
