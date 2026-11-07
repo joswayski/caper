@@ -383,6 +383,24 @@ final class ProfilePictureTests: XCTestCase {
 
     // MARK: Upload
 
+    func testMetadataRefusalPreventsEveryPictureUploadAndExplainsWhy() async throws {
+        let picture = PreparedPicture(data: Data("broken".utf8), contentType: "image/gif", width: 1, height: 1)
+        for mode in 0..<3 {
+            do {
+                switch mode {
+                case 0: _ = try await ProfilePictureUploader.stageAvatar(picture, api: client())
+                case 1: _ = try await ProfilePictureUploader.uploadAvatar(picture, api: client())
+                default: _ = try await ProfilePictureUploader.uploadSpaceIcon(picture, spaceID: spaceID, api: client())
+                }
+                XCTFail("uncleanable pictures must never upload")
+            } catch {
+                XCTAssertEqual(ProfilePicturePolicy.message(for: error, purpose: mode == 2 ? .spaceIcon : .avatar),
+                               AttachmentMetadata.refusalMessage)
+            }
+        }
+        XCTAssertTrue(PictureURLProtocol.requests.isEmpty)
+    }
+
     func testAvatarUploadPutsExactHeadersRetriesCompleteAndReturnsTheAccount() async throws {
         let completes = Counter()
         PictureURLProtocol.handler = { request in
@@ -395,7 +413,7 @@ final class ProfilePictureTests: XCTestCase {
             default: throw URLError(.badURL)
             }
         }
-        let picture = PreparedPicture(data: Data(repeating: 7, count: 2048), contentType: "image/webp", width: 512, height: 512)
+        let picture = try webPPicture(width: 512, height: 512)
         let account = try await ProfilePictureUploader.uploadAvatar(picture, api: client(), completeRetryDelays: [.zero])
         XCTAssertEqual(account.avatarPicture?.asset, pictureID)
         XCTAssertEqual(account.avatarId, 4)
@@ -413,7 +431,8 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertEqual(body["purpose"] as? String, "avatar")
         XCTAssertEqual(body["filename"] as? String, "avatar.webp")
         XCTAssertEqual(body["contentType"] as? String, "image/webp")
-        XCTAssertEqual(body["byteSize"] as? Int, 2048)
+        XCTAssertEqual(body["byteSize"] as? Int, picture.data.count)
+        XCTAssertEqual(requests[1].body, picture.data)
         XCTAssertEqual(body["width"] as? Int, 512)
         XCTAssertEqual(header(requests[1], "content-type"), "image/webp")
         XCTAssertEqual(header(requests[1], "content-disposition"), "inline; filename=\"avatar.webp\"")
@@ -431,7 +450,10 @@ final class ProfilePictureTests: XCTestCase {
             default: throw URLError(.badURL)
             }
         }
-        let picture = PreparedPicture(data: Data("GIF89a".utf8) + Data([40, 0, 20, 0]), contentType: "image/gif", width: 40, height: 20)
+        let gif = try animatedGIF(width: 40, height: 20, frames: 2)
+        XCTAssertEqual(gif.last, 0x3B)
+        let tagged = gif.dropLast() + Data([0x21, 0xFE, 4]) + Data("Home".utf8) + Data([0, 0x3B])
+        let picture = PreparedPicture(data: tagged, contentType: "image/gif", width: 40, height: 20)
         let space = try await ProfilePictureUploader.uploadSpaceIcon(picture, spaceID: spaceID, api: client(), completeRetryDelays: [])
         XCTAssertEqual(space.iconPicture?.asset, pictureID)
         let body = try XCTUnwrap(json(PictureURLProtocol.requests.first?.body))
@@ -439,6 +461,8 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertEqual(body["spaceId"] as? String, spaceID)
         XCTAssertEqual(body["filename"] as? String, "space-icon.gif")
         XCTAssertEqual(body["height"] as? Int, 20)
+        XCTAssertEqual(body["byteSize"] as? Int, gif.count)
+        XCTAssertEqual(PictureURLProtocol.requests.first { $0.method == "PUT" }?.body, gif)
     }
 
     func testAFailedUploadCancelsItsReservationAndExplainsItself() async throws {
@@ -450,7 +474,7 @@ final class ProfilePictureTests: XCTestCase {
             default: throw URLError(.badURL)
             }
         }
-        let picture = PreparedPicture(data: Data(repeating: 1, count: 8), contentType: "image/webp", width: 8, height: 8)
+        let picture = try webPPicture(width: 8, height: 8)
         do {
             _ = try await ProfilePictureUploader.uploadAvatar(picture, api: client())
             XCTFail("expected a storage refusal")
@@ -585,7 +609,7 @@ final class ProfilePictureTests: XCTestCase {
         let original = Account(id: "self", username: "maya", displayName: "Maya", avatarId: 4)
         model.account = original
         let draft = ProfileEditDraft(account: original)
-        let picture = PreparedPicture(data: Data([1, 2, 3]), contentType: "image/webp", width: 1, height: 1)
+        let picture = try webPPicture(width: 1, height: 1)
         draft.username = "new_name"; draft.displayName = "New name"; draft.usePicture(picture)
         XCTAssertTrue(PictureURLProtocol.requests.isEmpty)
         do { try await model.saveProfile(draft: draft); XCTFail("expected failed publication") }
@@ -629,7 +653,7 @@ final class ProfilePictureTests: XCTestCase {
         let original = Account(id: "self", username: "maya", displayName: "Maya", avatarId: 4)
         model.account = original
         let draft = ProfileEditDraft(account: original)
-        let picture = PreparedPicture(data: Data([1]), contentType: "image/webp", width: 1, height: 1)
+        let picture = try webPPicture(width: 1, height: 1)
         draft.displayName = "New name"; draft.usePicture(picture)
         do { try await model.saveProfile(draft: draft); XCTFail("expected storage refusal") }
         catch { XCTAssertEqual(ProfileEditDraft.saveError(error), "Storage refused the upload. Try again.") }
@@ -785,7 +809,7 @@ final class ProfilePictureTests: XCTestCase {
         reply.replyTo = MessageReply(message: mine)
         model.chat.messages = [mine, reply]
 
-        let picture = PreparedPicture(data: Data(repeating: 1, count: 16), contentType: "image/webp", width: 512, height: 512)
+        let picture = try webPPicture(width: 512, height: 512)
         try await model.changeAvatar(picture)
         XCTAssertEqual(model.account?.avatarPicture?.asset, pictureID)
         XCTAssertEqual(model.account?.avatarId, 4, "the saved mascot never changes")
@@ -846,7 +870,7 @@ final class ProfilePictureTests: XCTestCase {
         model.detail = SpaceDetail(space: studio, channels: [], members: [])
         XCTAssertTrue(model.isOwner)
 
-        let picture = PreparedPicture(data: Data(repeating: 1, count: 16), contentType: "image/webp", width: 512, height: 512)
+        let picture = try webPPicture(width: 512, height: 512)
         try await model.changeSpaceIcon(picture)
         XCTAssertEqual(model.detail?.space.iconPicture?.asset, pictureID)
         XCTAssertEqual(model.spaces.map { $0.iconPicture?.asset }, [pictureID, nil])
@@ -941,6 +965,12 @@ final class ProfilePictureTests: XCTestCase {
     }
 
     // MARK: Fixtures
+
+    private func webPPicture(width: Int, height: Int) throws -> PreparedPicture {
+        let pixels = try XCTUnwrap(AttachmentPreparer.rgbaPixels(image(width: width, height: height) { _, _ in [24, 80, 160] }))
+        let data = try XCTUnwrap(AttachmentPreparer.encodeLosslessWebP(pixels))
+        return PreparedPicture(data: data, contentType: "image/webp", width: width, height: height)
+    }
 
     /// An opaque sRGB image from RGB values.
     private func image(width: Int, height: Int, pixel: (Int, Int) -> [UInt8]) -> CGImage {

@@ -223,7 +223,6 @@ public enum AttachmentPreparer {
             AttachmentStaging.remove(output.url)
             return nil
         }
-        AttachmentMetadata.patchQuickTimeMetadata(at: output.url)
         var prepared = PreparedAttachment(original: file)
         prepared.fileURL = output.url
         prepared.name = output.url.lastPathComponent
@@ -290,8 +289,6 @@ public enum AttachmentPreparer {
             prepared.byteSize = encoded.data.count
             prepared.width = encoded.width
             prepared.height = encoded.height
-        } else {
-            stripMetadata(&prepared, baseType: baseType, orientation: orientation)
         }
         if AttachmentPolicy.needsPreview(kind: prepared.kind, width: prepared.width, height: prepared.height, byteSize: prepared.byteSize, settings: settings),
            let image = thumbnail(source, index: index, maxPixelSize: settings.previewEdge) {
@@ -309,21 +306,6 @@ public enum AttachmentPreparer {
             return nil
         }
         return destination
-    }
-
-    /// Originals that upload unchanged lose their location and other
-    /// metadata losslessly (JPEG APPn segments, PNG text/eXIf chunks).
-    static func stripMetadata(_ prepared: inout PreparedAttachment, baseType: String, orientation: Int) {
-        guard prepared.fileURL.isFileURL, let data = try? Data(contentsOf: prepared.fileURL) else { return }
-        let stripped: Data?
-        switch baseType {
-        case "image/jpeg", "image/jpg", "image/pjpeg": stripped = AttachmentMetadata.strippedJPEG(data, orientation: orientation)
-        case "image/png": stripped = AttachmentMetadata.strippedPNG(data)
-        default: stripped = nil
-        }
-        guard let stripped, let destination = writeStaged(stripped, name: prepared.name) else { return }
-        prepared.fileURL = destination
-        prepared.byteSize = stripped.count
     }
 
     struct EncodedStill { let data: Data; let contentType: String; let width: Int; let height: Int; let lossless: Bool }
@@ -728,15 +710,6 @@ public enum AttachmentPreparer {
                 AttachmentStaging.remove(output.url)
             }
         }
-        // Remove common tags locally: patch an export or replace an unchanged
-        // original with a patched copy. The server cleans remaining container metadata.
-        if prepared.fileURL != file.url {
-            AttachmentMetadata.patchQuickTimeMetadata(at: prepared.fileURL)
-        } else if let stripped = AttachmentMetadata.strippedQuickTimeCopy(of: file.url, name: file.name) {
-            prepared.fileURL = stripped
-            prepared.name = stripped.lastPathComponent
-        }
-
         if prepared.kind == .video, settings.previewEdge > 0 {
             prepared.preview = await poster(finalAsset, durationMs: prepared.durationMs, edge: settings.previewEdge)
         }

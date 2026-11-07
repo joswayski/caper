@@ -364,7 +364,9 @@ final class ProfileMessageDraft {
             } catch {
                 if !discarded, uploadGeneration == generation, let current = files.firstIndex(where: { $0.id == id }) {
                     files[current].progress = nil
-                    if !(error is CancellationError) { files[current].uploadError = "Failed to upload." }
+                    if !(error is CancellationError) {
+                        files[current].uploadError = AttachmentMetadata.refusalMessage(for: error) ?? "Failed to upload."
+                    }
                 }
                 throw error
             }

@@ -6566,6 +6566,12 @@ struct MentionCardView: View {
                         .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                         .background(CaperTheme.terracotta.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 }
+                ForEach(draft.files.filter { $0.uploadError == AttachmentMetadata.refusalMessage }) { file in
+                    Text("\(file.spoiler ? "Spoiler attachment" : file.local.name): \(AttachmentMetadata.refusalMessage)")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("attachment-metadata-refusal")
+                }
                 StagedFileLayout() {
                     ForEach(draft.files) { file in stagedChip(file) }
                 }.accessibilityLabel("Files to send")

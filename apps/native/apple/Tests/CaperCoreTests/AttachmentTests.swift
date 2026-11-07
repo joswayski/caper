@@ -1343,13 +1343,21 @@ final class AttachmentTests: XCTestCase {
 
     // MARK: Metadata on unchanged originals
 
-    func testKeptJPEGLosesLocationButKeepsOrientationAndScanData() throws {
+    private func cleaned(_ data: Data, contentType: String) async throws -> Data {
+        let file = try await AttachmentMetadata.cleanCopy(of: data, contentType: contentType)
+        defer { AttachmentStaging.remove(file.url) }
+        let output = try Data(contentsOf: file.url)
+        XCTAssertEqual(output.count, file.size)
+        return output
+    }
+
+    func testKeptJPEGLosesLocationButKeepsOrientationAndScanData() async throws {
         let gps: [CFString: Any] = [kCGImagePropertyGPSLatitude: 51.5, kCGImagePropertyGPSLatitudeRef: "N",
                                     kCGImagePropertyGPSLongitude: 0.12, kCGImagePropertyGPSLongitudeRef: "W"]
         let jpeg = try encoded(noise(width: 64, height: 48), type: .jpeg, quality: 0.5,
                                properties: [kCGImagePropertyOrientation: 6, kCGImagePropertyGPSDictionary: gps])
         XCTAssertNotNil(try properties(jpeg)[kCGImagePropertyGPSDictionary])
-        let stripped = try XCTUnwrap(AttachmentMetadata.strippedJPEG(jpeg, orientation: 6))
+        let stripped = try await cleaned(jpeg, contentType: "image/jpeg")
         let output = try properties(stripped)
         XCTAssertNil(output[kCGImagePropertyGPSDictionary], "location removed")
         XCTAssertEqual((output[kCGImagePropertyOrientation] as? NSNumber)?.intValue, 6, "orientation kept in a minimal Exif segment")
@@ -1361,15 +1369,13 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(jpeg[originalScan...], stripped[strippedScan...], "entropy-coded data is byte-identical")
         XCTAssertEqual(try decodedPixels(stripped).rgba, try decodedPixels(jpeg).rgba)
 
-        let upright = try XCTUnwrap(AttachmentMetadata.strippedJPEG(jpeg, orientation: 1))
+        let uprightJPEG = try encoded(noise(width: 64, height: 48), type: .jpeg, quality: 0.5,
+                                     properties: [kCGImagePropertyOrientation: 1, kCGImagePropertyGPSDictionary: gps])
+        let upright = try await cleaned(uprightJPEG, contentType: "image/jpeg")
         XCTAssertNil(try properties(upright)[kCGImagePropertyGPSDictionary])
         XCTAssertEqual((try properties(upright)[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1, 1)
-        XCTAssertLessThan(upright.count, stripped.count)
-        XCTAssertNil(AttachmentMetadata.strippedJPEG(Data("not a jpeg".utf8), orientation: 1))
-
-        let segment = AttachmentMetadata.orientationExifSegment(3)
-        XCTAssertEqual(segment.count, 36)
-        XCTAssertEqual(Array(segment[0..<4]), [0xFF, 0xE1, 0x00, 0x22])
+        let again = try await cleaned(stripped, contentType: "image/jpeg")
+        XCTAssertEqual(again, stripped, "cleaning is idempotent")
     }
 
     func testJPEGKeptAtFullQualityUploadsAStrippedCopy() async throws {
@@ -1381,12 +1387,22 @@ final class AttachmentTests: XCTestCase {
         settings.imageQuality = 100
         let prepared = await AttachmentPreparer.prepare(original, settings: settings)
         defer { AttachmentStaging.remove(prepared.fileURL) }
-        XCTAssertNotEqual(prepared.fileURL, original.url, "a stripped copy replaces the original")
         XCTAssertEqual(prepared.contentType, "image/jpeg")
         XCTAssertEqual(prepared.name, "photo.jpg")
-        let data = try Data(contentsOf: prepared.fileURL)
-        XCTAssertEqual(data.count, prepared.byteSize)
+        AttachmentURLProtocol.handler = { request, _ in
+            if request.httpMethod == "PUT" { return (200, Data()) }
+            if request.url?.path == "/api/assets" {
+                return (201, Data(#"{"id":"Asset0000001","upload":{"method":"PUT","url":"https://r2.invalid/photo","headers":{}}}"#.utf8))
+            }
+            return (200, Data(#"{"id":"Asset0000001","kind":"image","contentType":"image/jpeg","name":"photo.jpg","size":1}"#.utf8))
+        }
+        _ = try await AttachmentUploader.upload(prepared, channelID: channelID, api: client()) { _ in }
+        let data = try XCTUnwrap(AttachmentURLProtocol.requests.first { $0.method == "PUT" }?.body)
+        let input = try XCTUnwrap(json(AttachmentURLProtocol.requests.first?.body))
+        XCTAssertEqual(input["byteSize"] as? Int, data.count)
+        XCTAssertLessThan(data.count, jpeg.count)
         XCTAssertNil(try properties(data)[kCGImagePropertyGPSDictionary])
+        XCTAssertEqual(try Data(contentsOf: original.url), jpeg, "the picked original stays unchanged")
     }
 
     private func pngChunk(_ type: String, _ payload: [UInt8]) -> [UInt8] {
@@ -1400,7 +1416,7 @@ final class AttachmentTests: XCTestCase {
         return chunk
     }
 
-    func testKeptPNGLosesTextAndExifChunks() throws {
+    func testKeptPNGLosesTextAndExifChunks() async throws {
         let palette = try XCTUnwrap(IndexedPNG.palette(width: 2, height: 1, rgba: [255, 0, 0, 255, 0, 0, 255, 255]))
         let png = [UInt8](try XCTUnwrap(IndexedPNG.encode(palette)))
         let idat = try XCTUnwrap(Data(png).range(of: Data("IDAT".utf8))).lowerBound - 4
@@ -1410,10 +1426,10 @@ final class AttachmentTests: XCTestCase {
         tagged += pngChunk("iTXt", Array("Comment\u{0}\u{0}\u{0}\u{0}\u{0}hi".utf8))
         tagged += pngChunk("zTXt", [0x41, 0x00, 0x00, 0x78, 0x9C])
         tagged += png[idat...]
-        let stripped = try XCTUnwrap(AttachmentMetadata.strippedPNG(Data(tagged)))
+        let stripped = try await cleaned(Data(tagged), contentType: "image/png")
         XCTAssertEqual(stripped, Data(png), "every other chunk is copied byte for byte")
-        XCTAssertNil(AttachmentMetadata.strippedPNG(Data(png)), "nothing to remove")
-        XCTAssertNil(AttachmentMetadata.strippedPNG(Data("nope".utf8)))
+        let again = try await cleaned(stripped, contentType: "image/png")
+        XCTAssertEqual(again, stripped, "nothing left to remove")
     }
 
     private func concat(_ parts: [UInt8]...) -> [UInt8] { parts.flatMap { $0 } }
@@ -1440,18 +1456,12 @@ final class AttachmentTests: XCTestCase {
         return box
     }
 
-    private func childTypes(_ bytes: [UInt8], in box: AttachmentMetadata.Box) throws -> [String] {
-        try XCTUnwrap(AttachmentMetadata.boxes(from: box.contentStart, to: box.end) { offset, count in
-            offset + count <= bytes.count ? Array(bytes[offset..<offset + count]) : nil
-        }).map(\.type)
-    }
-
-    func testQuickTimeLocationBoxesAreRenamedWithoutMovingSamples() throws {
+    func testQuickTimeLocationBoxesAreRenamedWithoutMovingSamples() async throws {
         let location = mp4RawBox([0xA9, 0x78, 0x79, 0x7A], Array("+37.3349-122.0090/".utf8)) // ©xyz
         let keys = mp4Box("meta", Array("com.apple.quicktime.location.ISO6709 +51.5-000.1/".utf8))
-        let trackHeader = mp4Box("tkhd", [UInt8](repeating: 0, count: 12))
+        let trackHeader = mp4Box("tkhd", concat([UInt8](repeating: 0, count: 12), [0, 0, 0, 1], [UInt8](repeating: 0, count: 68)))
         let trackUserData = mp4Box("udta", mp4Box("name", Array("cam".utf8)))
-        let media = mp4Box("mdia", [UInt8](repeating: 1, count: 8))
+        let media = mp4Box("mdia", mp4Box("hdlr", concat([UInt8](repeating: 0, count: 8), Array("vide".utf8), [UInt8](repeating: 0, count: 12))))
         let track = mp4Box("trak", concat(trackHeader, trackUserData, media))
         let movieHeader = mp4Box("mvhd", [UInt8](repeating: 0, count: 20))
         let moov = mp4Box("moov", concat(movieHeader, mp4Box("udta", location), keys, track))
@@ -1461,9 +1471,9 @@ final class AttachmentTests: XCTestCase {
         let original = try AttachmentStaging.stage(data: Data(file), filename: "IMG_0002.MOV")
         defer { AttachmentStaging.remove(original.url) }
 
-        let strippedURL = try XCTUnwrap(AttachmentMetadata.strippedQuickTimeCopy(of: original.url, name: original.name))
-        defer { AttachmentStaging.remove(strippedURL) }
-        let stripped = [UInt8](try Data(contentsOf: strippedURL))
+        let cleanedFile = try await AttachmentMetadata.cleanCopy(of: original.url, contentType: "video/quicktime")
+        defer { AttachmentStaging.remove(cleanedFile.url) }
+        let stripped = [UInt8](try Data(contentsOf: cleanedFile.url))
         XCTAssertEqual(stripped.count, file.count, "no box changes size")
         XCTAssertEqual([UInt8](try Data(contentsOf: original.url)), file, "the staged original is untouched")
         let text = String(decoding: stripped, as: UTF8.self)
@@ -1473,34 +1483,32 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(Array(stripped[mdatStart..<mdatStart + 16 + samples.count]), Array(file[mdatStart..<mdatStart + 16 + samples.count]),
                        "sample data is byte-identical")
 
-        let read: (Int, Int) -> [UInt8]? = { offset, count in offset + count <= stripped.count ? Array(stripped[offset..<offset + count]) : nil }
-        let top = try XCTUnwrap(AttachmentMetadata.boxes(from: 0, to: stripped.count, read: read))
-        XCTAssertEqual(top.map(\.type), ["ftyp", "mdat", "moov"])
-        let moovBox = try XCTUnwrap(top.last)
-        XCTAssertEqual(try childTypes(stripped, in: moovBox), ["mvhd", "free", "free", "trak"])
-        let trakBox = try XCTUnwrap(AttachmentMetadata.boxes(from: moovBox.contentStart, to: moovBox.end, read: read)?.last)
-        XCTAssertEqual(try childTypes(stripped, in: trakBox), ["tkhd", "free", "mdia"])
-
-        XCTAssertNil(AttachmentMetadata.strippedQuickTimeCopy(of: strippedURL, name: "again.mov"), "nothing left to remove")
+        let expectedTrack = mp4Box("trak", concat(trackHeader, mp4Box("free", [UInt8](repeating: 0, count: trackUserData.count - 8)), media))
+        let expectedMovie = mp4Box("moov", concat(movieHeader, mp4Box("free", [UInt8](repeating: 0, count: location.count)),
+                                                 mp4Box("free", [UInt8](repeating: 0, count: keys.count - 8)), expectedTrack))
+        XCTAssertEqual(stripped, concat(mp4Box("ftyp", Array("qt  0000".utf8)), mp4LargeBox("mdat", samples), expectedMovie))
+        let again = try await cleaned(Data(stripped), contentType: "video/quicktime")
+        XCTAssertEqual(again, Data(stripped), "nothing left to remove")
     }
 
-    func testQuickTimeStripperHandlesSizeZeroAndRejectsMalformedFiles() throws {
+    func testQuickTimeStripperHandlesSizeZeroAndRejectsMalformedFiles() async throws {
         let moov = mp4Box("moov", mp4Box("udta", mp4RawBox([0xA9, 0x78, 0x79, 0x7A], [1, 2, 3])))
         let tail = mp4Box("mdat", [9, 9, 9, 9], sizeField: 0) // Runs to the end of the file.
         let file = concat(mp4Box("ftyp", Array("isom".utf8)), moov, tail)
-        let offsets = AttachmentMetadata.quickTimeMetadataTypeOffsets(fileSize: file.count) { offset, count in
-            offset + count <= file.count ? Array(file[offset..<offset + count]) : nil
-        }
-        XCTAssertEqual(offsets, [12 + 8 + 4])
+        let stripped = try await cleaned(Data(file), contentType: "video/mp4")
+        XCTAssertEqual(stripped.suffix(tail.count), Data(tail))
+        XCTAssertEqual(stripped.count, file.count)
 
         var broken = file
         broken[15] = 0xFF // moov now claims more bytes than the file has.
-        XCTAssertNil(AttachmentMetadata.quickTimeMetadataTypeOffsets(fileSize: broken.count) { offset, count in
-            offset + count <= broken.count ? Array(broken[offset..<offset + count]) : nil
-        })
-        let text = try AttachmentStaging.stage(data: Data("plain text, not a movie".utf8), filename: "a.mov")
-        defer { AttachmentStaging.remove(text.url) }
-        XCTAssertNil(AttachmentMetadata.strippedQuickTimeCopy(of: text.url, name: text.name))
+        for data in [Data(broken), Data("plain text, not a movie".utf8)] {
+            do {
+                _ = try await cleaned(data, contentType: "video/quicktime")
+                XCTFail("unsafe media must fail before uploading")
+            } catch {
+                XCTAssertEqual((error as? APIError)?.code, "media_metadata")
+            }
+        }
     }
 
     // MARK: Upload sequence
@@ -1509,14 +1517,67 @@ final class AttachmentTests: XCTestCase {
         request.headers.first { $0.key.lowercased() == name }?.value
     }
 
+    func testMetadataRefusalOnOriginalOrPreviewNeverReservesAnUpload() async throws {
+        let invalid = try AttachmentStaging.stage(data: Data("not a media file".utf8), filename: "broken.mp3")
+        let document = try AttachmentStaging.stage(data: Data("notes".utf8), filename: "notes.txt")
+        defer { AttachmentStaging.remove(invalid.url); AttachmentStaging.remove(document.url) }
+        var withInvalidPreview = PreparedAttachment(original: document)
+        withInvalidPreview.preview = AttachmentPreviewImage(data: Data("not a preview".utf8), contentType: "image/png")
+        for file in [PreparedAttachment(original: invalid), withInvalidPreview] {
+            do {
+                _ = try await AttachmentUploader.upload(file, channelID: channelID, api: client()) { _ in }
+                XCTFail("uncleanable media must never upload")
+            } catch {
+                XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(error), AttachmentMetadata.refusalMessage)
+            }
+        }
+        XCTAssertTrue(AttachmentURLProtocol.requests.isEmpty, "refusal happens before even reserving storage")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: invalid.url.path), "the draft remains available to remove or retry")
+    }
+
+    @MainActor
+    func testChannelAndProfileDraftsKeepTheMetadataRefusalMessage() async throws {
+        AttachmentURLProtocol.handler = composerHandler()
+        let api = client()
+        let chat = ChatModel(api: api)
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        chat.addAttachments([try AttachmentStaging.stage(data: Data("broken".utf8), filename: "broken.mp3")])
+        await waitUntil("metadata refusal") { chat.attachmentDrafts.first?.error != nil }
+        XCTAssertEqual(chat.attachmentDrafts.first?.statusLabel, AttachmentMetadata.refusalMessage)
+        let id = try XCTUnwrap(chat.attachmentDrafts.first?.id)
+        chat.retryAttachmentDraft(id: id)
+        await waitUntil("metadata refusal after retry") { chat.attachmentDrafts.first?.error != nil }
+        XCTAssertEqual(chat.attachmentDrafts.first?.error, AttachmentMetadata.refusalMessage)
+        chat.removeAttachmentDraft(id: id)
+        await chat.stop()
+
+        let draft = ProfileMessageDraft()
+        draft.add([try AttachmentStaging.stage(data: Data("broken".utf8), filename: "broken.mp3")])
+        defer { draft.clear() }
+        do {
+            _ = try await draft.upload(channelID: channelID, api: api)
+            XCTFail("uncleanable profile attachment must not upload")
+        } catch {
+            XCTAssertEqual((error as? APIError)?.code, "media_metadata")
+        }
+        XCTAssertEqual(draft.files.first?.uploadError, AttachmentMetadata.refusalMessage)
+        XCTAssertFalse(AttachmentURLProtocol.requests.contains { $0.method == "POST" && $0.url.path == "/api/assets" })
+    }
+
     func testUploadReservesPutsPreviewThenFileWithExactHeadersWithoutCredentialsThenCompletes() async throws {
-        let original = try AttachmentStaging.stage(data: Data(repeating: 7, count: 2048), filename: "shot.webp")
+        let pixels = try XCTUnwrap(AttachmentPreparer.rgbaPixels(noise(width: 16, height: 12)))
+        let webP = try XCTUnwrap(AttachmentPreparer.encodeLosslessWebP(pixels))
+        let original = try AttachmentStaging.stage(data: webP, filename: "shot.webp")
         defer { AttachmentStaging.remove(original.url) }
         var prepared = PreparedAttachment(original: original)
         prepared.sourceSize = 9000
         prepared.width = 800
         prepared.height = 600
-        prepared.preview = AttachmentPreviewImage(data: Data(repeating: 1, count: 100), contentType: "image/jpeg")
+        let gps: [CFString: Any] = [kCGImagePropertyGPSLatitude: 51.5, kCGImagePropertyGPSLatitudeRef: "N"]
+        let preview = try encoded(noise(width: 8, height: 6), type: .jpeg, quality: 0.5,
+                                  properties: [kCGImagePropertyGPSDictionary: gps])
+        prepared.preview = AttachmentPreviewImage(data: preview, contentType: "image/jpeg")
         let completes = FractionLog()
         AttachmentURLProtocol.handler = { request, _ in
             switch (request.httpMethod ?? "GET", request.url?.absoluteString ?? "") {
@@ -1552,10 +1613,14 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(body["channelId"] as? String, channelID)
         XCTAssertEqual(body["filename"] as? String, "shot.webp")
         XCTAssertEqual(body["contentType"] as? String, "image/webp")
-        XCTAssertEqual(body["byteSize"] as? Int, 2048)
+        XCTAssertEqual(body["byteSize"] as? Int, webP.count)
+        XCTAssertEqual(requests[2].body, webP)
         XCTAssertEqual(body["sourceByteSize"] as? Int, 9000)
         XCTAssertEqual(body["width"] as? Int, 800)
-        XCTAssertEqual((body["preview"] as? [String: Any])?["byteSize"] as? Int, 100)
+        let uploadedPreview = try XCTUnwrap(requests[1].body)
+        XCTAssertLessThan(uploadedPreview.count, preview.count)
+        XCTAssertNil(try properties(uploadedPreview)[kCGImagePropertyGPSDictionary])
+        XCTAssertEqual((body["preview"] as? [String: Any])?["byteSize"] as? Int, uploadedPreview.count)
         XCTAssertEqual((body["preview"] as? [String: Any])?["contentType"] as? String, "image/jpeg")
         XCTAssertEqual(header(requests[0], "authorization"), "Bearer account-secret")
         XCTAssertEqual(header(requests[1], "content-type"), "image/jpeg")
@@ -1570,10 +1635,11 @@ final class AttachmentTests: XCTestCase {
     }
 
     func testDeclaredPreviewWithoutAPreviewUploadFailsBeforeStorage() async throws {
-        let original = try AttachmentStaging.stage(data: Data(repeating: 7, count: 10), filename: "a.png")
+        let png = try encoded(noise(width: 2, height: 3), type: .png)
+        let original = try AttachmentStaging.stage(data: png, filename: "a.png")
         defer { AttachmentStaging.remove(original.url) }
         var prepared = PreparedAttachment(original: original)
-        prepared.preview = AttachmentPreviewImage(data: Data(repeating: 1, count: 4), contentType: "image/jpeg")
+        prepared.preview = AttachmentPreviewImage(data: try encoded(noise(width: 2, height: 3), type: .jpeg), contentType: "image/jpeg")
         AttachmentURLProtocol.handler = { _, _ in
             (201, Data(#"{"id":"Asset0000004","upload":{"method":"PUT","url":"https://r2.invalid/o","headers":{"content-type":"image/png"}}}"#.utf8))
         }
@@ -1609,9 +1675,12 @@ final class AttachmentTests: XCTestCase {
     }
 
     func testLargeFilesGoUpInPartsAndOnlyAFailedPartIsSignedAgain() async throws {
-        let bytes = Data((0..<10).map { UInt8($0 * 7 + 3) })
-        let original = try AttachmentStaging.stage(data: bytes, filename: "big.mp4")
+        let palette = try XCTUnwrap(IndexedPNG.palette(width: 2, height: 1, rgba: [255, 0, 0, 255, 0, 0, 255, 255]))
+        let bytes = try XCTUnwrap(IndexedPNG.encode(palette))
+        let tagged = bytes.prefix(8) + Data(pngChunk("tEXt", Array("Location\u{0}Home".utf8))) + bytes.dropFirst(8)
+        let original = try AttachmentStaging.stage(data: tagged, filename: "big.png")
         defer { AttachmentStaging.remove(original.url) }
+        let partBytes = (bytes.count + 2) / 3
         let lock = NSLock()
         nonisolated(unsafe) var failedOnce = false
         nonisolated(unsafe) var received: [Int: Data] = [:]
@@ -1619,7 +1688,8 @@ final class AttachmentTests: XCTestCase {
             let path = request.url?.path ?? ""
             switch (request.httpMethod ?? "GET", path) {
             case ("POST", "/api/assets"):
-                return (201, Data(#"{"id":"Asset0000005","kind":"video","multipart":{"partBytes":4,"partCount":3}}"#.utf8))
+                XCTAssertEqual(json(body)?["byteSize"] as? Int, bytes.count)
+                return (201, Data(#"{"id":"Asset0000005","kind":"image","multipart":{"partBytes":\#(partBytes),"partCount":3}}"#.utf8))
             case ("POST", "/api/assets/Asset0000005/parts"):
                 let asked = (json(body)?["parts"] as? [Int]) ?? []
                 let parts = asked.map { #"{"number":\#($0),"method":"PUT","url":"https://r2.invalid/part/\#($0)?sig=s","headers":{}}"# }
@@ -1651,7 +1721,7 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(requests.filter { $0.method == "PUT" }.count, 4, "three parts plus one retry")
         lock.withLock {
             XCTAssertEqual(received.keys.sorted(), [1, 2, 3])
-            XCTAssertEqual((1...3).map { received[$0]!.count }, [4, 4, 2])
+            XCTAssertEqual((1...3).map { received[$0]!.count }, [partBytes, partBytes, bytes.count - 2 * partBytes])
             XCTAssertEqual((1...3).reduce(Data()) { $0 + received[$1]! }, bytes)
         }
         for put in requests where put.method == "PUT" {
