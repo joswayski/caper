@@ -1295,6 +1295,53 @@ test("push config and device registration follow the API contract", async (t) =>
   assert.deepEqual(await devices(), { devices: [], requests: [] });
 });
 
+test("inbox pages use stable cursors across reads and keep counts independent of filters", async (t) => {
+  const { request } = await setup(t);
+  const path = "/api/notifications/inbox";
+  const page = (query = "") => request(path + query, { auth: true }).then(({ value }) => value);
+  assert.equal((await request(path)).response.status, 401);
+  assert.equal((await page()).items.length, 2, "the default still fits on one page");
+  await request("/__fixture/control", { method: "POST", body: { inboxPageSize: 1 } });
+  const first = await page("?unread=true");
+  assert.deepEqual(
+    first.items.map(({ id }) => id),
+    ["inbox0000002"],
+  );
+  const cursor = '["2026-09-23T09:43:00.000Z","inbox0000002"]';
+  assert.equal(first.nextCursor, cursor);
+  assert.equal(first.unreadCount, 2);
+  const mentions = await page("?filter=mentions&unread=true");
+  assert.equal(mentions.items.length, 1);
+  assert.equal(mentions.nextCursor, null);
+  assert.equal(mentions.unreadCount, 2, "the badge counts all unread activity");
+  // Remove the first unread row between requests: an offset cursor would skip Maya.
+  await request(path + "/read", { auth: true, method: "POST", body: { ids: ["inbox0000002"] } });
+  const second = await page(`?unread=true&cursor=${encodeURIComponent(cursor)}`);
+  assert.deepEqual(
+    second.items.map(({ id }) => id),
+    ["inbox0000001"],
+  );
+  assert.equal(second.nextCursor, null);
+  assert.equal(second.unreadCount, 1);
+  assert.deepEqual((await request("/__fixture/inbox-requests")).value.requests.at(-1), {
+    filter: "all",
+    unread: true,
+    cursor,
+  });
+  const sameTime = encodeURIComponent('["2026-09-23T09:43:00.000Z","inbox0000003"]');
+  assert.equal((await page(`?cursor=${sameTime}`)).items[0].id, "inbox0000002", "ties use the ID");
+  for (const invalid of ["bad", "null", '["bad","id"]', '["2026-09-23T09:43:00.000Z",1]'])
+    assert.equal((await request(`${path}?cursor=${encodeURIComponent(invalid)}`, { auth: true })).response.status, 400);
+  for (const inboxPageSize of [0, 41, 1.5])
+    assert.equal(
+      (await request("/__fixture/control", { method: "POST", body: { inboxPageSize } })).response.status,
+      400,
+    );
+  await request("/__fixture/control", { method: "POST", body: { reset: true } });
+  assert.equal((await page()).items.length, 2);
+  assert.equal((await page()).nextCursor, null);
+});
+
 test("notification settings and overrides validate, persist in memory and reset", async (t) => {
   const { request } = await setup(t);
   const defaults = { level: "all", mobile: "whenInactive", voiceStarted: true, overrides: [] };

@@ -871,7 +871,7 @@ export async function startFixture({
         return json(response, 200, { devices: state.pushDevices, requests: state.pushRequests });
       if (path === "/__fixture/channel-reads" && method === "GET")
         return json(response, 200, { reads: state.channelReads ?? null, log: state.channelReadLog ?? [] });
-      // The inbox pages asked for, in order: `{ requests: [{ filter, unread }] }`.
+      // The inbox pages asked for, in order: `{ requests: [{ filter, unread, cursor? }] }`.
       if (path === "/__fixture/inbox-requests" && method === "GET")
         return json(response, 200, { requests: state.inboxRequests ?? [] });
       if (path === "/__fixture/control" && method === "POST") {
@@ -886,6 +886,12 @@ export async function startFixture({
         if (body.channelMentions !== undefined) state.channelMentions = body.channelMentions;
         // Opt-in: `{ inboxDelayMs: n }` answers inbox pages n ms late.
         if (typeof body.inboxDelayMs === "number") state.inboxDelayMs = body.inboxDelayMs;
+        // Smaller pages exercise Load more without filling the inbox with fake rows.
+        if (body.inboxPageSize !== undefined) {
+          if (!Number.isInteger(body.inboxPageSize) || body.inboxPageSize < 1 || body.inboxPageSize > 40)
+            return reject(response, 400, "Invalid fixture inbox page size.");
+          state.inboxPageSize = body.inboxPageSize;
+        }
         if (body.reset || typeof body.holdSends === "boolean") {
           holdSends = !body.reset && body.holdSends;
           if (!holdSends) for (const release of heldSends) release();
@@ -1813,12 +1819,46 @@ export async function startFixture({
         }[filter];
         if (!matches) return reject(response, 400, "invalid inbox filter");
         const unreadOnly = url.searchParams.get("unread") === "true";
-        (state.inboxRequests ??= []).push({ filter, unread: unreadOnly });
+        const encodedCursor = url.searchParams.get("cursor");
+        let cursor;
+        if (encodedCursor !== null) {
+          try {
+            cursor = JSON.parse(encodedCursor);
+            if (
+              encodedCursor.length > 512 ||
+              !Array.isArray(cursor) ||
+              cursor.length !== 2 ||
+              cursor.some((part) => typeof part !== "string") ||
+              !Number.isFinite(Date.parse(cursor[0]))
+            )
+              throw new Error("invalid cursor");
+          } catch {
+            return reject(response, 400, "invalid inbox cursor");
+          }
+        }
+        (state.inboxRequests ??= []).push({
+          filter,
+          unread: unreadOnly,
+          ...(encodedCursor === null ? {} : { cursor: encodedCursor }),
+        });
         if (state.inboxDelayMs) await new Promise((resolve) => setTimeout(resolve, state.inboxDelayMs));
         const mine = user.id === ids.owner ? state.inbox : [];
+        // Match the API's descending (createdAt, id) keyset, including after a read
+        // removes an earlier row from an unread-only page. Offsets would skip rows.
+        const rows = mine
+          .filter((item) => matches(item) && (!unreadOnly || item.unread))
+          .filter(
+            (item) =>
+              !cursor ||
+              Date.parse(item.createdAt) < Date.parse(cursor[0]) ||
+              (Date.parse(item.createdAt) === Date.parse(cursor[0]) && item.id < cursor[1]),
+          )
+          .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id));
+        const items = rows.slice(0, state.inboxPageSize ?? 40);
+        const last = items.at(-1);
         return json(response, 200, {
-          items: mine.filter((item) => matches(item) && (!unreadOnly || item.unread)),
-          nextCursor: null,
+          items,
+          nextCursor: rows.length > items.length ? JSON.stringify([last.createdAt, last.id]) : null,
           unreadCount: mine.filter((item) => item.unread).length,
         });
       }
