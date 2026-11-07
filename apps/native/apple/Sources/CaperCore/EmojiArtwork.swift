@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import ImageIO
+@_implementationOnly import CaperMobile
 
 public struct EmojiCatalogEntry: Codable, Identifiable, Sendable, Equatable {
     public let id: String
@@ -21,8 +22,14 @@ enum EmojiArtwork {
         guard let url = resourceURL(name: "catalog", extension: "json"),
               let data = try? Data(contentsOf: url),
               let entries = try? JSONDecoder().decode([EmojiCatalogEntry].self, from: data) else { return [] }
+        // The shared autocomplete searches these same bytes (shared/messages/emoji.rs).
+        _ = data.withUnsafeBytes { caper_mobile_emoji_catalog($0.bindMemory(to: UInt8.self).baseAddress, $0.count) }
         return entries
     }()
+    /// The catalog entry at a position the shared autocomplete returned.
+    static func entry(at index: Int) -> EmojiCatalogEntry? {
+        entries.indices.contains(index) ? entries[index] : nil
+    }
     static let choices = entries.filter(\.selectable)
     /// Picker order approximating web's: smileys (the emoticon block, then
     /// other faces) before people, then the other categories with flags last.

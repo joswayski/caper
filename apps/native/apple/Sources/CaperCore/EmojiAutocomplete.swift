@@ -1,4 +1,5 @@
 import SwiftUI
+@_implementationOnly import CaperMobile
 #if os(iOS)
 import UIKit
 import UIKit.UIGestureRecognizerSubclass
@@ -24,51 +25,39 @@ public struct EmojiAutocompleteMatch: Equatable {
 }
 
 enum EmojiAutocomplete {
-    private static let defaults = ["1f44d", "1f600", "2764", "1f389", "1f680", "1f440"]
-
-    static func match(text: String, selection: NSRange, markedText: Bool,
-                      catalog: [EmojiCatalogEntry] = EmojiArtwork.choices) -> EmojiAutocompleteMatch? {
-        guard !markedText, selection.length == 0,
-              let caret = Range(NSRange(location: selection.location, length: 0), in: text)?.lowerBound else { return nil }
-        if caret < text.endIndex, isQuery(text[caret]) || text[caret] == ":" { return nil }
-
-        var start = caret
-        while start > text.startIndex {
-            let previous = text.index(before: start)
-            guard isQuery(text[previous]) else { break }
-            start = previous
-        }
-        guard start > text.startIndex else { return nil }
-        let colon = text.index(before: start)
-        guard text[colon] == ":" else { return nil }
-        if colon > text.startIndex {
-            let before = text[text.index(before: colon)]
-            guard before.isWhitespace || "([{".contains(before) else { return nil }
-        }
-        let raw = String(text[start..<caret])
-        // One character is an emoticon (":D", ":P", ":3"), not a search; Return sends it as typed.
-        guard raw.count != 1 else { return nil }
-        let query = normalize(raw)
-        let selectable = catalog.filter(\.selectable)
-        let choices: [EmojiCatalogEntry]
-        if raw.isEmpty {
-            let byID = Dictionary(uniqueKeysWithValues: selectable.map { ($0.id, $0) })
-            choices = defaults.compactMap { byID[$0] }
-        } else {
-            choices = selectable.enumerated().compactMap { offset, entry -> (Int, Int, EmojiCatalogEntry)? in
-                let name = normalize(entry.name), keywords = normalize(entry.keywords)
-                let rank: Int
-                if name == query { rank = 0 }
-                else if name.hasPrefix(query) { rank = 1 }
-                else if keywords.hasPrefix(query) || keywords.contains(" \(query)") { rank = 2 }
-                else if name.contains(query) || keywords.contains(query) { rank = 3 }
-                else { return nil }
-                return (rank, offset, entry)
-            // Within a rank the shorter name is the closer match: ":fi" offers fire before film-frames.
-            }.sorted { ($0.0, $0.2.name.count, $0.1) < ($1.0, $1.2.name.count, $1.1) }.prefix(6).map(\.2)
-        }
+    /// Web's `:` token at the caret and the entries it offers, through the
+    /// shared Rust autocomplete (shared/messages/emoji.rs), which reads the
+    /// token in the visible text and returns its source range.
+    static func match(text: String, selection: NSRange, markedText: Bool) -> EmojiAutocompleteMatch? {
+        guard !markedText, selection.length == 0, let token = token(text, caret: selection.location) else { return nil }
+        let choices = suggestions(token.query)
         guard !choices.isEmpty else { return nil }
-        return EmojiAutocompleteMatch(replacementRange: NSRange(colon..<caret, in: text), choices: Array(choices.prefix(6)))
+        return EmojiAutocompleteMatch(replacementRange: token.range, choices: choices)
+    }
+
+    /// Up to six entries web offers for `query`, best first.
+    static func suggestions(_ query: String) -> [EmojiCatalogEntry] {
+        guard EmojiArtwork.entry(at: 0) != nil else { return [] }
+        var query = query
+        return query.withUTF8 { bytes in
+            let found = caper_mobile_emoji_suggestions(bytes.baseAddress, bytes.count)
+            defer { caper_mobile_ints_free(found) }
+            return UnsafeBufferPointer(start: found.data, count: found.len).compactMap { EmojiArtwork.entry(at: Int($0)) }
+        }
+    }
+
+    /// The open `:` token with the caret at UTF-16 offset `caret`: its source range and visible query.
+    static func token(_ text: String, caret: Int) -> (range: NSRange, query: String)? {
+        guard caret >= 0, caret <= text.utf16.count else { return nil }
+        var source = text
+        let token: [Int32] = source.withUTF8 { bytes in
+            let token = caper_mobile_emoji_token(bytes.baseAddress, bytes.count, Int32(caret))
+            defer { caper_mobile_ints_free(token) }
+            return Array(UnsafeBufferPointer(start: token.data, count: token.len))
+        }
+        guard token.count >= 2 else { return nil }
+        let query = String(String.UnicodeScalarView(token.dropFirst(2).compactMap { Unicode.Scalar(UInt32($0)) }))
+        return (NSRange(location: Int(token[0]), length: Int(token[1] - token[0])), query)
     }
 
     static func inserting(_ entry: EmojiCatalogEntry, in text: String, match: EmojiAutocompleteMatch,
@@ -84,15 +73,6 @@ enum EmojiAutocomplete {
         guard result.unicodeScalars.count <= scalarLimit else { return nil }
         let cursor = selection.location + (emoji as NSString).length
         return MessageFormatting.repairEdit(text, text: result, selection: NSRange(location: cursor, length: 0))
-    }
-
-    private static func normalize(_ value: String) -> String {
-        value.lowercased().replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ")
-    }
-    private static func isQuery(_ character: Character) -> Bool {
-        character.unicodeScalars.count == 1 && character.unicodeScalars.allSatisfy {
-            (65...90).contains($0.value) || (97...122).contains($0.value) || (48...57).contains($0.value) || $0 == "_" || $0 == "+" || $0 == "-"
-        }
     }
 }
 
@@ -134,9 +114,7 @@ enum ComposerAutocomplete {
         if let mention = MentionAutocomplete.match(text: displayed, selection: caret, markedText: false, source: mentions) {
             return .mention(MentionAutocompleteMatch(replacementRange: original(mention.replacementRange), choices: mention.choices))
         }
-        return EmojiAutocomplete.match(text: displayed, selection: caret, markedText: false).map {
-            .emoji(EmojiAutocompleteMatch(replacementRange: original($0.replacementRange), choices: $0.choices))
-        }
+        return EmojiAutocomplete.match(text: text, selection: selection, markedText: false).map { .emoji($0) }
     }
 
     /// Accepts the row at `index`, enforcing the same 4,000-scalar limit for both kinds.
