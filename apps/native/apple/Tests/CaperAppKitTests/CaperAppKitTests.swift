@@ -57,9 +57,291 @@ import XCTest
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    /// UI removal can be optimistic, and the reaction picker closes before its
+    /// write finishes. Observe persistence independently, without fixed send delays.
+    private static func fixtureEventually(_ path: String, matches: ([String: Any]) -> Bool) async throws -> [String: Any] {
+        var snapshot = try await fixtureGET(path)
+        for _ in 0..<50 {
+            if matches(snapshot) { return snapshot }
+            try await Task.sleep(for: .milliseconds(100))
+            snapshot = try await fixtureGET(path)
+        }
+        XCTAssertTrue(matches(snapshot), "The HTTP fixture did not reach the expected state: \(path)")
+        return snapshot
+    }
+
     private func messageMenuItem(_ title: String, app: XCUIApplication, body: XCUIElement) -> XCUIElement {
         let item = app.menuItems[title]
         return item.exists ? item : body.menuItems[title]
+    }
+
+    func testActivityInboxLoadRetryFiltersReadRollbackAndDismissalStopPolling() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let path = "/api/notifications/inbox"
+        let historyPath = "/api/chat/channels/chan00000001/messages"
+        let before = try await Self.fixtureGET(path)
+        XCTAssertEqual(before["unreadCount"] as? Int, 2)
+        XCTAssertEqual((before["items"] as? [[String: Any]])?.compactMap { $0["id"] as? String }, ["inbox0000002", "inbox0000001"])
+        let historyBefore = try await Self.fixtureGET(historyPath)
+        try await Self.control(["failure": ["path": path, "method": "GET", "status": 503,
+            "persistent": true, "error": "TEST FIXTURE: notifications unavailable."]])
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15)); resize(app, width: 1280)
+        let draft = "TEST FIXTURE — keep channel draft while reading notifications"
+        composer.click(); composer.typeText(draft)
+        let entry = app.buttons["activity-inbox"]
+        let dialog = app.descendants(matching: .any)["activity-inbox-dialog"].firstMatch
+        let done = app.buttons["activity-done"]
+        let retry = app.buttons["Retry"]
+        let mention = app.buttons["activity-open-inbox0000002"]
+        let reaction = app.buttons["activity-open-inbox0000001"]
+        let empty = app.staticTexts["No notifications match these filters."]
+        XCTAssertTrue(entry.waitForExistence(timeout: 5)); XCTAssertEqual(entry.label, "Notifications")
+        entry.hover(); app.buttons["selected-space-name"].hover(); entry.click()
+        XCTAssertTrue(dialog.waitForExistence(timeout: 5)); XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE: notifications unavailable."].exists)
+        XCTAssertFalse(mention.exists); XCTAssertFalse(reaction.exists); XCTAssertFalse(empty.exists)
+        XCTAssertFalse(composer.exists); XCTAssertFalse(app.scrollViews["message-timeline"].exists)
+        XCTAssertFalse(app.buttons["channel-chan00000001"].exists)
+        capture("activity inbox GET failure wide", app: app)
+        try await Self.control(["clearFailures": true])
+        retry.hover(); done.hover(); retry.click()
+        XCTAssertTrue(mention.waitForExistence(timeout: 10)); XCTAssertTrue(reaction.waitForExistence(timeout: 5))
+        XCTAssertTrue(retry.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Load more"].exists, "The existing two-row seed has no next page")
+
+        for (filter, visible, hidden) in [("mentions", mention, reaction), ("reactions", reaction, mention)] {
+            let button = app.buttons["activity-filter-\(filter)"]
+            button.hover(); app.buttons["activity-filter-all"].hover(); button.click()
+            XCTAssertTrue(visible.waitForExistence(timeout: 10)); XCTAssertTrue(hidden.waitForNonExistence(timeout: 5))
+            XCTAssertFalse(empty.exists)
+        }
+        for filter in ["dms", "threads", "invitations"] {
+            // Return to a nonempty filter so each empty assertion observes a new load.
+            app.buttons["activity-filter-all"].click()
+            XCTAssertTrue(mention.waitForExistence(timeout: 10)); XCTAssertTrue(reaction.waitForExistence(timeout: 5))
+            app.buttons["activity-filter-\(filter)"].click()
+            XCTAssertTrue(empty.waitForExistence(timeout: 10))
+            XCTAssertFalse(mention.exists); XCTAssertFalse(reaction.exists); XCTAssertFalse(retry.exists)
+        }
+        resize(app, width: 900)
+        capture("activity inbox empty invitations filter narrow", app: app)
+        app.buttons["activity-filter-mentions"].click()
+        let read = app.buttons["activity-read-inbox0000002"]
+        XCTAssertTrue(read.waitForExistence(timeout: 10))
+        XCTAssertEqual(read.label, "Mark notification from Alex read")
+        try await Self.control(["failure": ["path": path + "/read", "method": "POST", "status": 503,
+            "error": "TEST FIXTURE: notification read unavailable."]])
+        read.hover(); mention.hover(); app.buttons["activity-react-inbox0000002"].hover(); read.click()
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE: notification read unavailable."].waitForExistence(timeout: 10))
+        XCTAssertTrue(read.waitForExistence(timeout: 5)); XCTAssertTrue(mention.exists)
+        XCTAssertTrue(app.staticTexts["Unread only (2)"].exists, "The optimistic count rolls back with the unread row")
+        let rejected = try await Self.fixtureGET(path)
+        XCTAssertEqual(rejected["unreadCount"] as? Int, 2)
+        XCTAssertEqual((rejected["items"] as? [[String: Any]])?.filter { $0["unread"] as? Bool == true }.count, 2,
+            "A failed read must restore both the row and count, not merely hide its error")
+        capture("activity inbox mark read rollback narrow", app: app)
+        // Retry reloads the inbox; it must not silently retry the failed write.
+        retry.hover(); read.hover(); retry.click()
+        XCTAssertTrue(retry.waitForNonExistence(timeout: 10)); XCTAssertTrue(read.exists)
+        let afterReload = try await Self.fixtureGET(path)
+        XCTAssertEqual(afterReload["unreadCount"] as? Int, 2)
+        read.click()
+        let accepted = try await Self.fixtureEventually(path) { $0["unreadCount"] as? Int == 1 }
+        let items = try XCTUnwrap(accepted["items"] as? [[String: Any]])
+        XCTAssertEqual(items.first { $0["id"] as? String == "inbox0000002" }?["unread"] as? Bool, false)
+        XCTAssertEqual(items.first { $0["id"] as? String == "inbox0000001" }?["unread"] as? Bool, true)
+        XCTAssertTrue(mention.waitForNonExistence(timeout: 5)); XCTAssertTrue(empty.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Unread only (1)"].exists)
+        let unreadOnly = app.descendants(matching: .any)["activity-unread-only"].firstMatch
+        XCTAssertTrue(unreadOnly.exists); unreadOnly.click()
+        XCTAssertTrue(mention.waitForExistence(timeout: 10)); XCTAssertFalse(read.exists)
+        XCTAssertFalse(reaction.exists, "Disabling unread-only must retain the Mentions filter")
+        capture("activity inbox read notification included narrow", app: app)
+        unreadOnly.click()
+        XCTAssertTrue(mention.waitForNonExistence(timeout: 10)); XCTAssertTrue(empty.waitForExistence(timeout: 5))
+        app.buttons["activity-filter-all"].click()
+        XCTAssertTrue(reaction.waitForExistence(timeout: 10)); XCTAssertFalse(mention.exists)
+        done.click()
+        XCTAssertTrue(dialog.waitForNonExistence(timeout: 5)); XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(entry.value as? String, "1 unread")
+        XCTAssertEqual(composer.value as? String, draft)
+        app.typeText(" — after Done")
+        XCTAssertEqual(composer.value as? String, draft + " — after Done", "Done must restore the native editor's focus")
+        let historyAfter = try await Self.fixtureGET(historyPath)
+        XCTAssertEqual(historyAfter["cursor"] as? String, historyBefore["cursor"] as? String,
+            "Reading notifications must not submit the channel draft")
+
+        // A one-shot GET failure is a sentinel: wait longer than the shipping
+        // 15-second inbox poll while closed. Only reopening may consume it.
+        try await Self.control(["failure": ["path": path, "method": "GET", "status": 503,
+            "error": "TEST FIXTURE: first request after inbox dismissal."]])
+        try await Task.sleep(for: .seconds(16))
+        entry.click()
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE: first request after inbox dismissal."].waitForExistence(timeout: 10),
+            "A detached inbox poll must not consume requests after Done")
+        capture("activity inbox closed polling sentinel on reopen narrow", app: app)
+        retry.click()
+        XCTAssertTrue(reaction.waitForExistence(timeout: 10)); XCTAssertTrue(retry.waitForNonExistence(timeout: 5))
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(dialog.waitForNonExistence(timeout: 5)); XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        app.typeText(" — after Escape")
+        XCTAssertEqual(composer.value as? String, draft + " — after Done — after Escape")
+        XCTAssertEqual(entry.value as? String, "1 unread")
+    }
+
+    func testActivityInboxInlineReplyReactOriginalNavigationAndInvitationHandoff() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        // Existing control: an object with inbox:true, not a separate invitation ID.
+        try await Self.control(["spaceInvitation": ["inbox": true]])
+        let path = "/api/notifications/inbox"
+        let source = "chan00000001", destination = "chan00000002", originalID = "chan00000001m04"
+        let historyPath = "/api/chat/channels/\(source)/messages"
+        let destinationPath = "/api/chat/channels/\(destination)/messages"
+        for index in 1...55 {
+            try await Self.control(["incomingMessage": ["channelId": source, "text": "TEST FIXTURE — notification context distance \(index)"]])
+        }
+        let newest = try await Self.fixtureGET(historyPath)
+        XCTAssertFalse((newest["messages"] as? [[String: Any]] ?? []).contains { $0["id"] as? String == originalID },
+            "The original must require a context fetch, not already be in the newest page")
+        let destinationBefore = try await Self.fixtureGET(destinationPath)
+        let initialInbox = try await Self.fixtureGET(path)
+        XCTAssertEqual(initialInbox["unreadCount"] as? Int, 3)
+        let invitation = try XCTUnwrap((initialInbox["items"] as? [[String: Any]])?.first { $0["id"] as? String == "inbox0000003" })
+        XCTAssertEqual(invitation["kind"] as? String, "space.invitation"); XCTAssertEqual(invitation["spaceId"] as? String, "space0000008")
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15)); resize(app, width: 1280)
+        let sourceDraft = "TEST FIXTURE — source draft survives notification navigation"
+        let destinationDraft = "TEST FIXTURE — design draft is not an inline reply"
+        composer.click(); composer.typeText(sourceDraft)
+        app.buttons["channel-\(destination)"].click()
+        XCTAssertTrue(app.textViews["message-\(destination)m01"].waitForExistence(timeout: 10))
+        composer.click(); composer.typeText(destinationDraft)
+        let entry = app.buttons["activity-inbox"]
+        let dialog = app.descendants(matching: .any)["activity-inbox-dialog"].firstMatch
+        entry.click()
+        XCTAssertTrue(app.buttons["activity-open-inbox0000003"].waitForExistence(timeout: 10))
+        app.buttons["activity-filter-mentions"].click()
+        let row = app.descendants(matching: .any)["activity-row-inbox0000002"].firstMatch
+        let reply = app.buttons["activity-reply-inbox0000002"]
+        let react = app.buttons["activity-react-inbox0000002"]
+        XCTAssertTrue(reply.waitForExistence(timeout: 10)); XCTAssertTrue(row.exists)
+        reply.hover(); react.hover(); reply.click()
+        let inlineComposer = row.textViews["mention-card-composer"]
+        let send = row.buttons["mention-card-send"]
+        XCTAssertTrue(inlineComposer.waitForExistence(timeout: 5)); XCTAssertTrue(app.staticTexts["Reply in #general"].exists)
+        XCTAssertFalse(composer.exists); XCTAssertFalse(app.buttons["mention-card-message"].exists)
+        let replyText = "TEST FIXTURE — reply through the shipping inbox composer"
+        inlineComposer.click(); inlineComposer.typeText(replyText)
+        reply.click(); XCTAssertTrue(inlineComposer.waitForNonExistence(timeout: 5))
+        reply.click(); XCTAssertTrue(inlineComposer.waitForExistence(timeout: 5))
+        XCTAssertEqual(inlineComposer.value as? String, replyText, "Collapsing a row must not discard its independent reply draft")
+        send.hover(); row.buttons["mention-card-emoji"].hover(); send.hover()
+        XCTAssertEqual(inlineComposer.value as? String, replyText)
+        capture("activity inbox shared inline reply wide", app: app)
+        send.click()
+        let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", ""), object: inlineComposer)
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 10), .completed)
+        let delivered = try await Self.fixtureEventually(historyPath) { snapshot in
+            (snapshot["messages"] as? [[String: Any]] ?? []).contains { ($0["content"] as? [String: Any])?["text"] as? String == replyText }
+        }
+        let replies = try XCTUnwrap(delivered["messages"] as? [[String: Any]]).filter { ($0["content"] as? [String: Any])?["text"] as? String == replyText }
+        XCTAssertEqual(replies.count, 1)
+        XCTAssertEqual(replies.first?["channelId"] as? String, source)
+        XCTAssertEqual((replies.first?["author"] as? [String: Any])?["id"] as? String, "owner0000001")
+        XCTAssertEqual((replies.first?["replyTo"] as? [String: Any])?["id"] as? String, originalID)
+        XCTAssertNil(replies.first?["threadRootId"])
+        XCTAssertTrue(dialog.exists); XCTAssertFalse(composer.exists, "Inline Send must not open the channel or a DM")
+        let followup = "TEST FIXTURE — unsent inline follow-up"
+        inlineComposer.click(); inlineComposer.typeText(followup)
+        react.hover(); reply.hover(); react.click()
+        let search = app.textFields["reaction-picker-search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.click(); search.typeText("tomato")
+        let tomato = app.scrollViews["reaction-picker-grid"].buttons["tomato"]
+        XCTAssertTrue(tomato.waitForExistence(timeout: 5)); XCTAssertTrue(tomato.isHittable)
+        capture("activity inbox shared reaction picker wide", app: app)
+        tomato.hover(); app.buttons["emoji-category-food_drink"].hover(); tomato.click()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        let reactionPath = historyPath + "/\(originalID)/reactions"
+        let stored = try await Self.fixtureEventually(reactionPath) { snapshot in
+            let group = (snapshot["reactions"] as? [[String: Any]])?.first { $0["emoji"] as? String == "🍅" }
+            return (group?["authors"] as? [[String: Any]] ?? []).contains { $0["id"] as? String == "owner0000001" }
+        }
+        let tomatoGroup = try XCTUnwrap((stored["reactions"] as? [[String: Any]])?.first { $0["emoji"] as? String == "🍅" })
+        XCTAssertEqual((tomatoGroup["authors"] as? [[String: Any]])?.compactMap { $0["id"] as? String }, ["owner0000001"])
+        XCTAssertTrue(dialog.exists); XCTAssertEqual(inlineComposer.value as? String, followup)
+        let afterInline = try await Self.fixtureGET(path)
+        XCTAssertEqual(afterInline["unreadCount"] as? Int, 3, "Inline reply/react do not acknowledge notifications")
+        let directs = try await Self.fixtureGET("/api/dms")
+        XCTAssertTrue(try XCTUnwrap(directs["conversations"] as? [[String: Any]]).isEmpty, "Replying to a mention must not create an actor DM")
+        let destinationAfter = try await Self.fixtureGET(destinationPath)
+        XCTAssertEqual(destinationAfter["cursor"] as? String, destinationBefore["cursor"] as? String)
+        reply.click()
+        app.buttons["activity-done"].click()
+        XCTAssertTrue(dialog.waitForNonExistence(timeout: 5)); XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, destinationDraft); XCTAssertEqual(entry.value as? String, "3 unread")
+
+        entry.click()
+        let open = app.buttons["activity-open-inbox0000002"]
+        XCTAssertTrue(open.waitForExistence(timeout: 10)); reply.click()
+        XCTAssertTrue(inlineComposer.waitForExistence(timeout: 5)); XCTAssertEqual(inlineComposer.value as? String, followup)
+        reply.click(); XCTAssertTrue(inlineComposer.waitForNonExistence(timeout: 5))
+        open.hover(); reply.hover(); open.click()
+        XCTAssertTrue(dialog.waitForNonExistence(timeout: 10))
+        let timeline = app.scrollViews["message-timeline"]
+        let original = timeline.textViews["message-\(originalID)"]
+        XCTAssertTrue(original.waitForExistence(timeout: 10)); XCTAssertTrue(original.isHittable)
+        XCTAssertTrue(timeline.frame.intersects(original.frame)); XCTAssertTrue(app.staticTexts["# general"].exists)
+        XCTAssertEqual(composer.value as? String, sourceDraft)
+        XCTAssertFalse(app.descendants(matching: .any)["thread-pane"].exists)
+        let afterOpen = try await Self.fixtureGET(path)
+        XCTAssertEqual(afterOpen["unreadCount"] as? Int, 2)
+        XCTAssertEqual((afterOpen["items"] as? [[String: Any]])?.first { $0["id"] as? String == "inbox0000002" }?["unread"] as? Bool, false)
+        capture("activity inbox old original channel navigation wide", app: app)
+
+        resize(app, width: 900)
+        entry.click(); app.buttons["activity-filter-invitations"].click()
+        let openInvitation = app.buttons["activity-open-inbox0000003"]
+        XCTAssertTrue(openInvitation.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["activity-reply-inbox0000003"].exists); XCTAssertFalse(app.buttons["activity-react-inbox0000003"].exists)
+        openInvitation.hover(); app.buttons["activity-read-inbox0000003"].hover(); openInvitation.click()
+        let invitationTitle = app.staticTexts["Join Maya's Book Club?"]
+        XCTAssertTrue(invitationTitle.waitForExistence(timeout: 10)); XCTAssertTrue(dialog.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Accept"].exists); XCTAssertTrue(app.buttons["Decline"].exists)
+        XCTAssertFalse(composer.exists); XCTAssertFalse(app.buttons["channel-\(source)"].exists)
+        XCTAssertFalse(app.buttons["activity-done"].exists, "The invitation replaces the inbox rather than stacking underneath it")
+        let pending = try await Self.fixtureGET("/api/spaces")
+        XCTAssertFalse(try XCTUnwrap(pending["spaces"] as? [[String: Any]]).contains { $0["id"] as? String == "space0000008" })
+        XCTAssertTrue(try XCTUnwrap(pending["invitations"] as? [[String: Any]]).contains { $0["id"] as? String == "space0000008" },
+            "Opening a notification must not accept or decline its pending invitation")
+        capture("activity inbox invitation handoff before membership mutation narrow", app: app)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(invitationTitle.waitForNonExistence(timeout: 5)); XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, sourceDraft)
+        let afterCancel = try await Self.fixtureGET("/api/spaces")
+        XCTAssertFalse(try XCTUnwrap(afterCancel["spaces"] as? [[String: Any]]).contains { $0["id"] as? String == "space0000008" })
+        XCTAssertTrue(try XCTUnwrap(afterCancel["invitations"] as? [[String: Any]]).contains { $0["id"] as? String == "space0000008" })
+        entry.click()
+        XCTAssertTrue(app.staticTexts["No notifications match these filters."].waitForExistence(timeout: 10))
+        app.descendants(matching: .any)["activity-unread-only"].firstMatch.click()
+        XCTAssertTrue(openInvitation.waitForExistence(timeout: 10)); openInvitation.click()
+        XCTAssertTrue(invitationTitle.waitForExistence(timeout: 10))
+        app.buttons["Accept"].hover(); app.buttons["Decline"].hover(); app.buttons["Accept"].click()
+        XCTAssertTrue(invitationTitle.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["channel-chan00000091"].waitForExistence(timeout: 10))
+        let joined = try await Self.fixtureGET("/api/spaces")
+        XCTAssertTrue(try XCTUnwrap(joined["spaces"] as? [[String: Any]]).contains { $0["id"] as? String == "space0000008" })
+        XCTAssertFalse(try XCTUnwrap(joined["invitations"] as? [[String: Any]]).contains { $0["id"] as? String == "space0000008" })
+        let members = try await Self.fixtureGET("/api/spaces/space0000008")
+        XCTAssertTrue(try XCTUnwrap(members["members"] as? [[String: Any]]).contains { $0["id"] as? String == "owner0000001" })
+        XCTAssertEqual(entry.value as? String, "1 unread")
+        capture("activity inbox invitation explicitly accepted narrow", app: app)
     }
 
     func testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts() async throws {
@@ -2180,6 +2462,45 @@ import XCTest
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         XCTAssertEqual(composer.value as? String, "Keep this draft after closing")
+
+        // The sidebar inbox is distinct from the account's notification settings.
+        // Exercise both native dismissal paths without adding another launch flow.
+        let entry = app.buttons["activity-inbox"]
+        let dialog = app.descendants(matching: .any)["activity-inbox-dialog"].firstMatch
+        let done = app.buttons["activity-done"]
+        let window = app.windows["Caper — AppKit development (not feature complete)"]
+        var draft = "Keep this draft after closing"
+        for width in [CGFloat(1280), CGFloat(900)] {
+            resize(app, width: width)
+            XCTAssertTrue(entry.waitForExistence(timeout: 5)); XCTAssertEqual(entry.label, "Notifications")
+            XCTAssertEqual(app.buttons.matching(identifier: "activity-inbox").count, 1)
+            composer.click()
+            entry.hover(); app.buttons["selected-space-name"].hover(); entry.click()
+            XCTAssertTrue(dialog.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["activity-open-inbox0000002"].waitForExistence(timeout: 10))
+            XCTAssertEqual(done.label, "Done"); XCTAssertTrue(done.isHittable)
+            XCTAssertFalse(entry.exists); XCTAssertFalse(composer.exists)
+            XCTAssertFalse(app.scrollViews["message-timeline"].exists)
+            XCTAssertFalse(app.buttons["channel-chan00000001"].exists)
+            XCTAssertFalse(app.buttons["account-settings-menu"].exists, "All background navigation must leave the modal AX tree")
+            XCTAssertTrue(window.frame.contains(dialog.frame)); XCTAssertTrue(window.frame.contains(done.frame))
+            XCTAssertGreaterThan(dialog.frame.width, 300); XCTAssertLessThanOrEqual(dialog.frame.width, 681)
+            XCTAssertGreaterThan(dialog.frame.height, 200); XCTAssertLessThanOrEqual(dialog.frame.height, 681)
+            for control in [done, app.buttons["activity-filter-all"], app.buttons["activity-open-inbox0000002"]] {
+                XCTAssertTrue(control.isHittable); XCTAssertTrue(dialog.frame.contains(control.frame))
+            }
+            capture(width == 1280 ? "activity inbox bounded modal and AX isolation wide" : "activity inbox bounded modal and AX isolation narrow", app: app)
+            if width == 1280 { done.hover(); app.buttons["activity-filter-invitations"].hover(); done.click() }
+            else { app.typeKey(.escape, modifierFlags: []) }
+            XCTAssertTrue(dialog.waitForNonExistence(timeout: 5)); XCTAssertTrue(composer.waitForExistence(timeout: 5))
+            XCTAssertEqual(composer.value as? String, draft)
+            XCTAssertEqual(entry.value as? String, "2 unread", "Opening and closing must not mark notifications read")
+            let suffix = width == 1280 ? " after inbox Done" : " after inbox Escape"
+            app.typeText(suffix); draft += suffix
+            XCTAssertEqual(composer.value as? String, draft, "The native host must restore focus, not just retain text")
+        }
+        let unread = try await Self.fixtureGET("/api/notifications/inbox")
+        XCTAssertEqual(unread["unreadCount"] as? Int, 2)
     }
 
     func testScrollUpHistoryRetriesFailureAndPreservesTheVisibleMessage() async throws {

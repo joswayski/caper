@@ -400,6 +400,89 @@ function pushDeviceProblem(body, platforms) {
   return undefined;
 }
 const rfc3339 = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$/;
+// Preserve sub-millisecond ordering in the API's (created_at, id) cursor.
+function inboxTime(value) {
+  if (typeof value !== "string" || !rfc3339.test(value) || !Number.isFinite(Date.parse(value))) return undefined;
+  // Date.parse normalizes impossible dates and 24:00; chrono rejects them.
+  const day = value.slice(0, 10);
+  if (Number(value.slice(11, 13)) > 23 || new Date(`${day}T00:00:00Z`).toISOString().slice(0, 10) !== day)
+    return undefined;
+  const fraction = value.match(/\.(\d+)/)?.[1] ?? "";
+  return BigInt(Math.floor(Date.parse(value) / 1000)) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0").slice(0, 9));
+}
+
+function validActivityInbox(items) {
+  const strings = [
+    "emoji",
+    "spaceId",
+    "spaceName",
+    "channelId",
+    "channelName",
+    "conversationId",
+    "messageId",
+    "threadRootId",
+  ];
+  const required = ["id", "kind", "createdAt", "unread", "actorId", "actorName", "body"];
+  const kinds = ["message", "mention", "reply", "reaction", "space.invitation", "channel.invitation", "direct.request"];
+  return (
+    Array.isArray(items) &&
+    items.every((item) => {
+      if (
+        !item ||
+        typeof item !== "object" ||
+        Array.isArray(item) ||
+        Object.keys(item).some((key) => ![...required, ...strings, "avatarId"].includes(key)) ||
+        !visibleAscii(item.id, 200) ||
+        !visibleAscii(item.actorId, 200) ||
+        !kinds.includes(item.kind) ||
+        inboxTime(item.createdAt) === undefined ||
+        typeof item.unread !== "boolean" ||
+        typeof item.actorName !== "string" ||
+        !item.actorName ||
+        typeof item.body !== "string" ||
+        [...item.body].length > 280 ||
+        (item.avatarId != null && (!Number.isInteger(item.avatarId) || item.avatarId < 0)) ||
+        strings.some((key) => item[key] != null && (typeof item[key] !== "string" || !item[key]))
+      )
+        return false;
+      if (item.kind === "space.invitation")
+        return (
+          !!item.spaceId &&
+          !item.channelId &&
+          !item.conversationId &&
+          !item.messageId &&
+          !item.threadRootId &&
+          !item.emoji
+        );
+      if (item.kind === "channel.invitation")
+        return (
+          !!item.spaceId &&
+          !!item.channelId &&
+          !item.conversationId &&
+          !item.messageId &&
+          !item.threadRootId &&
+          !item.emoji
+        );
+      if (item.kind === "direct.request")
+        return (
+          !!item.conversationId &&
+          !item.spaceId &&
+          !item.channelId &&
+          !item.messageId &&
+          !item.threadRootId &&
+          !item.emoji
+        );
+      return (
+        !!item.messageId &&
+        (item.spaceId ? !!item.channelId && !item.conversationId : !!item.conversationId && !item.channelId) &&
+        (item.kind !== "reply" || !!item.threadRootId) &&
+        (item.kind === "reaction" ? !!item.emoji : !item.emoji)
+      );
+    }) &&
+    new Set(items.map((item) => item.id)).size === items.length
+  );
+}
+
 const yearMs = 365 * 24 * 60 * 60 * 1000;
 // Mutes read as null once they expire; stored times are whole UTC seconds.
 const activeMute = (mutedUntil) =>
@@ -520,6 +603,42 @@ export async function startFixture({
                 detail.space.ownerId === user.id ||
                 (state.grants.get(channel.id) ?? []).includes(user.id)),
           )));
+  // Rows are an owner-scoped snapshot of eligible activity, not a second SQL
+  // source generator. Recheck live access for both listing and acknowledgement.
+  const inboxFor = (user) =>
+    user.id !== ids.owner
+      ? []
+      : state.inbox.filter((item) => {
+          if (item.actorId === user.id || state.blocks.includes(item.actorId)) return false;
+          const detail = state.spaces.find((entry) => entry.space.id === item.spaceId);
+          const member = detail?.members.some((member) => member.id === user.id);
+          if (item.kind === "space.invitation")
+            return !!detail && !member && state.invitations.get(`${item.spaceId}:${user.id}`)?.status === "pending";
+          const channel = channelFor(item.channelId ?? item.conversationId);
+          if (item.kind === "channel.invitation")
+            return (
+              !!member &&
+              channel?.spaceId === item.spaceId &&
+              channel.private &&
+              detail.space.ownerId !== user.id &&
+              !(state.grants.get(channel.id) ?? []).includes(user.id) &&
+              state.channelInvitations.get(`${channel.id}:${user.id}`)?.status === "pending"
+            );
+          const direct = state.directs.find((entry) => entry.id === item.conversationId);
+          if (direct?.declined || (direct && state.blocks.includes(direct.peer.id))) return false;
+          if (item.kind === "direct.request") return direct?.status === "incoming";
+          if (!channel || channel.id === ids.demo || !canRead(channel, user, false)) return false;
+          if (direct ? direct.status !== "accepted" : channel.spaceId !== item.spaceId) return false;
+          if (state.messages.get(channel.id)?.find((message) => message.id === item.messageId)?.deletedAt) return false;
+          const muted = (state.notificationOverrides.get(user.id) ?? []).some(
+            (entry) =>
+              activeMute(entry.mutedUntil) &&
+              (entry.conversationId === channel.id ||
+                entry.channelId === channel.id ||
+                (entry.spaceId === item.spaceId && !entry.channelId && !!item.spaceId)),
+          );
+          return !muted || item.kind === "mention";
+        });
   // Same @mention grammar and rules as apps/api/src/mentions.rs and chat::with_mentions:
   // any existing account is tagged, in channels and DMs; specials only outside DMs.
   const mentionsFor = (channel, text) => {
@@ -895,7 +1014,13 @@ export async function startFixture({
       if (path === "/__fixture/channel-reads" && method === "GET")
         return json(response, 200, { reads: state.channelReads ?? null, log: state.channelReadLog ?? [] });
       if (path === "/__fixture/control" && method === "POST") {
+        if (body.activityInbox !== undefined && !validActivityInbox(body.activityInbox))
+          return reject(response, 400, "Invalid fixture activity inbox.");
         if (body.reset) state = initialState(formatted);
+        // Replace only the owner's activity with API-shaped rows, including
+        // their unread flags. [] clears it; reset restores the two default rows.
+        // Applied before spaceInvitation.inbox, which still prepends its seed.
+        if (body.activityInbox !== undefined) state.inbox = clone(body.activityInbox);
         if (typeof body.admin === "boolean") state.account.admin = body.admin;
         // Opt-in channel read state: `{ channelReads: { [channelId]: readSeq } }`.
         if (body.channelReads !== undefined) {
@@ -1828,29 +1953,72 @@ export async function startFixture({
       }
       if (path === "/api/notifications/inbox" && method === "GET") {
         if (!user) return reject(response, 401, "Sign in required.");
+        const keys = [...url.searchParams.keys()];
+        if (keys.some((key) => !["filter", "unread", "cursor"].includes(key)) || new Set(keys).size !== keys.length)
+          return reject(response, 400, "invalid inbox query");
+        const unread = url.searchParams.get("unread") ?? "false";
+        if (!["true", "false"].includes(unread)) return reject(response, 400, "invalid inbox query");
         const filter = url.searchParams.get("filter") ?? "all";
-        const matches = {
+        const filters = {
           all: () => true,
           dms: (item) => !item.spaceId,
           mentions: (item) => item.kind === "mention",
           threads: (item) => item.threadRootId && item.kind !== "reaction",
           reactions: (item) => item.kind === "reaction",
           invitations: (item) => ["space.invitation", "channel.invitation", "direct.request"].includes(item.kind),
-        }[filter];
-        if (!matches) return reject(response, 400, "invalid inbox filter");
-        const mine = user.id === ids.owner ? state.inbox : [];
-        const unreadOnly = url.searchParams.get("unread") === "true";
+        };
+        if (!Object.hasOwn(filters, filter)) return reject(response, 400, "invalid inbox filter");
+        let cursor;
+        if (url.searchParams.has("cursor")) {
+          try {
+            const value = url.searchParams.get("cursor");
+            if (Buffer.byteLength(value) <= 512) cursor = JSON.parse(value);
+          } catch {
+            /* Invalid JSON follows the same rejection as an invalid tuple. */
+          }
+          if (
+            !Array.isArray(cursor) ||
+            cursor.length !== 2 ||
+            inboxTime(cursor[0]) === undefined ||
+            typeof cursor[1] !== "string"
+          )
+            return reject(response, 400, "invalid inbox cursor");
+        }
+        const mine = inboxFor(user);
+        const page = mine
+          .filter(
+            (item) =>
+              filters[filter](item) &&
+              (unread !== "true" || item.unread) &&
+              (!cursor ||
+                inboxTime(item.createdAt) < inboxTime(cursor[0]) ||
+                (inboxTime(item.createdAt) === inboxTime(cursor[0]) && item.id < cursor[1])),
+          )
+          .sort(
+            (a, b) =>
+              Number(inboxTime(b.createdAt) - inboxTime(a.createdAt)) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+          );
+        const items = page.slice(0, 40);
+        const last = items.at(-1);
         return json(response, 200, {
-          items: mine.filter((item) => matches(item) && (!unreadOnly || item.unread)),
-          nextCursor: null,
+          items,
+          nextCursor: page.length > 40 ? JSON.stringify([last.createdAt, last.id]) : null,
           unreadCount: mine.filter((item) => item.unread).length,
         });
       }
       if (path === "/api/notifications/inbox/read" && method === "POST") {
         if (!user) return reject(response, 401, "Sign in required.");
-        const ids_ = Array.isArray(body?.ids) ? body.ids : [];
-        const mine = user.id === ids.owner ? state.inbox : [];
-        for (const item of mine) if (ids_.includes(item.id)) item.unread = false;
+        if (
+          !body ||
+          !Array.isArray(body.ids) ||
+          body.ids.some((id) => typeof id !== "string") ||
+          Object.keys(body).some((key) => key !== "ids")
+        )
+          return reject(response, 422, "invalid inbox read");
+        if (!body.ids.length || body.ids.length > 100 || body.ids.some((id) => Buffer.byteLength(id) > 200))
+          return reject(response, 400, "provide between 1 and 100 inbox IDs");
+        const mine = inboxFor(user);
+        for (const item of mine) if (body.ids.includes(item.id)) item.unread = false;
         return json(response, 200, { unreadCount: mine.filter((item) => item.unread).length });
       }
       const overridePath = /^\/api\/(?:spaces\/([^/]+)(?:\/channels\/([^/]+))?|dms\/([^/]+))\/notifications$/.exec(
@@ -2041,10 +2209,12 @@ export async function startFixture({
                 })),
             },
           ].filter((space) => space.channels.length),
-          // With feedback-team state too, the badge still counts waiting reports.
+          // With feedback-team state too, keep the separate waiting-report count.
           feedbackWaiting: user.feedbackTeam
             ? (state.feedback ?? []).filter((report) => !report.answered && !report.archived).length
             : 0,
+          // push::badge::count is the accessible activity count, not channel heads or feedback.
+          badgeCount: inboxFor(user).filter((item) => item.unread).length,
         });
       const channelRead = /^\/api\/spaces\/([^/]+)\/channels\/([^/]+)\/read$/.exec(path);
       if (channelRead && method === "POST" && user && state.channelReads) {
@@ -2060,6 +2230,7 @@ export async function startFixture({
         return json(response, 200, {
           spaces: [],
           feedbackWaiting: (state.feedback ?? []).filter((report) => !report.answered && !report.archived).length,
+          badgeCount: inboxFor(user).filter((item) => item.unread).length,
         });
       if (path === "/api/feedback" && method === "GET") {
         if (!user?.feedbackTeam) return reject(response, 404, "resource not found");
