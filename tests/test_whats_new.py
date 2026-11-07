@@ -275,6 +275,36 @@ class HighlightsTests(unittest.TestCase):
         self.assertEqual(result["sequence"], 2)
         self.assertEqual(result["releases"][-1]["highlights"], [])
 
+    def test_unreleased_apple_hosts_cannot_supply_release_highlights(self):
+        self.seed(platforms=PLATFORMS)
+        migration = self.commit(
+            "Smoother scrolling in native conversations",
+            {
+                "apps/native/apple/Sources/CaperAppKit/Timeline.swift": "APPKIT-ONLY",
+                "apps/native/apple/Sources/CaperUIKit/Timeline.swift": "UIKIT-ONLY",
+                "apps/native/windows/src/timeline.rs": "WIN32-ONLY",
+                "apps/native/linux/src/timeline.rs": "GTK-ONLY",
+            },
+        )
+        for audience in ("web", "native"):
+            for value in self.generate(migration, audience).values():
+                self.assertEqual(value["releases"][-1]["highlights"], [])
+        self.assertEqual(self.requests, [])
+
+        shipped = self.commit(
+            "Improve conversation scrolling",
+            {
+                "apps/native/apple/Sources/CaperMacOS/Timeline.swift": "SHIPPED-SWIFTUI",
+                "apps/native/apple/Sources/CaperAppKit/Timeline.swift": "UNRELEASED-APPKIT",
+            },
+        )
+        self.response = {"highlights": [highlight([shipped], ["macos"])]}
+        result = self.generate(shipped, "native")
+        self.assertEqual(len(result["macos"]["releases"][-1]["highlights"]), 1)
+        evidence = self.requests[-1]["messages"][0]["content"]
+        self.assertIn("SHIPPED-SWIFTUI", evidence)
+        self.assertNotIn("UNRELEASED-APPKIT", evidence)
+
     def test_grouped_platform_highlights_use_each_platform_baseline(self):
         self.seed(platforms=PLATFORMS[1:])
         first = self.commit("Improve mobile voice controls", {"apps/native/android/app/src/main/Voice.kt": "mobile();"})

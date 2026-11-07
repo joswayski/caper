@@ -4506,6 +4506,11 @@ range, have client/shared runtime evidence and pass schema/text/claim checks; an
 empty list is valid. Only repository evidence is sent, never user data. One request
 sends at most 400,000 characters; over that, server-only diffs drop and client diffs
 shorten (`diffTruncated`), keeping every commit's subject, body and paths.
+Highlights describe behavior reachable in the released client, not native migration
+progress. The separate AppKit/UIKit parity hosts are excluded from product paths
+(Win32/GTK hosts are outside the eligible roots). Shared-code changes still need
+evidence of released behavior; mixed commits describe only that behavior. Update
+these boundaries and the editorial prompt when replacement hosts actually ship.
 
 Public GitHub prereleases `whats-new-web`, `whats-new-android`, `whats-new-ios`,
 `whats-new-macos`, `whats-new-windows` and `whats-new-linux` hold immutable
