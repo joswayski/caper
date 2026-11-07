@@ -1756,14 +1756,17 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }, Modifier.weight(1f), fontSize = 12.sp)
                 }
                 VoiceRecordingNotice(recorder)
-                SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send,
+                // One transformation per mention source, so typing and presence updates don't refilter the draft.
+                val source = mentionSource(state)
+                val transformation = remember(source) { MentionVisualTransformation(source) }
+                SuggestingComposer(draft, { draft = it }, source, thread.rootId, ::send,
                     focusRequest = state.composerFocusRequest?.takeIf { it.channelId == state.selectedChannel?.id && it.rootId == thread.rootId },
                     focusEnabled = !thread.loading, consumeFocus = viewModel::consumeComposerFocus) { field, change, actions ->
                     Box(Modifier.voiceRecordingKeys(recorder)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                             EmojiTextField(draft, change, Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 5,
                                 keyboardAttachment = if (canAttach) { uri -> viewModel.addAttachments(listOf(uri), target).singleOrNull() } else null,
-                                visualTransformation = MentionVisualTransformation(mentionSource(state)),
+                                visualTransformation = transformation,
                                 leadingIcon = {
                                     AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
                                         drawer = AttachDrawerHost(files, viewModel::removeDraft,
@@ -2069,12 +2072,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         else sendDraft()
                     }
                 }
+                // One transformation per mention source, so typing and presence updates don't refilter the draft.
+                val source = mentionSource(state)
+                val transformation = remember(source) { MentionVisualTransformation(source) }
                 SuggestingComposer(draft, {
                     // Typing follows the text, not caret moves or selections.
                     val edited = it.text != draft.text
                     updateDraft(it); viewModel.reportActivity()
                     if (edited) viewModel.setTyping(it.text.isNotBlank())
-                }, mentionSource(state), channel.id, ::submit,
+                }, source, channel.id, ::submit,
                     focusRequest = state.composerFocusRequest?.takeIf { it.channelId == channel.id && it.rootId == null && state.thread == null },
                     consumeFocus = viewModel::consumeComposerFocus) { field, change, actions ->
                     Box(Modifier.voiceRecordingKeys(recorder)) {
@@ -2084,7 +2090,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 keyboardAttachment = if (canAttach) { uri -> viewModel.addAttachments(listOf(uri), target).singleOrNull() } else null,
                                 // One line: a long channel or DM name would otherwise wrap and grow the empty field.
                                 placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
-                                visualTransformation = MentionVisualTransformation(mentionSource(state)),
+                                visualTransformation = transformation,
                                 // Reserve the icon inside the field while uploads/session become ready.
                                 // Read-only previews and locked DMs have no composer.
                                 leadingIcon = {
@@ -2166,8 +2172,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val catalog = remember { EmojiArtwork.catalog(context) }
     var dismissedAt by remember(scope) { mutableStateOf<TextFieldValue?>(null) }
     var focused by remember(scope) { mutableStateOf(false) }
-    val token = emojiToken(draft)
-    val mention = if (token == null) mentionToken(draft) else null
+    val token = remember(draft) { emojiToken(draft) }
+    val mention = remember(draft, token) { if (token == null) mentionToken(draft) else null }
     val open = focused && draft != dismissedAt
     val emojiRows = if (open && token != null) emojiSuggestions(catalog, token.query) else emptyList()
     val mentionRows = if (open && mention != null) mentionSuggestions(mentions, mention.query) else emptyList()
