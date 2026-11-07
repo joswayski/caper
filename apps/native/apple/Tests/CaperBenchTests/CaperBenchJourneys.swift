@@ -31,6 +31,8 @@ final class CaperBenchJourneys: XCTestCase {
     }
     /// The fixture's history page size: launch shows only the newest 50 rows.
     private static let pageSize = 50
+    /// The most flings a scroll journey makes before its page-2 check fails.
+    private static let maxFlings = 80
     /// Long, formatted and link-heavy, without Return (which would send).
     private static let draft = "**Release check** for _the voice beta_: see https://example.com/docs/42/release-notes?tab=voice#section-3 "
         + "and www.example.org/specs/17, plus <https://example.net/no-card/9> (also https://example.com/wiki/Caper_(app)/7). "
@@ -141,7 +143,7 @@ final class CaperBenchJourneys: XCTestCase {
         }
     }
 
-    /// Fast flings up through #general's 3,000 short rows, loading older pages.
+    /// Fast flings up through #general's 3,000 short rows until an older page shows.
     func testScrollHistory() {
         scrollHistory(in: Self.general)
     }
@@ -161,12 +163,25 @@ final class CaperBenchJourneys: XCTestCase {
             let timeline = app.descendants(matching: .any)
                 .matching(NSPredicate(format: "identifier IN %@", ["message-timeline", "chat-timeline"])).firstMatch
             XCTAssertTrue(timeline.exists, "Missing the message timeline")
+            // Fling until a row older than the launch page is on screen. Tall
+            // formatted rows need far more flings than #general's short ones.
+            let target = channel.count - Self.pageSize
+            var oldest = Int.max, flings = 0
             startMeasuring()
-            for _ in 0..<8 { timeline.swipeDown(velocity: .fast) }
+            while flings < Self.maxFlings, oldest > target {
+                for _ in 0..<4 { timeline.swipeDown(velocity: .fast) }
+                flings += 4
+                // SwiftUI pages older history from its button at the top;
+                // UIKit pages by itself near the top.
+                let older = app.buttons["load-older-messages"]
+                if older.exists, older.isHittable, older.isEnabled { older.tap() }
+                oldest = visibleSeqs(in: app).min() ?? .max
+            }
             sleep(1)
             stopMeasuring()
+            print("bench: #\(channel.name) reached seq \(oldest) after \(flings) flings")
             // The flings must have reached rows older than the launch page.
-            let oldest = visibleSeqs(in: app).min() ?? .max
+            oldest = visibleSeqs(in: app).min() ?? .max
             XCTAssertLessThanOrEqual(oldest, channel.count - Self.pageSize,
                                      "Scrolling must load history older than the newest \(Self.pageSize) rows")
             app.terminate()
