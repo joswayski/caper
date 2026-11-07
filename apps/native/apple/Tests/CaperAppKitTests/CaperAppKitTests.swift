@@ -26,6 +26,14 @@ import XCTest
         add(screenshot)
     }
 
+    /// Settings is a separate window; the main-window helper cannot capture it.
+    private func capture(_ name: String, window: XCUIElement) {
+        let screenshot = XCTAttachment(screenshot: window.screenshot())
+        screenshot.name = "AppKit \(name) — local fixture"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
     private func resize(_ app: XCUIApplication, width: CGFloat) {
         let window = app.windows["Caper — AppKit development (not feature complete)"]
         let frame = window.frame
@@ -73,6 +81,212 @@ import XCTest
     private func messageMenuItem(_ title: String, app: XCUIApplication, body: XCUIElement) -> XCUIElement {
         let item = app.menuItems[title]
         return item.exists ? item : body.menuItems[title]
+    }
+
+    private func inspectSettings(_ app: XCUIApplication, captureName: String) -> XCUIElement {
+        let settings = app.windows["caper-appkit-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        XCTAssertEqual(settings.label, "Caper Settings — AppKit development")
+        XCTAssertEqual(app.windows.matching(identifier: "caper-appkit-settings").count, 1)
+        XCTAssertEqual(app.windows.matching(identifier: "Caper Settings — AppKit development").count, 1)
+        XCTAssertTrue(settings.descendants(matching: .any)["desktop-settings"].firstMatch.exists)
+        let scroll = settings.scrollViews.firstMatch
+        XCTAssertTrue(scroll.exists)
+        scroll.scroll(byDeltaX: 0, deltaY: 10000)
+        let startup = settings.descendants(matching: .any)["launch-at-login"].firstMatch
+        let sounds = settings.descendants(matching: .any)["sound-effects"].firstMatch
+        let voice = settings.descendants(matching: .any)["voice-messages-send-on-stop"].firstMatch
+        XCTAssertTrue(startup.exists); XCTAssertFalse(startup.isEnabled, "Development fixtures must never change OS Login Items")
+        XCTAssertTrue(sounds.exists); XCTAssertTrue(sounds.isEnabled); XCTAssertTrue(sounds.isHittable)
+        startup.hover(); sounds.hover()
+        capture("\(captureName) startup and sounds", window: settings)
+        for _ in 0..<6 where !voice.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -120) }
+        XCTAssertTrue(voice.exists); XCTAssertTrue(voice.isEnabled); XCTAssertTrue(voice.isHittable)
+        voice.hover()
+        capture("\(captureName) voice send-on-stop", window: settings)
+        // Inspect preferences without changing them: no defaults overrides,
+        // recording, OS registration or updater actions.
+        scroll.scroll(byDeltaX: 0, deltaY: -10000)
+        let updates = settings.buttons["check-for-updates"]
+        let notes = settings.buttons["open-whats-new"]
+        XCTAssertTrue(updates.exists); XCTAssertFalse(updates.isEnabled)
+        XCTAssertTrue(settings.staticTexts["Update checks are available in packaged release builds."].exists)
+        XCTAssertTrue(notes.exists); XCTAssertTrue(notes.isEnabled); XCTAssertTrue(notes.isHittable)
+        updates.hover(); notes.hover()
+        capture("\(captureName) development updates and release notes", window: settings)
+        return settings
+    }
+
+    func testSettingsSignedOutShortcutAccountAndCaperMenuReuseWindowWithoutLosingDraft() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let signedOut = launch(signedIn: false)
+        defer { signedOut.terminate() }
+        let email = signedOut.textFields["Email address"]
+        XCTAssertTrue(email.waitForExistence(timeout: 10)); resize(signedOut, width: 1280)
+        email.click(); email.typeText("settings-")
+        signedOut.typeKey(",", modifierFlags: .command)
+        let signedOutSettings = inspectSettings(signedOut, captureName: "signed-out Settings main 1280")
+        signedOut.typeKey(",", modifierFlags: .command)
+        XCTAssertEqual(signedOut.windows.matching(identifier: "caper-appkit-settings").count, 1)
+        signedOut.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(signedOutSettings.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(email.isHittable, "Command-W must close Settings, not the signed-out main window")
+        signedOut.typeText("fixture@example.test")
+        XCTAssertEqual(email.value as? String, "settings-fixture@example.test", "Closing restores native sign-in editing focus")
+        capture("signed-out main after Settings Command-W 1280", app: signedOut)
+        signedOut.terminate()
+
+        let historyPath = "/api/chat/channels/chan00000001/messages"
+        let historyBefore = try await Self.fixtureGET(historyPath)
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        var draft = "TEST FIXTURE — keep channel draft across Settings entrypoints"
+        composer.click(); composer.typeText(draft)
+        let account = app.buttons["account-settings-menu"]
+        // AppKit supplies the application menu's title from the development
+        // bundle, rather than the shipping app's exact "Caper" display name.
+        let caperMenu = app.menuBars.menuBarItems.matching(NSPredicate(format: "label BEGINSWITH %@", "Caper")).firstMatch
+        for width in [CGFloat(1280), CGFloat(900)] {
+            resize(app, width: width)
+            XCTAssertEqual(account.label, "Account settings")
+            account.hover(); app.buttons["account-profile"].hover(); account.click()
+            let item = app.menuItems["Settings…"]
+            XCTAssertTrue(item.waitForExistence(timeout: 5)); XCTAssertTrue(item.isEnabled)
+            item.hover(); app.menuItems["What’s new"].hover(); item.click()
+            let settings = inspectSettings(app, captureName: "account Settings main \(Int(width))")
+            app.typeKey(",", modifierFlags: .command)
+            XCTAssertEqual(app.windows.matching(identifier: "caper-appkit-settings").count, 1)
+            caperMenu.click()
+            let menuSettings = app.menuBars.menuItems["Settings…"]
+            XCTAssertTrue(menuSettings.isEnabled)
+            menuSettings.hover(); app.menuBars.menuItems["What’s new"].hover(); menuSettings.click()
+            XCTAssertEqual(app.windows.matching(identifier: "caper-appkit-settings").count, 1)
+            XCTAssertEqual(app.windows.matching(identifier: "Caper Settings — AppKit development").count, 1)
+            app.menuBars.menuBarItems["File"].click()
+            XCTAssertTrue(app.menuBars.menuItems["Close Window"].isEnabled)
+            app.typeKey(.escape, modifierFlags: [])
+            app.typeKey("w", modifierFlags: .command)
+            XCTAssertTrue(settings.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(composer.isHittable); XCTAssertEqual(composer.value as? String, draft)
+            app.typeText(" after Settings"); draft += " after Settings"
+            XCTAssertEqual(composer.value as? String, draft, "Closing restores editing focus, not just draft text")
+
+            // Reopen through the main menu after Close, not only while visible.
+            caperMenu.click(); app.menuBars.menuItems["Settings…"].click()
+            XCTAssertTrue(settings.waitForExistence(timeout: 5))
+            XCTAssertEqual(app.windows.matching(identifier: "caper-appkit-settings").count, 1)
+            XCTAssertEqual(app.windows.matching(identifier: "Caper Settings — AppKit development").count, 1)
+            capture("reopened singleton Settings main \(Int(width))", window: settings)
+            app.menuBars.menuBarItems["File"].click(); app.menuBars.menuItems["Close Window"].click()
+            XCTAssertTrue(settings.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(composer.isHittable); XCTAssertEqual(composer.value as? String, draft)
+            app.typeText(" after reopening"); draft += " after reopening"
+            XCTAssertEqual(composer.value as? String, draft)
+            capture("channel draft after Settings File Close \(Int(width))", app: app)
+        }
+        let historyAfter = try await Self.fixtureGET(historyPath)
+        XCTAssertEqual(historyAfter["cursor"] as? String, historyBefore["cursor"] as? String,
+            "Settings entrypoints must not submit the channel draft")
+    }
+
+    func testWhatsNewFixtureDismissalAccountReopeningAndSettingsOwnershipPreserveDraft() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let historyPath = "/api/chat/channels/chan00000001/messages"
+        let historyBefore = try await Self.fixtureGET(historyPath)
+        let app = launch(fixture: "whats-new")
+        defer { app.terminate() }
+        let main = app.windows["Caper — AppKit development (not feature complete)"]
+        let caperMenu = app.menuBars.menuBarItems.matching(NSPredicate(format: "label BEGINSWITH %@", "Caper")).firstMatch
+        let close = app.buttons["Close What’s new"]
+        let done = app.buttons["Done"]
+        let preview = app.staticTexts["TEST FIXTURE — Message editing"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.descendants(matching: .any)["whats-new"].firstMatch.exists)
+        XCTAssertEqual(app.buttons.matching(identifier: "Close What’s new").count, 1)
+        XCTAssertTrue(close.isHittable); XCTAssertTrue(done.isHittable)
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertFalse(app.windows["caper-appkit-settings"].exists)
+        XCTAssertTrue(preview.exists, "Opening Settings must not replace or acknowledge a presented release sheet")
+        for width in [CGFloat(1280), CGFloat(900)] {
+            resize(app, width: width)
+            close.hover(); done.hover(); close.hover()
+            capture("What's new labelled preview main \(Int(width))", app: app)
+        }
+        close.click()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5)); XCTAssertFalse(preview.exists)
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        let draft = "TEST FIXTURE — keep channel draft while reading What's new"
+        composer.click(); composer.typeText(draft)
+        // native-project.yml does not stamp CaperSourceRevision, and project.yml
+        // deliberately clears CAPER_SOURCE_REVISION for Debug. The one-shot
+        // CaperRuntime preview is not release history: manual opens truthfully
+        // show this existing state instead of invented published fixture data.
+        let unavailable = "Release notes are unavailable in development builds."
+        for width in [CGFloat(1280), CGFloat(900)] {
+            resize(app, width: width)
+            let account = app.buttons["account-settings-menu"]
+            account.hover(); app.buttons["account-profile"].hover(); account.click()
+            let item = app.menuItems["What’s new"]
+            XCTAssertTrue(item.waitForExistence(timeout: 5)); XCTAssertTrue(item.isEnabled)
+            item.hover(); app.menuItems["Settings…"].hover(); item.click()
+            XCTAssertTrue(close.waitForExistence(timeout: 5))
+            XCTAssertTrue(main.buttons["Close What’s new"].exists)
+            XCTAssertTrue(app.staticTexts[unavailable].waitForExistence(timeout: 5))
+            XCTAssertFalse(preview.exists)
+            XCTAssertEqual(app.buttons.matching(identifier: "Close What’s new").count, 1)
+            XCTAssertEqual(app.buttons.matching(identifier: "Done").count, 1)
+            close.hover(); done.hover()
+            capture("account What's new development unavailable main \(Int(width))", app: app)
+            if width == 1280 { done.click() } else { app.typeKey(.escape, modifierFlags: []) }
+            XCTAssertTrue(close.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, draft)
+
+            account.click(); app.menuItems["Settings…"].click()
+            let settings = app.windows["caper-appkit-settings"]
+            XCTAssertTrue(settings.waitForExistence(timeout: 5))
+            XCTAssertEqual(app.windows.matching(identifier: "caper-appkit-settings").count, 1)
+            if width == 1280 {
+                settings.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -10000)
+                let notes = settings.buttons["open-whats-new"]
+                XCTAssertTrue(notes.isHittable)
+                settings.buttons["check-for-updates"].hover(); notes.hover(); notes.click()
+            } else {
+                // The global menu must also respect the open Settings owner.
+                caperMenu.click()
+                app.menuBars.menuItems["Settings…"].hover(); app.menuBars.menuItems["What’s new"].click()
+            }
+            let ownedClose = settings.buttons["Close What’s new"]
+            XCTAssertTrue(ownedClose.waitForExistence(timeout: 5))
+            XCTAssertTrue(settings.staticTexts[unavailable].waitForExistence(timeout: 5))
+            // Repeated manual requests must foreground this same presentation.
+            caperMenu.click(); app.menuBars.menuItems["What’s new"].click()
+            XCTAssertFalse(main.buttons["Close What’s new"].exists, "Settings must not also present a workspace sheet")
+            XCTAssertEqual(app.buttons.matching(identifier: "Close What’s new").count, 1)
+            XCTAssertEqual(app.buttons.matching(identifier: "Done").count, 1)
+            XCTAssertEqual(settings.sheets.count, 1)
+            XCTAssertEqual(app.sheets.count, 1, "There must be one owner, not two concurrent sheets")
+            ownedClose.hover(); settings.buttons["Done"].hover()
+            capture("Settings owns What's new main \(Int(width))", window: settings)
+            // The shared sheet can extend beyond the fixed-size Settings window.
+            capture("Settings-owned What's new sheet main \(Int(width))", window: settings.sheets.firstMatch)
+            if width == 1280 { ownedClose.click() } else { app.typeKey(.escape, modifierFlags: []) }
+            XCTAssertTrue(close.waitForNonExistence(timeout: 5)); XCTAssertEqual(app.sheets.count, 0)
+            XCTAssertTrue(settings.exists, "Dismissing release notes must leave their Settings window open")
+            XCTAssertTrue(settings.descendants(matching: .any)["desktop-settings"].firstMatch.exists)
+            app.typeKey("w", modifierFlags: .command)
+            XCTAssertTrue(settings.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertTrue(composer.isHittable)
+            XCTAssertEqual(composer.value as? String, draft)
+            capture("channel draft after What's new and Settings dismissal \(Int(width))", app: app)
+        }
+        let historyAfter = try await Self.fixtureGET(historyPath)
+        XCTAssertEqual(historyAfter["cursor"] as? String, historyBefore["cursor"] as? String,
+            "Reading and dismissing What's new must not send the draft")
     }
 
     func testActivityInboxLoadRetryFiltersReadRollbackAndDismissalStopPolling() async throws {

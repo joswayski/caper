@@ -7,6 +7,8 @@ import CaperCore
     private let model: AppModel
     var show: ((WorkspaceSheet) -> Void)?
     var showActivity: (() -> Void)?
+    var showSettings: (() -> Void)?
+    var showWhatsNew: (() -> Void)?
     var leaveChannel: ((Channel) -> Void)?
     var block: ((BlockTarget) -> Void)?
     private let observation = NativeObservation()
@@ -394,6 +396,8 @@ import CaperCore
         if model.account?.debugEnabled == true { items.append(NavigationMenuItem("Audio diagnostics") { [weak self] in self?.show?(.diagnostics) }) }
         items += [.separator(), NavigationMenuItem("Notifications") { [weak self] in self?.show?(.notifications) },
             NavigationMenuItem("Privacy and blocked accounts") { [weak self] in self?.show?(.privacy) }, .separator(),
+            NavigationMenuItem("Settings…") { [weak self] in self?.showSettings?() },
+            NavigationMenuItem("What’s new") { [weak self] in self?.showWhatsNew?() }, .separator(),
             NavigationMenuItem("Log out") { [weak self] in guard let self else { return }; Task { await self.model.logout() } }]
         popup(items, at: settings)
     }
