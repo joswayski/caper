@@ -1555,9 +1555,7 @@ impl App {
             self.live = Some(live.logout());
         }
         self.drafts.clear();
-        self.composer.text.clear();
-        self.composer.caret = 0;
-        self.composer.anchor = 0;
+        self.composer.set_text(Vec::new());
         self.composer_changed();
         self.status = None;
         let mut s = crate::signin::SignIn::new();

@@ -765,7 +765,7 @@ impl App {
         let Some(c) = c else { return };
         let len = c.text.len();
         (c.anchor, c.caret) = (start.min(len), end.min(len));
-        c.insert(&gfx::wide(emoji));
+        c.commit(&gfx::wide(emoji));
         if root.is_some() {
             self.thread_composer_changed();
         } else {

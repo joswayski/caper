@@ -872,6 +872,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
                 crate::uploads::Part::Mic => 1000,
                 crate::uploads::Part::RemovePreview => 1001,
                 crate::uploads::Part::Emoji => 1002,
+                crate::uploads::Part::Format(crate::composer::Style::Bold) => 1003,
+                crate::uploads::Part::Format(crate::composer::Style::Italic) => 1004,
                 // A recording's chip has no preview: Play takes its place.
                 crate::uploads::Part::Open(k) | crate::uploads::Part::Play(k) => 1 + 4 * k,
                 crate::uploads::Part::Spoiler(k) => 2 + 4 * k,
@@ -889,6 +891,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
             TPart::Send => (22, 4),
             TPart::Gif => (22, 5),
             TPart::Emoji => (22, 6),
+            TPart::Format(crate::composer::Style::Bold) => (22, 7),
+            TPart::Format(crate::composer::Style::Italic) => (22, 8),
             TPart::Row(i) => (23, i),
             TPart::Chip(i, k) => (24, i * 64 + k.min(62)),
             TPart::Add(i) => (24, i * 64 + 63),
@@ -1542,9 +1546,7 @@ impl IValueProvider_Impl for Node_Impl {
                 return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
             }
             let f = field_mut(a, id);
-            f.text = text;
-            f.caret = f.text.len();
-            f.anchor = f.caret;
+            f.set_text(text);
             field_changed(a, id, true);
             Ok(())
         })
@@ -1678,7 +1680,7 @@ impl Doc {
 
     fn text(self, a: &App) -> Result<Vec<u16>> {
         match self {
-            Self::Field(id) if exists(a, id) => Ok(field(a, id).text.clone()),
+            Self::Field(id) if exists(a, id) => Ok(field(a, id).shown_text()),
             Self::Row(i) if exists(a, Id::Row(i)) => {
                 Ok(a.rows.row(i).map(|r| r.plain16.clone()).unwrap_or_default())
             }
@@ -1720,7 +1722,10 @@ impl Doc {
 
     fn selection(self, a: &App) -> (usize, usize) {
         match self {
-            Self::Field(id) => field(a, id).selection(),
+            Self::Field(id) => {
+                let (caret, anchor) = field(a, id).shown_ends();
+                (caret.min(anchor), caret.max(anchor))
+            }
             Self::Row(i) => App::sel_for(a.sel, i, a.row_len(i))
                 .map_or((0, 0), |(s, e)| (s as usize, e as usize)),
             // The thread's rows are read, not selected.
@@ -1732,8 +1737,7 @@ impl Doc {
         match self {
             Self::Field(id) => {
                 let f = field_mut(a, id);
-                f.anchor = s;
-                f.caret = e;
+                f.select_shown(s, e);
                 field_changed(a, id, false);
             }
             Self::Row(i) => a.set_sel(Some(((i, s as u32), (i, e as u32)))),
@@ -1812,7 +1816,7 @@ impl ITextProvider2_Impl for Node_Impl {
         let id = self.id;
         let (caret, focused) = with(|a| {
             let f = field(a, id);
-            Ok((f.caret, f.focused))
+            Ok((f.shown_ends().0, f.focused))
         })?;
         if !isactive.is_null() {
             unsafe { *isactive = focused.into() };

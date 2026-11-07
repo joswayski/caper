@@ -442,7 +442,7 @@ impl App {
                 c,
                 bench,
                 rows: Rows::new(n),
-                composer: Composer::default(),
+                composer: Composer::formatted(),
                 scale,
                 w: rc.right as f32 / scale,
                 h: rc.bottom as f32 / scale,
@@ -667,12 +667,10 @@ impl App {
                         self.set_composer_focus(false);
                     }
                     let new = self.ids.open.clone();
-                    self.composer.text = new
+                    let text = new
                         .and_then(|id| self.drafts.remove(&id))
                         .unwrap_or_default();
-                    self.composer.caret = self.composer.text.len();
-                    self.composer.anchor = self.composer.caret;
-                    self.composer.comp.clear();
+                    self.composer.set_text(text);
                     self.composer_changed();
                     self.bar_changed();
                 }
@@ -999,6 +997,7 @@ impl App {
             && (h - self.box_h).abs() > 0.01
         {
             self.dirty.layout = true;
+            self.events |= EV_SCREEN;
         }
         self.dirty.composer = true;
         self.events |= EV_TEXT;
@@ -1011,12 +1010,8 @@ impl App {
         let focused =
             focused && self.c.has_conversation() && self.dm_bar().is_none() && self.rec().is_none();
         // One text field has focus: the reply box in the thread gives it up.
-        if focused
-            && let Some(t) = &mut self.thread
-            && t.composer.focused
-        {
-            t.composer.focused = false;
-            self.dirty.thread_box = true;
+        if focused {
+            self.set_thread_focus(false);
         }
         if focused
             && let Some(p) = &mut self.gifs
@@ -1032,6 +1027,9 @@ impl App {
             return;
         }
         self.composer.focused = focused;
+        if !focused {
+            self.composer.end();
+        }
         self.composer.caret_on = true;
         unsafe {
             if focused {
@@ -1040,7 +1038,7 @@ impl App {
                 let _ = KillTimer(Some(self.hwnd), TIMER_CARET);
             }
         }
-        self.dirty.composer = true;
+        self.composer_changed();
         self.events |= EV_FOCUS;
         self.need = true;
     }
@@ -1502,9 +1500,7 @@ impl App {
             self.rows.append(&self.g, &self.c)?;
             self.at_end = true;
         }
-        self.composer.text.clear();
-        self.composer.caret = 0;
-        self.composer.anchor = 0;
+        self.composer.set_text(Vec::new());
         self.composer_changed();
         Ok(())
     }
@@ -1875,6 +1871,11 @@ impl App {
                 return Some(LRESULT(0));
             }
             WM_IME_STARTCOMPOSITION if self.focused_field().is_some() => {
+                if let Some(f) = self.focused_field_mut() {
+                    f.end();
+                    f.composing = true;
+                }
+                self.field_changed(false);
                 self.ime_position();
                 return Some(LRESULT(0));
             }
@@ -1885,9 +1886,16 @@ impl App {
             WM_IME_ENDCOMPOSITION if self.focused_field().is_some() => {
                 if let Some(f) = self.focused_field_mut() {
                     f.comp.clear();
+                    f.composing = false;
                 }
                 self.field_changed(false);
                 return Some(LRESULT(0));
+            }
+            WM_KILLFOCUS => {
+                if let Some(f) = self.focused_field_mut() {
+                    f.end();
+                }
+                return None;
             }
             _ => return None,
         }
@@ -2247,8 +2255,7 @@ impl App {
         }
         if ctrl && vk == VIRTUAL_KEY('C' as u16) {
             let text = if self.composer.focused {
-                let (a, b) = self.composer.selection();
-                self.composer.text[a..b].to_vec()
+                self.composer.copied()
             } else {
                 self.selected_text()
             };
@@ -2278,6 +2285,10 @@ impl App {
                 _ => return false,
             }
             return true;
+        }
+        if self.composer.composing || !self.composer.comp.is_empty() {
+            // The IME owns Enter and navigation while composing.
+            return false;
         }
         match vk {
             VK_RETURN if shift => self.composer.insert(&['\n' as u16]),
@@ -2358,9 +2369,10 @@ impl App {
                 if flags & GCS_RESULTSTR.0 != 0 {
                     let s = read(GCS_RESULTSTR);
                     field.comp.clear();
-                    field.insert(&s);
+                    field.commit(&s);
                 }
                 if flags & GCS_COMPSTR.0 != 0 {
+                    field.end();
                     field.comp = read(GCS_COMPSTR);
                     let cur = ImmGetCompositionStringW(himc, GCS_CURSORPOS, None, 0);
                     field.comp_cursor = (cur.max(0) as usize).min(field.comp.len());

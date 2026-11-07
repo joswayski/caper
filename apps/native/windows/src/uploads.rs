@@ -94,6 +94,7 @@ impl Draft {
 /// A control in the composer box.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Part {
+    Format(composer::Style),
     Attach,
     /// Send a GIF: opens the picker.
     Gif,
@@ -281,7 +282,7 @@ pub fn part_rect(tiles: &[D2D_RECT_F], top: f32, part: Part) -> Option<D2D_RECT_
     Some(match part {
         Part::Attach => attach_rect(top),
         // Placed by the box's width (`App::box_part_rect`).
-        Part::Gif | Part::Emoji | Part::Mic | Part::RemovePreview => return None,
+        Part::Format(_) | Part::Gif | Part::Emoji | Part::Mic | Part::RemovePreview => return None,
         Part::Play(k) => chip_play(*tiles.get(k)?),
         Part::Remove(k) if is_chip(*tiles.get(k)?) => chip_remove(tiles[k]),
         Part::Retry(k) if is_chip(*tiles.get(k)?) => chip_status(tiles[k]),
@@ -743,15 +744,20 @@ impl App {
     /// The open channel's composer files, their tiles in a box `bw` wide,
     /// the height above the text, and the notice line.
     pub fn box_files(&self, bw: f32) -> (Vec<&Draft>, Vec<D2D_RECT_F>, f32, Option<String>) {
+        let bar = self.composer.format_height();
         let Some(live) = &self.live else {
-            return (Vec::new(), Vec::new(), 0.0, None);
+            return (Vec::new(), Vec::new(), bar, None);
         };
         let drafts = live.open_drafts();
         let failed = drafts.iter().filter(|d| d.upload.error.is_some()).count();
         let notice = drafts::failed_notice(failed).or_else(|| self.attach_error.clone());
         let voice: Vec<bool> = drafts.iter().map(|d| d.upload.voice().is_some()).collect();
-        let (tiles, top) = strip(&voice, bw, notice.is_some());
-        (drafts, tiles, top, notice)
+        let (mut tiles, top) = strip(&voice, bw, notice.is_some());
+        for tile in &mut tiles {
+            tile.top += bar;
+            tile.bottom += bar;
+        }
+        (drafts, tiles, top + bar, notice)
     }
 
     /// The composer box's height for width `bw`, its text laid out after
@@ -769,11 +775,7 @@ impl App {
             0.0
         };
         self.composer.inset_bottom = card;
-        let top = if self.live.is_some() {
-            self.box_files(bw).2
-        } else {
-            0.0
-        };
+        let top = self.box_files(bw).2;
         let left = if self.live.is_some() { ATTACH_W } else { 0.0 };
         let right = match (self.live.is_some(), self.gif_shown()) {
             (true, true) => MIC_W + EMOJI_W + GIF_W,
@@ -795,6 +797,14 @@ impl App {
 
     /// The composer box's control under client point (x, y).
     pub fn box_part_at(&self, x: f32, y: f32) -> Option<Part> {
+        for style in [composer::Style::Bold, composer::Style::Italic] {
+            if self
+                .box_part_rect(Part::Format(style))
+                .is_some_and(|(bx, by, w, h)| x >= bx && x < bx + w && y >= by && y < by + h)
+            {
+                return Some(Part::Format(style));
+            }
+        }
         if self.live.is_none()
             || !self.in_box(x, y)
             || self.dm_bar().is_some()
@@ -827,12 +837,21 @@ impl App {
 
     /// The composer box's controls, in reading order (for UI Automation).
     pub fn box_parts(&self) -> Vec<Part> {
-        if self.live.is_none() || self.dm_bar().is_some() || self.rec().is_some() {
+        if self.dm_bar().is_some() || self.rec().is_some() {
             return Vec::new();
+        }
+        let mut out = Vec::new();
+        if self.composer.format_height() > 0.0 {
+            out.extend([
+                Part::Format(composer::Style::Bold),
+                Part::Format(composer::Style::Italic),
+            ]);
+        }
+        if self.live.is_none() {
+            return out;
         }
         let (_, _, bw, _) = self.box_rect();
         let (drafts, ..) = self.box_files(bw);
-        let mut out = Vec::new();
         for (k, d) in drafts.iter().enumerate() {
             if d.upload.voice().is_some() {
                 out.push(Part::Play(k));
@@ -863,6 +882,13 @@ impl App {
 
     pub fn box_part_rect(&self, part: Part) -> Option<overlay::Rect> {
         let (bx, by, bw, _) = self.box_rect();
+        if let Part::Format(style) = part {
+            if !self.c.has_conversation() || self.dm_bar().is_some() || self.rec().is_some() {
+                return None;
+            }
+            let (x, y, w, h) = self.composer.format_rect(style)?;
+            return Some((bx + x, by + y, w, h));
+        }
         let (_, tiles, top, _) = self.box_files(bw);
         let r = match part {
             Part::Gif => gif_rect(top, bw),
@@ -881,6 +907,7 @@ impl App {
         let (drafts, ..) = self.box_files(bw);
         let file = |k: usize| drafts.get(k).map(|d| (describe(d), d));
         match part {
+            Part::Format(style) => style.name().into(),
             Part::Attach => match &self.live {
                 Some(live) if live.can_attach() => "Attach files".into(),
                 Some(live) => live.attach_unavailable().into(),
@@ -926,6 +953,12 @@ impl App {
     /// A click (or UIA Invoke) on a composer box control.
     pub fn box_activate(&mut self, part: Part) {
         match part {
+            Part::Format(style) => {
+                if self.box_part_rect(part).is_some() && self.composer.toggle(style.marker()) {
+                    self.composer_changed();
+                }
+                return;
+            }
             Part::Attach => return self.pick_files(),
             Part::Gif => return self.toggle_gifs(None),
             Part::Emoji => return self.toggle_composer_emoji(None),
@@ -943,7 +976,8 @@ impl App {
         }
         let k = match part {
             Part::Open(k) | Part::Spoiler(k) | Part::Remove(k) | Part::Retry(k) => k,
-            Part::Attach
+            Part::Format(_)
+            | Part::Attach
             | Part::Gif
             | Part::Emoji
             | Part::Mic
@@ -973,7 +1007,8 @@ impl App {
                 self.attach_error = None;
             }
             Part::Retry(_) => live.retry_draft(key),
-            Part::Attach
+            Part::Format(_)
+            | Part::Attach
             | Part::Gif
             | Part::Emoji
             | Part::Mic

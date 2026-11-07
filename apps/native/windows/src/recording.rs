@@ -415,7 +415,7 @@ impl App {
             return false;
         }
         let spaced: Vec<u16> = spaced.encode_utf16().collect();
-        self.composer.insert(&spaced);
+        self.composer.commit(&spaced);
         self.composer_changed();
         true
     }

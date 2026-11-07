@@ -50,6 +50,7 @@ pub enum Part {
     Older,
     Broadcast,
     Field,
+    Format(composer::Style),
     /// Send a GIF, inside the box before Insert emoji.
     Gif,
     /// Insert emoji, at the end of the box's first line.
@@ -82,6 +83,7 @@ pub struct Pane {
     pub scroll: f32,
     pub at_end: bool,
     pub composer: Composer,
+    selecting: bool,
     /// "Also send to #channel", for the next reply only.
     pub broadcast: bool,
     pub hover: Option<Part>,
@@ -131,7 +133,8 @@ impl Pane {
             error: false,
             scroll: 0.0,
             at_end: true,
-            composer: Composer::default(),
+            composer: Composer::formatted(),
+            selecting: false,
             broadcast: false,
             hover: None,
             box_h: BOX_MIN,
@@ -490,7 +493,8 @@ impl App {
     pub fn thread_text_origin(&self) -> (f32, f32) {
         let (x, y, _, _) = self.thread_box_rect().unwrap_or_default();
         let scroll = self.thread.as_ref().map_or(0.0, |t| t.composer.scroll());
-        (x + composer::PAD, y + composer::PAD - scroll)
+        let top = self.thread.as_ref().map_or(0.0, |t| t.composer.inset.1);
+        (x + composer::PAD, y + composer::PAD + top - scroll)
     }
 
     /// A part's rectangle in client DIPs, while it is on screen.
@@ -537,18 +541,23 @@ impl App {
                 Some((x0 + PAD, y, CHECK + 7.0 + t.check_w, CHECK_H))
             }
             Part::Field => self.thread_box_rect(),
+            Part::Format(style) => {
+                let (bx, by, _, _) = self.thread_box_rect()?;
+                let (x, y, w, h) = t.composer.format_rect(style)?;
+                Some((bx + x, by + y, w, h))
+            }
             Part::Gif => {
                 if !t.gif {
                     return None;
                 }
                 let (bx, by, _, _) = self.thread_box_rect()?;
                 let (x, y, w, h) = gif_local();
-                Some((bx + x, by + y, w, h))
+                Some((bx + x, by + y + t.composer.inset.1, w, h))
             }
             Part::Emoji => {
                 let (bx, by, _, _) = self.thread_box_rect()?;
                 let (x, y, w, h) = emoji_local();
-                Some((bx + x, by + y, w, h))
+                Some((bx + x, by + y + t.composer.inset.1, w, h))
             }
             Part::Send => {
                 let (x, y, w, h) = send_local(self.h, t.box_h);
@@ -591,6 +600,12 @@ impl App {
         }
         push_rows(&mut out, after);
         out.extend([Part::Broadcast, Part::Field]);
+        if t.composer.format_height() > 0.0 {
+            out.extend([
+                Part::Format(composer::Style::Bold),
+                Part::Format(composer::Style::Italic),
+            ]);
+        }
         if t.gif {
             out.push(Part::Gif);
         }
@@ -631,6 +646,7 @@ impl App {
             }
             Part::Broadcast => format!("Also send to {}", t.destination),
             Part::Field => "Reply to thread".into(),
+            Part::Format(style) => style.name().into(),
             Part::Gif => "Send a GIF".into(),
             Part::Emoji => "Insert emoji".into(),
             Part::Send => "Send reply".into(),
@@ -786,6 +802,9 @@ impl App {
             return;
         };
         t.composer.focused = focused;
+        if !focused {
+            t.composer.end();
+        }
         t.composer.caret_on = true;
         unsafe {
             if focused {
@@ -799,7 +818,7 @@ impl App {
                 let _ = KillTimer(Some(self.hwnd), crate::TIMER_CARET);
             }
         }
-        self.dirty.thread_box = true;
+        self.thread_composer_changed();
         self.events |= EV_FOCUS;
         self.need = true;
     }
@@ -822,12 +841,14 @@ impl App {
         };
         t.composer.caret_on = true;
         t.gif = gif;
+        t.composer.inset.1 = t.composer.format_height();
         if let Ok(h) = t.composer.relayout(g, text_w(gif)) {
-            let h = h.max(BOX_MIN);
+            let h = h.max(BOX_MIN) + t.composer.inset.1;
             if (h - t.box_h).abs() > 0.01 {
                 t.box_h = h;
                 self.dirty.layout = true;
                 self.dirty.thread = true;
+                self.events |= EV_SCREEN;
             }
         }
         // Send's look follows whether there is anything to send.
@@ -851,9 +872,7 @@ impl App {
             return;
         }
         let (root, broadcast) = (t.root.clone(), t.broadcast);
-        t.composer.text.clear();
-        t.composer.caret = 0;
-        t.composer.anchor = 0;
+        t.composer.set_text(Vec::new());
         t.broadcast = false;
         t.at_end = true;
         if let Some(live) = &self.live {
@@ -864,6 +883,14 @@ impl App {
 
     pub fn thread_activate(&mut self, part: Part) {
         match part {
+            Part::Format(style) => {
+                if let Some(t) = &mut self.thread
+                    && t.composer.format_rect(style).is_some()
+                    && t.composer.toggle(style.marker())
+                {
+                    self.thread_composer_changed();
+                }
+            }
             Part::Close => self.close_thread(),
             Part::Older => {
                 let Some(t) = &self.thread else { return };
@@ -959,6 +986,14 @@ impl App {
         let focused = self.thread.as_ref()?.composer.focused;
         match msg {
             WM_MOUSEMOVE => {
+                if self.thread.as_ref()?.selecting {
+                    let (tx, ty) = self.thread_text_origin();
+                    let t = self.thread.as_mut()?;
+                    let p = t.composer.hit(x - tx, y - ty - t.composer.scroll());
+                    t.composer.move_to(p, true);
+                    self.thread_composer_changed();
+                    return done;
+                }
                 let hover = self
                     .in_thread(x, y)
                     .then(|| self.thread_hit(x, y))
@@ -976,9 +1011,14 @@ impl App {
                             let scroll = t.composer.scroll();
                             let p = t.composer.hit(x - tx, y - ty - scroll);
                             t.composer.move_to(p, shift);
+                            t.selecting = true;
+                        }
+                        unsafe {
+                            SetCapture(self.hwnd);
                         }
                         self.thread_composer_changed();
                     }
+                    Some(part @ Part::Format(_)) => self.thread_activate(part),
                     Some(part) => {
                         self.set_thread_focus(false);
                         self.set_composer_focus(false);
@@ -990,6 +1030,17 @@ impl App {
                     }
                 }
                 done
+            }
+            WM_LBUTTONUP if self.thread.as_ref()?.selecting => {
+                self.thread.as_mut()?.selecting = false;
+                unsafe {
+                    let _ = ReleaseCapture();
+                }
+                done
+            }
+            WM_CAPTURECHANGED => {
+                self.thread.as_mut()?.selecting = false;
+                None
             }
             WM_MOUSEWHEEL if self.pointer.is_some_and(|(x, y)| self.in_thread(x, y)) => {
                 let delta = ((wp.0 >> 16) & 0xffff) as i16 as f32;
@@ -1019,10 +1070,13 @@ impl App {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
                 let hwnd = self.hwnd;
                 let t = self.thread.as_mut()?;
+                if t.composer.composing || !t.composer.comp.is_empty() {
+                    return Some(None);
+                }
                 if ctrl && vk == VIRTUAL_KEY('C' as u16) {
-                    let (a, b) = t.composer.selection();
-                    if b > a {
-                        crate::set_clipboard(hwnd, &t.composer.text[a..b]);
+                    let copied = t.composer.copied();
+                    if !copied.is_empty() {
+                        crate::set_clipboard(hwnd, &copied);
                     }
                     return done;
                 }
@@ -1092,10 +1146,12 @@ impl App {
                 t.composer.draw(g, dc, bw, bh, placeholder)?;
                 if t.gif {
                     let (x, y, w, h) = gif_local();
+                    let y = y + t.composer.inset.1;
                     let color = if lit { TEXT } else { TEXT_MUTED };
                     crate::uploads::gif_button(g, dc, rect(x, y, x + w, y + h), color)?;
                 }
                 let (x, y, w, h) = emoji_local();
+                let y = y + t.composer.inset.1;
                 icons::draw(
                     dc,
                     Icon::Smile,
