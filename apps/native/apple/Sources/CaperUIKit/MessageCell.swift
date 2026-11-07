@@ -516,11 +516,13 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
 
         if row.deleted {
             body.isHidden = true
+            // A reused cell's old text would otherwise lend this row its links' actions.
+            body.attributedText = nil
             note.isHidden = false
             note.text = "This message was deleted."
         } else {
             body.isHidden = row.text.isEmpty
-            if !row.text.isEmpty { body.attributedText = Self.render(row) }
+            body.attributedText = row.text.isEmpty ? nil : Self.render(row)
             note.isHidden = true
             note.text = nil
             note.textColor = UIKitStyle.muted
@@ -528,7 +530,17 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         self.alpha = row.pending && row.pendingError == nil ? 0.6 : 1
         body.accessibilityLabel = row.grouped ? "\(row.authorName), \(timeText): \(body.plainText)" : body.plainText
         body.accessibilityIdentifier = "message-text-\(row.id)"
-        body.accessibilityCustomActions = actions(for: row)
+        // "Message actions" and the rest belong to the whole row, as SwiftUI's:
+        // every element that can stand for it carries them, so rows without
+        // text (files, voice, GIFs, deleted) keep them too.
+        let rowActions = actions(for: row)
+        [header, body, note, gutter].forEach { $0.accessibilityCustomActions = rowActions }
+        // A grouped row without text has no header or body to name it; its
+        // gutter reads "Author, time", like SwiftUI's.
+        let gutterSpeaks = row.grouped && body.isHidden
+        gutter.isAccessibilityElement = gutterSpeaks
+        gutter.accessibilityElementsHidden = !gutterSpeaks
+        gutter.accessibilityLabel = gutterSpeaks ? "\(row.authorName), \(timeText)" : nil
     }
 
     private var chipsWidth: CGFloat = 0
@@ -743,8 +755,8 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
 
     override var accessibilityElements: [Any]? {
         // "(edited)" is its own button after the header, as SwiftUI's.
-        get { [pinBadge, replyContext, header, edited, body, extras, chips, errors, threadLink, note]
-            .filter { !$0.isHidden && !($0 === edited && header.isHidden) } }
+        get { [gutter, pinBadge, replyContext, header, edited, body, extras, chips, errors, threadLink, note]
+            .filter { !$0.isHidden && !($0 === edited && header.isHidden) && !($0 === gutter && !gutter.isAccessibilityElement) } }
         set {}
     }
 
