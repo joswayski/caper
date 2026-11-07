@@ -89,6 +89,7 @@ final class AttachmentImageLoader: @unchecked Sendable {
     private let session: URLSession
 
     init(configuration: URLSessionConfiguration = .ephemeral) {
+        KlipyFixtureTransport.install(into: configuration)
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
         session = URLSession(configuration: configuration)

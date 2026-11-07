@@ -310,7 +310,8 @@ import CaperCore
     func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, revealedBlocked: Bool, react: ((String, String) -> Void)?) {
         guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked else { return }
         let range = body.selectedRange()
-        if self.message?.content.attachments != message.content.attachments || self.message?.isDeleted != message.isDeleted {
+        if self.message?.content.attachments != message.content.attachments || self.message?.content.gif != message.content.gif
+            || self.message?.isDeleted != message.isDeleted {
             attachments?.removeFromSuperview()
             attachments = makeAttachments?(message)
             if let attachments {
