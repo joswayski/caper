@@ -64,6 +64,24 @@ pub unsafe extern "C" fn caper_mobile_mention_spans(
     crate::mention_spans(unsafe { text(utf8, len) }, true).into()
 }
 
+/// `crate::history_diff_spans(before, after, true)`: the before span count,
+/// then four values per highlighted span.
+///
+/// # Safety
+/// `before` and `after` must point to `before_len` and `after_len` bytes of
+/// UTF-8, or may be null when their length is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_history_diff_spans(
+    before: *const u8,
+    before_len: usize,
+    after: *const u8,
+    after_len: usize,
+) -> CaperMobileInts {
+    // SAFETY: forwarded from this function's contract.
+    let (before, after) = unsafe { (text(before, before_len), text(after, after_len)) };
+    crate::history_diff_spans(before, after, true).into()
+}
+
 /// `crate::names::has_hidden(text)`: whether a display or space name holds a
 /// character names may not.
 ///

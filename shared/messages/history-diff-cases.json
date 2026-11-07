@@ -1,0 +1,694 @@
+{
+  "description": "Which characters an edit-history comparison highlights, generated from web's MessageDiff (@pierre/diffs with lineDiffType \"word\" over jsdiff 9.0.0): lines are diffed first, each changed line paired with its counterpart is diffed by words, and a changed line without a counterpart is highlighted whole. Each side is a list of [text, highlighted] runs covering the whole text. Every client's tests must produce exactly these runs; see shared/messages/history_diff.rs.",
+  "cases": [
+    {
+      "note": "an inserted word",
+      "before": "see you there",
+      "after": "see you over there",
+      "old": [
+        [
+          "see you there",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "see you ",
+          false
+        ],
+        [
+          "over ",
+          true
+        ],
+        [
+          "there",
+          false
+        ]
+      ]
+    },
+    {
+      "note": "a removed word",
+      "before": "see you over there",
+      "after": "see you there",
+      "old": [
+        [
+          "see you ",
+          false
+        ],
+        [
+          "over ",
+          true
+        ],
+        [
+          "there",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "see you there",
+          false
+        ]
+      ]
+    },
+    {
+      "note": "a replaced word keeps the spaces around it",
+      "before": "meet at 5pm today",
+      "after": "meet at 6pm today",
+      "old": [
+        [
+          "meet at ",
+          false
+        ],
+        [
+          "5pm",
+          true
+        ],
+        [
+          " today",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "meet at ",
+          false
+        ],
+        [
+          "6pm",
+          true
+        ],
+        [
+          " today",
+          false
+        ]
+      ]
+    },
+    {
+      "note": "identical text has no highlights",
+      "before": "nothing changed",
+      "after": "nothing changed",
+      "old": [
+        [
+          "nothing changed",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "nothing changed",
+          false
+        ]
+      ]
+    },
+    {
+      "note": "a whole replacement",
+      "before": "yes",
+      "after": "no",
+      "old": [
+        [
+          "yes",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "no",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "punctuation is its own token",
+      "before": "done.",
+      "after": "done!",
+      "old": [
+        [
+          "done",
+          false
+        ],
+        [
+          ".",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "done",
+          false
+        ],
+        [
+          "!",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "each emoji is its own token",
+      "before": "nice 👍",
+      "after": "nice 👍🏽 🙂",
+      "old": [
+        [
+          "nice 👍",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "nice 👍",
+          false
+        ],
+        [
+          "🏽 🙂",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "Latin letters with diacritics are word characters",
+      "before": "café crème",
+      "after": "café brûlée",
+      "old": [
+        [
+          "café ",
+          false
+        ],
+        [
+          "crème",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "café ",
+          false
+        ],
+        [
+          "brûlée",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "× and ˇ are not word characters",
+      "before": "2×3 ˇx",
+      "after": "2×4 ˇy",
+      "old": [
+        [
+          "2×",
+          false
+        ],
+        [
+          "3",
+          true
+        ],
+        [
+          " ˇ",
+          false
+        ],
+        [
+          "x",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "2×",
+          false
+        ],
+        [
+          "4",
+          true
+        ],
+        [
+          " ˇ",
+          false
+        ],
+        [
+          "y",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "other scripts change one character at a time",
+      "before": "日本語です",
+      "after": "日本人です",
+      "old": [
+        [
+          "日本",
+          false
+        ],
+        [
+          "語",
+          true
+        ],
+        [
+          "です",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "日本",
+          false
+        ],
+        [
+          "人",
+          true
+        ],
+        [
+          "です",
+          false
+        ]
+      ]
+    },
+    {
+      "note": "a run of other white space is one token",
+      "before": "a 　b",
+      "after": "a c",
+      "old": [
+        [
+          "a",
+          false
+        ],
+        [
+          " 　b",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "a",
+          false
+        ],
+        [
+          " c",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "U+0085 and U+FEFF sit inside words and spaces",
+      "before": "ab ﻿c",
+      "after": "ad ﻿c",
+      "old": [
+        [
+          "a",
+          false
+        ],
+        [
+          "b",
+          true
+        ],
+        [
+          " ﻿c",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "a",
+          false
+        ],
+        [
+          "d",
+          true
+        ],
+        [
+          " ﻿c",
+          false
+        ]
+      ]
+    },
+    {
+      "note": "a lone carriage return is its own token",
+      "before": "a\rb",
+      "after": "a\rc",
+      "old": [
+        [
+          "a\r",
+          false
+        ],
+        [
+          "b",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "a\r",
+          false
+        ],
+        [
+          "c",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "Markdown delimiters compare as written",
+      "before": "**bold** and _it_",
+      "after": "**bold** or _it_",
+      "old": [
+        [
+          "**bold** ",
+          false
+        ],
+        [
+          "and",
+          true
+        ],
+        [
+          " _it_",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "**bold** ",
+          false
+        ],
+        [
+          "or",
+          true
+        ],
+        [
+          " _it_",
+          false
+        ]
+      ]
+    },
+    {
+      "note": "repeated words take jsdiff's path",
+      "before": "the the the cat",
+      "after": "the cat the the",
+      "old": [
+        [
+          "the ",
+          false
+        ],
+        [
+          "the",
+          true
+        ],
+        [
+          " the ",
+          false
+        ],
+        [
+          "cat",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "the ",
+          false
+        ],
+        [
+          "cat",
+          true
+        ],
+        [
+          " the ",
+          false
+        ],
+        [
+          "the",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "an added line is highlighted whole",
+      "before": "first line",
+      "after": "first line\nsecond line",
+      "old": [
+        [
+          "first line",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "first line\n",
+          false
+        ],
+        [
+          "second line",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "a removed line is highlighted whole",
+      "before": "first\nsecond\nthird",
+      "after": "first\nthird",
+      "old": [
+        [
+          "first\n",
+          false
+        ],
+        [
+          "second\n",
+          true
+        ],
+        [
+          "third",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "first\nthird",
+          false
+        ]
+      ]
+    },
+    {
+      "note": "a changed line is compared by words",
+      "before": "one\ntwo three\nfour",
+      "after": "one\ntwo 3\nfour",
+      "old": [
+        [
+          "one\ntwo ",
+          false
+        ],
+        [
+          "three",
+          true
+        ],
+        [
+          "\nfour",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "one\ntwo ",
+          false
+        ],
+        [
+          "3",
+          true
+        ],
+        [
+          "\nfour",
+          false
+        ]
+      ]
+    },
+    {
+      "note": "lines pair by similarity when one side has more",
+      "before": "intro\nthe quick fox",
+      "after": "intro\na new line\nthe quick fix",
+      "old": [
+        [
+          "intro\nthe quick ",
+          false
+        ],
+        [
+          "fox",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "intro\n",
+          false
+        ],
+        [
+          "a new line\n",
+          true
+        ],
+        [
+          "the quick ",
+          false
+        ],
+        [
+          "fix",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "lines pair in order when that is as alike",
+      "before": "a\nb",
+      "after": "x\ny\nz",
+      "old": [
+        [
+          "a",
+          true
+        ],
+        [
+          "\n",
+          false
+        ],
+        [
+          "b",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "x",
+          true
+        ],
+        [
+          "\n",
+          false
+        ],
+        [
+          "y",
+          true
+        ],
+        [
+          "\n",
+          false
+        ],
+        [
+          "z",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "a blank line added between paragraphs",
+      "before": "hello\nworld",
+      "after": "hello\n\nworld",
+      "old": [
+        [
+          "hello\nworld",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "hello\n",
+          false
+        ],
+        [
+          "\n",
+          true
+        ],
+        [
+          "world",
+          false
+        ]
+      ]
+    },
+    {
+      "note": "Windows line endings keep their carriage return",
+      "before": "one\r\ntwo",
+      "after": "one\r\n2",
+      "old": [
+        [
+          "one\r\n",
+          false
+        ],
+        [
+          "two",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "one\r\n",
+          false
+        ],
+        [
+          "2",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "a trailing newline only changes the line ending",
+      "before": "end",
+      "after": "end\n",
+      "old": [
+        [
+          "end",
+          false
+        ]
+      ],
+      "new": [
+        [
+          "end\n",
+          false
+        ]
+      ]
+    },
+    {
+      "note": "only the changed part of a link is highlighted",
+      "before": "see https://caper.chat/a",
+      "after": "see https://caper.chat/b",
+      "old": [
+        [
+          "see https://caper.chat/",
+          false
+        ],
+        [
+          "a",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "see https://caper.chat/",
+          false
+        ],
+        [
+          "b",
+          true
+        ]
+      ]
+    },
+    {
+      "note": "a mention",
+      "before": "thanks @alice",
+      "after": "thanks @bob!",
+      "old": [
+        [
+          "thanks @",
+          false
+        ],
+        [
+          "alice",
+          true
+        ]
+      ],
+      "new": [
+        [
+          "thanks @",
+          false
+        ],
+        [
+          "bob!",
+          true
+        ]
+      ]
+    }
+  ]
+}

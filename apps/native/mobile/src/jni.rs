@@ -23,19 +23,14 @@ unsafe fn string(env: *mut JNIEnv, text: jstring) -> Option<String> {
 }
 
 /// # Safety
-/// `env` must be the calling thread's JNI environment and `text` a live string.
-unsafe fn spans(env: *mut JNIEnv, text: jstring, parse: fn(&str, bool) -> Vec<i32>) -> jintArray {
+/// `env` must be the calling thread's JNI environment.
+unsafe fn int_array(env: *mut JNIEnv, values: &[i32]) -> jintArray {
     // SAFETY: a JNI environment always carries its function table.
     let functions = unsafe { &**env };
     let (Some(new_array), Some(set_region)) = (functions.NewIntArray, functions.SetIntArrayRegion)
     else {
         return std::ptr::null_mut();
     };
-    // SAFETY: forwarded from this function's contract.
-    let Some(text) = (unsafe { string(env, text) }) else {
-        return std::ptr::null_mut();
-    };
-    let values = parse(&text, false);
     let Ok(count) = jsize::try_from(values.len()) else {
         return std::ptr::null_mut();
     };
@@ -47,6 +42,17 @@ unsafe fn spans(env: *mut JNIEnv, text: jstring, parse: fn(&str, bool) -> Vec<i3
         unsafe { set_region(env, array, 0, count, values.as_ptr().cast::<jint>()) };
     }
     array
+}
+
+/// # Safety
+/// `env` must be the calling thread's JNI environment and `text` a live string.
+unsafe fn spans(env: *mut JNIEnv, text: jstring, parse: fn(&str, bool) -> Vec<i32>) -> jintArray {
+    // SAFETY: forwarded from this function's contract.
+    match unsafe { string(env, text) } {
+        // SAFETY: forwarded from this function's contract.
+        Some(text) => unsafe { int_array(env, &parse(&text, false)) },
+        None => std::ptr::null_mut(),
+    }
 }
 
 /// `CaperMobile.formatSpans(text)`: `crate::format_spans(text, false)`.
@@ -89,6 +95,28 @@ pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_mentionSp
 ) -> jintArray {
     // SAFETY: forwarded from the JVM's call.
     unsafe { spans(env, text, crate::mention_spans) }
+}
+
+/// `CaperMobile.historyDiffSpans(before, after)`:
+/// `crate::history_diff_spans(before, after, false)`.
+///
+/// # Safety
+/// Called by the JVM with its environment and two live strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_historyDiffSpans(
+    env: *mut JNIEnv,
+    _class: jclass,
+    before: jstring,
+    after: jstring,
+) -> jintArray {
+    // SAFETY: forwarded from the JVM's call.
+    match unsafe { (string(env, before), string(env, after)) } {
+        // SAFETY: forwarded from the JVM's call.
+        (Some(before), Some(after)) => unsafe {
+            int_array(env, &crate::history_diff_spans(&before, &after, false))
+        },
+        _ => std::ptr::null_mut(),
+    }
 }
 
 /// `CaperMobile.nameHasHidden(text)`: `crate::names::has_hidden(text)`.

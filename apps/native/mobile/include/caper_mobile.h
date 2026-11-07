@@ -21,6 +21,11 @@ CaperMobileInts caper_mobile_format_spans(const uint8_t *utf8, size_t len);
 CaperMobileInts caper_mobile_link_spans(const uint8_t *utf8, size_t len);
 // Four values per @mention token: utf16 start, utf16 end, utf8 start, utf8 end.
 CaperMobileInts caper_mobile_mention_spans(const uint8_t *utf8, size_t len);
+// An edit-history comparison's highlights: the number of before spans, then
+// four values per highlighted span (utf16 start, utf16 end, utf8 start, utf8
+// end), before spans first.
+CaperMobileInts caper_mobile_history_diff_spans(const uint8_t *before, size_t before_len, const uint8_t *after,
+                                                size_t after_len);
 void caper_mobile_ints_free(CaperMobileInts ints);
 // Whether a display or space name holds a character names may not.
 bool caper_mobile_name_has_hidden(const uint8_t *utf8, size_t len);

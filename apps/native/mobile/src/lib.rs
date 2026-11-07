@@ -13,6 +13,8 @@
 
 #[path = "../../../../shared/messages/formatting.rs"]
 pub mod formatting;
+#[path = "../../../../shared/messages/history_diff.rs"]
+pub mod history_diff;
 #[path = "../../../../shared/messages/links.rs"]
 pub mod links;
 #[path = "../../../../shared/messages/mentions.rs"]
@@ -132,6 +134,32 @@ pub fn mention_spans(text: &str, utf8: bool) -> Vec<i32> {
     out
 }
 
+/// What an edit-history comparison highlights (`history_diff`): `[count,
+/// ...before spans, ...after spans]`, where `count` is the number of before
+/// spans and each span is `[utf16_start, utf16_end]`, or `[utf16_start,
+/// utf16_end, utf8_start, utf8_end]` with `utf8`. Text between spans is not
+/// highlighted.
+pub fn history_diff_spans(before: &str, after: &str, utf8: bool) -> Vec<i32> {
+    let (old, new) = history_diff::highlights(before, after);
+    let push = |out: &mut Vec<i32>, text: &str, runs: history_diff::Highlights| {
+        let mut cursor = Utf16Cursor::new(text);
+        let mut count = 0;
+        for (range, _) in runs.into_iter().filter(|(_, changed)| *changed) {
+            out.push(offset(cursor.at(range.start)));
+            out.push(offset(cursor.at(range.end)));
+            if utf8 {
+                out.extend([offset(range.start), offset(range.end)]);
+            }
+            count += 1;
+        }
+        count
+    };
+    let mut out = vec![0];
+    out[0] = push(&mut out, before, old);
+    push(&mut out, after, new);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +200,55 @@ mod tests {
                     }
                 }
                 assert_eq!(runs, expected, "{text}");
+            }
+        }
+    }
+
+    /// Hosts rebuild each side's runs from the highlighted spans; every shared case agrees.
+    #[test]
+    fn spans_rebuild_the_shared_history_diff_cases() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../shared/messages/history-diff-cases.json"
+        ))
+        .unwrap();
+        let cases = cases["cases"].as_array().unwrap();
+        assert!(cases.len() > 20);
+        for case in cases {
+            let (before, after) = (
+                case["before"].as_str().unwrap(),
+                case["after"].as_str().unwrap(),
+            );
+            for (utf8, width) in [(false, 2), (true, 4)] {
+                let spans = history_diff_spans(before, after, utf8);
+                let split = 1 + spans[0] as usize * width;
+                for (text, spans, key) in [
+                    (before, &spans[1..split], "old"),
+                    (after, &spans[split..], "new"),
+                ] {
+                    let units = text.encode_utf16().count() as i32;
+                    let mut runs: Vec<(String, bool)> = Vec::new();
+                    let mut push = |value: String, changed: bool| {
+                        if !value.is_empty() {
+                            runs.push((value, changed));
+                        }
+                    };
+                    let mut end = 0;
+                    for span in spans.chunks(width) {
+                        if utf8 {
+                            assert_eq!(
+                                utf16(text, span[0]..span[1]),
+                                text[span[2] as usize..span[3] as usize]
+                            );
+                        }
+                        push(utf16(text, end..span[0]), false);
+                        push(utf16(text, span[0]..span[1]), true);
+                        end = span[1];
+                    }
+                    push(utf16(text, end..units), false);
+                    let expected: Vec<(String, bool)> =
+                        serde_json::from_value(case[key].clone()).unwrap();
+                    assert_eq!(runs, expected, "{}", case["note"]);
+                }
             }
         }
     }
