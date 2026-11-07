@@ -535,6 +535,7 @@ import CaperCore
                 await chat.openThread(current.threadRootId ?? current.id)
             }
         case .history: dialogs.messageHistory(current, in: presentationParent)
+        case .reactors(let emoji): dialogs.reactions(current, emoji: emoji, in: presentationParent)
         case .addReaction: picker.reaction(to: current, from: anchor, composer: composer)
         case .dismissReaction: chat.reactionErrors[current.id] = nil
         case .retryReaction:
@@ -575,6 +576,11 @@ import CaperCore
         var items: [NSMenuItem] = [NavigationMenuItem("Add reaction…", enabled: chat.canInteract, action: perform { [weak self, weak anchor] in
             guard let self, let anchor else { return }; self.messageAction($0, action: .addReaction, anchor: anchor)
         }), .separator()]
+        if let reaction = current.reactions?.first {
+            items.insert(NavigationMenuItem("View reactions", action: perform { [weak self] in
+                guard let self else { return }; self.dialogs.reactions($0, emoji: reaction.emoji, in: self.presentationParent)
+            }), at: 1)
+        }
         for (title, action) in [("Reply", MessageAction.reply), ("Reply in thread", MessageAction.replyInThread)] {
             items.append(NavigationMenuItem(title, enabled: chat.canInteract && chat.pendingMessage == nil, action: perform { [weak self, weak anchor] in
                 guard let self, let anchor else { return }; self.messageAction($0, action: action, anchor: anchor)
