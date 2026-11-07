@@ -4,7 +4,7 @@
 // rule throughout: smaller without visible loss, else the original file.
 import type { ChatAttachmentKind } from "./types.ts";
 import { encodeIndexedPng, exactPalette } from "./png.ts";
-import { stripMetadata } from "./metadata.ts";
+import { cleanMetadata } from "./metadata.ts";
 import { encodeAvif } from "./avif.ts";
 import { decodeBitmap, heicFallback } from "./heic.ts";
 import { encodeLosslessWebp, iccProfile, pngBitDepth, pngChunks, webpWithIcc } from "./webp.ts";
@@ -943,7 +943,10 @@ export async function prepareFile(
     : kind === "video" || kind === "audio" || contentType.startsWith("video/")
       ? await prepareTimed(file, contentType, settings, progress, signal, edited)
       : { blob: file, name: file.name, contentType, kind, sourceSize: file.size };
-  // An original upload still loses its location and other metadata, losslessly.
-  if (prepared.blob === file) prepared.blob = await stripMetadata(file, contentType);
+  // Every upload body loses its location and other identifying metadata here,
+  // losslessly; the server does not clean uploads. Throws `MetadataRefused`
+  // for media this cannot clean.
+  prepared.blob = await cleanMetadata(prepared.blob, prepared.contentType);
+  if (prepared.preview) prepared.preview = await cleanMetadata(prepared.preview, prepared.preview.type);
   return prepared;
 }

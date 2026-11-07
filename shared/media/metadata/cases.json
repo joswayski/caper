@@ -1,0 +1,222 @@
+[
+  {
+    "file": "photo.jpg",
+    "contentType": "image/jpeg",
+    "expected": "0f458c64994e3d8c7451700058bd0094920b7450b6721b2afe135b6ce5a5c2b5"
+  },
+  {
+    "file": "photo.jpg",
+    "contentType": "application/octet-stream",
+    "expected": "0f458c64994e3d8c7451700058bd0094920b7450b6721b2afe135b6ce5a5c2b5"
+  },
+  {
+    "file": "no-jfif.jpg",
+    "contentType": "image/jpeg",
+    "expected": "14a0c39816a01abc26c3001628c8ac937acdc81ca86bed7b998970a154a8559a"
+  },
+  {
+    "file": "trailer.jpg",
+    "contentType": "image/jpeg",
+    "expected": "0f458c64994e3d8c7451700058bd0094920b7450b6721b2afe135b6ce5a5c2b5"
+  },
+  {
+    "file": "progressive.jpg",
+    "contentType": "image/jpeg",
+    "expected": "eac6c1ad862ce743bde870c27b5d5757435a9ded1d432046b2d3d3c1996dcafc"
+  },
+  {
+    "file": "photo.png",
+    "contentType": "image/png",
+    "expected": "ea465dc15c1bb80137e4dd54964c4c6723c5d192fd27677099a32be9b76ae0ae"
+  },
+  {
+    "file": "photo.gif",
+    "contentType": "image/gif",
+    "expected": "7969b3900734cb5a10e0eefbdc5217cb52d929f7f6c5c6ceaa3a39bc9ccef633"
+  },
+  {
+    "file": "photo.webp",
+    "contentType": "image/webp",
+    "expected": "aeb0da4e7288644b751bc6a71485023d0a8f4f095fbfa56dd0a08dea55a9a396"
+  },
+  {
+    "file": "plain.webp",
+    "contentType": "image/webp",
+    "expected": "e797bd92109749b0e56052f922e4ed513cd6534140dd112c64a1a110fdf9e4b4"
+  },
+  {
+    "file": "photo.heic",
+    "contentType": "image/heic",
+    "expected": "5cd0fea445776874c8275c1bca5e51a795bb04334f1b477c78c0586c68f3ddfc"
+  },
+  {
+    "file": "photo.avif",
+    "contentType": "image/avif",
+    "expected": "5e95c6266705ab0b7c03a79a20c6b24cd85171a9fa1b710c0968f3d07cd23a8a"
+  },
+  {
+    "file": "photo.tif",
+    "contentType": "image/tiff",
+    "expected": "f4b088be3defc134cf157af2543b5ecb5c1ac9e7a800537cca34e491a1ede693"
+  },
+  {
+    "file": "big-endian.tif",
+    "contentType": "image/tiff",
+    "expected": "07b70bef94a5d5953d733a1f335a1a7f8907dd875b34ae228b5603599230c707"
+  },
+  {
+    "file": "maker-canon.tif",
+    "contentType": "image/x-canon-cr2",
+    "expected": "a07ce3d4f4a692cc75554832cf2a832fcd7615aa5ec23766056a437307686808"
+  },
+  {
+    "file": "maker-nikon.tif",
+    "contentType": "image/x-nikon-nef",
+    "expected": "b4e655d3b37d766ded435f687eec3721fd0b91c223fadbb20fb267a9a8cca10a"
+  },
+  {
+    "file": "maker-olympus.tif",
+    "contentType": "image/x-olympus-orf",
+    "expected": "9e5390a309791edf23c8c92fc027842533fa90be7c9114efe3f47261c5b42fc6"
+  },
+  {
+    "file": "maker-panasonic.tif",
+    "contentType": "image/x-panasonic-rw2",
+    "expected": "af8180d8a9be6d7eaf4f4a5eef77064108c35940a5d4e803e185362957b99cec"
+  },
+  {
+    "file": "maker-pentax.tif",
+    "contentType": "image/x-pentax-pef",
+    "expected": "da34692d1439c207e3cf33966ea1d82d5a422d9a548f6227f74535707a6cc010"
+  },
+  {
+    "file": "photo.psd",
+    "contentType": "image/vnd.adobe.photoshop",
+    "expected": "b7a9eef9582befd0c62979955d24916a511204992fd1d195b0d92159ec0941f0"
+  },
+  {
+    "file": "photo.jp2",
+    "contentType": "image/jp2",
+    "expected": "95745df5d89ad8eeccff7aef2af459f7dcf827ec161d45e3d7f0174454a6fb90"
+  },
+  {
+    "file": "tone.mp3",
+    "contentType": "audio/mpeg",
+    "expected": "b5ecea9c9d91adedd2da6204e6b33f5dde049ab91c0c34e9e2ae70c790544ef4"
+  },
+  {
+    "file": "tone.m4a",
+    "contentType": "audio/mp4",
+    "expected": "dc344ba48d202286c6fbee4b1197449a3e30a89c92dfd58cb60205a05be5fb18"
+  },
+  {
+    "file": "cover.m4a",
+    "contentType": "audio/x-m4a",
+    "expected": "b3fb247c9e5af2d11d2537e7b97fb7afd0324d55a38efc33e2e06c22a1641bd4"
+  },
+  {
+    "file": "tone.aac",
+    "contentType": "audio/aac",
+    "expected": "c70e9f863700a8a2c3f60a410d5954f3f981e43021cf7f7d0d9e92f4f2f7e004"
+  },
+  {
+    "file": "tone.flac",
+    "contentType": "audio/flac",
+    "expected": "bdd70ac8ed5ef0b6a4b7d753732cc0cb80454ea58d2a9beca394c8ee61a69158"
+  },
+  {
+    "file": "tone.ogg",
+    "contentType": "audio/ogg",
+    "expected": "feb3fc932e4f7c27484b7fb45c08518ebfb61a754b117f8bd275474740b0417a"
+  },
+  {
+    "file": "tone.opus",
+    "contentType": "audio/ogg",
+    "expected": "5122b62ed2502734bf3ae086b57ace9cc47cd7c4fa6b400c72817bfd0c016125"
+  },
+  {
+    "file": "flac.oga",
+    "contentType": "audio/ogg",
+    "expected": "efa5f0857f5e5cce73636b4df11100db2f9b7467cf0bdbcd540bb501e5ce95d3"
+  },
+  {
+    "file": "tone.spx",
+    "contentType": "audio/ogg",
+    "expected": "0844df450dfdaa7236f8e1fb0ebb0060f1a26e74e866df823b0837c85c9efc99"
+  },
+  {
+    "file": "tone.wav",
+    "contentType": "audio/wav",
+    "expected": "08ff8f58dec51032fdf8232c742b06e9298e562e3f3cfc36fcc09d0c2000205e"
+  },
+  {
+    "file": "tone.aiff",
+    "contentType": "audio/aiff",
+    "expected": "e07beac0492d138bfe33769b43fc32b2bd6082eebbdf9bc96d24d888752f1af6"
+  },
+  {
+    "file": "clip.mp4",
+    "contentType": "video/mp4",
+    "expected": "a80e7e7985e9dd3d2669f80059893fb9ad90197e6ec1992a1f624f6388f5ac5b"
+  },
+  {
+    "file": "clip.mov",
+    "contentType": "video/quicktime",
+    "expected": "29d6f2b1800a459d334516147c0b60f95b8f806199be51de5aaa3dc8b2505e4a"
+  },
+  {
+    "file": "subtitled.mp4",
+    "contentType": "video/mp4",
+    "expected": "72e684f40522597c77c2eecc5c5287352cf8a758264adaeb7450d42413ddea47"
+  },
+  {
+    "file": "clip.webm",
+    "contentType": "video/webm",
+    "expected": "c3a0b5caa00e0d0ea0e1c27f5b94068b51283cdf10e05106957dfd1dfeb01cf7"
+  },
+  {
+    "file": "subtitled.webm",
+    "contentType": "video/webm",
+    "expected": "fe28e457e8e16e93940f2dba17b77266317b15dd73e00a2cc501901e80dcd341"
+  },
+  {
+    "file": "clip.ogv",
+    "contentType": "video/ogg",
+    "expected": "8a8472b46f47c80a9aa25e81d54ad1028f343f33cfdbc8602fe452211fbce9b0"
+  },
+  {
+    "file": "clip.avi",
+    "contentType": "video/x-msvideo",
+    "expected": "13f1d80e709e118eea6dccd0f28fbc9af7b1f4051c10540b673b857ced19ef27"
+  },
+  {
+    "file": "bare.jxl",
+    "contentType": "image/jxl",
+    "expected": "8e3e6dbede3aca7a208886326664a45afed5dc29ca2520281940017e4c774f64"
+  },
+  {
+    "file": "document.pdf",
+    "contentType": "application/pdf",
+    "expected": "6ce7354b1e9263c2ff72e3fb7238d39fbeaa964d8eb74f81108cad1cf9790e81"
+  },
+  {
+    "file": "picture.bmp",
+    "contentType": "image/bmp",
+    "expected": "refused:unsupported"
+  },
+  {
+    "file": "picture.svg",
+    "contentType": "image/svg+xml",
+    "expected": "refused:unsupported"
+  },
+  {
+    "file": "canon.cr3",
+    "contentType": "image/x-canon-cr3",
+    "expected": "refused:unsupported"
+  },
+  {
+    "file": "truncated.png",
+    "contentType": "image/png",
+    "expected": "refused:malformed"
+  }
+]
