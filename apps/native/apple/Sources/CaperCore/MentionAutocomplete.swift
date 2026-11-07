@@ -1,4 +1,5 @@
 import Foundation
+@_implementationOnly import CaperMobile
 
 /// A composer `@` suggestion: a person, the `everyone`/`here` specials
 /// offered only in space channels, or `feedback`, offered in every conversation.
@@ -278,29 +279,28 @@ enum MentionAutocomplete {
 
     // MARK: Messages
 
-    /// Every grammar token in `text`, in order (names of 1–32 characters).
+    /// Every grammar token in `text`, in order (names of 1–32 characters):
+    /// shared/messages/mentions.rs, through Rust.
     static func tokens(in text: String) -> [MentionToken] {
-        let scalars = text.unicodeScalars
-        var tokens: [MentionToken] = []
-        var previous: Unicode.Scalar?
-        var index = scalars.startIndex
-        while index < scalars.endIndex {
-            let scalar = scalars[index]
-            let starts = scalar == "@" && startsToken(after: previous)
-            previous = scalar
-            var end = scalars.index(after: index)
-            guard starts else { index = end; continue }
-            var name: [Unicode.Scalar] = []
-            while end < scalars.endIndex, isNameScalar(scalars[end]) {
-                name.append(scalars[end]); previous = scalars[end]
-                end = scalars.index(after: end)
+        var source = text
+        return source.withUTF8 { bytes in
+            let spans = caper_mobile_mention_spans(bytes.baseAddress, bytes.count)
+            defer { caper_mobile_ints_free(spans) }
+            let utf8 = text.utf8
+            var index = utf8.startIndex, offset = 0
+            func at(_ target: Int) -> String.Index {
+                index = utf8.index(index, offsetBy: target - offset)
+                offset = target
+                return index
             }
-            if (1...maximumNameLength).contains(name.count) {
-                tokens.append(MentionToken(range: index..<end, name: string(name).lowercased()))
+            return stride(from: 0, to: spans.len, by: 4).map { span in
+                let values = spans.data.advanced(by: span)
+                let start = Int(values[2]), end = Int(values[3])
+                // The name is ASCII, so its bytes are its characters.
+                let name = String(decoding: UnsafeBufferPointer(rebasing: bytes[(start + 1)..<end]), as: UTF8.self).lowercased()
+                return MentionToken(range: at(start)..<at(end), name: name)
             }
-            index = end
         }
-        return tokens
     }
 
     /// A token is highlighted only when `content.mentions` resolves it:

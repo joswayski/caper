@@ -10,7 +10,7 @@ workspace, so mobile builds never compile the desktop client's media stack.
 | Bold/italic formatting | `shared/messages/formatting.rs` | `data/Formatting.kt` | `MessageFormatting.swift` |
 | Edit-history highlights | `shared/messages/history_diff.rs` | `data/Edits.kt` (`messageDiff`) | |
 | Links | `shared/messages/links.rs` | `data/Links.kt` | `MessageLinks.swift` |
-| Mention tokens | `shared/messages/mentions.rs` | `MentionAutocomplete.kt` (`mentionSpans`) | |
+| Mention tokens | `shared/messages/mentions.rs` | `MentionAutocomplete.kt` (`mentionSpans`) | `MentionAutocomplete.swift` (`tokens`) |
 | Name characters | `apps/native/client/src/names.rs` | `model/Names.kt` | `Names.swift` |
 
 The host code keeps its own types and editing helpers and calls Rust for the

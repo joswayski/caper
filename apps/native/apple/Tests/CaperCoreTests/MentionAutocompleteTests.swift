@@ -239,6 +239,22 @@ final class MentionAutocompleteTests: XCTestCase {
 
     // MARK: Messages
 
+    /// Every client runs these same cases; see shared/messages/mention-cases.json.
+    func testMessageTokensFollowTheSharedCases() throws {
+        struct Token: Decodable { let text: String; let name: String }
+        struct Case: Decodable { let text: String; let tokens: [Token] }
+        struct Cases: Decodable { let cases: [Case] }
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let cases = try JSONDecoder().decode(Cases.self, from: Data(contentsOf: root.appendingPathComponent("shared/messages/mention-cases.json")))
+        XCTAssertGreaterThan(cases.cases.count, 10)
+        for fixture in cases.cases {
+            let scalars = fixture.text.unicodeScalars
+            let actual = MentionAutocomplete.tokens(in: fixture.text).map { [String(scalars[$0.range]), $0.name] }
+            XCTAssertEqual(actual, fixture.tokens.map { [$0.text, $0.name] }, fixture.text)
+        }
+    }
+
     func testMessageTokenizationMatchesServerGrammar() {
         let text = "@Alice, hi @bob! bob@alice.com x/@carol @@dave (@erin) [@f] @ @al.\u{E9} @alic\u{E9}"
         XCTAssertEqual(MentionAutocomplete.tokens(in: text).map(\.name), ["alice", "bob", "erin", "f", "al", "alic"])
