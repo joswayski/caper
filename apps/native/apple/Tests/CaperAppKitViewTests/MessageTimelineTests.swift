@@ -230,6 +230,13 @@ import XCTest
         body.setSelectedRange(emoji)
         let quick = try button("quick-reaction-message-1-👍")
         XCTAssertTrue(window.makeFirstResponder(quick))
+        timeline.layoutSubtreeIfNeeded()
+        let actionButtons = try ["quick-reaction-message-1-👍", "quick-reaction-message-1-❤️", "quick-reaction-message-1-😂",
+            "add-reaction-message-1", "reply-message-message-1", "message-options-message-1"].map(button)
+        for (left, right) in zip(actionButtons, actionButtons.dropFirst()) {
+            XCTAssertLessThanOrEqual(left.accessibilityFrame().maxX, right.accessibilityFrame().minX,
+                "Adjacent actions must not share an accessibility hit region")
+        }
         value.reactions = [MessageReaction(emoji: "👍", authorIds: ["peer", "self"])]
         update()
         XCTAssertTrue(window.firstResponder === quick, "An optimistic reaction must not remove the focused quick action")

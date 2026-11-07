@@ -166,7 +166,10 @@ import CaperCore
         audio.frame = NSRect(x: bounds.width - 68, y: 7, width: 60, height: 26)
         volume.frame = NSRect(x: 48, y: 54, width: bounds.width - 56, height: 20)
         slider.frame = NSRect(x: 48, y: 76, width: bounds.width - 56, height: 24)
-        muted.frame = NSRect(x: 48, y: 106, width: bounds.width - 56, height: 20)
+        // A checkbox only tracks its box and label. Do not advertise the blank
+        // remainder of the row as part of its activation frame.
+        muted.sizeToFit()
+        muted.frame = NSRect(x: 48, y: 106, width: min(bounds.width - 56, muted.frame.width), height: 20)
         note.frame = NSRect(x: 48, y: 132, width: bounds.width - 56, height: 16)
     }
 }
