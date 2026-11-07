@@ -1351,14 +1351,30 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         // Served as recorded: the fixture labels voice notes audio/mp4 like the
         // API's transcode, but never transcodes them. Images likewise retain
         // the client's prepared bytes; no privacy cleaning or decoding here.
-        response.writeHead(200, {
+        // One `bytes=a-b` range, as storage serves it: native players seek
+        // media by reading ranges through their loopback proxy.
+        const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? "");
+        let [start, end] = [0, data.length - 1];
+        if (range && range[1] !== "") {
+          start = Number(range[1]);
+          if (range[2] !== "") end = Math.min(Number(range[2]), end);
+        } else if (range && range[2] !== "") {
+          // `bytes=-n`: the last n bytes.
+          start = Math.max(0, data.length - Number(range[2]));
+        }
+        if (range && ((range[1] === "" && range[2] === "") || start > end)) {
+          response.writeHead(416, { "content-range": `bytes */${data.length}` });
+          return response.end();
+        }
+        response.writeHead(range ? 206 : 200, {
           "content-type": preview ? asset.preview.contentType : asset.contentType,
-          "content-length": data.length,
-          "accept-ranges": "none",
+          "content-length": end - start + 1,
+          "accept-ranges": "bytes",
+          ...(range ? { "content-range": `bytes ${start}-${end}/${data.length}` } : {}),
           "cache-control": "no-store",
           "x-content-type-options": "nosniff",
         });
-        return response.end(data);
+        return response.end(data.subarray(start, end + 1));
       }
       const assetComplete = /^\/api\/assets\/([^/]+)\/complete$/.exec(path);
       if (assetComplete && method === "POST") {
