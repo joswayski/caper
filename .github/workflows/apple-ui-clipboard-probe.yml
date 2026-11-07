@@ -1,5 +1,5 @@
-# Bounded AX/selection diagnostic overlay only. Never merge this workflow.
-# The full twelve-test successor gate still requires queue49's full views.
+# Exact excluded UI subset only. Never merge this workflow.
+# Queue49 full views passed at this exact source before this subset was released.
 name: Apple isolated UI clipboard probe
 on:
   push:
@@ -12,8 +12,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: diagnostics-3aebe036
-            source: 3aebe036e0796a02cfa882b34181febe697a50ed
+          - name: gate-09d4fb85
+            source: 09d4fb853e1f262885f98fb81f5d150ba637763d
     runs-on: macos-15-intel
     timeout-minutes: 90
     env:
@@ -66,19 +66,10 @@ jobs:
           echo 'f61ee0b3f4c4cd337303e003d333357c5eaf25ef5d75a742109ee59e9a0a3932  apps/native/apple/.build/rnnoise-source.tar.gz' | shasum -a 256 -c -
           tar -xzf apps/native/apple/.build/rnnoise-source.tar.gz -C apps/native/apple/.build/rnnoise --strip-components=1
           tar -xzf apps/native/apple/.build/rnnoise-model.tar.gz -C apps/native/apple/.build/rnnoise src/rnnoise_data.c src/rnnoise_data.h
-      - name: Apply the bounded diagnostic overlay with exact provenance
-        run: |
-          git show "$GITHUB_SHA:.github/probe-inputs/appkit-diagnostics.patch" > ui/diagnostic.patch
-          echo '1de6fe43696b29af00fdc49dc6a2c7ae66c1bae94459fab13c9eeb7bc7fab7c6  ui/diagnostic.patch' | shasum -a 256 -c -
-          git apply --check ui/diagnostic.patch
-          git apply ui/diagnostic.patch
-          printf 'BASE=%s\nPROBE=%s\n' "$SOURCE_SHA" "$GITHUB_SHA" > ui/overlay-provenance.txt
-          shasum -a 256 ui/diagnostic.patch >> ui/overlay-provenance.txt
-          git diff --stat >> ui/overlay-provenance.txt
-          shasum -a 256 scripts/native-parity-fixture.mjs apps/native/apple/native-project.yml apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift apps/native/apple/Sources/CaperAppKit/WorkspaceController.swift > ui/overlay-source-hashes.txt
-      - name: Run only forwarding, original formatting and the two plain-text controls
+      - name: Run only the twelve excluded UI methods at unchanged source
         continue-on-error: true
         run: |
+          git diff --exit-code
           bash apps/native/apple/prepare.sh
           generator=(apps/native/apple/.build/xcodegen-*)
           swift run --package-path "${generator[0]}" xcodegen --spec apps/native/apple/native-project.yml --project apps/native/apple
@@ -89,14 +80,22 @@ jobs:
           curl --silent --fail http://127.0.0.1:3001/health >/dev/null
           tests=(
             testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts
+            testMessageReplyQuoteCancelSendAndOriginalNavigation
+            testOwnMessageActionsEditConflictHistoryAndDeleteConfirmation
+            testMessageQuickReactionsPickerAndTextSelectionStayIndependent
+            testComposerEmojiPickerSelectionUndoCancelAndScalarLimit
+            testGifPickerRecoverySendViewerAndDraftRetention
+            testImagePasteEditSpoilerSendAndDecodedViewer
+            testFilePickerUploadFailureRetryAndComposerOwnership
+            testConversationSendNavigationAndSelection
             testDraftFormattingCopyRepairUndoMenusAndSend
-            testProbePlainFormattingInsideSelectedGlyph
-            testProbePlainFormattingOutsideSelectedGlyph
+            testAutocompleteKeyboardPointerUndoAndSelection
+            testMentionClickPreservesDraggingAndProtectsUnsavedProfileEdits
           )
           printf '%s\n' "${tests[@]}" > ui/selected-tests.txt
           # A failed async XCTest continued into the next method in the original
           # run. Separate runner processes keep its assertions from contaminating
-          # the next result; the two existing methods and two controls run once.
+          # the next result; each of the twelve approved methods runs once.
           arguments=(-project apps/native/apple/CaperNative.xcodeproj -scheme CaperAppKitTests
             -destination "platform=macOS,arch=$(uname -m)" -derivedDataPath apps/native/apple/DerivedData-UI)
           xcodebuild "${arguments[@]}" build-for-testing 2>&1 | tee ui/build.log
@@ -111,9 +110,6 @@ jobs:
             status=${PIPESTATUS[0]}
             set -e
             echo "$status" > "$directory/test-exit-code"
-            if [[ -f /tmp/caper-appkit-selection.jsonl ]]; then
-              cp /tmp/caper-appkit-selection.jsonl "$directory/selection.jsonl"
-            fi
           done
       - name: Export actual results and captures
         if: always()
@@ -123,24 +119,7 @@ jobs:
             directory="$(dirname "$bundle")"
             xcrun xcresulttool get test-results summary --path "$bundle" > "$directory/summary.json"
             xcrun xcresulttool export attachments --path "$bundle" --output-path "$directory/captures"
-          done
-      - name: Export existing reply and image diagnostics without rerunning them
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p retained ui/retained-diagnostics
-          gh api repos/joswayski/caper/actions/runs/42406044201/artifacts > ui/retained-diagnostics/artifacts.json
-          for name in forwarding-caff5dbc frozen-77873879; do
-            gh run download 42406044201 --repo joswayski/caper --name "clipboard-ui-$name" --dir "retained/$name"
-            for method in testMessageReplyQuoteCancelSendAndOriginalNavigation testImagePasteEditSpoilerSendAndDecodedViewer; do
-              bundle="retained/$name/$method/Results.xcresult"
-              test -d "$bundle"
-              output="ui/retained-diagnostics/$name/$method"
-              mkdir -p "$output"
-              cp "retained/$name/source-hashes.txt" "retained/$name/environment.txt" "retained/$name/$method/summary.json" "retained/$name/$method/test-exit-code" "$output/"
-              xcrun xcresulttool export diagnostics --path "$bundle" --output-path "$output/diagnostics" > "$output/export.log" 2>&1
-            done
+            xcrun xcresulttool export diagnostics --path "$bundle" --output-path "$directory/diagnostics" > "$directory/export-diagnostics.log" 2>&1
           done
       - uses: actions/upload-artifact@v4
         if: always()
@@ -148,7 +127,7 @@ jobs:
           name: clipboard-ui-${{ matrix.name }}
           path: ui/
           retention-days: 7
-      - name: Require the exact diagnostic methods without skips
+      - name: Require the exact twelve excluded methods without skips
         if: always()
         run: |
           python3 - <<'PY'
@@ -157,9 +136,17 @@ jobs:
           expected = set((path / 'selected-tests.txt').read_text().splitlines())
           assert expected == {
               'testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts',
+              'testMessageReplyQuoteCancelSendAndOriginalNavigation',
+              'testOwnMessageActionsEditConflictHistoryAndDeleteConfirmation',
+              'testMessageQuickReactionsPickerAndTextSelectionStayIndependent',
+              'testComposerEmojiPickerSelectionUndoCancelAndScalarLimit',
+              'testGifPickerRecoverySendViewerAndDraftRetention',
+              'testImagePasteEditSpoilerSendAndDecodedViewer',
+              'testFilePickerUploadFailureRetryAndComposerOwnership',
+              'testConversationSendNavigationAndSelection',
               'testDraftFormattingCopyRepairUndoMenusAndSend',
-              'testProbePlainFormattingInsideSelectedGlyph',
-              'testProbePlainFormattingOutsideSelectedGlyph',
+              'testAutocompleteKeyboardPointerUndoAndSelection',
+              'testMentionClickPreservesDraggingAndProtectsUnsavedProfileEdits',
           }, expected
           assert {p.parent.name for p in path.glob('*/summary.json')} == expected
           failures = []
