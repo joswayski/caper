@@ -5442,4 +5442,3 @@ pub fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {
     });
     popover.popup();
 }
-
