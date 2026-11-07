@@ -370,6 +370,19 @@ private struct AppKitWorkspaceDialog: View {
         AppKitAttachmentSurface { AppKitPendingMessage(pending: pending, chat: model.chat) }
     }
 
+    /// Keep the shipping quote's thumbnails, blocked/deleted states, expansion
+    /// and reduced-motion behavior without hosting either conversation list.
+    public func replyContext(_ message: ChatMessage) -> AppKitAttachmentSurface? {
+        guard !message.isDeleted, let reference = message.replyTo else { return nil }
+        return AppKitAttachmentSurface {
+            NativeReplyContext(reference: reference, motionKey: message.id, chat: model.chat)
+        }
+    }
+
+    public func replyDraft(inThread: Bool = false) -> AppKitAttachmentSurface {
+        AppKitAttachmentSurface { AppKitReplyDraft(chat: model.chat, inThread: inThread) }
+    }
+
     public func pickFiles(inThread: Bool = false) {
         guard let window = parent?.view.window, let target = model.chat.attachmentTarget(inThread: inThread) else { return }
         let chat = model.chat
@@ -423,11 +436,25 @@ private struct AppKitPendingMessage: View {
 
     var body: some View {
         PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
-            rejected: chat.sendRejected, canEdit: chat.draft.isEmpty && chat.attachmentDrafts.isEmpty,
+            rejected: chat.sendRejected,
+            canEdit: pending.threadRootId == nil ? chat.draft.isEmpty && chat.attachmentDrafts.isEmpty
+                : pending.threadRootId == chat.threadRootID && chat.threadDraft.isEmpty && chat.threadAttachmentDrafts.isEmpty,
             chat: chat, uploadFailed: chat.sendUploadFailed,
-            retry: { Task { await chat.send(retryPending: true) } },
+            retry: { Task { await chat.send(inThread: pending.threadRootId != nil, retryPending: true) } },
             edit: { _ = chat.discardRejected(edit: true) },
             dismiss: { _ = chat.discardRejected() })
+    }
+}
+
+private struct AppKitReplyDraft: View {
+    let chat: ChatModel
+    let inThread: Bool
+
+    var body: some View {
+        let root = inThread ? chat.threadRootID : "channel"
+        if let root, let reference = chat.replyTargets[root] {
+            NativeReplyDraft(reference: reference, chat: chat, root: root)
+        }
     }
 }
 
@@ -455,10 +482,13 @@ public enum AppKitComposerCounter {
 /// dismissal and saved editor selection; ChatModel still owns GIF delivery.
 @MainActor public final class AppKitComposerPicker: NSObject, NSPopoverDelegate {
     private let model: AppModel
+    private let inThread: Bool
     private var popover: NSPopover?
     private var restoreFocus: (() -> Void)?
 
-    public init(model: AppModel) { self.model = model; super.init() }
+    public init(model: AppModel, inThread: Bool = false) {
+        self.model = model; self.inThread = inThread; super.init()
+    }
 
     public func reaction(to message: ChatMessage, from anchor: NSView, composer: ComposerTextView) {
         let chat = model.chat, context = model.chat.editingContext
@@ -478,12 +508,12 @@ public enum AppKitComposerCounter {
     public func emoji(from anchor: NSView, composer: ComposerTextView) {
         guard composer.isEditable, !composer.hasMarkedText(), model.chat.canInteract else { return }
         let text = composer.string, selection = composer.selectedRange()
-        let channel = model.chat.channelID, viewer = model.chat.viewerID
+        let context = model.chat.editingContext, root = model.chat.threadRootID
         show(from: anchor, composer: composer) { close in
             ReactionPicker(title: "Insert emoji", close: close) { [weak self, weak composer] emoji in
                 close()
                 guard let self, let composer, composer.isEditable, !composer.hasMarkedText(),
-                      self.model.chat.channelID == channel, self.model.chat.viewerID == viewer,
+                      self.model.chat.editingContext == context, !self.inThread || self.model.chat.threadRootID == root,
                       self.model.chat.canInteract, composer.string == text,
                       let result = EmojiAutocomplete.inserting(emoji, in: text, selection: selection) else { return }
                 // Preserve native undo and the formatter's UTF-16/limit rules.
@@ -497,16 +527,17 @@ public enum AppKitComposerCounter {
     }
 
     public func gifs(from anchor: NSView, composer: ComposerTextView) {
-        let chat = model.chat
-        guard composer.isEditable, !composer.hasMarkedText(), chat.canSendGif(), let configuration = chat.klipy else { return }
-        let channel = chat.channelID, viewer = chat.viewerID
+        let chat = model.chat, inThread = self.inThread
+        guard composer.isEditable, !composer.hasMarkedText(), chat.canSendGif(inThread: inThread), let configuration = chat.klipy else { return }
+        let context = chat.editingContext, root = chat.threadRootID
         show(from: anchor, composer: composer) { close in
             KlipyPicker(configuration: configuration, close: close) { gif, query in
                 close()
                 Task {
                     // Navigation/account changes must not retarget a queued selection.
-                    guard chat.channelID == channel, chat.viewerID == viewer, chat.canSendGif() else { return }
-                    await chat.sendGif(gif, query: query)
+                    guard chat.editingContext == context, !inThread || chat.threadRootID == root,
+                          chat.canSendGif(inThread: inThread) else { return }
+                    await chat.sendGif(gif, inThread: inThread, query: query)
                 }
             }
         }
@@ -516,10 +547,10 @@ public enum AppKitComposerCounter {
                                     @ViewBuilder content: (@escaping () -> Void) -> Content) {
         guard let window = anchor.window, window.attachedSheet == nil, !model.whatsNew.workspaceModalOpen else { return }
         close(restoringFocus: false)
-        let channel = model.chat.channelID, viewer = model.chat.viewerID
+        let context = model.chat.editingContext, root = model.chat.threadRootID
         restoreFocus = { [weak self, weak composer, weak window] in
             guard let self, let composer, let window, composer.window === window, composer.isEditable,
-                  self.model.chat.channelID == channel, self.model.chat.viewerID == viewer,
+                  self.model.chat.editingContext == context, !self.inThread || self.model.chat.threadRootID == root,
                   !self.model.whatsNew.workspaceModalOpen else { return }
             window.makeFirstResponder(composer)
         }

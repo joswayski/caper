@@ -46,9 +46,355 @@ import XCTest
 
     private nonisolated static func resetFixture() async throws { try await control(["reset": true]) }
 
+    private nonisolated static func fixtureGET(_ path: String) async throws -> [String: Any] {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3001\(path)")!)
+        request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
     private func messageMenuItem(_ title: String, app: XCUIApplication, body: XCUIElement) -> XCUIElement {
         let item = app.menuItems[title]
         return item.exists ? item : body.menuItems[title]
+    }
+
+    func testMessageReplyQuoteCancelSendAndOriginalNavigation() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        try await Self.control(["uploadsEnabled": true])
+        let path = "/api/chat/channels/chan00000001/messages"
+        let targetID = "chan00000001m02"
+        let initial = try await Self.fixtureGET(path)
+        let target = try XCTUnwrap((initial["messages"] as? [[String: Any]])?.first { $0["id"] as? String == targetID })
+        let author = try XCTUnwrap((target["author"] as? [String: Any])?["name"] as? String)
+        let original = try XCTUnwrap((target["content"] as? [String: Any])?["text"] as? String)
+        let source = try imageFile()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        let timeline = app.scrollViews["message-timeline"]
+        let body = timeline.textViews["message-\(targetID)"]
+        XCTAssertTrue(body.waitForExistence(timeout: 5))
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["attach-files-button"])
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        let draft = "TEST FIXTURE — quoted reply α 👩🏽‍💻 café"
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(draft, forType: .string)
+        composer.click(); composer.typeKey("v", modifierFlags: .command)
+        NSPasteboard.general.clearContents(); NSPasteboard.general.writeObjects([source as NSURL])
+        composer.typeKey("v", modifierFlags: .command)
+        let staged = app.buttons["staged-file-remove"]
+        XCTAssertTrue(staged.waitForExistence(timeout: 10))
+        timeline.scroll(byDeltaX: 0, deltaY: 1000)
+        let row = timeline.descendants(matching: .any)["message-row-\(targetID)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5)); row.hover()
+        let options = timeline.buttons["message-options-\(targetID)"]
+        XCTAssertTrue(options.waitForExistence(timeout: 5)); options.hover(); options.click()
+        for title in ["Reply", "Reply in thread"] {
+            let item = messageMenuItem(title, app: app, body: body)
+            XCTAssertTrue(item.waitForExistence(timeout: 5)); XCTAssertTrue(item.isEnabled)
+        }
+        messageMenuItem("Reply", app: app, body: body).click()
+        let cancel = app.buttons["Cancel reply"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Replying to \(author)"].exists)
+        XCTAssertEqual(composer.value as? String, draft)
+        XCTAssertTrue(staged.exists, "Selecting Reply must not discard staged files")
+        XCTAssertFalse(app.descendants(matching: .any)["thread-pane"].exists, "Reply belongs to the channel, not a new thread")
+        capture("channel reply draft and staged file wide", app: app)
+        cancel.click()
+        XCTAssertTrue(cancel.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, draft)
+        XCTAssertTrue(staged.exists, "Cancelling only clears the quote")
+        body.rightClick()
+        for title in ["Reply", "Reply in thread"] {
+            let item = messageMenuItem(title, app: app, body: body)
+            XCTAssertTrue(item.waitForExistence(timeout: 5)); XCTAssertTrue(item.isEnabled)
+        }
+        messageMenuItem("Reply in thread", app: app, body: body).click()
+        XCTAssertTrue(app.textViews["thread-composer"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.textViews["thread-composer"].value as? String, "")
+        XCTAssertFalse(cancel.exists, "Reply in thread must not implicitly quote the root")
+        XCTAssertEqual(composer.value as? String, draft)
+        XCTAssertTrue(staged.exists, "Opening a thread leaves the channel's staged file in its original composer")
+        app.buttons["close-thread"].click()
+        XCTAssertTrue(app.descendants(matching: .any)["thread-pane"].waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, draft); XCTAssertTrue(staged.exists)
+        timeline.scroll(byDeltaX: 0, deltaY: 1000)
+        XCTAssertTrue(body.waitForExistence(timeout: 5)); body.rightClick()
+        XCTAssertTrue(messageMenuItem("Reply", app: app, body: body).waitForExistence(timeout: 5))
+        messageMenuItem("Reply", app: app, body: body).click()
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, draft)
+        XCTAssertTrue(staged.exists)
+
+        // Push the original outside the newest HTTP page, not merely behind
+        // another view. View original must fetch context and reveal its target.
+        for index in 1...55 {
+            try await Self.control(["incomingMessage": ["channelId": "chan00000001", "text": "Reply context distance \(index)"]])
+        }
+        app.buttons["send-message"].click()
+        timeline.scroll(byDeltaX: 0, deltaY: -10000)
+        let delivered = timeline.textViews.matching(NSPredicate(format: "value == %@", draft)).firstMatch
+        XCTAssertTrue(delivered.waitForExistence(timeout: 20), "The quoted image message must reach the HTTP fixture and gateway")
+        let sentID = String(delivered.identifier.dropFirst("message-".count))
+        XCTAssertEqual(sentID.count, 15)
+        XCTAssertTrue(cancel.waitForNonExistence(timeout: 5)); XCTAssertFalse(staged.exists)
+        XCTAssertEqual(composer.value as? String, "")
+        let history = try await Self.fixtureGET(path)
+        let stored = try XCTUnwrap((history["messages"] as? [[String: Any]])?.first { $0["id"] as? String == sentID })
+        let quote = try XCTUnwrap(stored["replyTo"] as? [String: Any])
+        XCTAssertEqual(quote["id"] as? String, targetID)
+        XCTAssertEqual(quote["text"] as? String, original)
+        XCTAssertNil(stored["threadRootId"])
+        XCTAssertNil(stored["broadcast"])
+        XCTAssertEqual(((stored["content"] as? [String: Any])?["attachments"] as? [[String: Any]])?.count, 1)
+        XCTAssertFalse(body.exists, "The old original must not already be realized at the live end")
+        let sentRow = timeline.descendants(matching: .any)["message-row-\(sentID)"]
+        let viewOriginal = sentRow.buttons["View original message from \(author)"]
+        XCTAssertTrue(viewOriginal.waitForExistence(timeout: 5))
+        capture("delivered reply context wide", app: app)
+        viewOriginal.click()
+        XCTAssertTrue(body.waitForExistence(timeout: 10))
+        XCTAssertEqual(body.value as? String, original)
+        XCTAssertTrue(body.isHittable); XCTAssertTrue(timeline.frame.intersects(body.frame))
+        XCTAssertFalse(app.descendants(matching: .any)["thread-pane"].exists)
+        capture("reply jumped to original channel message", app: app)
+
+        // A cancelled quote must also be absent from the next server payload.
+        body.rightClick()
+        let reply = messageMenuItem("Reply", app: app, body: body)
+        XCTAssertTrue(reply.waitForExistence(timeout: 5)); reply.click()
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5)); cancel.click()
+        XCTAssertTrue(cancel.waitForNonExistence(timeout: 5))
+        let unquoted = "TEST FIXTURE — cancelled quote sends normally"
+        composer.click(); composer.typeText(unquoted); app.buttons["send-message"].click()
+        XCTAssertTrue(timeline.textViews.matching(NSPredicate(format: "value == %@", unquoted)).firstMatch.waitForExistence(timeout: 15))
+        let afterCancel = try await Self.fixtureGET(path)
+        let plain = try XCTUnwrap((afterCancel["messages"] as? [[String: Any]])?.first {
+            ($0["content"] as? [String: Any])?["text"] as? String == unquoted
+        })
+        XCTAssertNil(plain["replyTo"]); XCTAssertNil(plain["threadRootId"])
+    }
+
+    func testThreadDraftsNarrowBackSendIsolationRetryAndRootNavigation() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let path = "/api/chat/channels/chan00000001/messages"
+        let rootID = "chan00000001m02", otherRootID = "chan00000001m01"
+        let threadPath = "\(path)/\(rootID)/thread"
+        try await Self.control(["incomingReply": ["rootId": rootID, "text": "Original thread reply"]])
+        try await Self.control(["incomingReply": ["rootId": otherRootID, "text": "Second root reply"]])
+        let initialChannel = try await Self.fixtureGET(path)
+        let initialChannelCount = try XCTUnwrap(initialChannel["messages"] as? [[String: Any]]).count
+        let initial = try await Self.fixtureGET(threadPath)
+        let seed = try XCTUnwrap((initial["messages"] as? [[String: Any]])?.first)
+        let seedID = try XCTUnwrap(seed["id"] as? String)
+        let seedText = try XCTUnwrap((seed["content"] as? [String: Any])?["text"] as? String)
+        let seedAuthor = try XCTUnwrap((seed["author"] as? [String: Any])?["name"] as? String)
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        let channel = app.scrollViews["message-timeline"]
+        let pane = app.descendants(matching: .any)["thread-pane"]
+        let timeline = app.scrollViews["thread-timeline"]
+        let editor = app.textViews["thread-composer"]
+        let send = app.buttons["thread-send"]
+        let back = app.buttons["close-thread"]
+        let broadcast = app.checkBoxes["thread-broadcast"]
+        let summary = channel.buttons["thread-summary-\(rootID)"]
+        let channelDraft = "TEST FIXTURE — keep the channel draft"
+        let threadDraft = "TEST FIXTURE — private reply to the first root"
+        let otherDraft = "TEST FIXTURE — second root keeps its own draft"
+        composer.click(); composer.typeText(channelDraft)
+        func openOtherRoot() {
+            XCTAssertTrue(channel.waitForExistence(timeout: 5))
+            channel.scroll(byDeltaX: 0, deltaY: 10000)
+            let link = channel.buttons["thread-summary-\(otherRootID)"]
+            XCTAssertTrue(link.waitForExistence(timeout: 5)); link.click()
+            XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        }
+        try await Self.control(["failure": ["path": threadPath, "method": "GET", "status": 503,
+            "error": "TEST FIXTURE: thread history unavailable."]])
+        let root = channel.textViews["message-\(rootID)"]
+        XCTAssertTrue(root.waitForExistence(timeout: 5)); root.rightClick()
+        let open = messageMenuItem("Reply in thread", app: app, body: root)
+        XCTAssertTrue(open.waitForExistence(timeout: 5)); open.click()
+        XCTAssertTrue(pane.waitForExistence(timeout: 5))
+        let loadError = pane.staticTexts["TEST FIXTURE: thread history unavailable."]
+        XCTAssertTrue(loadError.waitForExistence(timeout: 10))
+        let retryLoad = pane.buttons["Retry"]
+        XCTAssertTrue(retryLoad.exists)
+        XCTAssertEqual(composer.value as? String, channelDraft)
+        capture("thread history failure wide", app: app)
+        retryLoad.click()
+        let seedBody = timeline.textViews["message-\(seedID)"]
+        XCTAssertTrue(seedBody.waitForExistence(timeout: 10))
+        XCTAssertTrue(loadError.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(seedBody.value as? String, seedText)
+        XCTAssertTrue(composer.isHittable); XCTAssertTrue(editor.isHittable)
+        XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX, "Wide windows show both timelines without overlap")
+        let divider = app.descendants(matching: .any)["thread-divider"]
+        XCTAssertTrue(divider.exists); divider.hover()
+        let handle = divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        handle.press(forDuration: 0.15, thenDragTo: handle.withOffset(CGVector(dx: timeline.frame.width - 380, dy: 0)))
+        XCTAssertEqual(timeline.frame.width, 380, accuracy: 3, "Dragging the divider resizes the native thread pane")
+        divider.click(); divider.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(timeline.frame.width, 364, accuracy: 3, "Keyboard resizing uses the same saved width")
+        XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX)
+        XCTAssertEqual(editor.value as? String, "")
+        XCTAssertFalse(pane.buttons["Cancel reply"].exists, "Reply in thread opens the root without quoting it")
+        XCTAssertFalse(send.isEnabled); XCTAssertEqual(broadcast.value as? String, "0")
+        editor.click(); editor.typeText(threadDraft)
+        seedBody.rightClick()
+        let quoteAction = messageMenuItem("Reply", app: app, body: seedBody)
+        XCTAssertTrue(quoteAction.waitForExistence(timeout: 5)); quoteAction.click()
+        XCTAssertTrue(pane.buttons["Cancel reply"].waitForExistence(timeout: 5))
+        XCTAssertTrue(pane.staticTexts["Replying to \(seedAuthor)"].exists)
+        XCTAssertEqual(editor.value as? String, threadDraft)
+        XCTAssertEqual(composer.value as? String, channelDraft, "Reply inside a thread must not target the channel composer")
+        capture("thread quote and independent channel draft wide", app: app)
+
+        resize(app, width: 900)
+        XCTAssertTrue(editor.isHittable)
+        XCTAssertFalse(composer.exists); XCTAssertFalse(channel.exists, "Narrow windows expose only the thread, not covered channel controls")
+        XCTAssertEqual(back.label, "Back to channel")
+        capture("thread quote narrow", app: app)
+        back.click()
+        XCTAssertTrue(pane.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, channelDraft)
+        openOtherRoot()
+        XCTAssertEqual(editor.value as? String, ""); XCTAssertFalse(pane.buttons["Cancel reply"].exists)
+        editor.click(); editor.typeText(otherDraft)
+        back.click()
+        XCTAssertTrue(summary.waitForExistence(timeout: 5)); summary.click()
+        XCTAssertTrue(editor.waitForExistence(timeout: 5)); XCTAssertEqual(editor.value as? String, threadDraft)
+        XCTAssertTrue(pane.buttons["Cancel reply"].exists, "Returning to a root restores its quote as well as its text")
+
+        try await Self.control(["failure": ["path": path, "method": "POST", "status": 503,
+            "error": "TEST FIXTURE: reply send unavailable."]])
+        send.click()
+        let pending = pane.groups.matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-message-")).firstMatch
+        XCTAssertTrue(pending.waitForExistence(timeout: 10))
+        let retrySend = pending.buttons["Retry send"]
+        XCTAssertTrue(retrySend.waitForExistence(timeout: 10))
+        XCTAssertTrue(pending.staticTexts.matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@",
+            "TEST FIXTURE: reply send unavailable.", "TEST FIXTURE: reply send unavailable.")).firstMatch.exists)
+        let pendingID = String(pending.identifier.dropFirst("pending-message-".count))
+        let failed = try await Self.fixtureGET(threadPath)
+        XCTAssertEqual((failed["messages"] as? [[String: Any]])?.count, 1, "A rejected transport must not invent a confirmed reply")
+        capture("thread send failure narrow", app: app)
+        back.click(); openOtherRoot()
+        XCTAssertEqual(editor.value as? String, otherDraft)
+        XCTAssertFalse(pending.exists, "Another root must not show the first root's failed message")
+        XCTAssertFalse(send.isEnabled, "An unresolved send cannot be resubmitted as a different root's draft")
+        back.click()
+        XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, channelDraft)
+        XCTAssertFalse(channel.groups.matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-message-")).firstMatch.exists)
+        summary.click()
+        XCTAssertTrue(retrySend.waitForExistence(timeout: 5)); retrySend.click()
+        XCTAssertTrue(pending.waitForNonExistence(timeout: 10))
+        let privateBody = timeline.textViews.matching(NSPredicate(format: "value == %@", threadDraft)).firstMatch
+        XCTAssertTrue(privateBody.waitForExistence(timeout: 10))
+        let privateID = String(privateBody.identifier.dropFirst("message-".count))
+        let recovered = try await Self.fixtureGET(threadPath)
+        let privateRows = try XCTUnwrap(recovered["messages"] as? [[String: Any]])
+        XCTAssertEqual(privateRows.count, 2, "Retry confirms exactly one reply")
+        let privateReply = try XCTUnwrap(privateRows.first { $0["id"] as? String == privateID })
+        XCTAssertEqual(privateReply["clientMessageId"] as? String, pendingID.lowercased(), "Retry keeps the original idempotency key")
+        XCTAssertEqual(privateReply["threadRootId"] as? String, rootID)
+        XCTAssertEqual(privateReply["broadcast"] as? Bool, false)
+        XCTAssertEqual((privateReply["replyTo"] as? [String: Any])?["id"] as? String, seedID)
+        let privateChannel = try await Self.fixtureGET(path)
+        XCTAssertEqual((privateChannel["messages"] as? [[String: Any]])?.count, initialChannelCount)
+        XCTAssertFalse(try XCTUnwrap(privateChannel["messages"] as? [[String: Any]]).contains { $0["id"] as? String == privateID })
+        XCTAssertEqual(editor.value as? String, ""); XCTAssertFalse(pane.buttons["Cancel reply"].exists)
+        XCTAssertEqual(broadcast.value as? String, "0")
+
+        let sharedText = "TEST FIXTURE — one reply shared with the channel"
+        editor.click(); editor.typeText(sharedText)
+        timeline.scroll(byDeltaX: 0, deltaY: 1000)
+        XCTAssertTrue(seedBody.waitForExistence(timeout: 5)); seedBody.rightClick()
+        let quoteAgain = messageMenuItem("Reply", app: app, body: seedBody)
+        XCTAssertTrue(quoteAgain.waitForExistence(timeout: 5)); quoteAgain.click()
+        broadcast.click(); XCTAssertEqual(broadcast.value as? String, "1")
+        send.click()
+        timeline.scroll(byDeltaX: 0, deltaY: -10000)
+        let sharedBody = timeline.textViews.matching(NSPredicate(format: "value == %@", sharedText)).firstMatch
+        XCTAssertTrue(sharedBody.waitForExistence(timeout: 10))
+        let sharedID = String(sharedBody.identifier.dropFirst("message-".count))
+        let sharedThread = try await Self.fixtureGET(threadPath)
+        let sharedRows = try XCTUnwrap(sharedThread["messages"] as? [[String: Any]])
+        let sharedReply = try XCTUnwrap(sharedRows.first { $0["id"] as? String == sharedID })
+        XCTAssertEqual(sharedRows.count, 3)
+        XCTAssertEqual(sharedReply["threadRootId"] as? String, rootID)
+        XCTAssertEqual(sharedReply["broadcast"] as? Bool, true)
+        XCTAssertEqual((sharedReply["replyTo"] as? [String: Any])?["id"] as? String, seedID)
+        let sharedChannel = try await Self.fixtureGET(path)
+        let channelRows = try XCTUnwrap(sharedChannel["messages"] as? [[String: Any]])
+        XCTAssertEqual(channelRows.count, initialChannelCount + 1, "Broadcast must not create a separate channel copy")
+        XCTAssertEqual(channelRows.filter { $0["id"] as? String == sharedID }.count, 1, "Broadcast is the same server message, not a second send")
+        XCTAssertFalse(channelRows.contains { $0["id"] as? String == privateID })
+        XCTAssertEqual(broadcast.value as? String, "0", "Broadcast applies to one send only")
+        resize(app, width: 1280)
+        XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, channelDraft)
+        channel.scroll(byDeltaX: 0, deltaY: -10000)
+        let channelShared = channel.textViews["message-\(sharedID)"]
+        XCTAssertTrue(channelShared.waitForExistence(timeout: 5))
+        XCTAssertTrue(timeline.textViews["message-\(sharedID)"].exists)
+        XCTAssertFalse(channel.textViews["message-\(privateID)"].exists)
+        let sharedLink = channel.buttons["thread-summary-\(sharedID)"]
+        XCTAssertEqual(sharedLink.label, "View thread")
+        capture("broadcast shared between native timelines wide", app: app)
+        channel.scroll(byDeltaX: 0, deltaY: 10000)
+        let rootRecord = try XCTUnwrap(sharedThread["root"] as? [String: Any])
+        let count = try XCTUnwrap((rootRecord["thread"] as? [String: Any])?["replyCount"] as? Int)
+        let summaryUpdated = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "\(count) replies"), object: summary)
+        XCTAssertEqual(XCTWaiter.wait(for: [summaryUpdated], timeout: 5), .completed)
+
+        channel.scroll(byDeltaX: 0, deltaY: -10000)
+        XCTAssertTrue(channelShared.waitForExistence(timeout: 5))
+        channelShared.rightClick()
+        let channelReply = messageMenuItem("Reply", app: app, body: channelShared)
+        XCTAssertTrue(channelReply.waitForExistence(timeout: 5)); channelReply.click()
+        XCTAssertTrue(pane.waitForNonExistence(timeout: 5), "Reply on a channel broadcast still targets the channel")
+        XCTAssertTrue(app.buttons["Cancel reply"].waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, channelDraft)
+        app.buttons["Cancel reply"].click()
+        sharedLink.click()
+        XCTAssertTrue(editor.waitForExistence(timeout: 5)); XCTAssertEqual(editor.value as? String, "")
+        XCTAssertTrue(timeline.textViews["message-\(sharedID)"].waitForExistence(timeout: 5), "View thread opens the original root, not a nested thread")
+        back.click()
+
+        // The broadcast's quote is a real deep link into an older thread page.
+        for index in 1...55 {
+            try await Self.control(["incomingReply": ["rootId": rootID, "text": "Newer thread reply \(index)"]])
+        }
+        let newestPage = try await Self.fixtureGET(threadPath)
+        let newest = try XCTUnwrap((newestPage["messages"] as? [[String: Any]])?.last)
+        let newestID = try XCTUnwrap(newest["id"] as? String)
+        let sharedRow = channel.descendants(matching: .any)["message-row-\(sharedID)"]
+        let original = sharedRow.buttons["View original message from \(seedAuthor)"]
+        XCTAssertTrue(original.waitForExistence(timeout: 5)); original.click()
+        XCTAssertTrue(seedBody.waitForExistence(timeout: 10)); XCTAssertTrue(seedBody.isHittable)
+        XCTAssertEqual(seedBody.value as? String, seedText)
+        let newer = app.buttons["load-newer-replies"]
+        XCTAssertTrue(newer.waitForExistence(timeout: 5))
+        capture("quoted original thread reply with newer page available", app: app)
+        newer.click()
+        XCTAssertTrue(newer.waitForNonExistence(timeout: 10))
+        timeline.scroll(byDeltaX: 0, deltaY: -10000)
+        XCTAssertTrue(timeline.textViews["message-\(newestID)"].waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, channelDraft)
+        XCTAssertFalse(channel.textViews["message-\(newestID)"].exists, "Live thread-only gateway rows never enter the channel timeline")
+        capture("thread newer replies loaded without changing channel draft", app: app)
+        back.click(); openOtherRoot()
+        XCTAssertEqual(editor.value as? String, otherDraft, "Sending and navigating the first root never consume the second root's draft")
     }
 
     func testOwnMessageActionsEditConflictHistoryAndDeleteConfirmation() async throws {
@@ -91,7 +437,7 @@ import XCTest
         }
         XCTAssertFalse(item("Message history").exists, "An unedited message has no history action")
         XCTAssertFalse(app.buttons["message-history-\(id)"].exists)
-        for title in ["Reply", "Reply in thread", "Pin message", "Unpin message", "Forward message", "Forward…"] {
+        for title in ["Pin message", "Unpin message", "Forward message", "Forward…"] {
             XCTAssertFalse(item(title).exists, "Unimplemented actions must not appear as placeholders")
         }
         capture("own message options wide", app: app)
