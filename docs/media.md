@@ -2312,10 +2312,9 @@ the current on the right, with changes highlighted; **View previous
 versions** selects an older change without replacing that pair. Web uses Pierre
 Diffs (`@pierre/diffs`, `lineDiffType: "word"`): lines are compared first, each
 changed line paired with its counterpart is compared by words, and a changed
-line without a counterpart is highlighted whole. The desktop and Android clients
-highlight the same characters through `shared/messages/history_diff.rs`, a port
-of that pipeline, and run `shared/messages/history-diff-cases.json`, which web
-checks; Apple renders its own word diff. There is no version purge or restore-to-version action.
+line without a counterpart is highlighted whole. Native clients highlight the
+same characters through `shared/messages/history_diff.rs`, a port of that
+pipeline, and run `shared/messages/history-diff-cases.json`, which web checks. There is no version purge or restore-to-version action.
 
 ### Editing API and durable delivery
 
