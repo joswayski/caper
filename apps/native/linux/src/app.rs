@@ -326,6 +326,17 @@ struct State {
 }
 
 impl State {
+    /// A fresh DM list; an open DM keeps its peer's current name.
+    fn set_directs(&mut self, directs: Vec<DirectConversation>) {
+        self.directs = directs;
+        if let Some(direct) = &self.direct
+            && let Some(entry) = self.directs.iter().find(|entry| &entry.id == direct)
+        {
+            self.channel_name = entry.peer.display_name.clone();
+        }
+        self.layout += 1;
+    }
+
     fn page(&self) -> Page {
         self.page.unwrap_or(Page::Loading)
     }
@@ -1166,7 +1177,7 @@ impl App {
         state.set_spaces(spaces);
         state.page = Some(Page::Chat);
         state.layout += 1;
-        self.load_directs(state);
+        // The DM list arrives with the account (`SignedInDirects`).
         self.refresh_unread(state);
         if let Some(token) = state.token.clone() {
             self.worker.send(Command::AssetUsage { token });
@@ -3232,15 +3243,12 @@ impl App {
             Event::DirectsLoaded {
                 generation,
                 result: Ok(directs),
-            } if generation == state.epoch => {
-                state.directs = directs;
-                if let Some(direct) = &state.direct
-                    && let Some(entry) = state.directs.iter().find(|entry| &entry.id == direct)
-                {
-                    state.channel_name = entry.peer.display_name.clone();
-                }
-                state.layout += 1;
-            }
+            } if generation == state.epoch => state.set_directs(directs),
+            // Fetched with the account at sign-in.
+            Event::SignedInDirects {
+                token,
+                result: Ok(directs),
+            } if state.token.as_ref() == Some(&token) => state.set_directs(directs),
             Event::DirectLookedUp {
                 generation,
                 request,
