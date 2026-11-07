@@ -9085,7 +9085,9 @@ struct NewDirectMessageSheet: View {
                     .textInputAutocapitalization(.never)
                     #endif
                     .autocorrectionDisabled()
-                    .disabled(pending)
+                    // Not disabled while pending: the binding already ignores edits,
+                    // and disabling drops focus, so the iPhone keyboard closed and
+                    // the dialog jumped as a lookup or refusal came back.
                     .focused($usernameFocused)
                     .onChange(of: username) { _, _ in error = nil; resolved = nil }
                     // Return only picks a suggestion; the button starts the conversation.
