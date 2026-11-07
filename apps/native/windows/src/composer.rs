@@ -26,6 +26,8 @@ pub struct Composer {
     /// Room before the text inside the box, left and top (the main
     /// composer's Attach files button and staged files).
     pub inset: (f32, f32),
+    /// Room under the text inside the box (the main composer's link card).
+    pub inset_bottom: f32,
 }
 
 fn is_word(c: u16) -> bool {
@@ -360,7 +362,7 @@ impl Composer {
             );
             let (left, top) = self.inset;
             dc.PushAxisAlignedClip(
-                &rect(PAD + left, PAD + top, w - PAD, h - PAD),
+                &rect(PAD + left, PAD + top, w - PAD, h - PAD - self.inset_bottom),
                 D2D1_ANTIALIAS_MODE_ALIASED,
             );
             let (ox, oy) = (PAD + left, PAD + top - self.scroll());

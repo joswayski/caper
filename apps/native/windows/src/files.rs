@@ -766,6 +766,11 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 impl App {
     /// Images arrived or URLs changed: rows showing attachments redraw.
     pub fn media_changed(&mut self) {
+        // The composer's link card waits for its thumbnail.
+        if self.preview_card().is_some() {
+            self.dirty.composer = true;
+            self.need = true;
+        }
         if self.gifs.is_some() {
             self.dirty.gifs = true;
             self.need = true;

@@ -52,6 +52,7 @@ icons! {
     Retry => "rotate-ccw.svg",
     Send => "send.svg",
     Settings => "settings.svg",
+    Smile => "smile.svg",
     SmilePlus => "smile-plus.svg",
     Trash => "trash-2.svg",
     VolumeX => "volume-x.svg",

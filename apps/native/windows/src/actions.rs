@@ -176,6 +176,10 @@ pub struct Picker {
     pub scroll: f32,
     pub hover: Option<PPart>,
     pub choices: Arc<Vec<&'static Entry>>,
+    /// "Insert emoji" instead of a reaction: the composer its choice goes
+    /// into (the channel's, or thread root's reply box) and the selection
+    /// it replaces, in UTF-16 units.
+    pub insert: Option<(Option<String>, usize, usize)>,
 }
 
 impl Picker {
@@ -197,9 +201,18 @@ impl Picker {
             scroll: 0.0,
             hover: None,
             choices: Arc::new(Vec::new()),
+            insert: None,
         };
         p.refresh();
         p
+    }
+
+    pub fn title(&self) -> &'static str {
+        if self.insert.is_some() {
+            "Insert emoji"
+        } else {
+            "Add a reaction"
+        }
     }
 
     pub fn query(&self) -> String {
@@ -307,7 +320,7 @@ impl Picker {
             let body = rect(0.0, 0.0, PICKER_W, PICKER_H);
             fill_round(dc, body, RADIUS, &g.brushes.surface);
             stroke_round(dc, body, RADIUS, &g.brushes.border);
-            let title = g.layout(&gfx::wide("Add a reaction"), &g.formats.section, 1e6)?;
+            let title = g.layout(&gfx::wide(self.title()), &g.formats.section, 1e6)?;
             let th = gfx::metrics(&title).height;
             crate::text::draw(dc, &title, M, M + (30.0 - th) / 2.0, &g.brushes.text);
             let (cx, cy, cw, ch) = self.local(PPart::Close);
@@ -676,8 +689,95 @@ impl App {
         self.events |= EV_SCREEN | EV_FOCUS;
     }
 
+    /// A composer's Emoji button toggles "Insert emoji" above it, as in
+    /// egui: the channel's (`root` None) or thread `root`'s reply box. The
+    /// choice replaces the selection the draft had.
+    pub fn toggle_composer_emoji(&mut self, root: Option<String>) {
+        if self.emoji_open_for(root.as_deref()) {
+            return self.close_picker_refocus();
+        }
+        let (button, composer) = match &root {
+            Some(_) => (
+                self.thread_part_rect(crate::thread::Part::Emoji),
+                self.thread.as_ref().map(|t| &t.composer),
+            ),
+            None => (
+                self.box_part_rect(crate::uploads::Part::Emoji),
+                Some(&self.composer),
+            ),
+        };
+        let (Some((x, y, w, h)), Some(c)) = (button, composer) else {
+            return;
+        };
+        let (start, end) = c.selection();
+        self.close_picker();
+        self.close_menu();
+        self.close_gifs(false);
+        self.set_composer_focus(false);
+        self.set_thread_focus(false);
+        // Above the button, ending at it (egui's right-bottom pivot).
+        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+        let anchor = (cx + 14.0 - PICKER_W, cy - 18.0 - PICKER_H);
+        let mut picker = Picker::new(usize::MAX, String::new(), anchor, (self.w, self.h));
+        picker.insert = Some((root, start, end));
+        self.picker = Some(picker);
+        self.picker_changed(true);
+        self.events |= EV_SCREEN | EV_FOCUS;
+    }
+
+    /// Whether "Insert emoji" is open for that composer (`root` None is
+    /// the channel's), which lights its button.
+    pub fn emoji_open_for(&self, root: Option<&str>) -> bool {
+        self.picker
+            .as_ref()
+            .and_then(|p| p.insert.as_ref())
+            .is_some_and(|(r, ..)| r.as_deref() == root)
+    }
+
+    /// Closes the picker; "Insert emoji" returns focus to its composer.
+    fn close_picker_refocus(&mut self) {
+        let target = self.picker.as_ref().and_then(|p| p.insert.as_ref());
+        let thread = target.map(|(root, ..)| root.is_some());
+        self.close_picker();
+        match thread {
+            Some(true) => self.set_thread_focus(true),
+            Some(false) => self.set_composer_focus(true),
+            None => {}
+        }
+    }
+
+    /// Puts `emoji` in place of `start..end` in that composer's draft.
+    fn insert_composer_emoji(
+        &mut self,
+        root: Option<String>,
+        start: usize,
+        end: usize,
+        emoji: &str,
+    ) {
+        let c = match &root {
+            Some(root) => self
+                .thread
+                .as_mut()
+                .filter(|t| t.root == *root)
+                .map(|t| &mut t.composer),
+            None => Some(&mut self.composer),
+        };
+        let Some(c) = c else { return };
+        let len = c.text.len();
+        (c.anchor, c.caret) = (start.min(len), end.min(len));
+        c.insert(&gfx::wide(emoji));
+        if root.is_some() {
+            self.thread_composer_changed();
+        } else {
+            self.composer_changed();
+        }
+    }
+
     pub fn close_picker(&mut self) {
         if self.picker.take().is_some() {
+            // An Insert emoji button stops being lit.
+            self.dirty.composer = true;
+            self.dirty.thread_box = true;
             self.picker_changed(false);
             self.events |= EV_SCREEN | EV_FOCUS;
         }
@@ -705,7 +805,7 @@ impl App {
     pub fn picker_activate(&mut self, part: PPart) {
         let Some(p) = &mut self.picker else { return };
         match part {
-            PPart::Close => return self.close_picker(),
+            PPart::Close => return self.close_picker_refocus(),
             PPart::Category(k) => {
                 p.category = k;
                 p.search.text.clear();
@@ -722,6 +822,10 @@ impl App {
                     return;
                 };
                 let (id, emoji) = (p.id.clone(), entry.emoji.clone());
+                if let Some((root, start, end)) = p.insert.clone() {
+                    self.close_picker_refocus();
+                    return self.insert_composer_emoji(root, start, end, &emoji);
+                }
                 if let Some(live) = &mut self.live {
                     live.react(&id, &emoji, true);
                 }
@@ -764,7 +868,20 @@ impl App {
             WM_LBUTTONDOWN => {
                 if !contains(p.rect(), x, y) {
                     // An outside click closes only the picker and still
-                    // reaches what it landed on, as in the egui client.
+                    // reaches what it landed on, as in the egui client;
+                    // its own Insert emoji button toggles it.
+                    let own = match p.insert.as_ref().map(|(root, ..)| root.is_some()) {
+                        Some(true) => {
+                            self.in_thread(x, y)
+                                && self.thread_hit(x, y) == Some(crate::thread::Part::Emoji)
+                        }
+                        Some(false) => self.box_part_at(x, y) == Some(crate::uploads::Part::Emoji),
+                        None => false,
+                    };
+                    if own {
+                        self.close_picker_refocus();
+                        return done;
+                    }
                     self.close_picker();
                     return None;
                 }
@@ -805,7 +922,7 @@ impl App {
             WM_KEYDOWN => {
                 let vk = VIRTUAL_KEY(wp.0 as u16);
                 match vk {
-                    VK_ESCAPE => self.close_picker(),
+                    VK_ESCAPE => self.close_picker_refocus(),
                     _ if ctrl && vk == VIRTUAL_KEY('C' as u16) => {
                         let (a, b) = p.search.selection();
                         if b > a {

@@ -50,6 +50,10 @@ pub enum Part {
     Older,
     Broadcast,
     Field,
+    /// Send a GIF, inside the box before Insert emoji.
+    Gif,
+    /// Insert emoji, at the end of the box's first line.
+    Emoji,
     Send,
 }
 
@@ -82,6 +86,8 @@ pub struct Pane {
     pub broadcast: bool,
     pub hover: Option<Part>,
     pub box_h: f32,
+    /// Whether the box holds Send a GIF (KLIPY answered for this account).
+    pub gif: bool,
     destination: String,
     title: IDWriteTextLayout,
     sub: IDWriteTextLayout,
@@ -129,6 +135,7 @@ impl Pane {
             broadcast: false,
             hover: None,
             box_h: BOX_MIN,
+            gif: false,
             destination,
             title,
             sub,
@@ -435,6 +442,25 @@ fn send_local(h: f32, box_h: f32) -> Rect {
     )
 }
 
+/// The reply box's text width, beside Insert emoji and Send a GIF (when
+/// it is shown).
+fn text_w(gif: bool) -> f32 {
+    let gif_w = if gif { crate::uploads::GIF_W } else { 0.0 };
+    box_w() - 2.0 * composer::PAD - crate::uploads::EMOJI_W - gif_w
+}
+
+/// Insert emoji, relative to the box, at the end of its first line.
+fn emoji_local() -> Rect {
+    let cy = composer::PAD + composer::LINE / 2.0;
+    (box_w() - 36.0, cy - 14.0, 28.0, 28.0)
+}
+
+/// Send a GIF, before Insert emoji (where egui's thread field keeps it).
+fn gif_local() -> Rect {
+    let (x, y, w, h) = emoji_local();
+    (x - crate::uploads::EMOJI_W, y, w, h)
+}
+
 impl App {
     /// The open thread's width beside the conversation.
     pub fn thread_w(&self) -> f32 {
@@ -511,6 +537,19 @@ impl App {
                 Some((x0 + PAD, y, CHECK + 7.0 + t.check_w, CHECK_H))
             }
             Part::Field => self.thread_box_rect(),
+            Part::Gif => {
+                if !t.gif {
+                    return None;
+                }
+                let (bx, by, _, _) = self.thread_box_rect()?;
+                let (x, y, w, h) = gif_local();
+                Some((bx + x, by + y, w, h))
+            }
+            Part::Emoji => {
+                let (bx, by, _, _) = self.thread_box_rect()?;
+                let (x, y, w, h) = emoji_local();
+                Some((bx + x, by + y, w, h))
+            }
             Part::Send => {
                 let (x, y, w, h) = send_local(self.h, t.box_h);
                 Some((x0 + x, y, w, h))
@@ -551,17 +590,22 @@ impl App {
             out.push(Part::Older);
         }
         push_rows(&mut out, after);
-        out.extend([Part::Broadcast, Part::Field, Part::Send]);
+        out.extend([Part::Broadcast, Part::Field]);
+        if t.gif {
+            out.push(Part::Gif);
+        }
+        out.extend([Part::Emoji, Part::Send]);
         out
     }
 
-    fn thread_hit(&self, x: f32, y: f32) -> Option<Part> {
+    pub fn thread_hit(&self, x: f32, y: f32) -> Option<Part> {
         let parts = self.thread_parts();
-        // Controls before the rows that hold them.
+        // Controls before the rows and the field that hold them.
+        let holder = |p: &&Part| matches!(p, Part::Row(_) | Part::Field);
         parts
             .iter()
-            .filter(|p| !matches!(p, Part::Row(_)))
-            .chain(parts.iter().filter(|p| matches!(p, Part::Row(_))))
+            .filter(|p| !holder(p))
+            .chain(parts.iter().filter(holder))
             .copied()
             .find(|p| self.thread_part_rect(*p).is_some_and(|r| contains(r, x, y)))
     }
@@ -587,6 +631,8 @@ impl App {
             }
             Part::Broadcast => format!("Also send to {}", t.destination),
             Part::Field => "Reply to thread".into(),
+            Part::Gif => "Send a GIF".into(),
+            Part::Emoji => "Insert emoji".into(),
             Part::Send => "Send reply".into(),
             Part::Add(_) => "Add reaction".into(),
             Part::Row(_) | Part::Chip(..) => String::new(),
@@ -628,6 +674,20 @@ impl App {
     /// The live thread changed (opened, loaded, a reply arrived, closed):
     /// the pane follows it.
     pub fn thread_refresh(&mut self) -> Result<()> {
+        // A thread's GIF picker goes with its thread, as in egui.
+        let open = self
+            .live
+            .as_ref()
+            .and_then(|l| l.thread.as_ref())
+            .map(|t| t.root.clone());
+        if self
+            .gifs
+            .as_ref()
+            .and_then(|p| p.root.as_ref())
+            .is_some_and(|r| open.as_ref() != Some(r))
+        {
+            self.close_gifs(false);
+        }
         let Some(live) = &self.live else {
             return Ok(());
         };
@@ -642,9 +702,10 @@ impl App {
         let opened = self.thread.as_ref().is_none_or(|p| p.root != root);
         if opened {
             let mut pane = Pane::new(&self.g, root, &self.c.place())?;
+            pane.gif = self.gif_shown();
             pane.box_h = pane
                 .composer
-                .relayout(&self.g, box_w() - 2.0 * composer::PAD)?
+                .relayout(&self.g, text_w(pane.gif))?
                 .max(BOX_MIN);
             self.thread = Some(pane);
             self.thread_layout_changed();
@@ -743,14 +804,25 @@ impl App {
         self.need = true;
     }
 
+    /// The reply box follows whether GIFs are offered (KLIPY answers
+    /// after the thread may have opened).
+    pub fn thread_tools_changed(&mut self) {
+        let gif = self.gif_shown();
+        if self.thread.as_ref().is_some_and(|t| t.gif != gif) {
+            self.thread_composer_changed();
+        }
+    }
+
     /// After an edit or caret move in the reply box.
     pub fn thread_composer_changed(&mut self) {
+        let gif = self.gif_shown();
         let g = &self.g;
         let Some(t) = &mut self.thread else {
             return;
         };
         t.composer.caret_on = true;
-        if let Ok(h) = t.composer.relayout(g, box_w() - 2.0 * composer::PAD) {
+        t.gif = gif;
+        if let Ok(h) = t.composer.relayout(g, text_w(gif)) {
             let h = h.max(BOX_MIN);
             if (h - t.box_h).abs() > 0.01 {
                 t.box_h = h;
@@ -845,6 +917,14 @@ impl App {
                 self.need = true;
             }
             Part::Field => self.set_thread_focus(true),
+            Part::Gif => {
+                let root = self.thread.as_ref().map(|t| t.root.clone());
+                self.toggle_gifs(root);
+            }
+            Part::Emoji => {
+                let root = self.thread.as_ref().map(|t| t.root.clone());
+                self.toggle_composer_emoji(root);
+            }
             Part::Send => self.send_thread_reply(),
             Part::Row(_) => {}
         }
@@ -854,8 +934,13 @@ impl App {
         if let Some(t) = &mut self.thread
             && t.hover != hover
         {
+            // Send a GIF and Insert emoji are drawn in the box's own surface.
+            let gif = [t.hover, hover]
+                .iter()
+                .any(|h| matches!(h, Some(Part::Gif | Part::Emoji)));
             t.hover = hover;
             self.dirty.thread = true;
+            self.dirty.thread_box |= gif;
             self.need = true;
         }
     }
@@ -996,8 +1081,28 @@ impl App {
             .offset((bx * s).round(), (by * s).round())?;
         if fresh || std::mem::take(&mut self.dirty.thread_box) {
             let placeholder = "Reply to thread\u{2026}";
+            // Lit while its picker is open, as the channel's.
+            let open = self
+                .gifs
+                .as_ref()
+                .is_some_and(|p| p.root.as_deref() == Some(t.root.as_str()));
+            let lit = open || t.hover == Some(Part::Gif);
+            let emoji = self.emoji_open_for(Some(t.root.as_str())) || t.hover == Some(Part::Emoji);
             self.thread_box_p.draw(s, |dc| {
                 t.composer.draw(g, dc, bw, bh, placeholder)?;
+                if t.gif {
+                    let (x, y, w, h) = gif_local();
+                    let color = if lit { TEXT } else { TEXT_MUTED };
+                    crate::uploads::gif_button(g, dc, rect(x, y, x + w, y + h), color)?;
+                }
+                let (x, y, w, h) = emoji_local();
+                icons::draw(
+                    dc,
+                    Icon::Smile,
+                    rect(x + 6.0, y + 6.0, x + w - 6.0, y + h - 6.0),
+                    if emoji { TEXT } else { TEXT_MUTED },
+                    1.0,
+                );
                 let r = rect(0.5, 0.5, bw - 0.5, bh - 0.5);
                 if t.composer.focused {
                     stroke_round(dc, r, RADIUS, &g.brushes.terracotta);

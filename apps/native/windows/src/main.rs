@@ -25,6 +25,7 @@ mod files;
 mod gifs;
 mod overlay;
 mod playback;
+mod preview;
 mod recording;
 mod settings;
 // The message grammar every client shares.
@@ -600,6 +601,8 @@ impl App {
         if images {
             self.media_changed();
         }
+        // A link card's answer arrives through the same wake.
+        self.preview_tick();
         for u in updates {
             match u {
                 live::Update::SignedOut(warning) => {
@@ -968,6 +971,7 @@ impl App {
 
     pub fn composer_changed(&mut self) {
         self.composer.caret_on = true;
+        self.preview_tick();
         let (_, _, bw, _) = self.box_rect();
         if let Ok(h) = self.box_height(bw)
             && (h - self.box_h).abs() > 0.01
@@ -1559,6 +1563,7 @@ impl App {
                 settings::audio::TIMER_AUDIO => self.audio_tick(),
                 playback::TIMER_PLAYBACK => self.playback_tick(),
                 recording::TIMER_RECORDING => self.recording_tick(),
+                preview::TIMER_PREVIEW => self.preview_tick(),
                 TIMER_GIFS => self.gifs_tick(),
                 TIMER_GIF_FRAMES => self.next_picker_frame(),
                 TIMER_UNREAD => {
@@ -2712,6 +2717,7 @@ impl App {
 
     fn draw_panels(&mut self) -> Result<()> {
         let s = self.scale;
+        let preview_thumb = self.preview_thumb();
         let (space_badges, channel_badges) = self.badges();
         let space_muted: Vec<bool> = (0..self.c.spaces.len())
             .map(|i| self.space_muted(i).is_some())
@@ -3127,11 +3133,15 @@ impl App {
             let placeholder = format!("Message {}", c.place());
             let comp = &self.composer;
             let (drafts, tiles, top, notice) = self.box_files(bw);
-            let gif = self.gif_shown().then_some((bw, self.gifs.is_some()));
+            let open = self.gifs.as_ref().is_some_and(|p| p.root.is_none());
+            let gif = self.gif_shown().then_some((bw, open));
+            let emoji = self.emoji_open_for(None);
             let live = self.live.as_ref();
             let bar = self.dm_bar();
             let rec = self.rec().is_some();
             let mic = (bw, self.mic_blocked().is_none());
+            let voice = self.playback.view();
+            let card = self.preview_card().cloned();
             let (bar_hover, bar_pressed) = (self.bar_hover, self.bar_pressed);
             if let Some((note, _)) = &self.note {
                 self.note_p.draw(s, |dc| Self::draw_note(g, dc, note, bw))?;
@@ -3144,8 +3154,8 @@ impl App {
                     return self.draw_rec(g, dc, bw);
                 }
                 comp.draw(g, dc, bw, bh, &placeholder)?;
-                match live {
-                    Some(live) => uploads::draw(
+                if let Some(live) = live {
+                    uploads::draw(
                         g,
                         dc,
                         &drafts,
@@ -3154,10 +3164,22 @@ impl App {
                         notice.as_deref(),
                         live.can_attach(),
                         gif,
+                        emoji,
                         mic,
-                    ),
-                    None => Ok(()),
+                        voice.as_ref(),
+                    )?;
                 }
+                if let Some(embed) = &card {
+                    preview::draw(
+                        g,
+                        dc,
+                        embed,
+                        preview_thumb.as_ref(),
+                        preview::card_rect(bw, bh),
+                        false,
+                    )?;
+                }
+                Ok(())
             })?;
         }
         Ok(())

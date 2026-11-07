@@ -37,9 +37,14 @@ const GAP: f32 = 8.0;
 pub const ATTACH_W: f32 = 30.0;
 /// The text's room before the GIF button, while GIFs are available.
 pub const GIF_W: f32 = 36.0;
+/// The text's room before Insert emoji, between GIF and Dictate.
+pub const EMOJI_W: f32 = 36.0;
 /// The text's room before Dictate, the line's last button.
 pub const MIC_W: f32 = 36.0;
 const NOTICE_H: f32 = 18.0;
+/// A staged recording's chip (egui's `voice_chip`).
+pub const CHIP_W: f32 = 236.0;
+pub const CHIP_H: f32 = 52.0;
 /// A corner button's circle, its inset from the tile's edges and its target.
 const CORNER_R: f32 = 11.0;
 const CORNER_INSET: f32 = 4.0;
@@ -92,37 +97,68 @@ pub enum Part {
     Attach,
     /// Send a GIF: opens the picker.
     Gif,
+    /// Insert emoji: opens the emoji picker for the draft.
+    Emoji,
     /// Dictate: records in the composer's place.
     Mic,
+    /// The link card's Remove: send without previews.
+    RemovePreview,
     /// The open channel's file `k`: its tile (preview), spoiler toggle,
-    /// Remove and Retry.
+    /// Remove and Retry; a staged recording's chip has Play (or
+    /// Pause), Remove and Retry upload.
+    Play(usize),
     Open(usize),
     Spoiler(usize),
     Remove(usize),
     Retry(usize),
 }
 
-/// Tiles for `n` files in a box `w` wide, wrapping into rows, and the
-/// height they and an optional notice line take above the text (0 for
-/// neither, so the box is unchanged without files).
-pub fn strip(n: usize, w: f32, notice: bool) -> (Vec<D2D_RECT_F>, f32) {
-    let per = (((w - 2.0 * PAD + GAP) / (TILE + GAP)).floor() as usize).max(1);
-    let tiles = (0..n)
-        .map(|k| {
-            let x = PAD + (k % per) as f32 * (TILE + GAP);
-            let y = PAD + (k / per) as f32 * (TILE + GAP);
-            rect(x, y, x + TILE, y + TILE)
-        })
-        .collect();
-    let mut h = if n == 0 {
-        0.0
-    } else {
-        PAD + n.div_ceil(per) as f32 * (TILE + GAP) - GAP
-    };
+/// Tiles for the files in a box `w` wide (a chip for each staged
+/// recording, `voice`), wrapping into rows, and the height they and an
+/// optional notice line take above the text (0 for neither, so the box
+/// is unchanged without files).
+pub fn strip(voice: &[bool], w: f32, notice: bool) -> (Vec<D2D_RECT_F>, f32) {
+    let (mut x, mut y, mut row) = (PAD, PAD, 0.0_f32);
+    let mut tiles = Vec::with_capacity(voice.len());
+    for &chip in voice {
+        let (tw, th) = if chip { (CHIP_W, CHIP_H) } else { (TILE, TILE) };
+        if x > PAD && x + tw > w - PAD {
+            (x, y, row) = (PAD, y + row + GAP, 0.0);
+        }
+        tiles.push(rect(x, y, x + tw, y + th));
+        x += tw + GAP;
+        row = row.max(th);
+    }
+    let mut h = if voice.is_empty() { 0.0 } else { y + row };
     if notice {
-        h += if n == 0 { PAD } else { 6.0 } + NOTICE_H;
+        h += if voice.is_empty() { PAD } else { 6.0 } + NOTICE_H;
     }
     (tiles, h)
+}
+
+/// Whether tile `t` is a recording's chip rather than a square.
+fn is_chip(t: D2D_RECT_F) -> bool {
+    t.bottom - t.top < TILE
+}
+
+fn chip_play(c: D2D_RECT_F) -> D2D_RECT_F {
+    let (cx, cy) = (c.left + 22.0, (c.top + c.bottom) / 2.0);
+    rect(cx - 14.0, cy - 14.0, cx + 14.0, cy + 14.0)
+}
+
+fn chip_remove(c: D2D_RECT_F) -> D2D_RECT_F {
+    let (cx, cy) = (c.right - 18.0, (c.top + c.bottom) / 2.0);
+    rect(cx - 12.0, cy - 12.0, cx + 12.0, cy + 12.0)
+}
+
+/// The upload's line along the chip's bottom: progress, or Retry upload.
+fn chip_status(c: D2D_RECT_F) -> D2D_RECT_F {
+    rect(
+        chip_play(c).right + 8.0,
+        c.bottom - 18.0,
+        chip_remove(c).left - 6.0,
+        c.bottom - 6.0,
+    )
 }
 
 /// Attach files, beside the first line of text below the files.
@@ -131,10 +167,16 @@ pub fn attach_rect(top: f32) -> D2D_RECT_F {
     rect(8.0, cy - 14.0, 36.0, cy + 14.0)
 }
 
-/// Send a GIF, before Dictate on the first line in a box `bw` wide.
+/// Send a GIF, before Insert emoji on the first line in a box `bw` wide.
 pub fn gif_rect(top: f32, bw: f32) -> D2D_RECT_F {
+    let e = emoji_rect(top, bw);
+    rect(e.left - GIF_W, e.top, e.right - EMOJI_W, e.bottom)
+}
+
+/// Insert emoji, before Dictate on the first line in a box `bw` wide.
+pub fn emoji_rect(top: f32, bw: f32) -> D2D_RECT_F {
     let m = mic_rect(top, bw);
-    rect(m.left - GIF_W, m.top, m.right - MIC_W, m.bottom)
+    rect(m.left - EMOJI_W, m.top, m.right - MIC_W, m.bottom)
 }
 
 /// Dictate, at the end of the first line in a box `bw` wide.
@@ -144,7 +186,7 @@ pub fn mic_rect(top: f32, bw: f32) -> D2D_RECT_F {
 }
 
 /// egui's GIF button: "GIF" in a small rounded badge.
-fn gif_button(g: &Gfx, dc: &ID2D1DeviceContext, r: D2D_RECT_F, color: u32) -> Result<()> {
+pub fn gif_button(g: &Gfx, dc: &ID2D1DeviceContext, r: D2D_RECT_F, color: u32) -> Result<()> {
     let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
     let badge = rect(cx - 10.0, cy - 7.0, cx + 10.0, cy + 7.0);
     let brush = dc_brush(dc, color)?;
@@ -210,6 +252,17 @@ pub fn part_at(tiles: &[D2D_RECT_F], drafts: &[&Draft], top: f32, x: f32, y: f32
     }
     let k = tiles.iter().position(|t| inside(*t, x, y))?;
     let (t, d) = (tiles[k], drafts.get(k)?);
+    if is_chip(t) {
+        return if inside(chip_play(t), x, y) {
+            Some(Part::Play(k))
+        } else if inside(chip_remove(t), x, y) {
+            Some(Part::Remove(k))
+        } else if d.upload.error.is_some() && inside(chip_status(t), x, y) {
+            Some(Part::Retry(k))
+        } else {
+            None
+        };
+    }
     Some(if inside(remove_rect(t), x, y) {
         Part::Remove(k)
     } else if inside(spoiler_rect(t), x, y) {
@@ -228,7 +281,10 @@ pub fn part_rect(tiles: &[D2D_RECT_F], top: f32, part: Part) -> Option<D2D_RECT_
     Some(match part {
         Part::Attach => attach_rect(top),
         // Placed by the box's width (`App::box_part_rect`).
-        Part::Gif | Part::Mic => return None,
+        Part::Gif | Part::Emoji | Part::Mic | Part::RemovePreview => return None,
+        Part::Play(k) => chip_play(*tiles.get(k)?),
+        Part::Remove(k) if is_chip(*tiles.get(k)?) => chip_remove(tiles[k]),
+        Part::Retry(k) if is_chip(*tiles.get(k)?) => chip_status(tiles[k]),
         Part::Open(k) => *tiles.get(k)?,
         Part::Spoiler(k) => spoiler_rect(*tiles.get(k)?),
         Part::Remove(k) => remove_rect(*tiles.get(k)?),
@@ -292,6 +348,108 @@ fn dc_brush(dc: &ID2D1DeviceContext, c: u32) -> Result<ID2D1SolidColorBrush> {
 fn centered_icon(dc: &ID2D1DeviceContext, icon: Icon, cx: f32, cy: f32, size: f32, color: u32) {
     let h = size / 2.0;
     icons::draw(dc, icon, rect(cx - h, cy - h, cx + h, cy + h), color, 1.0);
+}
+
+/// A staged recording: Play or Pause, its waveform, its length (or what
+/// remains while it plays), the upload's progress or Retry upload, and
+/// Remove (egui's `voice_chip`).
+fn chip(
+    g: &Gfx,
+    dc: &ID2D1DeviceContext,
+    d: &Draft,
+    prepared: &Arc<caper_client::uploads::Prepared>,
+    view: Option<&crate::playback::View>,
+    t: D2D_RECT_F,
+) -> Result<()> {
+    let u = &d.upload;
+    fill_round(dc, t, 8.0, &g.brushes.surface);
+    let edge = if u.error.is_some() {
+        &g.brushes.error
+    } else {
+        &g.brushes.border
+    };
+    stroke_round(dc, t, 8.0, edge);
+    let view = view.filter(|v| v.id == crate::playback::staged_id(prepared));
+    let playing = view.is_some_and(|v| v.playing);
+    let p = chip_play(t);
+    let (cx, cy) = ((p.left + p.right) / 2.0, (p.top + p.bottom) / 2.0);
+    let disc = D2D1_ELLIPSE {
+        point: windows_numerics::Vector2 { X: cx, Y: cy },
+        radiusX: 14.0,
+        radiusY: 14.0,
+    };
+    unsafe { dc.FillEllipse(&disc, &g.solid(ACTION)) };
+    let nudge = if playing { 0.0 } else { 1.0 };
+    icons::draw(
+        dc,
+        if playing { Icon::Pause } else { Icon::Play },
+        rect(
+            p.left + 8.0 + nudge,
+            p.top + 8.0,
+            p.right - 8.0 + nudge,
+            p.bottom - 8.0,
+        ),
+        BLACKOUT,
+        1.0,
+    );
+    let r = chip_remove(t);
+    centered_icon(
+        dc,
+        Icon::Close,
+        (r.left + r.right) / 2.0,
+        (r.top + r.bottom) / 2.0,
+        14.0,
+        TEXT_MUTED,
+    );
+    let duration = prepared.duration_ms.unwrap_or(0);
+    let position = view.and_then(|v| v.position);
+    let shown = duration.saturating_sub(position.unwrap_or(0));
+    let time = line(
+        g,
+        &caper_client::voice_note::duration_label(shown),
+        &g.formats.file_detail,
+        1e6,
+    )?;
+    let tm = gfx::metrics(&time);
+    let time_left = r.left - 6.0 - tm.widthIncludingTrailingWhitespace.max(26.0);
+    crate::text::draw(dc, &time, time_left, t.top + 10.0, &g.brushes.muted);
+    let wave = rect(p.right + 8.0, t.top + 10.0, time_left - 6.0, t.top + 26.0);
+    let played = match position {
+        Some(position) if duration > 0 => position as f32 / duration as f32,
+        _ => 0.0,
+    };
+    let peaks = prepared.voice.as_ref().and_then(|v| v.waveform.as_deref());
+    crate::playback::waveform(g, dc, wave, peaks, played)?;
+    let s = chip_status(t);
+    if u.error.is_some() {
+        let l = line(g, "Retry upload", &g.formats.file_detail, 1e6)?;
+        let m = gfx::metrics(&l);
+        crate::text::draw(
+            dc,
+            &l,
+            s.left,
+            (s.top + s.bottom - m.height) / 2.0,
+            &g.brushes.error,
+        );
+    } else if u.attachment.is_none() {
+        let track = rect(
+            s.left,
+            (s.top + s.bottom) / 2.0 - 1.0,
+            s.right,
+            (s.top + s.bottom) / 2.0 + 1.0,
+        );
+        fill_round(dc, track, 1.0, &g.brushes.border);
+        if let Progress::Known(f) = u.status().1 {
+            let done = rect(
+                track.left,
+                track.top,
+                track.left + (track.right - track.left) * f.clamp(0.0, 1.0),
+                track.bottom,
+            );
+            fill_round(dc, done, 1.0, &g.brushes.terracotta);
+        }
+    }
+    Ok(())
 }
 
 fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Result<()> {
@@ -380,7 +538,9 @@ pub fn draw(
     notice: Option<&str>,
     can_attach: bool,
     gif: Option<(f32, bool)>,
+    emoji: bool,
     mic: (f32, bool),
+    voice: Option<&crate::playback::View>,
 ) -> Result<()> {
     let (bw, recordable) = mic;
     let m = mic_rect(top, bw);
@@ -392,6 +552,15 @@ pub fn draw(
         16.0,
         if recordable { TEXT_MUTED } else { BORDER },
     );
+    let e = emoji_rect(top, bw);
+    centered_icon(
+        dc,
+        Icon::Smile,
+        (e.left + e.right) / 2.0,
+        (e.top + e.bottom) / 2.0,
+        16.0,
+        if emoji { TEXT } else { TEXT_MUTED },
+    );
     if let Some((bw, open)) = gif {
         gif_button(
             g,
@@ -401,7 +570,10 @@ pub fn draw(
         )?;
     }
     for (d, t) in drafts.iter().zip(tiles) {
-        tile(g, dc, d, *t)?;
+        match d.upload.voice() {
+            Some(prepared) => chip(g, dc, d, prepared, voice, *t)?,
+            None => tile(g, dc, d, *t)?,
+        }
     }
     if let Some(text) = notice {
         let l = line(g, text, &g.formats.file_detail, 1e6)?;
@@ -577,7 +749,8 @@ impl App {
         let drafts = live.open_drafts();
         let failed = drafts.iter().filter(|d| d.upload.error.is_some()).count();
         let notice = drafts::failed_notice(failed).or_else(|| self.attach_error.clone());
-        let (tiles, top) = strip(drafts.len(), bw, notice.is_some());
+        let voice: Vec<bool> = drafts.iter().map(|d| d.upload.voice().is_some()).collect();
+        let (tiles, top) = strip(&voice, bw, notice.is_some());
         (drafts, tiles, top, notice)
     }
 
@@ -590,6 +763,12 @@ impl App {
         if self.rec().is_some() {
             return Ok(crate::recording::BAR_H);
         }
+        let card = if self.preview_card().is_some() {
+            crate::preview::PREVIEW_H
+        } else {
+            0.0
+        };
+        self.composer.inset_bottom = card;
         let top = if self.live.is_some() {
             self.box_files(bw).2
         } else {
@@ -597,12 +776,13 @@ impl App {
         };
         let left = if self.live.is_some() { ATTACH_W } else { 0.0 };
         let right = match (self.live.is_some(), self.gif_shown()) {
-            (true, true) => MIC_W + GIF_W,
-            (true, false) => MIC_W,
+            (true, true) => MIC_W + EMOJI_W + GIF_W,
+            (true, false) => MIC_W + EMOJI_W,
             _ => 0.0,
         };
         self.composer.inset = (left, top);
         Ok(top
+            + card
             + self
                 .composer
                 .relayout(&self.g, bw - 2.0 * PAD - left - right)?)
@@ -627,6 +807,18 @@ impl App {
         if inside(mic_rect(top, bw), x - bx, y - by) {
             return Some(Part::Mic);
         }
+        if self.preview_card().is_some()
+            && inside(
+                crate::preview::remove_rect(crate::preview::card_rect(bw, self.box_h)),
+                x - bx,
+                y - by,
+            )
+        {
+            return Some(Part::RemovePreview);
+        }
+        if inside(emoji_rect(top, bw), x - bx, y - by) {
+            return Some(Part::Emoji);
+        }
         if self.gif_shown() && inside(gif_rect(top, bw), x - bx, y - by) {
             return Some(Part::Gif);
         }
@@ -642,6 +834,14 @@ impl App {
         let (drafts, ..) = self.box_files(bw);
         let mut out = Vec::new();
         for (k, d) in drafts.iter().enumerate() {
+            if d.upload.voice().is_some() {
+                out.push(Part::Play(k));
+                if d.upload.error.is_some() {
+                    out.push(Part::Retry(k));
+                }
+                out.push(Part::Remove(k));
+                continue;
+            }
             if previewable(d) {
                 out.push(Part::Open(k));
             }
@@ -654,7 +854,10 @@ impl App {
         if self.gif_shown() {
             out.push(Part::Gif);
         }
-        out.push(Part::Mic);
+        out.extend([Part::Emoji, Part::Mic]);
+        if self.preview_card().is_some() {
+            out.push(Part::RemovePreview);
+        }
         out
     }
 
@@ -663,7 +866,11 @@ impl App {
         let (_, tiles, top, _) = self.box_files(bw);
         let r = match part {
             Part::Gif => gif_rect(top, bw),
+            Part::Emoji => emoji_rect(top, bw),
             Part::Mic => mic_rect(top, bw),
+            Part::RemovePreview => {
+                crate::preview::remove_rect(crate::preview::card_rect(bw, self.box_h))
+            }
             _ => part_rect(&tiles, top, part)?,
         };
         Some((bx + r.left, by + r.top, r.right - r.left, r.bottom - r.top))
@@ -680,7 +887,27 @@ impl App {
                 None => String::new(),
             },
             Part::Gif => "Send a GIF".into(),
+            Part::Emoji => "Insert emoji".into(),
             Part::Mic => "Dictate".into(),
+            Part::RemovePreview => "Remove link preview".into(),
+            Part::Play(k) => {
+                let playing = drafts
+                    .get(k)
+                    .and_then(|d| d.upload.voice())
+                    .zip(self.playback.view())
+                    .is_some_and(|(p, v)| v.playing && v.id == crate::playback::staged_id(p));
+                if playing {
+                    "Pause voice message".into()
+                } else {
+                    "Play voice message".into()
+                }
+            }
+            Part::Remove(k) if drafts.get(k).is_some_and(|d| d.upload.voice().is_some()) => {
+                "Remove voice message".into()
+            }
+            Part::Retry(k) if drafts.get(k).is_some_and(|d| d.upload.voice().is_some()) => {
+                "Retry upload".into()
+            }
             Part::Open(k) => file(k).map_or_else(String::new, |(s, _)| format!("Preview {s}")),
             Part::Spoiler(k) => file(k).map_or_else(String::new, |(_, d)| {
                 if d.upload.spoiler {
@@ -700,15 +927,28 @@ impl App {
     pub fn box_activate(&mut self, part: Part) {
         match part {
             Part::Attach => return self.pick_files(),
-            Part::Gif => return self.toggle_gifs(),
+            Part::Gif => return self.toggle_gifs(None),
+            Part::Emoji => return self.toggle_composer_emoji(None),
             Part::Mic => return self.start_recording(),
+            Part::RemovePreview => return self.remove_preview(),
             _ => {}
         }
         let (_, _, bw, _) = self.box_rect();
         let (drafts, ..) = self.box_files(bw);
+        if let Part::Play(k) = part {
+            if let Some(prepared) = drafts.get(k).and_then(|d| d.upload.voice()).cloned() {
+                self.play_staged(&prepared);
+            }
+            return;
+        }
         let k = match part {
             Part::Open(k) | Part::Spoiler(k) | Part::Remove(k) | Part::Retry(k) => k,
-            Part::Attach | Part::Gif | Part::Mic => return,
+            Part::Attach
+            | Part::Gif
+            | Part::Emoji
+            | Part::Mic
+            | Part::Play(_)
+            | Part::RemovePreview => return,
         };
         let Some(d) = drafts.get(k) else { return };
         let key = d.upload.key;
@@ -733,7 +973,12 @@ impl App {
                 self.attach_error = None;
             }
             Part::Retry(_) => live.retry_draft(key),
-            Part::Attach | Part::Gif | Part::Mic => {}
+            Part::Attach
+            | Part::Gif
+            | Part::Emoji
+            | Part::Mic
+            | Part::Play(_)
+            | Part::RemovePreview => {}
         }
         self.drafts_changed();
     }
@@ -790,6 +1035,7 @@ impl App {
     /// send waiting for them goes once they are all uploaded (or stops when
     /// one failed or the draft changed).
     pub fn drafts_changed(&mut self) {
+        self.thread_tools_changed();
         if let Some((text, keys)) = &self.send_waiting
             && let Some(live) = &self.live
         {
@@ -839,23 +1085,31 @@ mod tests {
 
     #[test]
     fn strip_is_empty_without_files_and_wraps_tiles_into_rows() {
-        assert_eq!(strip(0, 600.0, false).1, 0.0);
+        let squares = |n: usize| vec![false; n];
+        assert_eq!(strip(&[], 600.0, false).1, 0.0);
         // Only the notice: the line and the box's top padding.
-        assert_eq!(strip(0, 600.0, true).1, PAD + NOTICE_H);
+        assert_eq!(strip(&[], 600.0, true).1, PAD + NOTICE_H);
         // 600 wide holds (600 - 24 + 8) / 112 = 5 tiles a row.
-        let (tiles, h) = strip(7, 600.0, false);
+        let (tiles, h) = strip(&squares(7), 600.0, false);
         assert_eq!(tiles[4].left, PAD + 4.0 * (TILE + GAP));
         assert_eq!((tiles[5].left, tiles[5].top), (PAD, PAD + TILE + GAP));
         assert_eq!(h, PAD + 2.0 * TILE + GAP);
         // A box narrower than one tile still shows them, one a row.
-        let (tiles, _) = strip(2, 50.0, false);
+        let (tiles, _) = strip(&squares(2), 50.0, false);
         assert_eq!(tiles[1].top, PAD + TILE + GAP);
+        // A recording's chip is wider and shorter; the row takes the tallest.
+        let (tiles, h) = strip(&[true, false, false, false], 600.0, false);
+        assert_eq!(tiles[0], rect(PAD, PAD, PAD + CHIP_W, PAD + CHIP_H));
+        assert_eq!(tiles[3].left, PAD + CHIP_W + GAP + 2.0 * (TILE + GAP));
+        let (tiles, h2) = strip(&[false, false, false, false, true], 600.0, false);
+        assert_eq!((tiles[4].left, tiles[4].top), (PAD, PAD + TILE + GAP));
+        assert_eq!((h, h2), (PAD + TILE, PAD + TILE + GAP + CHIP_H));
     }
 
     #[test]
     fn corners_beat_the_tile_and_retry_only_after_a_failure() {
         let mut upload = Upload::picked(1, "c".into(), None, "a.png".into(), Some("a.png".into()));
-        let tiles = strip(1, 600.0, false).0;
+        let tiles = strip(&[false], 600.0, false).0;
         let t = tiles[0];
         let at = |d: &Draft, x: f32, y: f32| part_at(&tiles, &[d], 0.0, x, y);
         let d = Draft::new(Upload::picked(2, "c".into(), None, "b".into(), None));

@@ -503,7 +503,11 @@ fn name(a: &App, id: Id) -> String {
         Id::Menu => "Message actions".into(),
         Id::MenuClose => "Close message actions".into(),
         Id::Tool(_, t) => t.label(),
-        Id::Picker => "Add a reaction".into(),
+        Id::Picker => a
+            .picker
+            .as_ref()
+            .map_or("Add a reaction", |p| p.title())
+            .into(),
         Id::Gifs => "GIFs and stickers".into(),
         Id::Gif(part) => a.gifs.as_ref().map_or_else(String::new, |p| p.name(part)),
         Id::Pick(part) => a.picker.as_ref().map_or_else(String::new, |p| p.name(part)),
@@ -760,7 +764,10 @@ fn runtime_id(id: Id) -> [i32; 3] {
                 // Past every file's controls (at most ten files).
                 crate::uploads::Part::Gif => 999,
                 crate::uploads::Part::Mic => 1000,
-                crate::uploads::Part::Open(k) => 1 + 4 * k,
+                crate::uploads::Part::RemovePreview => 1001,
+                crate::uploads::Part::Emoji => 1002,
+                // A recording's chip has no preview: Play takes its place.
+                crate::uploads::Part::Open(k) | crate::uploads::Part::Play(k) => 1 + 4 * k,
                 crate::uploads::Part::Spoiler(k) => 2 + 4 * k,
                 crate::uploads::Part::Remove(k) => 3 + 4 * k,
                 crate::uploads::Part::Retry(k) => 4 + 4 * k,
@@ -774,6 +781,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
             TPart::Broadcast => (22, 2),
             TPart::Field => (22, 3),
             TPart::Send => (22, 4),
+            TPart::Gif => (22, 5),
+            TPart::Emoji => (22, 6),
             TPart::Row(i) => (23, i),
             TPart::Chip(i, k) => (24, i * 64 + k.min(62)),
             TPart::Add(i) => (24, i * 64 + 63),

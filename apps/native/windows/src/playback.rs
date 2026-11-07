@@ -14,8 +14,10 @@ use crate::{App, EV_ROWS};
 use caper_client::media_proxy::MediaProxy;
 use caper_client::model::{Attachment, AttachmentStatus, TranscriptView};
 use caper_client::player::{Player, State};
+use caper_client::uploads::Prepared;
 use caper_client::voice_note;
 use std::collections::HashSet;
+use std::sync::Arc;
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
@@ -324,7 +326,7 @@ pub fn draw(
 
 /// The bars that fit `r`, the played part (0–1) in text colour over the
 /// muted rest.
-fn waveform(
+pub fn waveform(
     g: &Gfx,
     dc: &ID2D1DeviceContext,
     r: D2D_RECT_F,
@@ -363,12 +365,20 @@ fn waveform(
     Ok(())
 }
 
+/// The player id of a recording staged in the composer: stable while it
+/// stays staged (egui's `staged_voice_id`).
+pub fn staged_id(prepared: &Arc<Prepared>) -> String {
+    format!("staged-voice-{:p}", Arc::as_ptr(prepared))
+}
+
 /// The one voice message loaded (playing, paused, or failed to start).
 struct Current {
     id: String,
     player: Option<Player>,
     /// Its loopback route, removed when it stops.
     local: Option<String>,
+    /// A staged recording's bytes on disk, kept while it plays.
+    _scratch: Option<Arc<caper_client::uploads::Scratch>>,
     error: Option<String>,
 }
 
@@ -422,12 +432,59 @@ impl Playback {
                 id: a.id.clone(),
                 player: Some(player),
                 local: Some(local),
+                _scratch: None,
                 error: None,
             },
             Err(error) => Current {
                 id: a.id.clone(),
                 player: None,
                 local: None,
+                _scratch: None,
+                error: Some(error.into()),
+            },
+        });
+    }
+
+    /// Plays or pauses a staged recording from its own bytes (it may not
+    /// have finished uploading), stopping any other voice message first.
+    fn play_staged(&mut self, prepared: &Arc<Prepared>) {
+        let id = staged_id(prepared);
+        if let Some(player) = self
+            .current
+            .as_mut()
+            .filter(|c| c.id == id)
+            .and_then(|c| c.player.as_mut())
+        {
+            player.toggle();
+            return;
+        }
+        self.stop();
+        let source = caper_client::ffmpeg::binary()
+            .ok_or("Voice playback needs the FFmpeg that ships with Caper.")
+            .and_then(|binary| {
+                prepared
+                    .on_disk()
+                    .map(|scratch| (binary, scratch))
+                    .map_err(|_| "This recording can\u{2019}t be played here.")
+            });
+        self.current = Some(match source {
+            Ok((binary, scratch)) => {
+                let input = scratch.path().to_string_lossy().into_owned();
+                let mut player = Player::audio(binary, input, prepared.duration_ms);
+                player.play();
+                Current {
+                    id,
+                    player: Some(player),
+                    local: None,
+                    _scratch: Some(scratch),
+                    error: None,
+                }
+            }
+            Err(error) => Current {
+                id,
+                player: None,
+                local: None,
+                _scratch: None,
                 error: Some(error.into()),
             },
         });
@@ -473,6 +530,24 @@ impl Playback {
 
 impl App {
     /// The rows showing attachment `id`.
+    /// Whether `id` is a recording staged in the open composer.
+    fn staged_shown(&self, id: &str) -> bool {
+        self.live.as_ref().is_some_and(|l| {
+            l.open_drafts()
+                .iter()
+                .filter_map(|d| d.upload.voice())
+                .any(|p| staged_id(p) == id)
+        })
+    }
+
+    /// Plays or pauses a staged recording (its chip's Play).
+    pub fn play_staged(&mut self, prepared: &Arc<Prepared>) {
+        self.playback.play_staged(prepared);
+        self.dirty.composer = true;
+        self.need = true;
+        self.arm_playback();
+    }
+
     fn voice_message_rows(&self, id: &str) -> Vec<usize> {
         self.c
             .messages
@@ -484,6 +559,14 @@ impl App {
     }
 
     fn voice_message_redraw(&mut self, id: Option<String>) {
+        if id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("staged-voice-"))
+        {
+            self.dirty.composer = true;
+            self.need = true;
+            return;
+        }
         if let Some(id) = id {
             let rows = self.voice_message_rows(&id);
             self.redraw.extend(rows);
@@ -561,7 +644,7 @@ impl App {
         let id = self.playback.id().map(str::to_owned);
         let gone = id
             .as_deref()
-            .is_some_and(|id| self.voice_message_rows(id).is_empty());
+            .is_some_and(|id| self.voice_message_rows(id).is_empty() && !self.staged_shown(id));
         if ended || gone {
             self.playback.stop();
         }
@@ -574,6 +657,7 @@ impl App {
     pub fn playback_follow(&mut self) {
         if let Some(id) = self.playback.id().map(str::to_owned)
             && self.voice_message_rows(&id).is_empty()
+            && !self.staged_shown(&id)
         {
             self.playback.stop();
             self.arm_playback();

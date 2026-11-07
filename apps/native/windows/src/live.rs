@@ -326,6 +326,9 @@ pub struct Live {
     draft_keys: u64,
     /// The last dictation sent, so only its answer is used.
     dictations: u64,
+    /// The main composer's link card, and its request in flight.
+    pub preview: caper_client::embeds::ComposerPreview,
+    preview_pending: Option<std::sync::mpsc::Receiver<(String, Option<core::Embed>)>>,
     pub uploads: Option<caper_client::compress::Compression>,
     pub uploads_checked: bool,
     local: Vec<(String, caper_client::Rgba)>,
@@ -567,6 +570,8 @@ impl Live {
             drafts: Vec::new(),
             draft_keys: 0,
             dictations: 0,
+            preview: Default::default(),
+            preview_pending: None,
             uploads: None,
             uploads_checked: false,
             local: Vec::new(),
@@ -1304,12 +1309,15 @@ impl Live {
     }
 
     /// Sends a GIF chosen in the picker as its own message, replying to
-    /// `reply_to`; KLIPY hears of it once the server confirms the send.
+    /// `reply_to`; with `thread`, into that root's thread (and to the
+    /// channel too when its flag is set). KLIPY hears of it once the
+    /// server confirms the send.
     pub fn send_gif(
         &mut self,
         gif: caper_client::klipy::Gif,
         share: caper_client::klipy::Share,
         reply_to: Option<String>,
+        thread: Option<(String, bool)>,
     ) {
         let (Some(channel), Some(chat_token)) = (&self.channel, &self.chat_token) else {
             return;
@@ -1323,8 +1331,8 @@ impl Live {
             channel: channel.clone(),
             client_id,
             text: String::new(),
-            broadcast: false,
-            thread_root_id: None,
+            broadcast: thread.as_ref().is_some_and(|(_, b)| *b),
+            thread_root_id: thread.map(|(root, _)| root),
             reply_to_id: reply_to,
             attachment_ids: Vec::new(),
             spoiler_attachment_ids: Vec::new(),
@@ -1451,6 +1459,39 @@ impl Live {
         Some(self.dictations)
     }
 
+    /// The main composer's link card for `draft`: takes an answer that
+    /// arrived, then asks about the draft's link once it has stayed for
+    /// the debounce. Whether the card changed, and when to look again.
+    pub fn preview_tick(&mut self, draft: &str) -> (bool, Option<Duration>) {
+        let before = self.preview.card().cloned();
+        if let Some(pending) = &self.preview_pending
+            && let Ok((url, embed)) = pending.try_recv()
+        {
+            self.preview_pending = None;
+            self.preview.answer(url, embed);
+        }
+        let mut wait = None;
+        match self
+            .preview
+            .due(draft, self.token.is_some(), std::time::Instant::now())
+        {
+            (Some(url), _) => {
+                if let (Some(api), Some(token)) = (self.media.api().cloned(), self.token.clone()) {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let host = self.host.clone();
+                    std::thread::spawn(move || {
+                        let embed = api.embed_preview(&token, &url);
+                        let _ = sender.send((url, embed));
+                        host.wake();
+                    });
+                    self.preview_pending = Some(receiver);
+                }
+            }
+            (None, after) => wait = after,
+        }
+        (before.as_ref() != self.preview.card(), wait)
+    }
+
     /// Removes a composer file, stopping its upload and giving up the
     /// server's copy.
     pub fn remove_draft(&mut self, key: u64) {
@@ -1520,6 +1561,8 @@ impl Live {
             .iter()
             .filter_map(|d| d.upload.send_attachment())
             .collect();
+        // A removed card sends the message without previews.
+        let suppress_embeds = self.preview.removed(&text);
         self.worker.send(Command::Send {
             generation: self.generation,
             token: self.token.clone(),
@@ -1537,7 +1580,7 @@ impl Live {
                 .collect(),
             attachment_ids: files.into_iter().map(|f| f.id).collect(),
             gif: None,
-            suppress_embeds: false,
+            suppress_embeds,
         });
         // The message owns the files now: nothing is cancelled.
         self.drafts.retain(|d| !keys.contains(&d.upload.key));
@@ -1576,6 +1619,8 @@ impl Live {
             return;
         };
         let client_id = uuid::Uuid::new_v4().to_string();
+        // The channel composer's removed card sends without previews.
+        let suppress_embeds = thread.is_none() && self.preview.removed(&text);
         self.worker.send(Command::Send {
             generation: self.generation,
             token: self.token.clone(),
@@ -1589,7 +1634,7 @@ impl Live {
             attachment_ids: Vec::new(),
             spoiler_attachment_ids: Vec::new(),
             gif: None,
-            suppress_embeds: false,
+            suppress_embeds,
         });
     }
 

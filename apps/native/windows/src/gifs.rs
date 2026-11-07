@@ -66,6 +66,8 @@ struct Loaded {
 
 /// The open picker: its tab, search, results and paging.
 pub struct Picker {
+    /// The thread whose reply box opened it; None is the channel's composer.
+    pub root: Option<String>,
     pub x: f32,
     pub y: f32,
     pub kind: Kind,
@@ -121,6 +123,7 @@ impl Picker {
         search.width = INNER_W - 12.0;
         let (sender, receiver) = channel();
         Self {
+            root: None,
             x: (anchor.0 + 14.0 - W).min(window.0 - W).max(0.0),
             y: (anchor.1 - 18.0 - H).min(window.1 - H).max(0.0),
             kind: Kind::Gif,
@@ -642,42 +645,63 @@ fn contain(dc: &ID2D1DeviceContext, bmp: &ID2D1Bitmap1, r: D2D_RECT_F, radius: f
 }
 
 impl App {
-    /// The composer's GIF button toggles the picker, as in egui.
-    pub fn toggle_gifs(&mut self) {
-        if self.gifs.is_some() {
-            return self.close_gifs(true);
+    /// A composer's GIF button toggles the picker, as in egui: the
+    /// channel's (`root` None) or thread `root`'s reply box. The other
+    /// composer's button moves it there.
+    pub fn toggle_gifs(&mut self, root: Option<String>) {
+        if let Some(p) = &self.gifs {
+            let same = p.root == root;
+            self.close_gifs(same);
+            if same {
+                return;
+            }
         }
         if !self.gif_shown() {
             return;
         }
+        let anchor = if root.is_some() {
+            let Some((x, y, w, h)) = self.thread_part_rect(crate::thread::Part::Gif) else {
+                return;
+            };
+            (x + w / 2.0, y + h / 2.0)
+        } else {
+            let (bx, by, bw, _) = self.box_rect();
+            let top = self.box_files(bw).2;
+            let b = crate::uploads::gif_rect(top, bw);
+            (bx + (b.left + b.right) / 2.0, by + (b.top + b.bottom) / 2.0)
+        };
         self.close_picker();
         self.close_menu();
-        let (bx, by, bw, _) = self.box_rect();
-        let top = self.box_files(bw).2;
-        let b = crate::uploads::gif_rect(top, bw);
-        let anchor = (bx + (b.left + b.right) / 2.0, by + (b.top + b.bottom) / 2.0);
         self.set_composer_focus(false);
-        self.gifs = Some(Picker::new(anchor, (self.w, self.h)));
+        self.set_thread_focus(false);
+        let mut picker = Picker::new(anchor, (self.w, self.h));
+        picker.root = root;
+        self.gifs = Some(picker);
+        self.dirty.thread_box = true;
         self.gifs_poll();
         self.gifs_changed(true);
         self.dirty.composer = true;
         self.events |= EV_SCREEN | EV_FOCUS;
     }
 
-    /// Closes the picker; `focus` returns focus to the composer.
+    /// Closes the picker; `focus` returns focus to the composer that
+    /// opened it.
     pub fn close_gifs(&mut self, focus: bool) {
-        if self.gifs.take().is_none() {
+        let Some(p) = self.gifs.take() else {
             return;
-        }
+        };
         unsafe {
             let _ = KillTimer(Some(self.hwnd), crate::TIMER_GIFS);
             let _ = KillTimer(Some(self.hwnd), crate::TIMER_GIF_FRAMES);
         }
         self.dirty.gifs = true;
         self.dirty.composer = true;
+        self.dirty.thread_box = true;
         self.need = true;
         self.events |= EV_SCREEN | EV_FOCUS;
-        if focus {
+        if focus && p.root.is_some() {
+            self.set_thread_focus(true);
+        } else if focus {
             self.set_composer_focus(true);
         }
     }
@@ -774,15 +798,31 @@ impl App {
                 self.events |= EV_SCREEN;
             }
             GPart::Tile(i) => {
+                let root = p.root.clone();
                 let Some((gif, share)) = config.as_ref().and_then(|c| p.choose(i, c)) else {
                     return;
                 };
-                // As in egui: sent at once, answering the composer's reply.
-                let reply = self.reply.as_ref().map(|r| r.target.id.clone());
-                self.cancel_reply();
+                // As in egui: sent at once, into its thread with the box's
+                // "Also send to" choice (which stays), or answering the
+                // channel composer's reply.
+                let (reply, thread) = match root {
+                    Some(root) => {
+                        let t = self.thread.as_mut().filter(|t| t.root == root);
+                        let broadcast = t.as_ref().is_some_and(|t| t.broadcast);
+                        if let Some(t) = t {
+                            t.at_end = true;
+                        }
+                        (None, Some((root, broadcast)))
+                    }
+                    None => {
+                        let reply = self.reply.as_ref().map(|r| r.target.id.clone());
+                        self.cancel_reply();
+                        (reply, None)
+                    }
+                };
                 self.close_gifs(true);
                 if let Some(live) = &mut self.live {
-                    live.send_gif(gif, share, reply);
+                    live.send_gif(gif, share, reply, thread);
                 }
                 return;
             }
@@ -821,8 +861,15 @@ impl App {
             WM_LBUTTONDOWN => {
                 if !contains(p.rect(), x, y) {
                     // An outside click closes only the picker and still
-                    // reaches what it landed on (the GIF button toggles).
-                    if self.box_part_at(x, y) == Some(crate::uploads::Part::Gif) {
+                    // reaches what it landed on (its own GIF button
+                    // toggles; the other composer's moves it).
+                    let own = if p.root.is_some() {
+                        self.in_thread(x, y)
+                            && self.thread_hit(x, y) == Some(crate::thread::Part::Gif)
+                    } else {
+                        self.box_part_at(x, y) == Some(crate::uploads::Part::Gif)
+                    };
+                    if own {
                         self.close_gifs(true);
                         return done;
                     }
