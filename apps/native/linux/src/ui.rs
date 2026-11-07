@@ -14,8 +14,12 @@ pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
 }
 
 /// A message field: a `GtkTextView` with a placeholder. As desktop and web on
-/// a keyboard, Enter sends; there is no Send button.
+/// a keyboard, Enter sends; the channel's composer has no Send button. A
+/// thread's composer, as desktop's, puts "Also send to" on its own row and
+/// Send reply beside the field.
 pub struct Composer {
+    /// What the layout holds: the field, and a thread's rows around it.
+    pub outer: gtk::Box,
     pub root: gtk::Box,
     /// The files staged in it (`crate::uploads`).
     pub chips: gtk::Box,
@@ -27,6 +31,11 @@ pub struct Composer {
     /// A thread reply's "Also send to #channel" (hidden in the channel's
     /// composer).
     pub broadcast: gtk::CheckButton,
+    /// A thread's Send reply, beside the field.
+    pub send: Option<gtk::Button>,
+    /// Where a narrow thread's microphone goes: beside "Also send to"
+    /// (`app::panes`).
+    pub mic_slot: Option<gtk::Box>,
     /// The draft's link preview card, with "Remove link preview" (main
     /// composer only).
     pub preview: gtk::Box,
@@ -159,7 +168,7 @@ impl DictationRow {
 }
 
 impl Composer {
-    fn new(images: &Images) -> Self {
+    fn new(images: &Images, thread: bool) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
         root.add_css_class("composer");
         let chips = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -249,9 +258,65 @@ impl Composer {
         let broadcast: gtk::CheckButton =
             crate::app::named("GtkCheckButton", "Also send to channel");
         broadcast.add_css_class("broadcast");
-        broadcast.set_visible(false);
-        root.append(&broadcast);
+        // "Also send to" and the destination in bold (`app` names it).
+        broadcast.set_child(Some(&gtk::Label::new(None)));
+        let outer = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let (mut send, mut mic_slot) = (None, None);
+        if thread {
+            outer.add_css_class("thread-composer");
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            row.add_css_class("broadcast-row");
+            broadcast.set_hexpand(true);
+            row.append(&broadcast);
+            let slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            row.append(&slot);
+            outer.append(&row);
+            let input = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            root.set_hexpand(true);
+            input.append(&root);
+            let button: gtk::Button = crate::app::named("GtkButton", "Send reply");
+            // Dark on eggshell once there is something to send, else muted.
+            let icon = |color| {
+                let image = images.icon_image(Icon::Send, color, 16);
+                image.set_halign(gtk::Align::Center);
+                image.set_valign(gtk::Align::Center);
+                image
+            };
+            let (dark, dim) = (icon("#0c0d0f"), icon("#b9bcbe"));
+            button.set_child(Some(&dim));
+            button.set_tooltip_text(Some("Send reply"));
+            button.add_css_class("send-reply");
+            button.set_valign(gtk::Align::End);
+            input.append(&button);
+            outer.append(&input);
+            let ready = {
+                let (button, field, shown) = (button.clone(), view.clone(), chips.clone());
+                move || {
+                    let some = field.buffer().char_count() > 0 || shown.is_visible();
+                    if some == button.has_css_class("ready") {
+                        return;
+                    }
+                    if some {
+                        button.add_css_class("ready");
+                        button.set_child(Some(&dark));
+                    } else {
+                        button.remove_css_class("ready");
+                        button.set_child(Some(&dim));
+                    }
+                }
+            };
+            let changed = ready.clone();
+            view.buffer().connect_changed(move |_| changed());
+            chips.connect_visible_notify(move |_| ready());
+            send = Some(button);
+            mic_slot = Some(slot);
+        } else {
+            outer.append(&root);
+        }
         Self {
+            outer,
+            send,
+            mic_slot,
             root,
             chips,
             attach,
@@ -411,11 +476,20 @@ pub struct Ui {
     /// Block, or Unblock for someone you blocked.
     pub request: RequestBar,
     pub thread_panel: gtk::Box,
+    /// The conversation and the thread beside it.
+    pub thread_split: gtk::Paned,
+    /// The conversation (and the narrow member drawer over it).
+    pub stage: gtk::Overlay,
+    /// "in #channel" or "with Name", under "Thread".
+    pub thread_place: gtk::Label,
     pub conversation: gtk::Box,
     pub drop: gtk::Box,
     pub drop_title: gtk::Label,
     pub drop_detail: gtk::Label,
     pub thread_close: gtk::Button,
+    /// A narrow thread's way back, as desktop: "Back to channel", or "Back
+    /// to conversation" in a DM (GTK 4.8 can't rename one button).
+    pub thread_back: [gtk::Button; 2],
     pub thread_list: List,
     pub thread_composer: Composer,
     pub thread_error: gtk::Label,
@@ -880,8 +954,8 @@ impl Ui {
         conversation.append(&compose_bar);
         let request = RequestBar::new();
         conversation.append(&request.waiting);
-        let composer = Composer::new(images);
-        conversation.append(&composer.root);
+        let composer = Composer::new(images, false);
+        conversation.append(&composer.outer);
         let join_bar = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         join_bar.add_css_class("join-bar");
         let join_label = label("", &["muted"]);
@@ -975,10 +1049,62 @@ impl Ui {
                 .child(&members)
                 .build(),
         );
+        let thread_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        thread_panel.add_css_class("thread");
+        thread_panel.set_size_request(300, -1);
+        thread_panel.set_hexpand(false);
+        let thread_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        thread_header.add_css_class("header");
+        // As desktop: "Thread", and "in #channel" or "with Name" under it.
+        let thread_heading = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        thread_heading.set_hexpand(true);
+        thread_heading.set_valign(gtk::Align::Center);
+        let thread_title = label("Thread", &["thread-title"]);
+        thread_title.set_xalign(0.0);
+        let thread_place = label("", &["thread-place"]);
+        thread_place.set_xalign(0.0);
+        thread_place.set_ellipsize(pango::EllipsizeMode::End);
+        thread_heading.append(&thread_title);
+        thread_heading.append(&thread_place);
+        let thread_close: gtk::Button = crate::app::named("GtkButton", "Close thread");
+        thread_close.set_child(Some(&images.icon_image(Icon::Close, "#b9bcbe", 18)));
+        thread_close.set_valign(gtk::Align::Center);
+        thread_close.add_css_class("flat");
+        let thread_back = ["Back to channel", "Back to conversation"].map(|name| {
+            let button: gtk::Button = crate::app::named("GtkButton", name);
+            button.set_child(Some(&images.icon_image(Icon::ArrowLeft, "#b9bcbe", 18)));
+            button.set_tooltip_text(Some(name));
+            button.set_valign(gtk::Align::Center);
+            button.add_css_class("flat");
+            button.set_visible(false);
+            thread_header.append(&button);
+            button
+        });
+        thread_header.append(&thread_heading);
+        thread_header.append(&thread_close);
+        thread_panel.append(&thread_header);
+        let thread_list = List::new("Thread", images, thread_rows);
+        thread_panel.append(&thread_list.scroller);
+        let thread_error = label("", &["error", "composer-error"]);
+        thread_error.set_wrap(true);
+        thread_panel.append(&thread_error);
+        let thread_composer = Composer::new(images, true);
+        thread_panel.append(&thread_composer.outer);
+        thread_panel.set_visible(false);
+        // As desktop: the thread opens between the conversation and the
+        // member list, on a line of its own (`app::panes`).
+        let thread_split: gtk::Paned = crate::app::named("GtkPaned", "Thread width");
+        thread_split.add_css_class("caper-split");
+        thread_split.set_start_child(Some(&stage));
+        thread_split.set_end_child(Some(&thread_panel));
+        thread_split.set_resize_start_child(true);
+        thread_split.set_shrink_start_child(false);
+        thread_split.set_resize_end_child(false);
+        thread_split.set_shrink_end_child(false);
         // Sidebar | conversation | members, split by draggable lines
         // (`app::panes`). The conversation takes a window's resizing.
         let content_split: gtk::Paned = crate::app::named("GtkPaned", "Member list width");
-        content_split.set_start_child(Some(&stage));
+        content_split.set_start_child(Some(&thread_split));
         content_split.set_end_child(Some(&members_panel));
         content_split.set_resize_start_child(true);
         content_split.set_shrink_start_child(false);
@@ -996,31 +1122,6 @@ impl Ui {
         split.set_hexpand(true);
         chat.append(&split);
 
-        let thread_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        thread_panel.add_css_class("thread");
-        thread_panel.set_size_request(420, -1);
-        thread_panel.set_hexpand(false);
-        let thread_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        thread_header.add_css_class("header");
-        let thread_title = label("Thread", &["channel-title"]);
-        thread_title.set_hexpand(true);
-        let thread_close: gtk::Button = crate::app::named("GtkButton", "Close thread");
-        thread_close.set_child(Some(&images.icon_image(Icon::Close, "#b9bcbe", 18)));
-        thread_close.set_valign(gtk::Align::Center);
-        thread_close.add_css_class("flat");
-        thread_header.append(&thread_title);
-        thread_header.append(&thread_close);
-        thread_panel.append(&thread_header);
-        let thread_list = List::new("Thread", images, thread_rows);
-        thread_panel.append(&thread_list.scroller);
-        let thread_error = label("", &["error", "composer-error"]);
-        thread_error.set_wrap(true);
-        thread_panel.append(&thread_error);
-        let thread_composer = Composer::new(images);
-        thread_composer.broadcast.set_visible(true);
-        thread_panel.append(&thread_composer.root);
-        thread_panel.set_visible(false);
-        chat.append(&thread_panel);
         // The wide layout must not set the window's minimum width, or a
         // window could never shrink to the narrow one (`crate::narrow`).
         let chat_viewport = gtk::Viewport::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
@@ -1129,11 +1230,15 @@ impl Ui {
             join,
             request,
             thread_panel,
+            thread_split,
+            stage,
+            thread_place,
             conversation,
             drop,
             drop_title,
             drop_detail,
             thread_close,
+            thread_back,
             thread_list,
             thread_composer,
             thread_error,

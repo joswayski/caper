@@ -80,6 +80,8 @@ pub struct Row {
     pub reply_target: Option<(String, Option<String>)>,
     /// The quote shows in full rather than three lines.
     pub reply_expanded: bool,
+    /// A line under the message: an empty thread's invitation to reply.
+    pub footer: Option<String>,
     pub reactions: Vec<Chip>,
     /// Your reaction failed: shown under the row with Retry and Dismiss.
     pub reaction_error: Option<String>,
@@ -284,6 +286,7 @@ impl Row {
             reply: None,
             reply_target: None,
             reply_expanded: false,
+            footer: None,
             reactions: Vec::new(),
             reaction_error: None,
             replies: None,
@@ -574,6 +577,7 @@ pub fn build<'a>(
                 .filter(|reply| !viewer.blocked.contains(&reply.author.id))
                 .map(|reply| (reply.id.clone(), reply.thread_root_id.clone())),
             reply_expanded: viewer.expanded_quotes.contains(&message.id),
+            footer: None,
             reply: message.reply_to.as_ref().map(|reply| {
                 if viewer.blocked.contains(&reply.author.id) {
                     return Quote {
@@ -727,6 +731,7 @@ pub fn build<'a>(
             reply: None,
             reply_target: None,
             reply_expanded: false,
+            footer: None,
             reactions: Vec::new(),
             reaction_error: None,
             replies: None,
@@ -825,6 +830,8 @@ struct Widgets {
     /// The quote card: its avatar, author and "View original" heading, its
     /// text, and Show more/less.
     reply: gtk::Box,
+    /// `Row::footer`.
+    footer: gtk::Label,
     quote_heading: gtk::Box,
     quote_avatar: AvatarView,
     quote_author: gtk::Label,
@@ -868,7 +875,11 @@ struct Widgets {
 
 fn tool(images: &Images, icon: Icon, label: &str) -> gtk::Button {
     let button = crate::app::named::<gtk::Button>("GtkButton", label);
-    button.set_child(Some(&images.icon_image(icon, "#b9bcbe", 16)));
+    // At its own size: a filled 28px button would scale it up.
+    let image = images.icon_image(icon, "#b9bcbe", 16);
+    image.set_halign(gtk::Align::Center);
+    image.set_valign(gtk::Align::Center);
+    button.set_child(Some(&image));
     button.set_tooltip_text(Some(label));
     button.add_css_class("flat");
     button.add_css_class("tool");
@@ -973,10 +984,11 @@ fn build_widgets(images: &Images) -> Widgets {
         .css_classes(["history-start"])
         .visible(false)
         .build();
-    let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    let avatar = AvatarView::new(36, false);
+    // As desktop: a 34px avatar, 10px from the text.
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let avatar = AvatarView::new(34, false);
     let gap = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    gap.set_size_request(36, 1);
+    gap.set_size_request(34, 1);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.set_hexpand(true);
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -1066,6 +1078,7 @@ fn build_widgets(images: &Images) -> Widgets {
             button.set_label(emoji);
             button.add_css_class("flat");
             button.add_css_class("tool");
+            button.add_css_class("quick");
             button.set_focus_on_click(false);
             tools.append(&button);
             button
@@ -1075,7 +1088,8 @@ fn build_widgets(images: &Images) -> Widgets {
     let reply_button = tool(images, Icon::Reply, "Reply");
     let thread_button = tool(images, Icon::Thread, "Reply in thread");
     let more = tool(images, Icon::More, "More actions");
-    for button in [&pick, &reply_button, &thread_button, &more] {
+    // Desktop's order: thread, reply, add reaction, more.
+    for button in [&thread_button, &reply_button, &pick, &more] {
         // A click should not leave the toolbar pinned open by focus; keyboard
         // focus still reveals it through `:focus-within`.
         button.set_focus_on_click(false);
@@ -1113,6 +1127,13 @@ fn build_widgets(images: &Images) -> Widgets {
     message.append(&thread_context);
     message.append(&overlay);
     root.append(&message);
+    let footer = gtk::Label::builder()
+        .xalign(0.0)
+        .wrap(true)
+        .css_classes(["thread-empty"])
+        .visible(false)
+        .build();
+    root.append(&footer);
     Widgets {
         blocked,
         blocked_label,
@@ -1125,6 +1146,7 @@ fn build_widgets(images: &Images) -> Widgets {
         unread,
         beginning,
         reply,
+        footer,
         quote_heading,
         quote_avatar,
         quote_author,
@@ -1408,6 +1430,10 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
         .day
         .set_label(row.day.as_deref().unwrap_or_default());
     fill_quote(widgets, images, row);
+    widgets.footer.set_visible(row.footer.is_some());
+    widgets
+        .footer
+        .set_label(row.footer.as_deref().unwrap_or_default());
     widgets.header.set_visible(!row.grouped);
     widgets.avatar.root.set_visible(!row.grouped);
     widgets.gap.set_visible(row.grouped);
@@ -1575,6 +1601,7 @@ mod tests {
             reply: None,
             reply_target: None,
             reply_expanded: false,
+            footer: None,
             reactions: Vec::new(),
             reaction_error: None,
             replies: None,

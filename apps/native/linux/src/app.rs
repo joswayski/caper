@@ -600,6 +600,8 @@ pub struct App {
     voice_send_rows: RefCell<[String; 2]>,
     /// The member list's saved width is placed (`panes`).
     panes_placed: Cell<bool>,
+    /// The open thread has its saved width (`panes`).
+    thread_placed: Cell<bool>,
     /// The window is 760 px or less, Browse is open there, and whether a
     /// wide window showed the member list (`narrow`).
     narrow: Cell<bool>,
@@ -687,6 +689,7 @@ pub fn start(application: &gtk::Application, base: &str) {
         recording_ticking: Cell::new(false),
         voice_send_rows: RefCell::default(),
         panes_placed: Cell::new(false),
+        thread_placed: Cell::new(false),
         narrow: Cell::new(false),
         browsing: Cell::new(false),
         wide_members: Cell::new(true),
@@ -889,26 +892,24 @@ impl App {
             .connect_clicked(move |button| app.settings_menu(button));
 
         let app = self.clone();
-        ui.members_toggle.connect_toggled(move |toggle| {
-            if toggle.is_active() {
-                app.state.borrow_mut().thread = None;
-            }
-            app.render();
-        });
+        // As desktop, the member list stays beside an open thread.
+        ui.members_toggle.connect_toggled(move |_| app.render());
         let app = self.clone();
         ui.error_retry.connect_clicked(move |_| app.retry());
         let app = self.clone();
         ui.empty_action
             .connect_clicked(move |_| app.open_create_channel());
-        let app = self.clone();
-        ui.thread_close.connect_clicked(move |_| {
-            {
-                let mut state = app.state.borrow_mut();
-                state.thread = None;
-                state.focused = None;
-            }
-            app.render();
-        });
+        for button in ui.thread_back.iter().chain([&ui.thread_close]) {
+            let app = self.clone();
+            button.connect_clicked(move |_| {
+                {
+                    let mut state = app.state.borrow_mut();
+                    state.thread = None;
+                    state.focused = None;
+                }
+                app.render();
+            });
+        }
 
         let app = self.clone();
         ui.channels.connect_row_activated(move |_, row| {
@@ -1025,6 +1026,10 @@ impl App {
                 glib::Propagation::Proceed
             });
             composer.view.add_controller(keys);
+            if let Some(send) = &composer.send {
+                let app = self.clone();
+                send.connect_clicked(move |_| app.send_message(thread));
+            }
             let app = self.clone();
             composer
                 .attach
@@ -2995,7 +3000,10 @@ impl App {
                 before: None,
             });
         }
-        self.ui.members_toggle.set_active(false);
+        // A narrow thread takes the conversation's place, drawer and all.
+        if self.is_narrow() {
+            self.ui.members_toggle.set_active(false);
+        }
         self.render();
         self.ui.thread_composer.view.grab_focus();
     }
@@ -4746,12 +4754,29 @@ impl App {
         } else {
             format!("#{}", state.channel_name)
         };
-        ui.thread_composer
+        if let Some(label) = ui
+            .thread_composer
             .broadcast
-            .set_label(Some(&format!("Also send to {destination}")));
+            .child()
+            .and_downcast::<gtk::Label>()
+        {
+            label.set_markup(&format!(
+                "Also send to <b>{}</b>",
+                glib::markup_escape_text(&destination)
+            ));
+        }
+        let narrow = self.is_narrow();
+        ui.thread_close.set_visible(!narrow);
+        ui.thread_back[0].set_visible(narrow && !direct);
+        ui.thread_back[1].set_visible(narrow && direct);
+        ui.thread_place.set_label(&format!(
+            "{} {destination}",
+            if direct { "with" } else { "in" }
+        ));
         self.render_empty(&state);
         self.render_context_bar(&state);
         self.render_gifs(&state);
+        self.place_thread_mic();
         let joined = state.joined();
         let can_send = state.session.is_some();
         let replaced = self.render_request_bar(&state);
@@ -4812,13 +4837,13 @@ impl App {
         let thread_open = state.thread.is_some() && !state.feedback_open;
         ui.thread_panel.set_visible(thread_open);
         ui.members_panel.set_visible(
-            !thread_open
-                && !state.feedback_open
-                && ui.members_toggle.is_active()
-                && ui.members_toggle.is_visible(),
+            !state.feedback_open && ui.members_toggle.is_active() && ui.members_toggle.is_visible(),
         );
         ui.thread_composer.view.set_sensitive(can_send && joined);
-        ui.thread_composer.placeholder.set_label("Reply in thread");
+        if let Some(send) = &ui.thread_composer.send {
+            send.set_sensitive(can_send && joined);
+        }
+        ui.thread_composer.placeholder.set_label("Reply to thread…");
         let send_error = state.send_error.as_deref().unwrap_or_default();
         let in_thread = state
             .pending
@@ -5042,6 +5067,22 @@ impl App {
                 for row in &mut thread {
                     row.focused = row.id == *focused;
                 }
+            }
+            // As desktop, an empty thread invites the first reply under its
+            // root.
+            let answerable =
+                state.joined() && state.open_request().is_none() && !state.open_blocked();
+            if state.thread.as_ref().is_some_and(|thread| !thread.loading)
+                && let [root] = thread.as_mut_slice()
+            {
+                root.footer = Some(
+                    if answerable {
+                        "No replies yet. Start the thread."
+                    } else {
+                        "No replies yet."
+                    }
+                    .into(),
+                );
             }
             let thread_changed =
                 rows::apply(&self.ui.thread_list.store, &state.thread_rows, &thread);

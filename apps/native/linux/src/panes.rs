@@ -6,7 +6,9 @@
 //! width shows it narrower without forgetting it. In the sidebar, a line
 //! splits Channels from Direct messages the same way (Up and Down), saved
 //! as a fraction of its height (`sidebar-channels-fraction-v1`), each list
-//! keeping at least 96 px. A child of `app`.
+//! keeping at least 96 px. An open thread sits between the conversation
+//! and the member list, 300–480 px (340 at first), saved as
+//! `thread-width-v1`. A child of `app`.
 
 use super::App;
 use gtk::{glib, prelude::*};
@@ -27,6 +29,10 @@ const LINE: i32 = 1;
 const SIDEBAR_KEY: &str = "sidebar-width-v1";
 const MEMBERS_KEY: &str = "members-width-v1";
 const LISTS_KEY: &str = "sidebar-channels-fraction-v1";
+const THREAD_KEY: &str = "thread-width-v1";
+const THREAD_MIN: i32 = 300;
+const THREAD_MAX: i32 = 480;
+const THREAD: i32 = 340;
 
 fn saved(app: &App, key: &str, default: i32) -> i32 {
     app.prefs
@@ -44,6 +50,11 @@ fn list_min(height: i32) -> i32 {
 fn lists_position(position: i32, height: i32) -> i32 {
     let min = list_min(height);
     position.clamp(min, (height - min).max(min))
+}
+
+/// The widest the thread can be beside a conversation; `total` is both.
+fn thread_max(total: i32) -> i32 {
+    (total - BESIDE_MEMBERS).clamp(THREAD_MIN, THREAD_MAX)
 }
 
 /// The widest the sidebar can be in a split `total` wide.
@@ -140,6 +151,55 @@ impl App {
         });
         self.place_members();
 
+        // The thread beside the conversation.
+        let threads = &self.ui.thread_split;
+        let app = Rc::downgrade(self);
+        threads.connect_position_notify(move |threads| {
+            let Some(app) = app.upgrade() else {
+                return;
+            };
+            let total = threads.width();
+            if total <= 0
+                || app.is_narrow()
+                || !app.ui.thread_panel.is_visible()
+                || !app.thread_placed.get()
+            {
+                return;
+            }
+            let width = total - threads.position() - LINE;
+            let clamped = width.clamp(THREAD_MIN, thread_max(total));
+            if clamped != width {
+                threads.set_position(total - clamped - LINE);
+            } else {
+                if total >= clamped + BESIDE_MEMBERS {
+                    app.prefs.set(THREAD_KEY, clamped);
+                }
+                app.place_thread_mic();
+            }
+        });
+        keys(threads, |threads, key| {
+            let total = threads.width();
+            let width = total - threads.position() - LINE;
+            let next = match key {
+                Key::Shorter => width + STEP,
+                Key::Wider => width - STEP,
+                Key::Min => THREAD_MIN,
+                Key::Max => THREAD_MAX,
+            };
+            threads.set_position(total - next.clamp(THREAD_MIN, thread_max(total)) - LINE);
+        });
+        reset_on_double_click(threads, |threads| {
+            threads.set_position(threads.width() - THREAD - LINE);
+        });
+        let app = Rc::downgrade(self);
+        self.ui.thread_panel.connect_visible_notify(move |panel| {
+            if let Some(app) = app.upgrade()
+                && panel.is_visible()
+            {
+                app.place_thread();
+            }
+        });
+
         // Channels above Direct messages. GTK keeps the line where it was,
         // proportionally, as the sidebar's height changes; only a move at a
         // steady height is the person's, and saved.
@@ -214,6 +274,64 @@ impl App {
             }
             glib::ControlFlow::Break
         });
+    }
+
+    /// Puts an opened thread at its saved width, once the split has one.
+    fn place_thread(self: &Rc<Self>) {
+        self.thread_placed.set(false);
+        let app = Rc::downgrade(self);
+        self.ui.thread_split.add_tick_callback(move |threads, _| {
+            let Some(app) = app.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let total = threads.width();
+            if total <= 0 {
+                return glib::ControlFlow::Continue;
+            }
+            if !app.is_narrow() {
+                let width = app
+                    .prefs
+                    .get::<i32>(THREAD_KEY)
+                    .filter(|width| (THREAD_MIN..=THREAD_MAX).contains(width))
+                    .unwrap_or(THREAD)
+                    .min(thread_max(total));
+                threads.set_position(total - width - LINE);
+            }
+            app.thread_placed.set(true);
+            app.place_thread_mic();
+            glib::ControlFlow::Break
+        });
+    }
+
+    /// As desktop, a narrow thread's microphone moves up beside "Also send
+    /// to", leaving the field room for its placeholder.
+    pub(super) fn place_thread_mic(&self) {
+        let composer = &self.ui.thread_composer;
+        let Some(slot) = &composer.mic_slot else {
+            return;
+        };
+        // From the line, which moves before the panel is laid out again.
+        let threads = &self.ui.thread_split;
+        let width = if self.is_narrow() {
+            threads.width()
+        } else {
+            threads.width() - threads.position() - LINE
+        };
+        if width <= 0 {
+            return;
+        }
+        let gif = if composer.gif.is_visible() { 36 } else { 0 };
+        // The panel's margins, Send, the attach button and the field's tools.
+        let in_field = width - 36 - 44 - 22 - 108 - gif >= 120;
+        let target = if in_field { &composer.line } else { slot };
+        let mic = &composer.mic;
+        if mic.parent().as_ref() == Some(target.upcast_ref()) {
+            return;
+        }
+        if let Some(parent) = mic.parent().and_downcast::<gtk::Box>() {
+            parent.remove(mic);
+        }
+        target.append(mic);
     }
 
     pub(super) fn place_members(self: &Rc<Self>) {

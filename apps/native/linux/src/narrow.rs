@@ -138,15 +138,13 @@ impl App {
         ui.rail.set_visible(!narrow || browsing);
         ui.sidebar.set_visible(!narrow || browsing);
         ui.sidebar.set_hexpand(browsing);
-        // A narrow thread takes the conversation's place, and the split
-        // around the hidden halves must not keep their width.
-        ui.split.set_visible(!narrow || browsing || !thread_open);
-        ui.content_split
-            .set_visible(!narrow || !browsing && !thread_open);
+        // A narrow thread takes the conversation's place beside it.
+        ui.content_split.set_visible(!narrow || !browsing);
+        ui.stage.set_visible(!narrow || !thread_open);
         ui.thread_panel.set_visible(thread_open && !browsing);
         ui.thread_panel.set_hexpand(narrow);
         ui.thread_panel
-            .set_size_request(if narrow { -1 } else { 420 }, -1);
+            .set_size_request(if narrow { -1 } else { 300 }, -1);
         if narrow {
             ui.members_panel.set_visible(true);
             let open = ui.members_toggle.is_active() && ui.members_toggle.is_visible();

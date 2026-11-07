@@ -365,9 +365,14 @@ listview.messages > row:hover {
   font-weight: 700;
 }
 
+/* As desktop's message header: a 13px name, a 10px time. */
+.message .author {
+  font-size: 13px;
+}
+
 .time {
   color: @caper_text_muted;
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .body {
@@ -413,7 +418,7 @@ listview.messages > row:hover {
   border: 1px solid alpha(@caper_border, 0.7);
   border-radius: 8px;
   padding: 10px 12px;
-  margin: 4px 0 8px 49px;
+  margin: 4px 0 8px 44px;
 }
 
 .quote-author {
@@ -497,9 +502,14 @@ listview.messages > row:hover .tools,
 }
 
 button.tool {
-  min-width: 28px;
-  min-height: 28px;
+  min-width: 24px;
+  min-height: 24px;
   padding: 0;
+}
+
+/* As desktop: the quick reactions read larger than the tools. */
+button.tool.quick {
+  font-size: 17px;
 }
 
 popover.emoji-picker > contents {
@@ -615,7 +625,64 @@ popover.emoji-picker image.mine {
 
 .thread {
   background: @caper_surface_conversation;
-  border-left: 1px solid @caper_border;
+}
+
+/* As desktop: "Thread" over where it is. */
+.thread-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.thread-place {
+  color: @caper_text_muted;
+  font-size: 11px;
+}
+
+.thread-empty {
+  color: @caper_text_muted;
+  font-size: 12px;
+  padding-top: 12px;
+}
+
+/* A thread's composer: "Also send to" on its own row, Send reply beside
+   the field. */
+.thread-composer {
+  margin: 0 18px 17px;
+}
+
+.thread-composer .composer {
+  margin: 0;
+}
+
+.broadcast-row {
+  min-height: 36px;
+}
+
+.broadcast-row checkbutton label {
+  color: @caper_text_muted;
+  font-size: 11.52px;
+}
+
+button.send-reply {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  margin-bottom: 2px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+button.send-reply:not(.ready) image {
+  opacity: 0.5;
+}
+
+button.send-reply.ready:not(:disabled) {
+  background: @caper_action;
+}
+
+button.send-reply.ready:not(:disabled):hover {
+  background: @caper_action_hover;
 }
 
 button.send:not(:disabled) {
