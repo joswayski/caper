@@ -10474,9 +10474,13 @@ impl CaperApp {
                     );
                 });
                 ui.add_space(8.0);
+                let download = update.download_label().filter(|_| update.can_apply);
+                // The notes give up the download line's height, so the actions
+                // stay on screen at small sizes.
+                let footer = if download.is_some() { 428.0 } else { 400.0 };
                 egui::ScrollArea::vertical()
                     .id_salt("update-notes")
-                    .max_height((viewport.height() - 400.0).clamp(64.0, 300.0))
+                    .max_height((viewport.height() - footer).clamp(64.0, 300.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if !update.history_complete {
@@ -10527,7 +10531,7 @@ impl CaperApp {
                             .size(13.0),
                     );
                 }
-                if let Some(size) = update.download_label().filter(|_| update.can_apply) {
+                if let Some(size) = download {
                     ui.add_space(12.0);
                     ui.label(RichText::new(size).color(MUTED).size(13.0));
                 }
