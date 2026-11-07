@@ -3426,7 +3426,7 @@ public final class ChatModel {
     public var forwardConversationTarget: ChatMessage?
     public private(set) var isPreview = false
     /// Changes when account/channel access or its generation changes.
-    var editingContext: String { "\(generation):\(channelID ?? ""):\(currentAuthor?.id ?? ""):\(isPreview)" }
+    public var editingContext: String { "\(generation):\(channelID ?? ""):\(currentAuthor?.id ?? ""):\(isPreview)" }
     /// Web's failed first load: no conversation to show, only the error.
     public private(set) var loadFailed = false
     /// Web's session error: history loaded but sending needs a new chat session.

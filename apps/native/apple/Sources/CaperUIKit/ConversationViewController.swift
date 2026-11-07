@@ -805,7 +805,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
                            canAttach: chat.canAttach,
                            attachReason: chat.canAttach ? AttachCapacity.hint(chat.attachmentDrafts.count) : chat.attachUnavailableReason,
                            canPickExpressions: ready)
-        composer.show(draft: chat.draft)
+        composer.show(draft: chat.draft, conversation: chat.editingContext)
         composer.refreshContext()
         composer.textView.pasteAttachments = chat.canAttach ? { [weak chat] in chat?.pasteAttachments() ?? false } : nil
         composer.showLinkPreview(ready ? UIKitComposerLinkPreview(chat: chat) : nil)
