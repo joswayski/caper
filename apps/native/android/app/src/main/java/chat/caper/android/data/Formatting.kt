@@ -10,64 +10,22 @@ internal data class FormattedMessage(val runs: List<FormattedRun>, val sourceInd
 
 private fun formatSpace(c: Char) = c in "\t\n\u000b\u000c\r \u00a0\u1680\u2028\u2029\u202f\u205f\u3000\ufeff" || c in '\u2000'..'\u200a'
 
-/** Deliberately small Markdown subset, aligned with web and the shared fixtures. */
+/** Deliberately small Markdown subset, aligned with web and the shared fixtures (shared/messages/formatting.rs, through Rust). */
 internal fun formattedMessage(text: String): FormattedMessage {
-    val links = mutableListOf<IntRange>()
-    var offset = 0
-    linkSegments(text).forEach {
-        if (it.href != null) links += offset until offset + it.text.length
-        offset += it.text.length
-    }
+    val spans = CaperMobile.formatSpans(text)
     val runs = mutableListOf<FormattedRun>()
     val indices = mutableListOf<Int>()
-    fun word(c: Char?) = c != null && (c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9' || c == '_' || c == '@')
-    fun markerAt(index: Int, marker: String): Boolean {
-        if (!text.startsWith(marker, index) || links.any { index in it }) return false
-        var slashes = 0
-        var i = index - 1
-        while (i >= 0 && text[i] == '\\') { slashes++; i-- }
-        if (slashes % 2 != 0) return false
-        return marker != "**" || (text.getOrNull(index - 1) != '*' && text.getOrNull(index + 2) != '*')
-    }
-    fun append(start: Int, end: Int, bold: Boolean, italic: Boolean) {
-        if (start >= end) return
+    for (span in spans.indices step 3) {
+        val start = spans[span]
+        val end = spans[span + 1]
+        val bold = spans[span + 2] and 1 != 0
+        val italic = spans[span + 2] and 2 != 0
         indices.addAll(start until end)
         val value = text.substring(start, end)
         val last = runs.lastOrNull()
         if (last?.bold == bold && last.italic == italic) runs[runs.lastIndex] = last.copy(text = last.text + value)
         else runs += FormattedRun(value, bold, italic)
     }
-    fun parse(start: Int, end: Int, bold: Boolean, italic: Boolean) {
-        var plain = start
-        var index = start
-        while (index < end) {
-            val marker = when {
-                !bold && markerAt(index, "**") -> "**"
-                !italic && markerAt(index, "_") -> "_"
-                else -> null
-            }
-            if (marker != null && !(marker == "_" && word(text.getOrNull(index - 1)))) {
-                val inner = index + marker.length
-                if (inner < end && !formatSpace(text[inner])) {
-                    var close = inner
-                    while (close + marker.length <= end) {
-                        if (close != inner && markerAt(close, marker) && !formatSpace(text[close - 1]) &&
-                            !(marker == "_" && word(text.getOrNull(close + 1)))) {
-                            append(plain, index, bold, italic)
-                            parse(inner, close, bold || marker == "**", italic || marker == "_")
-                            index = close + marker.length - 1
-                            plain = index + 1
-                            break
-                        }
-                        close++
-                    }
-                }
-            }
-            index++
-        }
-        append(plain, end, bold, italic)
-    }
-    parse(0, text.length, false, false)
     return FormattedMessage(runs, indices)
 }
 
