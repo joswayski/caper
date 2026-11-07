@@ -2396,6 +2396,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val messages = remember(inThread, state.messages, state.threadOnlyRows, state.contextStart, state.contextEnd, state.pinIntents, state.editIntents) {
         (if (inThread) state.displayedMessages else state.displayedChannelMessages).filter { it.deletedAt == null }
     }
+    // Cut the loaded reactions' emoji artwork off the main thread, newest first and within half the crop
+    // cache: a row scrolling into view would otherwise decode a whole 1024px sprite sheet there for its chips.
+    val appContext = LocalContext.current.applicationContext
+    LaunchedEffect(messages) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            messages.asReversed().asSequence().flatMap { it.reactions }.map { it.emoji }.distinct().take(96).forEach { EmojiArtwork.bitmap(appContext, it) }
+        }
+    }
     val rowState = rememberMessageRowState(state)
     // Profile and mention taps read the newest state, so the row callbacks stay the same instances.
     val latest by rememberUpdatedState(state)
