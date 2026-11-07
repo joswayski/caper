@@ -1335,6 +1335,7 @@ test("notification settings and overrides validate, persist in memory and reset"
     [{ level: "loud" }, "level must be all, mentions, nothing or null"],
     [{ muted: true }, "invalid notification settings"],
     [[], "invalid notification settings"],
+    [{ voiceStarted: "false" }, "invalid notification settings"],
     [{ mutedUntil: "tomorrow" }, "mutedUntil must be forever or a time within the next year"],
     [{ mutedUntil: "2020-01-01T00:00:00Z" }, "mutedUntil must be forever or a time within the next year"],
     [
@@ -1345,13 +1346,20 @@ test("notification settings and overrides validate, persist in memory and reset"
     assert.deepEqual(await put(space, body), [400, { error }], JSON.stringify(body));
   assert.deepEqual(await put(space, { level: "mentions" }), [
     200,
-    { spaceId: ids.space, level: "mentions", mutedUntil: null },
+    { spaceId: ids.space, level: "mentions", mutedUntil: null, voiceStarted: null },
   ]);
   assert.deepEqual(
     await put(space, { mutedUntil: inHalfAnHour.toISOString() }),
-    [200, { spaceId: ids.space, level: "mentions", mutedUntil: muted }],
+    [200, { spaceId: ids.space, level: "mentions", mutedUntil: muted, voiceStarted: null }],
     "a missing key leaves that field unchanged",
   );
+  // Like push::settings::update_space: only spaces choose whether voice starting notifies.
+  assert.deepEqual(await put(space, { voiceStarted: false }), [
+    200,
+    { spaceId: ids.space, level: "mentions", mutedUntil: muted, voiceStarted: false },
+  ]);
+  assert.deepEqual(await put(channel, { voiceStarted: false }), [400, { error: "invalid notification settings" }]);
+  assert.deepEqual(await put(direct, { voiceStarted: true }), [400, { error: "invalid notification settings" }]);
   assert.deepEqual(await put(channel, { mutedUntil: "forever" }), [
     200,
     { spaceId: ids.space, channelId: ids.design, level: null, mutedUntil: "forever" },
@@ -1368,7 +1376,7 @@ test("notification settings and overrides validate, persist in memory and reset"
     mobile: "always",
     voiceStarted: false,
     overrides: [
-      { spaceId: ids.space, level: "mentions", mutedUntil: muted },
+      { spaceId: ids.space, level: "mentions", mutedUntil: muted, voiceStarted: false },
       { spaceId: ids.space, channelId: ids.design, level: null, mutedUntil: "forever" },
       { conversationId: ids.direct, level: "nothing", mutedUntil: "forever" },
     ],
@@ -1404,6 +1412,20 @@ test("notification settings and overrides validate, persist in memory and reset"
     [null, "forever", null],
   );
   vi.useRealTimers();
+  // A space override with only its voice choice left still lists; reset, it goes.
+  await put(space, { level: null, mutedUntil: null });
+  assert.deepEqual((await request("/api/notifications/settings", { auth: true })).value.overrides.at(0), {
+    spaceId: ids.space,
+    level: null,
+    mutedUntil: null,
+    voiceStarted: false,
+  });
+  await put(space, { voiceStarted: null });
+  assert.ok(
+    !(await request("/api/notifications/settings", { auth: true })).value.overrides.some(
+      (entry) => entry.spaceId === ids.space && !entry.channelId,
+    ),
+  );
   await request("/__fixture/control", { method: "POST", body: { reset: true } });
   assert.deepEqual((await request("/api/notifications/settings", { auth: true })).value, defaults);
 });

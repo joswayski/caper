@@ -405,9 +405,12 @@ const yearMs = 365 * 24 * 60 * 60 * 1000;
 const activeMute = (mutedUntil) =>
   mutedUntil === "forever" || (mutedUntil && Date.parse(mutedUntil) > Date.now()) ? mutedUntil : null;
 // Same rules and messages as push::settings::OverrideInput. Missing keys keep the field.
-function overrideChanges(body, direct) {
+// Only spaces take voiceStarted (a boolean, or null to reset); channels and DMs refuse it.
+function overrideChanges(body, direct, space) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return { error: "invalid notification settings" };
-  if (Object.keys(body).some((key) => key !== "level" && key !== "mutedUntil"))
+  if (Object.keys(body).some((key) => !["level", "mutedUntil", "voiceStarted"].includes(key)))
+    return { error: "invalid notification settings" };
+  if ("voiceStarted" in body && body.voiceStarted !== null && typeof body.voiceStarted !== "boolean")
     return { error: "invalid notification settings" };
   const changes = {};
   if ("level" in body) {
@@ -424,6 +427,10 @@ function overrideChanges(body, direct) {
         return { error: "mutedUntil must be forever or a time within the next year" };
       changes.mutedUntil = new Date(Math.floor(at / 1000) * 1000).toISOString().replace(".000Z", "Z");
     }
+  }
+  if ("voiceStarted" in body) {
+    if (!space) return { error: "invalid notification settings" };
+    changes.voiceStarted = body.voiceStarted;
   }
   return { changes };
 }
@@ -1711,7 +1718,11 @@ export async function startFixture({
         ...settingsFor(user),
         overrides: (state.notificationOverrides.get(user.id) ?? [])
           .map((entry) => ({ ...entry, mutedUntil: activeMute(entry.mutedUntil) }))
-          .filter((entry) => (entry.level !== null || entry.mutedUntil !== null) && overrideTarget(user, entry)),
+          .filter(
+            (entry) =>
+              (entry.level !== null || entry.mutedUntil !== null || (entry.voiceStarted ?? null) !== null) &&
+              overrideTarget(user, entry),
+          ),
       });
       if (path === "/api/notifications/settings" && (method === "GET" || method === "PUT")) {
         if (!user) return reject(response, 401, "Sign in required.");
@@ -1764,7 +1775,11 @@ export async function startFixture({
       if (overridePath && method === "PUT") {
         if (!user) return reject(response, 401, "Sign in required.");
         const [, spaceId, channelId, conversationId] = overridePath;
-        const { changes, error } = overrideChanges(body, conversationId !== undefined);
+        const { changes, error } = overrideChanges(
+          body,
+          conversationId !== undefined,
+          conversationId === undefined && channelId === undefined,
+        );
         if (error) return reject(response, 400, error);
         const target = overrideTarget(user, { spaceId, channelId, conversationId });
         if (!target)
@@ -1782,6 +1797,7 @@ export async function startFixture({
         let entry = overrides.find((candidate) => key(candidate) === key(target));
         if (!entry) {
           entry = { ...target, level: null, mutedUntil: null };
+          if (!target.channelId && !target.conversationId) entry.voiceStarted = null;
           overrides.push(entry);
         }
         Object.assign(entry, changes);
