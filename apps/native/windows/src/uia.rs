@@ -100,6 +100,8 @@ pub enum Id {
     /// The thread beside the conversation, and its parts.
     Thread,
     ThreadPart(TPart),
+    /// A channel's Join, or your call's card and its buttons.
+    Voice(crate::call::VPart),
 }
 
 fn na() -> Error {
@@ -219,6 +221,7 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                 out.push(Id::Composer);
             }
             out.push(Id::Members);
+            out.extend(a.voice_parts().into_iter().map(Id::Voice));
             if a.foot_shown() {
                 out.push(Id::Gear);
             }
@@ -253,6 +256,10 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .into_iter()
             .chain((0..a.c.channels.len()).flat_map(|i| {
                 std::iter::once(Id::Channel(i))
+                    .chain(
+                        a.join_action(i)
+                            .map(|_| Id::Voice(crate::call::VPart::Join(i))),
+                    )
                     .chain(a.channel_scope(i).map(|_| Id::ChannelOptions(i)))
             }))
             .collect(),
@@ -300,7 +307,10 @@ fn parent(id: Id) -> Option<Id> {
     Some(match id {
         Id::Root => return None,
         Id::Space(_) => Id::Rail,
-        Id::Channel(_) | Id::ChannelOptions(_) | Id::SpaceOptions => Id::Channels,
+        Id::Channel(_)
+        | Id::ChannelOptions(_)
+        | Id::SpaceOptions
+        | Id::Voice(crate::call::VPart::Join(_)) => Id::Channels,
         Id::Direct(_) | Id::NewDirect | Id::DirectOptions(_) => Id::Directs,
         Id::AccountItem(_) => Id::AccountMenu,
         Id::DmItem(_) => Id::DmMenu,
@@ -331,6 +341,8 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Channel(i) => i < a.c.channels.len(),
         Id::ChannelOptions(i) => a.channel_scope(i).is_some(),
         Id::SpaceOptions => a.space_scope().is_some(),
+        Id::Voice(crate::call::VPart::Join(i)) => a.join_action(i).is_some(),
+        Id::Voice(p) => a.voice_parts().contains(&p),
         Id::Directs | Id::NewDirect => !a.direct_rows().is_empty(),
         Id::Bar(p) => a.bar_parts().iter().any(|(q, _)| *q == p),
         Id::Waiting => a.note.is_some(),
@@ -430,6 +442,7 @@ fn name(a: &App, id: Id) -> String {
             _ => "Conversation options",
         }
         .into(),
+        Id::Voice(p) => a.voice_name(p),
         // egui's names for these buttons.
         Id::SpaceOptions => format!(
             "{} actions",
@@ -631,6 +644,8 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::AccountMenu | Id::DmMenu => UIA_MenuControlTypeId,
         Id::DmItem(_) => UIA_MenuItemControlTypeId,
         Id::DirectOptions(_) | Id::SpaceOptions | Id::ChannelOptions(_) => UIA_ButtonControlTypeId,
+        Id::Voice(crate::call::VPart::Status) => UIA_TextControlTypeId,
+        Id::Voice(_) => UIA_ButtonControlTypeId,
         Id::AccountItem(_) => UIA_MenuItemControlTypeId,
         Id::MenuItem(_) => UIA_MenuItemControlTypeId,
         Id::Thread => UIA_PaneControlTypeId,
@@ -671,6 +686,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::DmMenu => (44, 0),
         Id::DmItem(k) => (45, k),
         Id::SpaceOptions => (46, 0),
+        Id::Voice(p) => (48, p.index()),
         Id::ChannelOptions(i) => (47, i),
         Id::AccountItem(k) => (41, k),
         Id::Waiting => (42, 0),
@@ -786,6 +802,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::DirectOptions(k) => a.direct_options_rect(k),
         Id::SpaceOptions => a.space_options_rect(),
         Id::ChannelOptions(i) => App::channel_options_rect(i),
+        Id::Voice(p) => a.voice_rect(p).unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::DmMenu => a.dm_menu_rect(),
         Id::DmItem(k) => a.dm_item_rect(k),
         Id::AccountItem(k) => a.account_item_rect(k),
@@ -953,7 +970,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             }
             Id::Settings(p) if p.is_toggle() => pattern == UIA_TogglePatternId,
             Id::Settings(crate::settings::SPart::Text(_)) => false,
+            Id::Voice(crate::call::VPart::Status) => false,
             Id::Settings(_)
+            | Id::Voice(_)
             | Id::Gear
             | Id::AccountItem(_)
             | Id::DirectOptions(_)
@@ -1082,6 +1101,13 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::DirectOptions(_)
                         | Id::SpaceOptions
                         | Id::ChannelOptions(_)
+                        | Id::Voice(
+                            crate::call::VPart::Join(_)
+                                | crate::call::VPart::Mute
+                                | crate::call::VPart::Deafen
+                                | crate::call::VPart::Leave
+                                | crate::call::VPart::Dismiss
+                        )
                         | Id::DmItem(_)
                         | Id::Bar(
                             crate::directs::BarPart::Accept
@@ -1101,6 +1127,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     (Id::Sign(Part::Title | Part::Message), _) => true,
                     (Id::Dialog(p), _) => a.dialog.as_ref().is_some_and(|d| d.enabled(p)),
                     (Id::Settings(p), _) => a.settings.as_ref().is_some_and(|s| s.enabled(p)),
+                    (Id::Voice(p), _) => a.voice_enabled(p),
                     (Id::DmItem(k), _) => {
                         let (on, items) = a.dm_menu_items();
                         on && items.get(k).is_some_and(crate::directs::MenuItem::action)
@@ -1257,6 +1284,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::NewDirect => a.open_start_direct(),
                 Id::Bar(p) => a.bar_activate(p),
                 Id::Settings(p) => a.settings_activate(p),
+                Id::Voice(p) => a.voice_activate(p),
                 Id::Gear => a.toggle_account_menu(),
                 Id::AccountItem(k) => a.account_activate(k),
                 Id::DirectOptions(k) => a.toggle_dm_menu(k),

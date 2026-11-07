@@ -5,10 +5,13 @@
 //! no session is stored. Only used when `CAPER_API_URL` is set; the rest
 //! of the egui client's commands come later.
 use crate::model::{self, Conversation, Person, Reaction, Span};
+use caper_client::effects::{Effect, Effects};
 use caper_client::notifications::{Change, Scope};
 use caper_client::reactions::{
     REACTOR_CACHE_LIMIT, Reacted, Reactions, ReactorCache, ReactorState,
 };
+use caper_client::state::{CallContext, Phase};
+use caper_client::voice::{Voice, VoiceOperation};
 use caper_client::worker::{AccountOperation, AccountResult, Command, Event, Worker};
 use caper_client::{Host, api::Api, gateway, grouping, model as core};
 use std::collections::{HashMap, HashSet};
@@ -118,6 +121,9 @@ pub enum Update {
     /// The notification inbox's rows, filters or unread count changed, or
     /// it closed to open one of its notifications.
     Inbox,
+    /// Voice changed: who is in a channel's voice, whether a channel can be
+    /// joined, or your call's state.
+    Voice,
     /// Something for the header's status line that leaves the sign-in
     /// screen alone (a toast that failed to show, say).
     Warning(String),
@@ -364,8 +370,56 @@ pub struct Live {
     /// and its thread's root, shown once that navigation loads.
     focus: Option<(u64, String, Option<String>)>,
     /// Who is in voice in each joined channel of the open space, as the
-    /// gateway last listed them (egui's `channel_rosters`).
-    rosters: HashMap<String, Vec<core::VoiceOccupant>>,
+    /// gateway last listed them (egui's `channel_rosters`), and when each
+    /// session started.
+    rosters: HashMap<String, (Vec<core::VoiceOccupant>, Option<u64>)>,
+    /// Your call (the shared engine, as egui's `voice`) and its sounds.
+    pub voice: Voice,
+    effects: Effects,
+    /// Whether each channel's voice can be joined, as the server said for
+    /// this account (egui's `media_availability`), and which were asked.
+    availability: HashMap<String, bool>,
+    status_asked: HashSet<String>,
+    /// The last join's membership check: its channel, the call generation
+    /// it was made in and when Join was clicked (epoch ms).
+    join_request: u64,
+    pending_join: Option<(String, u64, u64)>,
+    /// Joins prepared ahead of a click, by channel (at most every 4 s).
+    prepared: HashMap<String, Instant>,
+    /// The call generation whose connection was announced, and who else
+    /// was in it, for the join and leave chimes.
+    announced: Option<u64>,
+    others: Option<(u64, Vec<String>)>,
+    /// What voice last showed, so only changes redraw.
+    voice_seen: String,
+}
+
+/// What a channel's voice offers now (egui's `VoiceAction`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VoiceAction {
+    /// Join (or Switch, from a call elsewhere), and whether it can now.
+    Join {
+        switching: bool,
+        enabled: bool,
+    },
+    Joining,
+    Leave,
+}
+
+/// Your call as the sidebar's card shows it.
+#[derive(Clone, PartialEq, Debug)]
+pub struct CallView {
+    /// Connecting, reconnecting or connected (None).
+    pub status: Option<&'static str>,
+    pub channel: String,
+    pub space: String,
+    pub names: String,
+    pub count: usize,
+    /// The session's running time.
+    pub timer: Option<String>,
+    pub joining: bool,
+    pub muted: bool,
+    pub deafened: bool,
 }
 
 /// What a send with composer files did.
@@ -426,10 +480,26 @@ pub fn start(hwnd: HWND) -> Option<Live> {
             host.wake();
         })
     });
+    // Voice wakes the window like the worker does.
+    let voice = Voice::new(api.base().clone(), {
+        let host = host.clone();
+        caper_client::voice::Repaint::new(move |delay| match delay {
+            None => host.wake(),
+            Some(delay) => host.wake_after(delay),
+        })
+    });
     let worker = Worker::new(api, host.clone());
     let generation = 1;
     worker.send(Command::Restore { generation });
-    Some(Live::fresh(worker, media, media_ready, host, generation))
+    Some(Live::fresh(
+        worker,
+        media,
+        media_ready,
+        host,
+        generation,
+        voice,
+        Effects::new(true),
+    ))
 }
 
 impl Live {
@@ -440,6 +510,8 @@ impl Live {
         media_ready: Arc<std::sync::atomic::AtomicBool>,
         host: WinHost,
         generation: u64,
+        voice: Voice,
+        effects: Effects,
     ) -> Self {
         Live {
             worker,
@@ -514,6 +586,16 @@ impl Live {
             activity: Default::default(),
             focus: None,
             rosters: HashMap::new(),
+            voice,
+            effects,
+            availability: HashMap::new(),
+            status_asked: HashSet::new(),
+            join_request: 0,
+            pending_join: None,
+            prepared: HashMap::new(),
+            announced: None,
+            others: None,
+            voice_seen: String::new(),
         }
     }
 
@@ -533,10 +615,14 @@ impl Live {
             mut media,
             media_ready,
             host,
+            mut voice,
+            effects,
             ..
         } = self;
         media.clear();
-        Live::fresh(worker, media, media_ready, host, generation)
+        voice.leave();
+        voice.error = None;
+        Live::fresh(worker, media, media_ready, host, generation, voice, effects)
     }
 
     fn account(&self, operation: AccountOperation) {
@@ -2068,8 +2154,7 @@ impl Live {
             return;
         };
         let a = &mut self.activity;
-        if poll && (a.loading || !a.reads.is_empty()) || more && (a.loading || a.cursor.is_none())
-        {
+        if poll && (a.loading || !a.reads.is_empty()) || more && (a.loading || a.cursor.is_none()) {
             return;
         }
         a.request += 1;
@@ -2178,9 +2263,303 @@ impl Live {
         out.append(&mut self.queued);
     }
 
-    /// Who is in voice in channel `id` (egui's `voice_people`).
-    pub fn voice_people(&self, id: &str) -> &[core::VoiceOccupant] {
-        self.rosters.get(id).map_or(&[], Vec::as_slice)
+    /// Who is in voice in channel `id` (egui's `voice_people`): your call's
+    /// own roster there, else the gateway's.
+    pub fn voice_names(&self, id: &str) -> Vec<&str> {
+        if self.own_call(id) {
+            return self
+                .voice
+                .participants
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect();
+        }
+        self.rosters.get(id).map_or_else(Vec::new, |(people, _)| {
+            people.iter().map(|p| p.name.as_str()).collect()
+        })
+    }
+
+    /// Whether your call (not a failed one) is in channel `id`.
+    fn own_call(&self, id: &str) -> bool {
+        self.voice.state.active_channel() == Some(id)
+            && !matches!(self.voice.state.phase, Phase::Failed(_))
+    }
+
+    /// Whether a call is under way anywhere.
+    pub fn in_voice(&self) -> bool {
+        !matches!(self.voice.state.phase, Phase::Idle | Phase::Failed(_))
+    }
+
+    /// Why channel `id`'s voice can't be joined now (egui's
+    /// `join_unavailable`).
+    pub fn join_unavailable(&self, id: &str) -> Option<&'static str> {
+        match self.availability.get(id) {
+            Some(true) => None,
+            Some(false) => Some("Joining is not available at this time."),
+            None => Some("Checking voice availability\u{2026}"),
+        }
+    }
+
+    /// Where a join of channel `id` goes: a joined channel of the open
+    /// space, signed in and available.
+    fn voice_target(&self, id: &str) -> Option<(CallContext, String)> {
+        let detail = self.detail.as_ref()?;
+        let target = detail.channels.iter().find(|c| c.id == id && c.joined)?;
+        if self.token.is_none() || detail.space.demo || self.join_unavailable(id).is_some() {
+            return None;
+        }
+        Some((
+            CallContext {
+                channel_id: target.id.clone(),
+                channel_name: target.name.clone(),
+                space_name: detail.space.name.clone(),
+            },
+            detail.space.id.clone(),
+        ))
+    }
+
+    /// egui's `voice_action`: what voice offers in channel `id` now.
+    pub fn voice_action(&self, id: &str) -> VoiceAction {
+        let own = self.own_call(id);
+        let authorizing = self.pending_join.as_ref().map(|(c, ..)| c.as_str());
+        let connecting = matches!(
+            self.voice.state.phase,
+            Phase::Joining(_) | Phase::Reconnecting(_)
+        );
+        if own && matches!(self.voice.state.phase, Phase::Connected(_)) {
+            VoiceAction::Leave
+        } else if authorizing == Some(id) || own && connecting {
+            VoiceAction::Joining
+        } else {
+            VoiceAction::Join {
+                switching: self.in_voice(),
+                enabled: authorizing.is_none() && !connecting && self.voice_target(id).is_some(),
+            }
+        }
+    }
+
+    /// Web prepares a join as the pointer nears Join; the API keeps it 8 s,
+    /// so it is asked again at most every 4 s.
+    pub fn prepare_voice(&mut self, id: &str) {
+        let (Some(token), Some(_)) = (self.token.clone(), self.voice_target(id)) else {
+            return;
+        };
+        if self.own_call(id)
+            || self
+                .prepared
+                .get(id)
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(4))
+        {
+            return;
+        }
+        self.prepared.insert(id.to_owned(), Instant::now());
+        self.worker.send(Command::PrepareVoice {
+            token,
+            channel: id.to_owned(),
+        });
+    }
+
+    /// Join or Switch (egui's `join_voice_channel`): the space membership
+    /// is checked, then the call joins.
+    pub fn join_voice(&mut self, id: &str) {
+        if self
+            .pending_join
+            .as_ref()
+            .is_some_and(|(_, generation, _)| *generation == self.voice.state.generation)
+            || matches!(
+                self.voice.state.phase,
+                Phase::Joining(_) | Phase::Reconnecting(_)
+            )
+            || self.own_call(id)
+        {
+            return;
+        }
+        let (Some(token), Some((_, space))) = (self.token.clone(), self.voice_target(id)) else {
+            return;
+        };
+        let clicked = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        self.join_request += 1;
+        self.pending_join = Some((id.to_owned(), self.voice.state.generation, clicked));
+        self.worker.send(Command::CheckVoice {
+            request: self.join_request,
+            voice_generation: self.voice.state.generation,
+            token,
+            space,
+            channel: id.to_owned(),
+        });
+        self.queued.push(Update::Voice);
+    }
+
+    fn accept_join(
+        &mut self,
+        request: u64,
+        voice_generation: u64,
+        space: &str,
+        channel: &str,
+        result: Result<(), caper_client::worker::LoadError>,
+    ) {
+        if request != self.join_request {
+            return;
+        }
+        let Some((_, _, clicked)) = self.pending_join.take() else {
+            return;
+        };
+        if voice_generation != self.voice.state.generation {
+            return;
+        }
+        let Some((context, target)) = self.voice_target(channel) else {
+            return;
+        };
+        if target != space {
+            return;
+        }
+        match result {
+            Ok(()) => {
+                let started = self.rosters.get(channel).and_then(|(_, s)| *s);
+                let name = Some(self.account_name.clone())
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or_else(|| "Guest".into());
+                self.voice.join(
+                    context,
+                    Some(target),
+                    self.token.clone(),
+                    name,
+                    clicked,
+                    started,
+                );
+            }
+            Err(e) => {
+                if e.access_denied {
+                    self.availability.insert(channel.to_owned(), false);
+                    self.rosters.remove(channel);
+                }
+                self.voice.error = Some(e.message);
+            }
+        }
+    }
+
+    /// Leave, or Cancel while joining; only a connected call plays the
+    /// disconnect sound.
+    pub fn leave_voice(&mut self) {
+        if matches!(self.voice.state.phase, Phase::Connected(_)) {
+            self.effects.play(Effect::Disconnect);
+        }
+        self.pending_join = None;
+        self.voice.leave();
+        self.queued.push(Update::Voice);
+    }
+
+    pub fn toggle_mute(&mut self) {
+        let muted = self.voice.state.audio.muted;
+        self.voice.command(VoiceOperation::Mute(!muted));
+        self.effects.toggle(muted);
+        self.queued.push(Update::Voice);
+    }
+
+    pub fn toggle_deafen(&mut self) {
+        let deafened = self.voice.state.audio.deafened;
+        self.voice.command(VoiceOperation::Deafen(!deafened));
+        self.effects.toggle(deafened);
+        self.queued.push(Update::Voice);
+    }
+
+    pub fn dismiss_voice_error(&mut self) {
+        self.voice.error = None;
+        self.queued.push(Update::Voice);
+    }
+
+    /// Your call as its card shows it, while one is under way.
+    pub fn call_view(&self) -> Option<CallView> {
+        let (Phase::Joining(call) | Phase::Connected(call) | Phase::Reconnecting(call)) =
+            &self.voice.state.phase
+        else {
+            return None;
+        };
+        let names: Vec<&str> = self
+            .voice
+            .participants
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        Some(CallView {
+            status: match self.voice.state.phase {
+                Phase::Connected(_) => None,
+                Phase::Joining(_) => Some("Connecting\u{2026}"),
+                _ => Some("Reconnecting\u{2026}"),
+            },
+            channel: call.channel_name.clone(),
+            space: call.space_name.clone(),
+            names: caper_client::voice::room_names(&names),
+            count: names.len(),
+            timer: self
+                .voice
+                .session_started_at
+                .filter(|_| matches!(self.voice.state.phase, Phase::Connected(_)))
+                .map(|started| caper_client::voice::session_duration(started, now)),
+            joining: matches!(self.voice.state.phase, Phase::Joining(_)),
+            muted: self.voice.state.audio.muted,
+            deafened: self.voice.state.audio.deafened,
+        })
+    }
+
+    /// Reads the call's reports (egui's `receive`): a connection plays the
+    /// join sound, others arriving or leaving their chimes. Whether what
+    /// voice shows changed.
+    fn receive_voice(&mut self) -> bool {
+        self.voice.receive();
+        if self
+            .pending_join
+            .as_ref()
+            .is_some_and(|(_, generation, _)| *generation != self.voice.state.generation)
+        {
+            self.pending_join = None;
+        }
+        let generation = self.voice.state.generation;
+        if matches!(self.voice.state.phase, Phase::Connected(_)) {
+            if self.announced != Some(generation) {
+                self.announced = Some(generation);
+                self.effects.play(Effect::Join);
+            }
+            let me = &self.voice.self_id;
+            let others: Vec<String> = self
+                .voice
+                .participants
+                .iter()
+                .filter(|p| p.id != *me)
+                .map(|p| p.id.clone())
+                .collect();
+            if let Some((g, before)) = &self.others
+                && *g == generation
+                && !me.is_empty()
+            {
+                if before.iter().any(|id| !others.contains(id)) {
+                    self.effects.play(Effect::Leave);
+                } else if others.iter().any(|id| !before.contains(id)) {
+                    self.effects.play(Effect::Join);
+                }
+            }
+            self.others = Some((generation, others));
+        } else {
+            self.others = None;
+        }
+        let seen = format!(
+            "{:?}{:?}{:?}{:?}{:?}",
+            self.voice.state.phase,
+            self.voice.state.audio,
+            self.voice
+                .participants
+                .iter()
+                .map(|p| (&p.id, &p.name, p.muted, p.deafened))
+                .collect::<Vec<_>>(),
+            self.voice.error,
+            self.pending_join,
+        );
+        if seen == self.voice_seen {
+            return false;
+        }
+        self.voice_seen = seen;
+        true
     }
 
     /// What the inbox card shows (egui's `activity_dialog` rows).
@@ -2325,8 +2704,12 @@ impl Live {
         {
             self.refresh_unread();
         }
+        let voice = self.receive_voice();
         let events: Vec<Event> = self.worker.events.try_iter().collect();
         let mut out = std::mem::take(&mut self.queued);
+        if voice {
+            out.push(Update::Voice);
+        }
         for event in events {
             self.handle(event, &mut out);
         }
@@ -2441,6 +2824,20 @@ impl Live {
                         unread.as_deref(),
                         self.direct_head(),
                     );
+                    // Whether each joined channel's voice can be joined,
+                    // once per account (egui's `refresh_media_status`).
+                    if !direct && let Some(token) = self.token.clone() {
+                        for c in detail.channels.iter().filter(|c| c.joined) {
+                            if self.status_asked.insert(c.id.clone()) {
+                                self.worker.send(Command::MediaStatus {
+                                    generation: self.account_epoch,
+                                    root: c.id.clone(),
+                                    token: Some(token.clone()),
+                                    channel: Some(c.id.clone()),
+                                });
+                            }
+                        }
+                    }
                     // The space's joined channels' voice rosters, as egui
                     // watches them; none in a request or a blocked DM.
                     self.rosters.clear();
@@ -2934,24 +3331,47 @@ impl Live {
                 generation,
                 channel,
                 participants,
-                ..
+                session_started_at,
             }) if generation == current => {
-                self.rosters.insert(channel, participants);
-                out.push(Update::Badges);
+                let started = session_started_at.filter(|_| !participants.is_empty());
+                self.rosters.insert(channel, (participants, started));
+                out.push(Update::Voice);
             }
+            // A channel whose voice you lost access to; a call in it ends.
             Event::Gateway(gateway::GatewayEvent::VoiceUnavailable {
                 generation,
                 channel,
-                ..
+                revoked,
             }) if generation == current => {
                 self.rosters.remove(&channel);
-                out.push(Update::Badges);
+                if revoked {
+                    self.voice.revoke_channel(&channel);
+                }
+                out.push(Update::Voice);
             }
             Event::Gateway(gateway::GatewayEvent::VoiceReset { generation })
                 if generation == current =>
             {
                 self.rosters.clear();
-                out.push(Update::Badges);
+                out.push(Update::Voice);
+            }
+            Event::MediaStatus {
+                generation,
+                root,
+                enabled,
+            } if generation == self.account_epoch => {
+                self.availability.insert(root, enabled);
+                out.push(Update::Voice);
+            }
+            Event::VoiceChecked {
+                request,
+                voice_generation,
+                space,
+                channel,
+                result,
+            } => {
+                self.accept_join(request, voice_generation, &space, &channel, result);
+                out.push(Update::Voice);
             }
             Event::Gateway(gateway::GatewayEvent::Presence {
                 generation,

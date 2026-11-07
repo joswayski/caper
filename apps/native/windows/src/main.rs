@@ -15,6 +15,7 @@
 
 mod actions;
 mod bench;
+mod call;
 mod card;
 mod composer;
 mod directs;
@@ -244,6 +245,8 @@ pub struct App {
     hover_member: Option<usize>,
     /// The sidebar's DM row under the pointer.
     hover_direct: Option<directs::Spot>,
+    /// A channel row's Join or a call card button under the pointer.
+    voice_hover: Option<call::VPart>,
     /// The request bar's hovered and pressed buttons.
     bar_hover: Option<directs::BarPart>,
     bar_pressed: Option<directs::BarPart>,
@@ -446,6 +449,7 @@ impl App {
                 hover_space: None,
                 hover_channel: None,
                 hover_channel_options: false,
+                voice_hover: None,
                 space_options_hover: false,
                 hover_member: None,
                 hover_direct: None,
@@ -764,6 +768,7 @@ impl App {
                     }
                 }
                 live::Update::Inbox => self.inbox_changed(),
+                live::Update::Voice => self.voice_changed(),
                 live::Update::Notified => {
                     self.close_dialog();
                     self.close_settings();
@@ -851,8 +856,7 @@ impl App {
     /// Who is in voice in joined channel `i`: their count and one line of
     /// names, as egui's room cards word it.
     pub fn channel_voice(&self, i: usize) -> Option<(usize, String)> {
-        let people = self.live.as_ref()?.voice_people(self.ids.channels.get(i)?);
-        let names: Vec<&str> = people.iter().map(|p| p.name.as_str()).collect();
+        let names = self.live.as_ref()?.voice_names(self.ids.channels.get(i)?);
         (!names.is_empty()).then(|| (names.len(), caper_client::voice::room_names(&names)))
     }
 
@@ -1335,7 +1339,12 @@ impl App {
             space = (0..self.c.spaces.len()).find(|&i| inside(Self::space_rect(i), x, y));
             channel = (0..self.c.channels.len()).find(|&i| inside(Self::channel_rect(i), x, y));
             member = (0..self.c.listed_members).find(|&i| inside(self.member_rect(i), x, y));
-            direct = self.direct_at(x, y);
+            // The call card covers the DM rows under it.
+            direct = if self.on_call(x, y) {
+                None
+            } else {
+                self.direct_at(x, y)
+            };
             channel_options = channel.is_some_and(|i| {
                 self.channel_scope(i).is_some() && inside(Self::channel_options_rect(i), x, y)
             });
@@ -1347,6 +1356,7 @@ impl App {
             self.need = true;
         }
         self.track_bar_hover();
+        self.track_voice_hover();
         let gear = self.pointer.is_some_and(|(x, y)| self.on_gear(x, y));
         if gear != self.gear_hover {
             self.gear_hover = gear;
@@ -1523,6 +1533,11 @@ impl App {
                 TIMER_CARD => self.show_card(),
                 TIMER_MEDIA => self.next_gif_frame(),
                 TIMER_MUTE => self.mutes_changed(),
+                // The call's running time.
+                call::TIMER_CALL => {
+                    self.dirty.sidebar = true;
+                    self.need = true;
+                }
                 settings::TIMER_INBOX => self.inbox_tick(),
                 TIMER_GIFS => self.gifs_tick(),
                 TIMER_GIF_FRAMES => self.next_picker_frame(),
@@ -1632,6 +1647,9 @@ impl App {
                             self.set_sel(Some((anchor, h)));
                             self.selecting = true;
                         }
+                    } else if let Some(p) = self.voice_at(x, y) {
+                        self.voice_activate(p);
+                    } else if self.on_call(x, y) {
                     } else if self.space_options_hover {
                         let scope = self.space_scope();
                         self.toggle_scope_menu(scope);
@@ -1710,6 +1728,7 @@ impl App {
                         .pointer
                         .is_some_and(|(x, y)| (self.in_box(x, y) && !bar) || self.in_history(x, y));
                 let hand = part
+                    || self.voice_hover.is_some()
                     || self.hover_channel.is_some()
                     || self.space_options_hover
                     || self
@@ -2751,6 +2770,11 @@ impl App {
             let in_voice: Vec<usize> = (0..c.channels.len())
                 .map(|i| self.channel_voice(i).map_or(0, |(n, _)| n))
                 .collect();
+            // A hovered row's Join (Switch from a call elsewhere).
+            let joins: Vec<Option<(bool, bool)>> = (0..c.channels.len())
+                .map(|i| self.join_action(i).filter(|_| hover == Some(i)))
+                .collect();
+            let voice_hover = self.voice_hover;
             self.sidebar.draw(s, |dc| unsafe {
                 dc.Clear(Some(&gfx::color(SURFACE_SIDEBAR, 1.0)));
                 if let Some((muted, lit)) = space_menu {
@@ -2821,6 +2845,27 @@ impl App {
                         );
                         right = b.left - 4.0;
                     }
+                    if let Some((_, enabled)) = joins[i] {
+                        let b = rect(r.right - 58.0, cy - 12.0, r.right - 34.0, cy + 12.0);
+                        let on = voice_hover == Some(call::VPart::Join(i));
+                        if on && enabled {
+                            fill_round(dc, b, 6.0, &g.brushes.hover);
+                        }
+                        icons::draw(
+                            dc,
+                            icons::Icon::Headphones,
+                            rect(b.left + 4.0, b.top + 4.0, b.right - 4.0, b.bottom - 4.0),
+                            if !enabled {
+                                BORDER
+                            } else if on {
+                                VOICE_GREEN
+                            } else {
+                                TEXT_MUTED
+                            },
+                            1.0,
+                        );
+                        right = r.right - 62.0;
+                    }
                     // A channel with anything new: egui's small text-coloured dot.
                     if channel_badges.get(i).copied().unwrap_or(false) {
                         fill_round(
@@ -2840,13 +2885,7 @@ impl App {
                         )?;
                         let m = gfx::metrics(&l);
                         right -= m.widthIncludingTrailingWhitespace;
-                        text::draw(
-                            dc,
-                            &l,
-                            right,
-                            cy - m.height / 2.0,
-                            &g.solid(VOICE_GREEN),
-                        );
+                        text::draw(dc, &l, right, cy - m.height / 2.0, &g.solid(VOICE_GREEN));
                         right -= 8.0;
                     }
                     if *muted {
@@ -2904,6 +2943,7 @@ impl App {
                     }
                 }
                 directs::draw(g, dc, &drows, dtop, dhover, dmenu)?;
+                self.draw_call(g, dc)?;
                 self.draw_foot(g, dc, self.h)?;
                 Ok(())
             })?;

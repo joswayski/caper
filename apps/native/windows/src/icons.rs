@@ -25,6 +25,7 @@ macro_rules! icons {
 }
 
 icons! {
+    AudioLines => "audio-lines.svg",
     Bell => "bell.svg",
     BellOff => "bell-off.svg",
     Check => "check.svg",
@@ -35,9 +36,13 @@ icons! {
     EyeOff => "eye-off.svg",
     FileText => "file-text.svg",
     Hash => "hash.svg",
+    Headphones => "headphones.svg",
     History => "history.svg",
+    Mic => "mic.svg",
+    MicOff => "mic-off.svg",
     More => "ellipsis.svg",
     Pencil => "pencil.svg",
+    PhoneOff => "phone-off.svg",
     Pin => "pin.svg",
     PinOff => "pin-off.svg",
     Play => "play.svg",
@@ -48,6 +53,7 @@ icons! {
     Settings => "settings.svg",
     SmilePlus => "smile-plus.svg",
     Trash => "trash-2.svg",
+    VolumeX => "volume-x.svg",
 }
 
 thread_local! {
