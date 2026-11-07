@@ -10,8 +10,26 @@ internal data class FormattedMessage(val runs: List<FormattedRun>, val sourceInd
 
 private fun formatSpace(c: Char) = c in "\t\n\u000b\u000c\r \u00a0\u1680\u2028\u2029\u202f\u205f\u3000\ufeff" || c in '\u2000'..'\u200a'
 
+/**
+ * The last few results of a parse, keyed on the exact text. One composer keystroke parses the same draft
+ * from its visual transformation, autocomplete, repair and toolbar state; results are read-only.
+ */
+internal class RecentParses<T : Any>(private val parse: (String) -> T) {
+    private val entries = ArrayDeque<Pair<String, T>>()
+    operator fun invoke(text: String): T = synchronized(this) {
+        entries.firstOrNull { it.first == text }?.second ?: parse(text).also {
+            entries.addFirst(text to it)
+            if (entries.size > 4) entries.removeLast()
+        }
+    }
+}
+
+private val recentFormats = RecentParses(::parseFormattedMessage)
+
 /** Deliberately small Markdown subset, aligned with web and the shared fixtures (shared/messages/formatting.rs, through Rust). */
-internal fun formattedMessage(text: String): FormattedMessage {
+internal fun formattedMessage(text: String): FormattedMessage = recentFormats(text)
+
+private fun parseFormattedMessage(text: String): FormattedMessage {
     val spans = CaperMobile.formatSpans(text)
     val runs = mutableListOf<FormattedRun>()
     val indices = mutableListOf<Int>()

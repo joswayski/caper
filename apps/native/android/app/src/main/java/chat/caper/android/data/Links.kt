@@ -19,8 +19,12 @@ internal data class LinkSegment(val text: String, val href: String? = null)
 /** A link inside a longer text: characters [start] until [end] open [href]. */
 internal data class LinkRange(val start: Int, val end: Int, val href: String)
 
+private val recentLinks = RecentParses(::parseLinkSegments)
+
 /** Splits plain text into text runs and `http(s)://` / `www.` links; the runs rebuild [text] exactly. */
-internal fun linkSegments(text: String): List<LinkSegment> {
+internal fun linkSegments(text: String): List<LinkSegment> = recentLinks(text)
+
+private fun parseLinkSegments(text: String): List<LinkSegment> {
     val spans = CaperMobile.linkSpans(text)
     val segments = mutableListOf<LinkSegment>()
     var plainStart = 0
