@@ -95,6 +95,12 @@ final class NativeButton: NSButton {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func pressed() { actionHandler() }
     override var isEnabled: Bool { didSet { alphaValue = isEnabled ? 1 : 0.45; needsLayout = true } }
+    /// The fill is the bounds. NSButton otherwise reports its bezel's alignment
+    /// rect, which makes a 24-point icon 31 points tall and over its neighbours.
+    override func accessibilityFrame() -> NSRect {
+        guard window != nil else { return super.accessibilityFrame() }
+        return NSAccessibility.screenRect(fromView: self, rect: bounds)
+    }
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()

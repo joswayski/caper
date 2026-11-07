@@ -80,7 +80,7 @@ import SwiftUI
     }
 
     /// Uses the same spacing, scalar limit and UTF-16 repair as the shipping
-    /// composer; insertText retains native selection, delegate updates and undo.
+    /// composer, as one undoable edit that notifies the delegate.
     @discardableResult public func insert(_ words: String) -> Bool {
         guard visible, context == chat.editingContext, owner == VoiceComposerID(chat: chat, inThread: inThread),
               let editor, editor.isEditable, !editor.hasMarkedText(), chat.canInteract else { return false }
@@ -88,10 +88,29 @@ import SwiftUI
         let words = VoiceMessage.dictationText(in: editor.string, selection: selection, words: words)
         guard !words.isEmpty, let result = EmojiAutocomplete.inserting(words, in: editor.string, selection: selection) else { return false }
         editor.breakUndoCoalescing()
-        editor.insertText(result.text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
-        editor.setSelectedRange(result.selection)
+        Self.replace(editor, with: result.text, selection: result.selection)
         editor.breakUndoCoalescing()
         return true
+    }
+
+    /// NSTextView's own undo of a replacement restores the characters without
+    /// textDidChange, leaving the dictated words in the draft. Register the step
+    /// here instead, so undo and redo are ordinary edits the delegate sees.
+    private static func replace(_ editor: NSTextView, with text: String, selection: NSRange) {
+        let previous = editor.string, previousSelection = editor.selectedRange()
+        let all = NSRange(location: 0, length: previous.utf16.count)
+        let undo = editor.undoManager
+        undo?.disableUndoRegistration()
+        if editor.shouldChangeText(in: all, replacementString: text) {
+            editor.textStorage?.replaceCharacters(in: all, with: NSAttributedString(string: text, attributes: editor.typingAttributes))
+            editor.setSelectedRange(selection)
+            editor.didChangeText()
+        }
+        undo?.enableUndoRegistration()
+        guard editor.string != previous else { return }
+        undo?.registerUndo(withTarget: editor) { editor in
+            MainActor.assumeIsolated { replace(editor, with: previous, selection: previousSelection) }
+        }
     }
 }
 

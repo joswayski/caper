@@ -537,8 +537,8 @@ final class VoiceMessageTests: XCTestCase {
     @MainActor
     func testAppKitDictationLifetimeRefusesStaleAndHiddenOwnersWithoutCancellingTheNeighbor() async throws {
         let chat = await appKitVoiceChat()
-        await chat.openThread("Root00000001")
-        XCTAssertEqual(chat.threadRootID, "Root00000001")
+        await chat.openThread("Root00000000001")
+        XCTAssertEqual(chat.threadRootID, "Root00000000001")
         XCTAssertNil(chat.threadError)
         let channel = VoiceComposerNativeEditor(chat: chat, inThread: false)
         let thread = VoiceComposerNativeEditor(chat: chat, inThread: true)
@@ -592,8 +592,8 @@ final class VoiceMessageTests: XCTestCase {
         XCTAssertEqual(chat.threadDraft, "thread 🐙 two reply", "cancel never clears typed text")
 
         let rootFile = try simulateCompletedDictation(inThread: true)
-        await chat.openThread("Root00000002")
-        XCTAssertEqual(chat.threadRootID, "Root00000002")
+        await chat.openThread("Root00000000002")
+        XCTAssertEqual(chat.threadRootID, "Root00000000002")
         XCTAssertNil(chat.threadError)
         XCTAssertTrue(chat.canInteract)
         thread.seed("new root 🐬")

@@ -156,7 +156,9 @@ import CaperCore
         let footer = max(50, bounds.height - 62)
         let available = max(0, footer - 50 - 12)
         sectionsDivider.update(available: available, share: draggedChannelsShare ?? preferredChannelsShare)
-        let channelHeight = available * CGFloat(sectionsDivider.share)
+        // Whole points: a fractional split makes NSScrollView snap its clip view
+        // to the pixel grid and shift the lists' scroll origins to compensate.
+        let channelHeight = (available * CGFloat(sectionsDivider.share)).rounded()
         channels.frame = NSRect(x: 0, y: 50, width: width, height: channelHeight)
         sectionsDivider.frame = NSRect(x: 0, y: channels.frame.maxY, width: width, height: 12)
         directs.frame = NSRect(x: 0, y: sectionsDivider.frame.maxY, width: width, height: max(0, available - channelHeight))
@@ -655,7 +657,11 @@ private final class NativeDirectRow: NativeView {
         badge.isHidden = !unread
         let unreadCount = count ?? 0
         badge.stringValue = unreadCount > 0 ? (unreadCount > 99 ? "99+" : String(unreadCount)) : ""
+        // Disabling a focused button hands focus to the window, and enabling it
+        // again does not return it: keep keyboard focus on the row while busy.
+        let focused = window?.firstResponder === open
         open.isEnabled = !busy
+        if focused, window?.firstResponder !== open { window?.makeFirstResponder(open) }
         open.setAccessibilityLabel(name + (isSelf ? ", you" : ""))
         let unreadLabel = unread ? (unreadCount > 0 ? "\(unreadCount) unread messages" : "Unread activity") : ""
         open.setAccessibilityValue([selected ? "Selected" : "", unreadLabel, muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", "))
