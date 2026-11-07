@@ -99,7 +99,7 @@ channels and DMs alike. `content.mentions` lists resolved users
 `{"type":"everyone"}` / `{"type":"here"}`, in first-appearance order with at most
 20 distinct names. Unresolved names stay plain text; the field is omitted when
 empty. `content.version` stays `1`; history, live events and replay carry the
-same payload. Clients find tokens with the same grammar (desktop and Android:
+same payload. Clients find tokens with the same grammar (native clients:
 `shared/messages/mentions.rs`; every client runs `shared/messages/mention-cases.json`),
 ignore unknown entry types, render resolved tokens as terracotta pills, and tint messages that mention the reader (their id, or
 `@everyone`/`@here` from someone else). `everyone` and `here` are reserved
