@@ -42,6 +42,10 @@ profile() {
 # the report.
 bench() {
   local label=$1 bin=$2 scenario=$3 limit=${4:-90} out=$WORK/bench.jsonl
+  if [ ! -x "$bin" ]; then
+    log "$label {\"scenario\":\"$scenario\",\"error\":\"skipped: no binary\"}"
+    return
+  fi
   rm -f "$out"
   BENCH=$scenario BENCH_OUT=$out timeout "$limit" "$bin" --api-url "http://127.0.0.1:$PORT" >>"$WORK/app.log" 2>&1
   if [ -s "$out" ]; then
@@ -72,6 +76,36 @@ say "Caper Linux hardware check → $REPORT"
   echo '```'
   echo
 } >"$REPORT"
+
+# The nightly tester build instead of building from source: FROM_CI=1
+# downloads the newest one (and the egui desktop's development build) with
+# gh; CAPER_LINUX_BUILD=<caper-linux-x64.tar.gz> uses one you downloaded.
+if [ -n "${FROM_CI:-}" ]; then
+  say "Downloading the newest nightly builds from GitHub Actions"
+  for run in $(gh run list --repo joswayski/caper --workflow native.yml --branch main \
+    --status completed --limit 5 --json databaseId -q '.[].databaseId'); do
+    rm -rf "$WORK/ci"
+    gh run download "$run" --repo joswayski/caper --pattern 'caper-linux-x64-*' -D "$WORK/ci" 2>/dev/null || continue
+    gh run download "$run" --repo joswayski/caper --pattern 'caper-development-linux-x64-*' -D "$WORK/ci" 2>/dev/null || true
+    break
+  done
+  CAPER_LINUX_BUILD=$(find "$WORK/ci" -name caper-linux-x64.tar.gz 2>/dev/null | head -1)
+  [ -n "$CAPER_LINUX_BUILD" ] || { echo "No nightly caper-linux build found (gh auth login?)."; exit 1; }
+  egui_build=$(find "$WORK/ci" -name Caper-linux-x64.tar.gz | head -1)
+  if [ -n "$egui_build" ]; then
+    mkdir -p "$WORK/egui" && tar -xzf "$egui_build" -C "$WORK/egui"
+    EGUI=$WORK/egui/Caper-linux-x64/caper-desktop
+  fi
+fi
+if [ -n "${CAPER_LINUX_BUILD:-}" ]; then
+  mkdir -p "$WORK/build" && tar -xzf "$CAPER_LINUX_BUILD" -C "$WORK/build"
+  LINUX=$WORK/build/caper-linux-x64/lib/caper-linux
+  log "caper-linux build: $(cat "$WORK/build/caper-linux-x64/REVISION" 2>/dev/null || echo "$CAPER_LINUX_BUILD")"
+  # Without a downloaded egui build, an installed Caper desktop is the comparison.
+  [ -x "$EGUI" ] || EGUI=$(command -v caper-desktop || true)
+  log "egui build: ${EGUI:-none, so its benchmarks are skipped}"
+  SKIP_BUILD=1
+fi
 
 say "Building release binaries (skip with SKIP_BUILD=1)"
 if [ -z "${SKIP_BUILD:-}" ]; then

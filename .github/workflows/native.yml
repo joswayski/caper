@@ -121,7 +121,8 @@ jobs:
           retention-days: 14
 
   # The GTK 4 Linux client (apps/native/linux) is in development: check and
-  # test it here, but never package or release it.
+  # test it here, and upload a tester tarball as a workflow artifact. Nothing
+  # releases or ships it.
   linux-gtk:
     name: Linux GTK / development check
     needs: route
@@ -169,24 +170,36 @@ jobs:
           cargo fmt --manifest-path "$manifest" --package caper-linux -- --check
           cargo clippy --manifest-path "$manifest" --locked --package caper-linux --all-targets --no-deps -- -D warnings
           cargo test --manifest-path "$manifest" --locked --package caper-linux
-      # The real app against the parity fixture, read through AT-SPI: sign-in,
-      # named message rows and toolbars, and a send. Ubuntu 24.04 has GTK 4.14,
-      # so this also covers newer GTK than the 4.8 the client targets.
-      - name: Smoke caper-linux under Xvfb
+      # The tester build (apps/native/linux/package.sh), installed the way a
+      # tester installs it, then read through AT-SPI against the parity
+      # fixture: sign-in, named message rows and toolbars, and a send. Ubuntu
+      # 24.04 has GTK 4.14, newer than the 4.8 the client targets.
+      - name: Package and smoke caper-linux under Xvfb
         env:
           CARGO_BUILD_JOBS: '2'
           CC: clang-21
           CXX: clang++-21
         run: |
           export LK_CUSTOM_WEBRTC="$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux)"
-          cargo build --manifest-path apps/native/desktop/Cargo.toml --locked --package caper-linux
+          cargo build --manifest-path apps/native/desktop/Cargo.toml --locked --release --package caper-linux
+          apps/native/linux/package.sh apps/native/desktop/target/release/caper-linux "$RUNNER_TEMP/tester"
+          mkdir "$RUNNER_TEMP/unpacked"
+          tar -xzf "$RUNNER_TEMP/tester/caper-linux-x64.tar.gz" -C "$RUNNER_TEMP/unpacked"
+          PREFIX="$RUNNER_TEMP/installed" "$RUNNER_TEMP/unpacked/caper-linux-x64/install.sh"
           CAPER_FIXTURE_PORT=3911 CAPER_FIXTURE_GATEWAY_PORT=3912 \
             node scripts/native-parity-fixture.mjs >"$RUNNER_TEMP/fixture.log" 2>&1 &
           timeout 30 bash -c 'until curl -s -o /dev/null http://127.0.0.1:3911/; do sleep 0.5; done'
           # The system Python, which has PyGObject.
           timeout 300 xvfb-run -a -s '-screen 0 1440x900x24' dbus-run-session -- \
             /usr/bin/python3 -I apps/native/linux/smoke.py \
-            --binary apps/native/desktop/target/debug/caper-linux --api-url http://127.0.0.1:3911
+            --binary "$RUNNER_TEMP/installed/bin/caper-linux" --api-url http://127.0.0.1:3911
+      # For testers and apps/native/linux/hardware-check.sh (FROM_CI=1); not a release.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caper-linux-x64-${{ github.sha }}
+          path: ${{ runner.temp }}/tester/caper-linux-x64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
 
   # The native Windows client (apps/native/windows): compiled and checked here
   # only. It is not packaged, uploaded or released, and release.yml never
