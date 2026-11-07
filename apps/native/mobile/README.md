@@ -9,7 +9,7 @@ workspace, so mobile builds never compile the desktop client's media stack.
 | --- | --- | --- | --- |
 | Bold/italic formatting | `shared/messages/formatting.rs` | `data/Formatting.kt` | `MessageFormatting.swift` |
 | Links | `shared/messages/links.rs` | `data/Links.kt` | `MessageLinks.swift` |
-| Name characters | `apps/native/client/src/names.rs` | `model/Names.kt` | |
+| Name characters | `apps/native/client/src/names.rs` | `model/Names.kt` | `Names.swift` |
 
 The host code keeps its own types and editing helpers and calls Rust for the
 parse. Results are flat `i32` arrays of offsets into the caller's string

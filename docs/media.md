@@ -620,10 +620,9 @@ Hangul fillers, tag characters, Mongolian vowel separator) and U+2800 BRAILLE
 PATTERN BLANK. Allowed: a single ZWJ/ZWNJ between two visible characters, one
 variation selector right after a visible character, and tag characters only
 inside a subdivision flag (U+1F3F4 … U+E007F). The rule is
-`apps/api/src/names.rs`, mirrored for inline errors by `apps/web/src/names.ts`,
-Apple `NameCharacters` and the desktop and Android clients'
-`apps/native/client/src/names.rs` (Android calls it through `apps/native/mobile`).
-Each runs `shared/names/cases.json`. Only
+`apps/api/src/names.rs`, mirrored for inline errors by `apps/web/src/names.ts`
+and the native clients' `apps/native/client/src/names.rs` (Android and Apple call
+it through `apps/native/mobile`). Each runs `shared/names/cases.json`. Only
 new writes are checked: a stored display name stays savable while unchanged; a
 space rename must use a valid name. Attachment file names have these characters
 removed instead of failing (control characters still fail). Message text is not
