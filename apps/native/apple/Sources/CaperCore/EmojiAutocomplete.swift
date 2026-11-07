@@ -760,18 +760,44 @@ public final class ComposerTextView: NSTextView {
         }
         return menu
     }
-    /// Only text drags edit the draft. File drags fall through to the
-    /// conversation's drop target, which attaches them, instead of typing
-    /// their paths (NSTextView's default for file URLs).
-    public override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [.string] }
+    /// The AppKit host forwards files, including mixed text/file drags. The
+    /// shipping SwiftUI host leaves this nil and owns its own drop destination.
+    public weak var attachmentDropDestination: AppKitFileDropView? {
+        didSet { updateDragTypeRegistration() }
+    }
+    public override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+        [.string] + (attachmentDropDestination == nil ? [] : AppKitFileDropView.dragTypes)
+    }
     /// A drag carrying text and files together still reaches the text view;
     /// refuse it rather than insert a path.
     private func carriesFiles(_ drag: NSDraggingInfo) -> Bool {
-        drag.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+        if attachmentDropDestination != nil, AppKitFileDropView.carriesFiles(drag.draggingPasteboard) { return true }
+        return drag.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
     }
-    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingEntered(sender) }
-    public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { carriesFiles(sender) ? [] : super.draggingUpdated(sender) }
-    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { carriesFiles(sender) ? false : super.performDragOperation(sender) }
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        carriesFiles(sender) ? attachmentDropDestination?.draggingEntered(sender) ?? [] : super.draggingEntered(sender)
+    }
+    public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        carriesFiles(sender) ? attachmentDropDestination?.draggingUpdated(sender) ?? [] : super.draggingUpdated(sender)
+    }
+    public override func draggingExited(_ sender: NSDraggingInfo?) {
+        attachmentDropDestination?.draggingExited(sender)
+        super.draggingExited(sender)
+    }
+    public override func draggingEnded(_ sender: NSDraggingInfo) {
+        attachmentDropDestination?.draggingEnded(sender)
+        super.draggingEnded(sender)
+    }
+    public override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        carriesFiles(sender) ? attachmentDropDestination?.prepareForDragOperation(sender) ?? false : super.prepareForDragOperation(sender)
+    }
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        carriesFiles(sender) ? attachmentDropDestination?.performDragOperation(sender) ?? false : super.performDragOperation(sender)
+    }
+    public override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        attachmentDropDestination?.concludeDragOperation(sender)
+        super.concludeDragOperation(sender)
+    }
     public var pasteAttachments: (() -> Bool)?
     public override func paste(_ sender: Any?) {
         if pasteAttachments?() != true { super.paste(sender) }

@@ -38,6 +38,59 @@ import SwiftUI
         show(AppKitWorkspaceDialogState(item: .leaveChannel(channel)), in: parent)
     }
 
+    public var messageContext: String { model.chat.editingContext }
+    public func currentMessage(_ message: ChatMessage) -> ChatMessage? {
+        guard message.channelId == model.chat.channelID else { return nil }
+        return model.chat.displayedMessages.first { $0.id == message.id }
+    }
+
+    public func canEdit(_ message: ChatMessage) -> Bool { model.chat.canEdit(message) }
+    public func canDelete(_ message: ChatMessage) -> Bool { model.chat.canDelete(message) }
+    public func canBlock(_ author: ChatAuthor) -> Bool {
+        BlockedMessages.canBlock(author, viewerID: model.chat.viewerID, blocked: model.chat.blockedAuthorIDs)
+    }
+    public func canUnblock(_ author: ChatAuthor) -> Bool {
+        BlockedMessages.canUnblock(author, viewerID: model.chat.viewerID, blocked: model.chat.blockedAuthorIDs)
+    }
+
+    public func editMessage(_ message: ChatMessage, in parent: NSViewController) {
+        guard canEdit(message) else { return }
+        show(AppKitWorkspaceDialogState(item: .edit(message)), in: parent)
+    }
+
+    public func messageHistory(_ message: ChatMessage, in parent: NSViewController) {
+        guard !message.isDeleted, message.forward == nil, message.channelId == model.chat.channelID else { return }
+        show(AppKitWorkspaceDialogState(item: .history(message)), in: parent)
+    }
+
+    public func reactions(_ message: ChatMessage, emoji: String, in parent: NSViewController) {
+        guard let current = currentMessage(message), !current.isDeleted,
+              current.reactions?.contains(where: { $0.emoji == emoji }) == true else { return }
+        // Listing people uses read access, even when adding a reaction is disabled.
+        show(AppKitWorkspaceDialogState(item: .reactions(current, emoji)), in: parent)
+    }
+
+    public func deleteMessage(_ message: ChatMessage, in parent: NSViewController) {
+        guard canDelete(message) else { return }
+        show(AppKitWorkspaceDialogState(item: .delete(message)), in: parent)
+    }
+
+    /// Channel, thread and Pins actions share the model's single forward target.
+    /// The workspace owns presentation, never a transient pin-card popover.
+    public func presentForwarding(in parent: NSViewController) {
+        if let message = model.chat.forwardTarget {
+            guard model.chat.canForward, !message.isDeleted else { model.chat.forwardTarget = nil; return }
+            show(AppKitWorkspaceDialogState(item: .forward(message)), in: parent)
+        } else if let message = model.chat.forwardConversationTarget {
+            show(AppKitWorkspaceDialogState(item: .forwardConversation(message)), in: parent)
+        } else if let item = host?.rootView.state.item {
+            switch item {
+            case .forward, .forwardConversation: close()
+            default: break
+            }
+        }
+    }
+
     private func show(_ state: AppKitWorkspaceDialogState, in parent: NSViewController) {
         guard host == nil, let container = parent.view as? AppKitWorkspaceContainer, container.dialogView == nil else { return }
         let host = NSHostingController(rootView: AppKitWorkspaceDialog(model: model, state: state) { [weak self] in self?.close() })
@@ -56,11 +109,19 @@ import SwiftUI
 
     private func close() {
         guard let host else { return }
+        let item = host.rootView.state.item
         let window = host.view.window
         (host.parent?.view as? AppKitWorkspaceContainer)?.dialogView = nil
         host.view.removeFromSuperview()
         host.removeFromParent()
         self.host = nil
+        switch item {
+        case .forward(let message):
+            if model.chat.forwardTarget?.id == message.id { model.chat.forwardTarget = nil }
+        case .forwardConversation(let message):
+            if model.chat.forwardConversationTarget?.id == message.id { model.chat.forwardConversationTarget = nil }
+        default: break
+        }
         window?.makeFirstResponder(previousResponder)
         previousResponder = nil
         model.whatsNew.workspaceModalOpen = false
@@ -69,10 +130,35 @@ import SwiftUI
 
 private enum AppKitWorkspaceDialogItem {
     case workspace(WorkspaceSheet), leaveChannel(Channel)
+    case edit(ChatMessage), history(ChatMessage), delete(ChatMessage)
+    case reactions(ChatMessage, String)
+    case forward(ChatMessage), forwardConversation(ChatMessage)
     var id: String {
         switch self {
         case .workspace(let item): item.id
         case .leaveChannel(let channel): "leave-channel-\(channel.id)"
+        case .edit(let message): "edit-\(message.id)"
+        case .history(let message): "history-\(message.id)"
+        case .delete(let message): "delete-\(message.id)"
+        case .reactions(let message, let emoji): "reactions-\(message.id)-\(emoji)"
+        case .forward(let message): "forward-\(message.id)"
+        case .forwardConversation(let message): "forward-conversation-\(message.id)"
+        }
+    }
+    var messageID: String? {
+        switch self {
+        case .edit(let message), .history(let message), .delete(let message), .reactions(let message, _),
+             .forward(let message), .forwardConversation(let message): message.id
+        default: nil
+        }
+    }
+    var width: CGFloat {
+        switch self {
+        case .edit: 520
+        case .history: 820
+        case .forward: 460
+        case .forwardConversation: 520
+        default: id.contains("manage") ? 600 : 560
         }
     }
 }
@@ -100,7 +186,7 @@ private struct AppKitWorkspaceDialog: View {
                 DialogHeight(maximum: min(680, max(1, geometry.size.height - top - 16))) {
                     content(item).id(item.id)
                 }
-                .frame(width: min(item.id.contains("manage") ? 600 : 560, geometry.size.width - 32))
+                .frame(width: min(item.width, geometry.size.width - 32))
                 .background(CaperTheme.surface.onTapGesture {})
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -113,6 +199,7 @@ private struct AppKitWorkspaceDialog: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onChange(of: state.item.id) { _, _ in state.dismissDisabled = false; state.profileDismissAction = nil }
+        .onChange(of: model.chat.editingContext) { _, _ in if state.item.messageID != nil { dismiss() } }
         .onDisappear { model.whatsNew.workspaceModalOpen = false }
         .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
     }
@@ -130,6 +217,19 @@ private struct AppKitWorkspaceDialog: View {
                     ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call."
                     : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.",
                 action: "Leave channel", pendingLabel: "Leaving…", close: dismiss) { try await model.leaveChannel(channel) }
+        case .edit(let message):
+            MessageEditorView(chat: model.chat, message: message, close: dismiss)
+        case .history(let message):
+            MessageHistoryView(chat: model.chat, message: message, close: dismiss)
+        case .delete(let message):
+            ConfirmationSheet(title: MessageDeletion.confirmTitle, detail: MessageDeletion.confirmMessage,
+                action: "Delete", pendingLabel: "Deleting…", close: dismiss) { await model.chat.deleteMessage(message) }
+        case .reactions(let message, let emoji):
+            ReactorsSheet(chat: model.chat, messageID: message.id, emoji: emoji, viewerID: model.chat.viewerID, close: dismiss)
+        case .forward(let message):
+            ForwardPickerView(chat: model.chat, message: message, close: dismiss)
+        case .forwardConversation(let message):
+            ForwardConversationView(chat: model.chat, messageID: message.id, close: dismiss)
         }
     }
 
@@ -139,11 +239,71 @@ private struct AppKitWorkspaceDialog: View {
     }
 }
 
+/// Pins use the shipping, bounded card list in a native header-anchored popover.
+/// Reading pins does not require an editable composer (channel previews too).
+@MainActor public final class AppKitPinsPresenter: NSObject, NSPopoverDelegate {
+    private let model: AppModel
+    private let media: AppKitMediaPresenter
+    private var popover: NSPopover?
+    private var restoreFocus: (() -> Void)?
+
+    public init(model: AppModel, media: AppKitMediaPresenter) {
+        self.model = model; self.media = media; super.init()
+    }
+
+    public func show(from anchor: NSView, composer: ComposerTextView) {
+        guard let window = anchor.window, model.chat.channelID != nil,
+              window.attachedSheet == nil, !model.whatsNew.workspaceModalOpen else { return }
+        if popover != nil { close(); return }
+        let context = model.chat.editingContext, root = model.chat.threadRootID
+        restoreFocus = { [weak self, weak composer, weak window] in
+            guard let self, let composer, let window, composer.window === window, composer.isEditable,
+                  self.model.chat.editingContext == context, self.model.chat.threadRootID == root,
+                  window.attachedSheet == nil, !self.model.whatsNew.workspaceModalOpen else { return }
+            window.makeFirstResponder(composer)
+        }
+        let popover = NSPopover()
+        self.popover = popover
+        popover.behavior = .transient
+        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.delegate = self
+        let host = NSHostingController(rootView: PinnedMessagesView(chat: model.chat, model: model) { [weak self] in self?.close() }
+            .frame(width: 470, height: 360)
+            .environment(\.mediaViewer, MediaViewerAction { [weak self] request in
+                guard let self else { return }
+                self.close()
+                self.media.showViewer(request)
+            })
+            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
+            .onChange(of: model.whatsNew.workspaceModalOpen) { [weak self] _, open in if open { self?.close(restoringFocus: false) } }
+            .onExitCommand { [weak self] in self?.close() })
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+    }
+
+    public func close(restoringFocus: Bool = true) {
+        if !restoringFocus { restoreFocus = nil }
+        popover?.animates = false
+        popover?.close()
+    }
+    public func popoverShouldClose(_ popover: NSPopover) -> Bool { popover.animates = false; return true }
+    public func popoverDidClose(_ notification: Notification) {
+        guard let closed = notification.object as? NSPopover else { return }
+        closed.contentViewController = nil
+        guard popover === closed else { return }
+        popover = nil
+        let restore = restoreFocus; restoreFocus = nil
+        restore?()
+    }
+}
+
 /// On-demand profile surfaces shared with the shipping Mac app. The workspace,
 /// timeline and main composer remain AppKit; no hosting view exists until open.
 @MainActor public final class AppKitProfilePresenter: NSObject, NSPopoverDelegate {
     private let model: AppModel
     private var popover: NSPopover?
+    private var personID: String?
     private var draft: ProfileMessageDraft?
     private var dismissAction: ProfileDismissAction?
 
@@ -169,12 +329,15 @@ private struct AppKitWorkspaceDialog: View {
     private func show(_ person: MentionCardPerson, rect: NSRect, view: NSView) {
         guard let window = view.window else { return }
         if let popover, popover.isShown {
+            // Hover and click on the same pinner must not recreate their draft.
+            guard personID != person.id else { return }
             popover.animates = false
             popover.performClose(nil)
             guard !popover.isShown else { return }
         }
         let popover = NSPopover()
         self.popover = popover
+        personID = person.id
         draft = model.profileMessageDraft(person: person)
         dismissAction = nil
         popover.behavior = .transient
@@ -211,7 +374,7 @@ private struct AppKitWorkspaceDialog: View {
         closed.contentViewController = nil
         // A delayed old notification must never tear down its replacement.
         guard popover === closed else { return }
-        popover = nil; draft = nil; dismissAction = nil
+        popover = nil; personID = nil; draft = nil; dismissAction = nil
     }
 
     public func confirmBlock(_ target: BlockTarget, window: NSWindow) {
@@ -224,6 +387,95 @@ private struct AppKitWorkspaceDialog: View {
             guard response == .alertFirstButtonReturn, let self else { return }
             Task { await self.model.chat.block(target) }
         }
+    }
+}
+
+/// The shipping 400ms hover bubble, outside the scroll clip and without a
+/// key window, mouse interception, per-row requests or a second name cache.
+@MainActor public final class AppKitReactionTooltipPresenter {
+    private let model: AppModel
+    private weak var anchor: NSView?
+    private var task: Task<Void, Never>?
+    private var overlay: AppKitPointerPassthroughView?
+    private var position: (() -> Void)?
+
+    public init(model: AppModel) { self.model = model }
+
+    public func hover(_ message: ChatMessage, emoji: String, entered: Bool, from anchor: NSView, in container: NSView) {
+        if !entered { if self.anchor === anchor { close() }; return }
+        close()
+        self.anchor = anchor
+        let context = model.chat.editingContext
+        task = Task { [weak self, weak anchor, weak container] in
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            guard let self, let anchor, let container, self.anchor === anchor,
+                  anchor.window?.isKeyWindow == true, anchor.window?.attachedSheet == nil,
+                  !anchor.isHiddenOrHasHiddenAncestor, !anchor.visibleRect.isEmpty,
+                  self.model.chat.editingContext == context, !self.model.whatsNew.workspaceModalOpen else { return }
+            self.show(messageID: message.id, emoji: emoji, anchor: anchor, container: container)
+        }
+    }
+
+    public func close() {
+        task?.cancel(); task = nil
+        overlay?.removeFromSuperview(); overlay = nil
+        position = nil; anchor = nil
+    }
+
+    private func show(messageID: String, emoji: String, anchor: NSView, container: NSView) {
+        let overlay = AppKitPointerPassthroughView()
+        let surface = AppKitAttachmentSurface {
+            AppKitReactionTooltipContent(model: model, messageID: messageID, emoji: emoji) { [weak self] in self?.close() }
+                .modifier(Entrance.anchored)
+        }
+        self.overlay = overlay
+        overlay.addSubview(surface)
+        container.addSubview(overlay)
+        position = { [weak self, weak anchor, weak container, weak overlay, weak surface] in
+            guard let self, let anchor, let container, let overlay, let surface else { return }
+            guard anchor.window != nil, !anchor.visibleRect.isEmpty, !anchor.isHiddenOrHasHiddenAncestor else { self.close(); return }
+            let chip = anchor.convert(anchor.bounds, to: container)
+            let width = min(280, max(1, container.bounds.width - 16))
+            let height = surface.height(for: width)
+            let x = min(max(8, chip.minX), max(8, container.bounds.width - width - 8))
+            let top = chip.minY - height - 6
+            let y = min(max(8, top >= 0 ? top : chip.maxY + 6), max(8, container.bounds.height - height - 8))
+            overlay.frame = NSRect(x: x, y: y, width: width, height: height)
+            surface.frame = overlay.bounds
+        }
+        surface.heightChanged = { [weak self] in self?.position?() }
+        position?()
+    }
+}
+
+private final class AppKitPointerPassthroughView: NSView {
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private struct AppKitReactionTooltipContent: View {
+    let model: AppModel
+    let messageID: String
+    let emoji: String
+    let close: () -> Void
+    private var chat: ChatModel { model.chat }
+    private var message: ChatMessage? { chat.displayedMessages.first { $0.id == messageID && !$0.isDeleted } }
+    private var available: Bool { message?.reactions?.contains { $0.emoji == emoji } == true }
+
+    var body: some View {
+        Group {
+            if let message, available {
+                ReactionTooltipBubble(emoji: emoji, text: NativePresentation.reactionSummary(message, emoji: emoji, chat: chat, viewerID: chat.viewerID))
+            }
+        }
+        .task(id: "\(chat.editingContext):\(message?.reactionSeq ?? "0")") {
+            guard available else { close(); return }
+            _ = chat.requestReactors(messageID: messageID)
+        }
+        .onChange(of: available) { _, value in if !value { close() } }
+        .onChange(of: chat.editingContext) { _, _ in close() }
+        .onChange(of: model.whatsNew.workspaceModalOpen) { _, open in if open { close() } }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in close() }
     }
 }
 
@@ -292,20 +544,52 @@ private struct AppKitWorkspaceDialog: View {
     }
 
     public func messageAttachments(_ message: ChatMessage) -> AppKitAttachmentSurface? {
-        guard !message.isDeleted, let files = message.content.attachments, !files.isEmpty else { return nil }
+        let files = message.content.attachments ?? []
+        guard !message.isDeleted, !files.isEmpty || message.content.gif != nil || message.forward != nil else { return nil }
         let chat = model.chat
         return AppKitAttachmentSurface {
-            MessageAttachmentsView(attachments: files, chat: chat, isAvailable: {
-                chat.channelID == message.channelId && chat.messages.contains { $0.id == message.id && !$0.isDeleted }
-            })
+            VStack(alignment: .leading, spacing: 8) {
+                if let gif = message.content.gif { MessageGifView(gif: gif) }
+                if !files.isEmpty {
+                    MessageAttachmentsView(attachments: files, chat: chat, isAvailable: {
+                        chat.channelID == message.channelId && chat.displayedMessages.contains { $0.id == message.id && !$0.isDeleted }
+                    })
+                }
+                ForwardCardView(message: message, chat: chat) {
+                    Task {
+                        guard chat.channelID == message.channelId,
+                              let current = chat.displayedMessages.first(where: { $0.id == message.id }),
+                              !current.isDeleted, current.forward?.message != nil else { return }
+                        _ = await chat.onOpenForward?(current)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .environment(\.mediaViewer, MediaViewerAction { [weak self] request in
-                self?.show { close in MediaViewer(request: request, close: close) }
+                self?.showViewer(request)
             })
         }
     }
 
+    fileprivate func showViewer(_ request: MediaViewerRequest) {
+        show { close in MediaViewer(request: request, close: close) }
+    }
+
     public func pendingMessage(_ pending: PendingMessage) -> AppKitAttachmentSurface {
         AppKitAttachmentSurface { AppKitPendingMessage(pending: pending, chat: model.chat) }
+    }
+
+    /// Keep the shipping quote's thumbnails, blocked/deleted states, expansion
+    /// and reduced-motion behavior without hosting either conversation list.
+    public func replyContext(_ message: ChatMessage) -> AppKitAttachmentSurface? {
+        guard !message.isDeleted, let reference = message.replyTo else { return nil }
+        return AppKitAttachmentSurface {
+            NativeReplyContext(reference: reference, motionKey: message.id, chat: model.chat)
+        }
+    }
+
+    public func replyDraft(inThread: Bool = false) -> AppKitAttachmentSurface {
+        AppKitAttachmentSurface { AppKitReplyDraft(chat: model.chat, inThread: inThread) }
     }
 
     public func pickFiles(inThread: Bool = false) {
@@ -361,11 +645,25 @@ private struct AppKitPendingMessage: View {
 
     var body: some View {
         PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
-            rejected: chat.sendRejected, canEdit: chat.draft.isEmpty && chat.attachmentDrafts.isEmpty,
+            rejected: chat.sendRejected,
+            canEdit: pending.threadRootId == nil ? chat.draft.isEmpty && chat.attachmentDrafts.isEmpty
+                : pending.threadRootId == chat.threadRootID && chat.threadDraft.isEmpty && chat.threadAttachmentDrafts.isEmpty,
             chat: chat, uploadFailed: chat.sendUploadFailed,
-            retry: { Task { await chat.send(retryPending: true) } },
+            retry: { Task { await chat.send(inThread: pending.threadRootId != nil, retryPending: true) } },
             edit: { _ = chat.discardRejected(edit: true) },
             dismiss: { _ = chat.discardRejected() })
+    }
+}
+
+private struct AppKitReplyDraft: View {
+    let chat: ChatModel
+    let inThread: Bool
+
+    var body: some View {
+        let root = inThread ? chat.threadRootID : "channel"
+        if let root, let reference = chat.replyTargets[root] {
+            NativeReplyDraft(reference: reference, chat: chat, root: root)
+        }
     }
 }
 
@@ -382,6 +680,118 @@ private struct AppKitComposerAttachments: View {
             AttachmentDraftsView(chat: chat, inThread: inThread)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+public enum AppKitComposerCounter {
+    public static func color(_ count: Int) -> NSColor { NSColor(ComposerCounter.tone(count)) }
+}
+
+/// The shipping pickers mounted only while open. AppKit owns the anchor,
+/// dismissal and saved editor selection; ChatModel still owns GIF delivery.
+@MainActor public final class AppKitComposerPicker: NSObject, NSPopoverDelegate {
+    private let model: AppModel
+    private let inThread: Bool
+    private var popover: NSPopover?
+    private var restoreFocus: (() -> Void)?
+
+    public init(model: AppModel, inThread: Bool = false) {
+        self.model = model; self.inThread = inThread; super.init()
+    }
+
+    public func reaction(to message: ChatMessage, from anchor: NSView, composer: ComposerTextView) {
+        let chat = model.chat, context = model.chat.editingContext
+        guard chat.canInteract, !message.isDeleted, chat.channelID == message.channelId else { return }
+        show(from: anchor, composer: composer) { close in
+            ReactionPicker(close: close) { emoji in
+                close()
+                Task {
+                    guard chat.editingContext == context, chat.canInteract,
+                          chat.displayedMessages.contains(where: { $0.id == message.id && !$0.isDeleted }) else { return }
+                    await chat.setReaction(messageID: message.id, emoji: emoji, active: true)
+                }
+            }
+        }
+    }
+
+    public func emoji(from anchor: NSView, composer: ComposerTextView) {
+        guard composer.isEditable, !composer.hasMarkedText(), model.chat.canInteract else { return }
+        let text = composer.string, selection = composer.selectedRange()
+        let context = model.chat.editingContext, root = model.chat.threadRootID
+        show(from: anchor, composer: composer) { close in
+            ReactionPicker(title: "Insert emoji", close: close) { [weak self, weak composer] emoji in
+                close()
+                guard let self, let composer, composer.isEditable, !composer.hasMarkedText(),
+                      self.model.chat.editingContext == context, !self.inThread || self.model.chat.threadRootID == root,
+                      self.model.chat.canInteract, composer.string == text,
+                      let result = EmojiAutocomplete.inserting(emoji, in: text, selection: selection) else { return }
+                // Preserve native undo and the formatter's UTF-16/limit rules.
+                composer.window?.makeFirstResponder(composer)
+                composer.breakUndoCoalescing()
+                composer.insertText(result.text, replacementRange: NSRange(location: 0, length: text.utf16.count))
+                composer.setSelectedRange(result.selection)
+                composer.breakUndoCoalescing()
+            }
+        }
+    }
+
+    public func gifs(from anchor: NSView, composer: ComposerTextView) {
+        let chat = model.chat, inThread = self.inThread
+        guard composer.isEditable, !composer.hasMarkedText(), chat.canSendGif(inThread: inThread), let configuration = chat.klipy else { return }
+        let context = chat.editingContext, root = chat.threadRootID
+        show(from: anchor, composer: composer) { close in
+            KlipyPicker(configuration: configuration, close: close) { gif, query in
+                close()
+                Task {
+                    // Navigation/account changes must not retarget a queued selection.
+                    guard chat.editingContext == context, !inThread || chat.threadRootID == root,
+                          chat.canSendGif(inThread: inThread) else { return }
+                    await chat.sendGif(gif, inThread: inThread, query: query)
+                }
+            }
+        }
+    }
+
+    private func show<Content: View>(from anchor: NSView, composer: ComposerTextView,
+                                    @ViewBuilder content: (@escaping () -> Void) -> Content) {
+        guard let window = anchor.window, window.attachedSheet == nil, !model.whatsNew.workspaceModalOpen else { return }
+        close(restoringFocus: false)
+        let context = model.chat.editingContext, root = model.chat.threadRootID
+        restoreFocus = { [weak self, weak composer, weak window] in
+            guard let self, let composer, let window, composer.window === window, composer.isEditable,
+                  self.model.chat.editingContext == context, !self.inThread || self.model.chat.threadRootID == root,
+                  !self.model.whatsNew.workspaceModalOpen else { return }
+            window.makeFirstResponder(composer)
+        }
+        let popover = NSPopover()
+        self.popover = popover
+        popover.behavior = .transient
+        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.delegate = self
+        let host = NSHostingController(rootView: content { [weak self] in self?.close() }
+            .preferredColorScheme(.dark).tint(CaperTheme.terracottaBright)
+            .onExitCommand { [weak self] in self?.close() })
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+    }
+
+    public func close(restoringFocus: Bool = true) {
+        if !restoringFocus { restoreFocus = nil }
+        popover?.animates = false
+        popover?.close()
+    }
+    public func closeIfUnavailable(composer: ComposerTextView) {
+        if !composer.isEditable || model.whatsNew.workspaceModalOpen { close(restoringFocus: false) }
+    }
+    public func popoverShouldClose(_ popover: NSPopover) -> Bool { popover.animates = false; return true }
+    public func popoverDidClose(_ notification: Notification) {
+        guard let closed = notification.object as? NSPopover else { return }
+        closed.contentViewController = nil
+        guard popover === closed else { return }
+        popover = nil
+        let restore = restoreFocus; restoreFocus = nil
+        restore?()
     }
 }
 #endif

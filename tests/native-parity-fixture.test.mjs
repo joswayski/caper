@@ -989,6 +989,506 @@ test("threads isolate replies, broadcast one shared message and preserve retry i
   );
 });
 
+test("forward failures retry loads and a destination-scoped uncertain send without duplicating partial success", async (t) => {
+  const { request, fixture } = await setup(t);
+  const control = (body) => request("/__fixture/control", { method: "POST", body });
+  const destinations = "/api/chat/forward-destinations";
+  assert.equal((await request(destinations)).response.status, 401);
+  await control({ failure: { path: destinations, method: "GET", status: 503, persistent: true } });
+  for (let attempt = 0; attempt < 2; attempt++)
+    assert.equal((await request(destinations, { auth: true })).response.status, 503);
+  await control({ clearFailures: true });
+  assert.deepEqual((await request(destinations, { auth: true })).value.destinations, [
+    { id: ids.general, name: "general", spaceId: ids.space, spaceName: "Fixture Studio", direct: false },
+    { id: ids.design, name: "design", spaceId: ids.space, spaceName: "Fixture Studio", direct: false },
+    { id: ids.private, name: "planning", spaceId: ids.space, spaceName: "Fixture Studio", direct: false },
+  ]);
+
+  const session = (await request("/api/chat/session", { method: "POST", auth: true })).value;
+  const mutation = { auth: true, method: "POST", headers: { "x-caper-chat-token": session.token } };
+  const send = (channelId, body, options = mutation) =>
+    request(`/api/chat/channels/${channelId}/forwards`, { ...options, body });
+  const body = {
+    sourceChannelId: ids.private,
+    sourceMessageId: `${ids.private}m01`,
+    clientMessageId: "AB12CD34-EF56-4789-8ABC-DEF012345678",
+    text: "Please read this original",
+  };
+  const uncertain = {
+    path: `/api/chat/channels/${ids.design}/forwards`,
+    method: "POST",
+    status: 503,
+    error: "TEST FIXTURE: forward acknowledgement lost.",
+    afterPersist: true,
+  };
+  assert.equal((await control({ failure: { ...uncertain, persistent: true } })).response.status, 400);
+  await control({ failure: uncertain });
+  // Rejected requests must not consume the post-persistence failure.
+  assert.equal((await send(ids.design, { ...body, sourceMessageId: "missing" })).response.status, 404);
+  assert.equal((await send(ids.design, body, { auth: true, method: "POST" })).response.status, 401);
+  for (const invalid of [
+    { clientMessageId: "not-a-uuid" },
+    { text: null },
+    { text: "   " },
+    { text: "\u0000" },
+    { text: "a".repeat(4001) },
+    { forward: { message: { content: { text: "forged source" } } } },
+  ])
+    assert.equal((await send(ids.design, { ...body, ...invalid })).response.status, 400);
+
+  const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`, {
+    headers: { authorization: "Bearer fixture-owner-token" },
+  });
+  t.onTestFinished(() => stream.ws.close());
+  await stream.opened;
+  assert.equal((await stream.next()).type, "hello");
+  for (const channelId of [ids.general, ids.design]) {
+    stream.ws.send(JSON.stringify({ type: "subscribe", id: channelId, kind: "chat", channelId, after: "4" }));
+    assert.deepEqual((await stream.next()).event, { type: "ready", cursor: "4" });
+    assert.equal((await stream.next()).type, "subscribed");
+  }
+  const first = await send(ids.general, body);
+  assert.equal(first.response.status, 200, "another destination cannot consume the failure");
+  assert.equal((await stream.next()).event.message.id, first.value.id);
+  const second = await send(ids.design, body);
+  assert.equal(second.response.status, 503);
+  assert.deepEqual(second.value, { error: uncertain.error });
+  const persisted = (await stream.next()).event;
+  assert.equal(persisted.type, "message.created");
+  assert.equal(persisted.channelId, ids.design);
+  assert.equal(persisted.seq, "5");
+  assert.equal(persisted.message.forward.seq, "4");
+  assert.equal(persisted.message.forward.message.id, `${ids.private}m01`);
+  assert.equal(persisted.message.content.text, "Please read this original");
+  assert.equal(persisted.message.clientMessageId, body.clientMessageId.toLowerCase());
+  assert.notEqual(persisted.message.id, first.value.id, "retry keys are destination-scoped");
+  for (const clientMessageId of [body.clientMessageId, body.clientMessageId.toLowerCase()]) {
+    const retry = await send(ids.design, { ...body, clientMessageId });
+    assert.equal(retry.response.status, 200);
+    assert.deepEqual(retry.value, persisted.message);
+  }
+  assert.equal((await send(ids.general, body)).value.id, first.value.id);
+  const canonicalRetry = await send(ids.design, {
+    ...body,
+    sourceChannelId: ids.general,
+    sourceMessageId: first.value.id,
+  });
+  assert.equal(canonicalRetry.response.status, 200, "hash the original, not the selected wrapper");
+  assert.deepEqual(canonicalRetry.value, persisted.message);
+  for (const changed of [{ text: "Different note" }, { sourceMessageId: `${ids.private}m02` }])
+    assert.equal((await send(ids.design, { ...body, ...changed })).response.status, 409);
+  const anotherSession = (await request("/api/chat/session", { method: "POST", auth: true })).value;
+  assert.equal(
+    (await send(ids.design, body, { ...mutation, headers: { "x-caper-chat-token": anotherSession.token } })).response
+      .status,
+    409,
+  );
+  for (const channelId of [ids.general, ids.design]) {
+    const history = (await request(`/api/chat/channels/${channelId}/messages`, { auth: true })).value;
+    assert.equal(history.cursor, "5");
+    assert.equal(history.messages.length, 5);
+    assert.equal(history.messages.filter((message) => message.forward).length, 1);
+  }
+  stream.ws.send(JSON.stringify({ type: "heartbeat" }));
+  assert.equal((await stream.next()).type, "heartbeat", "retries and conflicts publish no duplicate events");
+
+  const threadPath = `/api/chat/channels/${ids.design}/forwards/${persisted.message.id}/thread`;
+  await control({ failure: { path: threadPath, method: "GET", status: 503 } });
+  assert.equal((await request(threadPath, { auth: true })).response.status, 503);
+  const loaded = await request(threadPath, { auth: true });
+  assert.equal(loaded.response.status, 200);
+  assert.equal(loaded.value.root.id, `${ids.private}m01`);
+  assert.equal(loaded.value.source.spaceId, ids.space);
+  assert.equal(loaded.value.source.message.id, `${ids.private}m01`);
+  assert.equal(loaded.value.cursor, "4");
+  assert.deepEqual(loaded.value.messages, []);
+  assert.equal(loaded.value.hasMore, false);
+
+  // Explicit clearing and reset clear uncertain failures too, not just GETs.
+  await control({ failure: uncertain });
+  await control({ clearFailures: true });
+  assert.equal((await send(ids.design, { ...body, clientMessageId: randomUUID() })).response.status, 200);
+  await control({ failure: uncertain });
+  await control({ reset: true });
+  const resetSession = (await request("/api/chat/session", { method: "POST", auth: true })).value;
+  assert.equal(
+    (await send(ids.design, body, { ...mutation, headers: { "x-caper-chat-token": resetSession.token } })).response
+      .status,
+    200,
+  );
+});
+
+test("forwards share a live canonical original without granting source access and revoke deleted grants", async (t) => {
+  const { request, fixture } = await setup(t);
+  const ownerSession = (await request("/api/chat/session", { auth: true, method: "POST" })).value;
+  const otherSession = (await request("/api/chat/session", { auth: "fixture-other-token", method: "POST" })).value;
+  const owner = { auth: true, headers: { "x-caper-chat-token": ownerSession.token } };
+  const other = { auth: "fixture-other-token", headers: { "x-caper-chat-token": otherSession.token } };
+  const sourcePath = `/api/chat/channels/${ids.private}/messages`;
+  const originalId = `${ids.private}m01`;
+  const input = {
+    sourceChannelId: ids.private,
+    sourceMessageId: originalId,
+    clientMessageId: randomUUID(),
+    text: "First note @maya @feedback",
+  };
+  const shared = await request(`/api/chat/channels/${ids.general}/forwards`, { ...owner, method: "POST", body: input });
+  assert.equal(shared.response.status, 200);
+  assert.deepEqual(shared.value.content.mentions, [{ type: "user", id: ids.member, username: "maya" }]);
+  assert.equal((await request(sourcePath, other)).response.status, 404);
+  assert.equal(
+    (await request(`/api/chat/channels/${ids.design}/forwards`, { ...other, method: "POST", body: input })).response
+      .status,
+    404,
+    "a guessed source ID cannot bypass source access",
+  );
+  const againInput = {
+    sourceChannelId: ids.general,
+    sourceMessageId: shared.value.id,
+    clientMessageId: randomUUID(),
+    text: "Second note",
+  };
+  const again = await request(`/api/chat/channels/${ids.design}/forwards`, {
+    ...other,
+    method: "POST",
+    body: againInput,
+  });
+  assert.equal(again.response.status, 200);
+  assert.equal(again.value.forward.message.id, originalId);
+  assert.equal(again.value.forward.message.channelId, ids.private);
+  assert.equal(again.value.forward.message.content.text, "TEST FIXTURE — local sample data, not a live conversation.");
+  assert.ok(!("forward" in again.value.forward.message));
+  const threadPath = `/api/chat/channels/${ids.general}/forwards/${shared.value.id}/thread`;
+  const againThreadPath = `/api/chat/channels/${ids.design}/forwards/${again.value.id}/thread`;
+  const inaccessible = (await request(threadPath, other)).value;
+  assert.equal(inaccessible.root.id, originalId);
+  assert.equal(inaccessible.source, null);
+  assert.deepEqual(inaccessible.messages, []);
+  assert.equal((await request(threadPath, owner)).value.source.message.id, originalId);
+  assert.equal((await request(threadPath)).response.status, 404);
+  assert.equal(
+    (await request(`/api/chat/channels/${ids.general}/forwards/${originalId}/thread`, other)).response.status,
+    404,
+  );
+  assert.equal(
+    (
+      await request(`/api/chat/channels/${ids.general}/messages/${shared.value.id}`, {
+        ...owner,
+        method: "PUT",
+        body: { text: "Change wrapper note", expectedRevision: 1 },
+      })
+    ).response.status,
+    404,
+  );
+
+  const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`, {
+    headers: { authorization: "Bearer fixture-other-token" },
+  });
+  t.onTestFinished(() => stream.ws.close());
+  await stream.opened;
+  assert.equal((await stream.next()).type, "hello");
+  stream.ws.send(JSON.stringify({ type: "subscribe", id: "denied", kind: "chat", channelId: ids.private, after: "4" }));
+  assert.equal((await stream.next()).status, 404);
+  for (const channelId of [ids.general, ids.design]) {
+    stream.ws.send(JSON.stringify({ type: "subscribe", id: channelId, kind: "chat", channelId, after: "5" }));
+    assert.deepEqual((await stream.next()).event, { type: "ready", cursor: "5" });
+    assert.equal((await stream.next()).type, "subscribed");
+  }
+  const live = [];
+  const projections = async (sourceSeq, destinationSeq) => {
+    const events = [];
+    for (const wrapper of [shared.value, again.value]) {
+      const frame = await stream.next();
+      assert.equal(frame.id, wrapper.channelId);
+      assert.equal(frame.event.type, "message.forward");
+      assert.equal(frame.event.seq, destinationSeq);
+      assert.equal(frame.event.message.id, wrapper.id);
+      assert.equal(frame.event.message.seq, "5", "creation order does not change with the projection");
+      assert.equal(frame.event.message.content.text, wrapper.content.text);
+      assert.equal(frame.event.message.forwardSeq, destinationSeq);
+      assert.equal(frame.event.message.forward.seq, sourceSeq);
+      assert.equal(frame.event.message.forward.message.id, originalId);
+      events.push(frame.event);
+    }
+    live.push(events[0]);
+    return events[0].message.forward.message;
+  };
+  assert.equal(
+    (
+      await request(`${sourcePath}/${originalId}`, {
+        ...owner,
+        method: "PUT",
+        body: { text: "Edited canonical original", expectedRevision: 1 },
+      })
+    ).response.status,
+    200,
+  );
+  const edited = await projections("5", "6");
+  assert.equal(edited.content.text, "Edited canonical original");
+  assert.equal(edited.revision, 2);
+  assert.equal(edited.editSeq, "5");
+  await request(`${sourcePath}/${originalId}/reactions`, {
+    ...owner,
+    method: "PUT",
+    body: { emoji: "👀", active: true },
+  });
+  assert.deepEqual((await projections("6", "7")).reactions, [{ emoji: "👀", authorIds: [ids.owner] }]);
+  const reply = await request(sourcePath, {
+    ...owner,
+    method: "POST",
+    body: { clientMessageId: randomUUID(), text: "A live reply", threadRootId: originalId },
+  });
+  assert.equal(reply.response.status, 200);
+  const withReply = await projections("7", "8");
+  assert.equal(withReply.thread.replyCount, 1);
+  assert.equal(withReply.thread.seq, "7");
+  assert.deepEqual(
+    withReply.thread.participants.map(({ id }) => id),
+    [ids.owner],
+  );
+  await request(`${sourcePath}/${reply.value.id}`, {
+    ...owner,
+    method: "PUT",
+    body: { text: "Edited live reply", expectedRevision: 1 },
+  });
+  assert.deepEqual((await projections("8", "9")).thread, withReply.thread);
+  await request(`${sourcePath}/${reply.value.id}/reactions`, {
+    ...owner,
+    method: "PUT",
+    body: { emoji: "👍", active: true },
+  });
+  await projections("9", "10");
+  const current = (await request(againThreadPath, other)).value;
+  assert.equal(current.cursor, "9");
+  assert.equal(current.source, null);
+  assert.equal(current.root.content.text, "Edited canonical original");
+  assert.deepEqual(
+    current.messages.map((message) => message.content.text),
+    ["Edited live reply"],
+  );
+  assert.deepEqual(current.messages[0].reactions, [{ emoji: "👍", authorIds: [ids.owner] }]);
+  assert.ok(!("threadRootId" in current.messages[0]));
+  assert.equal((await request(`${sourcePath}/${originalId}/versions`, other)).response.status, 404);
+  // Replay matches the live immutable snapshots, including reply invalidations.
+  stream.ws.send(JSON.stringify({ type: "subscribe", id: "replay", kind: "chat", channelId: ids.general, after: "5" }));
+  for (const event of live) assert.deepEqual((await stream.next()).event, event);
+  assert.deepEqual((await stream.next()).event, { type: "ready", cursor: "10" });
+  assert.equal((await stream.next()).type, "subscribed");
+  stream.ws.send(JSON.stringify({ type: "unsubscribe", id: "replay" }));
+  stream.ws.send(JSON.stringify({ type: "heartbeat" }));
+  assert.equal((await stream.next()).type, "heartbeat");
+
+  const deleted = await request(`/api/chat/channels/${ids.general}/messages/${shared.value.id}`, {
+    ...owner,
+    method: "DELETE",
+  });
+  assert.equal(deleted.response.status, 200);
+  assert.ok(deleted.value.deletedAt);
+  assert.equal(deleted.value.content.text, "");
+  assert.deepEqual(deleted.value.forward, { message: null, seq: "0" });
+  assert.equal(deleted.value.forwardSeq, "11");
+  const removal = (await stream.next()).event;
+  assert.equal(removal.type, "message.edited");
+  assert.equal(removal.message.forwardSeq, removal.message.editSeq);
+  const deletedRetry = await request(`/api/chat/channels/${ids.general}/forwards`, {
+    ...owner,
+    method: "POST",
+    body: input,
+  });
+  assert.equal(deletedRetry.response.status, 200);
+  assert.deepEqual(deletedRetry.value, deleted.value);
+  assert.equal((await request(threadPath, other)).response.status, 404);
+  assert.equal(
+    (await request(`/api/chat/channels/${ids.design}/forwards`, { ...other, method: "POST", body: againInput }))
+      .response.status,
+    404,
+    "even a retry must recheck the selected wrapper grant",
+  );
+  await request(`${sourcePath}/${originalId}`, {
+    ...owner,
+    method: "PUT",
+    body: { text: "Independent forward still lives", expectedRevision: 2 },
+  });
+  const independent = (await stream.next()).event;
+  assert.equal(independent.channelId, ids.design);
+  assert.equal(independent.type, "message.forward");
+  assert.equal(independent.seq, "11");
+  assert.equal(independent.message.forward.message.content.text, "Independent forward still lives");
+  stream.ws.send(JSON.stringify({ type: "heartbeat" }));
+  assert.equal((await stream.next()).type, "heartbeat", "a deleted wrapper never projects again");
+  assert.equal((await request(`${sourcePath}/${originalId}`, { ...owner, method: "DELETE" })).response.status, 200);
+  const unavailable = (await stream.next()).event;
+  assert.equal(unavailable.channelId, ids.design);
+  assert.equal(unavailable.seq, "12");
+  assert.deepEqual(unavailable.message.forward, { message: null, seq: "0" });
+  assert.deepEqual((await request(againThreadPath, other)).value, {
+    root: null,
+    messages: [],
+    cursor: "0",
+    hasMore: false,
+    source: null,
+  });
+  assert.equal(
+    (
+      await request(`/api/chat/channels/${ids.design}/forwards`, {
+        ...other,
+        method: "POST",
+        body: {
+          ...againInput,
+          sourceChannelId: ids.design,
+          sourceMessageId: again.value.id,
+          clientMessageId: randomUUID(),
+        },
+      })
+    ).response.status,
+    404,
+  );
+  // A fresh connection/replay cannot resurrect either deleted excerpt.
+  for (const [channelId, head] of [
+    [ids.general, "11"],
+    [ids.design, "12"],
+  ]) {
+    const history = (await request(`/api/chat/channels/${channelId}/messages`, other)).value;
+    assert.equal(history.cursor, head);
+    assert.deepEqual(history.messages.at(-1).forward, { message: null, seq: "0" });
+    stream.ws.send(JSON.stringify({ type: "subscribe", id: "tombstones", kind: "chat", channelId, after: "4" }));
+    for (let seq = 5; seq <= Number(head); seq++) {
+      const event = (await stream.next()).event;
+      assert.equal(event.seq, String(seq));
+      assert.deepEqual(event.message.forward, { message: null, seq: "0" });
+      if (channelId === ids.general) assert.equal(event.message.content.text, "");
+    }
+    assert.deepEqual((await stream.next()).event, { type: "ready", cursor: head });
+    assert.equal((await stream.next()).type, "subscribed");
+  }
+});
+
+test("forward history paginates only direct replies and shared reply excerpts hide parent navigation", async (t) => {
+  const { request } = await setup(t);
+  const sessions = await Promise.all(
+    [true, "fixture-member-token"].map(async (auth) => ({
+      auth,
+      headers: { "x-caper-chat-token": (await request("/api/chat/session", { auth, method: "POST" })).value.token },
+    })),
+  );
+  const [owner, member] = sessions;
+  const other = { auth: "fixture-other-token" };
+  const sourcePath = `/api/chat/channels/${ids.private}/messages`;
+  const originalId = `${ids.private}m01`;
+  const replies = [];
+  // Two authors stay under the production per-account send limit.
+  for (let index = 0; index < 52; index++) {
+    const sent = await request(sourcePath, {
+      ...sessions[index % 2],
+      method: "POST",
+      body: {
+        clientMessageId: randomUUID(),
+        text: `Reply ${index}`,
+        threadRootId: originalId,
+        replyToId: originalId,
+        broadcast: index === 0,
+      },
+    });
+    assert.equal(sent.response.status, 200);
+    replies.push(sent.value);
+  }
+  await request(`${sourcePath}/${replies[0].id}/pin`, { ...owner, method: "PUT", body: { active: true } });
+  const forward = async (sourceMessageId) => {
+    const result = await request(`/api/chat/channels/${ids.general}/forwards`, {
+      ...owner,
+      method: "POST",
+      body: { sourceChannelId: ids.private, sourceMessageId, clientMessageId: randomUUID() },
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(result.value.content.text, "", "the note is optional");
+    return `/api/chat/channels/${ids.general}/forwards/${result.value.id}/thread`;
+  };
+  const threadPath = await forward(originalId);
+  const latest = (await request(threadPath, other)).value;
+  assert.equal(latest.root.thread.replyCount, 52);
+  assert.equal(latest.root.thread.seq, "56");
+  assert.equal(latest.cursor, "57");
+  assert.equal(latest.hasMore, true);
+  assert.equal(latest.source, null);
+  assert.deepEqual(
+    latest.messages.map(({ content }) => content.text),
+    Array.from({ length: 50 }, (_, i) => `Reply ${i + 2}`),
+  );
+  const earlier = (await request(`${threadPath}?before=7`, other)).value;
+  assert.equal(earlier.hasMore, false);
+  assert.equal(earlier.cursor, "57");
+  assert.equal(earlier.root.id, originalId);
+  assert.deepEqual(
+    earlier.messages.map(({ content }) => content.text),
+    ["Reply 0", "Reply 1"],
+  );
+  for (const message of [...earlier.messages, ...latest.messages])
+    for (const key of ["threadRootId", "thread", "broadcast", "pin", "pinSeq", "replyTo", "forward", "forwardSeq"])
+      assert.ok(!(key in message), `shared replies omit ${key}`);
+  const empty = (await request(`${threadPath}?before=0`, other)).value;
+  assert.deepEqual(empty.messages, []);
+  assert.equal(empty.root.id, originalId);
+  assert.equal(empty.cursor, "57");
+  for (const before of ["invalid", "-1", "9223372036854775808"])
+    assert.equal((await request(`${threadPath}?before=${before}`, other)).response.status, 400);
+
+  const replyPath = await forward(replies[0].id);
+  const excerpt = (await request(replyPath, other)).value;
+  assert.equal(excerpt.root.id, replies[0].id);
+  assert.equal(excerpt.root.content.text, "Reply 0");
+  assert.deepEqual(excerpt.messages, [], "sharing a reply does not share its parent or siblings");
+  assert.equal(excerpt.source, null);
+  for (const key of ["threadRootId", "thread", "broadcast", "pin", "pinSeq", "replyTo"])
+    assert.ok(!(key in excerpt.root));
+  const navigable = (await request(replyPath, member)).value.source;
+  assert.equal(navigable.spaceId, ids.space);
+  assert.equal(navigable.message.threadRootId, originalId);
+  assert.equal(navigable.message.replyTo.id, originalId);
+  assert.equal(navigable.message.broadcast, true);
+  assert.ok(navigable.message.pin);
+  assert.equal((await request(`${sourcePath}/${originalId}/thread`, other)).response.status, 404);
+
+  await request(`/api/spaces/${ids.space}/channels/${ids.private}/membership`, { ...member, method: "DELETE" });
+  assert.equal((await request(sourcePath, member)).response.status, 404);
+  assert.equal((await request(replyPath, member)).value.source, null, "source navigation is checked on each read");
+  assert.equal((await request(replyPath, member)).value.root.id, replies[0].id);
+  await request(`/api/spaces/${ids.space}/channels/${ids.general}/membership`, { ...member, method: "DELETE" });
+  assert.ok(
+    !(await request("/api/chat/forward-destinations", member)).value.destinations.some(({ id }) => id === ids.general),
+  );
+  assert.equal((await request(threadPath, member)).response.status, 200, "public preview remains readable");
+  assert.equal(
+    (
+      await request(`/api/chat/channels/${ids.general}/forwards`, {
+        ...member,
+        method: "POST",
+        body: { sourceChannelId: ids.general, sourceMessageId: `${ids.general}m01`, clientMessageId: randomUUID() },
+      })
+    ).response.status,
+    404,
+    "reading is not permission to send into an unjoined destination",
+  );
+
+  await request(`${sourcePath}/${replies[0].id}`, { ...owner, method: "DELETE" });
+  const tombstone = (await request(`${threadPath}?before=7`, other)).value.messages[0];
+  assert.equal(tombstone.id, replies[0].id);
+  assert.ok(tombstone.deletedAt);
+  assert.equal(tombstone.content.text, "");
+  assert.deepEqual((await request(replyPath, other)).value, {
+    root: null,
+    messages: [],
+    cursor: "0",
+    hasMore: false,
+    source: null,
+  });
+  await request(`/api/spaces/${ids.space}/members/${ids.other}`, { ...owner, method: "DELETE" });
+  assert.equal(
+    (await request(threadPath, other)).response.status,
+    404,
+    "destination membership still gates the shared history",
+  );
+});
+
 test("editing retains versions, author ownership, thread identity and original send retries", async (t) => {
   const { request } = await setup(t);
   const path = `/api/chat/channels/${ids.general}/messages`;

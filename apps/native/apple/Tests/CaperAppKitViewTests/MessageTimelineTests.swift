@@ -14,6 +14,139 @@ import XCTest
         timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? NSTextView } } ?? []
     }
 
+    func testForwardProjectionChangesRemeasureWithoutLosingTheWrapperSelection() throws {
+        _ = NSApplication.shared
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let parent = NSViewController()
+        let media = AppKitMediaPresenter(model: model, parent: parent)
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 600))
+        timeline.makeAttachments = { media.messageAttachments($0) }
+        let previous = message(0)
+        var wrapper = message(1)
+        let source = message(7, author: "Maya")
+        var original = ChatMessage(id: source.id, channelId: "another-channel", seq: source.seq,
+            author: source.author, content: source.content, createdAt: source.createdAt, clientMessageId: source.clientMessageId)
+        func update() {
+            timeline.update([previous, wrapper], conversationID: "channel", canInteract: true)
+            timeline.layoutSubtreeIfNeeded()
+        }
+        update()
+        let body = try XCTUnwrap(bodies(in: timeline).first { $0.accessibilityIdentifier() == "message-message-1" })
+        let row = try XCTUnwrap(body.superview)
+        body.setSelectedRange((body.string as NSString).range(of: "👩🏽‍💻"))
+        func surface() throws -> AppKitAttachmentSurface {
+            try XCTUnwrap(row.subviews.compactMap { $0 as? AppKitAttachmentSurface }.first)
+        }
+        wrapper.forward = MessageForward(message: original, seq: "7")
+        update()
+        let shortHeight = row.frame.height
+        XCTAssertGreaterThan(try surface().frame.height, 80, "A forward-only update must create a visible original card")
+        original.content = ChatContent(version: 1, type: "text", text: String(repeating: "Asymmetric source edit — café 中文 👩🏽‍💻. ", count: 10))
+        wrapper.forward = MessageForward(message: original, seq: "11")
+        update()
+        XCTAssertGreaterThan(row.frame.height, shortHeight, "Source edits must invalidate the leaf even when the wrapper note is unchanged")
+        for width in [CGFloat(640), CGFloat(300)] {
+            timeline.setFrameSize(NSSize(width: width, height: 600))
+            update()
+            let card = try surface()
+            XCTAssertTrue(row.bounds.contains(card.frame))
+            XCTAssertGreaterThanOrEqual(card.frame.minY, body.frame.maxY)
+            XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+            XCTAssertEqual(body.string, wrapper.content.text, "A source edit must never overwrite the forwarder's note")
+        }
+        wrapper.content = ChatContent(version: 1, type: "text", text: "")
+        update()
+        XCTAssertEqual(body.frame.height, 0, accuracy: 0.5, "Captionless forwards reserve action space, not a blank note row")
+        XCTAssertGreaterThanOrEqual(try surface().frame.minY, 36)
+        wrapper.forward = MessageForward(message: nil, seq: "0")
+        update()
+        XCTAssertGreaterThan(try surface().frame.height, 30, "An unavailable source keeps its explanatory card")
+        wrapper.deletedAt = "2026-11-05T11:00:00Z"
+        update()
+        XCTAssertEqual(body.string, MessageDeletion.placeholder)
+        XCTAssertFalse(row.subviews.contains { $0 is AppKitAttachmentSurface }, "A deleted wrapper must not retain its source")
+    }
+
+    func testReplyQuoteAndThreadSummaryKeepTextSelectionAndFitAtBothWidths() throws {
+        _ = NSApplication.shared
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let parent = NSViewController()
+        let media = AppKitMediaPresenter(model: model, parent: parent)
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 500))
+        timeline.makeReply = { media.replyContext($0) }
+        var original = message(0, author: "maya")
+        original.content = ChatContent(version: 1, type: "text",
+            text: String(repeating: "An asymmetric quote — 👩🏽‍💻 café 中文. ", count: 15))
+        var reply = message(1, author: "alex")
+        reply.replyTo = MessageReply(message: original)
+        reply.thread = ThreadSummary(replyCount: 2, participants: [original.author], seq: "7")
+        timeline.update([reply], conversationID: "channel")
+        let body = try XCTUnwrap(bodies(in: timeline).first)
+        let row = try XCTUnwrap(body.superview)
+        let selection = (body.string as NSString).range(of: "👩🏽‍💻")
+        body.setSelectedRange(selection)
+        for width in [CGFloat(640), CGFloat(300)] {
+            timeline.setFrameSize(NSSize(width: width, height: 500))
+            timeline.layoutSubtreeIfNeeded()
+            let quote = try XCTUnwrap(row.subviews.compactMap { $0 as? AppKitAttachmentSurface }.first)
+            let summary = try XCTUnwrap(row.subviews.compactMap { $0 as? NSButton }
+                .first { $0.accessibilityIdentifier() == "thread-summary-message-1" })
+            XCTAssertGreaterThan(quote.frame.height, 40, "Quotes must reserve visible space, not only an accessibility element")
+            XCTAssertTrue(row.bounds.contains(quote.frame))
+            XCTAssertGreaterThanOrEqual(body.frame.minY, quote.frame.maxY)
+            XCTAssertGreaterThanOrEqual(summary.frame.minY, body.frame.maxY)
+            XCTAssertTrue(row.bounds.contains(summary.frame))
+            XCTAssertEqual(summary.accessibilityLabel(), "2 replies")
+            XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+        }
+        original.content = ChatContent(version: 1, type: "text", text: "A replacement quote")
+        reply.replyTo = MessageReply(message: original)
+        reply.thread = ThreadSummary(replyCount: 3, participants: [original.author, reply.author], seq: "11")
+        timeline.update([reply], conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(body.selectedRange(), selection)
+        XCTAssertEqual(row.subviews.compactMap { $0 as? NSButton }
+            .first { $0.accessibilityIdentifier() == "thread-summary-message-1" }?.accessibilityLabel(), "3 replies")
+        reply.replyTo = nil
+        timeline.update([reply], conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertFalse(row.subviews.contains { $0 is AppKitAttachmentSurface })
+        XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+        reply.deletedAt = "2026-11-05T11:00:00Z"
+        timeline.update([reply], conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(body.string, MessageDeletion.placeholder)
+        let summary = try XCTUnwrap(row.subviews.compactMap { $0 as? NSButton }
+            .first { $0.accessibilityIdentifier() == "thread-summary-message-1" })
+        XCTAssertFalse(summary.isHidden, "Deleting the root must not strand its surviving replies")
+        XCTAssertEqual(summary.accessibilityLabel(), "3 replies")
+    }
+
+    func testOriginalMessageJumpRevealsBlockedTargetWithoutRealizingInterveningHistory() throws {
+        _ = NSApplication.shared
+        let timeline = MessageTimeline(frame: .zero)
+        let history = (0..<3000).map { message($0, author: $0 == 147 ? "blocked" : "peer") }
+        var visible: Set<String> = []
+        timeline.visibleMessagesChanged = { visible = $0 }
+        timeline.update(history, conversationID: "channel", blocked: ["blocked"])
+        XCTAssertTrue(timeline.focusMessage("message-147"), "A deep link may arrive before the window lays out")
+        timeline.setFrameSize(NSSize(width: 420, height: 360))
+        timeline.layoutSubtreeIfNeeded()
+        let target = try XCTUnwrap(bodies(in: timeline).first { $0.string == history[147].content.text })
+        let row = try XCTUnwrap(target.superview)
+        XCTAssertTrue(timeline.contentView.bounds.intersects(row.frame))
+        XCTAssertTrue(visible.contains("message-147"))
+        XCTAssertLessThan(timeline.documentView?.accessibilityChildren()?.count ?? 3000, 40)
+        XCTAssertFalse(bodies(in: timeline).contains { $0.string == history.last?.content.text })
+        XCTAssertFalse(timeline.focusMessage("missing-message"))
+        XCTAssertTrue(timeline.contentView.bounds.intersects(row.frame), "An unknown target must not move the reader")
+        timeline.showLatest()
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertTrue(visible.contains("message-2999"))
+        XCTAssertTrue(bodies(in: timeline).contains { $0.string == history.last?.content.text })
+        XCTAssertLessThan(timeline.documentView?.accessibilityChildren()?.count ?? 3000, 40)
+    }
+
     func testAttachmentLeavesHaveHeightAndStayInsideRealizedHistory() throws {
         _ = NSApplication.shared
         let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
@@ -25,6 +158,7 @@ import XCTest
             var value = message(index)
             value.content.attachments = [ChatAttachment(id: "image-\(index)", kind: .image, contentType: "image/png",
                 name: "photo.png", size: 640, width: 240, height: 160, url: "file:///nonexistent/caper-test.png")]
+            if index.isMultiple(of: 2) { value.forward = MessageForward(message: message(index + 3000, author: "Maya"), seq: "1") }
             return value
         }
         timeline.update(history, conversationID: "channel")
@@ -40,6 +174,212 @@ import XCTest
         XCTAssertTrue(timeline.documentView?.subviews.flatMap(\.subviews).allSatisfy { !($0 is AppKitAttachmentSurface) } == true)
     }
 
+    func testGifOnlyChangesRefreshMediaAndKeepTheCaptionSelection() throws {
+        _ = NSApplication.shared
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let parent = NSViewController()
+        let media = AppKitMediaPresenter(model: model, parent: parent)
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        timeline.makeAttachments = { media.messageAttachments($0) }
+        var value = message(0)
+        timeline.update([value], conversationID: "channel")
+        let body = try XCTUnwrap(bodies(in: timeline).first)
+        body.setSelectedRange(NSRange(location: 0, length: 3))
+        func surfaces() -> [AppKitAttachmentSurface] {
+            timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? AppKitAttachmentSurface } } ?? []
+        }
+        XCTAssertTrue(surfaces().isEmpty)
+        value.content.gif = ChatGif(kind: .sticker, slug: "fixture", title: "TEST FIXTURE sticker", width: 96, height: 64,
+            gif: "https://static.klipy.com/caper-fixture/sticker.gif")
+        timeline.update([value], conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(surfaces().count, 1, "A GIF-only update must create its visible media, even with no attachment array")
+        XCTAssertGreaterThan(try XCTUnwrap(surfaces().first).frame.height, 0)
+        XCTAssertEqual(body.selectedRange(), NSRange(location: 0, length: 3))
+        value.content.gif = nil
+        timeline.update([value], conversationID: "channel")
+        XCTAssertTrue(surfaces().isEmpty, "Removing only content.gif must tear down its animation host")
+        XCTAssertEqual(body.string, value.content.text)
+    }
+
+    func testReactionUpdatesKeepFocusSelectionAndFailureControlsInsideTheRow() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 400),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 420, height: 400))
+        window.contentView = timeline
+        var value = message(1)
+        value.reactions = [MessageReaction(emoji: "👍", authorIds: ["peer"])]
+        func update(allowed: Bool = true, failed: Bool = false) {
+            timeline.update([value], conversationID: "channel", viewerID: "self", canInteract: allowed,
+                reactionErrors: failed ? [value.id: "Couldn’t save reaction. Retry."] : [:])
+            timeline.layoutSubtreeIfNeeded()
+        }
+        func visible(_ view: NSView) -> [NSView] {
+            view.isHiddenOrHasHiddenAncestor ? [] : [view] + view.subviews.flatMap(visible)
+        }
+        func button(_ id: String) throws -> NSButton {
+            try XCTUnwrap(visible(timeline).compactMap { $0 as? NSButton }.first { $0.accessibilityIdentifier() == id })
+        }
+        update()
+        let body = try XCTUnwrap(bodies(in: timeline).first)
+        let row = try XCTUnwrap(body.superview)
+        let emoji = (body.string as NSString).range(of: "👩🏽‍💻")
+        body.setSelectedRange(emoji)
+        let quick = try button("quick-reaction-message-1-👍")
+        XCTAssertTrue(window.makeFirstResponder(quick))
+        value.reactions = [MessageReaction(emoji: "👍", authorIds: ["peer", "self"])]
+        update()
+        XCTAssertTrue(window.firstResponder === quick, "An optimistic reaction must not remove the focused quick action")
+        XCTAssertEqual(quick.state, .on)
+        XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+        let chip = try button("reaction-message-1-👍")
+        XCTAssertEqual(chip.title, "👍 2")
+        XCTAssertTrue(window.makeFirstResponder(chip))
+        value.reactions = [MessageReaction(emoji: "👍", authorIds: ["peer", "self", "other"])]
+        update()
+        XCTAssertTrue(window.firstResponder === chip, "Incoming counts must not replace a focused reaction chip")
+        XCTAssertEqual(chip.title, "👍 3")
+        let height = row.frame.height
+        update(failed: true)
+        let retry = try button("reaction-retry-message-1")
+        let dismiss = try button("reaction-dismiss-message-1")
+        XCTAssertGreaterThan(row.frame.height, height, "Error-only changes must invalidate the row measurement")
+        XCTAssertGreaterThan(retry.frame.minY, chip.frame.maxY)
+        for control in [retry, dismiss] { XCTAssertTrue(row.bounds.contains(control.frame)) }
+        var actions: [String] = []
+        timeline.messageAction = { message, action, _ in
+            XCTAssertEqual(message.id, value.id)
+            switch action {
+            case .retryReaction: actions.append("retry")
+            case .dismissReaction: actions.append("dismiss")
+            default: XCTFail("Wrong action for failure recovery")
+            }
+        }
+        retry.performClick(nil); dismiss.performClick(nil)
+        XCTAssertEqual(actions, ["retry", "dismiss"])
+        update(allowed: false, failed: true)
+        XCTAssertFalse(retry.isEnabled)
+        XCTAssertTrue(dismiss.isEnabled, "Read-only users can put an error away without mutating the server")
+        XCTAssertFalse(try button("add-reaction-message-1").isEnabled)
+        XCTAssertFalse(chip.isEnabled)
+        update()
+        XCTAssertTrue(retry.isHidden); XCTAssertTrue(dismiss.isHidden)
+        XCTAssertEqual(row.frame.height, height, accuracy: 0.5)
+        XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+    }
+
+    func testPinsKeepAuthorIdentitySelectionAndIndependentErrorsInsideGroupedAndQuotedRows() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let parent = NSViewController()
+        let media = AppKitMediaPresenter(model: model, parent: parent)
+        let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 600))
+        timeline.makeReply = { media.replyContext($0) }
+        window.contentView = timeline
+        let previous = message(0)
+        var value = message(1)
+        value.reactions = [MessageReaction(emoji: "👍", authorIds: ["peer"])]
+        value.thread = ThreadSummary(replyCount: 2, participants: [previous.author], seq: "7")
+        func update(pinError: Bool = false, reactionError: Bool = false, pending: Bool = false, allowed: Bool = true) {
+            timeline.update([previous, value], conversationID: "channel", viewerID: "self", canInteract: allowed,
+                reactionErrors: reactionError ? [value.id: "Couldn’t save reaction. Retry."] : [:],
+                pinErrors: pinError ? [value.id: "Couldn’t update pin. Try again."] : [:],
+                pendingPins: pending ? [value.id] : [])
+            timeline.layoutSubtreeIfNeeded()
+        }
+        update()
+        let body = try XCTUnwrap(bodies(in: timeline).first { $0.accessibilityIdentifier() == "message-message-1" })
+        let row = try XCTUnwrap(body.superview)
+        func button(_ id: String) throws -> NSButton {
+            try XCTUnwrap(row.subviews.compactMap { $0 as? NSButton }.first { $0.accessibilityIdentifier() == id })
+        }
+        let unpinnedHeight = row.frame.height
+        body.setSelectedRange((body.string as NSString).range(of: "👩🏽‍💻"))
+        value.pin = MessagePin(author: message(2, author: "self").author, createdAt: value.createdAt)
+        update()
+        let badge = try button("pinned-by-message-1")
+        XCTAssertEqual(badge.title, "Pinned by you", "The pin's author, not the message's author, determines ownership")
+        XCTAssertEqual(badge.accessibilityLabel(), "Open profile for self")
+        XCTAssertGreaterThan(row.frame.height, unpinnedHeight, "A pin-only update must invalidate the grouped row's measurement")
+        XCTAssertTrue(window.makeFirstResponder(badge))
+        value.pin = MessagePin(author: message(3, author: "Maya").author, createdAt: value.createdAt)
+        update()
+        XCTAssertTrue(window.firstResponder === badge)
+        XCTAssertEqual(badge.title, "Pinned by Maya")
+        XCTAssertEqual(badge.accessibilityLabel(), "Open profile for Maya")
+        var openedAuthor: String?
+        timeline.openAuthor = { author, _ in openedAuthor = author.id }
+        badge.performClick(nil)
+        XCTAssertEqual(openedAuthor, "Maya")
+        XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+
+        for quoted in [false, true] {
+            value.replyTo = quoted ? MessageReply(message: previous) : nil
+            for width in [CGFloat(640), CGFloat(300)] {
+                timeline.setFrameSize(NSSize(width: width, height: 600))
+                update(pinError: true, reactionError: true)
+                let retry = try button("pin-retry-message-1")
+                let dismiss = try button("pin-dismiss-message-1")
+                let reactionRetry = try button("reaction-retry-message-1")
+                let summary = try button("thread-summary-message-1")
+                for control in [badge, retry, dismiss, reactionRetry, summary] {
+                    XCTAssertFalse(control.isHidden)
+                    XCTAssertTrue(row.bounds.contains(control.frame), "Pin and reaction errors must fit together at both pane widths")
+                }
+                XCTAssertGreaterThan(retry.frame.minY, reactionRetry.frame.maxY)
+                XCTAssertGreaterThan(summary.frame.minY, retry.frame.maxY)
+                XCTAssertGreaterThanOrEqual(body.frame.minY, badge.frame.maxY)
+                if quoted {
+                    let quote = try XCTUnwrap(row.subviews.compactMap { $0 as? AppKitAttachmentSurface }.first)
+                    XCTAssertGreaterThanOrEqual(quote.frame.minY, badge.frame.maxY)
+                    XCTAssertGreaterThanOrEqual(body.frame.minY, quote.frame.maxY)
+                }
+                update(pinError: true, pending: true)
+                XCTAssertFalse(retry.isEnabled, "Pending changes must not accept duplicate retries")
+                XCTAssertTrue(reactionRetry.isHidden, "Dismissing a reaction error must not hide the independent pin error")
+                update(pinError: true, allowed: false)
+                XCTAssertFalse(retry.isEnabled)
+                XCTAssertTrue(dismiss.isEnabled)
+                XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+            }
+        }
+        update(pinError: true)
+        var actions: [String] = []
+        timeline.messageAction = { message, action, _ in
+            XCTAssertEqual(message.id, value.id)
+            switch action {
+            case .retryPin: actions.append("retry")
+            case .dismissPin: actions.append("dismiss")
+            default: XCTFail("Wrong action for pin failure recovery")
+            }
+        }
+        try button("pin-retry-message-1").performClick(nil)
+        try button("pin-dismiss-message-1").performClick(nil)
+        XCTAssertEqual(actions, ["retry", "dismiss"])
+        value.pin = nil; value.replyTo = nil
+        timeline.setFrameSize(NSSize(width: 640, height: 600))
+        update()
+        XCTAssertTrue(badge.isHidden)
+        XCTAssertTrue(try button("pin-retry-message-1").isHidden)
+        XCTAssertEqual(row.frame.height, unpinnedHeight, accuracy: 0.5)
+        XCTAssertEqual(body.accessibilitySelectedText(), "👩🏽‍💻")
+        value.pin = MessagePin(author: previous.author, createdAt: value.createdAt)
+        value.deletedAt = "2026-11-05T11:00:00Z"
+        update(pinError: true, reactionError: true)
+        XCTAssertEqual(body.string, MessageDeletion.placeholder)
+        XCTAssertTrue(badge.isHidden, "A tombstone must hide stale pin metadata")
+        XCTAssertTrue(try button("pin-retry-message-1").isHidden)
+        XCTAssertTrue(try button("reaction-retry-message-1").isHidden)
+        XCTAssertFalse(try button("thread-summary-message-1").isHidden)
+    }
+
     func testBlockedRunsRevealIndependentlyWithoutRealizingTheirWholeHistory() throws {
         let timeline = MessageTimeline(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         let history = [message(0, author: "blocked"), message(1, author: "blocked"),
@@ -49,13 +389,17 @@ import XCTest
             try XCTUnwrap(timeline.documentView?.subviews.flatMap { $0.subviews.compactMap { $0 as? NSButton } }
                 .first { $0.accessibilityLabel() == label })
         }
-        timeline.update(history, conversationID: "channel", viewerID: "self", blocked: ["blocked", "self"])
+        timeline.update(history, conversationID: "channel", viewerID: "self", blocked: ["blocked", "self"], canInteract: true)
         timeline.layoutSubtreeIfNeeded()
         XCTAssertEqual(visible(), [history[2].content.text], "Blocked content is absent; your own message never collapses")
         try toggle("Show 2 blocked messages").performClick(nil)
         XCTAssertTrue(visible().contains(history[0].content.text))
         XCTAssertTrue(visible().contains(history[1].content.text))
         XCTAssertFalse(visible().contains(history[3].content.text), "Showing one run must not reveal another")
+        let revealed = try XCTUnwrap(bodies(in: timeline).first { $0.string == history[0].content.text })
+        let addReaction = try XCTUnwrap(revealed.superview?.subviews.flatMap(\.subviews).compactMap { $0 as? NSButton }
+            .first { $0.accessibilityIdentifier() == "add-reaction-message-0" })
+        XCTAssertTrue(addReaction.isEnabled, "Revealing a blocked run must preserve the conversation's interaction permission")
         try toggle("Hide 2 blocked messages").performClick(nil)
         XCTAssertEqual(visible(), [history[2].content.text])
         timeline.update(history, conversationID: "channel", viewerID: "self")
@@ -276,6 +620,13 @@ import XCTest
         let row = try XCTUnwrap(body.superview)
         let author = try XCTUnwrap(row.subviews.compactMap { $0 as? NSTextField }.first { $0.stringValue == "maya" })
         XCTAssertTrue(author.isHidden, "Consecutive messages from the same author are grouped")
+        last.revision = 2
+        timeline.update([first, previous, last], conversationID: "channel")
+        timeline.layoutSubtreeIfNeeded()
+        let history = try XCTUnwrap(row.subviews.compactMap { $0 as? NSButton }
+            .first { $0.accessibilityIdentifier() == "message-history-message-2" })
+        XCTAssertFalse(history.isHidden)
+        XCTAssertGreaterThanOrEqual(body.frame.minY, history.frame.maxY, "A grouped edited marker must not cover the message text")
         timeline.update([first, last], conversationID: "channel")
         timeline.layoutSubtreeIfNeeded()
         XCTAssertFalse(author.isHidden, "Deleting the preceding message reveals the author again")

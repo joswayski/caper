@@ -5,6 +5,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 import XCTest
 @testable import CaperCore
+#if os(macOS)
+import AppKit
+#endif
 
 private final class AttachmentTokenStore: TokenStore, @unchecked Sendable {
     var token: String?
@@ -2021,6 +2024,139 @@ final class AttachmentTests: XCTestCase {
         for draft in channelFiles + otherFiles { XCTAssertFalse(FileManager.default.fileExists(atPath: draft.localURL.path)) }
     }
 
+    #if os(macOS)
+    @MainActor
+    func testAppKitDropKeepsFileOrderAndOriginalThreadWithoutTypingPaths() async throws {
+        _ = NSApplication.shared
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let model = AppModel(api: client())
+        let chat = model.chat
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        await chat.openThread("Root00000001")
+        let sources = try ["first.txt", "second.caperunknown"].enumerated().map { index, name in
+            try AttachmentStaging.stage(data: Data([UInt8(index + 7), 0, 255]), filename: name)
+        }
+        defer { sources.forEach { AttachmentStaging.remove($0.url) } }
+        let drag = AttachmentDrag()
+        defer { drag.draggingPasteboard.releaseGlobally() }
+        // Mixed representations must attach the real files, never type paths.
+        XCTAssertTrue(drag.draggingPasteboard.writeObjects(sources.map { source in
+            let item = NSPasteboardItem()
+            item.setString(source.url.absoluteString, forType: .fileURL)
+            item.setString(source.url.path, forType: .string)
+            return item
+        }))
+        let destination = AppKitFileDropView(model: model, inThread: true)
+        let composer = ComposerTextView()
+        composer.string = "Keep my text"
+        composer.attachmentDropDestination = destination
+        XCTAssertEqual(composer.draggingEntered(drag), .copy)
+        XCTAssertTrue(composer.prepareForDragOperation(drag))
+        XCTAssertTrue(composer.performDragOperation(drag))
+        composer.concludeDragOperation(drag)
+        // Change before the background-copy callback can run on the main actor.
+        chat.threadRootID = "Root00000002"
+        await waitUntil("drop uploads to original thread") {
+            AttachmentURLProtocol.requests.filter { $0.url.path.hasSuffix("/complete") }.count == 2
+        }
+        XCTAssertTrue(chat.threadAttachmentDrafts.isEmpty)
+        XCTAssertTrue(chat.attachmentDrafts.isEmpty)
+        XCTAssertEqual(composer.string, "Keep my text")
+        chat.threadRootID = "Root00000001"
+        let copies = chat.threadAttachmentDrafts
+        XCTAssertEqual(copies.map(\.name), ["first.txt", "second.caperunknown"])
+        XCTAssertNil(chat.threadAttachmentNotice)
+        for (index, copy) in copies.enumerated() {
+            XCTAssertNotEqual(copy.localURL, sources[index].url)
+            XCTAssertEqual(try Data(contentsOf: copy.localURL), Data([UInt8(index + 7), 0, 255]))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: sources[index].url.path))
+        }
+        await chat.send(inThread: true)
+        let sent = try XCTUnwrap(AttachmentURLProtocol.requests.last { $0.method == "POST" && $0.url.path.hasSuffix("/messages") })
+        XCTAssertEqual(json(sent.body)?["threadRootId"] as? String, "Root00000001")
+        XCTAssertEqual((json(sent.body)?["attachmentIds"] as? [String])?.count, 2)
+        await chat.stop(discardingDrafts: true)
+        for copy in copies { XCTAssertFalse(FileManager.default.fileExists(atPath: copy.localURL.path)) }
+    }
+
+    @MainActor
+    func testAppKitDropRejectsLinksCancelledAndStaleDragsAndKeepsCapacity() async throws {
+        _ = NSApplication.shared
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let model = AppModel(api: client())
+        let chat = model.chat
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        let destination = AppKitFileDropView(model: model)
+        let drag = AttachmentDrag()
+        defer { drag.draggingPasteboard.releaseGlobally() }
+        for type in [NSPasteboard.PasteboardType.string, .URL, .html] {
+            drag.draggingPasteboard.clearContents()
+            drag.draggingPasteboard.setString("https://example.com", forType: type)
+            XCTAssertEqual(destination.draggingEntered(drag), [])
+            XCTAssertFalse(destination.performDragOperation(drag))
+        }
+        let sources = try (0..<11).map { try AttachmentStaging.stage(data: Data([UInt8($0)]), filename: "file\($0).txt") }
+        defer { sources.forEach { AttachmentStaging.remove($0.url) } }
+        drag.draggingPasteboard.clearContents()
+        XCTAssertTrue(drag.draggingPasteboard.writeObjects(sources.map { $0.url as NSURL }))
+        drag.draggingSourceOperationMask = .move
+        XCTAssertEqual(destination.draggingEntered(drag), [])
+        drag.draggingSourceOperationMask = .copy
+        XCTAssertEqual(destination.draggingEntered(drag), .copy)
+        destination.draggingExited(drag)
+        XCTAssertFalse(destination.performDragOperation(drag))
+        XCTAssertEqual(destination.draggingEntered(drag), .copy)
+        await chat.open(channelID: "Chan12345679", displayName: "Me")
+        XCTAssertEqual(destination.draggingUpdated(drag), [])
+        XCTAssertFalse(destination.performDragOperation(drag))
+        await chat.checkUploadAvailability()
+        chat.sending = true
+        XCTAssertEqual(destination.draggingEntered(drag), [])
+        chat.sending = false
+        model.whatsNew.workspaceModalOpen = true
+        XCTAssertEqual(destination.draggingEntered(drag), [])
+        model.whatsNew.workspaceModalOpen = false
+        XCTAssertEqual(destination.draggingEntered(drag), .copy)
+        XCTAssertTrue(destination.performDragOperation(drag))
+        await waitUntil("bounded drop") { chat.attachmentDrafts.count == 10 }
+        XCTAssertEqual(chat.attachmentDrafts.map(\.name), (0..<10).map { "file\($0).txt" })
+        XCTAssertEqual(chat.attachmentNotice, "You can attach up to 10 files.")
+        XCTAssertEqual(destination.draggingEntered(drag), .copy, "A full composer still shows the remove-one overlay")
+        XCTAssertFalse(destination.performDragOperation(drag))
+        XCTAssertEqual(chat.attachmentDrafts.count, 10)
+        await chat.stop(discardingDrafts: true)
+    }
+
+    @MainActor
+    func testAppKitDropReportsUnreadableAndDirectoryInputsWithoutLosingValidFiles() async throws {
+        _ = NSApplication.shared
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let model = AppModel(api: client())
+        let chat = model.chat
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        let source = try AttachmentStaging.stage(data: Data("valid".utf8), filename: "valid.txt")
+        defer { AttachmentStaging.remove(source.url) }
+        let drag = AttachmentDrag()
+        defer { drag.draggingPasteboard.releaseGlobally() }
+        XCTAssertTrue(drag.draggingPasteboard.writeObjects([
+            source.url.deletingLastPathComponent() as NSURL,
+            source.url.appendingPathExtension("missing") as NSURL,
+            source.url as NSURL,
+        ]))
+        let destination = AppKitFileDropView(model: model)
+        XCTAssertEqual(destination.draggingEntered(drag), .copy)
+        XCTAssertTrue(destination.performDragOperation(drag))
+        await waitUntil("valid drop after failures") { chat.attachmentDrafts.first?.attachment != nil }
+        XCTAssertEqual(chat.attachmentDrafts.map(\.name), ["valid.txt"])
+        XCTAssertEqual(chat.attachmentNotice, "Some files couldn’t be added. Try selecting them with Files.")
+        XCTAssertEqual(try Data(contentsOf: source.url), Data("valid".utf8))
+        await chat.stop(discardingDrafts: true)
+    }
+    #endif
+
     @MainActor
     func testLatePickerTargetsKeepFilesAcrossThreadsAndConversationsAndInvalidateOnSignOut() async throws {
         AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
@@ -2615,3 +2751,27 @@ private final class FractionLog: @unchecked Sendable {
     func append(_ value: Double) { lock.withLock { stored.append(value) } }
     var values: [Double] { lock.withLock { stored } }
 }
+
+#if os(macOS)
+/// Real isolated pasteboard and file IO; only AppKit's drag-session envelope is
+/// simulated here. Finder/promised-file pointer checks belong to the UI run.
+private final class AttachmentDrag: NSObject, NSDraggingInfo {
+    let draggingPasteboard = NSPasteboard(name: .init("caper-drop-tests-\(UUID().uuidString)"))
+    var draggingSourceOperationMask: NSDragOperation = .copy
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingSource: Any? { nil }
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    var draggedImage: NSImage? { NSImage(size: NSSize(width: 1, height: 1)) }
+    var draggingSequenceNumber: Int { 1 }
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 0
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass],
+                                searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+}
+#endif
