@@ -25,6 +25,8 @@ pub struct Composer {
     pub chips: gtk::Box,
     pub attach: gtk::Button,
     pub view: gtk::TextView,
+    /// Its formatting: hidden delimiters, styled runs and typing as web's.
+    pub rich: Rc<crate::composing::Rich>,
     pub placeholder: gtk::Label,
     /// "Send a GIF", shown while GIFs are on.
     pub gif: gtk::Button,
@@ -210,6 +212,7 @@ impl Composer {
         view.set_wrap_mode(gtk::WrapMode::WordChar);
         view.set_accepts_tab(false);
         view.set_hexpand(true);
+        let rich = crate::composing::attach(&view, &root);
         let placeholder = label("", &["placeholder"]);
         placeholder.set_can_target(false);
         placeholder.set_valign(gtk::Align::Start);
@@ -321,6 +324,7 @@ impl Composer {
             chips,
             attach,
             view,
+            rich,
             placeholder,
             gif,
             broadcast,
@@ -334,10 +338,11 @@ impl Composer {
         }
     }
 
+    /// The draft's source, hidden delimiters included.
     pub fn text(&self) -> String {
         let buffer = self.view.buffer();
         buffer
-            .text(&buffer.start_iter(), &buffer.end_iter(), false)
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
             .to_string()
     }
 }

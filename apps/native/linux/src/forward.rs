@@ -61,7 +61,7 @@ const NOTE: &str = "Shares this conversation, including future edits, reactions 
 fn text(view: &gtk::TextView) -> String {
     let buffer = view.buffer();
     buffer
-        .text(&buffer.start_iter(), &buffer.end_iter(), false)
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
         .to_string()
 }
 
@@ -222,6 +222,7 @@ impl App {
             .accepts_tab(false)
             .build();
         note.add_css_class("forward-note");
+        crate::composing::attach(&note, &root);
         let placeholder = label("Add a note (optional)", &["muted"]);
         placeholder.set_can_target(false);
         placeholder.set_valign(gtk::Align::Start);

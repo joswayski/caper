@@ -1030,9 +1030,13 @@ impl App {
             // reply or an edit.
             let keys = gtk::EventControllerKey::new();
             keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-            let app = self.clone();
+            let (app, rich) = (self.clone(), composer.rich.clone());
             keys.connect_key_pressed(move |_, key, _, modifiers| {
                 app.active();
+                // An IME's Enter and Escape are its own.
+                if rich.composing() {
+                    return glib::Propagation::Proceed;
+                }
                 let popup = app.suggestions.borrow().get(usize::from(thread)).cloned();
                 if popup.is_some_and(|popup| popup.key(key, modifiers)) {
                     return glib::Propagation::Stop;
@@ -1523,13 +1527,14 @@ impl App {
     }
 
     fn leave_conversation(&self, state: &mut State) {
+        self.ui.composer.rich.end();
         // The composer's unsent text stays with its conversation (an edit
         // in progress is not a draft).
         if let Some(channel) = state.channel.clone()
             && !matches!(state.compose, Some(Compose::Edit { .. }))
         {
             let buffer = self.ui.composer.view.buffer();
-            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
             if text.trim().is_empty() {
                 state.drafts.remove(&channel);
             } else {

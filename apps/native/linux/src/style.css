@@ -2376,3 +2376,38 @@ button.history-button {
 .composer scrolledwindow scrollbar.vertical slider {
   min-height: 8px;
 }
+
+/* Bold and Italic over a composer's selection (`composing`), as desktop's. */
+popover.format-bar > contents {
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 0;
+}
+
+popover.format-bar button {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 0;
+}
+
+popover.format-bar button:first-child {
+  border-radius: 8px 0 0 8px;
+}
+
+popover.format-bar button:last-child {
+  border-radius: 0 8px 8px 0;
+}
+
+popover.format-bar button:hover {
+  background: @caper_surface_hover;
+}
+
+.format-bold {
+  font-weight: 700;
+}
+
+.format-italic {
+  font-style: italic;
+}

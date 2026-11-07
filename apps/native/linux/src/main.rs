@@ -2,6 +2,7 @@
 //! any release or package yet.
 
 mod app;
+mod composing;
 mod content;
 mod fonts;
 #[allow(dead_code)]

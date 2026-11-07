@@ -154,6 +154,7 @@ impl App {
             view.set_wrap_mode(gtk::WrapMode::WordChar);
             view.set_accepts_tab(false);
             view.set_hexpand(true);
+            let rich = crate::composing::attach(&view, &line);
             let placeholder = label(
                 &format!(
                     "Message @{}",
@@ -193,6 +194,7 @@ impl App {
             keys.connect_key_pressed(move |_, key, _, modifiers| {
                 if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
                     && !modifiers.contains(gdk::ModifierType::SHIFT_MASK)
+                    && !rich.composing()
                 {
                     app.profile_send(false);
                     return glib::Propagation::Stop;
@@ -457,7 +459,7 @@ impl App {
             .map(|(view, _)| {
                 let buffer = view.buffer();
                 buffer
-                    .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                    .text(&buffer.start_iter(), &buffer.end_iter(), true)
                     .to_string()
             })
             .unwrap_or_default();

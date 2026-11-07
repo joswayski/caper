@@ -134,7 +134,7 @@ impl Popup {
     fn text(&self) -> String {
         let buffer = self.view.buffer();
         buffer
-            .text(&buffer.start_iter(), &buffer.end_iter(), false)
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
             .to_string()
     }
 
