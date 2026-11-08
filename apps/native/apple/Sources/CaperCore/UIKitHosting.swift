@@ -141,6 +141,11 @@ import UniformTypeIdentifiers
         page(FirstSpaceView(model: model))
     }
 
+    /// A new account's profile: SwiftUI's own page, with its validation and Log out.
+    public static func profile(model: AppModel) -> UIViewController {
+        page(ProfileView(model: model))
+    }
+
     public static func spacesUnavailable(model: AppModel) -> UIViewController {
         page(UIKitSpacesUnavailable(model: model))
     }
@@ -874,10 +879,12 @@ public struct UIKitTimelineEntry {
 /// SwiftUI's What's new: the release-notes sheet, opened from the account
 /// menu or shown once for a new build's unread notes. Its zero-size host
 /// sits in the root; the automatic check waits, as on SwiftUI, until nothing
-/// else is presented and no call is starting.
+/// else is presented and no call is starting. The same host drives the call's
+/// speaking rings and chimes, as SwiftUI's root does.
 @MainActor public enum UIKitWhatsNew {
     public static func presenter(model: AppModel) -> UIViewController {
-        let host = UIHostingController(rootView: Color.clear.modifier(WhatsNewPresentation(model: model)).preferredColorScheme(.dark))
+        let host = UIHostingController(rootView: Color.clear.modifier(WhatsNewPresentation(model: model))
+            .modifier(VoiceCallEffects(model: model)).preferredColorScheme(.dark))
         host.overrideUserInterfaceStyle = .dark
         host.view.backgroundColor = .clear
         host.view.isUserInteractionEnabled = false
@@ -949,9 +956,15 @@ public struct UIKitPresentationHost: View {
             })
             .onChange(of: chat.isPreview) { _, preview in if preview { state.actions = nil; state.showingEmojiPicker = false } }
             .onChange(of: chat.currentAuthor?.id) { _, _ in state.actions = nil; state.showingEmojiPicker = false }
+            // Another conversation (a tapped notification, say) closes this one's sheets, as SwiftUI's ChatView.
+            .onChange(of: model.selectedChannelID) { _, _ in closeMessageSheets() }
+            .onChange(of: model.selectedDirectMessageID) { _, _ in closeMessageSheets() }
+            .onChange(of: model.visit?.channelID) { _, _ in closeMessageSheets() }
             .onChange(of: state.actions?.id) { _, _ in state.showingEmojiPicker = false }
             .preferredColorScheme(.dark)
     }
+
+    private func closeMessageSheets() { state.actions = nil; state.reactors = nil; state.showingEmojiPicker = false }
 
     private func actionsSheet(_ message: ChatMessage) -> some View {
         MessageActionsSheet(message: message, chat: chat, showingEmojiPicker: $state.showingEmojiPicker,
