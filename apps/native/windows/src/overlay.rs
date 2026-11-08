@@ -2167,6 +2167,12 @@ impl App {
             }
             None => self.menu_p.offset(-10_000.0, 0.0)?,
         }
+        if let Some(e) = &self.attachment_editor {
+            self.dialog_p.ensure(g, px(self.w), px(self.h))?;
+            self.dialog_p.offset(0.0, 0.0)?;
+            self.dialog_p.draw(s, |dc| e.draw(g, dc, self.w))?;
+            return Ok(());
+        }
         match &self.dialog {
             Some(d) => {
                 self.dialog_p.ensure(g, px(self.w), px(self.h))?;

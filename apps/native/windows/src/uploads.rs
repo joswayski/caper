@@ -993,6 +993,9 @@ impl App {
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned())
             .or_else(|| d.upload.attachment.as_ref().and_then(|a| a.url.clone()));
+        if matches!(part, Part::Open(_)) && self.open_attachment_editor(key) {
+            return;
+        }
         let Some(live) = &mut self.live else { return };
         match part {
             Part::Open(_) => {

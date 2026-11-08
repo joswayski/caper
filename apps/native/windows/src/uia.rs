@@ -9,6 +9,7 @@
 //! plain text: screen readers can read it by character, word and line, find
 //! its bounds and select in it (the selection is the history's selection).
 use crate::actions::{PPart, Tool};
+use crate::attachment_editor::Part as EPart;
 use crate::gifs::GPart;
 use crate::list::Action;
 use crate::overlay::{Kind, Part as DPart};
@@ -72,6 +73,7 @@ pub enum Id {
     MenuItem(usize),
     /// A part of the open dialog, which replaces the tree while shown.
     Dialog(DPart),
+    AttachmentEditor(EPart),
     /// A row's hover-toolbar control, reachable without hovering.
     Tool(usize, Tool),
     MenuClose,
@@ -119,6 +121,9 @@ fn with<R>(f: impl FnOnce(&mut App) -> Result<R>) -> Result<R> {
 
 /// The editable field behind a node: the sign-in field or the composer.
 fn field(a: &App, id: Id) -> &Composer {
+    if let (Id::AttachmentEditor(EPart::Field), Some(e)) = (id, &a.attachment_editor) {
+        return &e.field;
+    }
     if let (Id::Pick(_), Some(p)) = (id, &a.picker) {
         return &p.search;
     }
@@ -136,6 +141,9 @@ fn field(a: &App, id: Id) -> &Composer {
 }
 
 fn field_mut(a: &mut App, id: Id) -> &mut Composer {
+    if let (Id::AttachmentEditor(EPart::Field), Some(e)) = (id, &mut a.attachment_editor) {
+        return &mut e.field;
+    }
     if let (Id::Dialog(p), Some(d)) = (id, &mut a.dialog) {
         return d.field_for_mut(p);
     }
@@ -155,7 +163,9 @@ fn field_mut(a: &mut App, id: Id) -> &mut Composer {
 }
 
 fn field_changed(a: &mut App, id: Id, text: bool) {
-    if matches!(id, Id::Dialog(_)) {
+    if matches!(id, Id::AttachmentEditor(_)) {
+        a.attachment_editor_changed();
+    } else if matches!(id, Id::Dialog(_)) {
         a.dialog_changed();
     } else if matches!(id, Id::Pick(_)) {
         a.picker_changed(text);
@@ -172,6 +182,9 @@ fn field_changed(a: &mut App, id: Id, text: bool) {
 
 /// The node of the focused text field, while one is focused.
 fn focused(a: &App) -> Option<Id> {
+    if let Some(e) = &a.attachment_editor {
+        return Some(Id::AttachmentEditor(e.focus));
+    }
     if let Some(d) = &a.dialog {
         if let Some(k) = d.number_focus() {
             return Some(Id::Dialog(DPart::Number(k)));
@@ -199,6 +212,9 @@ fn focused(a: &App) -> Option<Id> {
 }
 
 fn children(a: &App, id: Id) -> Vec<Id> {
+    if let (Id::Root, Some(e)) = (id, &a.attachment_editor) {
+        return e.parts().map(Id::AttachmentEditor).collect();
+    }
     if let (Id::Root, Some(s)) = (id, &a.signin) {
         return s.parts().map(Id::Sign).collect();
     }
@@ -359,6 +375,9 @@ fn parent(id: Id) -> Option<Id> {
 }
 
 fn exists(a: &App, id: Id) -> bool {
+    if a.attachment_editor.is_some() && !matches!(id, Id::Root | Id::AttachmentEditor(_)) {
+        return false;
+    }
     // Settings replaces the tree while shown.
     if a.settings.is_some() && !matches!(id, Id::Root | Id::Settings(_)) {
         return false;
@@ -395,6 +414,10 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Invite(s) => a.invite_spots().contains(&s),
         Id::Sign(p) => a.signin.as_ref().is_some_and(|s| s.part_rect(p).is_some()),
         Id::Dialog(p) => a.dialog.as_ref().is_some_and(|d| d.part_rect(p).is_some()),
+        Id::AttachmentEditor(p) => a
+            .attachment_editor
+            .as_ref()
+            .is_some_and(|e| e.part_rect(p).is_some()),
         Id::Menu => a.menu.is_some() && a.dialog.is_none(),
         Id::MenuItem(k) => a.dialog.is_none() && a.menu.as_ref().is_some_and(|m| k < m.items.len()),
         Id::MenuClose => a.menu.is_some() && a.dialog.is_none(),
@@ -435,6 +458,10 @@ fn exists(a: &App, id: Id) -> bool {
 fn name(a: &App, id: Id) -> String {
     let c = &a.c;
     match id {
+        Id::AttachmentEditor(p) => a
+            .attachment_editor
+            .as_ref()
+            .map_or_else(String::new, |e| e.label(p)),
         Id::Root => "Caper".into(),
         Id::Rail => "Spaces".into(),
         Id::Space(i) => {
@@ -787,6 +814,10 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         ) => UIA_TextControlTypeId,
         Id::Dialog(DPart::Toggle) => UIA_CheckBoxControlTypeId,
         Id::Dialog(_) => UIA_ButtonControlTypeId,
+        Id::AttachmentEditor(EPart::Field) => UIA_EditControlTypeId,
+        Id::AttachmentEditor(EPart::Title | EPart::Status) => UIA_TextControlTypeId,
+        Id::AttachmentEditor(EPart::Canvas) => UIA_ImageControlTypeId,
+        Id::AttachmentEditor(_) => UIA_ButtonControlTypeId,
         Id::Sign(_) | Id::Control(..) => UIA_ButtonControlTypeId,
     }
 }
@@ -824,6 +855,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Menu => (12, 0),
         Id::MenuItem(k) => (13, k),
         Id::Dialog(p) => (14, p.index()),
+        Id::AttachmentEditor(p) => (51, p.index()),
         Id::Tool(i, t) => (
             15,
             i * 8
@@ -966,6 +998,11 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
         Id::Members => (a.w - a.members_w(), 0.0, a.members_w(), a.h),
         Id::Member(i) => a.member_rect(i),
         Id::Composer => a.box_rect(),
+        Id::AttachmentEditor(p) => a
+            .attachment_editor
+            .as_ref()
+            .and_then(|e| e.part_rect(p))
+            .unwrap_or_default(),
         Id::Menu => a
             .menu
             .as_ref()
@@ -1163,6 +1200,13 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             }
             Id::Gif(_) => pattern == UIA_InvokePatternId,
             Id::Dialog(DPart::Toggle) => pattern == UIA_TogglePatternId,
+            Id::AttachmentEditor(EPart::Field) => {
+                pattern == UIA_ValuePatternId
+                    || pattern == UIA_TextPatternId
+                    || pattern == UIA_TextPattern2Id
+            }
+            Id::AttachmentEditor(EPart::Title | EPart::Status | EPart::Canvas) => false,
+            Id::AttachmentEditor(_) => pattern == UIA_InvokePatternId,
             Id::Dialog(DPart::Number(_)) => pattern == UIA_ValuePatternId,
             Id::Dialog(DPart::Field) => {
                 pattern == UIA_ValuePatternId
@@ -1256,6 +1300,26 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
                     id,
                     Id::Composer
+                        | Id::AttachmentEditor(
+                            EPart::Field
+                                | EPart::Cancel
+                                | EPart::Done
+                                | EPart::View
+                                | EPart::Crop
+                                | EPart::Rotate
+                                | EPart::Draw
+                                | EPart::Erase
+                                | EPart::Text
+                                | EPart::Undo
+                                | EPart::Redo
+                                | EPart::Reset
+                                | EPart::Color(_)
+                                | EPart::Smaller
+                                | EPart::Larger
+                                | EPart::AddText
+                                | EPart::CustomColor
+                                | EPart::Open
+                        )
                         | Id::Control(..)
                         | Id::ThreadPart(TPart::Field)
                         | Id::Space(_)
@@ -1300,6 +1364,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     (Id::Sign(Part::Field), Some(s)) => s.editable(),
                     (Id::Sign(Part::Title | Part::Message), _) => true,
                     (Id::Dialog(p), _) => a.dialog.as_ref().is_some_and(|d| d.enabled(p)),
+                    (Id::AttachmentEditor(p), _) => {
+                        a.attachment_editor.as_ref().is_some_and(|e| e.enabled(p))
+                    }
                     (Id::Invite(s), _) => a.invite_enabled(s),
                     (Id::Settings(p), _) => a.settings.as_ref().is_some_and(|s| s.enabled(p)),
                     (Id::Voice(p), _) => a.voice_enabled(p),
@@ -1399,11 +1466,24 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
     fn SetFocus(&self) -> Result<()> {
         let id = self.id;
         with(|a| {
+            if !exists(a, id) {
+                return Err(na());
+            }
             match id {
                 Id::Composer => a.set_composer_focus(true),
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
                 Id::Dialog(DPart::Number(k)) => a.dialog_activate(DPart::Number(k)),
+                Id::AttachmentEditor(p) => {
+                    if let Some(e) = &mut a.attachment_editor
+                        && e.enabled(p)
+                    {
+                        e.focus = p;
+                        e.field.focused = p == EPart::Field;
+                        a.events |= crate::EV_FOCUS;
+                        a.attachment_editor_changed();
+                    }
+                }
                 Id::Pick(PPart::Search) => a.picker_activate(PPart::Search),
                 Id::Gif(GPart::Search) => a.gifs_activate(GPart::Search),
                 Id::ThreadPart(TPart::Field) => a.set_thread_focus(true),
@@ -1455,6 +1535,9 @@ impl IInvokeProvider_Impl for Node_Impl {
     fn Invoke(&self) -> Result<()> {
         let id = self.id;
         with(|a| {
+            if !exists(a, id) {
+                return Err(na());
+            }
             match id {
                 Id::Space(i) => a.select_space(i),
                 Id::Channel(i) => a.select_channel(i),
@@ -1480,6 +1563,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Sign(p) => a.signin_activate(Some(p)),
                 Id::MenuItem(k) => a.menu_activate(k),
                 Id::Dialog(p) => a.dialog_activate(p),
+                Id::AttachmentEditor(p) => a.attachment_editor_activate(p),
                 Id::Control(i, action) => a.row_action(i, action),
                 Id::Tool(i, t) => a.tool_activate(i, t),
                 Id::MenuClose => a.close_menu(),
@@ -1542,6 +1626,14 @@ impl IValueProvider_Impl for Node_Impl {
         let text = unsafe { val.as_wide().to_vec() };
         let id = self.id;
         with(|a| {
+            if !exists(a, id) {
+                return Err(na());
+            }
+            if let Id::AttachmentEditor(p) = id
+                && !a.attachment_editor.as_ref().is_some_and(|e| e.enabled(p))
+            {
+                return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
+            }
             if a.signin.as_ref().is_some_and(|s| !s.editable()) {
                 return Err(HRESULT(UIA_E_ELEMENTNOTENABLED as _).into());
             }
@@ -1554,11 +1646,21 @@ impl IValueProvider_Impl for Node_Impl {
 
     fn Value(&self) -> Result<BSTR> {
         let id = self.id;
-        with(|a| Ok(BSTR::from_wide(&field(a, id).text)))
+        with(|a| {
+            if !exists(a, id) {
+                return Err(na());
+            }
+            Ok(BSTR::from_wide(&field(a, id).text))
+        })
     }
 
     fn IsReadOnly(&self) -> Result<BOOL> {
-        with(|a| Ok(a.signin.as_ref().is_some_and(|s| !s.editable()).into()))
+        with(|a| {
+            Ok((a.signin.as_ref().is_some_and(|s| !s.editable())
+                || matches!(self.id, Id::AttachmentEditor(_))
+                    && a.attachment_editor.as_ref().is_none_or(|e| e.busy))
+            .into())
+        })
     }
 }
 
@@ -1566,6 +1668,9 @@ impl IToggleProvider_Impl for Node_Impl {
     fn Toggle(&self) -> Result<()> {
         let id = self.id;
         with(|a| {
+            if !exists(a, id) {
+                return Err(na());
+            }
             match id {
                 Id::ThreadPart(p) => a.thread_activate(p),
                 Id::Settings(p) => a.settings_activate(p),
@@ -1705,6 +1810,10 @@ impl Doc {
     /// Client DIP position of the layout origin.
     fn origin(self, a: &App) -> (f32, f32) {
         match (self, &a.signin) {
+            (Self::Field(Id::AttachmentEditor(_)), _) => a
+                .attachment_editor
+                .as_ref()
+                .map_or((0.0, 0.0), |e| e.text_origin()),
             (Self::Field(Id::Dialog(_)), _) => {
                 a.dialog.as_ref().map_or((0.0, 0.0), |d| d.text_origin())
             }
@@ -2152,8 +2261,10 @@ impl ITextRangeProvider_Impl for TextRange_Impl {
 /// Raised after edits in the focused field while a client listens.
 pub fn raise_composer_events() {
     unsafe {
-        if UiaClientsAreListening().as_bool() {
-            let n = node(editable());
+        if UiaClientsAreListening().as_bool()
+            && let Some(id) = editable()
+        {
+            let n = node(id);
             let _ = UiaRaiseAutomationEvent(&n, UIA_Text_TextChangedEventId);
             let _ = UiaRaiseAutomationEvent(&n, UIA_Text_TextSelectionChangedEventId);
         }
@@ -2165,7 +2276,8 @@ pub fn raise_focus() {
         if UiaClientsAreListening().as_bool() {
             let id = crate::with_app(|a| focused(a))
                 .flatten()
-                .unwrap_or_else(editable);
+                .or_else(editable)
+                .unwrap_or(Id::Root);
             let _ = UiaRaiseAutomationEvent(&node(id), UIA_AutomationFocusChangedEventId);
         }
     }
@@ -2186,38 +2298,46 @@ pub fn raise_rows_changed() {
     }
 }
 
-/// The text field on screen: the sign-in field while signed out.
-fn editable() -> Id {
-    match crate::with_app(|a| {
-        (
-            a.dialog.as_ref().map(|d| d.kind),
-            a.signin.is_some(),
-            a.picker.is_some(),
-            a.gifs.as_ref().is_some_and(|p| p.search.focused),
-            a.thread.as_ref().is_some_and(|t| t.composer.focused),
+/// The visible text field, if the current modal has one.
+fn editable() -> Option<Id> {
+    crate::with_app(|a| {
+        if let Some(e) = &a.attachment_editor {
+            return e
+                .part_rect(EPart::Field)
+                .map(|_| Id::AttachmentEditor(EPart::Field));
+        }
+        Some(
+            match (
+                a.dialog.as_ref().map(|d| d.kind),
+                a.signin.is_some(),
+                a.picker.is_some(),
+                a.gifs.as_ref().is_some_and(|p| p.search.focused),
+                a.thread.as_ref().is_some_and(|t| t.composer.focused),
+            ) {
+                (
+                    Some(
+                        Kind::Edit
+                        | Kind::StartDirect
+                        | Kind::Browse
+                        | Kind::JoinInvite
+                        | Kind::CreateSpace
+                        | Kind::CreateChannel
+                        | Kind::InvitePeople,
+                    ),
+                    _,
+                    _,
+                    _,
+                    _,
+                ) => Id::Dialog(DPart::Field),
+                (_, true, _, _, _) => Id::Sign(Part::Field),
+                (_, _, true, _, _) => Id::Pick(PPart::Search),
+                (_, _, _, true, _) => Id::Gif(GPart::Search),
+                (_, _, _, _, true) => Id::ThreadPart(TPart::Field),
+                _ => Id::Composer,
+            },
         )
-    }) {
-        Some((
-            Some(
-                Kind::Edit
-                | Kind::StartDirect
-                | Kind::Browse
-                | Kind::JoinInvite
-                | Kind::CreateSpace
-                | Kind::CreateChannel
-                | Kind::InvitePeople,
-            ),
-            _,
-            _,
-            _,
-            _,
-        )) => Id::Dialog(DPart::Field),
-        Some((_, true, _, _, _)) => Id::Sign(Part::Field),
-        Some((_, _, true, _, _)) => Id::Pick(PPart::Search),
-        Some((_, _, _, true, _)) => Id::Gif(GPart::Search),
-        Some((_, _, _, _, true)) => Id::ThreadPart(TPart::Field),
-        _ => Id::Composer,
-    }
+    })
+    .flatten()
 }
 
 /// The sign-in screen appeared, changed step or closed: the tree under the

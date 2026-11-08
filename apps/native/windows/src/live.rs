@@ -182,6 +182,8 @@ pub enum Update {
     Open(String),
     /// The composer's files or whether uploads are available changed.
     Drafts,
+    /// An edited replacement finished; the original survives any failure.
+    AttachmentEdited(u64, Option<String>),
     /// A page of message `message`'s versions for request `request`, or
     /// why it failed (for its history).
     Versions {
@@ -363,6 +365,7 @@ pub struct Live {
     /// and own decoded images to show for sent attachments.
     pub drafts: Vec<crate::uploads::Draft>,
     draft_keys: u64,
+    edit_upload: Option<(u64, crate::uploads::Draft)>,
     /// The last dictation sent, so only its answer is used.
     dictations: u64,
     /// The main composer's link card, and its request in flight.
@@ -623,6 +626,7 @@ impl Live {
             unread_revision: 0,
             drafts: Vec::new(),
             draft_keys: 0,
+            edit_upload: None,
             dictations: 0,
             preview: Default::default(),
             preview_pending: None,
@@ -681,7 +685,10 @@ impl Live {
     /// Signs out (egui's `logout`): the stored session is forgotten and the
     /// server revokes it. A signed-out Live replaces this one on the same
     /// worker, so nothing can restore the old session meanwhile.
-    pub fn logout(self) -> Live {
+    pub fn logout(mut self) -> Live {
+        if let Some((_, draft)) = self.edit_upload.take() {
+            draft.upload.abandon();
+        }
         let generation = self.generation + 1;
         self.worker.send(Command::StopNotifications);
         self.worker.send(Command::StopGateway);
@@ -1653,6 +1660,7 @@ impl Live {
     /// Removes a composer file, stopping its upload and giving up the
     /// server's copy.
     pub fn remove_draft(&mut self, key: u64) {
+        self.cancel_draft_edit(key);
         if let Some(i) = self.drafts.iter().position(|d| d.upload.key == key) {
             let draft = self.drafts.remove(i);
             draft.upload.abandon();
@@ -1665,6 +1673,57 @@ impl Live {
     pub fn toggle_spoiler(&mut self, key: u64) {
         if let Some(d) = self.drafts.iter_mut().find(|d| d.upload.key == key) {
             d.upload.spoiler = !d.upload.spoiler;
+        }
+    }
+
+    /// Stage an edited replacement separately. Never consume the original
+    /// draft or its server reservation until preparation and upload succeed.
+    pub fn save_draft_edit(
+        &mut self,
+        key: u64,
+        edit: Option<caper_client::attachment_edit::Edit>,
+    ) -> Result<(), &'static str> {
+        let (Some(token), Some(settings)) = (self.token.clone(), self.uploads.clone()) else {
+            return Err("Uploads are unavailable. Your original attachment is unchanged.");
+        };
+        if self.edit_upload.is_some() {
+            return Err("An attachment edit is already uploading.");
+        }
+        let d = self
+            .drafts
+            .iter()
+            .find(|d| d.upload.key == key)
+            .ok_or("The attachment is no longer available.")?;
+        let source = &d.upload;
+        let path = source
+            .local_path
+            .clone()
+            .ok_or("The original file is unavailable.")?;
+        self.draft_keys += 1;
+        let mut replacement = caper_client::drafts::Upload::picked(
+            self.draft_keys,
+            source.channel.clone(),
+            source.thread_root_id.clone(),
+            source.source_name.clone(),
+            Some(path),
+        );
+        replacement.slot = source.slot;
+        replacement.spoiler = source.spoiler;
+        replacement.source_scratch = source.source_scratch.clone();
+        replacement.edit = edit;
+        self.worker.send(replacement.command(token, settings));
+        self.edit_upload = Some((key, crate::uploads::Draft::new(replacement)));
+        Ok(())
+    }
+
+    pub fn cancel_draft_edit(&mut self, key: u64) {
+        if self
+            .edit_upload
+            .as_ref()
+            .is_some_and(|(old, _)| *old == key)
+            && let Some((_, replacement)) = self.edit_upload.take()
+        {
+            replacement.upload.abandon();
         }
     }
 
@@ -1701,6 +1760,13 @@ impl Live {
     /// (`Sent::Waiting`). Sent files leave the composer.
     pub fn send_with_files(&mut self, text: String, reply_to: Option<String>) -> Sent {
         let keys: Vec<u64> = self.open_drafts().iter().map(|d| d.upload.key).collect();
+        if self
+            .edit_upload
+            .as_ref()
+            .is_some_and(|(old, _)| keys.contains(old))
+        {
+            return Sent::Waiting;
+        }
         for key in &keys {
             self.retry_draft(*key);
         }
@@ -4472,6 +4538,59 @@ impl Live {
                 out.push(Update::Drafts);
             }
             Event::Upload { key, token, update } => {
+                // Keys restart with a new account. An old session's reply
+                // must never overwrite a new session's draft or edit.
+                if self.token.as_ref() != Some(&token) {
+                    if let caper_client::worker::UploadUpdate::Finished(Ok(file)) = update {
+                        self.worker.send(Command::CancelAssets {
+                            token,
+                            ids: vec![file.id],
+                        });
+                    }
+                    return;
+                }
+                if self
+                    .edit_upload
+                    .as_ref()
+                    .is_some_and(|(_, d)| d.upload.key == key)
+                {
+                    let terminal =
+                        matches!(&update, caper_client::worker::UploadUpdate::Finished(_));
+                    let (_, d) = self.edit_upload.as_mut().unwrap();
+                    if let Some(image) = d.upload.apply(update) {
+                        d.set_thumbnail(image);
+                    }
+                    if terminal {
+                        let (old_key, mut replacement) = self.edit_upload.take().unwrap();
+                        let error = replacement.upload.error.clone();
+                        if error.is_none() {
+                            if let Some(i) =
+                                self.drafts.iter().position(|d| d.upload.key == old_key)
+                            {
+                                // Spoiler may have changed while the request was in flight.
+                                replacement.upload.spoiler = self.drafts[i].upload.spoiler;
+                                let old = std::mem::replace(&mut self.drafts[i], replacement);
+                                old.upload.abandon();
+                                if let Some(file) = old.upload.attachment {
+                                    self.cancel_assets(vec![file.id]);
+                                }
+                                let d = &self.drafts[i];
+                                if let (Some(file), Some(image)) = (&d.upload.attachment, &d.thumb)
+                                {
+                                    self.local.push((file.id.clone(), image.clone()));
+                                }
+                            } else if let Some(file) = replacement.upload.attachment {
+                                self.worker.send(Command::CancelAssets {
+                                    token,
+                                    ids: vec![file.id],
+                                });
+                            }
+                        }
+                        out.push(Update::AttachmentEdited(old_key, error));
+                        out.push(Update::Drafts);
+                    }
+                    return;
+                }
                 let Some(d) = self.drafts.iter_mut().find(|d| d.upload.key == key) else {
                     // Removed while it uploaded: give up the server's copy.
                     if let caper_client::worker::UploadUpdate::Finished(Ok(file)) = update {
