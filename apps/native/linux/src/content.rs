@@ -22,6 +22,8 @@ const STICKER_EDGE: f32 = 160.0;
 /// A message's content below its text, compared whole with its row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Content {
+    /// Sent attachments' message/presentation origin; previews have no reveal state.
+    pub scope: Option<String>,
     /// Each file with its freshest URLs, and whether it is a spoiler you
     /// have not revealed.
     pub attachments: Vec<(Attachment, bool)>,
@@ -90,6 +92,7 @@ pub fn view(images: &Rc<Images>, content: &Content, handler: &Handler) -> Option
                 (width as i32, height as i32),
                 &gallery_files,
                 handler,
+                content.scope.as_deref(),
             );
             tile.add_css_class("single");
             root.append(&tile);
@@ -108,6 +111,7 @@ pub fn view(images: &Rc<Images>, content: &Content, handler: &Handler) -> Option
                     (width.round() as i32, height.round() as i32),
                     &gallery_files,
                     handler,
+                    content.scope.as_deref(),
                 );
                 fixed.put(&tile, x.into(), y.into());
             }
@@ -122,7 +126,13 @@ pub fn view(images: &Rc<Images>, content: &Content, handler: &Handler) -> Option
         if !attachment.spoiler && voice_playable(attachment) {
             root.append(&crate::playback::card(images, attachment));
         } else {
-            root.append(&file_card(images, attachment, *hidden, handler));
+            root.append(&file_card(
+                images,
+                attachment,
+                *hidden,
+                handler,
+                content.scope.as_deref(),
+            ));
         }
     }
     for embed in &content.embeds {
@@ -189,6 +199,7 @@ fn tile(
     size: (i32, i32),
     gallery_files: &[Attachment],
     handler: &Handler,
+    scope: Option<&str>,
 ) -> gtk::Widget {
     let video = attachment.kind == AttachmentKind::Video;
     let overlay = gtk::Overlay::new();
@@ -210,7 +221,15 @@ fn tile(
         centered(&pill);
         overlay.add_overlay(&pill);
         let (handler, id) = (handler.clone(), attachment.id.clone());
-        tile.connect_clicked(move |_| handler(Action::Reveal(id.clone())));
+        if let Some(scope) = scope.map(str::to_owned) {
+            tile.connect_clicked(move |_| {
+                handler(Action::Reveal {
+                    scope: scope.clone(),
+                    id: id.clone(),
+                    revealed: true,
+                })
+            });
+        }
         tile.set_child(Some(&overlay));
         return tile.upcast();
     }
@@ -247,8 +266,9 @@ fn tile(
     let view = {
         let (handler, attachment) = (handler.clone(), attachment.clone());
         let files = gallery_files.to_vec();
+        let scope = scope.map(str::to_owned);
         move || match files.iter().position(|file| file.id == attachment.id) {
-            Some(index) => handler(Action::View(files.clone(), index)),
+            Some(index) => handler(Action::View(files.clone(), index, scope.clone())),
             None => handler(Action::Open(attachment.clone())),
         }
     };
@@ -399,6 +419,7 @@ fn file_card(
     attachment: &Attachment,
     hidden: bool,
     handler: &Handler,
+    scope: Option<&str>,
 ) -> gtk::Button {
     let card = button(
         &if hidden {
@@ -465,7 +486,15 @@ fn file_card(
     let handler = handler.clone();
     let attachment = attachment.clone();
     if hidden {
-        card.connect_clicked(move |_| handler(Action::Reveal(attachment.id.clone())));
+        if let Some(scope) = scope.map(str::to_owned) {
+            card.connect_clicked(move |_| {
+                handler(Action::Reveal {
+                    scope: scope.clone(),
+                    id: attachment.id.clone(),
+                    revealed: true,
+                })
+            });
+        }
     } else {
         card.set_sensitive(tile_notice(&attachment).is_none() && attachment.url.is_some());
         card.connect_clicked(move |_| handler(Action::Open(attachment.clone())));
@@ -606,7 +635,7 @@ fn card(images: &Images, embed: &Embed, handler: &Handler) -> gtk::Box {
                 .bind(&shown, &caper_client::embeds::key(&image.url), &image.url);
             tile.set_child(Some(&shown));
             let handler = handler.clone();
-            tile.connect_clicked(move |_| handler(Action::View(files.clone(), 0)));
+            tile.connect_clicked(move |_| handler(Action::View(files.clone(), 0, None)));
             line.append(&tile);
             card.append(&line);
         }
@@ -638,7 +667,7 @@ fn images_view(
             .bind(&shown, &caper_client::embeds::key(&item.url), &item.url);
         tile.set_child(Some(&shown));
         let (handler, files) = (handler.clone(), files.clone());
-        tile.connect_clicked(move |_| handler(Action::View(files.clone(), index)));
+        tile.connect_clicked(move |_| handler(Action::View(files.clone(), index, None)));
         tile
     };
     if items.len() == 1 {
@@ -715,7 +744,7 @@ fn gif_view(images: &Images, gif: &caper_client::klipy::Gif, handler: &Handler) 
     }
     tile.set_child(Some(&shown));
     let (handler, file) = (handler.clone(), caper_client::klipy::viewer_file(gif));
-    tile.connect_clicked(move |_| handler(Action::View(vec![file.clone()], 0)));
+    tile.connect_clicked(move |_| handler(Action::View(vec![file.clone()], 0, None)));
     tile
 }
 

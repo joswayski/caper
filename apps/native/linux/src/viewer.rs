@@ -13,6 +13,9 @@ use gtk::{gdk, glib, prelude::*};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+/// Re-hide an attachment at the originating sent message, never a draft preview.
+pub type HideSpoiler = Rc<dyn Fn(&str)>;
+
 struct Viewer {
     files: Vec<Attachment>,
     index: Cell<usize>,
@@ -35,6 +38,8 @@ struct Viewer {
     stage: gtk::Overlay,
     slot: gtk::Box,
     video: RefCell<Option<crate::video::Video>>,
+    hide: gtk::Button,
+    on_hide: Option<HideSpoiler>,
 }
 
 /// Room left either side of a video for previous and next.
@@ -50,6 +55,8 @@ impl Viewer {
         self.zoom_to(1.0);
         let index = self.index.get();
         let file = self.images.media.resolve(&self.files[index]);
+        self.hide
+            .set_visible(file.spoiler && self.on_hide.is_some());
         self.picture.set_paintable(gdk::Paintable::NONE);
         self.picture.remove_css_class("loaded");
         // Stepping off a video stops it.
@@ -257,6 +264,7 @@ pub fn open(
     images: &Rc<Images>,
     files: Vec<Attachment>,
     index: usize,
+    on_hide: Option<HideSpoiler>,
 ) {
     if files.is_empty() {
         return;
@@ -292,6 +300,11 @@ pub fn open(
     header.append(&browser);
     header.append(&close);
     root.append(&header);
+    let hide = gtk::Button::with_label("Hide spoiler");
+    hide.add_css_class("flat");
+    hide.set_halign(gtk::Align::End);
+    hide.set_margin_end(12);
+    root.append(&hide);
     let stage = gtk::Overlay::new();
     stage.set_vexpand(true);
     let picture = gtk::Picture::new();
@@ -345,9 +358,24 @@ pub fn open(
         stage: stage.clone(),
         slot,
         video: RefCell::default(),
+        hide: hide.clone(),
+        on_hide,
     });
     viewer.index.set(index.min(viewer.files.len() - 1));
     viewer.show();
+    let (shown, closing) = (viewer.clone(), window.downgrade());
+    hide.connect_clicked(move |_| {
+        let current = &shown.files[shown.index.get()];
+        if current.spoiler
+            && let Some(hide) = &shown.on_hide
+        {
+            // Closing unrealizes the video stage and stops its decoder/audio.
+            if let Some(window) = closing.upgrade() {
+                window.close();
+            }
+            hide(&current.id);
+        }
+    });
     let shown = viewer.clone();
     previous.connect_clicked(move |_| shown.step(false));
     let shown = viewer.clone();
