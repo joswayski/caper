@@ -84,6 +84,13 @@ Official image documentation is pinned at actions/runner-images commit
 [macos-26-arm64 Readme](https://github.com/actions/runner-images/blob/b5e4fd2931679d96bf0c289a03f54d414633af0f/images/macos/macos-26-arm64-Readme.md).
 Availability and observed provenance are not runtime health.
 
+Setup, preflight, cumulative and restoration each bind `RUNNER_ENVIRONMENT` to
+`${{ runner.environment }}` in step-level `env`, where GitHub permits that context.
+There is no job-level binding or hard-coded observed identity. These bindings
+preserve the hosted checks in provenance, the session helpers and the fresh
+pre-test identity check. Validate expression-context availability with pinned
+actionlint v1.7.12 as well as workflow structure; neither proves native execution.
+
 `control-provenance.json` maps all unchanged control files to their exact earlier
 commits/paths and hashes. The complete 3836-byte published graphics fixture is
 unchanged, including its one-second lifetime and all unused branches. Only
