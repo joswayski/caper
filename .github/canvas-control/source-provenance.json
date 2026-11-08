@@ -1,0 +1,13 @@
+{
+  "url": "https://github.com/actions/runner-images/issues/15251",
+  "issueUpdatedAt": "2026-11-05T09:33:03Z",
+  "issueBodyUTF8SHA256": "fcb0056d39c247b3975b93887174ca15fe544bc5ac101fda7781e85784b04630",
+  "extraction": "Complete sole swift fenced block, with its final newline; no edits or omitted branches",
+  "fixtureBytes": 3836,
+  "fixtureSHA256": "58c83c884b281ff038bd7e55de529d8159829796738827a7033e7593475061a3",
+  "executedModesOnly": ["hosting", "hosting-canvas", "hosting-blur"],
+  "fixtureLifetimeSeconds": 1,
+  "supervisorTimeoutSecondsPerMode": 60,
+  "capturePolicy": "At most one desktop screenshot per live process, 0.2 seconds after launch, only with preflight permission. No prompt, grant, focus change, retry or lifetime extension. A capture is not proof of rendered fixture content until inspected.",
+  "scope": "This fixture and run.py remain standalone: no Caper linkage or tests. The separate native_acceptance.py may build/test the pinned combined source on the same VM only after every standalone control passes. See environment-proposal.json. Entire harness is diagnostic-only and never merge."
+}

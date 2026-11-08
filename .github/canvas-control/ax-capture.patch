@@ -1,0 +1,25 @@
+diff --git a/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift b/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
+--- a/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
++++ b/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
+@@ -24,6 +24,10 @@
+         screenshot.name = "AppKit \(name) — local fixture"
+         screenshot.lifetime = .keepAlways
+         add(screenshot)
++        let tree = XCTAttachment(string: app.debugDescription)
++        tree.name = "AX AppKit \(name) — local fixture"
++        tree.lifetime = .keepAlways
++        add(tree)
+     }
+ 
+     /// Settings is a separate window; the main-window helper cannot capture it.
+@@ -32,6 +36,10 @@
+         screenshot.name = "AppKit \(name) — local fixture"
+         screenshot.lifetime = .keepAlways
+         add(screenshot)
++        let tree = XCTAttachment(string: window.debugDescription)
++        tree.name = "AX AppKit \(name) — local fixture"
++        tree.lifetime = .keepAlways
++        add(tree)
+     }
+ 
+     private func resize(_ app: XCUIApplication, width: CGFloat) {
