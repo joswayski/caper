@@ -492,6 +492,99 @@ def standalone(output):
     return run_test(base, AX, output, True)
 
 
+def resolve_sidebar_packages(base, project, derived, output):
+    # Retry only the observed SwiftPM binary-transfer diagnostic, never a build.
+    transport = (
+        "failed downloading 'https://github.com/stasel/WebRTC/releases/download/153.0.0/"
+        "WebRTC-M153.xcframework.zip' which is required by binary target 'WebRTC': "
+        'downloadError("Could not connect to the server.")'
+    )
+    expected = {"webrtc": "153.0.0", "libwebp-xcode": "1.6.0"}
+    resolved = project / "project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+    packages = derived / "SourcePackages"
+    started = time.monotonic()
+    deadline = started + 370
+    for attempt in range(1, 4):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("package resolution exhausted its 370s budget")
+        directory = output / f"attempt-{attempt}"
+        result = command(base + ["-resolvePackageDependencies"], directory, min(120, remaining))
+        metadata = {}
+        for path in [resolved, packages / "workspace-state.json", *sorted(packages.glob("checkouts/*/Package.swift"))]:
+            name = f"{path.parent.name}-Package.swift" if path.name == "Package.swift" else path.name
+            metadata[str(path)] = {"present": path.is_file()}
+            if path.is_file():
+                shutil.copy2(path, directory / name)
+                metadata[str(path)].update(copy=name, sha256=sha(directory / name))
+        record(directory / "metadata.json", metadata)
+        # Missing metadata is permitted only on failed resolution, not on success.
+        if resolved.is_file():
+            pins = json.loads((directory / "Package.resolved").read_text())["pins"]
+            assert len(pins) == len(expected) and {p["identity"]: p["state"]["version"] for p in pins} == expected
+        stdout = (directory / "stdout.txt").read_text(errors="replace")
+        stderr = (directory / "stderr.txt").read_text(errors="replace")
+        remainder = []
+        for text in [stdout, stderr]:
+            text = text.replace(transport + "fatalError", "").replace(transport, "")
+            text = text.replace("xcodebuild: error: Could not resolve package dependencies:", "")
+            text = re.sub(r"(?m)^\s*fatalError\s*$", "", text)
+            text = re.sub(
+                r"(?m)^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ xcodebuild\[\d+:\d+\] Writing error result bundle to [^\n]+\.xcresult$",
+                "",
+                text,
+            )
+            remainder.append(text.strip())
+        progress = {"Command line invocation:", "Resolve Package Graph"}
+        for owner, name, version in [("stasel", "WebRTC", "153.0.0"), ("SDWebImage", "libwebp-Xcode", "1.6.0")]:
+            progress.update(
+                {
+                    f"Fetching from https://github.com/{owner}/{name}.git",
+                    f"Updating from https://github.com/{owner}/{name}.git",
+                    f"Creating working copy of package ‘{name}’",
+                    f"Checking out {version} of package ‘{name}’",
+                }
+            )
+        transport_only = (
+            result["returnCode"] == 74
+            and result["signal"] is None
+            and not result["timedOut"]
+            and transport in stdout + stderr
+            and not remainder[1]
+            and all(
+                line.strip() in progress
+                or line.strip().startswith("/Applications/Xcode_26.6.app/Contents/Developer/usr/bin/xcodebuild ")
+                for line in remainder[0].splitlines()
+                if line.strip()
+            )
+            and not re.search(
+                r"\b(error|failed|failure|fatalerror|checksum|integrity|signature|fingerprint|corrupt|invalid|version|conflict|mismatch)\b",
+                "\n".join(remainder),
+                re.I,
+            )
+        )
+        elapsed = time.monotonic() - started
+        passed = ok(result) and result["signal"] is None and resolved.is_file() and elapsed <= 370
+        retry = transport_only and attempt < 3 and deadline - time.monotonic() > 5
+        record(
+            directory / "decision.json",
+            {
+                "passed": passed,
+                "identifiedTransportFailure": transport_only,
+                "retry": retry,
+                "elapsedSeconds": elapsed,
+                "overallBoundSeconds": 370,
+                "attemptLimit": 3,
+                "delaySeconds": 5 if retry else 0,
+            },
+        )
+        if passed:
+            return
+        if not retry:
+            raise RuntimeError(f"package resolution stopped at attempt {attempt}; see retained evidence")
+        time.sleep(5)
+
+
 def sidebar(output):
     assert json.loads((output.parent / "health/report.json").read_text())["failed"] is False
     checked(["git", "rev-parse", "HEAD", "HEAD^{tree}"], output / "product-pin", 10)
@@ -528,9 +621,12 @@ def sidebar(output):
     )
     project = Path("apps/native/apple/CaperNative.xcodeproj")
     retain_scheme(project / "xcshareddata/xcschemes/CaperAppKit.xcscheme", output)
-    base = base_command(project, "CaperAppKit", "apps/native/apple/DerivedData-SidebarDiagnostic")
+    derived = Path("apps/native/apple/DerivedData-SidebarDiagnostic")
+    base = base_command(project, "CaperAppKit", derived)
+    resolve_sidebar_packages(base, project, derived, output / "resolve-packages")
+    base += ["-disableAutomaticPackageResolution"]
     checked(base + ["build-for-testing"], output / "build", 1800)
-    products = Path("apps/native/apple/DerivedData-SidebarDiagnostic/Build/Products")
+    products = derived / "Build/Products"
     for path in products.glob("*.xctestrun"):
         shutil.copy2(path, output / path.name)
     record(

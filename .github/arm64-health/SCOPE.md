@@ -130,6 +130,30 @@ Only then checkout the exact product pin, restore the same pinned RNNoise inputs
 prepare its ordinary dependencies/all five Rust slices, generate the existing
 development project and build Debug `CaperAppKit` for testing. Existing core/view
 bundles compile as scheme dependencies; no Caper UI scheme or shipping app builds.
+
+Before the single build, run `xcodebuild -resolvePackageDependencies` with the
+same project, scheme, configuration, destination and DerivedData. At most three
+resolution attempts, each capped at 120s, separated by 5s only after the exact
+WebRTC 153 binary-download diagnostic `Could not connect to the server.` with
+exit 74. The overall resolution budget is 370s, including delays; the existing
+70min sidebar/110min job caps still apply and can stop the work earlier.
+Require the recognized diagnostic/wrapper/progress output without other errors:
+unknown wording, another URL, integrity/checksum/signature/version errors,
+signals, launch failures, timeouts and exhausted bounds stop without retry.
+This deliberately does not cover every possible transient transport error.
+
+Each attempt retains raw process results/stdout/stderr, the retry decision and
+read-only copies/hashes of any `Package.resolved`, SwiftPM workspace state and
+checkout manifests present. Missing files are recorded. A successful resolution
+must provide the two declared pins (WebRTC 153.0.0, libwebp-Xcode 1.6.0); malformed
+or different pins stop even after a transport failure. No package edits, alternate
+endpoint, hand-populated cache or checksum bypass. Standard SwiftPM binary
+[checksum validation](https://developer.apple.com/documentation/xcode/distributing-binary-frameworks-as-swift-packages)
+remains enabled. The sole build/test use `-disableAutomaticPackageResolution`,
+as [Apple recommends for CI](https://developer.apple.com/documentation/xcode/building-swift-packages-or-apps-that-use-them-in-continuous-integration-workflows),
+to preserve resolved versions. That flag is not an offline guarantee: a later
+build can still encounter a download failure, which is never retried here.
+
 Execute only:
 
 `CaperAppKitViewTests/NavigationSidebarTests/testVoiceCardPreservesFocusAndLiveRowWhenChannelsCollapse`
@@ -141,8 +165,7 @@ test source, generated schemes/xctestruns and binary hashes. A standalone succes
 does not itself accept any Caper behavior; the singleton must pass independently.
 
 Native timeouts remain default 300/max 600 and 900s external test subprocess cap;
-no test retry or timeout inflation. The sole exception to the former
-no-dependency-retry probe policy restores the unchanged product script's existing
+no test retry or timeout inflation. Download recovery also preserves the product script's existing
 curl transfer retries (`--retry 6 --retry-delay 5 --retry-all-errors`), including
 its archive hash verification. No curl override, new endpoint/version/cache or
 generic preparation retry wrapper. `CARGO_NET_RETRY=0` and the 2700s preparation
