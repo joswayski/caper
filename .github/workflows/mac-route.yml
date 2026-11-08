@@ -1,4 +1,4 @@
-name: Choose self-hosted runners
+name: Choose Linux and Windows runners
 
 # Called by workflows with jobs that can run on the self-hosted machines
 # (joswayski/infrastructure: the Mac, label "josemac" and, for linux/arm64 image
@@ -8,9 +8,10 @@ name: Choose self-hosted runners
 # communication: the windows and linux outputs stay false until recovery is
 # verified. The Mac's VMs were rebuilt on Xcode 27.1 on October 31, 2026.
 # See docs/media.md, "Native distribution and acceptance".
-# Every other output is 'true' only when all of these hold, and jobs use
-# GitHub-hosted runners otherwise:
-#   - the repository variable (SELF_HOSTED_MAC for both of the Mac's outputs,
+# macOS jobs select josemac-ui/josemac-sim directly in their workflows and
+# never fall back to cloud Macs. This router only selects Windows/Linux jobs.
+# The Linux arm64 output is 'true' only when all of these hold:
+#   - the repository variable (SELF_HOSTED_MAC for the Mac's Linux VM,
 #     SELF_HOSTED_WINDOWS or SELF_HOSTED_LINUX) is "on" (the kill switch),
 #   - the run is a push or manual run on main (never a pull request or fork),
 #   - it is the first attempt (re-runs, including the fallback watchdog's,
@@ -21,9 +22,6 @@ name: Choose self-hosted runners
 on:
   workflow_call:
     outputs:
-      mac:
-        description: "'true' when macOS jobs should run on the self-hosted Mac"
-        value: ${{ jobs.route.outputs.mac }}
       windows:
         description: "'true' when Windows jobs should run on the self-hosted Windows PC"
         value: ${{ jobs.route.outputs.windows }}
@@ -38,11 +36,10 @@ permissions: {}
 
 jobs:
   route:
-    name: Choose self-hosted runners
+    name: Choose Linux and Windows runners
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      mac: ${{ steps.route.outputs.mac }}
       windows: ${{ steps.route.outputs.windows }}
       linux: ${{ steps.route.outputs.linux }}
       linux_arm: ${{ steps.route.outputs.linux_arm }}
@@ -93,7 +90,6 @@ jobs:
             [[ "$use" == true ]] && where="self-hosted ($label)"
             echo "$what jobs run on $where: $reason" | tee -a "$GITHUB_STEP_SUMMARY"
           }
-          route mac "$MAC" josemac macOS
           route windows "$WINDOWS" josewin Windows
           route linux "$LINUX" joselinux Linux
           route linux_arm "$MAC" joselinux-arm "Linux arm64"
