@@ -1,0 +1,7 @@
+9eeb606ad6dcaef4e879b660eb7ed7ed9b7ee68c68ebd446d88b5aa768ce62e8  .github/ax-sidebar/AXMenuControl.swift
+81e75fdefcd14ddda0634ba7ce5f6199262651d6b597c9b097a1262be9601479  .github/ax-sidebar/AXMenuTests.swift
+66967a00de96d3c5105d865518b8099f0831838588eb27c38f902686ee571ba5  .github/ax-sidebar/SCOPE.md
+7643a185a259c119d9a952c4ccc9eed5860178e0ccda890ca692feb46b03a848  .github/ax-sidebar/project.yml
+fe826070385a1082952d8e95d1312dee4f8aabdcce524d001f8a86d38b9cc632  .github/ax-sidebar/run.py
+2ca7be97ba1bdf747bcdaf26098840c5500102f31d80b485bfa1f8d2fad5e172  .github/ax-sidebar/sidebar-geometry.patch
+34c7ac98de8d156c6cc83880c4dc3d59cad7dea924c4927746a0171949b53390  .github/workflows/apple-ax-sidebar-diagnostic.yml

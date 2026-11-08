@@ -1,0 +1,55 @@
+diff --git a/apps/native/apple/Tests/CaperAppKitViewTests/NavigationSidebarTests.swift b/apps/native/apple/Tests/CaperAppKitViewTests/NavigationSidebarTests.swift
+--- a/apps/native/apple/Tests/CaperAppKitViewTests/NavigationSidebarTests.swift
++++ b/apps/native/apple/Tests/CaperAppKitViewTests/NavigationSidebarTests.swift
+@@ -179,6 +179,43 @@
+         func button(_ id: String) -> NSButton? {
+             visible(sidebar).compactMap { $0 as? NSButton }.first { $0.accessibilityIdentifier() == id }
+         }
++        func recordSidebarGeometry(_ name: String) throws {
++            func describe(_ view: NSView) -> [String: Any] {
++                var result: [String: Any] = [
++                    "class": NSStringFromClass(type(of: view)),
++                    "identifier": view.accessibilityIdentifier(),
++                    "frame": NSStringFromRect(view.frame), "bounds": NSStringFromRect(view.bounds),
++                    "hidden": view.isHidden, "hiddenAncestor": view.isHiddenOrHasHiddenAncestor,
++                    "label": view.accessibilityLabel() ?? "",
++                    "children": view.subviews.map(describe),
++                ]
++                if let scroll = view as? NSScrollView {
++                    result["scroll"] = [
++                        "contentSize": NSStringFromSize(scroll.contentSize),
++                        "clipBounds": NSStringFromRect(scroll.contentView.bounds),
++                        "documentFrame": scroll.documentView.map { NSStringFromRect($0.frame) } ?? "absent",
++                        "scrollerStyle": scroll.scrollerStyle.rawValue,
++                        "hasVerticalScroller": scroll.hasVerticalScroller,
++                        "autohidesScrollers": scroll.autohidesScrollers,
++                        "verticalScrollerHidden": scroll.verticalScroller?.isHidden ?? true,
++                        "verticalScrollerFrame": scroll.verticalScroller.map { NSStringFromRect($0.frame) } ?? "absent",
++                        "borderType": scroll.borderType.rawValue,
++                        "contentInsets": String(describing: scroll.contentInsets),
++                        "scrollerInsets": String(describing: scroll.scrollerInsets),
++                    ]
++                }
++                return result
++            }
++            let snapshot: [String: Any] = [
++                "tree": describe(sidebar),
++                "preferredScrollerStyle": NSScroller.preferredScrollerStyle.rawValue,
++                "persistedChannelsShare": UserDefaults.standard.object(forKey: "caper.channelSidebarChannelsShare") ?? "unset",
++            ]
++            let data = try JSONSerialization.data(withJSONObject: snapshot, options: [.prettyPrinted, .sortedKeys])
++            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
++            attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
++        }
++        try recordSidebarGeometry("Sidebar geometry at outer width 344")
+         XCTAssertEqual(visible(sidebar).filter { $0.accessibilityIdentifier().hasPrefix("voice-face-") }.count, 9)
+         XCTAssertEqual(button("voice-faces-more")?.accessibilityLabel(), "3 more in the call")
+         XCTAssertEqual(button("voice-faces-more")?.accessibilityCustomActions()?.map(\.name), ["Show everyone"])
+@@ -225,6 +262,7 @@
+         XCTAssertNotNil(button("channel-call"), "Collapsing Channels must not hide its live call")
+         sidebar.frame.size.width = 300
+         sidebar.layoutSubtreeIfNeeded()
++        try recordSidebarGeometry("Sidebar geometry at outer width 300")
+         XCTAssertEqual(button("voice-faces-more")?.accessibilityLabel(), "5 more in the call", "Narrow cards keep two rows, not ten overflowing faces")
+         try XCTUnwrap(button("voice-call-leave")).performClick(nil)
+         XCTAssertEqual(model.voice.phase, .idle)
