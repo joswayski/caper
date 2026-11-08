@@ -99,7 +99,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         }
         sendOnStop.accessibilityIdentifier = "voice-messages-send-on-stop"
         var items: [UIMenuElement] = [UIMenu(title: "Audio settings", options: .displayInline, children: [effects, sendOnStop]),
-                                      UIAction(title: "Audio test") { [weak self] _ in self?.dialog(.audio) }]
+                                      UIAction(title: "Audio test", attributes: model.voice.phase == .leaving ? .disabled : []) { [weak self] _ in self?.dialog(.audio) }]
         if model.voice.phase == .connected {
             items.append(UIAction(title: "Connection details") { [weak self] _ in self?.dialog(.connection) })
         }
@@ -484,7 +484,8 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         // Browse channels: a search field, then every matching channel.
         if live, selectedSpace != browsedSpaceID { browsedSpaceID = selectedSpace; browsingChannels = false; channelSearch = "" }
         if live && browsingChannels {
-            let search = channelSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+            // People often type the name as it is shown, with its `#`, as SwiftUI allows.
+            let search = channelSearch.trimmingCharacters(in: .whitespaces).drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
             let results = (detail?.channels ?? []).filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
             browseRows = Dictionary(results.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             snapshot.appendItems([.search] + results.map { .browseResult($0.id) })
@@ -1181,7 +1182,8 @@ final class BrowseResultCell: UICollectionViewListCell {
         // VoiceOver: the row opens the channel; Manage is its own button.
         isAccessibilityElement = false
         contentView.accessibilityElements = owner ? [name, manage] : [name]
-        name.accessibilityLabel = "\(channel.name), \(state.text ?? "")"
+        // The lock is hidden from VoiceOver, so the name says it, as on web.
+        name.accessibilityLabel = "\(channel.name)\(channel.private ? ", private" : ""), \(state.text ?? "")"
         name.accessibilityValue = unread ? "Unread activity" : ""
         name.accessibilityTraits = .button
         accessibilityIdentifier = "browse-channel-\(channel.name)"

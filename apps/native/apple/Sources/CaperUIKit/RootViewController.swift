@@ -90,7 +90,7 @@ final class RootViewController: UIViewController {
         switch kind {
         case .loading: next = LoadingViewController()
         case .signIn: next = SignInViewController(model: model)
-        case .onboarding: next = OnboardingViewController(model: model)
+        case .onboarding: next = UIKitHosting.profile(model: model)
         case .firstSpace: next = UIKitHosting.firstSpace(model: model)
         case .spacesUnavailable: next = UIKitHosting.spacesUnavailable(model: model)
         case .workspace: next = WorkspaceViewController(model: model, cached: cached)

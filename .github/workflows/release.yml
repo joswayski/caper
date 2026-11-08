@@ -143,14 +143,13 @@ jobs:
     strategy:
       matrix:
         include:
-          # Hosted macos-15 arm64 stopped acquiring runners on November 4,
-          # 2026 ("not acquired by Runner of type hosted"). The Xcode 27 image
-          # is arm64 with Xcode 27.1 by default, the same Xcode the self-hosted
-          # Mac CI and TestFlight already build with; the deployment target
-          # stays macOS 14.
-          - os: xcode-27
-            label: Apple-Silicon
-    runs-on: ${{ matrix.os }}
+          - label: Apple-Silicon
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+    # Wait for the existing local VM; never acquire a cloud Mac.
+    runs-on: [self-hosted, josemac-ui]
+    env:
+      CAPER_MACOS_ARCH: ${{ matrix.arch }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -177,6 +176,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: 1.99.1
+          target: ${{ matrix.rust_target }}
           cache-workspaces: apps/native/updater
       - name: Build the self-updater
         env:
@@ -184,8 +184,10 @@ jobs:
         run: |
           set -euo pipefail
           [[ -n "$CAPER_UPDATE_PUBLIC_KEY" ]] || unset CAPER_UPDATE_PUBLIC_KEY
-          cargo build --manifest-path apps/native/updater/Cargo.toml --locked --release
-          echo "CAPER_UPDATER_BINARY=$GITHUB_WORKSPACE/apps/native/updater/target/release/caper-updater" >>"$GITHUB_ENV"
+          cargo build --manifest-path apps/native/updater/Cargo.toml --locked --release --target "${{ matrix.rust_target }}"
+          updater="$GITHUB_WORKSPACE/apps/native/updater/target/${{ matrix.rust_target }}/release/caper-updater"
+          lipo -verify_arch "$CAPER_MACOS_ARCH" "$updater"
+          echo "CAPER_UPDATER_BINARY=$updater" >>"$GITHUB_ENV"
       - uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           role-to-assume: ${{ env.RELEASE_SIGNER_ROLE }}
@@ -245,20 +247,21 @@ jobs:
           [[ -z "${CAPER_SIGNING_KEYCHAIN:-}" ]] || security delete-keychain "$CAPER_SIGNING_KEYCHAIN" || true
           rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/apple.json"
 
-  # Hosted Intel Macs are the slowest and least reliable release build, so
-  # publish does not wait for them. publish carries the previous Intel files
-  # forward without offering them to self-updaters; publish-intel then adds
-  # this build. If it fails, Intel Macs keep the previous build until a later
-  # release succeeds.
+  # Cross-build Intel on the same local ARM64 VM and test under Rosetta.
+  # This is not physical Intel/macOS 15 acceptance. publish still does not
+  # wait for Intel; publish-intel adds it only after this build succeeds.
   macos-intel:
     name: macOS / ${{ matrix.label }}
     needs: resolve
     strategy:
       matrix:
         include:
-          - os: macos-15-intel
-            label: Intel
-    runs-on: ${{ matrix.os }}
+          - label: Intel
+            arch: x86_64
+            rust_target: x86_64-apple-darwin
+    runs-on: [self-hosted, josemac-ui]
+    env:
+      CAPER_MACOS_ARCH: ${{ matrix.arch }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -268,9 +271,7 @@ jobs:
   testflight:
     name: iOS / TestFlight
     needs: resolve
-    # GitHub's Xcode 27 image (public preview) carries the iOS 27.1 SDK that
-    # lets iPhone Duo run the app edge to edge instead of in a centred window.
-    runs-on: xcode-27
+    runs-on: [self-hosted, josemac-sim]
     # Includes waiting for Apple to process the build before handing it to testers.
     timeout-minutes: 110
     permissions:
@@ -309,10 +310,13 @@ jobs:
         # display; earlier SDKs run in compatibility mode.
         run: |
           set -euo pipefail
-          xcode=/Applications/Xcode_27.1.app
-          [[ -d "$xcode" ]] || { echo "No Xcode 27.1 on this runner:" >&2; ls -d /Applications/Xcode* >&2; exit 1; }
-          sudo xcode-select -s "$xcode/Contents/Developer"
-          xcodebuild -version
+          developer_dir=/Applications/Xcode_27.1.app/Contents/Developer
+          # The local VM may name its selected bundle Xcode.app instead.
+          [[ -d "$developer_dir" ]] || developer_dir="$(xcode-select -p)"
+          version="$(DEVELOPER_DIR="$developer_dir" xcodebuild -version)"
+          printf '%s\n' "$version"
+          [[ "$version" == $'Xcode 27.1\n'* ]] || { echo "Xcode 27.1 is required." >&2; exit 1; }
+          echo "DEVELOPER_DIR=$developer_dir" >>"$GITHUB_ENV"
       - uses: ./.github/actions/mobile-rust
         with:
           platform: apple

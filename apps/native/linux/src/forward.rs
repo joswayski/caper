@@ -36,6 +36,7 @@ pub(super) struct Dialog {
 enum View {
     Picker {
         picker: Box<Picker>,
+        preview: gtk::Box,
         search: gtk::SearchEntry,
         list: gtk::Box,
         /// Each shown destination's checkbox.
@@ -184,39 +185,55 @@ impl App {
         }
         self.close_forward();
         let (window, root) = self.forward_window("Forward message");
+        let height = self
+            .ui
+            .window
+            .surface()
+            .and_then(|surface| surface.display().monitor_at_surface(&surface))
+            .map_or(self.ui.window.height(), |monitor| {
+                self.ui.window.height().min(monitor.geometry().height())
+            });
+        window.set_default_height((height - 80).clamp(240, 800));
+        // The whole preview/destination area scrolls: a gallery must not push
+        // the note or submit action outside the available window height.
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&body)
+            .build();
+        root.append(&scroll);
         let intro = label(NOTE, &["muted", "small"]);
         intro.set_wrap(true);
-        root.append(&intro);
+        body.append(&intro);
         let shown = source
             .forward
             .as_ref()
             .and_then(|forward| forward.message.as_ref())
             .unwrap_or(&source);
-        let preview = Original::new(shown, &self.images, &revealed, false).view(
-            &self.images,
-            &self.forward_handler(),
-            None,
+        let preview = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        preview.append(
+            &Original::new(
+                shown,
+                &self.images,
+                &revealed,
+                format!("forward-preview:{}", source.id),
+                false,
+            )
+            .view(&self.images, &self.forward_handler(), None),
         );
         preview.add_css_class("forward-card");
-        root.append(&preview);
+        body.append(&preview);
         let search: gtk::SearchEntry =
             crate::app::named("GtkSearchEntry", "Find a space, channel or DM");
         search.set_placeholder_text(Some("Find a space, channel or DM"));
-        root.append(&search);
+        body.append(&search);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        // The list scrolls; the note and Forward stay in view.
-        let scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .min_content_height(132)
-            .max_content_height(300)
-            .propagate_natural_height(true)
-            .child(&list)
-            .build();
-        scroll.add_css_class("forward-list");
-        root.append(&scroll);
+        list.add_css_class("forward-list");
+        body.append(&list);
         let empty = label("Join a channel or start a DM to forward here.", &["muted"]);
         empty.set_visible(false);
-        root.append(&empty);
+        body.append(&empty);
         let note = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
             .accepts_tab(false)
@@ -229,7 +246,14 @@ impl App {
         placeholder.set_margin_start(10);
         placeholder.set_margin_top(8);
         let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&note));
+        let note_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .min_content_height(64)
+            .max_content_height(96)
+            .propagate_natural_height(true)
+            .child(&note)
+            .build();
+        overlay.set_child(Some(&note_scroll));
         overlay.add_overlay(&placeholder);
         let weak = Rc::downgrade(self);
         note.buffer().connect_changed(move |buffer| {
@@ -285,6 +309,7 @@ impl App {
             spinner,
             view: View::Picker {
                 picker: Box::new(Picker::new(source)),
+                preview,
                 search: search.clone(),
                 list,
                 checks: Vec::new(),
@@ -493,11 +518,14 @@ impl App {
             body.remove(&child);
         }
         let original = |message: &Message| {
-            let view = Original::new(message, &self.images, &revealed, false).view(
+            let view = Original::new(
+                message,
                 &self.images,
-                &handler,
-                None,
-            );
+                &revealed,
+                format!("forward-conversation:{}:{}", wrapper.id, message.id),
+                false,
+            )
+            .view(&self.images, &handler, None);
             view.add_css_class("forward-message");
             view
         };
@@ -587,6 +615,41 @@ impl App {
                 }
             });
             body.append(&retry);
+        }
+    }
+
+    /// A reveal changes only media, without losing the picker's search/note.
+    pub(super) fn refresh_forward_spoilers(self: &Rc<Self>) {
+        let picker = self.forwarding.borrow().dialog.as_ref().and_then(|dialog| {
+            if let View::Picker {
+                picker, preview, ..
+            } = &dialog.view
+            {
+                Some((picker.source.clone(), preview.clone()))
+            } else {
+                None
+            }
+        });
+        if let Some((source, preview)) = picker {
+            let shown = source
+                .forward
+                .as_ref()
+                .and_then(|forward| forward.message.as_ref())
+                .unwrap_or(&source);
+            let revealed = self.images.media.revealed.borrow();
+            let original = Original::new(
+                shown,
+                &self.images,
+                &revealed,
+                format!("forward-preview:{}", source.id),
+                false,
+            );
+            while let Some(child) = preview.first_child() {
+                preview.remove(&child);
+            }
+            preview.append(&original.view(&self.images, &self.forward_handler(), None));
+        } else {
+            self.fill_conversation();
         }
     }
 
