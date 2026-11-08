@@ -1,5 +1,5 @@
 # NEVER MERGE. Preparation is inactive; execution needs separate exact-pin approval.
-name: ARM64 health gate and sidebar singleton
+name: ARM64 health gate and cumulative AppKit validation
 on:
   push:
     branches: [apple-arm64-health-sidebar-run]
@@ -45,9 +45,14 @@ jobs:
         with:
           ref: 9fca8b93f3629390e837794b9468c5cdc18d7617
           path: caper
+      - uses: actions/setup-node@v4
+        id: node
+        if: ${{ !cancelled() && steps.health.outcome == 'success' && steps.source.outcome == 'success' }}
+        with:
+          node-version: '24'
       - uses: ./.github/actions/mobile-rust
         id: rust
-        if: ${{ !cancelled() && steps.health.outcome == 'success' && steps.source.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.health.outcome == 'success' && steps.node.outcome == 'success' }}
         with:
           platform: apple
       - name: Restore the exact existing RNNoise dependency
@@ -64,21 +69,21 @@ jobs:
           echo 'f61ee0b3f4c4cd337303e003d333357c5eaf25ef5d75a742109ee59e9a0a3932  apps/native/apple/.build/rnnoise-source.tar.gz' | shasum -a 256 -c -
           tar -xzf apps/native/apple/.build/rnnoise-source.tar.gz -C apps/native/apple/.build/rnnoise --strip-components=1
           tar -xzf apps/native/apple/.build/rnnoise-model.tar.gz -C apps/native/apple/.build/rnnoise src/rnnoise_data.c src/rnnoise_data.h
-      - name: Corrected sidebar singleton only, both explicit styles
-        id: sidebar
+      - name: Exact 37 non-UI tests and six UI singletons, once each
+        id: cumulative
         if: ${{ !cancelled() && steps.health.outcome == 'success' && steps.dependency.outcome == 'success' }}
         timeout-minutes: 70
         continue-on-error: true
         working-directory: caper
-        run: python3 ../.github/arm64-health/run.py sidebar "$RUNNER_TEMP/arm64-health/sidebar"
+        run: python3 ../.github/arm64-health/run.py cumulative "$RUNNER_TEMP/arm64-health/cumulative"
       - name: Preserve real outcomes; no acceptance from aggregate status
         if: always()
         run: python3 .github/arm64-health/run.py finalize "$RUNNER_TEMP/arm64-health"
-      - name: Retain controls, pixels, timing, crash inventories and singleton results
+      - name: Retain controls, pixels, timing, crashes and all cumulative results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: arm64-health-sidebar-9fca8b93-${{ github.sha }}-${{ github.run_attempt }}
+          name: arm64-health-cumulative-9fca8b93-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/arm64-health
             !${{ runner.temp }}/arm64-health/standalone/work/XcodeGen

@@ -1,4 +1,4 @@
-"""NEVER MERGE. Same-VM health controls gate one corrected sidebar singleton."""
+"""NEVER MERGE. Same-VM health controls gate the pinned 37+6 AppKit selection."""
 
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -13,6 +13,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent
@@ -315,13 +317,16 @@ def retain_scheme(path, output):
     shutil.copy2(path, output / path.name)
 
 
-def run_test(base, selector, output, standalone):
+def run_test(base, selector, output, standalone, expected=None):
+    selectors = [selector] if isinstance(selector, str) else selector
+    expected = {tuple(selector.split("/"))} if expected is None else expected
     test = output / "test"
     result = command(
         base
         + ["-resultBundlePath", str(test / "Results.xcresult")]
         + FLAGS
-        + ["-only-testing:" + selector, "test-without-building"],
+        + ["-only-testing:" + value for value in selectors]
+        + ["test-without-building"],
         test,
         900,
         observe=standalone,
@@ -353,13 +358,18 @@ def run_test(base, selector, output, standalone):
     }
     record(test / "counts.json", report)
     summary = json.loads((test / "summary.json").read_text())
-    expected = tuple(selector.split("/"))
-    passed = ok(result) and starts == [expected] and ends == [expected + ("passed",)]
+    passed = (
+        ok(result)
+        and len(starts) == len(expected)
+        and set(starts) == expected
+        and len(ends) == len(expected)
+        and set(ends) == {item + ("passed",) for item in expected}
+    )
     passed = passed and all(
         summary[key] == value
         for key, value in {
-            "totalTestCount": 1,
-            "passedTests": 1,
+            "totalTestCount": len(expected),
+            "passedTests": len(expected),
             "failedTests": 0,
             "skippedTests": 0,
             "expectedFailures": 0,
@@ -585,7 +595,28 @@ def resolve_sidebar_packages(base, project, derived, output):
         time.sleep(5)
 
 
-def sidebar(output):
+def ui_evidence(output, checkpoints):
+    captures = output / "test/captures"
+    attachments = [
+        item for group in json.loads((captures / "manifest.json").read_text()) for item in group["attachments"]
+    ]
+    recordings = [item for item in attachments if item["exportedFileName"].lower().endswith((".mp4", ".mov"))]
+    assert recordings and all((captures / item["exportedFileName"]).stat().st_size > 0 for item in recordings)
+    retained = []
+    for checkpoint in checkpoints:
+        for prefix in ["AppKit ", "AX AppKit "]:
+            name = prefix + checkpoint + " — local fixture"
+            matches = [item for item in attachments if item["suggestedHumanReadableName"].startswith(name)]
+            assert len(matches) == 1, (name, matches)
+            path = captures / matches[0]["exportedFileName"]
+            assert path.stat().st_size > 0, path
+            if prefix == "AX AppKit ":
+                assert "Element subtree:" in path.read_text(), path
+            retained.append(matches[0])
+    record(output / "evidence.json", {"checkpoints": retained, "recordings": recordings, "inspection": "required"})
+
+
+def cumulative(output):
     assert json.loads((output.parent / "health/report.json").read_text())["failed"] is False
     checked(["git", "rev-parse", "HEAD", "HEAD^{tree}"], output / "product-pin", 10)
     assert (output / "product-pin/stdout.txt").read_text().splitlines() == [SOURCE, TREE]
@@ -593,6 +624,40 @@ def sidebar(output):
     assert sha(TEST_FILE) == "38658ea7cdd3ea9a8625d54f589ef8f663ed4df2a111883409e7c7ced948a832"
     shutil.copy2(TEST_FILE, output / "NavigationSidebarTests.swift")
     record(output / "test-source-hash.json", {"sha256": sha(TEST_FILE), "overlay": False})
+    selection = json.loads((ROOT / "selections.json").read_text())
+    assert selection["product"] == SOURCE
+    expected = {tuple(value.split("/")) for value in selection["coreAndViews"]}
+    assert len(expected) == len(selection["coreAndViews"]) == 37
+    assert sum(item[0] == "CaperCoreTests" for item in expected) == 14
+    assert sum(item[0] == "CaperAppKitViewTests" for item in expected) == 23
+    assert SIDEBAR in selection["coreAndViews"]
+    assert len(selection["ui"]) == len({item["selector"] for item in selection["ui"]}) == 6
+    shutil.copy2(ROOT / "selections.json", output / "selections.json")
+    # Preserve the original combined desktop requirement; do not resize the host.
+    checked(
+        [
+            "xcrun",
+            "swift",
+            "-e",
+            "import AppKit; import Foundation; "
+            'guard let f = NSScreen.main?.visibleFrame else { print("No visible desktop"); exit(1) }; '
+            'print(f); print("Keyboard navigation: \\(NSApplication.shared.isFullKeyboardAccessEnabled)"); '
+            "guard f.width >= 1440 && f.height >= 900 else { exit(1) }",
+        ],
+        output / "desktop",
+        60,
+    )
+    # The historical eight-line capture-only overlay; test methods stay byte-identical.
+    ui_source = Path("apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift")
+    assert sha(ui_source) == "42785b0654aa6934519ce9bf08e72c9d2e88de84c29cdffd0d8b13470e19e8c8"
+    shutil.copy2(ui_source, output / "CaperAppKitTests.original.swift")
+    patch = ROOT / "ax-capture.patch"
+    checked(["git", "apply", "--check", str(patch)], output / "overlay-check", 10)
+    checked(["git", "apply", str(patch)], output / "overlay-apply", 10)
+    assert sha(ui_source) == "0f0d4665aca9c6848c89900fe1c63f6a3746cff0a37669d1feabb21705e13a5c"
+    shutil.copy2(ui_source, output / "CaperAppKitTests.observed.swift")
+    checked(["git", "diff", "--binary"], output / "observation-diff", 10)
+    record(output / "observation-hashes.json", {"patch": sha(patch), "observedUI": sha(ui_source)})
     # Preserve the product's curl transfer retries; Cargo and preparation are not retried.
     checked(
         [
@@ -620,12 +685,16 @@ def sidebar(output):
         300,
     )
     project = Path("apps/native/apple/CaperNative.xcodeproj")
-    retain_scheme(project / "xcshareddata/xcschemes/CaperAppKit.xcscheme", output)
+    for scheme in ["CaperAppKit", "CaperAppKitTests"]:
+        retain_scheme(project / f"xcshareddata/xcschemes/{scheme}.xcscheme", output)
     derived = Path("apps/native/apple/DerivedData-SidebarDiagnostic")
     base = base_command(project, "CaperAppKit", derived)
     resolve_sidebar_packages(base, project, derived, output / "resolve-packages")
     base += ["-disableAutomaticPackageResolution"]
-    checked(base + ["build-for-testing"], output / "build", 1800)
+    ui_base = base_command(project, "CaperAppKitTests", derived) + ["-disableAutomaticPackageResolution"]
+    for scheme, args in [("CaperAppKit", base), ("CaperAppKitTests", ui_base)]:
+        directory = output / ("build-" + scheme)
+        checked(args + ["-resultBundlePath", str(directory / "Results.xcresult"), "build-for-testing"], directory, 1800)
     products = derived / "Build/Products"
     for path in products.glob("*.xctestrun"):
         shutil.copy2(path, output / path.name)
@@ -633,7 +702,62 @@ def sidebar(output):
         output / "binary-hashes.json",
         {str(path.relative_to(products)): sha(path) for path in products.glob("**/Contents/MacOS/*") if path.is_file()},
     )
-    return run_test(base, SIDEBAR, output, False)
+    selections = [
+        ("core-and-views", base, ["CaperCoreTests/MessageFormattingTests", "CaperAppKitViewTests"], expected, [])
+    ]
+    selections += [
+        (
+            item["selector"].split("/")[-1],
+            ui_base,
+            item["selector"],
+            {tuple(item["selector"].split("/"))},
+            item["captures"],
+        )
+        for item in selection["ui"]
+    ]
+    with (output / "fixture.log").open("wb") as log:
+        fixture = subprocess.Popen(
+            ["node", "scripts/native-parity-fixture.mjs"], stdout=log, stderr=log, start_new_session=True
+        )
+        try:
+            ready = False
+            for _ in range(100):
+                if fixture.poll() is not None:
+                    break
+                try:
+                    with urllib.request.urlopen("http://127.0.0.1:3001/health", timeout=1) as response:
+                        ready = response.status == 200
+                    if ready:
+                        break
+                except (urllib.error.URLError, TimeoutError):
+                    pass
+                time.sleep(0.2)
+            assert ready and fixture.poll() is None, "Synthetic fixture did not become ready"
+            results = []
+            for name, args, selectors, identities, checkpoints in selections:
+                directory = output / name
+                result = {"name": name, "failed": True}
+                try:
+                    assert fixture.poll() is None, "Synthetic fixture exited"
+                    passed = run_test(args, selectors, directory, False, identities)
+                    result["testPassed"] = passed
+                    if checkpoints:
+                        ui_evidence(directory, checkpoints)
+                    result["failed"] = not passed
+                except Exception as error:
+                    result["error"] = f"{type(error).__name__}: {error}"
+                results.append(result)
+                record(directory / "report.json", result)
+                record(output / "selections-report.json", {"results": results, "complete": len(results) == 7})
+            return not any(result["failed"] for result in results)
+        finally:
+            if fixture.poll() is None:
+                os.killpg(fixture.pid, signal.SIGTERM)
+                try:
+                    fixture.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(fixture.pid, signal.SIGKILL)
+                    fixture.wait()
 
 
 def main():
@@ -644,7 +768,7 @@ def main():
         names = (
             ["preflight", "graphics", "standalone"]
             if mode == "health"
-            else ["preflight", "graphics", "standalone", "health", "sidebar"]
+            else ["preflight", "graphics", "standalone", "health", "cumulative"]
         )
         for name in names:
             path = root / name / "report.json"
@@ -664,11 +788,11 @@ def main():
             preflight(output)
             report["failed"] = False
         else:
-            assert mode in {"graphics", "standalone", "sidebar"}
+            assert mode in {"graphics", "standalone", "cumulative"}
             assert json.loads((output.parent / "preflight/gate.json").read_text())["passed"]
             output.mkdir(parents=True, exist_ok=False)
             try:
-                passed = {"graphics": graphics, "standalone": standalone, "sidebar": sidebar}[mode](output)
+                passed = {"graphics": graphics, "standalone": standalone, "cumulative": cumulative}[mode](output)
                 report["checkPassed"] = passed
             finally:
                 after = command(

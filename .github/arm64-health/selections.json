@@ -1,0 +1,100 @@
+{
+  "referenceHarness": "a7aff5300585845273ea9e33d54eeddb03401c2c",
+  "referenceProduct": "5910cfa98ee038fe53204b333c7065879f29a9ba",
+  "product": "9fca8b93f3629390e837794b9468c5cdc18d7617",
+  "coreAndViews": [
+    "CaperAppKitViewTests/MemberPanelTests/testLargeRosterRealizesOnlyVisibleMembersAndSearchWorksAfterScrolling",
+    "CaperAppKitViewTests/MemberPanelTests/testPanelResizeKeyboardAndAccessibilityRespectDirectionAndLiveBounds",
+    "CaperAppKitViewTests/MemberPanelTests/testPresenceGroupsKeepIdleOnlineAndUnknownSeparateFromOffline",
+    "CaperAppKitViewTests/MessageTimelineTests/testAttachmentLeavesHaveHeightAndStayInsideRealizedHistory",
+    "CaperAppKitViewTests/MessageTimelineTests/testBlockedRunsRevealIndependentlyWithoutRealizingTheirWholeHistory",
+    "CaperAppKitViewTests/MessageTimelineTests/testDateDividersFollowLocalMidnightWithoutSplittingSameDayGroups",
+    "CaperAppKitViewTests/MessageTimelineTests/testDeletingAPredecessorAndEditingTextRemeasuresTheVisibleRow",
+    "CaperAppKitViewTests/MessageTimelineTests/testEmojiKeepsLinePitchAndTimestampsFollowAuthorNames",
+    "CaperAppKitViewTests/MessageTimelineTests/testForwardProjectionChangesRemeasureWithoutLosingTheWrapperSelection",
+    "CaperAppKitViewTests/MessageTimelineTests/testGifOnlyChangesRefreshMediaAndKeepTheCaptionSelection",
+    "CaperAppKitViewTests/MessageTimelineTests/testOriginalMessageJumpRevealsBlockedTargetWithoutRealizingInterveningHistory",
+    "CaperAppKitViewTests/MessageTimelineTests/testPinsKeepAuthorIdentitySelectionAndIndependentErrorsInsideGroupedAndQuotedRows",
+    "CaperAppKitViewTests/MessageTimelineTests/testReactionUpdatesKeepFocusSelectionAndFailureControlsInsideTheRow",
+    "CaperAppKitViewTests/MessageTimelineTests/testReplyQuoteAndThreadSummaryKeepTextSelectionAndFitAtBothWidths",
+    "CaperAppKitViewTests/MessageTimelineTests/testResolvedMentionsStaySelectableAndViewerChangesRefreshTheRow",
+    "CaperAppKitViewTests/MessageTimelineTests/testScrollingIntoHistoryLoadsAPageWithoutMovingTheReader",
+    "CaperAppKitViewTests/MessageTimelineTests/testThreeThousandRowsExposeOnlyRealizedSelectableTextAndKeepHistoryAnchor",
+    "CaperAppKitViewTests/NavigationSidebarTests/testActivityEntryRetainsFocusAndUpdatesUnreadWithoutAcknowledging",
+    "CaperAppKitViewTests/NavigationSidebarTests/testChannelNamesIncludePrivacyAndBrowseStatusAcrossRefreshes",
+    "CaperAppKitViewTests/NavigationSidebarTests/testCreateSpaceKeepsKeyboardFocusWhenNavigationRefreshes",
+    "CaperAppKitViewTests/NavigationSidebarTests/testElsewhereCallStaysAboveChannelsWithoutReplacingSelectedChat",
+    "CaperAppKitViewTests/NavigationSidebarTests/testRequestNavigationKeepsFocusDuringSelectionRefresh",
+    "CaperAppKitViewTests/NavigationSidebarTests/testVoiceCardPreservesFocusAndLiveRowWhenChannelsCollapse",
+    "CaperCoreTests/MessageFormattingTests/testComposerTypingEndsWhenTheComposerChangesUnderIt",
+    "CaperCoreTests/MessageFormattingTests/testComposerTypingFollowsTheSharedCases",
+    "CaperCoreTests/MessageFormattingTests/testComposerTypingKeepsTheChainWhenTheSystemAppliesAKey",
+    "CaperCoreTests/MessageFormattingTests/testEditorCoordinatorEndsTypingInAnotherConversation",
+    "CaperCoreTests/MessageFormattingTests/testEditorCoordinatorTypesAFormattedDraftExactly",
+    "CaperCoreTests/MessageFormattingTests/testEditsDiscardOnlyOrphanedDelimiters",
+    "CaperCoreTests/MessageFormattingTests/testFormattedCompletionKeepsWireRanges",
+    "CaperCoreTests/MessageFormattingTests/testNativeTextKeepsResolvedMentionBoundariesAcrossFormatting",
+    "CaperCoreTests/MessageFormattingTests/testReplacementAndStyledLinkEdgeEdits",
+    "CaperCoreTests/MessageFormattingTests/testSharedParserFixtures",
+    "CaperCoreTests/MessageFormattingTests/testToggleSelectionFixtures",
+    "CaperCoreTests/MessageFormattingTests/testTypingPastAClosingDelimiterKeepsTheStyle",
+    "CaperCoreTests/MessageFormattingTests/testURLBoundariesCannotBeSplit",
+    "CaperCoreTests/MessageFormattingTests/testVisibleNavigationDeletionAndClipboard"
+  ],
+  "ui": [
+    {
+      "selector": "CaperAppKitTests/CaperAppKitTests/testDraftFormattingCopyRepairUndoMenusAndSend",
+      "captures": [
+        "draft formatting menus",
+        "draft style mentions and link",
+        "draft formatting narrow"
+      ]
+    },
+    {
+      "selector": "CaperAppKitTests/CaperAppKitTests/testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts",
+      "captures": [
+        "forward picker cancel wide",
+        "forward destinations load failure wide",
+        "forward filtered selection and note narrow",
+        "forward partial delivery retains only failed destination narrow",
+        "forward from read-only preview narrow"
+      ]
+    },
+    {
+      "selector": "CaperAppKitTests/CaperAppKitTests/testAccountDialogsProtectProfileAndRestoreComposerFocus",
+      "captures": [
+        "unsaved profile retained after Escape and backdrop",
+        "privacy",
+        "notifications",
+        "activity inbox bounded modal and AX isolation wide",
+        "activity inbox bounded modal and AX isolation narrow"
+      ]
+    },
+    {
+      "selector": "CaperAppKitTests/CaperAppKitTests/testPendingChannelLeaveRejectsEscapeAndBackdropUntilFailure",
+      "captures": [
+        "pending leave retained after Escape and backdrop",
+        "failed leave before cancel shortcut"
+      ]
+    },
+    {
+      "selector": "CaperAppKitTests/CaperAppKitTests/testMessageReplyQuoteCancelSendAndOriginalNavigation",
+      "captures": [
+        "channel reply draft and staged file wide",
+        "delivered reply context wide",
+        "reply jumped to original channel message"
+      ]
+    },
+    {
+      "selector": "CaperAppKitTests/CaperAppKitTests/testImagePasteEditSpoilerSendAndDecodedViewer",
+      "captures": [
+        "staged image",
+        "image editor rotated spoiler",
+        "staged spoiler narrow",
+        "pending image confirmation",
+        "sent image spoiler narrow",
+        "decoded sent image viewer"
+      ]
+    }
+  ]
+}

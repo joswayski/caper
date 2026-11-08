@@ -8,8 +8,15 @@ One hosted VM/job; all results remain `productAcceptance: false`.
 ## Exact inputs and environment
 
 Product checkout: `9fca8b93f3629390e837794b9468c5cdc18d7617`, tree
-`1fdd75c82099d48f375e275ed105c93cfcd6c316`. No overlay, assertion or product edit.
-Test file SHA256: `38658ea7cdd3ea9a8625d54f589ef8f663ed4df2a111883409e7c7ced948a832`.
+`1fdd75c82099d48f375e275ed105c93cfcd6c316`. No product or test-method edit.
+Sidebar test SHA256: `38658ea7cdd3ea9a8625d54f589ef8f663ed4df2a111883409e7c7ced948a832`.
+The separately hashed `ax-capture.patch` is evidence-only: the same eight lines
+used by combined harness `a7aff5300585845273ea9e33d54eeddb03401c2c`, adding full
+debugDescription attachments to the two existing capture helpers. Original UI
+source SHA256 `42785b0654aa6934519ce9bf08e72c9d2e88de84c29cdffd0d8b13470e19e8c8`
+and observed SHA256 `0f0d4665aca9c6848c89900fe1c63f6a3746cff0a37669d1feabb21705e13a5c`
+are checked before/after application. Retain both sources, patch and raw diff.
+No assertions, fixture behavior, method bodies, widths or preferences change.
 
 Fail closed unless GitHub-hosted, attempt 1, exact execution branch, ARM64,
 `ImageVersion=20261102.0473.1`, macOS 26.7.2/build 25G332 and Xcode 26.6/build 17F113
@@ -106,7 +113,7 @@ timeouts still fail closed; no broader tolerance, fallback sampling or retry.
 
 Before any controls, inventory relevant user/system DiagnosticReports paths with
 size, mtime/ctime/inode and SHA256, without copying/deleting historical reports.
-After graphics, AX and (if admitted) sidebar, inventory again against this SAME
+After graphics, AX and (if admitted) cumulative validation, inventory again against this SAME
 baseline. Every unchanged historical exclusion is explicit. Copy only new or
 changed relevant reports with original paths/hashes; disappearance or a report
 changing during its read makes the inventory incomplete and fails collection.
@@ -124,12 +131,20 @@ is recorded. Any new/changed relevant report conservatively blocks health even
 if collection succeeds; it is not automatically labelled an AX reproduction.
 Existing old run artifacts remain untouched.
 
-## Sole Caper test after health passes
+## Exact cumulative selection after health passes
 
 Only then checkout the exact product pin, restore the same pinned RNNoise inputs,
 prepare its ordinary dependencies/all five Rust slices, generate the existing
-development project and build Debug `CaperAppKit` for testing. Existing core/view
-bundles compile as scheme dependencies; no Caper UI scheme or shipping app builds.
+development project and build Debug `CaperAppKit` and `CaperAppKitTests` for testing,
+once each, as in the earlier combined harness. No shipping scheme build.
+
+Before preparation or the capture overlay, preserve the earlier combined
+requirement for `NSScreen.main.visibleFrame` at least 1440×900 points. Record the
+actual frame and keyboard-navigation state; a smaller or absent desktop exits
+normally nonzero. Do not change resolution, defaults, test widths or assertions.
+The ARM64 image pin alone does not guarantee this geometry; standalone health
+and the narrow sidebar do not establish wide UI feasibility. No execution is
+implied by this inactive preparation.
 
 The workflow's RNNoise source curl has its own narrow transfer-recovery exception:
 `--max-time 60 --retry 2 --retry-delay 5 --retry-max-time 120 --retry-all-errors`.
@@ -150,12 +165,12 @@ extractions, and can cancel sooner if they consume the remaining time. No guaran
 of download completion, deadline extension, cache/endpoint substitution or softened
 hash gate follows from enabling transfer recovery.
 
-Before the single build, run `xcodebuild -resolvePackageDependencies` with the
-same project, scheme, configuration, destination and DerivedData. At most three
+Before either build, run `xcodebuild -resolvePackageDependencies` with the
+same project, CaperAppKit scheme, configuration, destination and DerivedData. At most three
 resolution attempts, each capped at 120s, separated by 5s only after the exact
 WebRTC 153 binary-download diagnostic `Could not connect to the server.` with
 exit 74. The overall resolution budget is 370s, including delays; the existing
-70min sidebar/110min job caps still apply and can stop the work earlier.
+70min cumulative/110min job caps still apply and can stop the work earlier.
 Require the recognized diagnostic/wrapper/progress output without other errors:
 unknown wording, another URL, integrity/checksum/signature/version errors,
 signals, launch failures, timeouts and exhausted bounds stop without retry.
@@ -168,28 +183,53 @@ must provide the two declared pins (WebRTC 153.0.0, libwebp-Xcode 1.6.0); malfor
 or different pins stop even after a transport failure. No package edits, alternate
 endpoint, hand-populated cache or checksum bypass. Standard SwiftPM binary
 [checksum validation](https://developer.apple.com/documentation/xcode/distributing-binary-frameworks-as-swift-packages)
-remains enabled. The sole build/test use `-disableAutomaticPackageResolution`,
+remains enabled. Both builds and all test selections use `-disableAutomaticPackageResolution`,
 as [Apple recommends for CI](https://developer.apple.com/documentation/xcode/building-swift-packages-or-apps-that-use-them-in-continuous-integration-workflows),
 to preserve resolved versions. That flag is not an offline guarantee: a later
 build can still encounter a download failure, which is never retried here.
 
-Execute only:
+`selections.json` pins all 43 exact identities against combined harness a7 and
+its product `5910cfa98ee038fe53204b333c7065879f29a9ba`. Execute its original
+`CaperCoreTests/MessageFormattingTests` + `CaperAppKitViewTests` selection once
+(14+23), then the same six UI singleton selectors in their original order. The
+corrected sidebar is already one of the 23; never invoke it separately. Exact
+start/outcome sets AND counts must match; duplicates, omissions, extra methods,
+failures, skips or expected failures reject the selection.
 
-`CaperAppKitViewTests/NavigationSidebarTests/testVoiceCardPreservesFocusAndLiveRowWhenChannelsCollapse`
+Reuse Node 24 and the product's unmodified `scripts/native-parity-fixture.mjs`.
+It uses Node built-ins only, without npm installation. One local fixture process,
+same bounded health-readiness loop (100 observations, 1s request timeout, 0.2s
+delay), unchanged per-method reset/control behavior and process-group cleanup.
+No production API, SFU, external fixture or personal hardware.
 
-That single method covers both explicit scroller-style fixtures with fixed
-expectations and all reviewed focus/containment/collapse/leave assertions. No
-37+6 suite or local API server. Keep xcresult, exact counts/summary/logs, original
-test source, generated schemes/xctestruns and binary hashes. A standalone success
-does not itself accept any Caper behavior; the singleton must pass independently.
+Both generated schemes retain keepAlways system/user attachments and successful
+screen recordings. Retain both original/modified schemes, generated xctestruns,
+binary hashes, package metadata, build result bundles and every test xcresult,
+including failures. All three exports are attempted for each test result even
+after XCTest failure. Independent test/evidence failures are aggregated without
+repeating a method; missing/malformed exports fail that selection and do not
+erase other results. Preparation/build failure stops before test invocation.
+
+For each UI singleton, require nonempty recordings plus exactly one screenshot
+and full AX tree for each of its existing named checkpoints (24 pairs total).
+These include delivered reply context, original-message navigation, rotated
+spoiler, pending/confirmed image and decoded viewer. No added capture calls or
+test-method modifications. The final cancelled-quote send and viewer-close/focus
+restoration rely on the unchanged assertions and whole success recording rather
+than a new AX checkpoint. Human/agent inspection must verify the complete clips,
+post-action states, all relevant pixels and full hierarchies; file presence is
+not usable-media or product acceptance. `productAcceptance` stays false.
 
 Native timeouts remain default 300/max 600 and 900s external test subprocess cap;
 no test retry or timeout inflation. Download recovery also preserves the product script's existing
 curl transfer retries (`--retry 6 --retry-delay 5 --retry-all-errors`), including
 its archive hash verification. No curl override, new endpoint/version/cache or
 generic preparation retry wrapper. `CARGO_NET_RETRY=0` and the 2700s preparation
-cap remain unchanged. Preparation, builds and the sidebar test still run at most
+cap remain unchanged. Preparation and each scheme build/test selection run at most
 once; transfer recovery is not permission to repeat them or relax any gate.
 Step caps: preflight 5min,
-graphics 10min, AX 25min, sidebar 70min; job 110min. Step cancellation/missing output
-is failure, never assumed success. Final summary and upload run even on failure.
+graphics 10min, AX 25min, cumulative 70min; job 110min. The sum of individual
+worst-case preparation/build/test/export limits exceeds the outer cap; those are
+ceilings, not reserved time. Cancellation may prevent later selections or exports,
+which remains incomplete failure, never a skip, implicit pass or retry grant.
+Final summary and upload run even on failure when the runner permits them.
