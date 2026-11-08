@@ -1,0 +1,31 @@
+# NEVER MERGE. Outside workflow discovery; activation and exact-head authorization required.
+name: Retained video fixed-time counterfactual only
+on:
+  push:
+    branches: [apple-video-boundary-run]
+permissions:
+  contents: read
+jobs:
+  boundary:
+    runs-on: macos-26
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Exact environment and three independent fixed-time cases
+        timeout-minutes: 8
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: python3 .github/arm64-video-boundary/run_boundary.py "$RUNNER_TEMP/video-boundary"
+      - name: Retain raw outcomes even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-boundary-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/video-boundary
+          if-no-files-found: error
+          retention-days: 14
