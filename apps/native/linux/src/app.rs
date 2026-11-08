@@ -1996,6 +1996,7 @@ impl App {
                 author: author.as_deref(),
                 joined,
                 in_thread: true,
+                surface: "pins",
                 images: &self.images,
                 reactions: &state.reactions,
             };
@@ -3159,12 +3160,44 @@ impl App {
                 self.open_thread(root);
             }
             Action::Menu { id, anchor } => self.row_menu(&id, &anchor),
-            Action::Reveal(id) => {
-                self.images.media.revealed.borrow_mut().insert(id);
+            Action::Reveal {
+                scope,
+                id,
+                revealed,
+            } => {
+                {
+                    let mut scopes = self.images.media.revealed.borrow_mut();
+                    if revealed {
+                        scopes.entry(scope).or_default().insert(id);
+                    } else if let Some(ids) = scopes.get_mut(&scope) {
+                        ids.remove(&id);
+                        if ids.is_empty() {
+                            scopes.remove(&scope);
+                        }
+                    }
+                }
                 self.render();
+                self.refresh_forward_spoilers();
             }
-            Action::View(files, index) => {
-                crate::viewer::open(&self.ui.window, &self.images, files, index)
+            Action::View(files, index, scope) => {
+                let hide = scope.map(|scope| {
+                    let (weak, epoch) = (Rc::downgrade(self), self.state.borrow().epoch);
+                    Rc::new(move |id: &str| {
+                        if let Some(app) = weak.upgrade()
+                            && app.state.borrow().epoch == epoch
+                        {
+                            app.row_action(
+                                Action::Reveal {
+                                    scope: scope.clone(),
+                                    id: id.to_owned(),
+                                    revealed: false,
+                                },
+                                false,
+                            );
+                        }
+                    }) as crate::viewer::HideSpoiler
+                });
+                crate::viewer::open(&self.ui.window, &self.images, files, index, hide)
             }
             Action::Open(attachment) => self.images.media.open(&attachment),
             Action::ImageMenu { attachment, anchor } => self.image_menu(attachment, &anchor),
@@ -5252,6 +5285,7 @@ impl App {
                 author: author.as_deref(),
                 joined,
                 in_thread,
+                surface: if in_thread { "thread" } else { "channel" },
                 images: &self.images,
                 reactions: &state.reactions,
             };

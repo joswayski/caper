@@ -33,6 +33,9 @@ const FULL_KEY: &str = "full:";
 /// delay.
 pub type Frames = Vec<(gdk::Texture, Duration)>;
 
+/// Ephemeral reveals by presentation/message origin, then attachment ID.
+pub type Revealed = HashMap<String, HashSet<String>>;
+
 enum Entry {
     Loading,
     Ready(Rc<Frames>),
@@ -54,8 +57,8 @@ pub struct Media {
     generation: Cell<u64>,
     /// Opens the full file once its URL was refreshed.
     open_after_refresh: RefCell<Option<(String, String)>>,
-    /// Spoiler attachments you revealed.
-    pub revealed: RefCell<HashSet<String>>,
+    /// Revealing a forwarded copy must not expose another message's copy.
+    pub revealed: RefCell<Revealed>,
 }
 
 fn unsigned(key: &str) -> bool {
