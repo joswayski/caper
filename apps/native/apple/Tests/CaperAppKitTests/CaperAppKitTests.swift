@@ -585,6 +585,49 @@ import XCTest
         capture("activity inbox invitation explicitly accepted narrow", app: app)
     }
 
+    func testForwardNoteClickTypingAndCancelPreserveChannelDraft() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        let draft = "TEST FIXTURE - channel draft"
+        composer.click(); app.typeText(draft)
+        XCTAssertEqual(composer.value as? String, draft)
+        let sourceID = "chan00000001m02"
+        let note = app.textViews["forward-note"]
+        for width: CGFloat in [1280, 900] {
+            resize(app, width: width)
+            let timeline = app.scrollViews["message-timeline"]
+            let body = timeline.textViews["message-\(sourceID)"]
+            XCTAssertTrue(body.waitForExistence(timeout: 10))
+            timeline.descendants(matching: .any)["message-row-\(sourceID)"].hover()
+            let options = timeline.buttons["message-options-\(sourceID)"]
+            options.hover(); options.click()
+            let forward = messageMenuItem("Forward message", app: app, body: body)
+            XCTAssertTrue(forward.waitForExistence(timeout: 5)); forward.click()
+            XCTAssertTrue(note.waitForExistence(timeout: 5))
+            XCTAssertEqual(note.value as? String, "", "Cancelled notes must not enter a new forwarding intent")
+            XCTAssertFalse(composer.exists)
+            let destination = app.buttons["forward-destination-chan00000002"]
+            XCTAssertTrue(destination.waitForExistence(timeout: 10)); destination.hover(); destination.click()
+            XCTAssertEqual(destination.value as? String, "Selected")
+            app.buttons["Close"].hover(); note.hover(); note.click()
+            // App-level typing uses the responder chosen by the click. No
+            // element-targeted typing, forced focus, or system clipboard access.
+            app.typeText("TEST FIXTURE - optional note")
+            XCTAssertEqual(note.value as? String, "TEST FIXTURE - optional note")
+            app.typeKey("a", modifierFlags: .command); app.typeText("replacement note")
+            XCTAssertEqual(note.value as? String, "replacement note")
+            capture("forward note typed at \(Int(width))", app: app)
+            app.buttons["Close"].click()
+            XCTAssertTrue(note.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(composer.waitForExistence(timeout: 5))
+            XCTAssertEqual(composer.value as? String, draft)
+        }
+    }
+
     func testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()
