@@ -14,6 +14,7 @@
 #![windows_subsystem = "windows"]
 
 mod actions;
+mod attachment_editor;
 mod bench;
 mod browse;
 mod call;
@@ -302,6 +303,9 @@ pub struct App {
     /// The open message menu and dialog, over the conversation.
     pub menu: Option<overlay::Menu>,
     pub dialog: Option<overlay::Dialog>,
+    pub attachment_editor: Option<attachment_editor::Editor>,
+    /// Files handed to another app must outlive the editor and its draft.
+    opened_attachments: Vec<std::sync::Arc<caper_client::uploads::Scratch>>,
     menu_p: Panel,
     dialog_p: Panel,
     /// The reaction picker, the reply above the composer, and the toolbar
@@ -504,6 +508,8 @@ impl App {
                 signin_p,
                 menu: None,
                 dialog: None,
+                attachment_editor: None,
+                opened_attachments: Vec::new(),
                 menu_p,
                 dialog_p,
                 picker: None,
@@ -543,6 +549,7 @@ impl App {
 
     /// Shows another conversation (the live one replacing the mock).
     fn set_conversation(&mut self, c: Conversation) -> Result<()> {
+        self.close_attachment_editor();
         let (channels, members) = side_layouts(&self.g, &c)?;
         self.rows = Rows::new(c.messages.len());
         self.c = c;
@@ -573,6 +580,7 @@ impl App {
 
     fn drain_live(&mut self) -> Result<()> {
         self.poll_file_dialog();
+        self.poll_attachment_editor();
         self.gifs_poll();
         let Some(live) = self.live.as_mut() else {
             return Ok(());
@@ -783,6 +791,9 @@ impl App {
                 live::Update::Deleted(request, error) => self.deleted(request, error),
                 live::Update::Media => self.media_changed(),
                 live::Update::Drafts => self.drafts_changed(),
+                live::Update::AttachmentEdited(key, error) => {
+                    self.attachment_edit_finished(key, error)
+                }
                 live::Update::Dictated { key, result } => self.dictated(key, result),
                 live::Update::Open(url) => open_link(&url),
                 live::Update::Versions {
@@ -808,6 +819,7 @@ impl App {
                 live::Update::Inbox => self.inbox_changed(),
                 live::Update::Voice => self.voice_changed(),
                 live::Update::Notified => {
+                    self.close_attachment_editor();
                     self.close_dialog();
                     self.close_settings();
                     self.close_dm_menu();
@@ -1183,6 +1195,9 @@ impl App {
 
     /// The focused text field and its text origin (client DIPs).
     pub fn focused_field(&self) -> Option<(&Composer, (f32, f32))> {
+        if let Some(e) = &self.attachment_editor {
+            return (e.field.focused && !e.busy).then(|| (&e.field, e.text_origin()));
+        }
         if let Some(d) = &self.dialog {
             return d.field.focused.then(|| (&d.field, d.text_origin()));
         }
@@ -1208,6 +1223,9 @@ impl App {
     }
 
     fn focused_field_mut(&mut self) -> Option<&mut Composer> {
+        if let Some(e) = &mut self.attachment_editor {
+            return Some(&mut e.field).filter(|f| f.focused && !e.busy);
+        }
         if let Some(d) = &mut self.dialog {
             if d.number_focus().is_some() {
                 return d.number_mut();
@@ -1247,7 +1265,9 @@ impl App {
 
     /// After an edit or caret move in the focused field.
     fn field_changed(&mut self, text: bool) {
-        if self.dialog.is_some() {
+        if self.attachment_editor.is_some() {
+            self.attachment_editor_changed();
+        } else if self.dialog.is_some() {
             self.dialog_changed();
         } else if self.signin.is_some() {
             self.signin_changed(text);
@@ -1512,6 +1532,15 @@ impl App {
         let y = ((lp.0 >> 16) & 0xffff) as i16 as f32 / self.scale;
         let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
         let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+        if self.attachment_editor.is_some() && msg == WM_DROPFILES {
+            unsafe {
+                windows::Win32::UI::Shell::DragFinish(windows::Win32::UI::Shell::HDROP(wp.0 as _));
+            }
+            return Some(LRESULT(0));
+        }
+        if let Some(r) = self.attachment_editor_input(msg, wp, x, y, ctrl, shift) {
+            return r;
+        }
         if self.signin.is_some()
             && let Some(r) = self.signin_input(msg, wp, lp, x, y, ctrl, shift)
         {
@@ -1560,6 +1589,9 @@ impl App {
                     self.dirty.signin = true;
                     self.close_menu();
                     self.dialog_changed();
+                    if self.attachment_editor.is_some() {
+                        self.attachment_editor_changed();
+                    }
                     if self.settings.is_some() {
                         self.settings_changed();
                     }
@@ -1577,7 +1609,7 @@ impl App {
                     if let Some(f) = self.focused_field_mut() {
                         f.caret_on = !f.caret_on;
                     }
-                    if self.dialog.is_some() {
+                    if self.dialog.is_some() || self.attachment_editor.is_some() {
                         self.dirty.overlay = true;
                     } else if self.signin.is_some() {
                         self.dirty.signin = true;
