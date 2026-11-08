@@ -7,6 +7,56 @@ import Vision
 
 @main
 struct Pixels {
+    // Video-only diagnostics. Synchronous metadata logging adds overhead, not retries.
+    @MainActor static var videoEvents: [[String: Any]] = []
+    @MainActor static var videoStage = "not-started"
+
+    static func timeFields(_ time: CMTime) -> [String: Any] {
+        ["value": time.value, "timescale": time.timescale, "epoch": time.epoch,
+         "flags": time.flags.rawValue, "seconds": time.seconds.isFinite ? time.seconds as Any : NSNull()]
+    }
+
+    static func errorChain(_ error: NSError) -> [String: Any] {
+        var entries: [[String: Any]] = []
+        var seen: Set<ObjectIdentifier> = []
+        var current: NSError? = error
+        while let item = current {
+            guard seen.insert(ObjectIdentifier(item)).inserted else {
+                return ["entries": entries, "end": "cycle"]
+            }
+            guard entries.count < 4 else { return ["entries": entries, "end": "depth-limit"] }
+            var entry: [String: Any] = ["domain": String(item.domain.prefix(128)), "code": item.code,
+                "message": String(item.localizedDescription.prefix(512))]
+            if let reason = item.localizedFailureReason { entry["failureReason"] = String(reason.prefix(512)) }
+            entries.append(entry)
+            guard let underlying = item.userInfo[NSUnderlyingErrorKey] else {
+                return ["entries": entries, "end": "no-underlying-error"]
+            }
+            guard let nested = underlying as? NSError else {
+                return ["entries": entries, "end": "non-NSError-underlying"]
+            }
+            current = nested
+        }
+        return ["entries": entries, "end": "no-underlying-error"]
+    }
+
+    @MainActor static func videoEvent(_ stage: String, _ fields: [String: Any] = [:]) {
+        videoStage = stage
+        // Nine requests produce at most 44 records, including a final error.
+        guard videoEvents.count < 64 else { return }
+        var event = fields
+        event["stage"] = stage
+        event["sequence"] = videoEvents.count + 1
+        event["uptimeNanoseconds"] = String(DispatchTime.now().uptimeNanoseconds)
+        videoEvents.append(event)
+        // stderr is incremental; stdout keeps the existing final-result JSON contract.
+        if let data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) {
+            FileHandle.standardError.write(Data("PIXELS_VIDEO ".utf8) + data + Data([10]))
+        } else {
+            FileHandle.standardError.write(Data("PIXELS_VIDEO {\"diagnosticEncodingFailed\":true}\n".utf8))
+        }
+    }
+
     static func emit(_ value: [String: Any]) throws {
         let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
         FileHandle.standardOutput.write(data)
@@ -150,8 +200,14 @@ struct Pixels {
         } catch {
             let error = error as NSError
             do {
-                try emit(["passed": false, "status": "error", "mode": CommandLine.arguments.dropFirst().first ?? "",
-                    "error": ["domain": error.domain, "code": error.code, "message": error.localizedDescription]])
+                var report: [String: Any] = ["passed": false, "status": "error", "mode": CommandLine.arguments.dropFirst().first ?? "",
+                    "error": ["domain": error.domain, "code": error.code, "message": error.localizedDescription]]
+                if CommandLine.arguments.dropFirst().first == "video" {
+                    let failedStage = videoStage
+                    videoEvent("error", ["failedStage": failedStage, "errorChain": errorChain(error)])
+                    report["videoDiagnostic"] = ["failedStage": failedStage, "events": videoEvents]
+                }
+                try emit(report)
             } catch {
                 FileHandle.standardOutput.write(Data("{\"passed\":false,\"status\":\"error-report-encoding-failed\"}\n".utf8))
             }
@@ -171,8 +227,13 @@ struct Pixels {
         }
         if mode == "video" {
             guard args.count == 4 else { throw NSError(domain: "Pixels.arguments", code: 1) }
+            videoEvent("asset.create")
             let asset = AVURLAsset(url: URL(fileURLWithPath: args[2]))
-            let duration = try await asset.load(.duration).seconds
+            videoEvent("duration.load.start")
+            let durationTime = try await asset.load(.duration)
+            let duration = durationTime.seconds
+            videoEvent("duration.load.result", ["duration": timeFields(durationTime)])
+            videoEvent("duration.validate")
             guard duration.isFinite, duration > 0 else { throw NSError(domain: "Pixels.videoDuration", code: 1) }
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
@@ -183,20 +244,29 @@ struct Pixels {
             // Offline inspection, not repeated capture: nine fixed interior timestamps.
             for index in 1...9 {
                 let seconds = duration * Double(index) / 10
-                let result = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600))
+                let requested = CMTime(seconds: seconds, preferredTimescale: 600)
+                videoEvent("image.request", ["index": index, "requestedSeconds": seconds, "requestedTime": timeFields(requested)])
+                let result = try await generator.image(at: requested)
+                videoEvent("image.result", ["index": index, "actualTime": timeFields(result.actualTime)])
+                videoEvent("inspection.start", ["index": index])
                 var observation = try inspect(result.image, mode: mode)
                 observation["requestedSeconds"] = seconds
                 observation["actualSeconds"] = result.actualTime.seconds
                 observations.append(observation)
+                videoEvent("inspection.result", ["index": index, "observation": observation])
                 if observation["passed"] as? Bool == true {
+                    videoEvent("png.encode", ["index": index])
                     guard let png = NSBitmapImageRep(cgImage: result.image).representation(using: .png, properties: [:]) else {
                         throw NSError(domain: "Pixels.png", code: 1)
                     }
+                    videoEvent("png.write", ["index": index])
                     try png.write(to: URL(fileURLWithPath: args[3]))
+                    videoEvent("output.success", ["index": index])
                     try emit(["passed": true, "durationSeconds": duration, "observations": observations])
                     return
                 }
             }
+            videoEvent("output.no-content")
             try emit(["passed": false, "durationSeconds": duration, "observations": observations])
             exit(1)
         }

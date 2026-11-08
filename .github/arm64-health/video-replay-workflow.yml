@@ -1,0 +1,32 @@
+# INACTIVE TEMPLATE outside .github/workflows. Separate review/authorization required to activate.
+# NEVER MERGE. No display/session changes, health controls, Caper checkout/build/test or network fixture.
+name: Retained video phase replay only
+on:
+  push:
+    branches: [apple-video-phase-replay-run]
+permissions:
+  contents: read
+jobs:
+  replay:
+    runs-on: macos-26
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Exact environment and two retained videos, once each
+        timeout-minutes: 7
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: python3 .github/arm64-health/video_replay.py "$RUNNER_TEMP/video-phase-replay"
+      - name: Retain raw failures and partial phase observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-phase-replay-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/video-phase-replay
+          if-no-files-found: error
+          retention-days: 14

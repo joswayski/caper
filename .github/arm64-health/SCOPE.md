@@ -1,5 +1,52 @@
 # Inactive, never-merge ARM64 forwarding observation
 
+## Inactive retained-video phase replay proposal
+
+`video-replay-workflow.yml` is a template OUTSIDE `.github/workflows`; no existing
+trigger, forwarding workflow or supervisor command changes. Activation and any
+execution require separate exact-pin review. `video_replay.py` invokes only the
+pixel helper, once for each of two retained, hash-pinned local recordings. It
+does not call the health/Caper/session entrypoints, create a UI, change display
+or preferences, produce new recordings, install dependencies or launch tests.
+It imports only existing process/result helpers; importing `run` executes no phase.
+
+The proposed dedicated branch is `apple-video-phase-replay-run`, attempt1 only,
+GitHub-hosted ARM64 image `20261102.0473.1`, macOS `26.7.2`/`25G332`, Xcode
+`26.6`/`17F113` at `/Applications/Xcode_26.6.app/Contents/Developer`. Verify actual
+identity, clean checkout and input hashes before compiling Pixels once (180s).
+Run failed then passing recording once each (unchanged 60s subprocess caps), with
+independent outcomes and no retry even when the first fails. The 7min step/10min
+job caps can terminate earlier; partial stdout/stderr/results upload on failure.
+The helper stops at the first thrown error or first content pass as before;
+never skip a bad sample. Neither replay result changes any historical outcome.
+Source/media/binary hashes and before/after media integrity are retained. Native
+compilation, AVFoundation behavior and timing effects require hosted validation.
+
+`video-replay/failed.mp4` is the exact standalone attachment
+`41B4ED30-211F-4DC7-B71F-48F18DCD58D8.mp4` from run `42496005325`/attempt1,
+head `a78b2969465c4be09c26172396bf927392dc31ac`, artifact `13623279072`;
+SHA256 `449df2b898b9b5b907a9989aeae75bf002035c69f18456912dd47a1faf8cd42c`, 51285 bytes.
+`video-replay/passing.mp4` is the exact standalone attachment
+`B58CC12B-C663-472D-9FD0-F979B12E070C.mp4` from run `42491607243`/attempt1,
+head `c01b43613f24a162acd422ee4f4df05a28da61cf`, artifact `13621941721`;
+SHA256 `4d490dea2913e03f82e8de57ca93d952b1a8919f00d461b1ee9aba8194ede597`, 102694 bytes.
+These names identify prior pixel outcomes, not expectations imposed on a replay.
+
+Video-only `PIXELS_VIDEO` stderr JSONL retains monotonic sequence/uptime, duration
+load start/result (raw CMTime and finite seconds), each request index and nominal
+seconds/rounded CMTime, returned actual CMTime, inspection start/result, PNG and
+output stages. Existing final stdout results stay intact; thrown errors additionally
+retain the last stage and prior events. NSError traversal follows only
+`NSUnderlyingErrorKey`, at most four unique objects, with explicit cycle/depth/
+non-NSError endings. Only domain (128 characters), code, message/failure reason
+(512 characters each) are retained; no userInfo dictionary, URL or arbitrary-key
+dump. The existing primary top-level error is preserved. Events are capped at64
+(current paths need at most44); incremental stderr survives a later throw/timeout.
+Diagnostic serialization failure has an explicit stderr marker, not a passed
+observation. This synchronous logging adds overhead; it is not timing-neutral.
+The nine interior times, 600 timescale, zero tolerances, preferred transform,
+Vision content criterion, first-error behavior and all nonvideo modes are unchanged.
+
 Preparation branch: `apple-arm64-health-sidebar-prepared`. Only a separately
 approved push to `apple-arm64-health-sidebar-run` triggers this workflow. No
 dispatch, schedule, existing-ref change, job retry, production merge or cutover.
