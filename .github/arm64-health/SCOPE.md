@@ -1,9 +1,53 @@
-# Inactive, never-merge ARM64 health gate
+# Inactive, never-merge ARM64 display inventory
 
 Preparation branch: `apple-arm64-health-sidebar-prepared`. Only a separately
 approved push to `apple-arm64-health-sidebar-run` triggers this workflow. No
 dispatch, schedule, existing-ref change, job retry, production merge or cutover.
 One hosted VM/job; all results remain `productAcceptance: false`.
+
+## Current workflow: observation only
+
+The workflow invokes only `run.py display-inventory`, then uploads its evidence
+even on failure. It cannot run controls, dependency setup, Caper preparation,
+builds or tests. Inventory step cap: 5 minutes; job cap: 10 minutes. It validates
+the exact environment below using the existing provenance checks, but returns
+before crash-baseline collection, pixel compilation or writing `gate.json`.
+This mode cannot admit the dormant health or cumulative pipeline.
+
+One `xcrun swift DisplayInventory.swift` process (60s including interpretation)
+reads NSScreen frame/visibleFrame in points, backing scale and backing-converted
+frame, plus CoreGraphics IDs, online/active/mirroring state, global display bounds,
+pixel dimensions, current mode and advertised modes. It uses the documented nil
+options for `CGDisplayCopyAllDisplayModes`; it does not invent or select modes.
+The snapshot is not atomic. Count changes, missing screens/modes, API errors and
+64-display/2048-mode bounds are explicit incomplete observations, not a claim
+that no larger mode exists. Empty/default mode lists do not prove resizing is
+impossible. No screenshots, windows, activation, permission prompts or UI events.
+
+The known Anka addon receipt is read with `pkgutil --pkg-info-plist` (10s); an
+absent, failed or malformed receipt cannot establish a version. Inventory only
+the immediate `/Library/Application Support/Veertu/Anka/addons` directory (128
+entries) and `change_res` metadata/hash/file type (64MiB maximum read, `file` 10s).
+Do not follow an addon-directory symlink or execute any guest utility, even with
+guessed version/help switches. Receipt version is package metadata, not proof of
+utility functionality or the host hypervisor version. Raw process outputs and
+normal nonzero/timeout results are retained; missing receipt makes the inventory
+result unsuccessful but does not prevent geometry collection. Writes are limited
+to evidence plus normal Swift/system bookkeeping; no zero-system-write guarantee.
+
+The geometry requirement remains `NSScreen.main.visibleFrame` >=1440×900 **points**,
+not a 1440×900 screenshot or nominal display mode. The menu bar/Dock can reduce
+usable area even with auto-hide. Backing pixels and CoreGraphics mode dimensions
+are recorded separately; no pixel-size-to-usable-points assumption is made. This
+inventory never evaluates a new acceptance policy or changes resolution, defaults,
+renderer, virtual displays or installed tools. A future sizing route and the
+unchanged health-first cumulative workflow require separate review/authorization.
+
+## Dormant validation contract
+
+The following health/cumulative code remains implemented but is unreachable from
+the current inventory-only workflow. Its described validation step/job caps are
+requirements for a separately reviewed restoration, not inventory execution.
 
 ## Exact inputs and environment
 

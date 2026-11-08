@@ -6,9 +6,11 @@ import json
 import math
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -251,7 +253,7 @@ def graphics(output):
     return passed
 
 
-def preflight(output):
+def preflight(output, provenance_only=False):
     output.mkdir(parents=True, exist_ok=False)
     shutil.copytree(ROOT, output / "source", ignore=shutil.ignore_patterns("__pycache__"))
     workflow = ROOT.parent / "workflows/apple-arm64-health-sidebar.yml"
@@ -289,6 +291,8 @@ def preflight(output):
     assert re.search(r"ProductVersion:\s+26\.7\.2\s", (output / "os/stdout.txt").read_text())
     assert re.search(r"BuildVersion:\s+25G332\s", (output / "os/stdout.txt").read_text())
     assert (output / "xcode/stdout.txt").read_text().strip() == "Xcode 26.6\nBuild version 17F113"
+    if provenance_only:
+        return  # Observation mode must not create the controls' admission gate.
     checked(
         [sys.executable, str(ROOT / "crashes.py"), "baseline", str(output / "crash-baseline")],
         output / "inventory-baseline",
@@ -301,6 +305,63 @@ def preflight(output):
     )
     record(output / "pixel-binary-hash.json", {"sha256": sha(output / "pixels")})
     record(output / "gate.json", {"passed": True, "productCommit": SOURCE, "productTree": TREE})
+
+
+def display_inventory(output):
+    geometry = command(["xcrun", "swift", str(ROOT / "DisplayInventory.swift")], output / "geometry", 60)
+    # Inspect receipt metadata and the known guest utility; never execute it,
+    # even with guessed --help/--version switches or an empty argument list.
+    package = "com.veertu.anka.guestaddons.pkg"
+    receipt = command(["/usr/sbin/pkgutil", "--pkg-info-plist", package], output / "guest-receipt", 10)
+    report = {"packageID": package, "receiptProcess": receipt, "complete": False, "utilityExecuted": False}
+    record(output / "guest.json", report)
+    try:
+        if ok(receipt):
+            metadata = plistlib.loads((output / "guest-receipt/stdout.txt").read_bytes())
+            report["receiptVersion"] = metadata.get("pkg-version")
+            report["receiptPackageID"] = metadata.get("pkgid")
+        else:
+            report["receiptVersion"] = None  # Nonzero does not establish an installed version.
+        directory = Path("/Library/Application Support/Veertu/Anka/addons")
+        report["directory"] = str(directory)
+        entries = []
+        report["entries"] = entries  # Preserve partial inventory on bounds/permission failure.
+        try:
+            if directory.is_symlink():
+                raise RuntimeError("Addons directory is a symlink; not followed")
+            with os.scandir(directory) as scan:
+                for index, entry in enumerate(scan):
+                    if index == 128:
+                        raise RuntimeError("Addons directory exceeds 128-entry inventory bound")
+                    entries.append(entry.name)
+            report["directoryState"] = "present"
+        except FileNotFoundError:
+            report["directoryState"] = "absent"
+        report["entries"] = sorted(entries)
+        utility = directory / "change_res"
+        report["utility"] = {"path": str(utility), "present": False}
+        try:
+            info = utility.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            report["utility"].update(present=True, mode=oct(info.st_mode), size=info.st_size)
+            if stat.S_ISLNK(info.st_mode):
+                report["utility"]["symlinkTarget"] = os.readlink(utility)
+            elif stat.S_ISREG(info.st_mode) and info.st_size <= 64 * 1024 * 1024:
+                report["utility"]["sha256"] = sha(utility)
+                description = command(["/usr/bin/file", "-b", str(utility)], output / "guest-utility-file", 10)
+                report["utility"]["fileProcess"] = description
+                assert ok(description), "file metadata command failed"
+            else:
+                raise RuntimeError("Utility is not a bounded regular file; not read")
+        report["complete"] = True
+    except Exception as error:
+        report["error"] = f"{type(error).__name__}: {error}"
+    record(output / "guest.json", report)
+    # A complete observation is not geometry acceptance. Missing receipt version
+    # remains explicitly unknown; no guest utility is presumed available or safe.
+    return ok(geometry) and report["complete"] and ok(receipt)
 
 
 def retain_scheme(path, output):
@@ -784,9 +845,9 @@ def main():
         return int(any(r["failed"] for r in reports.values()))
     report = {"failed": True, "mode": mode, "productAcceptance": False}
     try:
-        if mode == "preflight":
-            preflight(output)
-            report["failed"] = False
+        if mode in {"preflight", "display-inventory"}:
+            preflight(output, provenance_only=mode == "display-inventory")
+            report["failed"] = not display_inventory(output) if mode == "display-inventory" else False
         else:
             assert mode in {"graphics", "standalone", "cumulative"}
             assert json.loads((output.parent / "preflight/gate.json").read_text())["passed"]
