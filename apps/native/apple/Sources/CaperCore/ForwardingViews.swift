@@ -125,7 +125,7 @@ struct ForwardPickerView: View {
                                           mentions: .empty, submit: {}, submitOnReturn: false, editable: pending == nil,
                                           accessibilityID: "forward-note")
                         .padding(6).background(CaperTheme.composer, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border).allowsHitTesting(false))
                     ComposerSuggestionsView(controller: autocomplete)
                     if let error {
                         Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
