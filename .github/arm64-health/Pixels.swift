@@ -53,27 +53,124 @@ struct Pixels {
                 "greenWidthFraction": span, "width": image.width, "height": image.height]
     }
 
-    @MainActor static func main() async throws {
-        let args = CommandLine.arguments
+    static func window(pid: pid_t, inventoryURL: URL) throws -> [String: Any] {
+        let started = ProcessInfo.processInfo.systemUptime
+        // Leave time for process startup/reporting inside the unchanged external 2s cap.
+        let budget = 1.5
+        let interval = 0.05
+        var observations: [[String: Any]] = []
+        var report: [String: Any] = ["passed": false, "complete": false, "pid": pid,
+            "status": "observing", "readinessBudgetSeconds": budget, "pollIntervalSeconds": interval]
+        func save() throws {
+            report["elapsedSeconds"] = ProcessInfo.processInfo.systemUptime - started
+            report["observations"] = observations
+            try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                .write(to: inventoryURL, options: .atomic)
+        }
+        func alive() -> Bool {
+            // Signal 0 observes existence/access only; it sends no signal to the fixture.
+            if kill(pid, 0) == 0 { return true }
+            let code = errno
+            report["status"] = code == ESRCH ? "process-exited" : "process-check-failed"
+            report["processCheckErrno"] = Int(code)
+            return false
+        }
+        try save()
+        while true {
+            guard alive() else { break }
+            guard ProcessInfo.processInfo.systemUptime - started < budget else {
+                report["status"] = "timeout"; break
+            }
+            guard CGPreflightScreenCaptureAccess() else {
+                report["status"] = "capture-permission-unavailable"; break
+            }
+            guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+                report["status"] = "inventory-unavailable"; break
+            }
+            let owned = windows.filter { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid }
+            var eligible: [[String: Any]] = []
+            var candidates: [[String: Any]] = []
+            var malformed = false
+            for window in owned {
+                let layer = window[kCGWindowLayer as String] as? NSNumber
+                let id = window[kCGWindowNumber as String] as? NSNumber
+                let bounds = window[kCGWindowBounds as String] as? [String: Any]
+                var missing: [String] = []
+                if layer == nil { missing.append("layer") }
+                if layer?.intValue == 0 {
+                    if id == nil || id!.int64Value <= 0 { missing.append("windowID") }
+                    for key in ["X", "Y", "Width", "Height"] {
+                        guard let value = bounds?[key] as? NSNumber, value.doubleValue.isFinite,
+                              (key != "Width" && key != "Height") || value.doubleValue > 0 else {
+                            missing.append("bounds." + key); continue
+                        }
+                    }
+                }
+                let valid = layer?.intValue == 0 && missing.isEmpty
+                var candidate: [String: Any] = ["ownerPID": pid,
+                    "layer": window[kCGWindowLayer as String] ?? NSNull(),
+                    "windowID": window[kCGWindowNumber as String] ?? NSNull(),
+                    "bounds": window[kCGWindowBounds as String] ?? NSNull(), "missingOrInvalidFields": missing,
+                    "classification": valid ? "eligible" : (missing.isEmpty ? "nonzero-layer" : "missing-field")]
+                candidate["onScreen"] = window[kCGWindowIsOnscreen as String] ?? NSNull()
+                candidates.append(candidate)
+                malformed = malformed || !missing.isEmpty
+                if valid { eligible.append(candidate) }
+            }
+            observations.append(["elapsedSeconds": ProcessInfo.processInfo.systemUptime - started,
+                "candidates": candidates, "eligibleCount": eligible.count,
+                "status": malformed ? "missing-field" : (eligible.isEmpty ? "no-window" : (eligible.count > 1 ? "multiple-window" : "ready"))])
+            // Preserve each PID-specific snapshot even if the external watchdog kills us.
+            try save()
+            guard alive() else { break }
+            guard ProcessInfo.processInfo.systemUptime - started < budget else {
+                report["status"] = "timeout"; break
+            }
+            if malformed { report["status"] = "missing-field"; break }
+            if eligible.count > 1 { report["status"] = "multiple-window"; break }
+            if let window = eligible.first {
+                report["passed"] = true
+                report["status"] = "ready"
+                report["windowID"] = window["windowID"]
+                report["bounds"] = window["bounds"]
+                report["onScreen"] = true
+                break
+            }
+            report["status"] = "no-window"
+            Thread.sleep(forTimeInterval: min(interval, max(0, budget - (ProcessInfo.processInfo.systemUptime - started))))
+        }
+        report["complete"] = true
+        try save()
+        return report
+    }
+
+    @MainActor static func main() async {
+        do {
+            try await run(CommandLine.arguments)
+        } catch {
+            let error = error as NSError
+            do {
+                try emit(["passed": false, "status": "error", "mode": CommandLine.arguments.dropFirst().first ?? "",
+                    "error": ["domain": error.domain, "code": error.code, "message": error.localizedDescription]])
+            } catch {
+                FileHandle.standardOutput.write(Data("{\"passed\":false,\"status\":\"error-report-encoding-failed\"}\n".utf8))
+            }
+            exit(1)
+        }
+    }
+
+    @MainActor static func run(_ args: [String]) async throws {
+        guard args.count >= 3 else { throw NSError(domain: "Pixels.arguments", code: 1) }
         let mode = args[1]
         if mode == "window" {
-            guard CGPreflightScreenCaptureAccess(), let pid = Int(args[2]),
-                  let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-                throw NSError(domain: "Pixels.windowPermissionOrInventory", code: 1)
-            }
-            let matches = windows.filter {
-                ($0[kCGWindowOwnerPID as String] as? NSNumber)?.intValue == pid &&
-                ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
-            }
-            guard matches.count == 1, let window = matches.first,
-                  let id = window[kCGWindowNumber as String] as? NSNumber,
-                  let bounds = window[kCGWindowBounds as String] as? [String: Any] else {
-                throw NSError(domain: "Pixels.noUniqueLiveWindow", code: 1)
-            }
-            try emit(["pid": pid, "windowID": id.intValue, "bounds": bounds, "onScreen": true])
+            guard args.count == 4, let pid = pid_t(args[2]), pid > 0 else { throw NSError(domain: "Pixels.arguments", code: 1) }
+            let report = try window(pid: pid, inventoryURL: URL(fileURLWithPath: args[3]))
+            try emit(report)
+            if report["passed"] as? Bool != true { exit(1) }
             return
         }
         if mode == "video" {
+            guard args.count == 4 else { throw NSError(domain: "Pixels.arguments", code: 1) }
             let asset = AVURLAsset(url: URL(fileURLWithPath: args[2]))
             let duration = try await asset.load(.duration).seconds
             guard duration.isFinite, duration > 0 else { throw NSError(domain: "Pixels.videoDuration", code: 1) }

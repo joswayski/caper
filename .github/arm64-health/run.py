@@ -158,13 +158,26 @@ def capture_window(process, output, pixels, mode):
     report = {"failed": True, "status": "not_attempted"}
     started = time.monotonic()
     try:
-        time.sleep(0.2)
         if process.poll() is not None:
             raise RuntimeError("fixture exited before capture; lifetime not extended")
         report.update(status="attempted", pid=process.pid, fixtureAliveAtStart=True)
-        checked([str(pixels), "window", str(process.pid)], output / "window-info", 2)
-        window = json.loads((output / "window-info/stdout.txt").read_text())
-        report["window"] = window
+        discovery = command(
+            [str(pixels), "window", str(process.pid), str(output / "window-observations.json")],
+            output / "window-info",
+            2,
+        )
+        report["discovery"] = discovery
+        text = (output / "window-info/stdout.txt").read_text()
+        if text.strip():
+            report["window"] = json.loads(text)
+        if not ok(discovery):
+            raise RuntimeError("window readiness failed; see retained result/observations/stdout/stderr")
+        window = report["window"]
+        if window.get("passed") is not True:
+            raise RuntimeError("window readiness did not pass; no capture attempted")
+        if process.poll() is not None:
+            raise RuntimeError("fixture exited after discovery; no capture attempted")
+        report["fixtureAliveBeforeCapture"] = True
         checked(
             ["/usr/sbin/screencapture", "-x", "-o", "-l" + str(window["windowID"]), str(output / "window.png")],
             output / "capture-command",

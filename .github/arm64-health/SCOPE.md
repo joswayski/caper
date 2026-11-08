@@ -42,16 +42,36 @@ retain real returnCode/signal/timeout, per-process duration, stdout/stderr and
 exact begin/survival markers. Read-only Metal/device/capture-permission preflight
 never requests permission. Missing capture permission is unhealthy, not a skip.
 
-For each live graphics process, attempt ONE capture after 0.2 seconds. A separate
-read-only helper finds exactly one on-screen, layer-zero window owned by that
-PID (2s bound); `screencapture -x -o -l<windowID>` captures it once (5s bound),
-without moving/focusing the window. No window, early exit or missing pixels fails
-closed; the fixture's lifetime is never extended. Offline pixel checks (60s bound)
-decode the image and require the Text control's exact phrase via Vision OCR, or
-the expected green shape: green pixels >5% and <95%, with horizontal span >70%
-for the Canvas ellipse or 15–60% for the blur circle. These are conservative
-content/usability gates, not a visual fidelity oracle; human inspection remains
-required. A surviving process with blank/unusable pixels is not healthy.
+For each live graphics process, start ONE read-only readiness helper immediately,
+with the unchanged external 2s process cap (including startup). Within that cap,
+it observes only that PID's on-screen windows, every 50ms for at most 1.5s, stopping
+on process exit, permission/inventory error, malformed fields, multiple eligible
+windows or exactly one eligible layer-zero window. Only no-window observations
+continue polling; no ambiguous candidate is selected. Signal 0 checks process
+existence/access without sending a signal. Atomic `window-observations.json`
+snapshots retain elapsed times, PID-specific candidate fields/classification,
+eligible counts, terminal status and completeness; a killed helper can leave a
+partial snapshot. Expected discovery/decoding errors emit structured JSON and
+ordinary nonzero exits, not uncaught Swift errors. A collection/encoding failure
+can still leave incomplete inventory; it fails closed, never becomes a healthy
+control or an attributed renderer failure.
+
+The supervisor rechecks the ORIGINAL fixture's process immediately before
+`screencapture -x -o -l<windowID>`: at most ONE screenshot (5s bound), without
+moving/focusing any window. Readiness observations are not repeated controls or
+captures. No capture retry, fixture restart or extension of its one-second
+lifetime. Process/window lifetime checks and capture cannot be atomic: a fixture
+may exit or its window change after the last observation, startup can exhaust
+the bound, and a ready window need not yet contain usable pixels. Those races
+still fail closed; early discovery is not assumed to explain the earlier missing
+captures, whose helper did not retain enough candidate inventory.
+
+Offline pixel checks (60s bound) decode the image and require the Text control's
+exact phrase via Vision OCR, or the expected green shape: green pixels >5% and
+<95%, with horizontal span >70% for the Canvas ellipse or 15–60% for the blur
+circle. These are conservative content/usability gates, not a visual fidelity
+oracle; human inspection remains required. A surviving process with blank/unusable
+pixels is not healthy.
 
 AX: only `AXMenuTests/AXMenuTests/testInitialTextFieldAndFullHierarchy`, once.
 Retain full unfiltered AX hierarchy with the field and menu bar/File/Edit,
