@@ -1,4 +1,4 @@
-# INACTIVE TEMPLATE outside .github/workflows. Separate review/authorization required to activate.
+# Local activation candidate. Publication/execution require separate exact-pin authorization.
 # NEVER MERGE. No display/session changes, health controls, Caper checkout/build/test or network fixture.
 name: Retained video phase replay only
 on:

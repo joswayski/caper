@@ -1,10 +1,14 @@
-# Inactive, never-merge ARM64 forwarding observation
+# Never-merge ARM64 diagnostics
 
-## Inactive retained-video phase replay proposal
+## Replay-only activation candidate (execution held)
 
-`video-replay-workflow.yml` is a template OUTSIDE `.github/workflows`; no existing
-trigger, forwarding workflow or supervisor command changes. Activation and any
-execution require separate exact-pin review. `video_replay.py` invokes only the
+`.github/workflows/apple-video-phase-replay.yml` places the reviewed template in
+workflow discovery with unchanged jobs/steps and only the dedicated replay push
+filter. Publication and execution remain held for separate exact-pin authorization;
+local preparation creates no branch. No existing workflow or supervisor command
+changes. The retained forwarding workflow selects only its separate
+`apple-arm64-health-sidebar-run` branch and is not invoked by the replay push.
+`video_replay.py` invokes only the
 pixel helper, once for each of two retained, hash-pinned local recordings. It
 does not call the health/Caper/session entrypoints, create a UI, change display
 or preferences, produce new recordings, install dependencies or launch tests.
@@ -47,8 +51,9 @@ observation. This synchronous logging adds overhead; it is not timing-neutral.
 The nine interior times, 600 timescale, zero tolerances, preferred transform,
 Vision content criterion, first-error behavior and all nonvideo modes are unchanged.
 
-Preparation branch: `apple-arm64-health-sidebar-prepared`. Only a separately
-approved push to `apple-arm64-health-sidebar-run` triggers this workflow. No
+Retained forwarding preparation branch: `apple-arm64-health-sidebar-prepared`.
+Only a separately approved push to `apple-arm64-health-sidebar-run` triggers the
+forwarding workflow below; none of its phases belong to the replay-only scope. No
 dispatch, schedule, existing-ref change, job retry, production merge or cutover.
 One hosted VM/job; all results remain `productAcceptance: false`.
 
