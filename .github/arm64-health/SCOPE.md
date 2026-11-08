@@ -2,7 +2,7 @@
 
 Preparation branch: `apple-arm64-health-sidebar-prepared`. Only a separately
 approved push to `apple-arm64-health-sidebar-run` triggers this workflow. No
-dispatch, schedule, existing-ref change, retry, production merge or cutover.
+dispatch, schedule, existing-ref change, job retry, production merge or cutover.
 One hosted VM/job; all results remain `productAcceptance: false`.
 
 ## Exact inputs and environment
@@ -141,7 +141,13 @@ test source, generated schemes/xctestruns and binary hashes. A standalone succes
 does not itself accept any Caper behavior; the singleton must pass independently.
 
 Native timeouts remain default 300/max 600 and 900s external test subprocess cap;
-no retry or timeout inflation. Process-local curl/Cargo settings disable existing
-dependency download retries without source changes. Step caps: preflight 5min,
+no test retry or timeout inflation. The sole exception to the former
+no-dependency-retry probe policy restores the unchanged product script's existing
+curl transfer retries (`--retry 6 --retry-delay 5 --retry-all-errors`), including
+its archive hash verification. No curl override, new endpoint/version/cache or
+generic preparation retry wrapper. `CARGO_NET_RETRY=0` and the 2700s preparation
+cap remain unchanged. Preparation, builds and the sidebar test still run at most
+once; transfer recovery is not permission to repeat them or relax any gate.
+Step caps: preflight 5min,
 graphics 10min, AX 25min, sidebar 70min; job 110min. Step cancellation/missing output
 is failure, never assumed success. Final summary and upload run even on failure.

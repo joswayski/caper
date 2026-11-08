@@ -500,12 +500,11 @@ def sidebar(output):
     assert sha(TEST_FILE) == "38658ea7cdd3ea9a8625d54f589ef8f663ed4df2a111883409e7c7ced948a832"
     shutil.copy2(TEST_FILE, output / "NavigationSidebarTests.swift")
     record(output / "test-source-hash.json", {"sha256": sha(TEST_FILE), "overlay": False})
-    # Keep source untouched, but do not retry its dependency downloads in this probe.
+    # Preserve the product's curl transfer retries; Cargo and preparation are not retried.
     checked(
         [
             "bash",
             "-c",
-            'curl() { command curl "$@" --retry 0; }; export -f curl; '
             "export CARGO_NET_RETRY=0; bash apps/native/apple/prepare.sh",
         ],
         output / "prepare",
