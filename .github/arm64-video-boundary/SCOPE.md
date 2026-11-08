@@ -1,10 +1,10 @@
-# Inactive, never-merge same-file timestamp diagnostic
+# Local activation candidate, never-merge same-file timestamp diagnostic
 
 This is not a health-gate correction or Caper acceptance. `Pixels.swift`, the old
-replay supervisor, both original media and all discovered workflows are unchanged.
-The template `workflow.yml.inactive` is outside `.github/workflows`; publication,
-activation and native execution need separate exact-pin authorization. The proposed
-exclusive branch is `apple-video-boundary-run`. The template checks out the event
+replay supervisor, both original media and all pre-existing workflows are unchanged.
+`.github/workflows/apple-video-boundary.yml` selects only `apple-video-boundary-run`.
+This local activation candidate is not authorization to publish or execute it;
+both actions require separate exact-pin approval. The workflow checks out the event
 SHA and the supervisor requires a clean matching HEAD, attempt 1, GitHub-hosted
 ARM64 image `20261102.0473.1`, macOS `26.7.2/25G332`, Xcode `26.6/17F113` at
 `/Applications/Xcode_26.6.app/Contents/Developer`. An authorization review must pin

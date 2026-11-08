@@ -1,4 +1,4 @@
-# NEVER MERGE. Outside workflow discovery; activation and exact-head authorization required.
+# NEVER MERGE. Local activation candidate; publication/execution require separate exact-pin authorization.
 name: Retained video fixed-time counterfactual only
 on:
   push:
