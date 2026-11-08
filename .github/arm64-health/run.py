@@ -267,12 +267,12 @@ def preflight(output):
     assert environment["RUNNER_ENVIRONMENT"] == "github-hosted"
     assert environment["GITHUB_RUN_ATTEMPT"] == "1"
     assert environment["GITHUB_REF"] == "refs/heads/apple-arm64-health-sidebar-run"
-    assert environment["ImageVersion"] == "20261026.0455.2"
+    assert environment["ImageVersion"] == "20261102.0473.1"
     assert environment["DEVELOPER_DIR"] == "/Applications/Xcode_26.6.app/Contents/Developer"
     assert (output / "harness-pin/stdout.txt").read_text().splitlines()[0] == environment["GITHUB_SHA"]
     assert (output / "architecture/stdout.txt").read_text().strip() == "arm64"
-    assert re.search(r"ProductVersion:\s+26\.6\.2\s", (output / "os/stdout.txt").read_text())
-    assert re.search(r"BuildVersion:\s+25G83\s", (output / "os/stdout.txt").read_text())
+    assert re.search(r"ProductVersion:\s+26\.7\.2\s", (output / "os/stdout.txt").read_text())
+    assert re.search(r"BuildVersion:\s+25G332\s", (output / "os/stdout.txt").read_text())
     assert (output / "xcode/stdout.txt").read_text().strip() == "Xcode 26.6\nBuild version 17F113"
     checked(
         [sys.executable, str(ROOT / "crashes.py"), "baseline", str(output / "crash-baseline")],

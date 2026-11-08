@@ -12,12 +12,13 @@ Product checkout: `9fca8b93f3629390e837794b9468c5cdc18d7617`, tree
 Test file SHA256: `38658ea7cdd3ea9a8625d54f589ef8f663ed4df2a111883409e7c7ced948a832`.
 
 Fail closed unless GitHub-hosted, attempt 1, exact execution branch, ARM64,
-`ImageVersion=20261026.0455.2`, macOS 26.6.2/build 25G83 and Xcode 26.6/build 17F113
+`ImageVersion=20261102.0473.1`, macOS 26.7.2/build 25G332 and Xcode 26.6/build 17F113
 at `/Applications/Xcode_26.6.app/Contents/Developer`. Label `macos-26` is not an
 immutable image selector: an unexpected assigned version fails preflight.
 Official image documentation is pinned at actions/runner-images commit
-`fad015e47059f40cf0786dcb4593384f6a0720d3`,
-`images/macos/macos-26-arm64-Readme.md`. Availability is not runtime health.
+`b5e4fd2931679d96bf0c289a03f54d414633af0f`:
+[macos-26-arm64 Readme](https://github.com/actions/runner-images/blob/b5e4fd2931679d96bf0c289a03f54d414633af0f/images/macos/macos-26-arm64-Readme.md).
+Availability and observed provenance are not runtime health.
 
 `control-provenance.json` maps all unchanged control files to their exact earlier
 commits/paths and hashes. The complete 3836-byte published graphics fixture is
