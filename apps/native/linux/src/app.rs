@@ -55,6 +55,8 @@ mod gifs;
 mod history;
 #[path = "inbox.rs"]
 mod inbox;
+#[path = "inbox_files.rs"]
+mod inbox_files;
 #[path = "members.rs"]
 mod members;
 #[path = "narrow.rs"]
@@ -1393,6 +1395,16 @@ impl App {
         {
             let mut state = self.state.borrow_mut();
             let token = state.token.take();
+            for reply in state.replies.values() {
+                if let Some(cancel) = &reply.cancel {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                if let Some(token) = &token {
+                    for file in &reply.files {
+                        inbox_files::abandon(&file.file, &self.api, token);
+                    }
+                }
+            }
             let uploaded: Vec<String> = state
                 .files
                 .iter()
@@ -3703,7 +3715,10 @@ impl App {
                 status,
             } if epoch == state.epoch => {
                 if let Some(card) = state.card.as_mut().filter(|card| card.person == person) {
-                    card.status = Some(status);
+                    card.status = Some(status.clone());
+                }
+                if let Some(reply) = state.replies.get_mut(&person).filter(|reply| reply.sending) {
+                    reply.status = Some(status);
                 }
             }
             // The update review's report: it stays in the review.

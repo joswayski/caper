@@ -53,6 +53,11 @@ pub(super) enum Target {
     },
     /// A composer's file, by its upload key.
     Draft(u64),
+    /// A notification reply's file; never the selected channel's draft.
+    Inbox {
+        item: Box<caper_client::activity::Item>,
+        key: u64,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -177,6 +182,8 @@ struct Session {
     /// A spoiler's cover: the rendered picture blurred, by what it shows.
     cover: Option<(u16, Vec<Mark>, cairo::ImageSurface)>,
     spoiler: Option<bool>,
+    preparing: Option<Arc<std::sync::atomic::AtomicBool>>,
+    open_error: Option<String>,
 }
 
 impl Session {
@@ -449,6 +456,13 @@ impl App {
     ) {
         self.close_editor();
         let picture = matches!(target, Target::Picture { .. });
+        let parent: gtk::Window = if matches!(target, Target::Inbox { .. }) {
+            let open = self.inbox_window.borrow();
+            let Some(open) = open.as_ref() else { return };
+            open.window.clone()
+        } else {
+            self.ui.window.clone().upcast()
+        };
         let initial = edit.unwrap_or_default();
         let session = Rc::new(RefCell::new(Session {
             target,
@@ -475,8 +489,9 @@ impl App {
             rendered: None,
             cover: None,
             spoiler: None,
+            preparing: None,
+            open_error: None,
         }));
-        let parent = self.ui.window.clone();
         let window = gtk::Window::builder()
             .transient_for(&parent)
             .modal(true)
@@ -953,12 +968,18 @@ impl App {
     }
 
     /// Opens what will be sent in its default app.
-    fn open_sent(&self) {
+    fn open_sent(self: &Rc<Self>) {
         let editor = self.editor.borrow();
         let Some(editor) = editor.as_ref() else {
             return;
         };
         let session = editor.session.borrow();
+        if let Target::Inbox { item, key } = &session.target {
+            let (item, key) = (item.clone(), *key);
+            drop(session);
+            self.open_inbox_sent(&item, key);
+            return;
+        }
         let Target::Draft(key) = session.target else {
             return;
         };
@@ -989,9 +1010,106 @@ impl App {
 
     pub(super) fn close_editor(&self) {
         if let Some(editor) = self.editor.borrow_mut().take() {
+            if let Some(cancel) = editor.session.borrow().preparing.as_ref() {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             editor.session.borrow_mut().drop_field();
             editor.window.destroy();
         }
+    }
+
+    pub(super) fn close_inbox_editor(&self) {
+        let inbox =
+            self.editor.borrow().as_ref().is_some_and(|editor| {
+                matches!(editor.session.borrow().target, Target::Inbox { .. })
+            });
+        if inbox {
+            self.close_editor();
+        }
+    }
+
+    /// Like the egui profile editor, prepare the saved edit off the UI thread.
+    /// Closing this editor cancels preparation and discards its late result.
+    fn open_inbox_sent(self: &Rc<Self>, item: &caper_client::activity::Item, key: u64) {
+        let Some(session) = self
+            .editor
+            .borrow()
+            .as_ref()
+            .map(|editor| editor.session.clone())
+        else {
+            return;
+        };
+        if session.borrow().preparing.is_some() {
+            return;
+        }
+        let state = self.state.borrow();
+        let Some(staged) = state
+            .replies
+            .get(&item.draft_key())
+            .and_then(|reply| reply.files.iter().find(|file| file.key == key))
+        else {
+            return;
+        };
+        let file = staged.file.clone();
+        let Some(edit) = file.edit.clone() else {
+            let uri = gtk::gio::File::for_path(&file.path).uri();
+            let _ = gtk::gio::AppInfo::launch_default_for_uri(
+                &uri,
+                None::<&gtk::gio::AppLaunchContext>,
+            );
+            return;
+        };
+        let Some(settings) = state.uploads.clone() else {
+            return;
+        };
+        drop(state);
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        session.borrow_mut().preparing = Some(cancel.clone());
+        session.borrow_mut().open_error = None;
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = caper_client::uploads::prepare_edited_path(
+                &file.path,
+                &file.name(),
+                &edit,
+                &settings,
+                &|_| {},
+                &cancel,
+            )
+            .and_then(|prepared| prepared.on_disk());
+            let _ = sender.send_blocking(result);
+        });
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            let Some(app) = weak.upgrade() else { return };
+            if !app
+                .editor
+                .borrow()
+                .as_ref()
+                .is_some_and(|editor| Rc::ptr_eq(&editor.session, &session))
+            {
+                return;
+            }
+            session.borrow_mut().preparing = None;
+            match result {
+                Ok(scratch) => {
+                    let uri = gtk::gio::File::for_path(scratch.path()).uri();
+                    app.opened.borrow_mut().push(scratch);
+                    if let Err(error) = gtk::gio::AppInfo::launch_default_for_uri(
+                        &uri,
+                        None::<&gtk::gio::AppLaunchContext>,
+                    ) {
+                        session.borrow_mut().open_error = Some(error.to_string());
+                    }
+                }
+                Err(error) => session.borrow_mut().open_error = Some(error),
+            }
+            app.render_editor();
+        });
+        self.render_editor_controls();
     }
 
     /// The editor's Done, Close, Spoiler or Remove.
@@ -1045,6 +1163,16 @@ impl App {
             }
             (Target::Draft(key), Outcome::Remove) => {
                 self.chip_action(crate::uploads::ChipAction::Remove(key));
+            }
+            (Target::Inbox { item, key }, Outcome::Save(edit)) => {
+                self.save_inbox_edit(&item, key, edit, preview)
+            }
+            (Target::Inbox { item, key }, Outcome::Spoiler) => {
+                self.inbox_file_action(&item, key, super::inbox_files::Action::Spoiler);
+                self.render_editor();
+            }
+            (Target::Inbox { item, key }, Outcome::Remove) => {
+                self.inbox_file_action(&item, key, super::inbox_files::Action::Remove)
             }
             (Target::Picture { .. }, _) => {}
         }
@@ -1140,13 +1268,20 @@ impl App {
             return;
         };
         let ready = session.still.is_some();
-        let spoiler = match session.target {
+        let spoiler = match &session.target {
             Target::Draft(key) => self.state.try_borrow().ok().and_then(|state| {
                 state
                     .files
                     .iter()
-                    .find(|file| file.key == key)
+                    .find(|file| file.key == *key)
                     .map(|f| f.spoiler)
+            }),
+            Target::Inbox { item, key } => self.state.try_borrow().ok().and_then(|state| {
+                state
+                    .replies
+                    .get(&item.draft_key())
+                    .and_then(|reply| reply.files.iter().find(|file| file.key == *key))
+                    .map(|file| file.file.spoiler)
             }),
             Target::Picture { .. } => None,
         };
@@ -1171,11 +1306,20 @@ impl App {
             open.set_sensitive(!pending);
             open.set_tooltip_text(Some(if pending { EDIT_PENDING } else { OPEN_SENT }));
         }
+        if let (Some(open), Target::Inbox { .. }) = (&editor.open, &session.target) {
+            open.set_sensitive(session.preparing.is_none());
+            open.set_tooltip_text(Some(if session.preparing.is_some() {
+                EDIT_PENDING
+            } else {
+                OPEN_SENT
+            }));
+        }
         let hint = (session.kind == Kind::Video && ready).then_some(if session.marks_allowed {
             VIDEO_HINT
         } else {
             VIDEO_CROP_HINT
         });
+        let hint = session.open_error.as_deref().or(hint);
         editor.hint.set_label(hint.unwrap_or_default());
         editor.hint.set_visible(hint.is_some());
         let key = format!(
