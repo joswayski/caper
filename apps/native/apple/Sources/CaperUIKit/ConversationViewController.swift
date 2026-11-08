@@ -558,6 +558,11 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private func apply(messages: [ChatMessage], pending: PendingMessage?, author: ChatAuthor?, viewerID: String?,
                        key: String?, live: Bool, error: String?, rejected: Bool, blocked: Set<String>) {
         if key != shownKey { revealedBlocked = [] }
+        // A jump (Go to message) replaces the window and centres its target,
+        // revealing it first when its author is blocked, as SwiftUI does.
+        let jump = live && model.chat.focusRevision != lastFocusRevision ? model.chat.focusedMessageID : nil
+        if live { lastFocusRevision = model.chat.focusRevision }
+        if let jump, messages.contains(where: { $0.id == jump }) { revealedBlocked.insert(jump) }
         var built = TimelineRows.build(messages, pending: pending, author: author, viewerID: viewerID,
                                        focusedID: live ? model.chat.focusedMessageID : nil, chat: live ? model.chat : nil,
                                        error: error, rejected: rejected, blocked: blocked, revealed: revealedBlocked,
@@ -609,9 +614,6 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         self.live = live
         arriving.formUnion(appended)
 
-        // A jump (Go to message) replaces the window and centres its target.
-        let jump = live && model.chat.focusRevision != lastFocusRevision ? model.chat.focusedMessageID : nil
-        if live { lastFocusRevision = model.chat.focusRevision }
         let jumpItem = jump.flatMap { id in messages.first { $0.id == id } }.map { Item.row($0.clientMessageId) }
         if jumpItem != nil { followingTail = false }
 

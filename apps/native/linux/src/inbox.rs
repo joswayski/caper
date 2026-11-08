@@ -4,7 +4,7 @@
 //! empty and Retry states. A row names who and when, says what happened,
 //! and opens where it came from (an invitation shows the invitation);
 //! opening or its check marks it read. Rows you can answer have Reply (an
-//! inline composer with a GIF option) and React. It refreshes every 15
+//! inline composer with files, attachment editing and a GIF option) and React. It refreshes every 15
 //! seconds while open. Paging and reads are `caper_client::activity`.
 //! A child of `app`.
 
@@ -22,6 +22,9 @@ use std::time::{Duration, Instant};
 /// An inline reply's send, by the row's draft key.
 #[derive(Default)]
 pub(super) struct Reply {
+    pub text: String,
+    pub files: Vec<super::inbox_files::File>,
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub sending: bool,
     pub status: Option<String>,
     pub error: Option<String>,
@@ -31,9 +34,16 @@ pub(super) struct Reply {
     pub share: Option<caper_client::klipy::Share>,
 }
 
+impl Reply {
+    pub(super) fn editable(&self) -> bool {
+        !self.sending && self.retry_id.is_none()
+    }
+}
+
 /// The open window's widgets.
 pub(super) struct InboxWindow {
-    window: gtk::Window,
+    pub window: gtk::Window,
+    pub chooser: std::cell::RefCell<Option<gtk::FileChooserNative>>,
     tabs: Vec<(Filter, gtk::ToggleButton)>,
     unread: gtk::Switch,
     unread_label: gtk::Label,
@@ -53,14 +63,16 @@ pub(super) struct InboxWindow {
 struct Shown {
     rows: Vec<(String, bool, bool, bool, bool, String)>,
     replies: Vec<(String, bool, Option<String>, Option<String>)>,
+    files: Vec<(String, u64, bool, bool, String)>,
     stale: bool,
     gifs: bool,
+    uploads: bool,
 }
 
 impl State {
     /// You can write to `item`'s conversation: it takes replies and is not
     /// a blocked DM or an unanswered request.
-    fn inbox_writable(&self, item: &Item) -> bool {
+    pub(super) fn inbox_writable(&self, item: &Item) -> bool {
         item.can_reply()
             && !self.directs.iter().any(|direct| {
                 Some(&direct.id) == item.conversation_id.as_ref()
@@ -344,6 +356,7 @@ impl App {
         });
         *self.inbox_window.borrow_mut() = Some(InboxWindow {
             window: window.clone(),
+            chooser: Default::default(),
             tabs,
             unread,
             unread_label,
@@ -360,7 +373,13 @@ impl App {
     }
 
     pub(super) fn close_inbox(&self) {
-        if let Some(open) = self.inbox_window.borrow_mut().take() {
+        self.close_inbox_editor();
+        let open = self.inbox_window.borrow_mut().take();
+        if let Some(open) = open {
+            if let Some(chooser) = open.chooser.take() {
+                #[allow(deprecated)]
+                chooser.destroy();
+            }
             open.window.destroy();
         }
         self.close_activity_gifs();
@@ -451,8 +470,24 @@ impl App {
                     )
                 })
                 .collect(),
+            files: state
+                .replies
+                .iter()
+                .flat_map(|(key, reply)| {
+                    reply.files.iter().map(move |file| {
+                        (
+                            key.clone(),
+                            file.key,
+                            file.file.spoiler,
+                            file.preview.is_some(),
+                            file.file.upload_status().0.to_owned(),
+                        )
+                    })
+                })
+                .collect(),
             stale: inbox.stale,
             gifs: state.klipy.is_some(),
+            uploads: state.uploads.is_some(),
         };
         if open.shown.as_ref() == Some(&shown) {
             return;
@@ -462,6 +497,9 @@ impl App {
             .iter()
             .find(|(_, (_, view))| view.has_focus())
             .map(|(key, _)| key.clone());
+        // Clear inherited INSENSITIVE before detaching the cached fields:
+        // GTK 4.8 reparenting adds the new parent's flags but keeps old ones.
+        open.list.set_sensitive(true);
         clear(&open.list);
         // Inert at once, dimmed only if the new page takes over 150 ms, as
         // web: fast answers swap rows without a visible dim.
@@ -628,6 +666,7 @@ impl App {
             let key = item.draft_key();
             let reply = state.replies.get(&key);
             let sending = reply.is_some_and(|reply| reply.sending);
+            let editable = writable && reply.is_none_or(Reply::editable);
             let hint = label(&item.reply_label(), &["muted", "small"]);
             hint.set_xalign(0.0);
             row.append(&hint);
@@ -636,14 +675,16 @@ impl App {
             line.add_css_class("profile-composer");
             let (overlay, view) = composers
                 .entry(key.clone())
-                .or_insert_with(|| self.inbox_composer(item))
+                .or_insert_with(|| {
+                    self.inbox_composer(item, reply.map_or("", |reply| reply.text.as_str()))
+                })
                 .clone();
             // The field moves from the row it was drawn in before.
             if let Some(old) = overlay.parent().and_downcast::<gtk::Box>() {
                 old.remove(&overlay);
             }
             line.append(&overlay);
-            view.set_editable(writable && !sending);
+            view.set_editable(editable);
             let send: gtk::Button = super::named("GtkButton", "Send message");
             send.set_child(Some(&self.images.icon_image(Icon::Send, "#b9bcbe", 18)));
             send.set_valign(gtk::Align::End);
@@ -658,18 +699,44 @@ impl App {
             });
             line.append(&send);
             row.append(&line);
+            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            if state.uploads.is_some() {
+                let attach = gtk::Button::with_label("Attach files");
+                attach.add_css_class("small-action");
+                attach.set_sensitive(editable);
+                let (app, target) = (Rc::downgrade(self), item.clone());
+                attach.connect_clicked(move |_| {
+                    if let Some(app) = app.upgrade() {
+                        app.pick_inbox_files(&target);
+                    }
+                });
+                actions.append(&attach);
+            }
             if state.klipy.is_some() {
                 let gif = gtk::Button::with_label("GIF");
                 gif.add_css_class("small-action");
                 gif.set_halign(gtk::Align::Start);
-                gif.set_sensitive(writable && !sending);
+                gif.set_sensitive(editable);
                 let (app, target) = (Rc::downgrade(self), item.clone());
                 gif.connect_clicked(move |button| {
                     if let Some(app) = app.upgrade() {
                         app.open_activity_gifs(target.clone(), button.upcast_ref());
                     }
                 });
-                row.append(&gif);
+                actions.append(&gif);
+            }
+            row.append(&actions);
+            if let Some(reply) = reply {
+                row.append(&self.inbox_file_chips(item, &reply.files, editable));
+                if reply.retry_id.is_some() {
+                    let note = label(
+                        "Delivery is uncertain. Send again to retry the same message and attachments.",
+                        &["muted", "small"],
+                    );
+                    note.set_wrap(true);
+                    note.set_xalign(0.0);
+                    row.append(&note);
+                }
             }
             if let Some(text) =
                 reply.and_then(|reply| reply.error.as_ref().or(reply.status.as_ref()))
@@ -687,7 +754,7 @@ impl App {
 
     /// A reply's text field in its overlay, with "Message @actor" and
     /// Enter to send.
-    fn inbox_composer(self: &Rc<Self>, item: &Item) -> (gtk::Overlay, gtk::TextView) {
+    fn inbox_composer(self: &Rc<Self>, item: &Item, text: &str) -> (gtk::Overlay, gtk::TextView) {
         let view: gtk::TextView =
             super::named("GtkTextView", &format!("Reply to {}", item.actor_name));
         view.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -709,9 +776,31 @@ impl App {
         ));
         overlay.add_overlay(&placeholder);
         overlay.set_hexpand(true);
+        view.buffer().set_text(text);
+        placeholder.set_visible(text.is_empty());
         let empty = placeholder.clone();
-        view.buffer()
-            .connect_changed(move |buffer| empty.set_visible(buffer.char_count() == 0));
+        let (weak, draft) = (Rc::downgrade(self), item.draft_key());
+        view.buffer().connect_changed(move |buffer| {
+            empty.set_visible(buffer.char_count() == 0);
+            if let Some(app) = weak.upgrade()
+                && let Ok(mut state) = app.state.try_borrow_mut()
+            {
+                let reply = state.replies.entry(draft.clone()).or_default();
+                if reply.editable() {
+                    reply.text = buffer
+                        .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                        .to_string();
+                }
+            }
+        });
+        let (weak, target) = (Rc::downgrade(self), item.clone());
+        view.connect_paste_clipboard(move |view| {
+            if let Some(app) = weak.upgrade()
+                && app.paste_inbox_files(&target)
+            {
+                view.stop_signal_emission_by_name("paste-clipboard");
+            }
+        });
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let (app, target) = (Rc::downgrade(self), item.clone());
@@ -737,28 +826,19 @@ impl App {
         gif: Option<(caper_client::klipy::Gif, caper_client::klipy::Share)>,
     ) {
         let key = item.draft_key();
-        let view = self
-            .inbox_window
-            .borrow()
-            .as_ref()
-            .and_then(|open| open.composers.get(&key).map(|(_, view)| view.clone()));
-        let text = view
-            .as_ref()
-            .map(|view| {
-                let buffer = view.buffer();
-                buffer
-                    .text(&buffer.start_iter(), &buffer.end_iter(), false)
-                    .to_string()
-            })
-            .unwrap_or_default();
         {
             let mut state = self.state.borrow_mut();
+            let reply = state.replies.get(&key);
+            let text = reply.map(|reply| reply.text.clone()).unwrap_or_default();
+            let empty = reply.is_none_or(|reply| reply.files.is_empty());
+            let uncertain = reply.is_some_and(|reply| reply.retry_id.is_some());
             let Some(token) = state.token.clone() else {
                 return;
             };
             if !state.inbox_writable(item)
                 || state.replies.values().any(|reply| reply.sending)
-                || gif.is_none() && text.trim().is_empty()
+                || gif.is_none() && text.trim().is_empty() && empty
+                || gif.is_some() && uncertain
             {
                 return;
             }
@@ -781,6 +861,13 @@ impl App {
             let retrying = reply.retry_id.is_some();
             let (gif, share) = gif.unzip();
             reply.share = share;
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            reply.cancel = Some(cancel.clone());
+            let files = if gif.is_some() {
+                Vec::new()
+            } else {
+                reply.files.iter().map(|file| file.file.clone()).collect()
+            };
             self.worker.send(Command::SendActivity {
                 epoch,
                 item: item.clone(),
@@ -791,9 +878,9 @@ impl App {
                     name,
                     client_id,
                     text: if gif.is_some() { String::new() } else { text },
-                    files: Vec::new(),
+                    files,
                     settings: uploads,
-                    cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    cancel,
                     retrying,
                     open_only: false,
                     voice_only: false,
@@ -815,6 +902,7 @@ impl App {
     ) {
         let reply = state.replies.entry(send.person.clone()).or_default();
         reply.sending = false;
+        reply.cancel = None;
         reply.status = None;
         let share = reply.share.take();
         let gif = share.is_some();
@@ -824,6 +912,10 @@ impl App {
                 reply.error = None;
                 if let Some(share) = share {
                     share.send();
+                }
+                if !gif {
+                    reply.text.clear();
+                    reply.files.clear();
                 }
                 if !gif
                     && let Some((_, view)) = self
@@ -836,6 +928,11 @@ impl App {
                 }
             }
             Err(error) => {
+                if !gif {
+                    for (staged, sent) in reply.files.iter_mut().zip(&send.files) {
+                        staged.file = sent.clone();
+                    }
+                }
                 reply.error = Some(error.message);
                 reply.retry_id = (!gif && error.uncertain).then(|| send.client_id.clone());
             }

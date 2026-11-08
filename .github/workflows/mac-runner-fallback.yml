@@ -1,9 +1,10 @@
-name: Self-hosted Mac fallback
+name: Self-hosted Windows and Linux fallback
 
-# If a job has waited more than an hour for a self-hosted machine (the Mac or the
-# Windows PC) and no runner with its label is working through jobs (asleep,
-# closed, off, or online but stuck idle), cancel its run and re-run it. Re-runs
-# always go to GitHub-hosted runners (see mac-route.yml). Jobs only waiting their
+# If a Windows/Linux job has waited more than an hour and no runner with its
+# label is working through jobs, cancel its run and re-run it on GitHub-hosted
+# Windows/Linux runners (see mac-route.yml). Never cancel a run with unfinished
+# local Mac work: macOS jobs must wait for the owner's Mac, without fallback.
+# Jobs only waiting their
 # turn behind a busy runner keep waiting: that hardware is the point, but only
 # for MAX_BUSY_WAIT_MINUTES, so a machine kept busy by back-to-back releases
 # cannot hold a run (and its whole concurrency group) queued indefinitely. A run that a newer run of the same workflow on the
@@ -23,7 +24,7 @@ concurrency:
 
 jobs:
   fallback:
-    name: Move jobs stuck on offline or idle self-hosted machines to GitHub-hosted runners
+    name: Move stuck Windows and Linux jobs to GitHub-hosted runners
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -53,12 +54,17 @@ jobs:
             gh api "repos/$REPO/actions/runs?status=$status&per_page=100" \
               --jq '.workflow_runs[] | select(.run_attempt == 1) | "\(.id) \(.workflow_id) \(.head_branch)"'
           done | sort -u | while read -r run workflow branch; do
-            stuck="$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" --jq '
+            jobs="$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100")"
+            if jq -e '.jobs | any(.status != "completed" and any(.labels[]; startswith("josemac")))' <<<"$jobs" >/dev/null; then
+              echo "Run $run has unfinished local Mac work; leaving it queued or running."
+              continue
+            fi
+            stuck="$(jq '
               [.jobs[] | select(.status == "queued")
-                       | select(any(.labels[]; startswith("josemac") or startswith("josewin") or startswith("joselinux")))
+                       | select(any(.labels[]; startswith("josewin") or startswith("joselinux")))
                        | select((.created_at | fromdateiso8601) < ($ENV.CUTOFF | tonumber))
                        | select(((.created_at | fromdateiso8601) < ($ENV.BUSY_CUTOFF | tonumber))
-                                or any(.labels[]; . as $label | ($label | startswith("jose")) and ($ENV.WORKING | contains(" " + $label + " ") | not)))] | length')"
+                                or any(.labels[]; . as $runner_label | ($runner_label | startswith("jose")) and ($ENV.WORKING | contains(" " + $runner_label + " ") | not)))] | length' <<<"$jobs")"
             (( stuck > 0 )) || continue
             echo "Run $run has $stuck job(s) waiting over ${MAX_WAIT_MINUTES}m with no busy self-hosted runner for them, or over ${MAX_BUSY_WAIT_MINUTES}m; cancelling."
             gh api -X POST "repos/$REPO/actions/runs/$run/cancel" >/dev/null || continue

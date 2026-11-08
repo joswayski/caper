@@ -135,7 +135,8 @@ impl Original {
     pub fn new(
         message: &Message,
         images: &Images,
-        revealed: &std::collections::HashSet<String>,
+        revealed: &crate::media::Revealed,
+        scope: String,
         view: bool,
     ) -> Self {
         let deleted = message.is_deleted();
@@ -167,6 +168,7 @@ impl Original {
                 crate::content::Content::default()
             } else {
                 crate::content::Content {
+                    scope: Some(scope.clone()),
                     attachments: message
                         .content
                         .attachments
@@ -174,7 +176,10 @@ impl Original {
                         .map(|attachment| {
                             (
                                 images.media.resolve(attachment),
-                                attachment.spoiler && !revealed.contains(&attachment.id),
+                                attachment.spoiler
+                                    && !revealed
+                                        .get(&scope)
+                                        .is_some_and(|ids| ids.contains(&attachment.id)),
                             )
                         })
                         .collect(),
@@ -473,7 +478,9 @@ pub struct Viewer<'a> {
     /// Your reactions still on their way, drawn over the server's counts.
     pub reactions: &'a caper_client::reactions::Reactions,
     /// Spoiler attachments you revealed.
-    pub revealed: &'a std::collections::HashSet<String>,
+    pub revealed: &'a crate::media::Revealed,
+    /// Independent presentation of a message (channel, thread or pins).
+    pub surface: &'static str,
     /// People you blocked, and the blocked runs you chose to show.
     pub blocked: &'a std::collections::BTreeSet<String>,
     pub shown_blocked: &'a std::collections::HashSet<String>,
@@ -703,6 +710,7 @@ pub fn build<'a>(
                 crate::content::Content::default()
             } else {
                 crate::content::Content {
+                    scope: Some(format!("{}:{}", viewer.surface, message.id)),
                     attachments: message
                         .content
                         .attachments
@@ -710,7 +718,11 @@ pub fn build<'a>(
                         .map(|attachment| {
                             (
                                 viewer.images.media.resolve(attachment),
-                                attachment.spoiler && !viewer.revealed.contains(&attachment.id),
+                                attachment.spoiler
+                                    && !viewer
+                                        .revealed
+                                        .get(&format!("{}:{}", viewer.surface, message.id))
+                                        .is_some_and(|ids| ids.contains(&attachment.id)),
                             )
                         })
                         .collect(),
@@ -736,7 +748,13 @@ pub fn build<'a>(
                 .filter(|_| !deleted)
                 .map(|forward| {
                     forward.message.as_ref().map(|original| {
-                        Original::new(original, viewer.images, viewer.revealed, true)
+                        Original::new(
+                            original,
+                            viewer.images,
+                            viewer.revealed,
+                            format!("{}:forward:{}", viewer.surface, message.id),
+                            true,
+                        )
                     })
                 }),
         };
@@ -832,10 +850,14 @@ pub enum Action {
         id: String,
         anchor: gtk::Widget,
     },
-    /// Show this spoiler attachment.
-    Reveal(String),
+    /// Show or re-hide this attachment only at its originating message/presentation.
+    Reveal {
+        scope: String,
+        id: String,
+        revealed: bool,
+    },
     /// Show these images in the viewer, starting at the index.
-    View(Vec<caper_client::model::Attachment>, usize),
+    View(Vec<caper_client::model::Attachment>, usize, Option<String>),
     /// Open the full file in the browser or the system's player.
     Open(caper_client::model::Attachment),
     /// An image's own menu (Copy image, Copy image link, Open image in

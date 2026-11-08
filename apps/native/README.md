@@ -86,7 +86,9 @@ registrations.
 ## Build and download
 
 The **Native development builds** workflow (`.github/workflows/native.yml`)
-runs nightly on `main` and on manual dispatch. It does not deploy, publish a
+runs nightly and on manual dispatch. Apple jobs run only on manual `main`
+dispatches, using the owner's existing Mac VMs; their admission hook does not
+allow scheduled jobs. No Mac job falls back to cloud hardware. It does not deploy, publish a
 release, or upload to stores. Each artifact (kept 14 days) contains the
 package, `SHA256SUMS`, and `BUILD.json` with the exact Git revision. Apple and
 Android jobs also run native UI automation against the loopback fixture and
@@ -126,6 +128,11 @@ app from one `main` commit:
 - a release-signed Android APK and Play bundle,
 - an iPhone build for TestFlight,
 - Windows and Linux desktop packages (not code-signed).
+
+Mac and iPhone release jobs use the owner's existing `josemac-ui` and
+`josemac-sim` VMs. Intel packages are cross-built and tested under Rosetta on
+the ARM64 Mac, not on physical Intel hardware. Offline Mac runners keep those
+jobs queued rather than starting a cloud Mac.
 
 It replaces the `native-latest` pre-release:
 

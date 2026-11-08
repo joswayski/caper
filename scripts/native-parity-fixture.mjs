@@ -555,6 +555,9 @@ export async function startFixture({
   // Thread replies stay loading, for loading-state captures.
   let holdThreads = false;
   const heldThreads = new Set();
+  // A conversation's first page stays loading, for the channel skeleton.
+  let holdHistory = false;
+  const heldHistory = new Set();
   let holdUploads = false;
   const heldUploads = new Set();
   let holdAvatarRegeneration = false;
@@ -1050,6 +1053,10 @@ export async function startFixture({
           holdThreads = !body.reset && body.holdThreads;
           if (!holdThreads) for (const release of heldThreads) release();
         }
+        if (body.reset || typeof body.holdHistory === "boolean") {
+          holdHistory = !body.reset && body.holdHistory;
+          if (!holdHistory) for (const release of heldHistory) release();
+        }
         if (body.reset || typeof body.holdUploads === "boolean") {
           holdUploads = !body.reset && body.holdUploads;
           if (!holdUploads) for (const release of heldUploads) release();
@@ -1074,6 +1081,11 @@ export async function startFixture({
         if (Number.isInteger(body.releaseHighlightsDelay))
           state.releaseHighlightsDelay = Math.max(0, Math.min(5000, body.releaseHighlightsDelay));
         if (body.noSpaces) state.spaces = [];
+        // A channel with no messages yet: its resync reloads with the skeleton showing.
+        if (typeof body.emptyChannel === "string" && state.messages.has(body.emptyChannel)) {
+          state.messages.set(body.emptyChannel, []);
+          state.createdEvents.set(body.emptyChannel, []);
+        }
         // Maya invites the owner to her space: accept, decline, then leave it.
         if (body.spaceInvitation && !state.spaces.some((detail) => detail.space.id === ids.invitedSpace)) {
           const space = { id: ids.invitedSpace, name: "Maya's Book Club", ownerId: ids.member };
@@ -1162,6 +1174,11 @@ export async function startFixture({
           state.failures.push(body.failure);
         }
         if (body.disconnect) for (const client of sockets) client.socket.destroy();
+        // The gateway's "history changed, reload it", sent to every open conversation.
+        if (body.resync)
+          for (const client of sockets)
+            for (const [id, sub] of client.subscriptions)
+              if (sub.kind === "chat") client.send({ type: "event", id, event: { type: "resync_required" } });
         if (body.typing)
           broadcast("chat", body.typing.channelId ?? ids.general, {
             type: "typing.updated",
@@ -1520,6 +1537,7 @@ export async function startFixture({
         return json(response, 200, {
           fixture: true,
           heldSends: heldSends.size,
+          heldHistory: heldHistory.size,
           heldAvatarRegenerations: heldAvatarRegenerations.size,
           heldChannelLeaves: heldChannelLeaves.size,
         });
@@ -2718,6 +2736,18 @@ export async function startFixture({
         if (channel.id !== ids.demo && !user) return reject(response, 401, "Sign in required.");
         if (!canRead(channel, user) || (method === "POST" && !canParticipate(channel, user)))
           return reject(response, 404, "resource not found");
+        if (method === "GET" && holdHistory) {
+          await new Promise((resolve) => {
+            const release = () => {
+              heldHistory.delete(release);
+              response.off("close", release);
+              resolve();
+            };
+            heldHistory.add(release);
+            response.once("close", release);
+          });
+          if (response.destroyed) return;
+        }
         // Pause before persistence and gateway fanout, not just the HTTP ack.
         if (method === "POST" && holdSends) {
           await new Promise((resolve) => {
@@ -3452,6 +3482,7 @@ export async function startFixture({
       for (const client of sockets) client.socket.destroy();
       for (const release of heldSends) release();
       for (const release of heldThreads) release();
+      for (const release of heldHistory) release();
       for (const release of heldAvatarRegenerations) release();
       await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
     },

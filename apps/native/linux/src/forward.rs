@@ -36,6 +36,7 @@ pub(super) struct Dialog {
 enum View {
     Picker {
         picker: Box<Picker>,
+        preview: gtk::Box,
         search: gtk::SearchEntry,
         list: gtk::Box,
         /// Each shown destination's checkbox.
@@ -192,10 +193,16 @@ impl App {
             .as_ref()
             .and_then(|forward| forward.message.as_ref())
             .unwrap_or(&source);
-        let preview = Original::new(shown, &self.images, &revealed, false).view(
-            &self.images,
-            &self.forward_handler(),
-            None,
+        let preview = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        preview.append(
+            &Original::new(
+                shown,
+                &self.images,
+                &revealed,
+                format!("forward-preview:{}", source.id),
+                false,
+            )
+            .view(&self.images, &self.forward_handler(), None),
         );
         preview.add_css_class("forward-card");
         root.append(&preview);
@@ -285,6 +292,7 @@ impl App {
             spinner,
             view: View::Picker {
                 picker: Box::new(Picker::new(source)),
+                preview,
                 search: search.clone(),
                 list,
                 checks: Vec::new(),
@@ -493,11 +501,14 @@ impl App {
             body.remove(&child);
         }
         let original = |message: &Message| {
-            let view = Original::new(message, &self.images, &revealed, false).view(
+            let view = Original::new(
+                message,
                 &self.images,
-                &handler,
-                None,
-            );
+                &revealed,
+                format!("forward-conversation:{}:{}", wrapper.id, message.id),
+                false,
+            )
+            .view(&self.images, &handler, None);
             view.add_css_class("forward-message");
             view
         };
@@ -587,6 +598,41 @@ impl App {
                 }
             });
             body.append(&retry);
+        }
+    }
+
+    /// A reveal changes only media, without losing the picker's search/note.
+    pub(super) fn refresh_forward_spoilers(self: &Rc<Self>) {
+        let picker = self.forwarding.borrow().dialog.as_ref().and_then(|dialog| {
+            if let View::Picker {
+                picker, preview, ..
+            } = &dialog.view
+            {
+                Some((picker.source.clone(), preview.clone()))
+            } else {
+                None
+            }
+        });
+        if let Some((source, preview)) = picker {
+            let shown = source
+                .forward
+                .as_ref()
+                .and_then(|forward| forward.message.as_ref())
+                .unwrap_or(&source);
+            let revealed = self.images.media.revealed.borrow();
+            let original = Original::new(
+                shown,
+                &self.images,
+                &revealed,
+                format!("forward-preview:{}", source.id),
+                false,
+            );
+            while let Some(child) = preview.first_child() {
+                preview.remove(&child);
+            }
+            preview.append(&original.view(&self.images, &self.forward_handler(), None));
+        } else {
+            self.fill_conversation();
         }
     }
 

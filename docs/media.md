@@ -15,7 +15,8 @@ recording.
 
 Apple's [preparation guide](https://developer.apple.com/iphone-duo/prepare/)
 requires Xcode 27.1 / the iOS 27.1 SDK for the edge-to-edge Duo experience; the
-TestFlight job runs on GitHub's `xcode-27` image and selects Xcode 27.1. The
+TestFlight job runs on the owner's existing `josemac-sim` VM and selects
+Xcode 27.1 with a job-local `DEVELOPER_DIR`. The
 display sizes in Apple's specifications are physical pixels, not app viewports:
 folding, rotation, Split View, keyboard and asymmetric safe areas change the
 space available. Never derive breakpoints from them or identify the phone by its
@@ -3639,24 +3640,39 @@ The [native clients](../apps/native/README.md) are separately implemented,
 browser-free clients using the HTTPS API and application WebSocket, not a
 native-only backend.
 
-**CI runners.** `.github/workflows/mac-route.yml` chooses self-hosted or
-GitHub-hosted runners. The Mac VMs (`ci-mac-1-caper`, `ci-mac-2-caper`, from
-`ghcr.io/cirruslabs/macos-tahoe-xcode:27.1` with iPhone 16 and iPhone Duo
-simulators) take macOS jobs when `SELF_HOSTED_MAC=on`. Windows and Linux x64 jobs
+**CI runners.** All macOS jobs, including signed releases and TestFlight, use
+the owner's existing Mac VMs: `josemac-ui` (`ci-mac-1-caper`) for macOS and
+`josemac-sim` (`ci-mac-2-caper`) for iOS. They wait when those runners are
+unavailable; there is no cloud Mac fallback, including on retries. Intel builds
+cross-compile the app and updater for x86_64 and test under Rosetta on the ARM64
+VM; this is not physical Intel or macOS 15 acceptance. The fallback watchdog
+does not cancel runs with unfinished local Mac jobs.
+
+The existing VM admission hook permits pushes and manual runs on `main`, not
+schedules. Apple development suites therefore run only on manual `main` runs;
+nightly development builds still cover the other platforms. CI and signed
+releases retain their automatic `main` triggers. Coordinate these jobs with
+manual testing on the physical Mac, since the VMs share its CPU, memory and disk.
+
+`.github/workflows/mac-route.yml` selects only Windows/Linux runners.
+`SELF_HOSTED_MAC` controls its Linux arm64 VM selection, not macOS routing.
+Windows and Linux x64 jobs
 are explicitly quarantined to GitHub-hosted runners after lost runner
 communication, whatever `SELF_HOSTED_WINDOWS`/`SELF_HOSTED_LINUX` say; removing a
 quarantine takes a change to that workflow after the host is recovered and a
 complete native build passes. Host recovery is in the infrastructure runbooks
 ([Mac](https://github.com/joswayski/infrastructure/blob/main/docs/mac-ci-runner.md),
 [Windows/Linux](https://github.com/joswayski/infrastructure/blob/main/docs/windows-ci-runner.md)):
-turn the repository variable off, then run `./scripts/mac-ci-runner.sh recover`
-(Mac, refuses to restart a VM with an active `Runner.Worker`) or
+do not start recovery while jobs or manual tests are active. Use
+`./scripts/mac-ci-runner.sh recover` (Mac, refuses to restart a VM with an
+active `Runner.Worker`) or
 `.\scripts\windows-ci-runner.ps1 recover` (elevated PowerShell on the PC;
 `sudo bash /usr/local/sbin/ci-linux-runner.sh recover` inside the Linux VM if its
-runner containers stopped). Signed release jobs always use GitHub-hosted runners.
+runner containers stopped). Turning a routing variable off does not redirect
+macOS jobs to cloud hardware.
 
-**Download a development build:** relevant `main` pushes run **Native development
-builds** automatically. To request one and retrieve its artifacts:
+**Download a development build:** request **Native development builds** manually
+on `main` to include the Apple clients, then retrieve its artifacts:
 
 ```sh
 gh workflow run native.yml --repo joswayski/caper --ref main

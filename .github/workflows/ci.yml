@@ -182,9 +182,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2025, macos-15]
+        # The local Mac admission hook only permits main. Branch dispatches
+        # still test Windows/Linux; they must not acquire a cloud Mac instead.
+        os: ${{ github.ref == 'refs/heads/main' && fromJSON('["ubuntu-24.04","windows-2025","macos-local"]') || fromJSON('["ubuntu-24.04","windows-2025"]') }}
     needs: route
-    runs-on: ${{ needs.route.outputs.mac == 'true' && matrix.os == 'macos-15' && fromJSON('["self-hosted","josemac"]') || needs.route.outputs.windows == 'true' && startsWith(matrix.os, 'windows') && fromJSON('["self-hosted","josewin"]') || needs.route.outputs.linux == 'true' && startsWith(matrix.os, 'ubuntu') && fromJSON('["self-hosted","joselinux"]') || matrix.os }}
+    runs-on: ${{ matrix.os == 'macos-local' && fromJSON('["self-hosted","josemac-ui"]') || needs.route.outputs.windows == 'true' && startsWith(matrix.os, 'windows') && fromJSON('["self-hosted","josewin"]') || needs.route.outputs.linux == 'true' && startsWith(matrix.os, 'ubuntu') && fromJSON('["self-hosted","joselinux"]') || matrix.os }}
     timeout-minutes: 20
     defaults:
       run:

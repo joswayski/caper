@@ -636,6 +636,44 @@ test("held sends remain absent from history and gateway until released, then con
   assert.equal(events.length, 1);
 });
 
+test("held history stays loading until released, and resync reaches open conversations", async (t) => {
+  const { fixture, request } = await setup(t);
+  const path = `/api/chat/channels/${ids.demo}/messages`;
+  const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`);
+  t.onTestFinished(() => stream.ws.close());
+  await stream.opened;
+  await stream.next(); // hello
+  stream.ws.send(JSON.stringify({ type: "subscribe", id: "chat", kind: "chat", channelId: ids.demo, after: "4" }));
+  await stream.next(); // ready
+  await stream.next(); // subscribed
+  await request("/__fixture/control", { method: "POST", body: { resync: true } });
+  assert.deepEqual(await stream.next(), { type: "event", id: "chat", event: { type: "resync_required" } });
+
+  await request("/__fixture/control", { method: "POST", body: { emptyChannel: ids.demo } });
+  const empty = await request(path);
+  assert.deepEqual([empty.value.messages, empty.value.cursor], [[], "0"]);
+  await request("/__fixture/control", { method: "POST", body: { reset: true } });
+
+  await request("/__fixture/control", { method: "POST", body: { holdHistory: true } });
+  let settled = false;
+  const loading = request(path).then((result) => {
+    settled = true;
+    return result;
+  });
+  await vi.waitFor(async () => {
+    const control = await request("/__fixture/control", { method: "POST", body: {} });
+    assert.equal(control.value.heldHistory, 1);
+  });
+  assert.equal(settled, false, "A held first page must not answer");
+  await request("/__fixture/control", { method: "POST", body: { holdHistory: false } });
+  const loaded = await loading;
+  assert.equal(loaded.response.status, 200);
+  assert.equal(loaded.value.messages.length, 4);
+  await request("/__fixture/control", { method: "POST", body: { holdHistory: true } });
+  await request("/__fixture/control", { method: "POST", body: { reset: true } });
+  assert.equal((await request(path)).response.status, 200, "Reset releases the hold");
+});
+
 test("loopback WebSocket replays, delivers live messages/typing/presence, failures, and disconnects", async (t) => {
   const { fixture, base, request } = await setup(t);
   const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`);

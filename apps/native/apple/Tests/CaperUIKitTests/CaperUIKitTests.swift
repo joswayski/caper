@@ -30,9 +30,10 @@ final class CaperUIKitTests: XCTestCase {
         control(["reset": true])
     }
 
-    private func launch(signedIn: Bool = true, cache: Bool = false, openURL: String? = nil) -> XCUIApplication {
+    private func launch(signedIn: Bool = true, cache: Bool = false, openURL: String? = nil, fixture: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         if let openURL { app.launchEnvironment["CAPER_TEST_OPEN_URL"] = openURL }
+        if let fixture { app.launchEnvironment["CAPER_UI_FIXTURE"] = fixture }
         app.launchArguments += ["-caper.space-landing.owner0000001", ""]
         // Browse's Channels/DMs split starts even in every run.
         app.launchArguments += ["-caper.channelSidebarChannelsShare", "0.5"]
@@ -96,6 +97,31 @@ final class CaperUIKitTests: XCTestCase {
         screenshot("uikit-login-error")
     }
 
+    /// A new account's profile is SwiftUI's page: Finish setup waits for a
+    /// valid username, the server's refusal shows, and Log out leaves.
+    func testOnboardingValidatesAndLogsOut() {
+        let app = launch(fixture: "profile-validation")
+        let username = app.textFields["Username"]
+        let submit = app.buttons["profile-continue"]
+        XCTAssertTrue(username.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["Choose how you show up."].exists)
+        XCTAssertTrue(app.staticTexts["TEST FIXTURE — username already taken. Choose another username."].exists)
+        XCTAssertFalse(submit.isEnabled)
+        username.tap()
+        username.typeText("ab\n")
+        app.textFields["Display name"].typeText("Fixture Name")
+        XCTAssertFalse(submit.isEnabled, "Two-letter usernames can't finish")
+        screenshot("uikit-onboarding")
+        username.tap()
+        username.typeText("_user")
+        XCTAssertTrue(submit.isEnabled)
+        // Below the fields, possibly under the keyboard: scroll it clear first.
+        let logOut = app.buttons["Log out"]
+        if !logOut.isHittable { app.staticTexts["Choose how you show up."].swipeUp() }
+        logOut.tap()
+        XCTAssertTrue(app.textFields["login-email"].waitForExistence(timeout: 10), "Log out returns to sign-in")
+    }
+
     func testConversationOpensAtLatestAndSends() {
         let app = launch()
         let latest = row(Self.latest)
@@ -132,6 +158,7 @@ final class CaperUIKitTests: XCTestCase {
     /// SwiftUI's pending row: an unknown outcome offers Retry send; a rejected
     /// send offers Edit (back to the composer) and Dismiss.
     func testFailedSendsRetryEditAndDismiss() {
+        control(["admin": true])
         let app = launch()
         XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
         let composer = app.textViews["message-composer"]
@@ -144,6 +171,9 @@ final class CaperUIKitTests: XCTestCase {
         let retry = app.buttons["Retry send"]
         XCTAssertTrue(retry.waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["Dismiss"].exists)
+        let pending = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-message-")).firstMatch
+        XCTAssertTrue(pending.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Admin")).firstMatch.exists,
+                      "The unsent row shows its author's Admin badge, as SwiftUI's does")
         screenshot("uikit-pending-unknown")
         retry.tap()
         let confirmed = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "TEST FIXTURE unsure")).firstMatch
@@ -252,6 +282,9 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(design.waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["selected-space-name"].exists)
         XCTAssertEqual(app.buttons["channel-chan00000001"].value as? String, "Selected")
+        // The lock is hidden from VoiceOver, so a private channel's name says it (SwiftUI's row, hosted).
+        XCTAssertEqual(app.buttons["channel-chan00000003"].label, "planning, private")
+        XCTAssertEqual(design.label, "design")
         screenshot("uikit-browse")
         design.tap()
         let title = app.buttons["channel-title-menu"]
@@ -1155,6 +1188,39 @@ final class CaperUIKitParityTests: XCTestCase {
         }
     }
 
+    /// Notes to self with the keyboard up: each app keeps its header in place
+    /// and the same gap between Send and the keyboard.
+    func testDirectMessageKeyboardPairs() throws {
+        try requireSwiftUI()
+        var gaps: [String: CGFloat] = [:]
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            let app = configured(bundle)
+            app.launch()
+            let back = app.buttons["Back to Browse"]
+            XCTAssertTrue(back.waitForExistence(timeout: 30), prefix)
+            back.tap()
+            // A cell in UIKit, a button in SwiftUI.
+            let notes = app.descendants(matching: .any)["dm-self"].firstMatch
+            XCTAssertTrue(notes.waitForExistence(timeout: 10), prefix)
+            notes.tap()
+            let composer = app.textViews["message-composer"]
+            XCTAssertTrue(composer.waitForExistence(timeout: 10), prefix)
+            sleep(1)
+            let headerY = back.frame.minY
+            composer.tap()
+            let keyboard = app.keyboards.firstMatch
+            XCTAssertTrue(keyboard.waitForExistence(timeout: 10), prefix)
+            composer.typeText("TEST FIXTURE keyboard")
+            sleep(1)
+            XCTAssertEqual(back.frame.minY, headerY, accuracy: 2, "\(prefix): the keyboard must not move the header")
+            gaps[prefix] = keyboard.frame.minY - app.buttons["Send message"].firstMatch.frame.maxY
+            capture("\(prefix)-dm-keyboard-open")
+            app.terminate()
+        }
+        XCTAssertEqual(gaps["uikit"] ?? 0, gaps["swiftui"] ?? 0, accuracy: 2, "Send sits as far above the keyboard in both apps: \(gaps)")
+    }
+
     /// A thread whose replies are still loading: each app's two-row skeleton.
     func testThreadLoadingSkeletonPairs() throws {
         try requireSwiftUI()
@@ -1176,6 +1242,31 @@ final class CaperUIKitParityTests: XCTestCase {
             XCTAssertTrue(skeleton.waitForNonExistence(timeout: 15), prefix)
             app.terminate()
         }
+    }
+
+    /// A channel's own first-page skeleton in each app: an empty #general
+    /// reloads after the gateway's resync while its history is held.
+    func testChannelLoadingSkeletonPairs() throws {
+        try requireSwiftUI()
+        for (bundle, prefix) in [(Self.uiKit, "uikit"), (Self.swiftUI, "swiftui")] {
+            control(["reset": true])
+            control(["emptyChannel": "chan00000001"])
+            let app = configured(bundle)
+            app.launch()
+            XCTAssertTrue(app.staticTexts["No messages yet."].waitForExistence(timeout: 30), prefix)
+            sleep(2)
+            control(["holdHistory": true])
+            control(["resync": true])
+            let skeleton = app.descendants(matching: .any)["Loading messages"].firstMatch
+            XCTAssertTrue(skeleton.waitForExistence(timeout: 15), prefix)
+            sleep(1)
+            capture("\(prefix)-channel-loading")
+            control(["holdHistory": false])
+            XCTAssertTrue(skeleton.waitForNonExistence(timeout: 15), prefix)
+            XCTAssertTrue(app.staticTexts["No messages yet."].waitForExistence(timeout: 15), prefix)
+            app.terminate()
+        }
+        control(["reset": true])
     }
 
     /// The unread line in each app, with #general read through seq 2997.
