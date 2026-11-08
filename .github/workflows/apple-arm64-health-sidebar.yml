@@ -1,5 +1,5 @@
 # NEVER MERGE. Preparation is inactive; execution needs separate exact-pin approval.
-name: ARM64 observation-only display inventory
+name: ARM64 session display and cumulative AppKit validation
 on:
   push:
     branches: [apple-arm64-health-sidebar-run]
@@ -8,9 +8,10 @@ permissions:
 jobs:
   diagnostic:
     runs-on: macos-26
-    timeout-minutes: 10
+    timeout-minutes: 110
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      RUNNER_ENVIRONMENT: ${{ runner.environment }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,16 +19,83 @@ jobs:
           persist-credentials: false
       - name: Verify all inputs
         run: shasum -a 256 -c .github/arm64-health/inputs.sha256
-      - name: Exact provenance and observation-only display inventory
+      - name: Exact provenance and one temporary session display transaction
+        id: display
+        timeout-minutes: 5
+        run: python3 .github/arm64-health/run.py display-setup "$RUNNER_TEMP/arm64-health/display-setup"
+      - name: Exact provenance, baseline inventory and offline pixel helper
+        id: preflight
         timeout-minutes: 5
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
-        run: python3 .github/arm64-health/run.py display-inventory "$RUNNER_TEMP/arm64-display"
-      - name: Retain raw inventory even on failure
+        run: python3 .github/arm64-health/run.py preflight "$RUNNER_TEMP/arm64-health/preflight"
+      - name: Unchanged Text, Canvas and blur processes, once each
+        id: graphics
+        timeout-minutes: 10
+        continue-on-error: true
+        run: python3 .github/arm64-health/run.py graphics "$RUNNER_TEMP/arm64-health/graphics"
+      - name: Unchanged ordinary-menu AX singleton, once
+        id: ax
+        if: ${{ !cancelled() && steps.preflight.outcome == 'success' }}
+        timeout-minutes: 25
+        continue-on-error: true
+        run: python3 .github/arm64-health/run.py standalone "$RUNNER_TEMP/arm64-health/standalone"
+      - name: Fail closed before any Caper preparation or build
+        id: health
+        if: always()
+        run: python3 .github/arm64-health/run.py health "$RUNNER_TEMP/arm64-health/health"
+      - uses: actions/checkout@v4
+        id: source
+        if: ${{ !cancelled() && steps.health.outcome == 'success' }}
+        with:
+          ref: 9fca8b93f3629390e837794b9468c5cdc18d7617
+          path: caper
+      - uses: actions/setup-node@v4
+        id: node
+        if: ${{ !cancelled() && steps.health.outcome == 'success' && steps.source.outcome == 'success' }}
+        with:
+          node-version: '24'
+      - uses: ./.github/actions/mobile-rust
+        id: rust
+        if: ${{ !cancelled() && steps.health.outcome == 'success' && steps.node.outcome == 'success' }}
+        with:
+          platform: apple
+      - name: Restore the exact existing RNNoise dependency
+        id: dependency
+        if: ${{ !cancelled() && steps.health.outcome == 'success' && steps.rust.outcome == 'success' }}
+        timeout-minutes: 5
+        working-directory: caper
+        run: |
+          git fetch --no-tags --depth=1 origin 2c029e164956f74c1e98e859b6aa414a3924bdb6
+          mkdir -p apps/native/apple/.build/rnnoise
+          git show 2c029e164956f74c1e98e859b6aa414a3924bdb6:.github/probe-inputs/rnnoise-model.tar.gz > apps/native/apple/.build/rnnoise-model.tar.gz
+          echo '0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37  apps/native/apple/.build/rnnoise-model.tar.gz' | shasum -a 256 -c -
+          curl --max-time 60 --retry 2 --retry-delay 5 --retry-max-time 120 --retry-all-errors -fLsS 'https://github.com/xiph/rnnoise/archive/70f1d256acd4b34a572f999a05c87bf00b67730d.tar.gz' -o apps/native/apple/.build/rnnoise-source.tar.gz
+          echo 'f61ee0b3f4c4cd337303e003d333357c5eaf25ef5d75a742109ee59e9a0a3932  apps/native/apple/.build/rnnoise-source.tar.gz' | shasum -a 256 -c -
+          tar -xzf apps/native/apple/.build/rnnoise-source.tar.gz -C apps/native/apple/.build/rnnoise --strip-components=1
+          tar -xzf apps/native/apple/.build/rnnoise-model.tar.gz -C apps/native/apple/.build/rnnoise src/rnnoise_data.c src/rnnoise_data.h
+      - name: Exact 37 non-UI tests and six UI singletons, once each
+        id: cumulative
+        if: ${{ !cancelled() && steps.health.outcome == 'success' && steps.dependency.outcome == 'success' }}
+        timeout-minutes: 70
+        continue-on-error: true
+        working-directory: caper
+        run: python3 ../.github/arm64-health/run.py cumulative "$RUNNER_TEMP/arm64-health/cumulative"
+      - name: Best-effort original session mode restoration, once
+        if: always()
+        timeout-minutes: 1
+        run: python3 .github/arm64-health/run.py display-restore "$RUNNER_TEMP/arm64-health/display-restore"
+      - name: Preserve real outcomes; restoration is reported separately
+        if: always()
+        run: python3 .github/arm64-health/run.py finalize "$RUNNER_TEMP/arm64-health"
+      - name: Retain controls, pixels, timing, crashes and all cumulative results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: arm64-display-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/arm64-display
+          name: arm64-health-cumulative-9fca8b93-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/arm64-health
+            !${{ runner.temp }}/arm64-health/standalone/work/XcodeGen
+            !${{ runner.temp }}/arm64-health/standalone/work/DerivedData
           if-no-files-found: error
           retention-days: 14

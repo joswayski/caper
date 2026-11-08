@@ -1,53 +1,66 @@
-# Inactive, never-merge ARM64 display inventory
+# Inactive, never-merge ARM64 session display and cumulative validation
 
 Preparation branch: `apple-arm64-health-sidebar-prepared`. Only a separately
 approved push to `apple-arm64-health-sidebar-run` triggers this workflow. No
 dispatch, schedule, existing-ref change, job retry, production merge or cutover.
 One hosted VM/job; all results remain `productAcceptance: false`.
 
-## Current workflow: observation only
+## Temporary session display before full health controls
 
-The workflow invokes only `run.py display-inventory`, then uploads its evidence
-even on failure. It cannot run controls, dependency setup, Caper preparation,
-builds or tests. Inventory step cap: 5 minutes; job cap: 10 minutes. It validates
-the exact environment below using the existing provenance checks, but returns
-before crash-baseline collection, pixel compilation or writing `gate.json`.
-This mode cannot admit the dormant health or cumulative pipeline.
+On this disposable hosted VM only, `display-setup` first checks exact provenance,
+then compiles the read-only inventory and session transaction helpers. It observes
+one active, awake, unmirrored main display and freshly enumerates default advertised
+modes with `CGDisplayCopyAllDisplayModes(id, nil)`. Exactly one GUI-usable mode must
+have width/height AND pixelWidth/pixelHeight 1600×1200. No hard-coded mode ID,
+fallback resolution, virtual display, renderer, defaults or guest utility change.
+The original mode must also be uniquely present in the advertised list.
 
-One `xcrun swift DisplayInventory.swift` process (60s including interpretation)
-reads NSScreen frame/visibleFrame in points, backing scale and backing-converted
-frame, plus CoreGraphics IDs, online/active/mirroring state, global display bounds,
-pixel dimensions, current mode and advertised modes. It uses the documented nil
-options for `CGDisplayCopyAllDisplayModes`; it does not invent or select modes.
-The snapshot is not atomic. Count changes, missing screens/modes, API errors and
-64-display/2048-mode bounds are explicit incomplete observations, not a claim
-that no larger mode exists. Empty/default mode lists do not prove resizing is
-impossible. No screenshots, windows, activation, permission prompts or UI events.
+Original full geometry/mode, selected mode and run identity are saved atomically
+before any mutation. The helper rechecks topology/current mode, then performs at
+most one `CGBeginDisplayConfiguration` / `CGConfigureDisplayWithDisplayMode` /
+`CGCompleteDisplayConfiguration(..., .forSession)` transaction. API statuses and
+current/target/advertised modes are retained, including on failure. An already
+matching mode needs no transaction. A pending failed transaction is cancelled;
+completion invalidates its token even on error, so it is not cancelled again.
 
-The known Anka addon receipt is read with `pkgutil --pkg-info-plist` (10s); an
-absent, failed or malformed receipt cannot establish a version. Inventory only
-the immediate `/Library/Application Support/Veertu/Anka/addons` directory (128
-entries) and `change_res` metadata/hash/file type (64MiB maximum read, `file` 10s).
-Do not follow an addon-directory symlink or execute any guest utility, even with
-guessed version/help switches. Receipt version is package metadata, not proof of
-utility functionality or the host hypervisor version. Raw process outputs and
-normal nonzero/timeout results are retained; missing receipt makes the inventory
-result unsuccessful but does not prevent geometry collection. Writes are limited
-to evidence plus normal Swift/system bookkeeping; no zero-system-write guarantee.
+Apple documents [atomic completion](https://developer.apple.com/documentation/coregraphics/cgcompletedisplayconfiguration(_:_:))
+and [session lifetime](https://developer.apple.com/documentation/coregraphics/cgconfigureoption/forsession):
+the setting survives the setter's exit and reverts to the saved permanent
+configuration at logout. No `.permanently`, caller-scoped setter or permanent
+configuration restore is used. This does not establish that selection succeeds
+on a particular hosted VM; errors remain failures, without another switch.
 
-The geometry requirement remains `NSScreen.main.visibleFrame` >=1440×900 **points**,
-not a 1440×900 screenshot or nominal display mode. The menu bar/Dock can reduce
-usable area even with auto-hide. Backing pixels and CoreGraphics mode dimensions
-are recorded separately; no pixel-size-to-usable-points assumption is made. This
-inventory never evaluates a new acceptance policy or changes resolution, defaults,
-renderer, virtual displays or installed tools. A future sizing route and the
-unchanged health-first cumulative workflow require separate review/authorization.
+After the setter exits, fresh inventory processes observe settling at most five
+times within a 10s observation budget (2s/process, 0.2s between observations).
+Only successful, complete single-display observations may be repeated; API,
+process, signal, timeout and malformed/incomplete inventory failures stop.
+Require the actual selected mode, 1600×1200 screen frame, backing scale1 AND
+`NSScreen.main.visibleFrame` >=1440×900 **points**. Nominal pixels do not admit
+controls. The snapshot is not atomic; all raw observations are retained.
 
-## Dormant validation contract
+Only successful setup admits a fresh preflight/crash baseline and full unchanged
+graphics/AX/video/crash health controls on this VM. Nothing reuses prior health.
+The earlier visible-point check before product preparation remains; another fresh
+mode/scale/usable-point check occurs after builds, before the fixture/tests start.
+Product pins, test bodies, selection and evidence-only overlay stay unchanged.
 
-The following health/cumulative code remains implemented but is unreachable from
-the current inventory-only workflow. Its described validation step/job caps are
-requirements for a separately reviewed restoration, not inventory execution.
+An `always()` cleanup attempts the saved original session mode at most once,
+using freshly advertised modes, the same run identity and hashed helper binaries.
+It refuses changed display identity or an unexpected third-party mode. It then
+observes the original mode/frame/scale; current usable geometry is retained but
+need not meet the test-size requirement. Missing original state means no mutation
+was possible and cleanup records not-needed. Restoration failure is separately
+retained and fails the final aggregate without replacing health/test failures.
+Cleanup is best-effort: VM loss, cancellation or the overall job deadline can
+prevent `always()` from finishing. Session/logout scope, not a cleanup guarantee,
+is the last boundary. Never use personal hardware for this workflow.
+
+Setup cap5min: provenance100s, two helper compiles60s each, initial inventory5s,
+transaction10s, settling10s (or failure inventory5s). Cleanup cap1min; no recompiles,
+transaction retry or fallback. Overall job110min and cumulative70min stay fixed.
+The separate `display-inventory` entrypoint still fails on a missing Anka receipt;
+it is not called by session setup and no receipt is a CoreGraphics dependency.
+No interpretation of an earlier inventory result is changed.
 
 ## Exact inputs and environment
 
@@ -185,7 +198,9 @@ once each, as in the earlier combined harness. No shipping scheme build.
 Before preparation or the capture overlay, preserve the earlier combined
 requirement for `NSScreen.main.visibleFrame` at least 1440×900 points. Record the
 actual frame and keyboard-navigation state; a smaller or absent desktop exits
-normally nonzero. Do not change resolution, defaults, test widths or assertions.
+normally nonzero. No further sizing occurs during controls or cumulative tests;
+defaults, test widths and assertions do not change. Recheck fresh mode/scale/usable
+points immediately before starting the fixture/tests, after both builds.
 The ARM64 image pin alone does not guarantee this geometry; standalone health
 and the narrow sidebar do not establish wide UI feasibility. No execution is
 implied by this inactive preparation.

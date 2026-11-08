@@ -364,6 +364,103 @@ def display_inventory(output):
     return ok(geometry) and report["complete"] and ok(receipt)
 
 
+def display_snapshot(binary, output, timeout=5):
+    checked([str(binary)], output, timeout)
+    data = json.loads((output / "stdout.txt").read_text())
+    assert data["complete"] is True and data["errors"] == [], "Incomplete display observation"
+    assert data["onlineCountBefore"] == data["onlineCountReturned"] == data["onlineCountAfter"] == 1
+    assert len(data["screens"]) == len(data["displays"]) == 1, "Only one display is supported"
+    screen, display = data["screens"][0], data["displays"][0]
+    assert screen["isNSScreenMain"] is True and display["isCGMain"] is True
+    assert screen["displayID"] == display["displayID"]
+    assert display["active"] is True and display["online"] is True and display["asleep"] is False
+    assert display["mirrorsDisplayID"] == 0
+    return data
+
+
+def check_session_display(output, setup, restore=False, attempts=1):
+    state = json.loads((setup / "original-session.json").read_text())
+    assert all(os.environ.get(key) == value for key, value in state["identity"].items()), "Different hosted run"
+    original = state["original"]
+    expected = original["displays"][0]["currentMode"] if restore else state["selected"]
+    binary = setup / "display-inventory"
+    hashes = json.loads((setup / "display-binary-hashes.json").read_text())
+    assert sha(binary) == hashes[binary.name]
+    deadline = time.monotonic() + 10
+    observations = []
+    try:
+        for index in range(attempts):
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, "Display settling observation budget exhausted"
+            data = display_snapshot(binary, output / f"sample-{index + 1}", min(2, remaining))
+            screen, display = data["screens"][0], data["displays"][0]
+            frame, visible = screen["framePoints"], screen["visibleFramePoints"]
+            matches = (
+                display["displayID"] == original["displays"][0]["displayID"] and display["currentMode"] == expected
+            )
+            if restore:
+                matches = matches and frame == original["screens"][0]["framePoints"]
+                matches = matches and screen["backingScaleFactor"] == original["screens"][0]["backingScaleFactor"]
+            else:
+                matches = (
+                    matches and screen["backingScaleFactor"] == 1 and frame["width"] == 1600 and frame["height"] == 1200
+                )
+                matches = matches and visible["width"] >= 1440 and visible["height"] >= 900
+            observations.append({"sample": index + 1, "matches": matches})
+            if matches:
+                return
+            if index + 1 < attempts:
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+        raise RuntimeError("Fresh display mode/usable geometry did not match; no repeated switch")
+    finally:
+        record(output / "observations.json", {"restore": restore, "observations": observations})
+
+
+def session_display(output, restore=False):
+    setup = output.parent / "display-setup" if restore else output
+    state = setup / "original-session.json"
+    if restore and not state.exists():
+        record(
+            output / "restoration.json", {"status": "not_needed", "reason": "No saved state; setup could not mutate"}
+        )
+        return True
+    if not restore:
+        for source, name in [
+            ("DisplayInventory.swift", "display-inventory"),
+            ("SessionDisplay.swift", "session-display"),
+        ]:
+            checked(["xcrun", "swiftc", str(ROOT / source), "-o", str(setup / name)], output / ("compile-" + name), 60)
+        record(
+            output / "display-binary-hashes.json",
+            {name: sha(setup / name) for name in ["display-inventory", "session-display"]},
+        )
+    else:
+        saved = json.loads(state.read_text())
+        assert all(os.environ.get(key) == value for key, value in saved["identity"].items()), "Different hosted run"
+        hashes = json.loads((setup / "display-binary-hashes.json").read_text())
+        assert all(sha(setup / name) == digest for name, digest in hashes.items()), "Display binary changed"
+    display_snapshot(setup / "display-inventory", output / "before")
+    action = "restore" if restore else "setup"
+    result = command(
+        [
+            str(setup / "session-display"),
+            action,
+            str(state),
+            str(output / "before/stdout.txt"),
+            str(output / "api.json"),
+        ],
+        output / "transaction",
+        10,
+    )
+    if not ok(result):
+        # Preserve post-failure geometry without retrying a transaction or admitting controls.
+        command([str(setup / "display-inventory")], output / "after-failed-transaction", 5)
+        raise RuntimeError(f"Session display {action} failed; inspect raw API/exit results")
+    assert json.loads((output / "api.json").read_text())["passed"] is True
+    check_session_display(output / "settling", setup, restore=restore, attempts=5)
+    return True
+
+
 def retain_scheme(path, output):
     shutil.copy2(path, output / (path.stem + ".original.xcscheme"))
     tree = ET.parse(path)
@@ -776,6 +873,7 @@ def cumulative(output):
         )
         for item in selection["ui"]
     ]
+    check_session_display(output / "display-before-tests", output.parent / "display-setup")
     with (output / "fixture.log").open("wb") as log:
         fixture = subprocess.Popen(
             ["node", "scripts/native-parity-fixture.mjs"], stdout=log, stderr=log, start_new_session=True
@@ -827,9 +925,9 @@ def main():
         reports = {}
         root = output.parent if mode == "health" else output
         names = (
-            ["preflight", "graphics", "standalone"]
+            ["display-setup", "preflight", "graphics", "standalone"]
             if mode == "health"
-            else ["preflight", "graphics", "standalone", "health", "cumulative"]
+            else ["display-setup", "preflight", "graphics", "standalone", "health", "cumulative", "display-restore"]
         )
         for name in names:
             path = root / name / "report.json"
@@ -845,9 +943,19 @@ def main():
         return int(any(r["failed"] for r in reports.values()))
     report = {"failed": True, "mode": mode, "productAcceptance": False}
     try:
-        if mode in {"preflight", "display-inventory"}:
-            preflight(output, provenance_only=mode == "display-inventory")
-            report["failed"] = not display_inventory(output) if mode == "display-inventory" else False
+        if mode in {"preflight", "display-inventory", "display-setup"}:
+            if mode == "preflight":
+                assert json.loads((output.parent / "display-setup/report.json").read_text())["failed"] is False
+            preflight(output, provenance_only=mode != "preflight")
+            if mode == "preflight":
+                report["failed"] = False
+            else:
+                report["failed"] = not {"display-inventory": display_inventory, "display-setup": session_display}[mode](
+                    output
+                )
+        elif mode == "display-restore":
+            output.mkdir(parents=True, exist_ok=False)
+            report["failed"] = not session_display(output, restore=True)
         else:
             assert mode in {"graphics", "standalone", "cumulative"}
             assert json.loads((output.parent / "preflight/gate.json").read_text())["passed"]
