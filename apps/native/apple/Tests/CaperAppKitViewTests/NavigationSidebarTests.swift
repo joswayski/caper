@@ -151,6 +151,16 @@ import XCTest
     }
 
     func testVoiceCardPreservesFocusAndLiveRowWhenChannelsCollapse() async throws {
+        // Fixed cases for 344/300-point outer widths: overlay leaves five/four
+        // face columns, while a visible legacy scroller leaves four/three.
+        try await checkVoiceCard(scrollerStyle: .overlay, wideFaces: 9, wideOverflow: "3 more in the call",
+            narrowFaces: 7, narrowOverflow: "5 more in the call")
+        try await checkVoiceCard(scrollerStyle: .legacy, wideFaces: 7, wideOverflow: "5 more in the call",
+            narrowFaces: 5, narrowOverflow: "7 more in the call")
+    }
+
+    private func checkVoiceCard(scrollerStyle: NSScroller.Style, wideFaces: Int, wideOverflow: String,
+                               narrowFaces: Int, narrowOverflow: String) async throws {
         _ = NSApplication.shared
         let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
         let text = Channel(id: "text", spaceId: "space", name: "general", private: false)
@@ -172,15 +182,26 @@ import XCTest
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 344, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = sidebar
         defer { model.leaveVoice(); window.close() }
-        sidebar.layoutSubtreeIfNeeded()
         func visible(_ view: NSView) -> [NSView] {
             view.isHiddenOrHasHiddenAncestor ? [] : [view] + view.subviews.flatMap(visible)
         }
         func button(_ id: String) -> NSButton? {
             visible(sidebar).compactMap { $0 as? NSButton }.first { $0.accessibilityIdentifier() == id }
         }
-        XCTAssertEqual(visible(sidebar).filter { $0.accessibilityIdentifier().hasPrefix("voice-face-") }.count, 9)
-        XCTAssertEqual(button("voice-faces-more")?.accessibilityLabel(), "3 more in the call")
+        let scrollViews = visible(sidebar).compactMap { $0 as? NSScrollView }
+        XCTAssertEqual(scrollViews.count, 3, "Configure the fixture's rail, Channels and Direct messages scroll views")
+        func layoutSidebar() {
+            // AppKit can change styles while this async test awaits. Configure
+            // only these fixture views at each checkpoint, never user defaults.
+            for scroll in scrollViews { scroll.scrollerStyle = scrollerStyle }
+            sidebar.layoutSubtreeIfNeeded()
+            for scroll in scrollViews {
+                XCTAssertEqual(scroll.scrollerStyle, scrollerStyle, "Requested style must apply after layout")
+            }
+        }
+        layoutSidebar()
+        XCTAssertEqual(visible(sidebar).filter { $0.accessibilityIdentifier().hasPrefix("voice-face-") }.count, wideFaces, "\(scrollerStyle), width 344")
+        XCTAssertEqual(button("voice-faces-more")?.accessibilityLabel(), wideOverflow, "\(scrollerStyle), width 344")
         XCTAssertEqual(button("voice-faces-more")?.accessibilityCustomActions()?.map(\.name), ["Show everyone"])
         let roomMore = try XCTUnwrap(visible(sidebar).first { $0.accessibilityIdentifier() == "room-faces-more" } as? NSTextField)
         XCTAssertEqual(roomMore.stringValue, "+4")
@@ -200,13 +221,14 @@ import XCTest
             MainActor.assumeIsolated { button("voice-call-deafen")?.accessibilityValue() as? String == "Deafened" }
         }, evaluatedWith: sidebar)
         await fulfillment(of: [deafened], timeout: 3)
+        layoutSidebar()
         XCTAssertTrue(window.firstResponder === deafen, "A voice update must not replace the focused control")
         XCTAssertTrue(model.voice.muted, "Deafen keeps the transport's mute semantics")
         XCTAssertEqual(model.selectedChannelID, text.id, "Call controls do not move the conversation")
         XCTAssertTrue(button("voice-face-person-3") === ownFace)
         for width in [CGFloat(220), 370, 440] {
             sidebar.frame.size.width = 60 + width
-            sidebar.layoutSubtreeIfNeeded()
+            layoutSidebar()
             XCTAssertTrue(window.firstResponder === deafen, "Resizing must preserve the focused call control")
             XCTAssertTrue(button("voice-face-person-3") === ownFace)
             XCTAssertEqual(model.selectedChannelID, text.id)
@@ -220,12 +242,13 @@ import XCTest
             XCTAssertEqual(railButton.convert(railButton.bounds, to: sidebar).midX, 30, "Resizing does not stretch the 60-point space rail")
         }
         try XCTUnwrap(button("channels-toggle")).performClick(nil)
-        sidebar.layoutSubtreeIfNeeded()
+        layoutSidebar()
         XCTAssertNil(button("channel-text"))
         XCTAssertNotNil(button("channel-call"), "Collapsing Channels must not hide its live call")
         sidebar.frame.size.width = 300
-        sidebar.layoutSubtreeIfNeeded()
-        XCTAssertEqual(button("voice-faces-more")?.accessibilityLabel(), "5 more in the call", "Narrow cards keep two rows, not ten overflowing faces")
+        layoutSidebar()
+        XCTAssertEqual(visible(sidebar).filter { $0.accessibilityIdentifier().hasPrefix("voice-face-") }.count, narrowFaces, "\(scrollerStyle), width 300")
+        XCTAssertEqual(button("voice-faces-more")?.accessibilityLabel(), narrowOverflow, "Narrow cards keep two rows, not ten overflowing faces (\(scrollerStyle))")
         try XCTUnwrap(button("voice-call-leave")).performClick(nil)
         XCTAssertEqual(model.voice.phase, .idle)
         XCTAssertEqual(model.selectedChannelID, text.id)
