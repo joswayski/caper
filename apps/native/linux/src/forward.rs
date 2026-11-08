@@ -185,9 +185,27 @@ impl App {
         }
         self.close_forward();
         let (window, root) = self.forward_window("Forward message");
+        let height = self
+            .ui
+            .window
+            .surface()
+            .and_then(|surface| surface.display().monitor_at_surface(&surface))
+            .map_or(self.ui.window.height(), |monitor| {
+                self.ui.window.height().min(monitor.geometry().height())
+            });
+        window.set_default_height((height - 80).clamp(240, 800));
+        // The whole preview/destination area scrolls: a gallery must not push
+        // the note or submit action outside the available window height.
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&body)
+            .build();
+        root.append(&scroll);
         let intro = label(NOTE, &["muted", "small"]);
         intro.set_wrap(true);
-        root.append(&intro);
+        body.append(&intro);
         let shown = source
             .forward
             .as_ref()
@@ -205,25 +223,17 @@ impl App {
             .view(&self.images, &self.forward_handler(), None),
         );
         preview.add_css_class("forward-card");
-        root.append(&preview);
+        body.append(&preview);
         let search: gtk::SearchEntry =
             crate::app::named("GtkSearchEntry", "Find a space, channel or DM");
         search.set_placeholder_text(Some("Find a space, channel or DM"));
-        root.append(&search);
+        body.append(&search);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        // The list scrolls; the note and Forward stay in view.
-        let scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .min_content_height(132)
-            .max_content_height(300)
-            .propagate_natural_height(true)
-            .child(&list)
-            .build();
-        scroll.add_css_class("forward-list");
-        root.append(&scroll);
+        list.add_css_class("forward-list");
+        body.append(&list);
         let empty = label("Join a channel or start a DM to forward here.", &["muted"]);
         empty.set_visible(false);
-        root.append(&empty);
+        body.append(&empty);
         let note = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
             .accepts_tab(false)
@@ -236,7 +246,14 @@ impl App {
         placeholder.set_margin_start(10);
         placeholder.set_margin_top(8);
         let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&note));
+        let note_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .min_content_height(64)
+            .max_content_height(96)
+            .propagate_natural_height(true)
+            .child(&note)
+            .build();
+        overlay.set_child(Some(&note_scroll));
         overlay.add_overlay(&placeholder);
         let weak = Rc::downgrade(self);
         note.buffer().connect_changed(move |buffer| {
