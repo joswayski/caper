@@ -210,7 +210,7 @@ def main():
         "-maximum-test-execution-time-allowance",
         "600",
         "-collect-test-diagnostics",
-        "always",
+        "on-failure",
     ]
     selections = [
         (
