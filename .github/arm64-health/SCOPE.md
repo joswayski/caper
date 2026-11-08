@@ -131,6 +131,25 @@ prepare its ordinary dependencies/all five Rust slices, generate the existing
 development project and build Debug `CaperAppKit` for testing. Existing core/view
 bundles compile as scheme dependencies; no Caper UI scheme or shipping app builds.
 
+The workflow's RNNoise source curl has its own narrow transfer-recovery exception:
+`--max-time 60 --retry 2 --retry-delay 5 --retry-max-time 120 --retry-all-errors`.
+At most three transfers, not repeated dependency steps. Retrying all curl errors
+also covers the observed HTTP 504 with curl exit 56, without assuming its network
+cause; checksum verification is outside curl and is never retried. The source
+URL/hash, model fetch/hash and extraction order remain unchanged. Any final curl
+failure or hash failure stops before extraction. Neither the git fetch nor the
+preparation/build/test is retried by this exception.
+
+[curl's retry budget](https://curl.se/docs/manpage.html#--retry-max-time) is not a
+total wall-clock timeout: an admitted transfer can outlast it. Allow conservatively
+185s for this command (120s retry window + 5s delay + 60s final transfer), apart
+from scheduling overhead; older curl versions check the budget before sleeping.
+An over-budget `Retry-After` stops retries instead of adding that sleep. The unchanged
+300s dependency-step cap includes the single git fetch, both hash checks and both
+extractions, and can cancel sooner if they consume the remaining time. No guarantee
+of download completion, deadline extension, cache/endpoint substitution or softened
+hash gate follows from enabling transfer recovery.
+
 Before the single build, run `xcodebuild -resolvePackageDependencies` with the
 same project, scheme, configuration, destination and DerivedData. At most three
 resolution attempts, each capped at 120s, separated by 5s only after the exact
