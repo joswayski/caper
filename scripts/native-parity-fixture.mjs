@@ -38,7 +38,7 @@ const limits = { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 };
 const imageTypes = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"];
 // Disposable, in-memory media only: keep the existing 8 MiB single-PUT ceiling
 // even when tests lower multipartPartBytes. Reservations also bound total retention.
-const imageLimits = { file: 8 * 1024 * 1024, preview: 512 * 1024, total: 64 * 1024 * 1024, count: 128 };
+const mediaLimits = { file: 8 * 1024 * 1024, preview: 512 * 1024, total: 64 * 1024 * 1024, count: 128 };
 const initialAccount = { id: ids.owner, username: "fixture_owner", displayName: "Fixture Owner", avatarId: 0 };
 const members = [
   { ...initialAccount, owner: true },
@@ -854,7 +854,7 @@ export async function startFixture({
       const audio = assetPut || partPut || path === "/api/dictation";
       let limit = partPut ? 1024 ** 3 : audio ? 8 * 1024 * 1024 : 256 * 1024;
       const uploading = state.assets.get(assetPut?.[1] ?? partPut?.[1]);
-      if (uploading?.image) {
+      if (uploading?.mediaKind) {
         const remaining = partPut
           ? uploading.size - (uploading.partSize ?? 0) + (uploading.parts?.get(Number(partPut[2]))?.length ?? 0)
           : assetPut[2] === "preview"
@@ -1432,8 +1432,16 @@ export async function startFixture({
             (body.waveform !== undefined && typeof body.waveform !== "string"))
         )
           return reject(response, 400, "Invalid voice message.");
-        const image = !avatar && !voice && imageTypes.includes(body.contentType);
-        if (image) {
+        // Match assets::kind, not arbitrary image/* or video/* MIME types.
+        const mediaKind =
+          !avatar &&
+          !voice &&
+          (imageTypes.includes(body.contentType)
+            ? "image"
+            : ["video/mp4", "video/webm", "video/quicktime"].includes(body.contentType)
+              ? "video"
+              : null);
+        if (mediaKind) {
           if (
             !Number.isSafeInteger(body.byteSize) ||
             body.byteSize < 1 ||
@@ -1446,17 +1454,17 @@ export async function startFixture({
               (!["image/png", "image/jpeg", "image/webp"].includes(body.preview.contentType) ||
                 !Number.isSafeInteger(body.preview.byteSize) ||
                 body.preview.byteSize < 1 ||
-                body.preview.byteSize > imageLimits.preview))
+                body.preview.byteSize > mediaLimits.preview))
           )
-            return reject(response, 400, "Invalid image metadata.");
-          const images = [...state.assets.values()].filter((asset) => asset.image && !asset.deleted);
-          const reserved = images.reduce((sum, asset) => sum + asset.size + (asset.preview?.byteSize ?? 0), 0);
+            return reject(response, 400, "Invalid media metadata.");
+          const media = [...state.assets.values()].filter((asset) => asset.mediaKind && !asset.deleted);
+          const reserved = media.reduce((sum, asset) => sum + asset.size + (asset.preview?.byteSize ?? 0), 0);
           if (
-            body.byteSize > imageLimits.file ||
-            images.length >= imageLimits.count ||
-            reserved + body.byteSize + (body.preview?.byteSize ?? 0) > imageLimits.total
+            body.byteSize > mediaLimits.file ||
+            media.length >= mediaLimits.count ||
+            reserved + body.byteSize + (body.preview?.byteSize ?? 0) > mediaLimits.total
           )
-            return reject(response, 413, "TEST FIXTURE: image storage limit; cancel pending uploads or reset.");
+            return reject(response, 413, "TEST FIXTURE: media storage limit; cancel pending uploads or reset.");
         }
         state.assets.set(id, {
           ownerId: user.id,
@@ -1466,7 +1474,7 @@ export async function startFixture({
           name: body.filename,
           contentType: body.contentType,
           size: body.byteSize,
-          ...(avatar || image
+          ...(avatar || mediaKind
             ? {
                 width: body.width,
                 height: body.height,
@@ -1474,7 +1482,7 @@ export async function startFixture({
               }
             : {}),
           ...(voice ? { voice, durationMs: body.durationMs, waveform: body.waveform } : {}),
-          ...(image ? { image, durationMs: body.durationMs, preview: body.preview ?? undefined } : {}),
+          ...(mediaKind ? { mediaKind, durationMs: body.durationMs, preview: body.preview ?? undefined } : {}),
         });
         // Absolute, like a presigned storage URL (native clients refuse relative
         // ones), on the origin the client called: through the web's dev proxy
@@ -1499,7 +1507,7 @@ export async function startFixture({
           asset.parts = new Map();
           return json(response, 200, {
             id,
-            ...(image ? { kind: "image" } : {}),
+            ...(mediaKind ? { kind: mediaKind } : {}),
             multipart: { partBytes, partCount: asset.partCount },
             ...(body.preview
               ? { previewUpload: { url: `${origin}/api/assets/${id}/fixture-preview`, headers: {} } }
@@ -1508,7 +1516,7 @@ export async function startFixture({
         }
         return json(response, 200, {
           id,
-          ...(avatar || image ? { kind: "image" } : {}),
+          ...(avatar || mediaKind ? { kind: avatar ? "image" : mediaKind } : {}),
           upload: {
             method: "PUT",
             url: avatar
@@ -1545,14 +1553,14 @@ export async function startFixture({
       if (partPut && method === "PUT") {
         const asset = state.assets.get(partPut[1]);
         const number = Number(partPut[2]);
-        if (!asset?.parts || asset.deleted || number > asset.partCount || (asset.image && asset.attachment))
+        if (!asset?.parts || asset.deleted || number > asset.partCount || (asset.mediaKind && asset.attachment))
           return reject(response, 404, "Asset not found.");
         const failing = state.failParts.indexOf(number);
         if (failing >= 0) {
           state.failParts.splice(failing, 1);
           return reject(response, 500, "TEST FIXTURE: part upload failed once.");
         }
-        if (asset.image) {
+        if (asset.mediaKind) {
           const size = (asset.partSize ?? 0) - (asset.parts.get(number)?.length ?? 0) + bytes;
           // Recheck after reading: concurrent PUTs may have filled the reservation.
           if (size > asset.size) return reject(response, 413, "Fixture request too large.");
@@ -1563,16 +1571,17 @@ export async function startFixture({
       }
       if (assetPut && method === "PUT") {
         const asset = state.assets.get(assetPut[1]);
-        if (!asset || asset.deleted || (asset.image && asset.attachment))
+        if (!asset || asset.deleted || (asset.mediaKind && asset.attachment))
           return reject(response, 404, "Asset not found.");
-        if (asset.image && assetPut[2] === "upload" && asset.parts) return reject(response, 404, "Asset not found.");
+        if (asset.mediaKind && assetPut[2] === "upload" && asset.parts)
+          return reject(response, 404, "Asset not found.");
         if (assetPut[2] === "upload") asset.bytes = bytes;
         if (
           assetPut[2] === "upload" &&
-          (asset.image || asset.voice || asset.purpose === "avatar" || asset.purpose === "spaceIcon")
+          (asset.mediaKind || asset.voice || asset.purpose === "avatar" || asset.purpose === "spaceIcon")
         )
           asset.data = Buffer.concat(chunks);
-        if (assetPut[2] === "preview" && asset.image && asset.preview) asset.previewData = Buffer.concat(chunks);
+        if (assetPut[2] === "preview" && asset.mediaKind && asset.preview) asset.previewData = Buffer.concat(chunks);
         return json(response, 204);
       }
       const assetFile = /^\/api\/assets\/([^/]+)\/fixture-(file|preview)$/.exec(path);
@@ -1584,11 +1593,11 @@ export async function startFixture({
           !data ||
           asset.deleted ||
           ((asset.purpose === "avatar" || asset.purpose === "spaceIcon") && !asset.completed) ||
-          (asset.image && !asset.attachment)
+          (asset.mediaKind && !asset.attachment)
         )
           return reject(response, 404, "Asset not found.");
         // Served as recorded: the fixture labels voice notes audio/mp4 like the
-        // API's transcode, but never transcodes them. Images likewise retain
+        // API's transcode, but never transcodes them. Images/videos likewise retain
         // the client's prepared bytes; no privacy cleaning or decoding here.
         // One `bytes=a-b` range, as storage serves it: native players seek
         // media by reading ranges through their loopback proxy.
@@ -1620,7 +1629,7 @@ export async function startFixture({
         const asset = state.assets.get(assetComplete[1]);
         if (!user || !asset || asset.ownerId !== user.id || asset.deleted)
           return reject(response, 404, "Asset not found.");
-        if (asset.image && asset.preview && asset.previewData?.length !== asset.preview.byteSize)
+        if (asset.mediaKind && asset.preview && asset.previewData?.length !== asset.preview.byteSize)
           return reject(response, 422, "Preview upload incomplete.");
         if (asset.parts && !asset.attachment) {
           // Like the API: wrong-sized parts reject the file; missing ones are upload_incomplete.
@@ -1633,7 +1642,7 @@ export async function startFixture({
           const hash = createHash("sha256");
           for (let number = 1; number <= asset.partCount; number++) hash.update(asset.parts.get(number));
           asset.sha256 = hash.digest("hex");
-          if (asset.image)
+          if (asset.mediaKind)
             asset.data = Buffer.concat(
               Array.from({ length: asset.partCount }, (_, index) => asset.parts.get(index + 1)),
             );
@@ -1674,7 +1683,7 @@ export async function startFixture({
               // server answers media requests (Sec-Fetch-Dest: audio) itself.
               url: `${advertised(request.socket.localPort)}/api/assets/${assetComplete[1]}/fixture-file`,
             }
-          : asset.image
+          : asset.mediaKind
             ? {
                 // assets::describe/completed returns metadata, not delivery URLs
                 // or a status. Message responses add url/previewUrl on send/read.
@@ -1682,7 +1691,7 @@ export async function startFixture({
                 name: asset.name,
                 contentType: asset.contentType,
                 size: asset.size,
-                kind: "image",
+                kind: asset.mediaKind,
                 ...(asset.width != null ? { width: asset.width } : {}),
                 ...(asset.height != null ? { height: asset.height } : {}),
                 ...(asset.durationMs != null ? { durationMs: asset.durationMs } : {}),
@@ -1716,7 +1725,7 @@ export async function startFixture({
         if (!user || !asset || asset.ownerId !== user.id) return reject(response, 404, "Asset not found.");
         if (!asset.completed && !asset.attachment) {
           asset.deleted = true;
-          if (asset.image) {
+          if (asset.mediaKind) {
             delete asset.data;
             delete asset.previewData;
             asset.parts?.clear();
@@ -2634,7 +2643,7 @@ export async function startFixture({
                 ? {
                     attachments: attachmentIds.map((id) => ({
                       ...state.assets.get(id).attachment,
-                      ...(state.assets.get(id).image
+                      ...(state.assets.get(id).mediaKind
                         ? {
                             // Like assets::sign_one; direct loopback media avoids
                             // the web dev server's image-navigation fallback.
