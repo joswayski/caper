@@ -1,0 +1,35 @@
+# Disposable standalone control. NEVER MERGE. Preparation branch is inactive.
+# Only a separately authorized push to apple-canvas-control-run can execute it.
+name: Standalone Intel Canvas control
+on:
+  push:
+    branches: [apple-canvas-control-run]
+    paths: [.github/workflows/apple-canvas-control.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  control:
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      RUNNER_ENVIRONMENT: ${{ runner.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify unchanged published input and harness
+        run: shasum -a 256 -c .github/canvas-control/inputs.sha256
+      - name: Run bounded standalone controls exactly once
+        run: python3 .github/canvas-control/run.py "$RUNNER_TEMP/canvas-evidence"
+      - name: Preserve evidence even when any control fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-canvas-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/canvas-evidence
+          if-no-files-found: error
+          retention-days: 14

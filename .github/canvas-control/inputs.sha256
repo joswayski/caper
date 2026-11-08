@@ -1,0 +1,5 @@
+58c83c884b281ff038bd7e55de529d8159829796738827a7033e7593475061a3  .github/canvas-control/IntelGraphicsProbe.swift
+200a5fb75df3ea31edb8d1f17c48ee5e0c5b5f06840fa8a5a2d1d445a37a7396  .github/canvas-control/MetalProvenance.swift
+f17c09275464386576f1ac6f5dfb6b8d6e571b8283358899fa145274fe6575d9  .github/canvas-control/run.py
+cf65a043e101b643068e755ae6237b3c86d8fb007d6a7e449c9cf71f7c2be0c5  .github/canvas-control/source-provenance.json
+f09ffa46c57b473ffd4d7ad582ecb25bfc58cadc322c673b51dcb173854c4314  .github/workflows/apple-canvas-control.yml
