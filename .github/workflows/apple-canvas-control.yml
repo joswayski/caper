@@ -15,7 +15,6 @@ jobs:
     timeout-minutes: 15
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
-      RUNNER_ENVIRONMENT: ${{ runner.environment }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,6 +23,8 @@ jobs:
       - name: Verify unchanged published input and harness
         run: shasum -a 256 -c .github/canvas-control/inputs.sha256
       - name: Run bounded standalone controls exactly once
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: python3 .github/canvas-control/run.py "$RUNNER_TEMP/canvas-evidence"
       - name: Preserve evidence even when any control fails
         if: always()
