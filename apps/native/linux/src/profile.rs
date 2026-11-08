@@ -395,7 +395,7 @@ impl App {
             let click = gtk::GestureClick::new();
             let app = self.clone();
             click.connect_released(move |_, _, _, _| {
-                crate::viewer::open(&app.ui.window, &app.images, vec![picture.clone()], 0);
+                crate::viewer::open(&app.ui.window, &app.images, vec![picture.clone()], 0, None);
             });
             avatar.root.add_controller(click);
             avatar.root.set_cursor_from_name(Some("pointer"));
