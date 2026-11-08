@@ -48,7 +48,11 @@ exact string-inequality resync decision, focus callback results, paste entry/exi
 and textDidChange before/after. The initial ready snapshot is update-entry state;
 in-interval event snapshots independently report state even if paste never runs.
 
-The test records pasteboard write result/changeCount. Readback digest/types/length
+The test records pasteboard write result, before/after changeCounts and separate
+readback-presence, exact-canary-match, type-policy and count-stability booleans,
+retaining the original compound readback result. A failed write skips content
+readback; false presence then means not read, not proof the board was empty.
+No unexpected type names or contents are emitted. Readback digest/types/length
 are emitted only if readback exactly matches its just-written synthetic string,
 the only declared type is string and changeCount remains stable. Otherwise record
 the mismatch without the unexpected contents, digest or types. At the registered
@@ -71,7 +75,16 @@ overhead, not input modification, waiting or recovery.
 
 Records go to stderr AND bounded per-stream JSONL files, so successful tests need
 not rely on failure-only diagnostic exports. The collector copies only this
-test's temporary directory, at most two 1MiB JSONL files, retains hashes and a
+test's reported UUID temporary directory, either the supervisor temporary root
+or the current user's exact development XCTest runner container's `Data/tmp`.
+It never searches containers. Component-wise no-follow directory descriptors and
+bounded regular, single-link event-file reads reject symlinks and traversal;
+reports retain the failing stage, reported path and accepted root provenance.
+At most two 1MiB JSONL files are copied. An explicit offline console-recovery
+function accepts at most two caller-selected 16MiB logs, retains source hashes
+and line numbers separately, and never replaces the live collection report.
+Legacy fields are not inferred, so legacy streams remain incomplete under the
+new schema. This fallback is not invoked by the workflow. Collection retains hashes and a
 monotonically ordered view, and checks stream completeness independently of
 XCTest success. Missing readiness, missing in-interval state, unmatched callbacks,
 limits or collection failures remain incomplete; zero paste callbacks with

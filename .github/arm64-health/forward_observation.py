@@ -2,8 +2,11 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import shutil
+import stat
 import tempfile
 
 ROOT = Path(__file__).resolve().parent
@@ -82,9 +85,23 @@ def assess(events):
     begin = next(e for e in events if e["event"] == "test.pasteboard")
     end = next(e for e in events if e["event"] == "test.end")
     assert begin["stream"] == end["stream"]
-    for key in ("writeSucceeded", "readbackMatches"):
+    for key in (
+        "writeSucceeded",
+        "readbackMatches",
+        "readbackPresent",
+        "exactCanaryMatch",
+        "typePolicyMatches",
+        "countStable",
+    ):
         assert type(begin.get(key)) is bool, key
     assert type(begin.get("changeCount")) is int and begin["changeCount"] >= 0, "changeCount"
+    assert type(begin.get("changeCountAfter")) is int and begin["changeCountAfter"] >= 0, "changeCountAfter"
+    assert begin["countStable"] == (begin["changeCount"] == begin["changeCountAfter"]), "Count stability"
+    assert not begin["readbackPresent"] or begin["writeSucceeded"], "Readback skipped after failed write"
+    assert not begin["exactCanaryMatch"] or begin["readbackPresent"], "Match requires presence"
+    assert begin["readbackMatches"] == (
+        begin["exactCanaryMatch"] and begin["typePolicyMatches"] and begin["countStable"]
+    ), "Compound readback"
     assert not begin["readbackMatches"] or begin["writeSucceeded"], "Readback cannot match after a failed write"
 
     def canary_metadata(data, matching):
@@ -146,29 +163,120 @@ def assess(events):
     }
 
 
+UUID = r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}"
+
+
+def receipt_location(raw):
+    """Only the reported UUID directory in our temp root or exact XCTest container."""
+    assert type(raw) is str and raw.startswith("/"), "Receipt must be an absolute path"
+    source = Path(raw)
+    assert str(source) == raw and ".." not in source.parts, f"Noncanonical receipt path: {raw}"
+    assert re.fullmatch("caper-forward-observation-" + UUID, source.name), f"Invalid receipt directory: {raw}"
+    roots = {
+        Path(tempfile.gettempdir()).resolve(): "supervisor-temporary-root",
+        Path.home()
+        / "Library/Containers/chat.caper.appkit-development.tests.xctrunner/Data/tmp": "xctest-container-temporary-root",
+    }
+    assert source.parent in roots, f"Receipt parent outside allowed roots: {raw}"
+    return source, roots[source.parent]
+
+
+def open_directory(path):
+    """Open each component without following symlinks, retaining the final directory FD."""
+    assert path.is_absolute() and ".." not in path.parts, f"Invalid directory path: {path}"
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for component in path.parts[1:]:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def copy_receipt(source, destination):
+    fd = open_directory(source)
+    try:
+        files = sorted(name for name in os.listdir(fd) if name.startswith("events-"))
+        assert 1 <= len(files) <= 2, f"Expected one or two event files at {source}; got {len(files)}"
+        for name in files:
+            assert re.fullmatch("events-" + UUID + r"\.jsonl", name), f"Invalid event filename at {source}: {name}"
+            item = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+            with os.fdopen(item, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                assert stat.S_ISREG(info.st_mode) and info.st_nlink == 1, (
+                    f"Not a single-link regular file: {source / name}"
+                )
+                assert info.st_size <= 1_048_576, f"Oversized event file: {source / name}"
+                data = stream.read(1_048_577)
+                assert len(data) <= 1_048_576, f"Event file grew beyond bound: {source / name}"
+            (destination / name).write_bytes(data)
+    finally:
+        os.close(fd)
+
+
+def recover_console(paths, destination, record):
+    """Explicit offline fallback; never rewrites the live collector's original outcome."""
+    destination.mkdir()
+    report = {"complete": False, "productAcceptance": False, "provenance": "retained-console-offline", "sources": []}
+    events = []
+    try:
+        assert 1 <= len(paths) <= 2, "Expected explicit test and/or app console paths"
+        for path in paths:
+            report["check"] = "read bounded explicit console"
+            report["path"] = str(path)
+            parent = open_directory(path.parent)
+            try:
+                fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            finally:
+                os.close(parent)
+            with os.fdopen(fd, "rb") as stream:
+                assert stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "Not a regular console"
+                data = stream.read(16_777_217)
+                assert len(data) <= 16_777_216, "Console exceeds 16 MiB bound"
+            report["sources"].append({"path": str(path), "sha256": hashlib.sha256(data).hexdigest()})
+            for number, line in enumerate(data.decode().splitlines(), 1):
+                if "CAPER_FORWARD_OBSERVATION " in line:
+                    assert len(events) < 514, "Console event bound exceeded"
+                    events.append(
+                        {
+                            "source": str(path),
+                            "line": number,
+                            "event": json.loads(line.split("CAPER_FORWARD_OBSERVATION ", 1)[1]),
+                        }
+                    )
+        report["check"] = "assess current metadata schema (legacy fields are not inferred)"
+        report.update(assess([item["event"] for item in events]))
+    except Exception as error:
+        report["error"] = f"{type(error).__name__}: {error}"
+    record(destination / "events.json", events)
+    record(destination / "report.json", report)
+    return report
+
+
 def collect(output, record):
-    report = {"complete": False, "productAcceptance": False}
+    report = {"complete": False, "productAcceptance": False, "check": "read test console receipt"}
     destination = output / "observations"
     destination.mkdir()
     try:
         test = output / "test"
         log = (test / "stdout.txt").read_text() + (test / "stderr.txt").read_text()
-        assert "CAPER_FORWARD_OBSERVATION_IO_ERROR" not in log
+        assert "CAPER_FORWARD_OBSERVATION_IO_ERROR" not in log, "Observation writer reported an I/O error"
         records = []
         for line in log.splitlines():
             if "CAPER_FORWARD_OBSERVATION " in line:
                 records.append(json.loads(line.split("CAPER_FORWARD_OBSERVATION ", 1)[1]))
         prepared = [e for e in records if e["event"] == "test.prepared"]
         assert len(prepared) == 1, "Missing/duplicate test observation directory"
-        source = Path(prepared[0]["directory"])
-        assert not source.is_symlink() and source.parent.resolve() == Path(tempfile.gettempdir()).resolve()
-        assert source.name.startswith("caper-forward-observation-")
-        files = list(source.glob("events-*.jsonl"))
-        assert 1 <= len(files) <= 2
+        report["check"] = "validate reported receipt location"
+        report["path"] = prepared[0]["directory"]
+        source, provenance = receipt_location(prepared[0]["directory"])
+        report["provenance"] = provenance
+        report["check"] = "copy bounded no-symlink receipt files"
+        copy_receipt(source, destination)
         events = []
-        for path in sorted(files):
-            assert not path.is_symlink() and path.stat().st_size <= 1_048_576
-            shutil.copy2(path, destination / path.name)
         record(
             destination / "hashes.json",
             {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in destination.glob("*.jsonl")},
@@ -179,6 +287,7 @@ def collect(output, record):
             destination / "ordered.json",
             sorted(events, key=lambda e: (int(e["uptimeNanoseconds"]), e["stream"], e["sequence"])),
         )
+        report["check"] = "assess receipt metadata"
         report.update(assess(events))
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"

@@ -71,8 +71,15 @@ import CryptoKit
         // or failed write never emits the unexpected contents or their digest/types.
         let readback = writeSucceeded ? board.string(forType: .string) : nil
         let types = board.types?.map(\.rawValue) ?? []
-        let matches = readback == expected && types == [NSPasteboard.PasteboardType.string.rawValue] && board.changeCount == count
+        let after = board.changeCount
+        let present = readback != nil
+        let exactMatch = readback == expected
+        let typePolicy = types == [NSPasteboard.PasteboardType.string.rawValue]
+        let stable = after == count
+        let matches = exactMatch && typePolicy && stable
         var data: [String: Any] = ["writeSucceeded": writeSucceeded, "readbackMatches": matches,
+            "readbackPresent": present, "exactCanaryMatch": exactMatch, "typePolicyMatches": typePolicy,
+            "countStable": stable, "changeCountAfter": after,
             "changeCount": count, "started": String(DispatchTime.now().uptimeNanoseconds), "active": true]
         if matches, let readback {
             data["sha256"] = SHA256.hash(data: Data(readback.utf8)).map { String(format: "%02x", $0) }.joined()
