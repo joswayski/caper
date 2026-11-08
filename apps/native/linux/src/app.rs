@@ -3273,9 +3273,6 @@ impl App {
         let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let status = label("", &["muted", "small", "image-menu-status"]);
         status.set_visible(false);
-        // Loads the original off screen, as the viewer does.
-        let original = gtk::Picture::new();
-        original.set_visible(false);
         for (text, item) in [
             ("Copy image", 0),
             ("Copy image link", 1),
@@ -3287,44 +3284,61 @@ impl App {
             if let Some(label) = button.child().and_downcast::<gtk::Label>() {
                 label.set_xalign(0.0);
             }
-            let (app, menu, status, original, attachment) = (
+            let (app, menu, status, attachment) = (
                 self.clone(),
                 popover.clone(),
                 status.clone(),
-                original.clone(),
                 attachment.clone(),
             );
             button.connect_clicked(move |button| match item {
                 0 => {
-                    let Some(url) = (if attachment.content_type == "image/gif" {
-                        caper_client::attachments::inline_source(&attachment).map(str::to_owned)
-                    } else {
-                        attachment.url.clone()
-                    }) else {
-                        return;
-                    };
                     status.set_label("Copying image…");
                     status.set_visible(true);
                     button.set_sensitive(false);
-                    let (status, button, copied) =
-                        (status.clone(), button.clone(), Cell::new(false));
-                    original.connect_paintable_notify(move |picture| {
-                        let texture = picture
-                            .paintable()
-                            .and_then(|paintable| paintable.downcast::<gdk::Texture>().ok());
-                        // An animation's first frame only.
-                        if let Some(texture) = texture.filter(|_| !copied.replace(true)) {
-                            button.clipboard().set_texture(&texture);
-                            status.set_label("Image copied");
-                            button.set_sensitive(true);
-                        }
-                    });
                     let key = if attachment.content_type == "image/gif" {
                         attachment.id.clone()
                     } else {
                         crate::media::Media::full_key(&attachment.id)
                     };
-                    app.images.media.bind(&original, &key, &url);
+                    app.images.media.retry(&key);
+                    let (weak, menu, status, button, attachment, generation) = (
+                        Rc::downgrade(&app),
+                        menu.downgrade(),
+                        status.clone(),
+                        button.clone(),
+                        attachment.clone(),
+                        app.state.borrow().generation,
+                    );
+                    glib::timeout_add_local(Duration::from_millis(50), move || {
+                        let Some(app) = weak.upgrade() else {
+                            return glib::ControlFlow::Break;
+                        };
+                        // Closing the menu or signing out cancels clipboard delivery.
+                        if app.state.borrow().generation != generation
+                            || menu.upgrade().is_none_or(|menu| !menu.is_visible())
+                        {
+                            return glib::ControlFlow::Break;
+                        }
+                        let file = app.images.media.resolve(&attachment);
+                        let url = if file.content_type == "image/gif" {
+                            caper_client::attachments::inline_source(&file)
+                        } else {
+                            file.url.as_deref()
+                        };
+                        match url
+                            .ok_or(())
+                            .and_then(|url| app.images.media.first_frame(&key, url))
+                        {
+                            Ok(Some(texture)) => {
+                                button.clipboard().set_texture(&texture);
+                                status.set_label("Image copied");
+                            }
+                            Ok(None) => return glib::ControlFlow::Continue,
+                            Err(()) => status.set_label("Couldn’t copy image. Try again."),
+                        }
+                        button.set_sensitive(true);
+                        glib::ControlFlow::Break
+                    });
                 }
                 1 => {
                     if let Some(url) = &attachment.url {
@@ -3340,7 +3354,6 @@ impl App {
             list.append(&button);
         }
         list.append(&status);
-        list.append(&original);
         popover.set_child(Some(&list));
         popup(&popover, anchor);
     }

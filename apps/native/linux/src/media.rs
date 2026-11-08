@@ -129,6 +129,41 @@ impl Media {
         format!("{FULL_KEY}{id}")
     }
 
+    /// First frame for a clipboard request: pending, ready, or terminal failure.
+    /// Keep polling with the resolved URL so a signed-URL refresh can finish.
+    pub fn first_frame(&self, key: &str, url: &str) -> Result<Option<gdk::Texture>, ()> {
+        if let Some(frames) = self.frames(key, url) {
+            return Ok(frames.first().map(|(texture, _)| texture.clone()));
+        }
+        if matches!(
+            self.entries.borrow().get(key),
+            Some(Entry::Failed {
+                awaiting_refresh: false,
+                ..
+            })
+        ) {
+            Err(())
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// An explicit user retry may fetch a failed URL again. Leave pending
+    /// refreshes and successful cached images alone.
+    pub fn retry(&self, key: &str) {
+        let mut entries = self.entries.borrow_mut();
+        if matches!(
+            entries.get(key),
+            Some(Entry::Failed {
+                awaiting_refresh: false,
+                ..
+            })
+        ) {
+            entries.remove(key);
+            self.retried.borrow_mut().remove(key);
+        }
+    }
+
     /// The loaded frames for `key`, starting its load when needed.
     fn frames(&self, key: &str, url: &str) -> Option<Rc<Frames>> {
         match self.entries.borrow().get(key) {
@@ -141,7 +176,31 @@ impl Media {
             _ => {}
         }
         if !unsigned(key) && needs_refresh(url, chrono::Utc::now().timestamp()) {
-            self.want_refresh(refresh_id(key), false);
+            let mut entries = self.entries.borrow_mut();
+            let refreshing = entries.iter().any(|(other, entry)| {
+                refresh_id(other) == refresh_id(key)
+                    && matches!(
+                        entry,
+                        Entry::Failed {
+                            awaiting_refresh: true,
+                            ..
+                        }
+                    )
+            });
+            entries.insert(
+                key.to_owned(),
+                Entry::Failed {
+                    url: url.to_owned(),
+                    awaiting_refresh: true,
+                },
+            );
+            drop(entries);
+            // Each key retains its terminal failure until a user retry or a
+            // newer URL. A new attempt must not wait out the refresher backoff.
+            // Tile and original requests can share an outstanding refresh.
+            if !refreshing {
+                self.want_refresh(refresh_id(key), true);
+            }
             return None;
         }
         self.entries
@@ -288,9 +347,9 @@ impl Media {
     ) -> Option<String> {
         {
             let mut fresh = self.fresh.borrow_mut();
-            for (id, url) in urls {
-                if requested.contains(&id) {
-                    fresh.insert(id, url);
+            for (id, url) in &urls {
+                if requested.contains(id) {
+                    fresh.insert(id.clone(), url.clone());
                 }
             }
         }
@@ -298,14 +357,24 @@ impl Media {
             let mut entries = self.entries.borrow_mut();
             for id in requested {
                 for key in [id.clone(), Self::full_key(id)] {
-                    if matches!(
-                        entries.get(&key),
-                        Some(Entry::Failed {
-                            awaiting_refresh: true,
-                            ..
-                        })
-                    ) {
-                        entries.remove(&key);
+                    if let Some(Entry::Failed {
+                        url,
+                        awaiting_refresh,
+                    }) = entries.get_mut(&key)
+                        && *awaiting_refresh
+                    {
+                        *awaiting_refresh = false;
+                        // Missing/failed refreshes are terminal. An expired
+                        // source stays failed until the caller supplies a newer
+                        // resolved URL; removing it would queue refresh forever.
+                        // A 403 on an unexpired URL may retry it once on success.
+                        if urls
+                            .get(id)
+                            .is_some_and(|fresh| fresh.url.is_some() || fresh.preview_url.is_some())
+                            && !needs_refresh(url, chrono::Utc::now().timestamp())
+                        {
+                            entries.remove(&key);
+                        }
                     }
                 }
             }
@@ -409,4 +478,164 @@ pub fn show(picture: &gtk::Picture, frames: &Rc<Frames>) {
         }
         glib::ControlFlow::Continue
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn expired_clipboard_url_reports_refresh_failure_and_allows_immediate_retry() {
+        let url = "http://127.0.0.1:9/image?exp=1";
+        let (sender, _) = async_channel::unbounded();
+        let media = Media::new(Api::new(url).unwrap(), sender);
+        for key in ["attachment".to_owned(), Media::full_key("attachment")] {
+            assert!(matches!(media.first_frame(&key, url), Ok(None)));
+            let ids = media.take_refresh();
+            assert_eq!(ids, ["attachment"]);
+            media.refreshed(&ids, BTreeMap::new());
+            assert!(media.first_frame(&key, url).is_err());
+            media.retry(&key);
+            assert!(matches!(media.first_frame(&key, url), Ok(None)));
+            let ids = media.take_refresh();
+            assert_eq!(
+                ids,
+                ["attachment"],
+                "explicit retry must bypass refresh backoff"
+            );
+            // Returning the same expired URL is not a successful refresh either.
+            media.refreshed(
+                &ids,
+                BTreeMap::from([(
+                    "attachment".into(),
+                    FreshUrl {
+                        url: Some(url.into()),
+                        preview_url: None,
+                    },
+                )]),
+            );
+            assert!(media.first_frame(&key, url).is_err());
+        }
+        assert!(matches!(media.first_frame("shared", url), Ok(None)));
+        let ids = media.take_refresh();
+        assert!(matches!(media.first_frame("full:shared", url), Ok(None)));
+        assert!(
+            media.take_refresh().is_empty(),
+            "join the in-flight refresh"
+        );
+        media.refreshed(&ids, BTreeMap::new());
+        assert!(media.first_frame("shared", url).is_err());
+        assert!(media.first_frame("full:shared", url).is_err());
+    }
+
+    #[test]
+    fn clipboard_load_reports_failure_retries_and_waits_for_url_refresh() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://{}/image?exp=4102444800",
+            listener.local_addr().unwrap()
+        );
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 3, image::Rgba([180, 80, 30, 255]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            for (status, body) in [
+                (500, b"refused".to_vec()),
+                (200, b"invalid image".to_vec()),
+                (403, b"expired".to_vec()),
+                (200, png.into_inner()),
+            ] {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                for line in BufReader::new(&socket).lines() {
+                    if line.unwrap().is_empty() {
+                        break;
+                    }
+                }
+                write!(
+                    socket,
+                    "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                socket.write_all(&body).unwrap();
+            }
+        });
+        let (sender, receiver) = async_channel::unbounded();
+        let media = Media::new(Api::new(&url).unwrap(), sender);
+        let key = Media::full_key("attachment");
+        // A successful proactive refresh lets the new URL proceed to download.
+        assert!(matches!(
+            media.first_frame(&key, &url.replace("4102444800", "1")),
+            Ok(None)
+        ));
+        assert!(matches!(
+            receiver.recv_blocking().unwrap(),
+            Signal::RefreshMedia
+        ));
+        media.refreshed(
+            &media.take_refresh(),
+            BTreeMap::from([(
+                "attachment".into(),
+                FreshUrl {
+                    url: Some(url.clone()),
+                    preview_url: None,
+                },
+            )]),
+        );
+        for attempt in 0..4 {
+            if attempt > 0 && attempt < 3 {
+                media.retry(&key);
+            }
+            assert!(matches!(media.first_frame(&key, &url), Ok(None)));
+            let Signal::Media {
+                generation,
+                key: loaded_key,
+                url: loaded_url,
+                result,
+            } = receiver.recv_blocking().unwrap()
+            else {
+                panic!("expected a completed image load");
+            };
+            media.loaded(generation, loaded_key, loaded_url, result);
+            match attempt {
+                0 | 1 => assert!(media.first_frame(&key, &url).is_err()),
+                2 => {
+                    // A 403 is not terminal until the refreshed URL has been tried.
+                    assert!(matches!(media.first_frame(&key, &url), Ok(None)));
+                    assert!(matches!(
+                        receiver.recv_blocking().unwrap(),
+                        Signal::RefreshMedia
+                    ));
+                    media.retry(&key);
+                    assert!(matches!(media.first_frame(&key, &url), Ok(None)));
+                    media.refreshed(
+                        &media.take_refresh(),
+                        BTreeMap::from([(
+                            "attachment".into(),
+                            FreshUrl {
+                                url: Some(url.clone()),
+                                preview_url: None,
+                            },
+                        )]),
+                    );
+                }
+                _ => {
+                    let texture = media.first_frame(&key, &url).unwrap().unwrap();
+                    assert_eq!((texture.width(), texture.height()), (2, 3));
+                    let mut pixels = [0; 24];
+                    texture.download(&mut pixels, 8);
+                    assert_eq!(&pixels[..4], &[30, 80, 180, 255]);
+                    media.retry(&key);
+                    assert_eq!(media.first_frame(&key, &url).unwrap(), Some(texture));
+                }
+            }
+        }
+        server.join().unwrap();
+    }
 }
