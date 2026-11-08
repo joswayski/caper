@@ -1,0 +1,81 @@
+diff --git a/apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift b/apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift
+index 06e28f3a..913376b2 100644
+--- a/apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift
++++ b/apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift
+@@ -800,11 +800,13 @@ public final class ComposerTextView: NSTextView {
+     }
+     public var pasteAttachments: (() -> Bool)?
+     public override func paste(_ sender: Any?) {
++        ForwardNoteObservation.observe("paste.enter", self)
++        defer { ForwardNoteObservation.observe("paste.exit", self) }
+         if pasteAttachments?() != true { super.paste(sender) }
+     }
+     public override func keyDown(with event: NSEvent) { if handleKey?(event) != true { super.keyDown(with: event) } }
+-    public override func becomeFirstResponder() -> Bool { let result = super.becomeFirstResponder(); if result { focusChanged?(true) }; return result }
+-    public override func resignFirstResponder() -> Bool { let result = super.resignFirstResponder(); if result { focusChanged?(false) }; return result }
++    public override func becomeFirstResponder() -> Bool { let result = super.becomeFirstResponder(); if result { focusChanged?(true) }; ForwardNoteObservation.observe("focus.become", self, ["result": result]); return result }
++    public override func resignFirstResponder() -> Bool { let result = super.resignFirstResponder(); if result { focusChanged?(false) }; ForwardNoteObservation.observe("focus.resign", self, ["result": result]); return result }
+ }
+ 
+ struct NativeMessageTextEditor: NSViewRepresentable {
+@@ -853,6 +855,8 @@ struct NativeMessageTextEditor: NSViewRepresentable {
+         let mentionsChanged = context.coordinator.parent.mentions != mentions || context.coordinator.parent.highlightSource != highlightSource
+         context.coordinator.adopt(self)
+         guard let view = scroll.documentView as? ComposerTextView else { return }
++        ForwardNoteObservation.update("update.enter", view, id: accessibilityID, editable: editable, enabled: isEnabled, bindingLength: text.utf16.count, resync: view.string != text)
++        defer { ForwardNoteObservation.update("update.exit", view, id: accessibilityID, editable: editable, enabled: isEnabled, bindingLength: text.utf16.count, resync: view.string != text) }
+         view.pasteAttachments = pasteAttachments
+         // A disabled composer (under a dialog) must not keep taking keystrokes.
+         view.isEditable = editable && isEnabled
+@@ -921,6 +925,8 @@ struct NativeMessageTextEditor: NSViewRepresentable {
+         // calls are nonisolated there. AppKit still delivers them on the main thread.
+         func textDidChange(_ notification: Notification) {
+             MainActor.assumeIsolated {
++                if let view { ForwardNoteObservation.observe("textDidChange.enter", view, ["highlighting": highlighting, "bindingUTF16Length": parent.text.utf16.count]) }
++                defer { if let view { ForwardNoteObservation.observe("textDidChange.exit", view, ["bindingUTF16Length": parent.text.utf16.count]) } }
+                 guard !highlighting, let view else { return }
+                 if parent.text != view.string { parent.text = view.string }
+                 dismissed = false; refresh(view)
+diff --git a/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift b/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
+index 8302f356..354e2fc1 100644
+--- a/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
++++ b/apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift
+@@ -2,11 +2,12 @@ import AppKit
+ import XCTest
+ 
+ @MainActor final class CaperAppKitTests: XCTestCase {
+-    private func launch(signedIn: Bool = true, fixture: String? = nil, preservePanelWidths: Bool = false) -> XCUIApplication {
++    private func launch(signedIn: Bool = true, fixture: String? = nil, preservePanelWidths: Bool = false, observationDirectory: URL? = nil) -> XCUIApplication {
+         let app = XCUIApplication()
+         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
+         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
+         app.launchEnvironment["CAPER_UI_FIXTURE"] = fixture
++        app.launchEnvironment["CAPER_FORWARD_OBSERVATION"] = observationDirectory?.path
+         if signedIn {
+             app.launchEnvironment["CAPER_TEST_BEARER"] = "fixture-owner-token"
+             app.launchEnvironment["CAPER_TEST_SPACE_ID"] = "space0000001"
+@@ -607,7 +608,8 @@ import XCTest
+             let history = try await Self.fixtureGET("/api/chat/channels/\(channel)/messages")
+             return try XCTUnwrap(history["messages"] as? [[String: Any]]).filter { $0["forward"] != nil }
+         }
+-        let app = launch()
++        let observationDirectory = ForwardNoteObservation.prepare()
++        let app = launch(observationDirectory: observationDirectory)
+         defer { app.terminate() }
+         let composer = app.textViews["message-composer"]
+         XCTAssertTrue(composer.waitForExistence(timeout: 15))
+@@ -626,8 +628,13 @@ import XCTest
+         let note = app.textViews["forward-note"]
+         let first = app.buttons["forward-destination-\(firstChannel)"]
+         let second = app.buttons["forward-destination-\(secondChannel)"]
++        var observeFirstReplacement = true
+         func replace(_ field: XCUIElement, with text: String) {
+-            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
++            let observe = observeFirstReplacement
++            observeFirstReplacement = false
++            defer { if observe { ForwardNoteObservation.end(observationDirectory) } }
++            NSPasteboard.general.clearContents(); let observationWrite = NSPasteboard.general.setString(text, forType: .string)
++            if observe { ForwardNoteObservation.begin(observationDirectory, writeSucceeded: observationWrite, expected: text) }
+             field.click(); field.typeKey("a", modifierFlags: .command)
+             // Pasting an empty string is a no-op in an AppKit field editor.
+             if text.isEmpty { field.typeKey(.delete, modifierFlags: []) }

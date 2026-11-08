@@ -1,9 +1,70 @@
-# Inactive, never-merge ARM64 session display and cumulative validation
+# Inactive, never-merge ARM64 forwarding observation
 
 Preparation branch: `apple-arm64-health-sidebar-prepared`. Only a separately
 approved push to `apple-arm64-health-sidebar-run` triggers this workflow. No
 dispatch, schedule, existing-ref change, job retry, production merge or cutover.
 One hosted VM/job; all results remain `productAcceptance: false`.
+
+## Proposed forwarding-only scope (requires separate execution review)
+
+The workflow now calls `forwarding`, not the retained `cumulative` entrypoint.
+It uses the same exact product, fresh health, session setup/restore, preparation,
+package recovery, two build-for-testing invocations, fixture and test flags below.
+It selects ONLY `CaperAppKitTests/CaperAppKitTests/testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts`,
+once. Zero non-UI or other Caper UI selections execute. The singleton's entire
+original body, gestures, assertions and five existing checkpoints remain; only
+its FIRST note replacement is observed. The `cumulative` output directory/step
+ID is retained for the unchanged finalization and cleanup contracts. The original
+37+6 entrypoint/manifest described below remains available but is NOT invoked.
+
+After the unchanged AX-capture overlay, `forward-note.patch` adds observation
+calls; `ForwardNoteObservation.swift` is copied into the diagnostic core and
+UI-test source directories only. No shipping source/ref is edited. Original and
+observed source hashes are checked, and the helper, patch and resulting sources
+are retained. No alternate input, sleep, polling, retries, throwing assertions,
+forced focus/editability or responder/menu change. Instrumentation adds CPU,
+clipboard readback, synchronous metadata I/O and event-monitor overhead; it is
+not timing-neutral and can perturb a race. The local monitor returns the exact
+received event without consuming or redirecting it.
+
+App observation requires the development bundle, parity fixture, exact loopback
+API and a unique test-created temporary directory passed only by this singleton.
+Only the `forward-note` view registers. A readiness state/monitor receipt is
+written independently of paste, then first-replacement events are gated by an
+atomic marker. The first helper writes the marker after its original pasteboard
+write and closes it on helper exit (including normal assertion-failure return).
+No subsequent replacement arms it. If abnormal test exit prevents closure, a
+12-second monotonic observation bound and 256-record-per-process cap stop further
+records; reaching either bound is incomplete evidence, never an implicit pass.
+There is no timer or observation polling. Temporary metadata is not deleted from
+the disposable VM before collection.
+
+Each record has a process/stream identity, contiguous sequence and machine-uptime
+nanoseconds; cross-process timestamps permit correlation but do not make readings
+atomic. Weak-key UUID identities distinguish live view/responder instances from
+recreation, without logging their descriptions or contents. Record app/key-window,
+actual first responder, note native/SwiftUI flags, UTF-16 text/binding lengths,
+exact string-inequality resync decision, focus callback results, paste entry/exit
+and textDidChange before/after. The initial ready snapshot is update-entry state;
+in-interval event snapshots independently report state even if paste never runs.
+
+The test records pasteboard write result/changeCount. Readback digest/types/length
+are emitted only if readback exactly matches its just-written synthetic string,
+the only declared type is string and changeCount remains stable. Otherwise record
+the mismatch without the unexpected contents, digest or types. No app-side
+clipboard reads, raw clipboard/message text, key characters, credentials or other
+applications' data are recorded. Clipboard reads are not an atomic transaction.
+
+Records go to stderr AND bounded per-stream JSONL files, so successful tests need
+not rely on failure-only diagnostic exports. The collector copies only this
+test's temporary directory, at most two 1MiB JSONL files, retains hashes and a
+monotonically ordered view, and checks stream completeness independently of
+XCTest success. Missing readiness, missing in-interval state, unmatched callbacks,
+limits or collection failures remain incomplete; zero paste callbacks with
+independent state is a meaningful observation, not a root-cause diagnosis.
+Collection runs even after test/export failure and never substitutes for the
+primary assertion, stdout/stderr, xcresult, AX attachments or full recording.
+The existing health/session/cleanup contracts and all caps below are unchanged.
 
 ## Temporary session display before full health controls
 

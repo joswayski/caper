@@ -19,6 +19,8 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
+import forward_observation
+
 ROOT = Path(__file__).resolve().parent
 SOURCE = "9fca8b93f3629390e837794b9468c5cdc18d7617"
 TREE = "1fdd75c82099d48f375e275ed105c93cfcd6c316"
@@ -774,7 +776,7 @@ def ui_evidence(output, checkpoints):
     record(output / "evidence.json", {"checkpoints": retained, "recordings": recordings, "inspection": "required"})
 
 
-def cumulative(output):
+def cumulative(output, forward_only=False):
     assert json.loads((output.parent / "health/report.json").read_text())["failed"] is False
     checked(["git", "rev-parse", "HEAD", "HEAD^{tree}"], output / "product-pin", 10)
     assert (output / "product-pin/stdout.txt").read_text().splitlines() == [SOURCE, TREE]
@@ -813,6 +815,8 @@ def cumulative(output):
     checked(["git", "apply", "--check", str(patch)], output / "overlay-check", 10)
     checked(["git", "apply", str(patch)], output / "overlay-apply", 10)
     assert sha(ui_source) == "0f0d4665aca9c6848c89900fe1c63f6a3746cff0a37669d1feabb21705e13a5c"
+    if forward_only:
+        forward_observation.install(output, checked, sha, record)
     shutil.copy2(ui_source, output / "CaperAppKitTests.observed.swift")
     checked(["git", "diff", "--binary"], output / "observation-diff", 10)
     record(output / "observation-hashes.json", {"patch": sha(patch), "observedUI": sha(ui_source)})
@@ -873,6 +877,10 @@ def cumulative(output):
         )
         for item in selection["ui"]
     ]
+    if forward_only:
+        selections = [item for item in selections if item[2] == forward_observation.SELECTOR]
+        assert len(selections) == 1
+    record(output / "execution-selection.json", {"forwardOnly": forward_only, "selectors": [s[2] for s in selections]})
     check_session_display(output / "display-before-tests", output.parent / "display-setup")
     with (output / "fixture.log").open("wb") as log:
         fixture = subprocess.Popen(
@@ -898,16 +906,26 @@ def cumulative(output):
                 result = {"name": name, "failed": True}
                 try:
                     assert fixture.poll() is None, "Synthetic fixture exited"
-                    passed = run_test(args, selectors, directory, False, identities)
+                    try:
+                        passed = run_test(args, selectors, directory, False, identities)
+                    finally:
+                        if forward_only:
+                            try:
+                                result["observationComplete"] = forward_observation.collect(directory, record)
+                            except Exception as error:
+                                result["observationComplete"] = False
+                                result["observationError"] = f"{type(error).__name__}: {error}"
                     result["testPassed"] = passed
                     if checkpoints:
                         ui_evidence(directory, checkpoints)
-                    result["failed"] = not passed
+                    result["failed"] = not passed or not result.get("observationComplete", True)
                 except Exception as error:
                     result["error"] = f"{type(error).__name__}: {error}"
                 results.append(result)
                 record(directory / "report.json", result)
-                record(output / "selections-report.json", {"results": results, "complete": len(results) == 7})
+                record(
+                    output / "selections-report.json", {"results": results, "complete": len(results) == len(selections)}
+                )
             return not any(result["failed"] for result in results)
         finally:
             if fixture.poll() is None:
@@ -957,11 +975,16 @@ def main():
             output.mkdir(parents=True, exist_ok=False)
             report["failed"] = not session_display(output, restore=True)
         else:
-            assert mode in {"graphics", "standalone", "cumulative"}
+            assert mode in {"graphics", "standalone", "cumulative", "forwarding"}
             assert json.loads((output.parent / "preflight/gate.json").read_text())["passed"]
             output.mkdir(parents=True, exist_ok=False)
             try:
-                passed = {"graphics": graphics, "standalone": standalone, "cumulative": cumulative}[mode](output)
+                passed = {
+                    "graphics": graphics,
+                    "standalone": standalone,
+                    "cumulative": cumulative,
+                    "forwarding": lambda out: cumulative(out, forward_only=True),
+                }[mode](output)
                 report["checkPassed"] = passed
             finally:
                 after = command(

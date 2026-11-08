@@ -1,5 +1,5 @@
 # NEVER MERGE. Preparation is inactive; execution needs separate exact-pin approval.
-name: ARM64 session display and cumulative AppKit validation
+name: ARM64 session display and forwarding observation
 on:
   push:
     branches: [apple-arm64-health-sidebar-run]
@@ -75,7 +75,7 @@ jobs:
           echo 'f61ee0b3f4c4cd337303e003d333357c5eaf25ef5d75a742109ee59e9a0a3932  apps/native/apple/.build/rnnoise-source.tar.gz' | shasum -a 256 -c -
           tar -xzf apps/native/apple/.build/rnnoise-source.tar.gz -C apps/native/apple/.build/rnnoise --strip-components=1
           tar -xzf apps/native/apple/.build/rnnoise-model.tar.gz -C apps/native/apple/.build/rnnoise src/rnnoise_data.c src/rnnoise_data.h
-      - name: Exact 37 non-UI tests and six UI singletons, once each
+      - name: Exact forwarding singleton with first-note observations, once
         id: cumulative
         if: ${{ !cancelled() && steps.health.outcome == 'success' && steps.dependency.outcome == 'success' }}
         timeout-minutes: 70
@@ -83,7 +83,7 @@ jobs:
         working-directory: caper
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
-        run: python3 ../.github/arm64-health/run.py cumulative "$RUNNER_TEMP/arm64-health/cumulative"
+        run: python3 ../.github/arm64-health/run.py forwarding "$RUNNER_TEMP/arm64-health/cumulative"
       - name: Best-effort original session mode restoration, once
         if: always()
         timeout-minutes: 1
@@ -93,11 +93,11 @@ jobs:
       - name: Preserve real outcomes; restoration is reported separately
         if: always()
         run: python3 .github/arm64-health/run.py finalize "$RUNNER_TEMP/arm64-health"
-      - name: Retain controls, pixels, timing, crashes and all cumulative results
+      - name: Retain controls, forwarding observations and original test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: arm64-health-cumulative-9fca8b93-${{ github.sha }}-${{ github.run_attempt }}
+          name: arm64-health-forwarding-9fca8b93-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/arm64-health
             !${{ runner.temp }}/arm64-health/standalone/work/XcodeGen
