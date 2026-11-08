@@ -400,6 +400,89 @@ function pushDeviceProblem(body, platforms) {
   return undefined;
 }
 const rfc3339 = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$/;
+// Preserve sub-millisecond ordering in the API's (created_at, id) cursor.
+function inboxTime(value) {
+  if (typeof value !== "string" || !rfc3339.test(value) || !Number.isFinite(Date.parse(value))) return undefined;
+  // Date.parse normalizes impossible dates and 24:00; chrono rejects them.
+  const day = value.slice(0, 10);
+  if (Number(value.slice(11, 13)) > 23 || new Date(`${day}T00:00:00Z`).toISOString().slice(0, 10) !== day)
+    return undefined;
+  const fraction = value.match(/\.(\d+)/)?.[1] ?? "";
+  return BigInt(Math.floor(Date.parse(value) / 1000)) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0").slice(0, 9));
+}
+
+function validActivityInbox(items) {
+  const strings = [
+    "emoji",
+    "spaceId",
+    "spaceName",
+    "channelId",
+    "channelName",
+    "conversationId",
+    "messageId",
+    "threadRootId",
+  ];
+  const required = ["id", "kind", "createdAt", "unread", "actorId", "actorName", "body"];
+  const kinds = ["message", "mention", "reply", "reaction", "space.invitation", "channel.invitation", "direct.request"];
+  return (
+    Array.isArray(items) &&
+    items.every((item) => {
+      if (
+        !item ||
+        typeof item !== "object" ||
+        Array.isArray(item) ||
+        Object.keys(item).some((key) => ![...required, ...strings, "avatarId"].includes(key)) ||
+        !visibleAscii(item.id, 200) ||
+        !visibleAscii(item.actorId, 200) ||
+        !kinds.includes(item.kind) ||
+        inboxTime(item.createdAt) === undefined ||
+        typeof item.unread !== "boolean" ||
+        typeof item.actorName !== "string" ||
+        !item.actorName ||
+        typeof item.body !== "string" ||
+        [...item.body].length > 280 ||
+        (item.avatarId != null && (!Number.isInteger(item.avatarId) || item.avatarId < 0)) ||
+        strings.some((key) => item[key] != null && (typeof item[key] !== "string" || !item[key]))
+      )
+        return false;
+      if (item.kind === "space.invitation")
+        return (
+          !!item.spaceId &&
+          !item.channelId &&
+          !item.conversationId &&
+          !item.messageId &&
+          !item.threadRootId &&
+          !item.emoji
+        );
+      if (item.kind === "channel.invitation")
+        return (
+          !!item.spaceId &&
+          !!item.channelId &&
+          !item.conversationId &&
+          !item.messageId &&
+          !item.threadRootId &&
+          !item.emoji
+        );
+      if (item.kind === "direct.request")
+        return (
+          !!item.conversationId &&
+          !item.spaceId &&
+          !item.channelId &&
+          !item.messageId &&
+          !item.threadRootId &&
+          !item.emoji
+        );
+      return (
+        !!item.messageId &&
+        (item.spaceId ? !!item.channelId && !item.conversationId : !!item.conversationId && !item.channelId) &&
+        (item.kind !== "reply" || !!item.threadRootId) &&
+        (item.kind === "reaction" ? !!item.emoji : !item.emoji)
+      );
+    }) &&
+    new Set(items.map((item) => item.id)).size === items.length
+  );
+}
+
 const yearMs = 365 * 24 * 60 * 60 * 1000;
 // Mutes read as null once they expire; stored times are whole UTC seconds.
 const activeMute = (mutedUntil) =>
@@ -476,6 +559,8 @@ export async function startFixture({
   const heldUploads = new Set();
   let holdAvatarRegeneration = false;
   const heldAvatarRegenerations = new Set();
+  let holdChannelLeaves = false;
+  const heldChannelLeaves = new Set();
   const identity = (request) =>
     request.headers.authorization === "Bearer fixture-owner-token" ||
     /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? "")
@@ -520,6 +605,42 @@ export async function startFixture({
                 detail.space.ownerId === user.id ||
                 (state.grants.get(channel.id) ?? []).includes(user.id)),
           )));
+  // Rows are an owner-scoped snapshot of eligible activity, not a second SQL
+  // source generator. Recheck live access for both listing and acknowledgement.
+  const inboxFor = (user) =>
+    user.id !== ids.owner
+      ? []
+      : state.inbox.filter((item) => {
+          if (item.actorId === user.id || state.blocks.includes(item.actorId)) return false;
+          const detail = state.spaces.find((entry) => entry.space.id === item.spaceId);
+          const member = detail?.members.some((member) => member.id === user.id);
+          if (item.kind === "space.invitation")
+            return !!detail && !member && state.invitations.get(`${item.spaceId}:${user.id}`)?.status === "pending";
+          const channel = channelFor(item.channelId ?? item.conversationId);
+          if (item.kind === "channel.invitation")
+            return (
+              !!member &&
+              channel?.spaceId === item.spaceId &&
+              channel.private &&
+              detail.space.ownerId !== user.id &&
+              !(state.grants.get(channel.id) ?? []).includes(user.id) &&
+              state.channelInvitations.get(`${channel.id}:${user.id}`)?.status === "pending"
+            );
+          const direct = state.directs.find((entry) => entry.id === item.conversationId);
+          if (direct?.declined || (direct && state.blocks.includes(direct.peer.id))) return false;
+          if (item.kind === "direct.request") return direct?.status === "incoming";
+          if (!channel || channel.id === ids.demo || !canRead(channel, user, false)) return false;
+          if (direct ? direct.status !== "accepted" : channel.spaceId !== item.spaceId) return false;
+          if (state.messages.get(channel.id)?.find((message) => message.id === item.messageId)?.deletedAt) return false;
+          const muted = (state.notificationOverrides.get(user.id) ?? []).some(
+            (entry) =>
+              activeMute(entry.mutedUntil) &&
+              (entry.conversationId === channel.id ||
+                entry.channelId === channel.id ||
+                (entry.spaceId === item.spaceId && !entry.channelId && !!item.spaceId)),
+          );
+          return !muted || item.kind === "mention";
+        });
   // Same @mention grammar and rules as apps/api/src/mentions.rs and chat::with_mentions:
   // any existing account is tagged, in channels and DMs; specials only outside DMs.
   const mentionsFor = (channel, text) => {
@@ -768,6 +889,17 @@ export async function startFixture({
       message.forward = { message: null, seq: "0" };
       message.forwardSeq = message.editSeq;
     }
+    // Like deletion::persist_delete, old replay rows must not restore a
+    // deleted wrapper's grant or a deleted original's shared content.
+    for (const channelId of state.messages.keys())
+      for (const event of channelEvents(channelId)) {
+        if (event.message?.id === message.id) {
+          event.message.content = clone(message.content);
+          if (message.forward) event.message.forward = { message: null, seq: "0" };
+        }
+        if (state.forwardSources.get(event.message?.id) === message.id)
+          event.message.forward = { message: null, seq: "0" };
+      }
     for (const reply of state.messages.get(channel.id) ?? [])
       if (reply.replyTo?.id === message.id) {
         delete reply.replyTo.fullText;
@@ -838,6 +970,18 @@ export async function startFixture({
     response.end(status === 204 ? undefined : JSON.stringify(body));
   };
   const reject = (response, status, error) => json(response, status, { error });
+  const takeFailure = (path, method, afterPersist = false) => {
+    const index = state.failures.findIndex(
+      (failure) =>
+        failure.path === path &&
+        (!failure.method || failure.method === method) &&
+        !!failure.afterPersist === afterPersist,
+    );
+    if (index < 0) return;
+    const failure = state.failures[index];
+    if (!failure.persistent) state.failures.splice(index, 1);
+    return failure;
+  };
 
   const serve = async (request, response) => {
     try {
@@ -875,7 +1019,13 @@ export async function startFixture({
       if (path === "/__fixture/inbox-requests" && method === "GET")
         return json(response, 200, { requests: state.inboxRequests ?? [] });
       if (path === "/__fixture/control" && method === "POST") {
+        if (body.activityInbox !== undefined && !validActivityInbox(body.activityInbox))
+          return reject(response, 400, "Invalid fixture activity inbox.");
         if (body.reset) state = initialState(formatted);
+        // Replace only the owner's activity with API-shaped rows, including
+        // their unread flags. [] clears it; reset restores the two default rows.
+        // Applied before spaceInvitation.inbox, which still prepends its seed.
+        if (body.activityInbox !== undefined) state.inbox = clone(body.activityInbox);
         if (typeof body.admin === "boolean") state.account.admin = body.admin;
         // Opt-in channel read state: `{ channelReads: { [channelId]: readSeq } }`.
         if (body.channelReads !== undefined) {
@@ -907,6 +1057,10 @@ export async function startFixture({
         if (body.reset || typeof body.holdAvatarRegeneration === "boolean") {
           holdAvatarRegeneration = !body.reset && body.holdAvatarRegeneration;
           if (!holdAvatarRegeneration) for (const release of heldAvatarRegenerations) release();
+        }
+        if (body.reset || typeof body.holdChannelLeaves === "boolean") {
+          holdChannelLeaves = !body.reset && body.holdChannelLeaves;
+          if (!holdChannelLeaves) for (const release of heldChannelLeaves) release();
         }
         if (body.pushPlatforms !== undefined) {
           if (
@@ -992,7 +1146,21 @@ export async function startFixture({
           state.multipartPartBytes = body.multipartPartBytes;
         if (Number.isSafeInteger(body.failPart) && body.failPart > 0) state.failParts.push(body.failPart);
         if (body.clearFailures) state.failures = [];
-        if (body.failure) state.failures.push(body.failure);
+        if (body.failure) {
+          // GET destination/history errors use the existing exact-path control.
+          // A POST /channels/:destination/forwards with `afterPersist: true`
+          // loses only its acknowledgement, once, after storage and fanout.
+          // Other destinations, rejected requests and idempotent retries do
+          // not consume it. clearFailures/reset clear it with ordinary errors.
+          if (
+            body.failure.afterPersist &&
+            (body.failure.method !== "POST" ||
+              !/^\/api\/chat\/channels\/[^/]+\/forwards$/.test(body.failure.path) ||
+              body.failure.persistent)
+          )
+            return reject(response, 400, "afterPersist requires a one-shot forward POST failure.");
+          state.failures.push(body.failure);
+        }
         if (body.disconnect) for (const client of sockets) client.socket.destroy();
         if (body.typing)
           broadcast("chat", body.typing.channelId ?? ids.general, {
@@ -1353,7 +1521,26 @@ export async function startFixture({
           fixture: true,
           heldSends: heldSends.size,
           heldAvatarRegenerations: heldAvatarRegenerations.size,
+          heldChannelLeaves: heldChannelLeaves.size,
         });
+      }
+      // Keep a real destructive confirmation pending until its test releases
+      // the request. Other methods, reads and failure injection stay independent.
+      if (
+        holdChannelLeaves &&
+        method === "DELETE" &&
+        /^\/api\/spaces\/[^/]+\/channels\/[^/]+\/membership$/.test(path)
+      ) {
+        await new Promise((resolve) => {
+          const release = () => {
+            heldChannelLeaves.delete(release);
+            response.off("close", release);
+            resolve();
+          };
+          heldChannelLeaves.add(release);
+          response.once("close", release);
+        });
+        if (response.destroyed) return;
       }
       if (path === "/api/assets" && method === "POST" && holdUploads) {
         await new Promise((resolve) => {
@@ -1367,14 +1554,8 @@ export async function startFixture({
         });
         if (response.destroyed) return;
       }
-      const failureIndex = state.failures.findIndex(
-        (failure) => failure.path === path && (!failure.method || failure.method === method),
-      );
-      if (failureIndex >= 0) {
-        const failure = state.failures[failureIndex];
-        if (!failure.persistent) state.failures.splice(failureIndex, 1);
-        return reject(response, failure.status, failure.error ?? "TEST FIXTURE: requested failure.");
-      }
+      const failure = takeFailure(path, method);
+      if (failure) return reject(response, failure.status, failure.error ?? "TEST FIXTURE: requested failure.");
       const user = identity(request);
       if (path === "/api/assets/usage")
         return user && state.uploadsEnabled
@@ -1808,65 +1989,80 @@ export async function startFixture({
       }
       if (path === "/api/notifications/inbox" && method === "GET") {
         if (!user) return reject(response, 401, "Sign in required.");
+        const keys = [...url.searchParams.keys()];
+        if (keys.some((key) => !["filter", "unread", "cursor"].includes(key)) || new Set(keys).size !== keys.length)
+          return reject(response, 400, "invalid inbox query");
+        const unread = url.searchParams.get("unread") ?? "false";
+        if (!["true", "false"].includes(unread)) return reject(response, 400, "invalid inbox query");
         const filter = url.searchParams.get("filter") ?? "all";
-        const matches = {
+        const filters = {
           all: () => true,
           dms: (item) => !item.spaceId,
           mentions: (item) => item.kind === "mention",
           threads: (item) => item.threadRootId && item.kind !== "reaction",
           reactions: (item) => item.kind === "reaction",
           invitations: (item) => ["space.invitation", "channel.invitation", "direct.request"].includes(item.kind),
-        }[filter];
-        if (!matches) return reject(response, 400, "invalid inbox filter");
-        const unreadOnly = url.searchParams.get("unread") === "true";
+        };
+        if (!Object.hasOwn(filters, filter)) return reject(response, 400, "invalid inbox filter");
         const encodedCursor = url.searchParams.get("cursor");
         let cursor;
         if (encodedCursor !== null) {
           try {
-            cursor = JSON.parse(encodedCursor);
-            if (
-              encodedCursor.length > 512 ||
-              !Array.isArray(cursor) ||
-              cursor.length !== 2 ||
-              cursor.some((part) => typeof part !== "string") ||
-              !Number.isFinite(Date.parse(cursor[0]))
-            )
-              throw new Error("invalid cursor");
+            if (Buffer.byteLength(encodedCursor) <= 512) cursor = JSON.parse(encodedCursor);
           } catch {
-            return reject(response, 400, "invalid inbox cursor");
+            /* Invalid JSON follows the same rejection as an invalid tuple. */
           }
+          if (
+            !Array.isArray(cursor) ||
+            cursor.length !== 2 ||
+            inboxTime(cursor[0]) === undefined ||
+            typeof cursor[1] !== "string"
+          )
+            return reject(response, 400, "invalid inbox cursor");
         }
         (state.inboxRequests ??= []).push({
           filter,
-          unread: unreadOnly,
+          unread: unread === "true",
           ...(encodedCursor === null ? {} : { cursor: encodedCursor }),
         });
         if (state.inboxDelayMs) await new Promise((resolve) => setTimeout(resolve, state.inboxDelayMs));
-        const mine = user.id === ids.owner ? state.inbox : [];
+        const mine = inboxFor(user);
         // Match the API's descending (createdAt, id) keyset, including after a read
         // removes an earlier row from an unread-only page. Offsets would skip rows.
-        const rows = mine
-          .filter((item) => matches(item) && (!unreadOnly || item.unread))
+        const page = mine
           .filter(
             (item) =>
-              !cursor ||
-              Date.parse(item.createdAt) < Date.parse(cursor[0]) ||
-              (Date.parse(item.createdAt) === Date.parse(cursor[0]) && item.id < cursor[1]),
+              filters[filter](item) &&
+              (unread !== "true" || item.unread) &&
+              (!cursor ||
+                inboxTime(item.createdAt) < inboxTime(cursor[0]) ||
+                (inboxTime(item.createdAt) === inboxTime(cursor[0]) && item.id < cursor[1])),
           )
-          .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id));
-        const items = rows.slice(0, state.inboxPageSize ?? 40);
+          .sort(
+            (a, b) =>
+              Number(inboxTime(b.createdAt) - inboxTime(a.createdAt)) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+          );
+        const items = page.slice(0, state.inboxPageSize ?? 40);
         const last = items.at(-1);
         return json(response, 200, {
           items,
-          nextCursor: rows.length > items.length ? JSON.stringify([last.createdAt, last.id]) : null,
+          nextCursor: page.length > items.length ? JSON.stringify([last.createdAt, last.id]) : null,
           unreadCount: mine.filter((item) => item.unread).length,
         });
       }
       if (path === "/api/notifications/inbox/read" && method === "POST") {
         if (!user) return reject(response, 401, "Sign in required.");
-        const ids_ = Array.isArray(body?.ids) ? body.ids : [];
-        const mine = user.id === ids.owner ? state.inbox : [];
-        for (const item of mine) if (ids_.includes(item.id)) item.unread = false;
+        if (
+          !body ||
+          !Array.isArray(body.ids) ||
+          body.ids.some((id) => typeof id !== "string") ||
+          Object.keys(body).some((key) => key !== "ids")
+        )
+          return reject(response, 422, "invalid inbox read");
+        if (!body.ids.length || body.ids.length > 100 || body.ids.some((id) => Buffer.byteLength(id) > 200))
+          return reject(response, 400, "provide between 1 and 100 inbox IDs");
+        const mine = inboxFor(user);
+        for (const item of mine) if (body.ids.includes(item.id)) item.unread = false;
         return json(response, 200, { unreadCount: mine.filter((item) => item.unread).length });
       }
       const overridePath = /^\/api\/(?:spaces\/([^/]+)(?:\/channels\/([^/]+))?|dms\/([^/]+))\/notifications$/.exec(
@@ -2057,10 +2253,12 @@ export async function startFixture({
                 })),
             },
           ].filter((space) => space.channels.length),
-          // With feedback-team state too, the badge still counts waiting reports.
+          // With feedback-team state too, keep the separate waiting-report count.
           feedbackWaiting: user.feedbackTeam
             ? (state.feedback ?? []).filter((report) => !report.answered && !report.archived).length
             : 0,
+          // push::badge::count is the accessible activity count, not channel heads or feedback.
+          badgeCount: inboxFor(user).filter((item) => item.unread).length,
         });
       const channelRead = /^\/api\/spaces\/([^/]+)\/channels\/([^/]+)\/read$/.exec(path);
       if (channelRead && method === "POST" && user && state.channelReads) {
@@ -2076,6 +2274,7 @@ export async function startFixture({
         return json(response, 200, {
           spaces: [],
           feedbackWaiting: (state.feedback ?? []).filter((report) => !report.answered && !report.archived).length,
+          badgeCount: inboxFor(user).filter((item) => item.unread).length,
         });
       if (path === "/api/feedback" && method === "GET") {
         if (!user?.feedbackTeam) return reject(response, 404, "resource not found");
@@ -2234,6 +2433,7 @@ export async function startFixture({
             .map((channel) => ({
               id: channel.id,
               name: channel.name,
+              ...(!channel.direct ? { spaceId: channel.spaceId } : {}),
               spaceName: spaceFor(channel.spaceId).name,
               direct: !!channel.direct,
             })),
@@ -2245,11 +2445,13 @@ export async function startFixture({
         if (!canRead(channel, user)) return reject(response, 404, "resource not found");
         if (method === "GET" && forwardPath[2]) {
           const wrapper = state.messages.get(channel.id)?.find((message) => message.id === forwardPath[2]);
-          const source = wrapper && messageFor(state.forwardSources.get(wrapper.id));
+          const original = wrapper && messageFor(state.forwardSources.get(wrapper.id));
+          const source = original && !original.deletedAt && channelFor(original.channelId) ? original : null;
           if (!wrapper || wrapper.deletedAt || !state.forwardSources.has(wrapper.id))
             return reject(response, 404, "Forward not found.");
           const before = url.searchParams.get("before");
-          if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, "invalid cursor");
+          if (before !== null && (!/^(0|[1-9]\d*)$/.test(before) || BigInt(before) > 9223372036854775807n))
+            return reject(response, 400, "invalid cursor");
           const replies = source
             ? state.messages
                 .get(source.channelId)
@@ -2276,16 +2478,24 @@ export async function startFixture({
           if (!canParticipate(channel, user) || !canRead(channelFor(body.sourceChannelId), user))
             return reject(response, 404, "resource not found");
           const who = state.chatSessions.get(request.headers["x-caper-chat-token"]);
-          if (!who || who.isGuest) return reject(response, 401, "Messaging session required.");
+          if (!who || who.isGuest || who.id !== user?.id) return reject(response, 401, "Messaging session required.");
           const selected = state.messages
             .get(body.sourceChannelId)
             ?.find((message) => message.id === body.sourceMessageId);
           const source = selected && messageFor(state.forwardSources.get(selected.id) ?? selected.id);
-          if (!source || source.deletedAt || selected.deletedAt) return reject(response, 404, "Original not found.");
+          if (!source || source.deletedAt || selected.deletedAt || !channelFor(source.channelId))
+            return reject(response, 404, "Original not found.");
+          const text = body.text === undefined ? "" : body.text;
           if (
+            Object.keys(body).some(
+              (key) => !["sourceChannelId", "sourceMessageId", "clientMessageId", "text"].includes(key),
+            ) ||
             typeof body.clientMessageId !== "string" ||
-            typeof (body.text ?? "") !== "string" ||
-            [...(body.text ?? "")].length > 4000
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientMessageId) ||
+            typeof text !== "string" ||
+            (text !== "" && !text.trim()) ||
+            [...text].length > 4000 ||
+            /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(text)
           )
             return reject(response, 400, "Invalid forward.");
           // Forwards are sends: blocks and message requests gate them the same way.
@@ -2293,11 +2503,12 @@ export async function startFixture({
           if (conversation && state.blocks.includes(conversation.peer.id))
             return json(response, 403, { error: "Unblock this person to message them.", code: "dm_blocked" });
           if (conversation?.status === "incoming") Object.assign(conversation, { status: "accepted", declined: false });
-          const key = `${channel.id}:${body.clientMessageId}`;
+          const clientMessageId = body.clientMessageId.toLowerCase();
+          const key = `${channel.id}:${clientMessageId}`;
           const previous = state.sendKeys.get(key);
           if (previous)
             return previous.token === request.headers["x-caper-chat-token"] &&
-              previous.text === (body.text ?? "") &&
+              previous.text === text &&
               previous.source === source.id
               ? json(response, 200, {
                   ...previous.message,
@@ -2305,14 +2516,15 @@ export async function startFixture({
                 })
               : reject(response, 409, "Message ID already used.");
           const seq = String(BigInt(channelHead(channel.id)) + 1n);
+          const mentions = mentionsFor(channel, text);
           const wrapper = {
             id: randomUUID().replaceAll("-", "").slice(0, 15),
             channelId: channel.id,
             seq,
             author: who,
-            content: { version: 1, type: "text", text: body.text ?? "" },
+            content: { version: 1, type: "text", text, ...(mentions.length ? { mentions } : {}) },
             createdAt: new Date().toISOString(),
-            clientMessageId: body.clientMessageId,
+            clientMessageId,
             forward: snapshot(source),
             forwardSeq: seq,
           };
@@ -2320,11 +2532,14 @@ export async function startFixture({
           state.forwardSources.set(wrapper.id, source.id);
           state.sendKeys.set(key, {
             token: request.headers["x-caper-chat-token"],
-            text: body.text ?? "",
+            text,
             source: source.id,
             message: wrapper,
           });
           created(wrapper);
+          const uncertain = takeFailure(path, method, true);
+          if (uncertain)
+            return reject(response, uncertain.status, uncertain.error ?? "TEST FIXTURE: requested failure.");
           return json(response, 200, wrapper);
         }
       }
@@ -2665,6 +2880,7 @@ export async function startFixture({
           state.sendKeys.set(key, { token: request.headers["x-caper-chat-token"], text: body.text, message });
           if (body.suppressEmbeds === true) message.content.suppressEmbeds = true;
           created(message);
+          projectForwards(message);
           transcribe(message);
           unfurl(message);
           return json(response, 200, message);

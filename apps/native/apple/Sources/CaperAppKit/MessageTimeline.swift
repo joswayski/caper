@@ -1,6 +1,8 @@
 import AppKit
 import CaperCore
 
+enum MessageAction { case reaction(String), reactors(String), addReaction, retryReaction, dismissReaction, pin, retryPin, dismissPin, history, reply, replyInThread, openThread }
+
 /// A scroll document with only realized native text views. Unlike NSTableView,
 /// it never manufactures an AX row for every message in the loaded history.
 @MainActor final class MessageTimeline: NSScrollView {
@@ -16,15 +18,28 @@ import CaperCore
     private var rendering = false
     private var conversationID: String?
     private var viewerID: String?
+    private var canInteract = false
+    private var reactionErrors: [String: String] = [:]
+    private var pinErrors: [String: String] = [:]
+    private var pendingPins: Set<String> = []
     private var followEnd = true
     private var selection: [String: (text: String, range: NSRange)] = [:]
+    private var focusedID: String?
+    private var pendingFocus: String?
+    var inThread = false
     var canLoadOlder = false
     var loadOlder: (() -> Void)?
+    var visibleMessagesChanged: ((Set<String>) -> Void)?
     var react: ((String, String) -> Void)?
     var openAuthor: ((ChatAuthor, NSView) -> Void)?
     var openMention: ((MessageMention, NSView, NSRect) -> Void)?
     var makeAttachments: ((ChatMessage) -> AppKitAttachmentSurface?)?
+    var makeReply: ((ChatMessage) -> AppKitAttachmentSurface?)?
     var makePending: ((PendingMessage) -> AppKitAttachmentSurface?)?
+    var messageMenu: ((ChatMessage, NSView) -> NSMenu?)?
+    var messageAction: ((ChatMessage, MessageAction, NSView) -> Void)?
+    var hoverReaction: ((ChatMessage, String, Bool, NSView) -> Void)?
+    var dismissHover: (() -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -43,7 +58,7 @@ import CaperCore
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil, blocked: Set<String> = [], pending: PendingMessage? = nil) {
+    func update(_ messages: [ChatMessage], conversationID: String?, viewerID: String? = nil, blocked: Set<String> = [], pending: PendingMessage? = nil, canInteract: Bool = false, reactionErrors: [String: String] = [:], pinErrors: [String: String] = [:], pendingPins: Set<String> = []) {
         let changedConversation = self.conversationID != conversationID
         let anchor = geometry.anchor(at: contentView.bounds.minY)
         let anchorTextTop = anchor.flatMap { rows[$0.id]?.textTop }
@@ -61,7 +76,9 @@ import CaperCore
             let predecessor = index > 0 ? next[index - 1] : nil
             // Deleting or inserting a predecessor can change grouping even
             // when this message itself has not changed.
-            if entries[oldIndex] != entry || oldPredecessor != predecessor { invalid.insert(id) }
+            if entries[oldIndex] != entry || oldPredecessor != predecessor || self.reactionErrors[id] != reactionErrors[id]
+                || self.pinErrors[id] != pinErrors[id] || self.pendingPins.contains(id) != pendingPins.contains(id)
+                || self.canInteract != canInteract { invalid.insert(id) }
         }
         if self.pending != pending, let pending { invalid.insert("pending-\(pending.id)") }
         self.pending = pending
@@ -70,9 +87,16 @@ import CaperCore
         self.blocked = blocked
         self.conversationID = conversationID
         self.viewerID = viewerID
+        self.canInteract = canInteract
+        self.reactionErrors = reactionErrors
+        self.pinErrors = pinErrors
+        self.pendingPins = pendingPins
         if changedConversation {
+            dismissHover?()
             geometry = NativeTimelineLayout()
             followEnd = true
+            focusedID = nil
+            pendingFocus = nil
             selection.removeAll()
             rows.values.forEach { $0.removeFromSuperview() }
             rows.removeAll()
@@ -81,6 +105,31 @@ import CaperCore
         realize(anchor: changedConversation ? nil : anchor, anchorTextTop: anchorTextTop)
         let currentIDs = Set(rowIDs)
         selection = selection.filter { currentIDs.contains($0.key) }
+    }
+
+    /// A jump measures only its destination viewport, not the intervening
+    /// history. Revealing a blocked target follows the shipping quote behavior.
+    @discardableResult func focusMessage(_ id: String) -> Bool {
+        guard messages.contains(where: { $0.id == id }) else { return false }
+        guard contentSize.width > 0, contentSize.height > 0 else { pendingFocus = id; return true }
+        pendingFocus = nil
+        followEnd = false
+        focusedID = id
+        revealed.insert(id)
+        update(messages, conversationID: conversationID, viewerID: viewerID, blocked: blocked,
+            pending: pending, canInteract: canInteract, reactionErrors: reactionErrors, pinErrors: pinErrors, pendingPins: pendingPins)
+        guard let index = rowIDs.firstIndex(of: id) else { return false }
+        realize(anchor: geometry.anchor(at: geometry.origin(of: index)))
+        let offset = max(0, geometry.origin(of: index) - max(0, (contentSize.height - geometry.height(at: index)) / 2))
+        realize(anchor: geometry.anchor(at: offset))
+        return true
+    }
+
+    func showLatest() {
+        focusedID = nil
+        pendingFocus = nil
+        followEnd = true
+        realize(anchor: nil)
     }
 
     /// A revealed run keeps its header alongside its messages; their native
@@ -99,11 +148,13 @@ import CaperCore
         if geometry.width != contentSize.width {
             geometry.replace(ids: rowIDs, width: contentSize.width)
         }
-        realize(anchor: anchor)
+        if let pendingFocus { focusMessage(pendingFocus) }
+        else { realize(anchor: anchor) }
     }
 
     @objc private func scrolled() {
         guard !rendering else { return }
+        dismissHover?()
         followEnd = contentView.bounds.maxY >= geometry.contentHeight - 2
         realize(anchor: geometry.anchor(at: contentView.bounds.minY))
         if !followEnd { requestOlderIfNeeded() }
@@ -142,8 +193,10 @@ import CaperCore
         // Measuring changes the estimated visible interval. Converge by measuring
         // only newly exposed rows, never the rest of the history at startup.
         var needed = geometry.visibleRange(offset: offset(), height: viewport, overscan: 100)
-        while needed.contains(where: { !geometry.isMeasured($0) }) {
-            for index in needed where !geometry.isMeasured(index) {
+        // A recreated cell still needs its text/container and leaf geometry,
+        // even when the virtual timeline remembers its previous outer height.
+        while needed.contains(where: { !geometry.isMeasured($0) || rows[ids[$0]] == nil }) {
+            for index in needed where !geometry.isMeasured(index) || rows[ids[index]] == nil {
                 let row = cell(at: index)
                 geometry.measure(index, height: row.measuredHeight(width: contentSize.width))
             }
@@ -167,6 +220,11 @@ import CaperCore
         reflectScrolledClipView(contentView)
         // These are real, selectable NSTextViews/buttons, not label-only mirrors.
         document.setAccessibilityChildren(needed.compactMap { rows[ids[$0]] })
+        let visible = Set(needed.filter {
+            let bottom = geometry.origin(of: $0) + geometry.height(at: $0)
+            return bottom > contentView.bounds.minY && bottom <= contentView.bounds.maxY + 1
+        }.map { ids[$0] })
+        visibleMessagesChanged?(visible)
     }
 
     private func cell(at index: Int) -> MessageCell {
@@ -178,6 +236,10 @@ import CaperCore
             row.openAuthor = { [weak self] author, view in self?.openAuthor?(author, view) }
             row.body.openMention = { [weak self] mention, view, rect in self?.openMention?(mention, view, rect) }
             row.makeAttachments = { [weak self] in self?.makeAttachments?($0) }
+            row.makeReply = { [weak self] in self?.makeReply?($0) }
+            row.messageMenu = { [weak self] message, view in self?.messageMenu?(message, view) }
+            row.messageAction = { [weak self] message, action, view in self?.messageAction?(message, action, view) }
+            row.hoverReaction = { [weak self] message, emoji, entered, view in self?.hoverReaction?(message, emoji, entered, view) }
             row.heightChanged = { [weak self, weak row] in
                 guard let self, let row, self.rows[id] === row else { return }
                 let anchor = self.geometry.anchor(at: self.contentView.bounds.minY)
@@ -201,16 +263,23 @@ import CaperCore
         case .message(let message):
             let predecessor: ChatMessage? = if case .message(let prior) = previous { prior } else { nil }
             let revealedBlocked = BlockedMessages.isHidden(message, blocked: blocked, viewerID: viewerID)
-            row.configure(message, grouped: NativePresentation.grouped(message, after: predecessor), day: revealedBlocked ? nil : day,
-                viewerID: viewerID, revealedBlocked: revealedBlocked, react: react)
+            // The root is not a predecessor of its first reply.
+            let prior = inThread && predecessor?.threadRootId == nil ? nil : predecessor
+            row.configure(message, grouped: NativePresentation.grouped(message, after: prior, inThread: inThread), day: revealedBlocked ? nil : day,
+                viewerID: viewerID, revealedBlocked: revealedBlocked, canInteract: canInteract, inThread: inThread,
+                reactionError: reactionErrors[message.id], pinError: pinErrors[message.id], pinPending: pendingPins.contains(message.id), react: react)
         case .blocked(let run):
             row.configure(run, day: day) { [weak self] in
                 guard let self else { return }
                 self.revealed = BlockedMessages.toggling(run, in: self.revealed)
                 self.followEnd = false
-                self.update(self.messages, conversationID: self.conversationID, viewerID: self.viewerID, blocked: self.blocked, pending: self.pending)
+                self.update(self.messages, conversationID: self.conversationID, viewerID: self.viewerID, blocked: self.blocked,
+                    pending: self.pending, canInteract: self.canInteract, reactionErrors: self.reactionErrors,
+                    pinErrors: self.pinErrors, pendingPins: self.pendingPins)
             }
         }
+        row.layer?.borderColor = NativeStyle.accent.cgColor
+        row.layer?.borderWidth = id == focusedID ? 1 : 0
         if let saved = selection.removeValue(forKey: id), saved.text == row.body.string,
            NSMaxRange(saved.range) <= row.body.string.utf16.count {
             row.body.setSelectedRange(saved.range)
@@ -225,6 +294,48 @@ import CaperCore
     private let timestamp = NativeStyle.label("", size: 10)
     private let avatar = NSImageView()
     var openAuthor: ((ChatAuthor, NSView) -> Void)?
+    var messageMenu: ((ChatMessage, NSView) -> NSMenu?)?
+    var messageAction: ((ChatMessage, MessageAction, NSView) -> Void)?
+    var hoverReaction: ((ChatMessage, String, Bool, NSView) -> Void)?
+    private let controls = MessageActionBar()
+    private var tracking: NSTrackingArea?
+    private var hovered = false
+    private var canInteract = false
+    private lazy var edited = NativeButton("(edited)") { [weak self] in
+        guard let self, let message = self.message else { return }
+        self.messageAction?(message, .history, self)
+    }
+    private let reactionFailure = NativeStyle.label("", size: 11)
+    private lazy var retryReaction = NativeButton("Retry") { [weak self] in
+        guard let self, let message = self.message else { return }
+        self.messageAction?(message, .retryReaction, self)
+    }
+    private lazy var dismissReaction = NativeButton("Dismiss") { [weak self] in
+        guard let self, let message = self.message else { return }
+        self.messageAction?(message, .dismissReaction, self)
+    }
+    private lazy var pinnedBy: NativeButton = NativeButton("") { [weak self] in
+        guard let self, let message = self.message, !message.isDeleted, let pin = message.pin else { return }
+        self.openAuthor?(pin.author, self.pinnedBy)
+    }
+    private var pinHeight: CGFloat { pinnedBy.isHidden ? 0 : 22 }
+    private let pinFailure = NativeStyle.label("", size: 11)
+    private lazy var retryPin = NativeButton("Retry") { [weak self] in
+        guard let self, let message = self.message else { return }
+        self.messageAction?(message, .retryPin, self)
+    }
+    private lazy var dismissPin = NativeButton("Dismiss") { [weak self] in
+        guard let self, let message = self.message else { return }
+        self.messageAction?(message, .dismissPin, self)
+    }
+    private var pinPending = false
+    private var layoutWidth: CGFloat = 0
+    private var compact: Bool { layoutWidth < 260 }
+    private var textInset: CGFloat { compact ? 20 : 68 }
+    private var stackedRecovery: Bool { layoutWidth - textInset - 20 < 132 }
+    private var reactionFailureHeight: CGFloat { reactionFailure.isHidden ? 0 : stackedRecovery ? 94 : 66 }
+    private var pinFailureHeight: CGFloat { pinFailure.isHidden ? 0 : stackedRecovery ? 94 : 66 }
+    private var failureHeight: CGFloat { reactionFailureHeight + pinFailureHeight }
     private lazy var authorAction: NativeButton = NativeButton("") { [weak self] in
         guard let self, let message = self.message, !message.author.isGuest else { return }
         self.openAuthor?(message.author, self.authorAction)
@@ -235,6 +346,14 @@ import CaperCore
     }
     private var attachments: AppKitAttachmentSurface?
     var makeAttachments: ((ChatMessage) -> AppKitAttachmentSurface?)?
+    private var quote: AppKitAttachmentSurface?
+    var makeReply: ((ChatMessage) -> AppKitAttachmentSurface?)?
+    private var quoteHeight: CGFloat = 0
+    private lazy var thread = NativeButton("") { [weak self] in
+        guard let self, let message = self.message else { return }
+        self.messageAction?(message, .openThread, self)
+    }
+    private var threadHeight: CGFloat { thread.isHidden ? 0 : 32 }
     var heightChanged: (() -> Void)?
     private var attachmentHeight: CGFloat = 0
     private let day = NativeStyle.label("", size: 10, bold: true)
@@ -253,7 +372,13 @@ import CaperCore
     private var grouped = false
     private var viewerID: String?
     private var dayHeight: CGFloat { day.isHidden ? 0 : ceil(day.cell?.cellSize.height ?? 14) + 16 }
-    var textTop: CGFloat { pending == nil ? dayHeight + (grouped ? 4 : 32) : 0 }
+    var textTop: CGFloat {
+        guard pending == nil else { return 0 }
+        // An attachment-only grouped row still needs room above its gallery
+        // for hover actions, as in the shipping Mac timeline.
+        let groupedTop: CGFloat = attachments != nil && body.string.isEmpty ? 36 : (edited.isHidden ? 4 : 24)
+        return dayHeight + pinHeight + quoteHeight + (grouped ? groupedTop : compact ? 70 : 32)
+    }
 
     init() {
         super.init()
@@ -287,7 +412,45 @@ import CaperCore
         avatar.setAccessibilityElement(false)
         authorAction.layer?.backgroundColor = NSColor.clear.cgColor
         avatarAction.layer?.backgroundColor = NSColor.clear.cgColor
-        [body, author, timestamp, avatar, day, authorAction, avatarAction, blockedToggle].forEach { addSubview($0) }
+        authorAction.profileFeedback = true; avatarAction.profileFeedback = true
+        edited.layer?.backgroundColor = NSColor.clear.cgColor
+        edited.font = NativeStyle.font(10); edited.contentTintColor = NativeStyle.muted
+        edited.isHidden = true
+        reactionFailure.textColor = NSColor(CaperTheme.error)
+        reactionFailure.maximumNumberOfLines = 2; reactionFailure.lineBreakMode = .byWordWrapping
+        pinnedBy.isHidden = true; pinnedBy.alignment = .left
+        pinnedBy.font = NativeStyle.font(10); pinnedBy.contentTintColor = NativeStyle.muted
+        pinnedBy.layer?.backgroundColor = NSColor.clear.cgColor
+        pinnedBy.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: nil)
+        pinnedBy.imagePosition = .imageLeading
+        pinnedBy.hoverChanged = { [weak self] entered in
+            guard entered, let self, let message = self.message, !message.isDeleted, let pin = message.pin else { return }
+            self.openAuthor?(pin.author, self.pinnedBy)
+        }
+        pinFailure.textColor = NSColor(CaperTheme.error)
+        pinFailure.maximumNumberOfLines = 2; pinFailure.lineBreakMode = .byWordWrapping
+        thread.isHidden = true; thread.alignment = .left
+        thread.font = NativeStyle.font(11, bold: true); thread.contentTintColor = NativeStyle.accent
+        thread.layer?.backgroundColor = NSColor.clear.cgColor
+        [body, author, timestamp, avatar, day, authorAction, avatarAction, blockedToggle, edited, controls,
+            reactionFailure, retryReaction, dismissReaction, pinnedBy, pinFailure, retryPin, dismissPin, thread].forEach { addSubview($0) }
+        controls.action = { [weak self] action, anchor in
+            guard let self, let message = self.message else { return }
+            self.messageAction?(message, action, anchor)
+        }
+        controls.messageMenu = { [weak self] anchor in
+            guard let self, let message = self.message else { return nil }
+            return self.messageMenu?(message, anchor)
+        }
+        controls.focusChanged = { [weak self] in self?.updateControlsVisibility() }
+        body.messageMenu = { [weak self] in
+            guard let self, let message = self.message else { return nil }
+            return self.messageMenu?(message, self)
+        }
+        setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Message actions") { [weak self] in
+            guard let self, self.message != nil else { return false }
+            self.controls.showMenu(); return true
+        }])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -307,20 +470,61 @@ import CaperCore
         setAccessibilityIdentifier("pending-row-\(pending.id)")
     }
 
-    func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, revealedBlocked: Bool, react: ((String, String) -> Void)?) {
-        guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked else { return }
+    func configure(_ message: ChatMessage, grouped: Bool, day: String?, viewerID: String?, revealedBlocked: Bool, canInteract: Bool, inThread: Bool, reactionError: String?, pinError: String?, pinPending: Bool, react: ((String, String) -> Void)?) {
+        guard self.message != message || self.grouped != grouped || self.day.stringValue != (day ?? "") || self.viewerID != viewerID || self.revealedBlocked != revealedBlocked || self.canInteract != canInteract || reactionFailure.stringValue != (reactionError ?? "") || pinFailure.stringValue != (pinError ?? "") || self.pinPending != pinPending else { return }
         let range = body.selectedRange()
-        if self.message?.content.attachments != message.content.attachments || self.message?.isDeleted != message.isDeleted {
+        if self.message?.replyTo != message.replyTo || self.message?.isDeleted != message.isDeleted {
+            quote?.removeFromSuperview()
+            quote = makeReply?(message)
+            if let quote {
+                quote.heightChanged = { [weak self] in self?.heightChanged?() }
+                addSubview(quote, positioned: .below, relativeTo: controls)
+            }
+        }
+        if self.message?.content.attachments != message.content.attachments || self.message?.content.gif != message.content.gif
+            || self.message?.forward != message.forward || self.message?.isDeleted != message.isDeleted {
             attachments?.removeFromSuperview()
             attachments = makeAttachments?(message)
             if let attachments {
                 attachments.heightChanged = { [weak self] in self?.heightChanged?() }
-                addSubview(attachments)
+                addSubview(attachments, positioned: .below, relativeTo: controls)
             }
         }
         self.message = message; self.grouped = grouped; self.viewerID = viewerID
+        self.canInteract = canInteract
+        self.pinPending = pinPending
         blockedRun = nil; self.revealedBlocked = revealedBlocked
         blockedToggle.isHidden = true; body.isHidden = false
+        setAccessibilityIdentifier("message-row-\(message.id)")
+        controls.isHidden = false
+        controls.configure(message, canInteract: canInteract, viewerID: viewerID)
+        updateControlsVisibility()
+        thread.isHidden = inThread || (message.threadRootId == nil && (message.thread?.replyCount ?? 0) == 0)
+        let count = message.thread?.replyCount ?? 0
+        thread.title = message.threadRootId != nil ? "View thread" : "\(count) \(count == 1 ? "reply" : "replies")"
+        thread.setAccessibilityLabel(thread.title)
+        thread.setAccessibilityIdentifier("thread-summary-\(message.id)")
+        edited.isHidden = message.isDeleted || message.forward != nil || (message.revision ?? 1) <= 1
+        edited.setAccessibilityLabel("Message history")
+        edited.setAccessibilityIdentifier("message-history-\(message.id)")
+        reactionFailure.stringValue = reactionError ?? ""
+        for item in [reactionFailure, retryReaction, dismissReaction] { item.isHidden = message.isDeleted || reactionError == nil }
+        retryReaction.isEnabled = canInteract
+        retryReaction.setAccessibilityIdentifier("reaction-retry-\(message.id)")
+        dismissReaction.setAccessibilityIdentifier("reaction-dismiss-\(message.id)")
+        pinnedBy.isHidden = message.isDeleted || message.pin == nil
+        if let pin = message.pin {
+            pinnedBy.title = "Pinned by \(pin.author.id == viewerID ? "you" : pin.author.name)"
+            pinnedBy.setAccessibilityLabel("Open profile for \(pin.author.name)")
+            pinnedBy.toolTip = pinnedBy.title
+        }
+        pinnedBy.setAccessibilityIdentifier("pinned-by-\(message.id)")
+        pinFailure.stringValue = pinError ?? ""
+        pinFailure.setAccessibilityIdentifier("pin-error-\(message.id)")
+        for item in [pinFailure, retryPin, dismissPin] { item.isHidden = message.isDeleted || pinError == nil }
+        retryPin.isEnabled = canInteract && !pinPending
+        retryPin.setAccessibilityIdentifier("pin-retry-\(message.id)")
+        dismissPin.setAccessibilityIdentifier("pin-dismiss-\(message.id)")
         self.day.stringValue = day ?? ""
         self.day.isHidden = day == nil
         self.day.setAccessibilityIdentifier("date-\(message.id)")
@@ -329,7 +533,11 @@ import CaperCore
         CATransaction.begin(); CATransaction.setDisableActions(true)
         layer?.backgroundColor = revealedBlocked ? NSColor(CaperTheme.surface).cgColor : NSColor.clear.cgColor
         blockedBar.isHidden = !revealedBlocked
-        mentionTint.isHidden = !mentionsViewer
+        let pin = message.isDeleted ? nil : message.pin
+        mentionTint.isHidden = !mentionsViewer && pin == nil
+        mentionTint.backgroundColor = pin.map { ($0.author.id == viewerID
+            ? NativeStyle.accent.withAlphaComponent(0.12) : NSColor(CaperTheme.pinGold).withAlphaComponent(0.06)).cgColor }
+            ?? NativeStyle.accent.withAlphaComponent(0.08).cgColor
         mentionBar.isHidden = !mentionsViewer || message.pin != nil
         CATransaction.commit()
         author.stringValue = message.author.name
@@ -359,11 +567,32 @@ import CaperCore
         if let id = CaperAvatar.index(for: message.author.avatarId) {
             avatar.image = Bundle(for: AppModel.self).image(forResource: "caper-avatar-\(id)")
         } else { avatar.image = nil }
-        reactions.forEach { $0.removeFromSuperview() }
-        reactions = (message.reactions ?? []).map { reaction in
-            NativeButton("\(reaction.emoji) \(reaction.authorIds.count)") { react?(message.id, reaction.emoji) }
+        let previousReactions = reactions
+        reactions = (message.isDeleted ? [] : message.reactions ?? []).map { reaction in
+            let id = "reaction-\(message.id)-\(reaction.emoji)"
+            let button = previousReactions.first { $0.accessibilityIdentifier() == id }
+                ?? NativeButton("") { react?(message.id, reaction.emoji) }
+            button.title = "\(reaction.emoji) \(reaction.authorIds.count)"
+            button.setAccessibilityLabel(button.title)
+            button.isEnabled = canInteract
+            button.setAccessibilityIdentifier(id)
+            button.hoverChanged = { [weak self, weak button] entered in
+                guard let self, let button, let message = self.message else { return }
+                self.hoverReaction?(message, reaction.emoji, entered, button)
+            }
+            let showPeople = { [weak self, weak button] in
+                guard let self, let button, let message = self.message else { return }
+                self.messageAction?(message, .reactors(reaction.emoji), button)
+            }
+            button.menu = NavigationMenus.menu([NavigationMenuItem("Show who reacted", action: showPeople)])
+            button.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "Show who reacted") { showPeople(); return true }])
+            let selected = viewerID.map { reaction.authorIds.contains($0) } ?? false
+            button.state = selected ? .on : .off
+            button.layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : NativeStyle.composer).cgColor
+            return button
         }
-        reactions.forEach { addSubview($0) }
+        for button in previousReactions where !reactions.contains(where: { $0 === button }) { button.removeFromSuperview() }
+        for button in reactions where button.superview == nil { addSubview(button) }
         needsLayout = true
     }
 
@@ -377,8 +606,13 @@ import CaperCore
         setAccessibilityHelp(nil)
         body.isHidden = true; body.string = ""
         authorAction.isHidden = true; avatarAction.isHidden = true
+        controls.isHidden = true; edited.isHidden = true
+        reactionFailure.isHidden = true; retryReaction.isHidden = true; dismissReaction.isHidden = true
+        pinnedBy.isHidden = true; pinFailure.isHidden = true; retryPin.isHidden = true; dismissPin.isHidden = true
         reactions.forEach { $0.removeFromSuperview() }; reactions = []
         attachments?.removeFromSuperview(); attachments = nil; attachmentHeight = 0
+        quote?.removeFromSuperview(); quote = nil; quoteHeight = 0
+        thread.isHidden = true
         blockedToggle.isHidden = false
         blockedToggle.title = "\(run.label) — \(run.revealed ? "Hide" : "Show")"
         blockedToggle.setAccessibilityLabel("\(run.revealed ? "Hide" : "Show") \(run.label)")
@@ -391,18 +625,36 @@ import CaperCore
     }
 
     func measuredHeight(width: CGFloat) -> CGFloat {
+        layoutWidth = width
         if pending != nil { return attachments?.height(for: width) ?? 0 }
         if blockedRun != nil { return dayHeight + 48 }
-        let textWidth = max(40, width - 88)
+        let textWidth = max(40, width - textInset - 20)
         body.textContainer?.containerSize = NSSize(width: textWidth, height: .greatestFiniteMagnitude)
         let text = body.attributedString()
         let coreTextHeight = NativePresentation.textHeight(text, width: textWidth)
         body.layoutManager?.ensureLayout(for: body.textContainer!)
         let nativeHeight = body.layoutManager?.usedRect(for: body.textContainer!).height ?? 0
         attachmentHeight = attachments?.height(for: textWidth) ?? 0
+        quoteHeight = quote?.height(for: max(40, width - 40)) ?? 0
         let textHeight = body.string.isEmpty && attachments != nil ? 0 : max(20, max(coreTextHeight, ceil(nativeHeight)))
-        return textTop + textHeight + attachmentHeight + (reactions.isEmpty ? 0 : 32) + 12
+        let height = textTop + textHeight + attachmentHeight + reactionHeight + failureHeight + threadHeight + 12
+        let controlsWidth = min(controls.preferredWidth, max(30, width - 30))
+        // A wrapped hover bar must not steal the next grouped row's hit area.
+        return controlsWidth < controls.preferredWidth
+            ? max(height, dayHeight + pinHeight + quoteHeight + controls.height(for: controlsWidth) + 11) : height
     }
+
+    private var reactionFrames: [NSRect] {
+        let available = max(40, layoutWidth - textInset - 20)
+        var x: CGFloat = 0, y: CGFloat = 0
+        return reactions.map { reaction in
+            let width = min(available, max(54, reaction.intrinsicContentSize.width + 12))
+            if x > 0, x + width > available { x = 0; y += 32 }
+            defer { x += width + 6 }
+            return NSRect(x: x, y: y, width: width, height: 28)
+        }
+    }
+    private var reactionHeight: CGFloat { reactionFrames.last.map { $0.maxY + 4 } ?? 0 }
 
     override func layout() {
         super.layout()
@@ -424,25 +676,51 @@ import CaperCore
             blockedToggle.frame = NSRect(x: 18, y: inset + 4, width: bounds.width - 36, height: 36)
             return
         }
-        avatar.frame = NSRect(x: 20, y: inset + 12, width: 36, height: 36)
+        let textWidth = max(40, bounds.width - textInset - 20)
+        pinnedBy.frame = NSRect(x: textInset, y: inset, width: textWidth, height: pinHeight)
+        quote?.frame = NSRect(x: 20, y: inset + pinHeight, width: max(40, bounds.width - 40), height: quoteHeight)
+        let messageTop = inset + pinHeight + quoteHeight
+        avatar.frame = NSRect(x: 20, y: messageTop + 12, width: 36, height: 36)
         // Intrinsic size describes the alignment rect, excluding NSTextField's
         // cell insets. Manual frames need cellSize or even short names truncate.
-        let timeWidth = ceil(timestamp.cell?.cellSize.width ?? timestamp.intrinsicContentSize.width)
-        let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - timeWidth - 7))
-        author.frame = NSRect(x: 68, y: inset + 10, width: authorWidth, height: 20)
-        timestamp.frame = NSRect(x: author.frame.maxX + 7, y: inset + 13, width: timeWidth, height: 17)
+        let editedWidth: CGFloat = edited.isHidden ? 0 : 48
+        let timeWidth = min(ceil(timestamp.cell?.cellSize.width ?? timestamp.intrinsicContentSize.width), compact ? max(0, textWidth - editedWidth - 5) : .greatestFiniteMagnitude)
+        let authorWidth = min(ceil(author.cell?.cellSize.width ?? author.intrinsicContentSize.width), max(0, bounds.width - 88 - (compact ? 0 : timeWidth + editedWidth + 7)))
+        author.frame = NSRect(x: 68, y: messageTop + 10, width: authorWidth, height: 20)
+        timestamp.frame = NSRect(x: compact ? textInset : author.frame.maxX + 7, y: messageTop + (compact ? 50 : 13), width: timeWidth, height: 17)
         authorAction.frame = author.frame
         avatarAction.frame = avatar.frame
-        let footer = attachmentHeight + (reactions.isEmpty ? 0.0 : 32)
+        edited.frame = NSRect(x: grouped ? textInset : timestamp.frame.maxX + 5, y: messageTop + (grouped ? 2 : compact ? 48 : 10), width: editedWidth, height: 20)
+        let controlsWidth = min(controls.preferredWidth, max(30, bounds.width - 30))
+        controls.frame = NSRect(x: max(0, bounds.width - controlsWidth - 15), y: messageTop + 3,
+            width: controlsWidth, height: controls.height(for: controlsWidth))
+        let footer = attachmentHeight + reactionHeight + failureHeight + threadHeight
         let top = textTop
-        body.frame = NSRect(x: 68, y: top, width: max(40, bounds.width - 88), height: max(0, bounds.height - top - footer - 12))
-        attachments?.frame = NSRect(x: 68, y: body.frame.maxY, width: max(40, bounds.width - 88), height: attachmentHeight)
-        var x: CGFloat = 68
-        for reaction in reactions {
-            let width = max(54, reaction.intrinsicContentSize.width + 12)
-            reaction.frame = NSRect(x: x, y: bounds.height - 40, width: width, height: 28)
-            x += width + 6
+        body.frame = NSRect(x: textInset, y: top, width: textWidth, height: max(0, bounds.height - top - footer - 12))
+        attachments?.frame = NSRect(x: textInset, y: body.frame.maxY, width: textWidth, height: attachmentHeight)
+        for (reaction, frame) in zip(reactions, reactionFrames) {
+            reaction.frame = frame.offsetBy(dx: textInset, dy: bounds.height - failureHeight - threadHeight - reactionHeight - 8)
         }
+        thread.frame = NSRect(x: textInset, y: bounds.height - threadHeight - 8, width: textWidth, height: 28)
+        reactionFailure.frame = NSRect(x: textInset, y: bounds.height - failureHeight - threadHeight - 8, width: textWidth, height: 30)
+        retryReaction.frame = NSRect(x: textInset, y: reactionFailure.frame.maxY + 4, width: 58, height: 24)
+        dismissReaction.frame = NSRect(x: stackedRecovery ? textInset : textInset + 64, y: retryReaction.frame.minY + (stackedRecovery ? 28 : 0), width: 68, height: 24)
+        pinFailure.frame = NSRect(x: textInset, y: reactionFailure.frame.minY + reactionFailureHeight, width: textWidth, height: 30)
+        retryPin.frame = NSRect(x: textInset, y: pinFailure.frame.maxY + 4, width: 58, height: 24)
+        dismissPin.frame = NSRect(x: stackedRecovery ? textInset : textInset + 64, y: retryPin.frame.minY + (stackedRecovery ? 28 : 0), width: 68, height: 24)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let tracking = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+        self.tracking = tracking; addTrackingArea(tracking)
+    }
+    override func mouseEntered(with event: NSEvent) { hovered = true; updateControlsVisibility() }
+    override func mouseExited(with event: NSEvent) { hovered = false; updateControlsVisibility() }
+    private func updateControlsVisibility() { controls.alphaValue = hovered || controls.hasFocus ? 1 : 0 }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let message else { return nil }; return messageMenu?(message, self)
     }
 }
 
@@ -450,7 +728,21 @@ import CaperCore
 /// single stationary click on an actual resolved-person glyph opens a card.
 @MainActor private final class MessageTextView: NSTextView {
     var openMention: ((MessageMention, NSView, NSRect) -> Void)?
+    var messageMenu: (() -> NSMenu?)?
     private var people: [String: MessageMention] = [:]
+
+    // Read-only message bodies are drag sources, never destinations. Let the
+    // conversation receive files even when a drag also offers plain text.
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [] }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let actions = messageMenu?() else { return super.menu(for: event) }
+        // Keep native Copy/selection/link commands ahead of the message menu.
+        guard let native = super.menu(for: event) else { return actions }
+        native.addItem(.separator())
+        for item in actions.items { actions.removeItem(item); native.addItem(item) }
+        return native
+    }
 
     func configureMentions(_ mentions: [MessageMention]) {
         people.removeAll()
@@ -506,4 +798,85 @@ import CaperCore
             }
         }
     }
+}
+
+/// Native controls remain in the keyboard/AX order when the pointer leaves.
+/// Only their visual shell fades; no hover event rebuilds the row or its text.
+@MainActor private final class MessageActionBar: NativeView {
+    var action: ((MessageAction, NSView) -> Void)?
+    var messageMenu: ((NSView) -> NSMenu?)?
+    var focusChanged: (() -> Void)?
+    private var quick: [NativeButton] = []
+    private lazy var add: NativeButton = NativeButton.icon("Add reaction", symbol: "face.smiling") { [weak self] in
+        guard let self else { return }; self.action?(.addReaction, self.add)
+    }
+    private lazy var reply: NativeButton = NativeButton.icon("Reply", symbol: "arrowshape.turn.up.left") { [weak self] in
+        guard let self else { return }; self.action?(.reply, self.reply)
+    }
+    private lazy var more: NativeButton = NativeButton.icon("Message options", symbol: "ellipsis") { [weak self] in self?.showMenu() }
+    var hasFocus: Bool { subviews.contains { $0 === window?.firstResponder } }
+    // AppKit exposes a one-point focus/AX outset around these 24-point buttons.
+    // Leave room between their hit regions, not only between their artwork.
+    private let buttonPitch: CGFloat = 26
+    var preferredWidth: CGFloat { CGFloat(subviews.filter { !$0.isHidden }.count - 1) * buttonPitch + 30 }
+    private func columns(for width: CGFloat) -> Int { max(1, Int((width - 30) / buttonPitch) + 1) }
+    func height(for width: CGFloat) -> CGFloat {
+        let columns = columns(for: width), count = subviews.filter { !$0.isHidden }.count
+        return CGFloat(max(0, (count - 1) / columns)) * buttonPitch + 30
+    }
+
+    init() {
+        super.init(NSColor(CaperTheme.surface))
+        layer?.cornerRadius = 8; layer?.borderWidth = 1; layer?.borderColor = NativeStyle.border.cgColor
+        quick = NativePresentation.quickReactions.map { emoji in
+            let button = NativeButton("React with \(emoji)") { [weak self] in
+                guard let self else { return }; self.action?(.reaction(emoji), self)
+            }
+            if let image = NativePresentation.emojiImage(emoji) {
+                button.image = NSImage(cgImage: image, size: NSSize(width: 18, height: 18))
+                button.imagePosition = .imageOnly
+            }
+            button.toolTip = "React with \(emoji)"
+            return button
+        }
+        for button in quick + [add, reply, more] {
+            button.layer?.backgroundColor = NSColor.clear.cgColor
+            button.focusChanged = { [weak self] _ in
+                // AppKit changes firstResponder after resignFirstResponder returns.
+                DispatchQueue.main.async { [weak self] in self?.focusChanged?() }
+            }
+            addSubview(button)
+        }
+        alphaValue = 0
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(_ message: ChatMessage, canInteract: Bool, viewerID: String?) {
+        for (emoji, button) in zip(NativePresentation.quickReactions, quick) {
+            button.isHidden = !canInteract || message.isDeleted
+            button.isEnabled = canInteract
+            button.setAccessibilityIdentifier("quick-reaction-\(message.id)-\(emoji)")
+            let selected = viewerID.map { id in message.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(id) == true } ?? false
+            button.state = selected ? .on : .off
+            button.layer?.backgroundColor = (selected ? NativeStyle.accent.withAlphaComponent(0.16) : .clear).cgColor
+        }
+        add.isHidden = message.isDeleted; add.isEnabled = canInteract
+        add.setAccessibilityIdentifier("add-reaction-\(message.id)")
+        reply.isHidden = message.isDeleted; reply.isEnabled = canInteract
+        reply.setAccessibilityIdentifier("reply-message-\(message.id)")
+        more.setAccessibilityIdentifier("message-options-\(message.id)")
+        needsLayout = true
+    }
+    func showMenu() {
+        guard let menu = messageMenu?(more) else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: more.bounds.maxY), in: more)
+    }
+    override func layout() {
+        super.layout()
+        let columns = columns(for: bounds.width)
+        for (index, button) in subviews.filter({ !$0.isHidden }).enumerated() {
+            button.frame = NSRect(x: 3 + CGFloat(index % columns) * buttonPitch, y: 3 + CGFloat(index / columns) * buttonPitch, width: 24, height: 24)
+        }
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? { alphaValue == 0 ? nil : super.hitTest(point) }
 }
