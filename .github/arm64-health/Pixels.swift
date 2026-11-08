@@ -176,6 +176,9 @@ struct Pixels {
             guard duration.isFinite, duration > 0 else { throw NSError(domain: "Pixels.videoDuration", code: 1) }
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
+            // Default tolerances are infinite; decode frame-accurately at the fixed samples.
+            generator.requestedTimeToleranceBefore = .zero
+            generator.requestedTimeToleranceAfter = .zero
             var observations: [[String: Any]] = []
             // Offline inspection, not repeated capture: nine fixed interior timestamps.
             for index in 1...9 {

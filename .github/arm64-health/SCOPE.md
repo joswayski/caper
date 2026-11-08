@@ -91,6 +91,17 @@ rewritten. The recording must decode and contain a frame with the standalone
 text-field phrase: inspect up to nine fixed interior timestamps offline, save
 the first matching frame and all inspected OCR results. No recapture/relaunch.
 
+Offline video decoding sets both `requestedTimeToleranceBefore` and
+`requestedTimeToleranceAfter` to `.zero`. Apple's
+[timing documentation](https://developer.apple.com/documentation/avfoundation/avassetimagegenerator/requestedtimetolerancebefore)
+specifies infinite defaults and zero on both properties for frame-accurate
+generation. [Additional decoding can cost time](https://developer.apple.com/documentation/avfoundation/creating-images-from-a-video-asset),
+but the existing nine-sample maximum and 60s external helper cap remain unchanged.
+Keep the original desired `requestedSeconds` and returned `actualSeconds` for
+every inspected frame; never replace actual timestamps with requested ones.
+OCR/content requirements remain unchanged. Decode errors, absent content and
+timeouts still fail closed; no broader tolerance, fallback sampling or retry.
+
 ## Crash inventory without the historical-copy trap
 
 Before any controls, inventory relevant user/system DiagnosticReports paths with
