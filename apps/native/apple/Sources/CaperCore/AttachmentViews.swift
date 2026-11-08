@@ -2163,6 +2163,12 @@ struct AttachmentDraftsView: View {
                     .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                     .background(CaperTheme.terracotta.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             }
+            ForEach(files.filter { $0.error == AttachmentMetadata.refusalMessage }) { draft in
+                Text("\(draft.spoiler ? "Spoiler attachment" : draft.name): \(AttachmentMetadata.refusalMessage)")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("attachment-metadata-refusal")
+            }
             StagedFileLayout() {
                 ForEach(files) { draft in chip(draft).modifier(Entrance.chip) }
             }

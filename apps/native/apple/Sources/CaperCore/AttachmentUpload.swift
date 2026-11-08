@@ -175,28 +175,46 @@ public enum AttachmentUploader {
                               completeRetryDelays: [Duration] = AttachmentUploader.completeRetryDelays,
                               partRetryDelays: [Duration] = AttachmentUploader.partRetryDelays,
                               progress: @escaping @Sendable (Double) -> Void) async throws -> ChatAttachment {
+        // Clean the final encoded/edited bytes, not just picked originals.
+        // Recordings alone still go through the API's voice re-encoder.
+        let originalURL = file.fileURL
+        var file = file
+        if !file.voice {
+            let cleaned = try await AttachmentMetadata.cleanCopy(of: file.fileURL, contentType: file.contentType)
+            file.fileURL = cleaned.url
+            file.byteSize = cleaned.size
+        }
+        defer { if file.fileURL != originalURL { AttachmentStaging.remove(file.fileURL) } }
+        let preview: LocalAttachmentFile?
+        if let image = file.preview {
+            preview = try await AttachmentMetadata.cleanCopy(of: image.data, contentType: image.contentType)
+        } else {
+            preview = nil
+        }
+        defer { if let preview { AttachmentStaging.remove(preview.url) } }
+        try Task.checkCancellation()
         func dimension(_ value: Int?) -> Int? { value.flatMap { (1...32_768).contains($0) ? $0 : nil } }
         var input = AssetCreateInput(
             channelId: channelID, filename: file.name, contentType: file.contentType, byteSize: file.byteSize,
             sourceByteSize: file.sourceSize > 0 ? file.sourceSize : nil,
             width: dimension(file.width), height: dimension(file.height),
             durationMs: file.durationMs.flatMap { (0...86_400_000).contains($0) ? $0 : nil },
-            preview: file.preview.map { AssetCreateInput.Preview(contentType: $0.contentType, byteSize: $0.data.count) },
+            preview: preview.map { AssetCreateInput.Preview(contentType: $0.contentType, byteSize: $0.size) },
             voice: file.voice ? true : nil, waveform: file.voice ? file.waveform : nil
         )
         input.multipart = true
         let reservation = try await api.createAsset(input)
         do {
             try Task.checkCancellation()
-            let previewSize = Double(file.preview?.data.count ?? 0)
+            let previewSize = Double(preview?.size ?? 0)
             let originalSize = Double(file.byteSize)
             let total = max(1, previewSize + originalSize)
-            if let preview = file.preview {
+            if let preview {
                 // A declared preview must be stored too, or `complete` reports 409.
                 guard let previewUpload = reservation.previewUpload else {
                     throw APIError(status: 502, message: "The upload service returned an invalid response.")
                 }
-                try await api.putToStorage(previewUpload, body: .data(preview.data))
+                try await api.putToStorage(previewUpload, body: .file(preview.url))
                 try Task.checkCancellation()
             }
             let report: @Sendable (Double) -> Void = { sent in progress((previewSize + sent) / total) }

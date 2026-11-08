@@ -4176,7 +4176,7 @@ public final class ChatModel {
                 return
             }
             if pendingNeedsUpload {
-                sendUploadFailed = true; self.error = "Failed to upload."
+                sendUploadFailed = true; self.error = AttachmentMetadata.refusalMessage(for: error) ?? "Failed to upload."
                 return
             }
             if let apiError = error as? APIError, [400, 404, 409, 413, 422].contains(apiError.status)
@@ -4232,7 +4232,11 @@ public final class ChatModel {
         uploadTasks[id] = Task { [weak self] in
             guard let self else { return }
             do { _ = try await self.uploadAttachmentDraft(id: id) }
-            catch { if !Task.isCancelled, self.uploadGeneration == expected { self.updateDraft(id) { $0.error = "Failed to upload." } } }
+            catch {
+                if !Task.isCancelled, self.uploadGeneration == expected {
+                    self.updateDraft(id) { $0.error = AttachmentMetadata.refusalMessage(for: error) ?? "Failed to upload." }
+                }
+            }
             if !Task.isCancelled { self.uploadTasks[id] = nil }
         }
     }
@@ -5122,7 +5126,7 @@ public final class ChatModel {
             _ = try await uploadAttachmentDraft(id: id)
         } catch {
             guard uploadGeneration == expected, !Task.isCancelled else { return }
-            updateDraft(id) { $0.error = "Failed to upload." }
+            updateDraft(id) { $0.error = AttachmentMetadata.refusalMessage(for: error) ?? "Failed to upload." }
         }
         uploadTasks[id] = nil
     }
@@ -5217,7 +5221,9 @@ public final class ChatModel {
         uploadTasks[id] = Task { [weak self] in
             guard let self else { return }
             do { _ = try await uploadAttachmentDraft(id: id) }
-            catch { if !Task.isCancelled { updateDraft(id) { $0.error = "Failed to upload." } } }
+            catch {
+                if !Task.isCancelled { updateDraft(id) { $0.error = AttachmentMetadata.refusalMessage(for: error) ?? "Failed to upload." } }
+            }
             // An edit cancels this task and starts its own.
             if !Task.isCancelled { uploadTasks[id] = nil }
         }

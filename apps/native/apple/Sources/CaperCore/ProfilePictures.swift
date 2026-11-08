@@ -23,7 +23,7 @@ public struct PictureCreateInput: Encodable, Equatable, Sendable {
     public let spaceId: String?
     public let filename: String
     public let contentType: String
-    public let byteSize: Int
+    public internal(set) var byteSize: Int
     public let width: Int
     public let height: Int
 
@@ -189,6 +189,7 @@ public enum ProfilePicturePolicy {
             }
         }
         if let error = error as? APIError {
+            if error.code == "media_metadata" { return error.message }
             if error.code == "picture_invalid" || error.status == 422 { return unusableMessage }
             if error.code == "picture_too_large" || error.status == 413 {
                 return "That picture is too large. Try another one."
@@ -351,13 +352,18 @@ public enum ProfilePictureUploader {
     private static func upload<Applied: Sendable>(_ picture: PreparedPicture, input: PictureCreateInput, api: APIClient,
                                                   completeRetryDelays: [Duration],
                                                   complete: (String) async throws -> Applied) async throws -> Applied {
+        let cleaned = try await AttachmentMetadata.cleanCopy(of: picture.data, contentType: picture.contentType)
+        defer { AttachmentStaging.remove(cleaned.url) }
+        try Task.checkCancellation()
+        var input = input
+        input.byteSize = cleaned.size
         let reservation = try await api.createPicture(input)
         do {
             try Task.checkCancellation()
             guard let upload = reservation.upload else {
                 throw APIError(status: 502, message: "The upload service returned an invalid response.")
             }
-            try await api.putToStorage(upload, body: .data(picture.data))
+            try await api.putToStorage(upload, body: .file(cleaned.url))
             try Task.checkCancellation()
             var delays = completeRetryDelays[...]
             while true {
