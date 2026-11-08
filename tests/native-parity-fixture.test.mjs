@@ -1769,6 +1769,94 @@ test.for([
 });
 
 test.for([false, true])(
+  "uploaded videos retain metadata and bytes through send/read (multipart=%s)",
+  async (multipart, t) => {
+    const { base, request } = await setup(t);
+    // The fixture transports opaque prepared bytes; native FFmpeg replay tests
+    // actual encoding/decoding. These deliberately asymmetric bytes test storage.
+    const bytes = Buffer.from("opaque prepared video bytes: 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true, multipartPartBytes: 32 } });
+    const asset = (
+      await request("/api/assets", {
+        auth: true,
+        method: "POST",
+        body: {
+          channelId: ids.general,
+          filename: "rotated.mp4",
+          contentType: "video/mp4",
+          byteSize: bytes.length,
+          width: 180,
+          height: 320,
+          durationMs: 1000,
+          multipart,
+          preview: { contentType: "image/png", byteSize: preparedPreview.length },
+        },
+      })
+    ).value;
+    assert.equal(asset.kind, "video");
+    const media = `${base}/api/assets/${asset.id}/fixture-file`;
+    const complete = () => request(`/api/assets/${asset.id}/complete`, { auth: true, method: "POST" });
+    const put = (url, body) => fetch(url, { method: "PUT", body });
+    let upload;
+    if (multipart) {
+      assert.deepEqual(asset.multipart, { partBytes: 32, partCount: 3 });
+      const parts = (
+        await request(`/api/assets/${asset.id}/parts`, {
+          auth: true,
+          method: "POST",
+          body: { parts: [3, 1, 2] },
+        })
+      ).value.parts;
+      upload = parts[0].url;
+      for (const part of parts.reverse())
+        assert.equal((await put(part.url, bytes.subarray((part.number - 1) * 32, part.number * 32))).status, 204);
+    } else {
+      upload = asset.upload.url;
+      assert.equal((await put(upload, bytes)).status, 204);
+    }
+    assert.equal((await fetch(media)).status, 404, "staged video bytes are not public");
+    assert.equal((await complete()).response.status, 422, "video preview must be uploaded too");
+    assert.equal((await put(asset.previewUpload.url, preparedPreview)).status, 204);
+    const description = {
+      id: asset.id,
+      name: "rotated.mp4",
+      contentType: "video/mp4",
+      size: bytes.length,
+      kind: "video",
+      width: 180,
+      height: 320,
+      durationMs: 1000,
+      preview: {},
+    };
+    assert.deepEqual((await complete()).value, description);
+    assert.deepEqual((await complete()).value, description);
+    const session = (await request("/api/chat/session", { auth: true, method: "POST", body: {} })).value;
+    const path = `/api/chat/channels/${ids.general}/messages`;
+    const sent = await request(path, {
+      auth: true,
+      method: "POST",
+      headers: { "x-caper-chat-token": session.token },
+      body: { clientMessageId: randomUUID(), text: "rotated video", attachmentIds: [asset.id] },
+    });
+    assert.equal(sent.response.status, 200);
+    const attachment = { ...description, url: media, previewUrl: asset.previewUpload.url };
+    assert.deepEqual(sent.value.content.attachments, [attachment]);
+    assert.deepEqual((await request(path, { auth: true })).value.messages.at(-1).content.attachments, [attachment]);
+    const delivered = await fetch(media);
+    assert.equal(delivered.status, 200);
+    assert.equal(delivered.headers.get("content-type"), "video/mp4");
+    assert.deepEqual(Buffer.from(await delivered.arrayBuffer()), bytes);
+    const range = await fetch(media, { headers: { range: "bytes=3-11" } });
+    assert.equal(range.status, 206);
+    assert.deepEqual(Buffer.from(await range.arrayBuffer()), bytes.subarray(3, 12));
+    await readPreparedImage(attachment.previewUrl, true);
+    assert.equal((await put(upload, Buffer.from("late"))).status, 404);
+    await request("/__fixture/control", { method: "POST", body: { reset: true } });
+    assert.equal((await fetch(media)).status, 404);
+  },
+);
+
+test.for([false, true])(
   "cancelled images discard pending original/preview media (multipart=%s)",
   async (multipart, t) => {
     const { base, request } = await setup(t);
@@ -1813,64 +1901,68 @@ test.for([false, true])(
   },
 );
 
-test("image retention is bounded by validated reservations, request sizes, and a resettable fixture budget", async (t) => {
-  const { request } = await setup(t);
-  await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true, multipartPartBytes: 32 } });
-  const reserve = (input) => request("/api/assets", { auth: true, method: "POST", body: { ...imageInput, ...input } });
-  for (const input of [
-    { byteSize: 0 },
-    { byteSize: -1 },
-    { byteSize: 0.5 },
-    { byteSize: "77" },
-    { byteSize: Number.MAX_SAFE_INTEGER + 1 },
-    { width: 0 },
-    { height: 32_769 },
-    { durationMs: -1 },
-    { durationMs: 86_400_001 },
-    { preview: true },
-    { preview: { contentType: "image/svg+xml", byteSize: 10 } },
-    { preview: { contentType: "image/png", byteSize: 512 * 1024 + 1 } },
-  ])
-    assert.equal((await reserve(input)).response.status, 400, JSON.stringify(input));
-  for (const multipart of [false, true])
-    assert.equal((await reserve({ multipart, byteSize: 8 * 1024 * 1024 + 1 })).response.status, 413);
-  const single = (await reserve({ preview: { contentType: "image/png", byteSize: preparedPreview.length } })).value;
-  assert.equal(
-    (await fetch(single.upload.url, { method: "PUT", body: Buffer.alloc(preparedImage.length + 1) })).status,
-    413,
-  );
-  assert.equal(
-    (await fetch(single.previewUpload.url, { method: "PUT", body: Buffer.alloc(preparedPreview.length + 1) })).status,
-    413,
-  );
-  const multipart = (await reserve({ multipart: true })).value;
-  const parts = (
-    await request(`/api/assets/${multipart.id}/parts`, { auth: true, method: "POST", body: { parts: [1, 2] } })
-  ).value.parts;
-  assert.equal((await fetch(parts[0].url, { method: "PUT", body: preparedImage })).status, 204);
-  assert.equal(
-    (await fetch(parts[1].url, { method: "PUT", body: Buffer.from([1]) })).status,
-    413,
-    "parts cannot cumulatively exceed the declared size",
-  );
-  assert.equal(
-    (await request(`/api/assets/${multipart.id}/complete`, { auth: true, method: "POST" })).response.status,
-    422,
-  );
-  await request("/__fixture/control", { method: "POST", body: { reset: true, uploadsEnabled: true } });
-  const reservations = [];
-  for (let index = 0; index < 8; index++) {
-    const result = await reserve({ byteSize: 8 * 1024 * 1024 });
-    assert.equal(result.response.status, 200);
-    reservations.push(result.value.id);
-  }
-  assert.equal((await reserve({})).response.status, 413, "even valid images cannot grow retained memory indefinitely");
-  await request(`/api/assets/${reservations[0]}/cancel`, { auth: true, method: "POST" });
-  assert.equal((await reserve({})).response.status, 200, "cancellation releases its reservation");
-  await request("/__fixture/control", { method: "POST", body: { reset: true, uploadsEnabled: true } });
-  for (let index = 0; index < 128; index++) assert.equal((await reserve({})).response.status, 200);
-  assert.equal((await reserve({})).response.status, 413, "small image reservations also have a count bound");
-});
+test.for(["image/png", "video/mp4"])(
+  "media retention has bounded reservations, requests and total budget (%s)",
+  async (contentType, t) => {
+    const { request } = await setup(t);
+    await request("/__fixture/control", { method: "POST", body: { uploadsEnabled: true, multipartPartBytes: 32 } });
+    const reserve = (input) =>
+      request("/api/assets", { auth: true, method: "POST", body: { ...imageInput, contentType, ...input } });
+    for (const input of [
+      { byteSize: 0 },
+      { byteSize: -1 },
+      { byteSize: 0.5 },
+      { byteSize: "77" },
+      { byteSize: Number.MAX_SAFE_INTEGER + 1 },
+      { width: 0 },
+      { height: 32_769 },
+      { durationMs: -1 },
+      { durationMs: 86_400_001 },
+      { preview: true },
+      { preview: { contentType: "image/svg+xml", byteSize: 10 } },
+      { preview: { contentType: "image/png", byteSize: 512 * 1024 + 1 } },
+    ])
+      assert.equal((await reserve(input)).response.status, 400, JSON.stringify(input));
+    for (const multipart of [false, true])
+      assert.equal((await reserve({ multipart, byteSize: 8 * 1024 * 1024 + 1 })).response.status, 413);
+    const single = (await reserve({ preview: { contentType: "image/png", byteSize: preparedPreview.length } })).value;
+    assert.equal(
+      (await fetch(single.upload.url, { method: "PUT", body: Buffer.alloc(preparedImage.length + 1) })).status,
+      413,
+    );
+    assert.equal(
+      (await fetch(single.previewUpload.url, { method: "PUT", body: Buffer.alloc(preparedPreview.length + 1) })).status,
+      413,
+    );
+    const multipart = (await reserve({ multipart: true })).value;
+    const parts = (
+      await request(`/api/assets/${multipart.id}/parts`, { auth: true, method: "POST", body: { parts: [1, 2] } })
+    ).value.parts;
+    assert.equal((await fetch(parts[0].url, { method: "PUT", body: preparedImage })).status, 204);
+    assert.equal(
+      (await fetch(parts[1].url, { method: "PUT", body: Buffer.from([1]) })).status,
+      413,
+      "parts cannot cumulatively exceed the declared size",
+    );
+    assert.equal(
+      (await request(`/api/assets/${multipart.id}/complete`, { auth: true, method: "POST" })).response.status,
+      422,
+    );
+    await request("/__fixture/control", { method: "POST", body: { reset: true, uploadsEnabled: true } });
+    const reservations = [];
+    for (let index = 0; index < 8; index++) {
+      const result = await reserve({ byteSize: 8 * 1024 * 1024 });
+      assert.equal(result.response.status, 200);
+      reservations.push(result.value.id);
+    }
+    assert.equal((await reserve({})).response.status, 413, "even valid media cannot grow retained memory indefinitely");
+    await request(`/api/assets/${reservations[0]}/cancel`, { auth: true, method: "POST" });
+    assert.equal((await reserve({})).response.status, 200, "cancellation releases its reservation");
+    await request("/__fixture/control", { method: "POST", body: { reset: true, uploadsEnabled: true } });
+    for (let index = 0; index < 128; index++) assert.equal((await reserve({})).response.status, 200);
+    assert.equal((await reserve({})).response.status, 413, "small media reservations also have a count bound");
+  },
+);
 
 test("image PUTs use the forwarded origin while media, like avatars and voice, uses direct loopback", async (t) => {
   const { base, request } = await setup(t);
