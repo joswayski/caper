@@ -83,6 +83,7 @@ struct ActivityInboxEntry: View {
 
 struct ActivityInboxView: View {
     @Bindable var model: AppModel
+    var close: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var reactionItem: ActivityItem?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -96,7 +97,7 @@ struct ActivityInboxView: View {
             HStack {
                 Text("Notifications").font(CaperTheme.font(20, weight: .bold))
                 Spacer()
-                Button("Done") { dismiss() }
+                Button("Done", action: closeInbox).accessibilityIdentifier("activity-done")
             }
             ScrollView(.horizontal) {
                 HStack {
@@ -113,6 +114,7 @@ struct ActivityInboxView: View {
                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(model.activityFilter == filter ? CaperTheme.terracotta : CaperTheme.border))
                         }.buttonStyle(.plain)
                             .accessibilityAddTraits(model.activityFilter == filter ? .isSelected : [])
+                            .accessibilityIdentifier("activity-filter-\(filter.rawValue)")
                     }
                 }
             }.scrollIndicators(.hidden)
@@ -125,6 +127,7 @@ struct ActivityInboxView: View {
                     .scaleEffect(0.75).frame(width: 40, height: 44)
                     #endif
                     .onChange(of: model.activityUnreadOnly) { _, _ in Task { await model.loadActivity(reset: true) } }
+                    .accessibilityIdentifier("activity-unread-only")
                 Text("Unread only ") + Text("(\(model.activityUnread))").foregroundColor(CaperTheme.muted)
                 Spacer()
             }
@@ -145,7 +148,7 @@ struct ActivityInboxView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             ZStack(alignment: .topTrailing) {
                                 Button {
-                                    Task { if await model.openActivity(item) { dismiss() } }
+                                    Task { if await model.openActivity(item) { closeInbox() } }
                                 } label: {
                                     VStack(alignment: .leading, spacing: 5) {
                                         Text("\(item.unread ? "● " : "")\(item.actorName)")
@@ -156,6 +159,7 @@ struct ActivityInboxView: View {
                                         Text(item.location).foregroundStyle(CaperTheme.muted)
                                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                                 }.buttonStyle(.plain).disabled(model.activityOpening == item.id)
+                                    .accessibilityIdentifier("activity-open-\(item.id)")
                                 HStack(spacing: 6) {
                                     Text(FeedbackInbox.relativeTime(item.createdAt)).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                                     if item.unread {
@@ -164,6 +168,7 @@ struct ActivityInboxView: View {
                                         }.buttonStyle(.plain)
                                             .accessibilityLabel("Mark notification from \(item.actorName) read")
                                             .help("Mark read without opening")
+                                            .accessibilityIdentifier("activity-read-\(item.id)")
                                     }
                                 }.frame(minHeight: actionSize)
                             }
@@ -175,10 +180,10 @@ struct ActivityInboxView: View {
                                     } label: {
                                         Text(model.activityExpanded[item.id] == nil ? "Reply" : "Close reply")
                                             .frame(minWidth: 44, minHeight: actionSize).contentShape(Rectangle())
-                                    }
+                                    }.accessibilityIdentifier("activity-reply-\(item.id)")
                                     Button { reactionItem = item } label: {
                                         Text("React").frame(minWidth: 44, minHeight: actionSize).contentShape(Rectangle())
-                                    }
+                                    }.accessibilityIdentifier("activity-react-\(item.id)")
                                 }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted)
                             }
                             if model.activityExpanded[item.id] != nil {
@@ -188,7 +193,8 @@ struct ActivityInboxView: View {
                                 }.modifier(Entrance.anchored)
                             }
                             Divider()
-                        }
+                        }.accessibilityElement(children: .contain)
+                            .accessibilityIdentifier("activity-row-\(item.id)")
                     }
                     if model.activityCursor != nil {
                         Button("Load more") { Task { await model.loadActivity(reset: false) } }.disabled(model.activityLoading)
@@ -213,10 +219,15 @@ struct ActivityInboxView: View {
                 }
             }
             #if os(macOS)
-            .frame(width: 680, height: 640)
+            // Native workspace dialogs supply the available size; the shipping
+            // sheet retains its fixed dimensions and environment dismissal.
+            .frame(idealWidth: 680, idealHeight: 640)
+            .frame(width: close == nil ? 680 : nil, height: close == nil ? 640 : nil)
             #else
             .frame(minWidth: 300, idealWidth: 560, minHeight: 420, idealHeight: 640)
             #endif
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("activity-inbox-dialog")
             .task {
                 await model.loadActivity(reset: true)
                 while !Task.isCancelled {
@@ -225,4 +236,6 @@ struct ActivityInboxView: View {
                 }
             }
     }
+
+    private func closeInbox() { if let close { close() } else { dismiss() } }
 }

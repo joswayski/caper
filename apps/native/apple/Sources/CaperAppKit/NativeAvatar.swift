@@ -40,7 +40,7 @@ import CaperCore
         update(name: account.displayName ?? account.username ?? "You", avatarId: account.avatarId, picture: account.avatarPicture)
     }
 
-    private func update(name: String, avatarId: Int?, picture: CaperPicture?) {
+    func update(name: String, avatarId: Int?, picture: CaperPicture?) {
         self.picture = picture
         saved.image = CaperAvatar.image(for: avatarId)
         initial.stringValue = String(name.prefix(1)).uppercased()
