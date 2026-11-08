@@ -10,6 +10,9 @@ internal object CaperMobile {
         System.loadLibrary("caper_mobile")
     }
 
+    /** New destination file; 0 success, 1 unsupported, 2 malformed, 3 I/O failure. */
+    @JvmStatic external fun cleanMetadata(source: String, destination: String, contentType: String): Int
+
     /** `[start, end, style]` per visible span of formatted text; style bit 1 is bold, 2 italic. */
     @JvmStatic external fun formatSpans(text: String): IntArray
 

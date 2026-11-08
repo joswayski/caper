@@ -2,6 +2,30 @@
 //! UTF-8, Swift's own encoding, so passing it copies nothing.
 #![allow(unsafe_code)]
 
+/// Streams metadata-cleaned bytes into a new destination file; see `crate::media`.
+///
+/// # Safety
+/// Each pointer must reference its length of UTF-8 bytes (or be null for length 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caper_mobile_clean_metadata(
+    source: *const u8,
+    source_len: usize,
+    destination: *const u8,
+    destination_len: usize,
+    mime: *const u8,
+    mime_len: usize,
+) -> i32 {
+    // SAFETY: all three byte ranges are supplied by the host under this contract.
+    let (source, destination, mime) = unsafe {
+        (
+            text(source, source_len),
+            text(destination, destination_len),
+            text(mime, mime_len),
+        )
+    };
+    crate::media::clean_metadata(source, destination, mime)
+}
+
 /// An `i32` array the caller releases with `caper_mobile_ints_free`.
 #[repr(C)]
 pub struct CaperMobileInts {

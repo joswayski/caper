@@ -8,6 +8,34 @@ use jni_sys::{
     jstring,
 };
 
+/// Streams cleaned bytes into a new file; status codes match the C ABI.
+///
+/// # Safety
+/// Called by the JVM with its environment and three live strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_chat_caper_android_data_CaperMobile_cleanMetadata(
+    env: *mut JNIEnv,
+    _class: jclass,
+    source: jstring,
+    destination: jstring,
+    mime: jstring,
+) -> jint {
+    // SAFETY: the JVM supplies live string references for this call.
+    let values = unsafe {
+        (
+            string(env, source),
+            string(env, destination),
+            string(env, mime),
+        )
+    };
+    match values {
+        (Some(source), Some(destination), Some(mime)) => {
+            crate::media::clean_metadata(&source, &destination, &mime)
+        }
+        _ => 3,
+    }
+}
+
 /// # Safety
 /// `env` must be the calling thread's JNI environment and `text` a live string.
 unsafe fn string(env: *mut JNIEnv, text: jstring) -> Option<String> {

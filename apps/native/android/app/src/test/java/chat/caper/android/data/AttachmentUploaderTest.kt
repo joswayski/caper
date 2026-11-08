@@ -39,8 +39,8 @@ class AttachmentUploaderTest {
         "storage":{"used":2048,"limit":1073741824}}"""
 
     private fun prepared(preview: Boolean): PreparedAttachment {
-        val file = folder.newFile("shot.png").apply { writeBytes(ByteArray(1500) { it.toByte() }) }
-        val small = if (preview) folder.newFile("preview.webp").apply { writeBytes(ByteArray(300) { 7 }) } else null
+        val file = folder.newFile("shot.png").apply { writeBytes(MetadataFixtures.taggedPng) }
+        val small = if (preview) folder.newFile("preview.webp").apply { writeBytes(MetadataFixtures.taggedWebp) } else null
         return PreparedAttachment(file, "shot.png", "image/png", "image", sourceSize = 9000, width = 1920, height = 1080,
             preview = small, previewContentType = small?.let { "image/webp" })
     }
@@ -66,28 +66,28 @@ class AttachmentUploaderTest {
         val body = Json.parseToJsonElement(create.body.readUtf8()).jsonObject
         assertEquals(setOf("channelId", "filename", "contentType", "byteSize", "sourceByteSize", "width", "height", "preview", "multipart"), body.keys)
         assertEquals("channel00001", body["channelId"]!!.jsonPrimitive.content)
-        assertEquals(1500L, body["byteSize"]!!.jsonPrimitive.long)
+        assertEquals(MetadataFixtures.png.size.toLong(), body["byteSize"]!!.jsonPrimitive.long)
         assertEquals(9000L, body["sourceByteSize"]!!.jsonPrimitive.long)
         assertEquals(1920, body["width"]!!.jsonPrimitive.int)
         assertEquals("image/webp", body["preview"]!!.jsonObject["contentType"]!!.jsonPrimitive.content)
-        assertEquals(300L, body["preview"]!!.jsonObject["byteSize"]!!.jsonPrimitive.long)
+        assertEquals(MetadataFixtures.webp.size.toLong(), body["preview"]!!.jsonObject["byteSize"]!!.jsonPrimitive.long)
 
         val previewPut = server.takeRequest()
         assertEquals("PUT", previewPut.method)
         assertEquals("/r2/preview/$id?X-Amz-Signature=def", previewPut.path)
         assertEquals("image/webp", previewPut.headers["Content-Type"])
-        assertEquals("300", previewPut.headers["Content-Length"])
+        assertEquals(MetadataFixtures.webp.size.toString(), previewPut.headers["Content-Length"])
         assertNull("no credentials go to storage", previewPut.headers["Authorization"])
-        assertEquals(300L, previewPut.bodySize)
+        assertArrayEquals(MetadataFixtures.webp, previewPut.body.readByteArray())
 
         val originalPut = server.takeRequest()
         assertEquals("/r2/original/$id?X-Amz-Signature=abc", originalPut.path)
         assertEquals("image/png", originalPut.headers["Content-Type"])
         assertEquals(disposition, originalPut.headers["Content-Disposition"])
-        assertEquals("1500", originalPut.headers["Content-Length"])
+        assertEquals(MetadataFixtures.png.size.toString(), originalPut.headers["Content-Length"])
         assertNull(originalPut.headers["Authorization"])
         assertNull(originalPut.headers["x-caper-chat-token"])
-        assertArrayEquals(ByteArray(1500) { it.toByte() }, originalPut.body.readByteArray())
+        assertArrayEquals(MetadataFixtures.png, originalPut.body.readByteArray())
 
         val complete = server.takeRequest()
         assertEquals("POST", complete.method)
@@ -181,7 +181,7 @@ class AttachmentUploaderTest {
         server.enqueue(MockResponse().setResponseCode(200))
         server.enqueue(MockResponse().setResponseCode(422).setBody("""{"error":"size mismatch"}"""))
         server.enqueue(MockResponse().setResponseCode(204))
-        val file = folder.newFile("again.png").apply { writeBytes(ByteArray(10) { 1 }) }
+        val file = folder.newFile("again.png").apply { writeBytes(MetadataFixtures.taggedPng) }
         val mismatch = runCatching {
             uploader.upload("account-secret", "channel00001", PreparedAttachment(file, "again.png", "image/png", "image", 10))
         }.exceptionOrNull()
@@ -229,8 +229,9 @@ class AttachmentUploaderTest {
     }
 
     @Test(timeout = 10000) fun `large files go up in parts with fresh urls for a failed part, then complete`() = runBlocking {
-        val bytes = ByteArray(10) { (it * 7 + 3).toByte() }
-        val file = folder.newFile("big.mp4").apply { writeBytes(bytes) }
+        val bytes = MetadataFixtures.png
+        val partSize = bytes.size / 3 + 1
+        val file = folder.newFile("big.png").apply { writeBytes(MetadataFixtures.taggedPng) }
         val created = java.util.concurrent.atomic.AtomicReference<String>()
         val partRequests = java.util.Collections.synchronizedList(mutableListOf<String>())
         val puts = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
@@ -242,7 +243,7 @@ class AttachmentUploaderTest {
                 return when {
                     path == "/api/assets" -> {
                         created.set(request.body.readUtf8())
-                        MockResponse().setResponseCode(201).setBody("""{"id":"$id","kind":"video","multipart":{"partBytes":4,"partCount":3}}""")
+                        MockResponse().setResponseCode(201).setBody("""{"id":"$id","kind":"image","multipart":{"partBytes":$partSize,"partCount":3}}""")
                     }
                     path == "/api/assets/$id/parts" -> {
                         val body = request.body.readUtf8()
@@ -266,15 +267,16 @@ class AttachmentUploaderTest {
         val progress = java.util.Collections.synchronizedList(mutableListOf<Float>())
         val uploader = AttachmentUploader(CaperApi(baseUrl = server.url("/").toString()), partRetryDelaysMs = listOf(1, 1))
 
-        val attachment = uploader.upload("account-secret", "channel00001", PreparedAttachment(file, "big.mp4", "video/mp4", "video", 10)) { progress += it }
+        val attachment = uploader.upload("account-secret", "channel00001", PreparedAttachment(file, "big.png", "image/png", "image", file.length())) { progress += it }
 
         assertEquals(id, attachment.id)
         assertEquals(true, Json.parseToJsonElement(created.get()).jsonObject["multipart"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(bytes.size.toLong(), Json.parseToJsonElement(created.get()).jsonObject["byteSize"]!!.jsonPrimitive.long)
         // Each part carries exactly its slice; the short last part included.
         val received = puts.entries.sortedBy { it.key.removePrefix("/r2/part/").substringBefore("?") }
         assertEquals(listOf("1", "2", "3"), received.map { it.key.removePrefix("/r2/part/").substringBefore("?") })
         assertArrayEquals(bytes, received.fold(ByteArray(0)) { all, part -> all + part.value })
-        assertEquals(listOf(4, 4, 2), received.map { it.value.size })
+        assertEquals(listOf(partSize, partSize, bytes.size - 2 * partSize), received.map { it.value.size })
         // The failed part was sent again with a URL asked for after the failure.
         assertTrue(failedOnce.get())
         val asked = partRequests.flatMap { body -> Json.parseToJsonElement(body).jsonObject["parts"]!!.jsonArray.map { it.jsonPrimitive.int } }
@@ -295,6 +297,20 @@ class AttachmentUploaderTest {
         listOf("/api/assets", "/r2/original/$id?X-Amz-Signature=abc", "/api/assets/$id/complete", "/api/assets/$id/cancel")
             .forEach { assertEquals(it, server.takeRequest().path) }
         assertEquals(4, server.requestCount)
+    }
+
+    @Test(timeout = 10000) fun `uncleanable originals and previews refuse before any request and remove scratch files`() = runBlocking {
+        val ready = prepared(preview = true)
+        val invalid = folder.newFile("invalid").apply { writeBytes(ByteArray(7)) }
+        val uploader = AttachmentUploader(CaperApi(baseUrl = server.url("/").toString()))
+        for (candidate in listOf(ready.copy(file = invalid), ready.copy(preview = invalid))) {
+            val error = runCatching { uploader.upload("secret", "channel00001", candidate) }.exceptionOrNull()
+            assertEquals(MetadataStrip.REFUSED, AttachmentPolicy.uploadErrorMessage(error!!))
+            assertEquals(0, server.requestCount)
+            assertFalse(folder.root.listFiles()!!.any { it.name.startsWith(".clean-") })
+        }
+        assertArrayEquals(MetadataFixtures.taggedPng, ready.file.readBytes())
+        assertArrayEquals(MetadataFixtures.taggedWebp, ready.preview!!.readBytes())
     }
 
     @Test fun `invalid asset ids never reach a url path`() {

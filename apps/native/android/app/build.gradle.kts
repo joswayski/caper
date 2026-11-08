@@ -49,7 +49,7 @@ val rustJniLibs = layout.buildDirectory.dir("rust-jniLibs")
 val rustHost = layout.buildDirectory.dir("rust-host")
 val rustInputs = files(
     mobileCrate.resolve("src"), mobileCrate.resolve("Cargo.toml"), mobileCrate.resolve("Cargo.lock"),
-    rootProject.file("../../../shared/messages"), rootProject.file("../client/src/names.rs")
+    rootProject.file("../../../shared/messages"), rootProject.file("../../../shared/media"), rootProject.file("../client/src/names.rs")
 )
 
 android {

@@ -14,11 +14,12 @@ workspace, so mobile builds never compile the desktop client's media stack.
 | Invite codes | `shared/invites/code.rs` | `data/InviteLinks.kt` (`inviteCode`) | `InviteLinks.swift` (`code(from:)`) |
 | Links | `shared/messages/links.rs` | `data/Links.kt` | `MessageLinks.swift` |
 | Mention tokens | `shared/messages/mentions.rs` | `MentionAutocomplete.kt` (`mentionSpans`) | `MentionAutocomplete.swift` (`tokens`) |
+| Upload metadata | `shared/media/metadata.rs` | `data/MetadataStrip.kt` | C ABI `caper_mobile_clean_metadata` |
 | Name characters | `apps/native/client/src/names.rs` | `model/Names.kt` | `Names.swift` |
 | Space and channel names | `apps/native/client/src/names.rs` | `MainActivity.kt` (`spaceNameError`, `channelNameError`) | `Models.swift` (`WorkspaceValidation`) |
 
 The host code keeps its own types and editing helpers and calls Rust for the
-parse. Results are flat `i32` arrays of offsets into the caller's string
+parse. Text results are flat `i32` arrays of offsets into the caller's string
 (UTF-16 code units, plus UTF-8 bytes for Swift), so text never round-trips
 through a second encoding; `src/lib.rs` documents each layout.
 
@@ -30,6 +31,15 @@ through a second encoding; `src/lib.rs` documents each layout.
   (feature `jni`). The app's Gradle build runs cargo-ndk for arm64-v8a,
   armeabi-v7a, x86 and x86_64 (16 KiB-aligned on 64-bit ABIs) and builds the
   library for the host so JVM unit tests run the same code.
+
+Metadata cleaning accepts source path, destination path and content type as
+UTF-8. `caper_mobile_clean_metadata` takes pointer/length pairs; JNI exposes
+`CaperMobile.cleanMetadata(String, String, String)`. Status 0 means the cleaned
+file was written, 1 unsupported media, 2 malformed media, and 3 an I/O error.
+The destination must not exist. The source is unchanged; failed copies remove
+their partial output. Parsing returns edits applied by a streaming `Read + Seek`
+adapter, so large audio/video payloads are not loaded into memory. The host owns
+the cleaned file and deletes it after uploads and retries finish.
 
 Each client's tests run the shared case files (`shared/messages/*-cases.json`,
 `shared/names/*.json`, `shared/invites/invite-cases.json`) through its bridge. Here:

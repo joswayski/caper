@@ -40,7 +40,7 @@ data class PreparedAttachment(
 /**
  * Reserve, upload the preview then the file straight to storage (in parts when the server asks),
  * confirm (web `uploadPrepared`).
- * Storage receives only the presigned headers; the API cleans metadata before sharing. Returns
+ * Every body is metadata-cleaned before reservation; storage receives only presigned headers. Returns
  * the attachment description whose ID is sent with a message.
  */
 class AttachmentUploader(
@@ -51,6 +51,20 @@ class AttachmentUploader(
     private val partRetryDelaysMs: List<Long> = listOf(500L, 2_000L, 5_000L, 15_000L),
 ) {
     suspend fun upload(token: String, channelId: String, file: PreparedAttachment, progress: (Float) -> Unit = {}): ChatAttachment {
+        suspend fun withPreview(prepared: PreparedAttachment): ChatAttachment {
+            val preview = prepared.preview
+            val type = prepared.previewContentType
+            return if (preview != null && type != null) MetadataStrip.withCleanFile(preview, type) {
+                uploadCleaned(token, channelId, prepared.copy(preview = it), progress)
+            } else uploadCleaned(token, channelId, prepared, progress)
+        }
+        // Only composer recordings retain server-side re-encoding. Imported audio is cleaned.
+        return if (file.voice) withPreview(file) else MetadataStrip.withCleanFile(file.file, file.contentType) {
+            withPreview(file.copy(file = it))
+        }
+    }
+
+    private suspend fun uploadCleaned(token: String, channelId: String, file: PreparedAttachment, progress: (Float) -> Unit): ChatAttachment {
         val size = file.file.length()
         if (size < 1) throw UploadException("This file is empty.")
         val preview = file.preview?.takeIf { file.previewContentType != null && it.length() in 1..AttachmentPolicy.PREVIEW_MAX_BYTES }
