@@ -2,8 +2,13 @@ diff --git a/apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift b/apps/
 index 06e28f3a..913376b2 100644
 --- a/apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift
 +++ b/apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift
-@@ -800,11 +800,13 @@ public final class ComposerTextView: NSTextView {
+@@ -800,11 +800,18 @@ public final class ComposerTextView: NSTextView {
      }
++    public override func mouseDown(with event: NSEvent) {
++        ForwardNoteObservation.mouseDown("mouseDown.enter", self, event)
++        defer { ForwardNoteObservation.mouseDown("mouseDown.exit", self, event) }
++        super.mouseDown(with: event)
++    }
      public var pasteAttachments: (() -> Bool)?
      public override func paste(_ sender: Any?) {
 +        ForwardNoteObservation.observe("paste.enter", self)
@@ -18,7 +23,7 @@ index 06e28f3a..913376b2 100644
  }
  
  struct NativeMessageTextEditor: NSViewRepresentable {
-@@ -853,6 +855,8 @@ struct NativeMessageTextEditor: NSViewRepresentable {
+@@ -853,6 +860,8 @@ struct NativeMessageTextEditor: NSViewRepresentable {
          let mentionsChanged = context.coordinator.parent.mentions != mentions || context.coordinator.parent.highlightSource != highlightSource
          context.coordinator.adopt(self)
          guard let view = scroll.documentView as? ComposerTextView else { return }
@@ -27,7 +32,7 @@ index 06e28f3a..913376b2 100644
          view.pasteAttachments = pasteAttachments
          // A disabled composer (under a dialog) must not keep taking keystrokes.
          view.isEditable = editable && isEnabled
-@@ -921,6 +925,8 @@ struct NativeMessageTextEditor: NSViewRepresentable {
+@@ -921,6 +930,8 @@ struct NativeMessageTextEditor: NSViewRepresentable {
          // calls are nonisolated there. AppKit still delivers them on the main thread.
          func textDidChange(_ notification: Notification) {
              MainActor.assumeIsolated {

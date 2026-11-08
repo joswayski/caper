@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -21,7 +22,7 @@ HASHES = {
     ),
     str(CORE): (
         "9d8727c4d16fa528936ee4d1fd9315cfa9e2041629f9a6ea6d3b19b2dd093f94",
-        "a4f0339c4a42c9bce77f28cbe9a323ceacec8db9da26a858559b12dfa04e7135",
+        "23a34c75f84cbcc6a6b44c01872547ab8456f94733e251e41763d973fc70eb78",
     ),
 }
 
@@ -58,6 +59,8 @@ def assess(events):
         "app.ready",
         "app.mouseDown.beforeRouting",
         "app.keyDown.beforeRouting",
+        "mouseDown.enter",
+        "mouseDown.exit",
         "paste.enter",
         "paste.exit",
         "focus.become",
@@ -117,7 +120,12 @@ def assess(events):
         if event["stream"] != begin["stream"] and event["event"] != "app.ready":
             assert int(begin["uptimeNanoseconds"]) <= int(event["uptimeNanoseconds"]) <= int(end["uptimeNanoseconds"])
     assert next(e for e in events if e["event"] == "app.ready")["monitorInstalled"] is True
-    states = [e for e in events if e["event"] in {"app.mouseDown.beforeRouting", "app.keyDown.beforeRouting"}]
+    states = [
+        e
+        for e in events
+        if e["event"]
+        in {"app.mouseDown.beforeRouting", "app.keyDown.beforeRouting", "mouseDown.enter", "mouseDown.exit"}
+    ]
     assert states, "No independent state observation during replacement; paste absence is inconclusive"
     for state in states:
         for key in ("view", "firstResponderClass"):
@@ -132,6 +140,7 @@ def assess(events):
             "swiftUIEnabled",
         ):
             assert type(state.get(key)) is bool, key
+    routing = assess_mouse_routing(events)
     for event in (e for e in events if e["event"] == "paste.enter"):
         data = event.get("pasteboard")
         assert type(data) is dict, "Missing paste-entry clipboard metadata"
@@ -158,8 +167,101 @@ def assess(events):
     return {
         "complete": True,
         "pasteCallbacks": names.count("paste.enter"),
+        "mouseRouting": routing,
         "viewIdentities": sorted({e["view"] for e in events if "view" in e}),
         "classification": "observations only; inspect ordering and primary XCTest result",
+    }
+
+
+def assess_mouse_routing(events):
+    """Validate observation shape; prediction and actual handler calls stay separate."""
+
+    def numbers(data, keys):
+        assert type(data) is dict, "Missing coordinate metadata"
+        for key in keys:
+            assert type(data.get(key)) in (int, float) and math.isfinite(data[key]), f"Invalid coordinate: {key}"
+        return data
+
+    def mouse(event):
+        data = event.get("mouseEvent")
+        assert type(data) is dict, "Missing mouse event metadata"
+        assert type(data.get("windowID")) is str and data["windowID"], "Mouse window identity"
+        for key in ("windowNumber", "eventNumber"):
+            assert type(data.get(key)) is int, key
+        numbers(data, ("timestampSeconds",))
+        numbers(data.get("windowPoint"), ("x", "y"))
+        return data
+
+    clicks = [e for e in events if e["event"] == "app.mouseDown.beforeRouting"]
+    assert clicks, "No predictive mouse observation"
+    for index, event in enumerate(clicks):
+        mouse(event)
+        data = event.get("routing")
+        assert type(data) is dict, "Missing routing metadata"
+        if index:
+            assert data == {"status": "already-observed", "queryPerformed": False}, "Repeated hitTest query"
+    first = clicks[0]
+    data = first["routing"]
+    assert data.get("status") == "observed" and data.get("queryPerformed") is True, (
+        f"Routing unavailable: {data.get('reason')}"
+    )
+    assert data.get("predictionOnly") is True, "hitTest must remain a prediction"
+    assert data.get("coordinateSpace") == "event-window-base", "Geometry coordinate space"
+    assert first["mouseEvent"]["windowNumber"] == first["windowNumber"], "Different event/note windows"
+    for key in ("noteID", "scrollID", "clipID", "rootID", "hostID", "recipientID", "querySpaceID"):
+        assert type(data.get(key)) is str and data[key], key
+    for key in ("noteID", "scrollID", "clipID", "rootID"):
+        assert data[key] != "nil", key
+    assert data.get("hostIdentification") == "nearest-NSHostingView-class-prefix", "Host heuristic provenance"
+    for key in ("hostSearchTruncated", "ancestryTruncated"):
+        assert type(data.get(key)) is bool, key
+    for key in ("noteVisibleWindow", "clipVisibleWindow"):
+        bounds = numbers(data.get(key), ("x", "y", "width", "height"))
+        assert bounds["width"] >= 0 and bounds["height"] >= 0, "Negative visible size"
+    for key in ("noteLocalPoint", "queryPoint", "notePointRoundTripWindow", "queryPointRoundTripWindow"):
+        point = numbers(data.get(key), ("x", "y"))
+        if "RoundTrip" in key:
+            assert all(
+                abs(point[axis] - first["mouseEvent"]["windowPoint"][axis]) <= 0.000001 for axis in ("x", "y")
+            ), "Coordinate round-trip mismatch"
+    chain = data.get("ancestry")
+    assert type(chain) is list and len(chain) <= 16, "Missing/oversized ancestry"
+    assert (len(chain) == 0) == (data["recipientID"] == "nil"), "Nil recipient ancestry"
+    assert not chain or chain[0].get("id") == data["recipientID"], "Recipient/ancestry mismatch"
+    assert not data["ancestryTruncated"] or len(chain) == 16, "Invalid ancestry truncation"
+    identities = []
+    for node in chain:
+        for key in ("id", "class"):
+            assert type(node.get(key)) is str and node[key], key
+        identities.append(node["id"])
+        for role, identity in (
+            ("Note", "noteID"),
+            ("Scroll", "scrollID"),
+            ("Clip", "clipID"),
+            ("Host", "hostID"),
+            ("Root", "rootID"),
+        ):
+            assert type(node.get("is" + role)) is bool and node["is" + role] == (node["id"] == data[identity]), (
+                "Inconsistent ancestry role"
+            )
+    assert len(set(identities)) == len(identities), "Duplicate ancestry identity"
+    entries = [e for e in events if e["event"] == "mouseDown.enter"]
+    exits = [e for e in events if e["event"] == "mouseDown.exit"]
+    assert len(entries) == len(exits), "Incomplete actual mouseDown handler"
+    for entry, exit_event in zip(entries, exits):
+        received = mouse(entry)
+        assert mouse(exit_event) == received, "Handler event changed"
+        assert entry["view"] == exit_event["view"], "Handler view changed"
+        matching = [e for e in clicks if e["mouseEvent"] == received and e["view"] == entry["view"]]
+        assert len(matching) == 1, "Handler missing unique pre-routing observation"
+        assert matching[0]["sequence"] < entry["sequence"] < exit_event["sequence"], "Handler order"
+        assert entry["stream"] == exit_event["stream"] == matching[0]["stream"], "Handler process/stream mismatch"
+    return {
+        "predictionOnly": True,
+        "predictedRecipient": data["recipientID"],
+        "ancestryTruncated": data["ancestryTruncated"],
+        "actualHandlerEntries": len(entries),
+        "actualHandlerExits": len(exits),
     }
 
 

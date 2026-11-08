@@ -13,6 +13,7 @@ import CryptoKit
     private static var monitor: Any?
     private static var ready = false
     private static var finished = false
+    private static var routingObserved = false
     private static var testDirectory: URL?
     private static let canary = "TEST FIXTURE — cancel this note, not the channel draft"
     private static var directory: URL? {
@@ -150,7 +151,15 @@ import CryptoKit
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { event in
                 MainActor.assumeIsolated {
                     if let note, active() {
-                        emit(event.type == .leftMouseDown ? "app.mouseDown.beforeRouting" : "app.keyDown.beforeRouting", snapshot(note))
+                        var data = snapshot(note)
+                        if event.type == .leftMouseDown {
+                            data["mouseEvent"] = mouseEvent(event)
+                            if !routingObserved {
+                                routingObserved = true
+                                data["routing"] = routingSnapshot(note, event)
+                            } else { data["routing"] = ["status": "already-observed", "queryPerformed": false] }
+                        }
+                        emit(event.type == .leftMouseDown ? "app.mouseDown.beforeRouting" : "app.keyDown.beforeRouting", data)
                     }
                 }
                 return event
@@ -168,6 +177,86 @@ import CryptoKit
         for (key, value) in fields { data[key] = value }
         if event == "paste.enter" { data["pasteboard"] = pasteboardSnapshot() }
         emit(event, data)
+    }
+
+    private static func routingIdentity(_ responder: NSResponder) -> String {
+        let id = responders.object(forKey: responder) ?? (UUID().uuidString as NSString)
+        responders.setObject(id, forKey: responder)
+        return id as String
+    }
+
+    private static func point(_ value: NSPoint) -> [String: CGFloat] { ["x": value.x, "y": value.y] }
+    private static func rect(_ value: NSRect) -> [String: CGFloat] {
+        ["x": value.origin.x, "y": value.origin.y, "width": value.width, "height": value.height]
+    }
+
+    private static func mouseEvent(_ event: NSEvent) -> [String: Any] {
+        ["windowID": event.window.map { routingIdentity($0) } ?? "nil",
+         "windowNumber": event.windowNumber, "eventNumber": event.eventNumber,
+         "timestampSeconds": event.timestamp, "windowPoint": point(event.locationInWindow)]
+    }
+
+    // This is the real handler boundary, unlike the monitor's predictive hitTest query.
+    // The overlay always calls super exactly once with the original event, even when unarmed.
+    static func mouseDown(_ phase: String, _ view: NSTextView, _ event: NSEvent) {
+        guard directory != nil, views.object(forKey: view) != nil, event.type == .leftMouseDown, active() else { return }
+        var data = snapshot(view)
+        data["mouseEvent"] = mouseEvent(event)
+        emit(phase, data)
+    }
+
+    private static func routingSnapshot(_ view: NSTextView, _ event: NSEvent) -> [String: Any] {
+        var data: [String: Any] = ["status": "unavailable", "queryPerformed": false,
+            "coordinateSpace": "event-window-base", "predictionOnly": true]
+        guard let window = event.window, view.window === window else {
+            data["reason"] = "missing-or-different-note-window"; return data
+        }
+        guard let root = window.contentView, let scroll = view.enclosingScrollView else {
+            data["reason"] = "missing-content-or-scroll-view"; return data
+        }
+        let clip = scroll.contentView
+        data["noteID"] = routingIdentity(view)
+        data["scrollID"] = routingIdentity(scroll)
+        data["clipID"] = routingIdentity(clip)
+        data["rootID"] = routingIdentity(root)
+        data["noteVisibleWindow"] = rect(view.convert(view.visibleRect, to: nil))
+        data["clipVisibleWindow"] = rect(clip.convert(clip.visibleRect, to: nil))
+        data["noteLocalPoint"] = point(view.convert(event.locationInWindow, from: nil))
+        data["notePointRoundTripWindow"] = point(view.convert(view.convert(event.locationInWindow, from: nil), to: nil))
+        // AppKit hitTest expects the RECEIVER'S SUPERVIEW coordinate space, not
+        // receiver-local coordinates. nil conversion uses window-base coordinates.
+        let queryPoint = root.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+        data["queryPoint"] = point(queryPoint)
+        data["querySpaceID"] = root.superview.map { routingIdentity($0) } ?? "window-base"
+        data["queryPointRoundTripWindow"] = point(root.superview?.convert(queryPoint, to: nil) ?? queryPoint)
+        // Identify hosting ancestors by an explicit class-name heuristic, not an AX label.
+        var ancestor: NSView? = view
+        var host: NSView?
+        var depth = 0
+        while let current = ancestor, depth < 16 {
+            if String(describing: type(of: current)).hasPrefix("NSHostingView") { host = current; break }
+            ancestor = current.superview; depth += 1
+        }
+        data["hostID"] = host.map { routingIdentity($0) } ?? "nil"
+        data["hostIdentification"] = "nearest-NSHostingView-class-prefix"
+        data["hostSearchTruncated"] = host == nil && ancestor != nil
+        // Exactly one predictive query. It may invoke framework code; it does not
+        // establish which view the subsequent event dispatch will actually call.
+        let recipient = root.hitTest(queryPoint)
+        data["queryPerformed"] = true
+        data["status"] = "observed"
+        data["recipientID"] = recipient.map { routingIdentity($0) } ?? "nil"
+        var chain: [[String: Any]] = []
+        var current = recipient
+        while let item = current, chain.count < 16 {
+            chain.append(["id": routingIdentity(item), "class": String(describing: type(of: item)),
+                          "isNote": item === view, "isScroll": item === scroll,
+                          "isClip": item === clip, "isHost": item === host, "isRoot": item === root])
+            current = item.superview
+        }
+        data["ancestry"] = chain
+        data["ancestryTruncated"] = current != nil
+        return data
     }
 
     private static func pasteboardSnapshot() -> [String: Any] {

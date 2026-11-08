@@ -48,6 +48,32 @@ exact string-inequality resync decision, focus callback results, paste entry/exi
 and textDidChange before/after. The initial ready snapshot is update-entry state;
 in-interval event snapshots independently report state even if paste never runs.
 
+The first armed mouseDown monitor records event window opaque identity/number,
+event number/timestamp and window-base point; note and enclosing clip visible
+rectangles are converted to that same window-base space. It makes at most one
+predictive `contentView.hitTest` query, using the receiver's **superview** coordinates
+as [AppKit requires](https://developer.apple.com/documentation/appkit/nsview/hittest(_:)).
+Note-local and query-point round trips back to window-base are retained separately.
+Missing/mismatched windows or missing content/scroll views retain an unavailable
+reason and never trigger another query. Recipient ancestry is limited to 16 nodes,
+with opaque IDs, classes and equality roles for note/clip/scroll/root/host. Host
+identification explicitly uses the nearest `NSHostingView` class-name prefix in
+at most 16 note ancestors; absence/truncation is not inferred host identity.
+Ancestry truncation is recorded, not presented as a complete hierarchy.
+
+The diagnostic overlay also wraps `ComposerTextView.mouseDown`: its original event
+is forwarded to `super` exactly once, unconditionally. Helper entry/exit observations
+require a registered note and the same active first-replacement interval and retain
+responder state and event identity. No other composer logs handler observations.
+Prediction and actual handler evidence are assessed independently: a predicted note
+with zero handler calls is not delivery, and handler delivery need not acquire focus.
+Missing exit, event/view mismatch or incomplete coordinates remain evidence failures,
+independent of XCTest outcome. The query, conversions, bounded ancestry traversal,
+guard checks and synchronous handler logging add overhead and may perturb timing;
+querying hitTest invokes framework code and does not prove the eventual recipient.
+There is no swizzling, substitute event, forced focus/layout, gesture/overlay change,
+delay or retry. This instrumentation is not a product fix.
+
 The test records pasteboard write result, before/after changeCounts and separate
 readback-presence, exact-canary-match, type-policy and count-stability booleans,
 retaining the original compound readback result. A failed write skips content
