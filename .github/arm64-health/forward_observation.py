@@ -8,6 +8,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 SELECTOR = "CaperAppKitTests/CaperAppKitTests/testForwardPickerCancelLoadRetrySearchAndPartialDeliveryPreserveDrafts"
+CANARY = "TEST FIXTURE — cancel this note, not the channel draft"
 UI = Path("apps/native/apple/Tests/CaperAppKitTests/CaperAppKitTests.swift")
 CORE = Path("apps/native/apple/Sources/CaperCore/EmojiAutocomplete.swift")
 HASHES = {
@@ -81,6 +82,20 @@ def assess(events):
     begin = next(e for e in events if e["event"] == "test.pasteboard")
     end = next(e for e in events if e["event"] == "test.end")
     assert begin["stream"] == end["stream"]
+    for key in ("writeSucceeded", "readbackMatches"):
+        assert type(begin.get(key)) is bool, key
+    assert type(begin.get("changeCount")) is int and begin["changeCount"] >= 0, "changeCount"
+    assert not begin["readbackMatches"] or begin["writeSucceeded"], "Readback cannot match after a failed write"
+
+    def canary_metadata(data, matching):
+        if matching:
+            assert data.get("sha256") == hashlib.sha256(CANARY.encode()).hexdigest(), "Canary digest"
+            assert type(data.get("utf16Length")) is int and data["utf16Length"] == len(CANARY.encode("utf-16-le")) // 2
+            assert data.get("types") == ["public.utf8-plain-text"], "Canary types"
+        else:
+            assert not {"sha256", "utf16Length", "types"}.intersection(data), "Unexpected clipboard metadata"
+
+    canary_metadata(begin, begin["readbackMatches"])
     for event in events:
         if event["stream"] != begin["stream"] and event["event"] != "app.ready":
             assert int(begin["uptimeNanoseconds"]) <= int(event["uptimeNanoseconds"]) <= int(end["uptimeNanoseconds"])
@@ -88,18 +103,40 @@ def assess(events):
     states = [e for e in events if e["event"] in {"app.mouseDown.beforeRouting", "app.keyDown.beforeRouting"}]
     assert states, "No independent state observation during replacement; paste absence is inconclusive"
     for state in states:
+        for key in ("view", "firstResponderClass"):
+            assert type(state.get(key)) is str and state[key], key
         for key in (
-            "view",
             "isEditable",
             "isSelectable",
             "appActive",
             "windowIsKey",
-            "firstResponderClass",
             "firstResponderIsNote",
             "swiftUIEditable",
             "swiftUIEnabled",
         ):
-            assert key in state, key
+            assert type(state.get(key)) is bool, key
+    for event in (e for e in events if e["event"] == "paste.enter"):
+        data = event.get("pasteboard")
+        assert type(data) is dict, "Missing paste-entry clipboard metadata"
+        for key in ("markerChangeCount", "changeCount", "changeCountAfter"):
+            assert type(data.get(key)) is int and data[key] >= 0, key
+        for key in ("provenanceSafe", "contentInspected"):
+            assert type(data.get(key)) is bool, key
+        assert data["markerChangeCount"] == begin["changeCount"], "Marker count changed"
+        safe = begin["writeSucceeded"] and begin["readbackMatches"]
+        assert data["provenanceSafe"] is safe, "Marker provenance differs from original observation"
+        changed = data["changeCount"] != begin["changeCount"] or data["changeCountAfter"] != begin["changeCount"]
+        assert data.get("changeStatus") == ("changed" if changed else "unchanged"), "Count status"
+        may_inspect = safe and data["changeCount"] == begin["changeCount"]
+        assert not data["contentInspected"] or may_inspect, "Unsafe content inspection"
+        status = data.get("readbackStatus")
+        if not may_inspect:
+            assert status == "skipped-unsafe-provenance", "Unsafe provenance must skip inspection"
+        else:
+            assert status in {"matching-canary", "readback-unavailable"}, "Readback status"
+        if status == "matching-canary":
+            assert not changed and data["contentInspected"], "Match requires inspected, unchanged content"
+        canary_metadata(data, status == "matching-canary")
     assert names.count("paste.enter") == names.count("paste.exit"), "Incomplete paste callback"
     return {
         "complete": True,

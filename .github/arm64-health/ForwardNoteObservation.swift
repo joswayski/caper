@@ -14,6 +14,7 @@ import CryptoKit
     private static var ready = false
     private static var finished = false
     private static var testDirectory: URL?
+    private static let canary = "TEST FIXTURE — cancel this note, not the channel draft"
     private static var directory: URL? {
         let env = ProcessInfo.processInfo.environment
         guard Bundle.main.bundleIdentifier == "chat.caper.appkit-development",
@@ -158,7 +159,46 @@ import CryptoKit
         guard directory != nil, views.object(forKey: view) != nil, active() else { return }
         var data = snapshot(view)
         for (key, value) in fields { data[key] = value }
+        if event == "paste.enter" { data["pasteboard"] = pasteboardSnapshot() }
         emit(event, data)
+    }
+
+    private static func pasteboardSnapshot() -> [String: Any] {
+        guard let directory,
+              let bytes = try? Data(contentsOf: directory.appendingPathComponent("marker.json")), bytes.count <= 4096,
+              let marker = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+              let originalCount = marker["changeCount"] as? Int else { return ["error": "marker-unavailable"] }
+        let expectedTypes = [NSPasteboard.PasteboardType.string.rawValue]
+        let expectedHash = SHA256.hash(data: Data(canary.utf8)).map { String(format: "%02x", $0) }.joined()
+        let safe = marker["writeSucceeded"] as? Bool == true && marker["readbackMatches"] as? Bool == true
+            && marker["sha256"] as? String == expectedHash && marker["types"] as? [String] == expectedTypes
+            && marker["utf16Length"] as? Int == canary.utf16.count
+        let board = NSPasteboard.general
+        let count = board.changeCount
+        var readback: String?
+        var types: [String] = []
+        var inspected = false
+        // A changed count or failed original observation forbids content inspection.
+        // The count/type/read sequence is not atomic; recheck and suppress any mismatch.
+        if safe && count == originalCount {
+            types = board.types?.map(\.rawValue) ?? []
+            if types == expectedTypes && board.changeCount == count {
+                inspected = true
+                readback = board.string(forType: .string)
+            }
+        }
+        let after = board.changeCount
+        let changed = count != originalCount || after != originalCount
+        let matches = safe && !changed && types == expectedTypes && readback?.utf8.elementsEqual(canary.utf8) == true
+        var data: [String: Any] = ["markerChangeCount": originalCount, "changeCount": count, "changeCountAfter": after,
+            "changeStatus": changed ? "changed" : "unchanged", "provenanceSafe": safe, "contentInspected": inspected,
+            "readbackStatus": matches ? "matching-canary" : (safe && count == originalCount ? "readback-unavailable" : "skipped-unsafe-provenance")]
+        if matches, let readback {
+            data["sha256"] = SHA256.hash(data: Data(readback.utf8)).map { String(format: "%02x", $0) }.joined()
+            data["utf16Length"] = readback.utf16.count
+            data["types"] = types
+        }
+        return data
     }
 }
 #endif

@@ -51,9 +51,23 @@ in-interval event snapshots independently report state even if paste never runs.
 The test records pasteboard write result/changeCount. Readback digest/types/length
 are emitted only if readback exactly matches its just-written synthetic string,
 the only declared type is string and changeCount remains stable. Otherwise record
-the mismatch without the unexpected contents, digest or types. No app-side
-clipboard reads, raw clipboard/message text, key characters, credentials or other
-applications' data are recorded. Clipboard reads are not an atomic transaction.
+the mismatch without the unexpected contents, digest or types. At the registered
+note's armed paste entry, compare current/before-and-after changeCounts against
+that original marker. Content inspection is permitted only when the original
+write/readback succeeded with the exact pinned synthetic canary metadata, the
+count is unchanged and only the string type is advertised. Recheck count after
+reading; emit digest/types/length only for byte-matching canary content with
+unchanged count. Changed provenance skips content inspection; unavailable or
+unexpected readback never emits its contents, digest or types. Preserve the
+original test observation independently, including failed writes/readbacks.
+Explicit count and readback statuses distinguish unchanged/changed counts,
+matching canary, unavailable readback and unsafe-provenance skips. Collection
+requires typed metadata and consistent statuses, not successful clipboard
+operations or a paste callback. No raw clipboard/message text, key characters,
+credentials or other applications' data are recorded. Count/type/content reads
+are not atomic: a concurrent change can occur between the guard and read, but
+mismatched content is never hashed or emitted. This adds synchronous observation
+overhead, not input modification, waiting or recovery.
 
 Records go to stderr AND bounded per-stream JSONL files, so successful tests need
 not rely on failure-only diagnostic exports. The collector copies only this
