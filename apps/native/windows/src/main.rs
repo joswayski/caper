@@ -55,6 +55,7 @@ mod thread;
 mod uia;
 mod uploads;
 mod versions;
+mod viewer;
 
 use bench::{Action, Bench};
 use composer::Composer;
@@ -94,7 +95,7 @@ const EV_ROWS: u8 = 4;
 pub(crate) const EV_SCREEN: u8 = 8;
 const TIMER_BENCH: usize = 1;
 pub(crate) const TIMER_CARET: usize = 2;
-const TIMER_LIVE: usize = 3;
+pub(crate) const TIMER_LIVE: usize = 3;
 /// The sign-in screen's spinner and resend countdown.
 const TIMER_SIGNIN: usize = 4;
 /// A chip's who-reacted card, once the pointer rests on it.
@@ -304,6 +305,9 @@ pub struct App {
     pub menu: Option<overlay::Menu>,
     pub dialog: Option<overlay::Dialog>,
     pub attachment_editor: Option<attachment_editor::Editor>,
+    /// The media viewer over the conversation, and its media's panel.
+    pub viewer: Option<viewer::Viewer>,
+    viewer_p: Panel,
     /// Files handed to another app must outlive the editor and its draft.
     opened_attachments: Vec<std::sync::Arc<caper_client::uploads::Scratch>>,
     menu_p: Panel,
@@ -390,6 +394,7 @@ impl App {
             let signin_p = Panel::new(&g)?;
             let menu_p = Panel::new(&g)?;
             let dialog_p = Panel::new(&g)?;
+            let viewer_p = Panel::new(&g)?;
             let picker_p = Panel::new(&g)?;
             let gifs_p = Panel::new(&g)?;
             let empty_p = Panel::new(&g)?;
@@ -437,7 +442,8 @@ impl App {
             root.AddVisual(&gifs_p.visual, true, &picker_p.visual)?;
             root.AddVisual(&dm_menu_p.visual, true, &gifs_p.visual)?;
             root.AddVisual(&dialog_p.visual, true, &dm_menu_p.visual)?;
-            root.AddVisual(&settings_p.visual, true, &dialog_p.visual)?;
+            root.AddVisual(&viewer_p.visual, true, &dialog_p.visual)?;
+            root.AddVisual(&settings_p.visual, true, &viewer_p.visual)?;
             root.AddVisual(&signin_p.visual, true, &settings_p.visual)?;
             let (channel_layouts, member_layouts) = side_layouts(&g, &c)?;
             let n = c.messages.len();
@@ -513,6 +519,8 @@ impl App {
                 menu: None,
                 dialog: None,
                 attachment_editor: None,
+                viewer: None,
+                viewer_p,
                 opened_attachments: Vec::new(),
                 menu_p,
                 dialog_p,
@@ -555,6 +563,7 @@ impl App {
     /// Shows another conversation (the live one replacing the mock).
     fn set_conversation(&mut self, c: Conversation) -> Result<()> {
         self.close_attachment_editor();
+        self.close_viewer();
         let (channels, members) = side_layouts(&self.g, &c)?;
         self.rows = Rows::new(c.messages.len());
         self.c = c;
@@ -586,6 +595,7 @@ impl App {
     fn drain_live(&mut self) -> Result<()> {
         self.poll_file_dialog();
         self.poll_attachment_editor();
+        self.poll_viewer();
         self.gifs_poll();
         let Some(live) = self.live.as_mut() else {
             return Ok(());
@@ -629,6 +639,7 @@ impl App {
         for u in updates {
             match u {
                 live::Update::SignedOut(warning) => {
+                    self.close_viewer();
                     if let Some(s) = &mut self.signin {
                         s.restoring = false;
                         s.error = warning;
@@ -825,6 +836,7 @@ impl App {
                 live::Update::Voice => self.voice_changed(),
                 live::Update::Notified => {
                     self.close_attachment_editor();
+                    self.close_viewer();
                     self.close_dialog();
                     self.close_settings();
                     self.close_dm_menu();
@@ -1557,13 +1569,16 @@ impl App {
         {
             live.active();
         }
-        if self.attachment_editor.is_some() && msg == WM_DROPFILES {
+        if (self.attachment_editor.is_some() || self.viewer.is_some()) && msg == WM_DROPFILES {
             unsafe {
                 windows::Win32::UI::Shell::DragFinish(windows::Win32::UI::Shell::HDROP(wp.0 as _));
             }
             return Some(LRESULT(0));
         }
         if let Some(r) = self.attachment_editor_input(msg, wp, x, y, ctrl, shift) {
+            return r;
+        }
+        if let Some(r) = self.viewer_input(msg, wp, x, y, shift) {
             return r;
         }
         if self.signin.is_some()
@@ -1617,6 +1632,7 @@ impl App {
                     if self.attachment_editor.is_some() {
                         self.attachment_editor_changed();
                     }
+                    self.viewer_changed();
                     if self.settings.is_some() {
                         self.settings_changed();
                     }
@@ -1650,6 +1666,7 @@ impl App {
                 TIMER_CARD => self.show_card(),
                 invite_people::TIMER_COPIED => self.copied_tick(),
                 TIMER_MEDIA => self.next_gif_frame(),
+                viewer::TIMER_VIEWER => self.viewer_tick(),
                 TIMER_MUTE => self.mutes_changed(),
                 // The call's running time.
                 call::TIMER_CALL => {

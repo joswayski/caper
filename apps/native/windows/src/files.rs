@@ -3,7 +3,9 @@
 //! audio and other files as cards. Spoilers stay covered by a blurred,
 //! striped cover until clicked, and a revealed one can be hidden again.
 //! Images load through the shared media cache (`caper_client::media`),
-//! which also refreshes expiring signed URLs and plays GIFs.
+//! which also refreshes expiring signed URLs and plays GIFs. Clicking a
+//! ready image or video opens the media viewer (`viewer`) with the rest of
+//! the message's images and videos; other files open in the browser.
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::theme::*;
@@ -766,6 +768,10 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 impl App {
     /// Images arrived or URLs changed: rows showing attachments redraw.
     pub fn media_changed(&mut self) {
+        // The viewer's original arrived, or its URL was refreshed.
+        if self.viewer.is_some() {
+            self.viewer_changed();
+        }
         // The composer's link card waits for its thumbnail.
         if self.preview_card().is_some() {
             self.dirty.composer = true;
@@ -914,8 +920,13 @@ impl App {
         if !clickable(&a) {
             return;
         }
-        // No media viewer on Windows yet: images and videos open in the
-        // browser like other files, after a refresh when the URL expires.
+        // Images and videos open in the viewer with the rest of the
+        // message's media; other files open in the browser, after a
+        // refresh when the URL expires.
+        if crate::viewer::viewable(&a) {
+            let (items, index) = crate::viewer::gallery(&m.attachments, &m.revealed, &a.id);
+            return self.open_viewer(items, index);
+        }
         let Some(live) = &mut self.live else { return };
         let a = live.media.resolve(&a);
         let unix = std::time::SystemTime::now()

@@ -15,6 +15,7 @@ use crate::list::Action;
 use crate::overlay::{Kind, Part as DPart};
 use crate::signin::Part;
 use crate::thread::Part as TPart;
+use crate::viewer::{Part as MPart, Viewer};
 use crate::{App, composer::Composer, gfx};
 use std::cell::Cell;
 use windows::Win32::Foundation::*;
@@ -74,6 +75,8 @@ pub enum Id {
     /// A part of the open dialog, which replaces the tree while shown.
     Dialog(DPart),
     AttachmentEditor(EPart),
+    /// The media viewer (its panel) and its parts, which replace the tree while shown.
+    Viewer(MPart),
     /// A row's hover-toolbar control, reachable without hovering.
     Tool(usize, Tool),
     MenuClose,
@@ -182,6 +185,9 @@ fn field_changed(a: &mut App, id: Id, text: bool) {
 
 /// The node of the focused text field, while one is focused.
 fn focused(a: &App) -> Option<Id> {
+    if let Some(v) = &a.viewer {
+        return Some(Id::Viewer(v.focus));
+    }
     if let Some(e) = &a.attachment_editor {
         return Some(Id::AttachmentEditor(e.focus));
     }
@@ -212,6 +218,17 @@ fn focused(a: &App) -> Option<Id> {
 }
 
 fn children(a: &App, id: Id) -> Vec<Id> {
+    if let Some(v) = &a.viewer {
+        return match id {
+            Id::Root => vec![Id::Viewer(MPart::Panel)],
+            Id::Viewer(MPart::Panel) => v
+                .parts()
+                .filter(|p| *p != MPart::Panel)
+                .map(Id::Viewer)
+                .collect(),
+            _ => Vec::new(),
+        };
+    }
     if let (Id::Root, Some(e)) = (id, &a.attachment_editor) {
         return e.parts().map(Id::AttachmentEditor).collect();
     }
@@ -350,6 +367,8 @@ fn children(a: &App, id: Id) -> Vec<Id> {
 fn parent(id: Id) -> Option<Id> {
     Some(match id {
         Id::Root => return None,
+        Id::Viewer(MPart::Panel) => Id::Root,
+        Id::Viewer(_) => Id::Viewer(MPart::Panel),
         Id::Space(_) => Id::Rail,
         Id::Invite(s) if s.in_sidebar() => Id::Channels,
         Id::Invite(_) => Id::Rail,
@@ -375,6 +394,13 @@ fn parent(id: Id) -> Option<Id> {
 }
 
 fn exists(a: &App, id: Id) -> bool {
+    if let Some(v) = &a.viewer {
+        return match id {
+            Id::Root => true,
+            Id::Viewer(p) => v.part_rect(p).is_some(),
+            _ => false,
+        };
+    }
     if a.attachment_editor.is_some() && !matches!(id, Id::Root | Id::AttachmentEditor(_)) {
         return false;
     }
@@ -458,6 +484,7 @@ fn exists(a: &App, id: Id) -> bool {
 fn name(a: &App, id: Id) -> String {
     let c = &a.c;
     match id {
+        Id::Viewer(p) => a.viewer.as_ref().map_or_else(String::new, |v| v.label(p)),
         Id::AttachmentEditor(p) => a
             .attachment_editor
             .as_ref()
@@ -818,6 +845,11 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::AttachmentEditor(EPart::Title | EPart::Status) => UIA_TextControlTypeId,
         Id::AttachmentEditor(EPart::Canvas) => UIA_ImageControlTypeId,
         Id::AttachmentEditor(_) => UIA_ButtonControlTypeId,
+        Id::Viewer(MPart::Panel) => UIA_WindowControlTypeId,
+        Id::Viewer(MPart::Title | MPart::Notice) => UIA_TextControlTypeId,
+        Id::Viewer(MPart::Stage) => UIA_ImageControlTypeId,
+        Id::Viewer(MPart::Seek) => UIA_SliderControlTypeId,
+        Id::Viewer(_) => UIA_ButtonControlTypeId,
         Id::Sign(_) | Id::Control(..) => UIA_ButtonControlTypeId,
     }
 }
@@ -856,6 +888,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::MenuItem(k) => (13, k),
         Id::Dialog(p) => (14, p.index()),
         Id::AttachmentEditor(p) => (51, p.index()),
+        Id::Viewer(p) => (52, p.index()),
         Id::Tool(i, t) => (
             15,
             i * 8
@@ -1002,6 +1035,11 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .attachment_editor
             .as_ref()
             .and_then(|e| e.part_rect(p))
+            .unwrap_or_default(),
+        Id::Viewer(p) => a
+            .viewer
+            .as_ref()
+            .and_then(|v| v.part_rect(p))
             .unwrap_or_default(),
         Id::Menu => a
             .menu
@@ -1207,6 +1245,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             }
             Id::AttachmentEditor(EPart::Title | EPart::Status | EPart::Canvas) => false,
             Id::AttachmentEditor(_) => pattern == UIA_InvokePatternId,
+            Id::Viewer(p) => {
+                pattern == UIA_InvokePatternId && Viewer::focusable(p) && p != MPart::Seek
+            }
             Id::Dialog(DPart::Number(_)) => pattern == UIA_ValuePatternId,
             Id::Dialog(DPart::Field) => {
                 pattern == UIA_ValuePatternId
@@ -1300,6 +1341,16 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
                     id,
                     Id::Composer
+                        | Id::Viewer(
+                            MPart::Copy
+                                | MPart::Open
+                                | MPart::Close
+                                | MPart::Previous
+                                | MPart::Next
+                                | MPart::Play
+                                | MPart::Seek
+                                | MPart::Mute
+                        )
                         | Id::AttachmentEditor(
                             EPart::Field
                                 | EPart::Cancel
@@ -1367,6 +1418,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     (Id::AttachmentEditor(p), _) => {
                         a.attachment_editor.as_ref().is_some_and(|e| e.enabled(p))
                     }
+                    (Id::Viewer(p), _) => a.viewer.as_ref().is_some_and(|v| v.enabled(p)),
                     (Id::Invite(s), _) => a.invite_enabled(s),
                     (Id::Settings(p), _) => a.settings.as_ref().is_some_and(|s| s.enabled(p)),
                     (Id::Voice(p), _) => a.voice_enabled(p),
@@ -1474,6 +1526,16 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::Sign(Part::Field) => a.set_signin_focus(true),
                 Id::Dialog(DPart::Field) => a.dialog_activate(DPart::Field),
                 Id::Dialog(DPart::Number(k)) => a.dialog_activate(DPart::Number(k)),
+                Id::Viewer(p) => {
+                    if let Some(v) = &mut a.viewer
+                        && Viewer::focusable(p)
+                        && v.enabled(p)
+                    {
+                        v.focus = p;
+                        a.events |= crate::EV_FOCUS;
+                        a.viewer_changed();
+                    }
+                }
                 Id::AttachmentEditor(p) => {
                     if let Some(e) = &mut a.attachment_editor
                         && e.enabled(p)
@@ -1564,6 +1626,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::MenuItem(k) => a.menu_activate(k),
                 Id::Dialog(p) => a.dialog_activate(p),
                 Id::AttachmentEditor(p) => a.attachment_editor_activate(p),
+                Id::Viewer(p) => a.viewer_activate(p),
                 Id::Control(i, action) => a.row_action(i, action),
                 Id::Tool(i, t) => a.tool_activate(i, t),
                 Id::MenuClose => a.close_menu(),

@@ -48,6 +48,8 @@ pub struct FreshUrl {
 
 /// Locally shown images fit the largest inline frame at 2x.
 pub const THUMBNAIL_EDGE: u32 = 720;
+/// The media viewer decodes originals at most this large on their long side.
+pub const FULL_EDGE: u32 = 4096;
 
 /// Inline media frames, as on web.
 pub const MAX_WIDTH: f32 = 360.0;
@@ -218,12 +220,21 @@ impl Refresher {
 /// Shrink playback frames to fit the retained-memory budget without freezing
 /// normal GIFs. Decode runs on the existing fetch worker.
 pub fn decode_animation(bytes: &[u8]) -> Option<Vec<(Rgba, Duration)>> {
+    decode_animation_at(bytes, THUMBNAIL_EDGE, 32 * 1024 * 1024)
+}
+
+/// [`decode_animation`] at most `edge` on the long side, with every frame
+/// together within `budget` bytes. A still WebP decodes at `edge` too.
+pub fn decode_animation_at(
+    bytes: &[u8],
+    edge: u32,
+    budget: usize,
+) -> Option<Vec<(Rgba, Duration)>> {
     use image::{AnimationDecoder, ImageDecoder};
-    const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16_384);
     limits.max_image_height = Some(16_384);
-    limits.max_alloc = Some(32 * 1024 * 1024);
+    limits.max_alloc = Some(budget.max(32 * 1024 * 1024) as u64);
     let cursor = || std::io::Cursor::new(bytes);
     let ((width, height), decoded) = match image::guess_format(bytes).ok()? {
         image::ImageFormat::Gif => {
@@ -235,15 +246,15 @@ pub fn decode_animation(bytes: &[u8]) -> Option<Vec<(Rgba, Duration)>> {
             let mut decoder = image::codecs::webp::WebPDecoder::new(cursor()).ok()?;
             decoder.set_limits(limits).ok()?;
             if !decoder.has_animation() {
-                return decode_thumbnail(bytes).map(|image| vec![(image, Duration::ZERO)]);
+                return decode_image(bytes, edge).map(|image| vec![(image, Duration::ZERO)]);
             }
             (decoder.dimensions(), decoder.into_frames())
         }
         _ => return None,
     };
-    let denominator = width.max(height).max(THUMBNAIL_EDGE);
-    let mut width = (width * THUMBNAIL_EDGE / denominator).max(1);
-    let mut height = (height * THUMBNAIL_EDGE / denominator).max(1);
+    let denominator = width.max(height).max(edge);
+    let mut width = (width * edge / denominator).max(1);
+    let mut height = (height * edge / denominator).max(1);
     let mut frames: Vec<(image::RgbaImage, Duration)> = Vec::new();
     let mut total = 0;
     for frame in decoded {
@@ -264,7 +275,7 @@ pub fn decode_animation(bytes: &[u8]) -> Option<Vec<(Rgba, Duration)>> {
         if image.dimensions() != (width, height) {
             image = image::imageops::thumbnail(&image, width, height);
         }
-        while total + image.len() > MAX_FRAME_BYTES {
+        while total + image.len() > budget {
             // GIF exposes no frame count up front. Geometric resizing bounds
             // retained pixels in one decode pass, preserving every delay.
             width = (width / 2).max(1);
@@ -290,6 +301,30 @@ pub fn decode_animation(bytes: &[u8]) -> Option<Vec<(Rgba, Duration)>> {
 /// Decode a still for display only, within memory limits.
 pub fn decode_thumbnail(bytes: &[u8]) -> Option<Rgba> {
     decode_image(bytes, THUMBNAIL_EDGE)
+}
+
+/// An original at full size for the clipboard (the viewer's Copy image),
+/// never a scaled or preview copy: the first frame of GIF/WebP, EXIF
+/// orientation applied, AVIF and HEIC through FFmpeg. Excessive originals
+/// are refused rather than silently shrunk.
+pub fn decode_original(bytes: &[u8], content_type: &str) -> Option<image::RgbaImage> {
+    use image::ImageDecoder;
+    if matches!(content_type, "image/avif" | "image/heic" | "image/heif") {
+        return crate::ffmpeg::decode_still(bytes, content_type, None);
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder().ok()?;
+    let orientation = decoder.orientation().ok()?;
+    let mut image = image::DynamicImage::from_decoder(decoder).ok()?;
+    image.apply_orientation(orientation);
+    Some(image.to_rgba8())
 }
 
 /// Decode a still at most `edge` on its long side, within memory limits.

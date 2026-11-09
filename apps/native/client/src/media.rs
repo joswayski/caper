@@ -13,8 +13,9 @@
 
 use crate::Rgba;
 use crate::attachments::{
-    EXTERNAL_KEY, FailureAction, FreshUrl, Refresher, decode_animation, decode_thumbnail,
-    inline_source, needs_refresh, on_fetch_failure, resolve,
+    EXTERNAL_KEY, FULL_EDGE, FailureAction, FreshUrl, Refresher, decode_animation,
+    decode_animation_at, decode_image, decode_thumbnail, inline_source, needs_refresh,
+    on_fetch_failure, resolve,
 };
 use crate::model::{Attachment, AttachmentKind, AttachmentStatus};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -37,10 +38,26 @@ const GIF_IDLE: Duration = Duration::from_secs(10);
 const GIF_BUDGET: usize = 128 * 1024 * 1024;
 
 const BLUR_KEY: &str = "spoiler-cover:";
+const FULL_KEY: &str = "full:";
+/// A viewer animation's frames together stay within this (a tile's: 32 MiB).
+const FULL_ANIMATION_BYTES: usize = 96 * 1024 * 1024;
 
 /// The cache key of an attachment's spoiler cover.
 pub fn spoiler_key(id: &str) -> String {
     format!("{BLUR_KEY}{id}")
+}
+
+/// The cache key of an attachment's original as the media viewer shows it:
+/// up to [`crate::attachments::FULL_EDGE`], apart from its inline tile.
+pub fn full_key(id: &str) -> String {
+    format!("{FULL_KEY}{id}")
+}
+
+/// The attachment id a cache key belongs to.
+fn owner(key: &str) -> &str {
+    key.strip_prefix(BLUR_KEY)
+        .or_else(|| key.strip_prefix(FULL_KEY))
+        .unwrap_or(key)
 }
 
 /// How a client makes and updates the textures it draws.
@@ -327,6 +344,31 @@ impl<T: Textures> Media<T> {
         )
     }
 
+    /// The media viewer's copy of `attachment`'s original, loading it from
+    /// its URL; a GIF or WebP keeps its animation while `animate`. Returns
+    /// its state and, while it plays, when its next frame is due. Draw
+    /// [`Media::texture`] of [`full_key`].
+    pub fn full(
+        &mut self,
+        textures: &mut T,
+        attachment: &Attachment,
+        animate: bool,
+        now: Instant,
+    ) -> (ImageState<T::Id>, Option<Duration>) {
+        let key = full_key(&attachment.id);
+        let url = attachment.url.as_deref();
+        if animate && matches!(attachment.content_type.as_str(), "image/gif" | "image/webp") {
+            self.gif(textures, &key, url, true, now)
+        } else {
+            (self.image_request(&key, url, false), None)
+        }
+    }
+
+    /// Forgets a cached image, such as a viewer original no longer shown.
+    pub fn release(&mut self, key: &str) {
+        self.images.remove(key);
+    }
+
     /// Called only for a visible, ready GIF tile. A local first-frame preview
     /// is replaced once by its original, never on signature refresh alone.
     /// Also returns when the next frame is due, so the caller repaints then
@@ -450,8 +492,7 @@ impl<T: Textures> Media<T> {
                         && !fetched.id.starts_with(EXTERNAL_KEY);
                     if retry {
                         self.retried.insert(fetched.id.clone());
-                        self.refresher
-                            .force(fetched.id.strip_prefix(BLUR_KEY).unwrap_or(&fetched.id));
+                        self.refresher.force(owner(&fetched.id));
                     }
                     self.images.insert(
                         fetched.id,
@@ -480,7 +521,14 @@ impl<T: Textures> Media<T> {
                 // never the uploaded poster; stills decode for display
                 // only, within memory limits.
                 let result = api.fetch_media(&url).and_then(|bytes| {
-                    if gif {
+                    if id.starts_with(FULL_KEY) {
+                        if gif {
+                            decode_animation_at(&bytes, FULL_EDGE, FULL_ANIMATION_BYTES)
+                        } else {
+                            decode_image(&bytes, FULL_EDGE)
+                                .map(|image| vec![(image, Duration::ZERO)])
+                        }
+                    } else if gif {
                         decode_animation(&bytes)
                     } else {
                         decode_thumbnail(&bytes).map(|image| {
@@ -952,6 +1000,102 @@ mod tests {
             media.take_refresh(Instant::now()).is_empty(),
             "only one retry"
         );
+    }
+
+    #[test]
+    fn viewer_originals_refresh_their_attachment_once_and_stay_apart_from_tiles() {
+        let mut textures = Counting::default();
+        let mut media = media();
+        let first = attachment(Some(&signed(NOW)));
+        let send = |media: &Media<Counting>, result: Result<Rgba, Option<u16>>| {
+            media
+                .sender
+                .send(Fetched {
+                    generation: media.generation,
+                    id: full_key("asset1"),
+                    result: result.map(|image| vec![(image, Duration::ZERO)]),
+                })
+                .unwrap();
+        };
+        let now = Instant::now();
+        assert!(matches!(
+            media.full(&mut textures, &first, true, now),
+            (ImageState::Loading, None)
+        ));
+        let (key, url, gif) = media.waiting.front().cloned().unwrap();
+        assert_eq!(
+            (key.as_str(), url.as_str(), gif),
+            ("full:asset1", first.url.as_deref().unwrap(), false)
+        );
+        media.poll(&mut textures, now);
+        send(&media, Err(Some(403)));
+        media.poll(&mut textures, now);
+        // The refresh names the attachment, not the viewer's cache key.
+        let requested = media.take_refresh(now);
+        assert_eq!(requested, ["asset1"]);
+        let fresh = FreshUrl {
+            url: Some(signed(NOW + 90_000)),
+            preview_url: None,
+        };
+        media.refreshed(&requested, BTreeMap::from([("asset1".into(), fresh)]));
+        let refreshed = media.resolve(&first);
+        assert!(matches!(
+            media.full(&mut textures, &refreshed, true, now).0,
+            ImageState::Loading
+        ));
+        media.poll(&mut textures, now);
+        send(&media, Ok(filled([3000, 2], WHITE)));
+        media.poll(&mut textures, now);
+        assert!(matches!(
+            media.full(&mut textures, &refreshed, true, now).0,
+            ImageState::Ready(_)
+        ));
+        assert_eq!(
+            media.texture(&full_key("asset1")).unwrap().image.size,
+            [3000, 2]
+        );
+        assert!(
+            media.texture("asset1").is_none(),
+            "the tile loads on its own"
+        );
+        media.release(&full_key("asset1"));
+        assert!(media.texture(&full_key("asset1")).is_none());
+        // Opened once more after its link went stale for good: one refresh only.
+        assert!(matches!(
+            media.full(&mut textures, &refreshed, true, now).0,
+            ImageState::Loading
+        ));
+        media.poll(&mut textures, now);
+        send(&media, Err(Some(403)));
+        media.poll(&mut textures, now);
+        assert!(media.take_refresh(now).is_empty());
+        assert!(matches!(
+            media.full(&mut textures, &refreshed, true, now).0,
+            ImageState::Failed
+        ));
+    }
+
+    #[test]
+    fn viewer_animations_keep_their_frames_up_to_the_full_edge() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            for color in [RED, BLUE] {
+                encoder
+                    .encode_frame(image::Frame::from_parts(
+                        image::RgbaImage::from_pixel(1600, 10, image::Rgba(color)),
+                        0,
+                        0,
+                        image::Delay::from_numer_denom_ms(100, 1),
+                    ))
+                    .unwrap();
+            }
+        }
+        let tile = decode_animation(&bytes).unwrap();
+        assert_eq!(tile[0].0.size, [720, 4]);
+        let full = decode_animation_at(&bytes, FULL_EDGE, FULL_ANIMATION_BYTES).unwrap();
+        assert_eq!(full.len(), 2);
+        assert_eq!(full[1].0.size, [1600, 10]);
     }
 
     #[test]

@@ -391,6 +391,19 @@ pub struct Playback {
 }
 
 impl Playback {
+    /// The loopback route to media, started on first use; the media
+    /// viewer's videos stream through it too.
+    pub fn proxy(&mut self) -> Option<MediaProxy> {
+        if self.proxy.is_none() {
+            self.proxy = MediaProxy::start().ok();
+        }
+        self.proxy.clone()
+    }
+
+    pub fn proxy_if_started(&self) -> Option<&MediaProxy> {
+        self.proxy.as_ref()
+    }
+
     /// Plays or pauses `a` (or plays it from `at` ms), stopping any other
     /// voice message first.
     fn play(&mut self, a: &Attachment, at: Option<u64>) {

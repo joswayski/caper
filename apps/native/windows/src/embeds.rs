@@ -5,14 +5,15 @@
 //! thumbnail beside the text when the card asks for one.
 //!
 //! Every string is plain text. Images and posters are unsigned and load
-//! through the shared media cache under `caper_client::embeds::key`. There is
-//! no in-app viewer or web player on Windows yet: images, videos and players
-//! open in the browser (a player opens the card's link).
+//! through the shared media cache under `caper_client::embeds::key`. A
+//! card's images open in the media viewer (`viewer`) with the rest of their
+//! block; there is no web player or in-app embed video yet, so videos and
+//! players open in the browser (a player opens the card's link).
 use crate::files::{Ctx, alpha, cover};
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::theme::*;
-use caper_client::embeds::{fit, fit_within, footer_line, gallery, heading, key};
+use caper_client::embeds::{fit, fit_within, footer_line, gallery, heading, image_files, key};
 use caper_client::media::ImageState;
 use caper_client::model::{Embed, EmbedBlock};
 use windows::Win32::Graphics::Direct2D::Common::*;
@@ -579,10 +580,30 @@ impl crate::App {
             .unwrap_or_default()
     }
 
-    /// A click (or UIA Invoke) on a link preview part: opens its link.
+    /// A click (or UIA Invoke) on a link preview part: an image opens in
+    /// the viewer with the rest of its block, as in egui; anything else
+    /// opens its link.
     pub fn embed_activate(&mut self, i: usize, k: usize) {
-        if let Some((_, target, _)) = self.embed_parts(i).into_iter().nth(k) {
-            crate::open_link(&target);
+        let Some((_, target, label)) = self.embed_parts(i).into_iter().nth(k) else {
+            return;
+        };
+        let images = label.starts_with("View ").then(|| {
+            self.c.messages.get(i)?.embeds.iter().find_map(|e| {
+                e.blocks.iter().find_map(|b| match b {
+                    EmbedBlock::Images {
+                        items,
+                        thumbnail: false,
+                    } => {
+                        let index = items.iter().position(|image| image.url == target)?;
+                        Some((image_files(items, heading(e)), index))
+                    }
+                    _ => None,
+                })
+            })
+        });
+        match images.flatten() {
+            Some((items, index)) => self.open_viewer(items, index),
+            None => crate::open_link(&target),
         }
     }
 }

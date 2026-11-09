@@ -1527,27 +1527,7 @@ impl Zoom {
 }
 
 /// Clipboard pixels are never the viewer's scaled texture or inline preview.
-/// ImageReader decodes the first frame of GIF/WebP without loading the animation.
-/// Reject excessive originals rather than silently shrinking them.
-pub(crate) fn decode_original(bytes: &[u8], content_type: &str) -> Option<image::RgbaImage> {
-    use image::ImageDecoder;
-    if matches!(content_type, "image/avif" | "image/heic" | "image/heif") {
-        return crate::ffmpeg::decode_still(bytes, content_type, None);
-    }
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(16_384);
-    limits.max_image_height = Some(16_384);
-    limits.max_alloc = Some(MAX_ANIMATION_BYTES as u64);
-    reader.limits(limits);
-    let mut decoder = reader.into_decoder().ok()?;
-    let orientation = decoder.orientation().ok()?;
-    let mut image = image::DynamicImage::from_decoder(decoder).ok()?;
-    image.apply_orientation(orientation);
-    Some(image.to_rgba8())
-}
+pub(crate) use caper_client::attachments::decode_original;
 
 /// Full-size frames: animated GIF/WebP with their delays, other stills once,
 /// all at most `edge` on their long side.

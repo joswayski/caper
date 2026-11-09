@@ -30,9 +30,12 @@ icons! {
     BellOff => "bell-off.svg",
     Check => "check.svg",
     ChevronDown => "chevron-down.svg",
+    ChevronLeft => "chevron-left.svg",
+    ChevronRight => "chevron-right.svg",
     Close => "x.svg",
     Copy => "copy.svg",
     Eye => "eye.svg",
+    ExternalLink => "external-link.svg",
     EyeOff => "eye-off.svg",
     FileText => "file-text.svg",
     Hash => "hash.svg",
@@ -57,6 +60,7 @@ icons! {
     Smile => "smile.svg",
     SmilePlus => "smile-plus.svg",
     Trash => "trash-2.svg",
+    Volume => "volume-2.svg",
     VolumeX => "volume-x.svg",
 }
 

@@ -9,13 +9,19 @@ feature, screenshot, performance and accessibility parity.
 By default it shows a labelled development mock conversation (3000 generated
 messages, 48 members). With `CAPER_API_URL` set it signs in (or restores the
 stored session) and runs on the shared client core (`apps/native/client`):
-the account's spaces and channels, live gateway updates, replies, threads,
-reactions, edits and their history, pins, unread state, and attachments.
+the account's spaces and channels, DMs and message requests, live gateway
+updates, replies, threads, reactions, edits and their history, pins, unread
+state, invitations and invite links, space and channel settings, settings
+and the notification inbox, system notifications (toasts), voice calls,
+dictation and voice messages, KLIPY GIFs, and attachments.
 Files attach from the composer's Attach files button (the system "Upload a
 file" dialog), by dropping them on the window or by pasting copied files or
-a picture; each uploads at once and the message waits for them. There is no
-in-app media viewer yet (images and videos open in the browser), and DMs,
-settings, notifications and voice are not wired in.
+a picture; each uploads at once and the message waits for them. Clicking an
+image or video opens the in-app media viewer with the rest of the message's
+media (arrows or Left/Right; wheel or double-click zoom, drag to pan; Open
+in browser and Copy image; videos play with play/pause, seek and mute
+through the bundled FFmpeg). A link preview's images open there too; its
+videos and players open in the browser.
 
 ## How it draws
 
@@ -40,7 +46,9 @@ settings, notifications and voice are not wired in.
 
 The UI Automation tree exposes the rail, channels, visible message rows,
 members and the composer with names and roles. Spaces and channels support
-Invoke and SelectionItem. The composer supports Value and Text/Text2 (value,
+Invoke and SelectionItem. The media viewer replaces the tree while open: its
+window, title, image and buttons are named, and its buttons support Invoke.
+The composer supports Value and Text/Text2 (value,
 caret, selection, bounds); each message row supports Text over its plain
 text, and selecting a range selects it in the history.
 

@@ -2151,6 +2151,10 @@ impl App {
 
     /// Redraws the menu and dialog surfaces when they changed.
     pub fn draw_overlays(&mut self) -> windows::core::Result<()> {
+        if self.viewer.is_some() {
+            self.dirty.overlay = false;
+            return self.draw_viewer();
+        }
         let s = self.scale;
         let px = |v: f32| (v * s).ceil().max(1.0) as u32;
         if !std::mem::take(&mut self.dirty.overlay) {
