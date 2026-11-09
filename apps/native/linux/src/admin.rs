@@ -633,6 +633,20 @@ impl App {
         self.render_admin();
     }
 
+    /// A `caper://invite/<code>` link from the OS: Join with invite link with
+    /// the link filled in and its preview already loading, as on egui.
+    pub(super) fn open_invite_link(self: &Rc<Self>, code: &str) {
+        self.open_join_invite();
+        let entry = self
+            .admin_window
+            .borrow()
+            .as_ref()
+            .and_then(|widgets| widgets.join_entry.clone());
+        let Some(entry) = entry else { return };
+        entry.set_text(&invites::invite_url(self.api.base(), code));
+        self.submit_admin();
+    }
+
     /// Opens the members, invitations and invite links of the open space.
     fn load_space_admin(&self, state: &mut State) {
         let (Some(token), Some(space)) = (state.token.clone(), state.space.clone()) else {

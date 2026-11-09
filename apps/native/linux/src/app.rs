@@ -603,6 +603,10 @@ pub struct App {
     report: RefCell<Option<audio::ReportDialog>>,
     history_window: RefCell<Option<history::HistoryWindow>>,
     gif_picker: RefCell<Option<gifs::Picker>>,
+    /// `caper://` invites handed off by later launches, and the one waiting
+    /// for sign-in and a finished profile.
+    invite_links: RefCell<Option<std::sync::mpsc::Receiver<String>>>,
+    pending_invite: RefCell<Option<String>>,
     inbox_window: RefCell<Option<inbox::InboxWindow>>,
     feedback_page: RefCell<Option<feedback::Page>>,
     /// Background update checks, this revision's What's new, and their
@@ -652,7 +656,22 @@ struct DirectDialog {
     open: gtk::Button,
 }
 
-pub fn start(application: &gtk::Application, base: &str, process_start: Instant) {
+/// Where a later launch hands this one a `caper://` invite: egui's file
+/// (eframe's storage directory), so whichever Caper is open receives it.
+pub fn link_handoff() -> std::path::PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| glib::home_dir().join(".local/share"))
+        .join("caper/link-handoff")
+}
+
+pub fn start(
+    application: &gtk::Application,
+    base: &str,
+    process_start: Instant,
+    launch_invite: Option<String>,
+) {
     let api = match Api::new(base) {
         Ok(api) => api,
         Err(error) => {
@@ -755,6 +774,14 @@ pub fn start(application: &gtk::Application, base: &str, process_start: Instant)
         whats_new_window: RefCell::default(),
         update_window: RefCell::default(),
         gif_picker: RefCell::default(),
+        invite_links: RefCell::new({
+            let wakes = sender.clone();
+            caper_client::app_link::listen_at(&link_handoff(), move || {
+                let _ = wakes.try_send(Signal::Front);
+                let _ = wakes.try_send(Signal::Wake);
+            })
+        }),
+        pending_invite: RefCell::new(launch_invite),
         members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
         ticking: Cell::new(false),
@@ -3481,6 +3508,28 @@ impl App {
         });
     }
 
+    /// Invite links from the OS (a launch argument or a later click handed
+    /// off by `app_link`) open Join with invite link once signed in with a
+    /// profile, as on egui.
+    fn poll_invite_links(self: &Rc<Self>) {
+        if let Some(links) = &*self.invite_links.borrow() {
+            while let Ok(code) = links.try_recv() {
+                *self.pending_invite.borrow_mut() = Some(code);
+            }
+        }
+        let ready = {
+            let state = self.state.borrow();
+            state.token.is_some() && state.page() == Page::Chat && !state.needs_profile()
+        };
+        if !ready || self.profile_dialog.borrow().is_some() {
+            return;
+        }
+        let code = self.pending_invite.borrow_mut().take();
+        if let Some(code) = code {
+            self.open_invite_link(&code);
+        }
+    }
+
     /// Drains the worker's events, then updates what they changed.
     fn receive(self: &Rc<Self>) {
         let mut typing = false;
@@ -3596,6 +3645,7 @@ impl App {
         self.render_inbox();
         self.render_updates();
         self.poll_whats_new();
+        self.poll_invite_links();
         self.render_settings();
         self.render_start_direct();
         self.start_membership_refresh();

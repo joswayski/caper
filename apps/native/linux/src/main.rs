@@ -39,11 +39,27 @@ fn main() -> glib::ExitCode {
         .map(|pair| pair[1].clone())
         .or_else(|| std::env::var("CAPER_API_URL").ok())
         .unwrap_or_else(|| "https://caper.chat".into());
+    // caper:// invite links (`caper_client::app_link`), as on egui: a click
+    // while Caper is open goes to that window instead of a second copy.
+    let launch_invite = caper_client::app_link::launch_code(&args);
+    if launch_invite
+        .as_deref()
+        .is_some_and(|code| caper_client::app_link::hand_off_at(&app::link_handoff(), code))
+    {
+        return glib::ExitCode::SUCCESS;
+    }
+    if !cfg!(debug_assertions)
+        && let Err(error) = caper_client::app_link::register()
+    {
+        eprintln!("Caper could not register caper:// links: {error}");
+    }
     let application = gtk::Application::builder()
         .application_id("chat.caper.linux")
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
-    application.connect_activate(move |application| app::start(application, &base, process_start));
+    application.connect_activate(move |application| {
+        app::start(application, &base, process_start, launch_invite.clone())
+    });
     // GTK must not read Caper's own arguments.
     application.run_with_args::<&str>(&[])
 }

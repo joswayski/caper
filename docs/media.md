@@ -728,7 +728,9 @@ join dialog and loads its preview, after sign-in and the profile step if needed.
   plus `xdg-mime`) and by the installer/`.deb`. A link clicked while Caper runs is
   handed to the open window over loopback (a token file in the app data folder).
   Launches and invite activations maximize the window (not fullscreen); window
-  geometry is not saved.
+  geometry is not saved. The GTK Linux client in development registers and
+  listens the same way, through the same token file, so whichever Caper is
+  open receives the link; it brings its window forward without maximizing it.
 
 **To do (owner): finish automatic app-link opening.**
 
