@@ -817,6 +817,8 @@ impl App {
                     None => {
                         let reply = self.reply.as_ref().map(|r| r.target.id.clone());
                         self.cancel_reply();
+                        self.at_end = true;
+                        self.need = true;
                         (reply, None)
                     }
                 };

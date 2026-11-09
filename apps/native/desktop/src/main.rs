@@ -1129,6 +1129,8 @@ struct CaperApp {
     history_viewport: f32,
     history_at_end: bool,
     history_offset: Option<f32>,
+    /// The channel send the history last jumped to the latest message for.
+    revealed_pending: Option<String>,
     /// How much the redone pass's main composer panel grows (shrinks)
     /// because this pass's panel reused its last height.
     composer_shift: f32,
@@ -1557,6 +1559,7 @@ impl CaperApp {
             history_viewport: 0.0,
             history_at_end: true,
             history_offset: None,
+            revealed_pending: None,
             composer_shift: 0.0,
             history_list: virtual_list::VirtualList::default(),
             history_area: None,
@@ -17390,9 +17393,15 @@ impl CaperApp {
                 message_skeleton(ui);
                 return;
             }
+            // Like web, a new channel send (a reply to an old message too)
+            // jumps to the latest message wherever the reader had scrolled.
+            let pending = self.pending.as_ref().filter(|pending| pending.thread_root_id.is_none()).map(|pending| pending.id.clone());
+            let sent = pending.is_some() && pending != self.revealed_pending;
+            self.revealed_pending = pending;
             // Web's End key on the message list jumps to the latest message.
-            let jump_latest = ui.memory(|memory| memory.focused().is_none())
-                && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::End));
+            let jump_latest = sent
+                || ui.memory(|memory| memory.focused().is_none())
+                    && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::End));
             // Plan the rows before the scroll area, so anchoring can choose
             // this pass's offset (see `virtual_list`).
             let me = self.account.as_ref().map(|account| account.id.clone());
@@ -17461,8 +17470,14 @@ impl CaperApp {
                 if let Some(offset) = self.history_offset.take() {
                     history = history.vertical_scroll_offset(offset);
                 } else if jump_latest {
-                    history = history.vertical_scroll_offset(f32::MAX);
-                    // That offset is clamped only as the pass ends; don't
+                    // egui's fresh state sticks to the end, landing exactly
+                    // there. An offset past the end would make egui spring
+                    // back so fast that the wheel cannot scroll up for
+                    // seconds (and f32::MAX overflows the rows to NaN).
+                    if let Some(id) = self.history_area {
+                        egui::scroll_area::State::default().store(ui.ctx(), id);
+                    }
+                    // That end is applied only as the pass ends; don't
                     // show the empty pass drawn past the end.
                     ui.ctx().request_discard("jump to the latest message");
                 } else if let Some(offset) = anchored {
@@ -34084,6 +34099,55 @@ mod tests {
         render(&mut app, &context, vec![]);
         assert_eq!(app.history_offset, Some(260.0));
         assert_eq!(app.older_anchor, Some(height));
+    }
+
+    #[test]
+    fn a_channel_send_jumps_a_scrolled_up_history_to_the_latest_message() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 1..=40);
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        // Wheel input releases egui's bottom stickiness, as a real reader does.
+        let scroll_up = |app: &mut CaperApp| {
+            render(
+                app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(900.0, 400.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, 450.0),
+                        modifiers: egui::Modifiers::NONE,
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Wheel,
+                    },
+                ],
+            );
+            // egui spreads the wheel over frames; let it finish.
+            for _ in 0..60 {
+                render(app, &context, vec![]);
+            }
+            assert!(!app.history_at_end, "the reader scrolled up");
+        };
+        let settle = |app: &mut CaperApp| {
+            for _ in 0..3 {
+                render(app, &context, vec![]);
+            }
+        };
+        scroll_up(&mut app);
+        // A thread reply leaves the channel where the reader is.
+        let mut reply = PendingSend::prepare(None, "thread reply", Vec::new());
+        reply.thread_root_id = Some("scroll-1".into());
+        app.pending = Some(reply);
+        settle(&mut app);
+        assert!(!app.history_at_end);
+        app.pending = Some(PendingSend::prepare(None, "I replied here", Vec::new()));
+        settle(&mut app);
+        assert!(app.history_at_end);
+        // Only the send jumps: the reader can scroll back up while it is
+        // pending, which egui's unclamped jump offset used to swallow.
+        scroll_up(&mut app);
     }
 
     fn scroll_fixture(context: &egui::Context, range: std::ops::RangeInclusive<u32>) -> CaperApp {

@@ -1514,6 +1514,10 @@ impl App {
             if !files && let Some(live) = &self.live {
                 live.send(text, reply, None);
             }
+            // Like web, a send (a reply to an old message too) jumps to
+            // the latest message wherever the reader had scrolled.
+            self.at_end = true;
+            self.need = true;
             self.set_focused(None);
         } else {
             self.c.send_local(text);
