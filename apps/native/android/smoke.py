@@ -380,8 +380,12 @@ def main() -> None:
     for required in ("Email address", "Email me a code"):
         assert find(login, text=required) is not None, f"Login is missing {required!r}"
     # The field is named by its visible label (web: <label for>), not only by its placeholder.
-    email_field = find(login, description="Email address")
-    assert email_field is not None and email_field.get("class") == "android.widget.EditText", "The email field is named"
+    # Compose puts the name on a node covering exactly the EditText, not on the EditText itself.
+    email_name = find(login, description="Email address")
+    assert email_name is not None and any(
+        node.get("class") == "android.widget.EditText" and node.get("bounds") == email_name.get("bounds")
+        for node in nodes(login)
+    ), "The email field is named"
     assert find(login, text="WELCOME TO CAPER") is None, "Login must not repeat the welcome heading"
     for retired in ("general", "Join", "TEST FIXTURE", "Message #"):
         assert find(login, contains=retired) is None, f"Signed-out screen exposes retired demo content: {retired!r}"
