@@ -610,8 +610,7 @@ public final class AppModel {
 
     /// Input anywhere in the app: this device was used just now (see `InputActivity`).
     private func reportInput() {
-        let gateway = self.gateway, profileGateway = self.profileGateway
-        Task { await gateway.reportActivity(); await profileGateway.reportActivity() }
+        Task { await self.chat.reportActivity(); await self.profileGateway.reportActivity() }
         #if os(macOS)
         desktopNotifications.reportActivity()
         #endif
@@ -3529,6 +3528,9 @@ public final class ChatModel {
     /// URL is refreshed at most once, but a later expiry can refresh again.
     private var urlRefreshAttempts: [String: String] = [:]
     private var urlRefreshTask: Task<Void, Never>?
+    /// Input on this device: the chat socket counts it toward "used most recently".
+    func reportActivity() async { await gateway.reportActivity() }
+
     @ObservationIgnored private lazy var gateway: Gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, error in
         self?.receiveGatewayState(state, error: error)
     }
