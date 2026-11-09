@@ -105,26 +105,45 @@ end
 return current
 "#;
 
-// Read-only: the session tags of connections in use right now (a live lease
-// and activity within the idle timeout). A connection ID without a tag, from an
-// older gateway, reports an empty tag, which matches no session.
+// Read-only: `{tag, age}` pairs, flattened, for connections in use right now (a
+// live lease and activity within the idle timeout); `age` is milliseconds since
+// that connection's last input. A connection ID without a tag, from an older
+// gateway, reports an empty tag, which matches no session.
 const ACTIVE_SESSIONS: &str = r#"
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 local entries = redis.call('HGETALL', KEYS[1])
-local tags = {}
+local sessions = {}
 
 for i = 1, #entries, 2 do
     local connection = entries[i]
     if connection ~= '__status' then
         local lease, activity = string.match(entries[i + 1], '^(%d+):(%d+)$')
         if lease and tonumber(lease) > now and now - tonumber(activity) < tonumber(ARGV[1]) then
-            table.insert(tags, string.match(connection, '^([^:]*):') or '')
+            table.insert(sessions, string.match(connection, '^([^:]*):') or '')
+            table.insert(sessions, math.max(0, now - tonumber(activity)))
         end
     end
 end
-return tags
+return sessions
 "#;
+
+/// Session tag and input age (ms) of each active connection of one user.
+pub(crate) type Sessions = Vec<(String, u64)>;
+
+/// Whether a different sign-in session saw input more recently than `own`:
+/// alerts belong to the device in use, so this one stays quiet. With no active
+/// connection of its own, any active session elsewhere is more recent.
+pub(crate) fn used_more_recently_elsewhere(sessions: &[(String, u64)], own: &str) -> bool {
+    let own_age = sessions
+        .iter()
+        .filter(|(tag, _)| tag == own)
+        .map(|(_, age)| *age)
+        .min();
+    sessions
+        .iter()
+        .any(|(tag, age)| tag != own && own_age.is_none_or(|own_age| *age < own_age))
+}
 
 /// The tag of an account session: the first 8 bytes of its token hash in
 /// lowercase hex. Push devices are compared to connections by this tag.
@@ -296,12 +315,13 @@ impl Presence {
 }
 
 impl Presence {
-    /// For each user, the session tags of their active connections (see
-    /// `ACTIVE_SESSIONS`), in the same order as `users`. Never modifies state.
+    /// For each user, the session tags and input ages of their active
+    /// connections (see `ACTIVE_SESSIONS`), in the same order as `users`.
+    /// Never modifies state.
     pub(crate) async fn active_sessions(
         &self,
         users: &[String],
-    ) -> Result<Vec<Vec<String>>, ApiError> {
+    ) -> Result<Vec<Sessions>, ApiError> {
         if users.is_empty() {
             return Ok(Vec::new());
         }
@@ -316,8 +336,25 @@ impl Presence {
             pipeline.add_command(command);
         }
         let mut broker = self.connection().await;
-        match pipeline.query_async(&mut broker).await {
-            Ok(tags) => Ok(tags),
+        match pipeline
+            .query_async::<Vec<Vec<redis::Value>>>(&mut broker)
+            .await
+        {
+            Ok(users) => Ok(users
+                .into_iter()
+                .map(|flat| {
+                    flat.as_chunks::<2>()
+                        .0
+                        .iter()
+                        .filter_map(|[tag, age]| {
+                            Some((
+                                redis::from_redis_value(tag).ok()?,
+                                redis::from_redis_value(age).ok()?,
+                            ))
+                        })
+                        .collect()
+                })
+                .collect()),
             Err(_) => {
                 self.repair().await;
                 Err(unavailable())
@@ -358,13 +395,13 @@ mod tests {
                 .active_sessions(&[user.clone(), idle.clone()])
                 .await
                 .unwrap(),
-            vec![Vec::<String>::new(), Vec::new()]
+            vec![Sessions::new(), Vec::new()]
         );
         presence
             .renew(&user, "0011223344556677:socket", 0)
             .await
             .unwrap();
-        presence.renew(&user, "legacy-socket", 0).await.unwrap();
+        presence.renew(&user, "legacy-socket", 60).await.unwrap();
         // Connected but past the idle timeout (100ms here): not active.
         presence
             .renew(&idle, "8899aabbccddeeff:socket", 500)
@@ -375,10 +412,13 @@ mod tests {
             .await
             .unwrap();
         active[0].sort();
-        assert_eq!(
-            active,
-            vec![vec![String::new(), "0011223344556677".into()], vec![]]
-        );
+        let tags: Vec<&str> = active[0].iter().map(|(tag, _)| tag.as_str()).collect();
+        assert_eq!(tags, ["", "0011223344556677"]);
+        assert!(active[1].is_empty());
+        // Ages count from each connection's last input.
+        let (legacy, tagged) = (active[0][0].1, active[0][1].1);
+        assert!((60..100).contains(&legacy), "{legacy}");
+        assert!(tagged < legacy, "{tagged} < {legacy}");
         let mut connection = broker.get_multiplexed_async_connection().await.unwrap();
         for key in [key(&user), key(&idle)] {
             redis::cmd("DEL")
@@ -387,6 +427,44 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn the_most_recently_used_session_alerts() {
+        let sessions = |list: &[(&str, u64)]| -> Sessions {
+            list.iter()
+                .map(|(tag, age)| (tag.to_string(), *age))
+                .collect()
+        };
+        // A session's newest connection counts: the desk's 900 ms beats the phone.
+        let both = sessions(&[("desk", 300_000), ("phone", 60_000), ("desk", 900)]);
+        assert!(
+            used_more_recently_elsewhere(&both, "phone"),
+            "desk's newest connection wins"
+        );
+        assert!(!used_more_recently_elsewhere(
+            &sessions(&[("desk", 300_000), ("phone", 60_000)]),
+            "phone"
+        ));
+        assert!(used_more_recently_elsewhere(
+            &sessions(&[("desk", 300_000), ("phone", 60_000)]),
+            "desk"
+        ));
+        // No active connection of its own: anything active elsewhere is newer.
+        assert!(used_more_recently_elsewhere(
+            &sessions(&[("desk", 500_000)]),
+            "phone"
+        ));
+        assert!(!used_more_recently_elsewhere(
+            &sessions(&[("phone", 1)]),
+            "phone"
+        ));
+        assert!(!used_more_recently_elsewhere(&[], "phone"));
+        // Same input age is not "more recent".
+        assert!(!used_more_recently_elsewhere(
+            &sessions(&[("desk", 5), ("phone", 5)]),
+            "phone"
+        ));
     }
 
     #[test]

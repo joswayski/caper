@@ -36,6 +36,10 @@ pub struct Alert {
     pub conversation_id: Option<String>,
     pub space_id: Option<String>,
     pub channel_id: Option<String>,
+    /// Another device of this account was used more recently and alerts
+    /// instead: update unread state, but show no banner.
+    #[serde(default)]
+    pub quiet: bool,
 }
 
 impl Alert {

@@ -1851,6 +1851,26 @@ async fn phone_push_waits_while_active_elsewhere_and_rechecks_at_send_time(pool:
     assert!(deliveries(fourth).await.3);
     clear_presence(&bob).await;
 
+    // The desktop used five minutes ago, the phone just now: the phone alerts.
+    h.presence
+        .renew(
+            &bob.external_id,
+            &presence::connection_id(Some(&bob.hash)),
+            300_000,
+        )
+        .await
+        .unwrap();
+    active(&h, &bob, &phone_hash).await;
+    let recent = send(&h, &alice, &conversation, "phone in hand", None).await;
+    expand(&h).await;
+    assert!(
+        !deliveries(recent.clone()).await.0,
+        "the phone was used last"
+    );
+    deliver(&h).await;
+    assert!(deliveries(recent).await.3);
+    clear_presence(&bob).await;
+
     // An older gateway's connection ID (no session tag) counts as elsewhere.
     h.presence
         .renew(&bob.external_id, &Uuid::new_v4().to_string(), 0)

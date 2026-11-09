@@ -298,13 +298,13 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Attempt {
         "space.invitation" | "channel.invitation" | "direct.request" | "voice.started"
     );
     if (claimed.held || consent) && claimed.mobile != "always" {
-        // Still active on another session: that client already showed it.
-        // Without presence the push goes out rather than being lost.
+        // Another session was used more recently: that client already showed
+        // it. Without presence the push goes out rather than being lost.
         let users = [claimed.recipient.clone()];
         if let Ok(active) = expansion::active_sessions(workers, &users).await
-            && active
-                .get(&claimed.recipient)
-                .is_some_and(|tags| tags.iter().any(|tag| *tag != claimed.device_tag))
+            && active.get(&claimed.recipient).is_some_and(|sessions| {
+                crate::presence::used_more_recently_elsewhere(sessions, &claimed.device_tag)
+            })
         {
             return if claimed.held {
                 Attempt::Dropped("active elsewhere")

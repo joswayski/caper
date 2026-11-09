@@ -683,8 +683,19 @@ async fn notification_subscription(
             if rows.is_empty() {
                 return Err(chat::unavailable());
             }
+            // Alerts belong to the device used most recently: when another
+            // sign-in session (a phone, say) saw input after this one, the
+            // event still updates unread state here but shows no banner.
+            let quiet = if rows.iter().any(|(_, payload)| payload.is_some()) {
+                used_elsewhere(state, identity).await
+            } else {
+                false
+            };
             for (id, payload) in rows {
-                if let Some(payload) = payload {
+                if let Some(mut payload) = payload {
+                    if quiet {
+                        payload["quiet"] = json!(true);
+                    }
                     event(out, &sub.id, payload).await?;
                 }
                 after = id;
@@ -707,6 +718,29 @@ async fn notification_subscription(
         }
         tokio::select! { _ = heads.changed() => {}, _ = check.tick() => {} }
     }
+}
+
+/// Whether another sign-in session of this account saw input more recently than
+/// this connection's. Without presence, alerts show as before.
+async fn used_elsewhere(state: &Gateway, identity: &Identity) -> bool {
+    let (Some(user), Some(hash), Some(presence)) = (
+        &identity.external_id,
+        &identity.hash,
+        &state.application.presence,
+    ) else {
+        return false;
+    };
+    presence
+        .active_sessions(std::slice::from_ref(user))
+        .await
+        .ok()
+        .and_then(|mut users| users.pop())
+        .is_some_and(|sessions| {
+            crate::presence::used_more_recently_elsewhere(
+                &sessions,
+                &crate::presence::session_tag(hash),
+            )
+        })
 }
 
 async fn replay(

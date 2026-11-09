@@ -816,6 +816,7 @@ async fn account_notifications_skip_history_replay_gaps_and_recheck_private_acce
     assert_eq!(event["channelId"], external);
     assert_eq!(event["body"], "private preview");
     assert!(event.get("senderAvatarUrl").is_none());
+    assert!(event.get("quiet").is_none(), "no other device in use");
     // Resolve the current profile at delivery, not a picture frozen on the message.
     let picture = crate::auth::random_id(crate::pictures::ID_LENGTH);
     sqlx::query("INSERT INTO public.assets(external_id,owner_id,purpose,kind,content_type,filename,byte_size,uploaded_at) VALUES($1,$2,'avatar','image','image/png','avatar.png',10,now())")
@@ -852,8 +853,28 @@ async fn account_notifications_skip_history_replay_gaps_and_recheck_private_acce
         400
     );
     drop(socket);
+    // Another sign-in session (a phone) just saw input: this one's alerts are quiet.
+    let recipient_external: String =
+        sqlx::query_scalar("SELECT external_id FROM public.users WHERE id=$1")
+            .bind(recipient)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let presence = Presence::new(&broker, Duration::from_secs(600))
+        .await
+        .unwrap();
     // Resume includes only this account's rows, even though the cursor is global.
     let mut replay = connect(address, &users[1].1).await;
+    // This desktop was last touched minutes ago; the phone just now.
+    transmit(
+        &mut replay,
+        json!({"type":"heartbeat","activityAgeMs":300_000}),
+    )
+    .await;
+    presence
+        .renew(&recipient_external, "0123456789abcdef:phone", 0)
+        .await
+        .unwrap();
     transmit(
         &mut replay,
         json!({"type":"subscribe","kind":"notifications","id":"alerts","after":"0"}),
@@ -863,6 +884,7 @@ async fn account_notifications_skip_history_replay_gaps_and_recheck_private_acce
         let event = next(&mut replay, "event", Some("alerts")).await["event"].clone();
         assert_eq!(event["type"], "notification.created");
         assert_eq!(event["seq"], seq.to_string());
+        assert_eq!(event["quiet"], true);
     }
     assert_eq!(
         next(&mut replay, "event", Some("alerts")).await["event"],

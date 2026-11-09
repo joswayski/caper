@@ -46,6 +46,12 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// Input in the app: this feed's socket carries it like the chat socket.
+    func reportActivity() {
+        let gateway = gateway
+        Task { await gateway?.reportActivity() }
+    }
+
     func stop() {
         epoch += 1
         accountID = nil
@@ -90,7 +96,9 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: timestamp) ?? ISO8601DateFormatter().date(from: timestamp)
-        guard let date, (-30...120).contains(Date().timeIntervalSince(date)), !isRetracted(event) else { return }
+        // `quiet`: another device of this account was used more recently and alerts instead.
+        guard let date, (-30...120).contains(Date().timeIntervalSince(date)), !isRetracted(event),
+              event["quiet"] as? Bool != true else { return }
         if NSApp.isActive && !model.navigationOpen && model.isShowing(route) { return }
         let content = UNMutableNotificationContent()
         content.title = title; content.body = body; content.sound = .default; content.userInfo = event

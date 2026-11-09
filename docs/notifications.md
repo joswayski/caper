@@ -83,10 +83,12 @@ Gateway connection IDs are `{tag}:{uuid}`, where `tag` is the first 8 bytes of
 the connection's account-session token hash in lowercase hex (`guest` without an
 account). A connection is *active* while its presence lease is live and its
 activity is within `PRESENCE_IDLE_TIMEOUT_SECONDS` (default 600), the same rule
-that makes a person `online`. If the recipient has an active connection on a
-different session than the device (an untagged ID counts as different), that
-device's delivery is held for 60 s. When it comes due it is dropped if the
-recipient is still active elsewhere. `always` never holds.
+that makes a person `online`. Activity is input: every client reports keys,
+clicks, pointer movement and (on phones) touches in its own windows. If a
+different session than the device's (an untagged ID counts as different) saw
+input more recently than any connection of the device's own session, that
+device's delivery is held for 60 s. When it comes due it is dropped if that is
+still true; a phone used since then gets it. `always` never holds.
 
 At send time every delivery, including provider retries, rechecks that the
 device and its session are still valid, that the conversation still exists, and
@@ -209,6 +211,10 @@ download, OS timeout) keeps the caption/file description and sender artwork.
   attachment. Windows uses a registered AppUserModelID and sender app-logo
   override; Linux uses the desktop notification service with an Open action.
   Activation focuses/restores the app and opens the DM or channel.
+- The device used most recently alerts. When another sign-in session saw input
+  more recently than this connection's session (see [Phone hold](#phone-hold-mobile--wheninactive)),
+  the event carries `"quiet": true`: clients update unread state but show no
+  banner. Without presence, events are never quiet.
 - Clients suppress the conversation visible in a focused window, deduplicate
   replay, discard replay older than two minutes (or over 30 s in the future) and
   clear alerts on logout. Rust desktop presents from its account worker,

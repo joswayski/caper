@@ -248,6 +248,13 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) openFromIntent(intent)
         setContent { CompositionLocalProvider(LocalBrandAvatar provides brandingAvatar) { CaperTheme { CaperApp(viewModel) } } }
     }
+    // Any touch or key counts as using Caper here, so this phone (not another device) alerts.
+    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        viewModel.reportActivity(); return super.dispatchTouchEvent(event)
+    }
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        viewModel.reportActivity(); return super.dispatchKeyEvent(event)
+    }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); openFromIntent(intent) }
 
     /** A notification tap, or an invite link from the manifest's VIEW filters. */

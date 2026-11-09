@@ -553,6 +553,7 @@ public final class AppModel {
     #if os(macOS)
     @ObservationIgnored private lazy var desktopNotifications = DesktopNotifications(model: self)
     #endif
+    @ObservationIgnored private lazy var inputActivity = InputActivity { [weak self] in self?.reportInput() }
     /// Web's membershipRevision: a background reconcile never applies a
     /// snapshot taken while a space or channel change here was running.
     @ObservationIgnored private var membershipChanges = 0
@@ -607,7 +608,17 @@ public final class AppModel {
         }
     }
 
+    /// Input anywhere in the app: this device was used just now (see `InputActivity`).
+    private func reportInput() {
+        let gateway = gateway, profileGateway = profileGateway
+        Task { await gateway.reportActivity(); await profileGateway.reportActivity() }
+        #if os(macOS)
+        desktopNotifications.reportActivity()
+        #endif
+    }
+
     public func start() async {
+        inputActivity.start()
         generation += 1
         voiceJoinGeneration += 1
         pendingVoiceChannelID = nil

@@ -454,11 +454,11 @@ async fn online(workers: &Workers, users: &[String]) -> Result<HashSet<String>, 
     Ok(online)
 }
 
-/// Session tags of each user's active gateway connections.
+/// Session tags and input ages of each user's active gateway connections.
 pub(super) async fn active_sessions(
     workers: &Workers,
     users: &[String],
-) -> Result<HashMap<String, Vec<String>>, ()> {
+) -> Result<HashMap<String, crate::presence::Sessions>, ()> {
     let presence = presence(workers).await?;
     let mut active = HashMap::new();
     for chunk in users.chunks(PRESENCE_CHUNK) {
@@ -470,7 +470,8 @@ pub(super) async fn active_sessions(
 
 /// `(user, device, held)` for every active device on a platform that is
 /// available now, whose session is still valid. A device is held while its
-/// owner (with `mobile = whenInactive`) is active on a different session.
+/// owner (with `mobile = whenInactive`) used a different session more recently
+/// than the device's own.
 async fn devices(
     workers: &Workers,
     recipients: &[Recipient],
@@ -524,9 +525,9 @@ async fn devices(
             let recipient = recipients.get(&user);
             let held = recipient.is_some_and(|r| {
                 r.hold
-                    && active
-                        .get(&r.external_id)
-                        .is_some_and(|tags| tags.iter().any(|other| *other != tag))
+                    && active.get(&r.external_id).is_some_and(|sessions| {
+                        crate::presence::used_more_recently_elsewhere(sessions, &tag)
+                    })
             });
             (user, device, held)
         })

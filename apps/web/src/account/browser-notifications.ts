@@ -44,6 +44,8 @@ export interface MessageNotification {
   channelId?: string;
   /** The thread a reply belongs to. */
   threadRootId?: string;
+  /** Another device of this account was used more recently and alerts instead. */
+  quiet?: boolean;
 }
 
 export function notificationLocation(event: MessageNotification) {
@@ -159,7 +161,7 @@ export function watchBrowserNotifications(
       const age = Date.now() - Date.parse(event.createdAt);
       return Number.isFinite(age) && age >= -30_000 && age <= 120_000;
     };
-    if (!location || !fresh()) return;
+    if (!location || event.quiet === true || !fresh()) return;
     const subject = invitation || request ? identity : (event.conversationId ?? event.channelId);
     const allowed = () => active && browserNotificationPermission() === "granted" && browserNotificationsEnabled();
     const reading = () => {

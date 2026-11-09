@@ -1381,7 +1381,7 @@ fn manage<H: Host>(
                             let host = host.clone();
                             move |alert, lifetime| {
                                 send(&events, &host, Event::NotificationActivity { epoch });
-                                if !alert.fresh() {
+                                if alert.quiet || !alert.fresh() {
                                     return;
                                 }
                                 let events = events.clone();
