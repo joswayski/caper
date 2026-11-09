@@ -2,8 +2,8 @@
 //! (`caper_client::worker`): restores the stored session, opens the
 //! account's first space and its first joined channel, follows it live
 //! through the gateway, and sends messages. Signs in by email code when
-//! no session is stored. Only used when `CAPER_API_URL` is set; the rest
-//! of the egui client's commands come later.
+//! no session is stored. The server is `endpoint()`: production in release
+//! builds, as in the egui client.
 use crate::model::{self, Conversation, Person, Reaction, Span};
 use caper_client::effects::{Effect, Effects};
 use caper_client::notifications::{Change, Scope};
@@ -527,10 +527,32 @@ pub enum Older {
     Start,
 }
 
-/// Starts the worker and restores the stored session; `None` without
-/// `CAPER_API_URL`.
+/// The production server, which release builds use unless told otherwise.
+pub const PRODUCTION: &str = "https://caper.chat";
+
+/// The server, as egui picks it: `--api-url`, then `CAPER_API_URL`, then
+/// production in release builds. Development builds without either show
+/// the sample conversation instead (`None`).
+pub fn endpoint() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.windows(2)
+        .find(|pair| pair[0] == "--api-url")
+        .map(|pair| pair[1].clone())
+        .or_else(|| std::env::var("CAPER_API_URL").ok())
+        .or_else(|| (!cfg!(debug_assertions)).then(|| PRODUCTION.into()))
+}
+
+/// Whether this copy talks to production. Only then does it share the
+/// installed Caper's OS registrations (launch at login), as egui keeps
+/// fixture runs off them.
+pub fn production() -> bool {
+    endpoint().is_some_and(|u| u.trim_end_matches('/') == PRODUCTION)
+}
+
+/// Starts the worker and restores the stored session; `None` without a
+/// server (`endpoint`).
 pub fn start(hwnd: HWND) -> Option<Live> {
-    let url = std::env::var("CAPER_API_URL").ok()?;
+    let url = endpoint()?;
     let host = WinHost {
         hwnd: hwnd.0 as isize,
         requests: Arc::default(),
@@ -538,7 +560,7 @@ pub fn start(hwnd: HWND) -> Option<Live> {
     let api = match Api::new(&url) {
         Ok(api) => api,
         Err(e) => {
-            eprintln!("CAPER_API_URL: {e}");
+            eprintln!("Caper could not start: {e}");
             return None;
         }
     };

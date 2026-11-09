@@ -7,13 +7,13 @@
 //! the visual without redrawing, only newly exposed strips are drawn, and
 //! hover or selection redraw just the rows they touch.
 //!
-//! Not shipped yet: kept out of the release workflow and installers until it
-//! reaches parity with the egui client. It shows a labelled development mock
-//! conversation until the shared client core (`apps/native/client`) is wired
-//! in.
+//! The Windows release ships it as Caper.exe (`apps/native/desktop/build.ps1`),
+//! on the shared client core (`apps/native/client`). Development builds
+//! without a server show a labelled mock conversation (`live::endpoint`).
 #![windows_subsystem = "windows"]
 
 mod actions;
+mod app_link;
 mod attachment_editor;
 mod bench;
 mod browse;
@@ -53,6 +53,7 @@ mod text;
 mod theme;
 mod thread;
 mod uia;
+mod updates;
 mod uploads;
 mod versions;
 mod viewer;
@@ -273,6 +274,15 @@ pub struct App {
     pub dm_menu: Option<directs::DmMenu>,
     dm_menu_p: Panel,
     gear_hover: bool,
+    /// Self-updates, the version "Update available" offers, and whether
+    /// it is hovered (`updates`).
+    pub updates: caper_client::updates::Updates,
+    pub update_dock: Option<String>,
+    pub update_dock_hover: bool,
+    /// `caper://` invite codes from later launches, and the one waiting
+    /// for sign-in (`app_link`).
+    pub app_links: Option<std::sync::mpsc::Receiver<String>>,
+    pub pending_invite: Option<String>,
     settings_p: Panel,
     pointer: Option<(f32, f32)>,
     tracking: bool,
@@ -497,6 +507,11 @@ impl App {
                 dm_menu: None,
                 dm_menu_p,
                 gear_hover: false,
+                updates: caper_client::updates::Updates::start(|| {}, false),
+                update_dock: None,
+                update_dock_hover: false,
+                app_links: None,
+                pending_invite: None,
                 settings_p,
                 pointer: None,
                 tracking: false,
@@ -602,6 +617,8 @@ impl App {
         self.poll_attachment_editor();
         self.poll_viewer();
         self.gifs_poll();
+        self.poll_updates();
+        self.poll_app_links();
         let Some(live) = self.live.as_mut() else {
             return Ok(());
         };
@@ -1469,6 +1486,12 @@ impl App {
             self.dirty.sidebar = true;
             self.need = true;
         }
+        let dock = self.pointer.is_some_and(|(x, y)| self.on_update_dock(x, y));
+        if dock != self.update_dock_hover {
+            self.update_dock_hover = dock;
+            self.dirty.sidebar = true;
+            self.need = true;
+        }
         if space != self.hover_space {
             self.hover_space = space;
             self.dirty.rail = true;
@@ -1750,6 +1773,8 @@ impl App {
                 }
                 if self.on_gear(x, y) {
                     self.toggle_account_menu();
+                } else if self.on_update_dock(x, y) {
+                    self.open_update_review();
                 } else if let Some(part) = self.bar_at(x, y) {
                     self.bar_pressed = Some(part);
                     self.dirty.composer = true;
@@ -1917,6 +1942,7 @@ impl App {
                             || self.tool_at(x, y).is_some()
                             || self.on_head_button(x, y)
                             || self.on_gear(x, y)
+                            || self.on_update_dock(x, y)
                             || self.thread_link_at(x, y).is_some()
                             || self.foot_at(x, y).is_some()
                             || self.quote_link_at(x, y).is_some()
@@ -3602,6 +3628,16 @@ fn resize_window(hwnd: HWND, w: f32, h: f32) {
 
 fn main() -> Result<()> {
     let process_start = Instant::now();
+    // A caper:// link clicked while Caper is open goes to that window, as
+    // in egui; this launch only carried it.
+    let launch_invite = app_link::launch_code();
+    let connected = live::endpoint().is_some();
+    if connected && launch_invite.as_deref().is_some_and(app_link::hand_off) {
+        return Ok(());
+    }
+    if connected {
+        app_link::register();
+    }
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
@@ -3611,6 +3647,8 @@ fn main() -> Result<()> {
             lpfnWndProc: Some(wndproc),
             hInstance: instance.into(),
             hCursor: LoadCursorW(None, IDC_ARROW)?,
+            // build.rs embeds Caper's icon as resource 1, as egui's does.
+            hIcon: LoadIconW(Some(instance.into()), PCWSTR(1 as _)).unwrap_or_default(),
             lpszClassName: w!("CaperWindows"),
             ..Default::default()
         };
@@ -3646,6 +3684,15 @@ fn main() -> Result<()> {
                 // Restoring the stored session; the sign-in form follows if there is none.
                 a.signin = Some(signin::SignIn::new());
                 a.signin_screen_changed();
+                // Invite links and update checks wake the window as the worker does.
+                let window = hwnd.0 as isize;
+                let wake = move || {
+                    let _ =
+                        PostMessageW(Some(HWND(window as _)), live::WM_LIVE, WPARAM(0), LPARAM(0));
+                };
+                a.app_links = app_link::listen(wake);
+                a.pending_invite = launch_invite;
+                a.updates = caper_client::updates::Updates::start(wake, true);
             }
         });
         if active {
@@ -3654,7 +3701,10 @@ fn main() -> Result<()> {
         if with_app(|a| a.live.is_some()) == Some(true) {
             SetTimer(Some(hwnd), TIMER_UNREAD, 15_000, None);
         }
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        // Opens maximized for people, as egui does; development and bench
+        // runs keep the 1440 by 900 window.
+        let people = !cfg!(debug_assertions) && !active && live::production();
+        let _ = ShowWindow(hwnd, if people { SW_SHOWMAXIMIZED } else { SW_SHOW });
         let mut clock = true;
         loop {
             let mut msg = MSG::default();

@@ -21,6 +21,8 @@ PRODUCT_ROOTS = (
     "apps/native/client/src/",
     "apps/native/desktop/src/",
     "apps/native/desktop/resources/",
+    "apps/native/windows/src/",
+    "apps/native/linux/src/",
     "apps/native/updater/src/",
     "shared/",
     "assets/",

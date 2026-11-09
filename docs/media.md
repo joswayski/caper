@@ -4597,9 +4597,12 @@ sends at most 400,000 characters; over that, server-only diffs drop and client d
 shorten (`diffTruncated`), keeping every commit's subject, body and paths.
 Highlights describe behavior reachable in the released client, not native migration
 progress. The separate AppKit/UIKit parity hosts are excluded from product paths
-(the Win32 host is outside the eligible roots). `apps/native/linux/src/` is the
-released Linux client and `apps/native/desktop/` (egui) now ships only on
-Windows. Shared-code changes still need evidence of released behavior; mixed
+(the Win32 and GTK hosts are outside the eligible roots, as the released
+clients). `apps/native/windows/src/` is the released Windows client and
+`apps/native/linux/src/` the released Linux client; the egui client in
+`apps/native/desktop/src/` is no longer released, while the rest of
+`apps/native/desktop/` (packaging, web player, WebRTC) ships on both. Shared-code
+changes still need evidence of released behavior; mixed
 commits describe only that behavior. Update these boundaries and the editorial
 prompt when the remaining replacement hosts ship.
 

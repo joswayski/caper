@@ -1,14 +1,30 @@
 # Caper for Windows (native)
 
 A native Windows client built on Win32, DirectComposition, Direct2D,
-DirectWrite and UI Automation through the `windows` crate (0.62). It is not
-shipped: it is outside the release workflow and the installers, and the egui
-client (`apps/native/desktop`) stays the Windows app until this one reaches
-feature, screenshot, performance and accessibility parity.
+DirectWrite and UI Automation through the `windows` crate (0.62). It is the
+Windows app: `apps/native/desktop/build.ps1` packages it as `Caper.exe` in
+the installer and self-update archive, in the egui client's layout and with
+its identity, so an egui install moves over on its next self-update and
+stays signed in:
 
-By default it shows a labelled development mock conversation (3000 generated
-messages, 48 members). With `CAPER_API_URL` set it signs in (or restores the
-stored session) and runs on the shared client core (`apps/native/client`):
+- the session is the same Credential Manager entry (`chat.caper.desktop`,
+  per API origin) and launch at login the same `Run` value, both through
+  the shared core;
+- it registers itself for `caper://` links on launch and receives links
+  from later launches through egui's handoff file
+  (`%APPDATA%\Caper\data\link-handoff`), opening Join with invite link;
+- it checks `caper-updater` beside it for signed releases; "Update
+  available" above the account footer opens the review, and Restart to
+  update hands over to the updater (`src/updates.rs`);
+- it keeps egui's executable name, icon and (unset) AppUserModelID, so
+  shortcuts, pins and notifications (`chat.caper.desktop`) stay the same;
+- its saved audio devices and volumes start from egui's (`app.ron`).
+
+Release builds talk to `https://caper.chat` unless `--api-url` or
+`CAPER_API_URL` names another server, and open maximized. Development builds
+without either show a labelled mock conversation (3000 generated messages,
+48 members). Connected, it signs in (or restores the stored session) and
+runs on the shared client core (`apps/native/client`):
 the account's spaces and channels, DMs and message requests, live gateway
 updates, replies, threads, reactions, edits and their history, pins, unread
 state, invitations and invite links, space and channel settings, settings
@@ -67,8 +83,10 @@ text, and selecting a range selects it in the history.
 Satoshi must be in `shared/fonts/cache` first (`python3 scripts/native_fonts.py`).
 
 It is a member of the desktop workspace (`apps/native/desktop/Cargo.toml`),
-which needs the same environment as `apps/native/desktop/build.ps1`; the
-desktop builds and the release workflow build only `caper-desktop`.
+which needs the same environment as `apps/native/desktop/build.ps1`. That
+script (PowerShell 7 in an x64 Visual Studio developer environment) checks
+and builds it into `dist/Caper-windows-x64-Setup.exe` and
+`dist/Caper-windows-x64.zip`.
 
 ```powershell
 cd apps/native/desktop

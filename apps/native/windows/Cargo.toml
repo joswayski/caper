@@ -4,12 +4,20 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
-description = "Native Windows Caper client (Win32, DirectComposition, Direct2D, DirectWrite, UI Automation); not shipped yet"
+description = "Native Windows Caper client (Win32, DirectComposition, Direct2D, DirectWrite, UI Automation)"
 publish = false
 
-# A member of the desktop workspace (../desktop/Cargo.toml) like caper-client;
-# no build or release names this package.
+# A member of the desktop workspace (../desktop/Cargo.toml) like caper-client.
+# ../desktop/build.ps1 ships it in the Windows release as Caper.exe.
 workspace = "../desktop"
+
+[features]
+# rav1e's x86-64 assembly for AVIF photo encoding (needs NASM at build time);
+# release builds enable it, as for egui.
+avif-asm = ["caper-client/avif-asm"]
+
+[build-dependencies]
+winresource = "0.1"
 
 [dependencies]
 caper-client = { path = "../client" }
@@ -22,6 +30,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "bmp"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Reads the egui client's saved audio choices (eframe's app.ron) once.
+ron = "0.12"
 uuid = { version = "1.18", features = ["v4"] }
 windows-core = "0.62"
 windows-numerics = "0.3"

@@ -1,9 +1,10 @@
 # Caper Desktop for Windows and Linux
 
-Linux release packages (`build.sh`) carry the GTK 4 client
-(`apps/native/linux`) in this client's package layout; egui ships on Windows
-and still builds and runs on Linux for development. Package and install notes
-below apply to both.
+Release packages carry the platform clients in this client's package layout:
+`build.ps1` ships the Win32 client (`apps/native/windows`) as `Caper.exe`, and
+`build.sh` ships the GTK 4 client (`apps/native/linux`) as `caper-desktop`.
+The egui client is no longer released; it still builds and runs on both for
+development. Package and install notes below apply to both.
 
 Browser-free native Caper client built with Rust, eframe/egui, wgpu and winit.
 It does not embed Electron, Tauri or a browser engine, and its own UI never

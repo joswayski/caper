@@ -52,26 +52,27 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 python (Join-Path $Root "scripts\native_fonts.py")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --package caper-client --package caper-web-player -- --check
+# Windows ships the Win32 client (apps/native/windows, package caper-windows)
+# as Caper.exe in the egui client's layout, so installs, the updater,
+# shortcuts, caper:// links and launch at login carry over.
+cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") --package caper-windows --package caper-client --package caper-web-player -- --check
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # Link preview players' allowlist and WebView2 configuration (linked into Caper.exe).
 cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-web-player --features engine --target $Target --locked --lib
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --package caper-client --target $Target --locked
+cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-windows --package caper-client --target $Target --locked
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $env:CAPER_FFMPEG = Join-Path $FfmpegExtract 'ffmpeg.exe'
-cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked avif_originals_decode_for_inline_and_spoiler_display -- --ignored
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-client --target $Target --locked native_inference_is_finite_and_owns_fresh_state -- --ignored
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --package caper-client --target $Target --locked --all-targets --no-deps -- -D warnings
+cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-windows --package caper-client --target $Target --locked --all-targets --no-deps -- -D warnings
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-web-player --features engine --target $Target --locked --lib --tests --no-deps -- -D warnings
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # rav1e's assembly halves AVIF photo encode time when NASM is available.
 $ReleaseFeatures = @()
 if (Get-Command nasm -ErrorAction SilentlyContinue) { $ReleaseFeatures = @("--features", "avif-asm") }
-cargo build --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked --release @ReleaseFeatures
+cargo build --manifest-path (Join-Path $Native "Cargo.toml") --package caper-windows --target $Target --locked --release @ReleaseFeatures
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # The self-updater ships beside Caper.exe. Release builds set CAPER_BUILD_NUMBER
 # and CAPER_UPDATE_PUBLIC_KEY; without the key it never offers updates.
@@ -82,7 +83,7 @@ $Dist = Join-Path $Native "dist"
 $Stage = Join-Path $Native "target\package\Caper-windows-x64"
 Remove-Item $Dist, $Stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $Dist, $Stage -ItemType Directory -Force | Out-Null
-Copy-Item (Join-Path $Native "target\$Target\release\caper-desktop.exe") (Join-Path $Stage "Caper.exe")
+Copy-Item (Join-Path $Native "target\$Target\release\caper-windows.exe") (Join-Path $Stage "Caper.exe")
 Copy-Item (Join-Path $Native "target\$Target\release\caper-updater.exe") (Join-Path $Stage "caper-updater.exe")
 Copy-Item (Join-Path $Root "LICENSE"), (Join-Path $Native "README.md"), (Join-Path $Native "THIRD-PARTY-NOTICES.md") $Stage
 Copy-Item (Join-Path $Root "shared\fonts\cache\Satoshi-FFL.txt") $Stage
