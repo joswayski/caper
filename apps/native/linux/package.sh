@@ -3,8 +3,10 @@
 # trimmed FFmpeg and ONNX Runtime beside it (where it looks for them), a
 # .desktop file, the icon, install.sh and the bundled software's notices. Not
 # a release: nothing ships it.
-#   apps/native/linux/package.sh <caper-linux binary> <output directory>
-# writes <output directory>/caper-linux-x64.tar.gz.
+#   apps/native/linux/package.sh <caper-linux binary> <output directory> [caper-web-player binary]
+# writes <output directory>/caper-linux-x64.tar.gz. With the link preview
+# player helper (`cargo build --package caper-web-player --features engine`),
+# players play in its WebKitGTK window instead of the browser.
 set -euo pipefail
 binary=$(realpath "$1")
 out=$(mkdir -p "$2" && realpath "$2")
@@ -31,6 +33,9 @@ python3 -m zipfile -e "$ffmpeg_archive" "$work/ffmpeg"
 stage="$work/caper-linux-x64"
 mkdir -p "$stage/lib" "$stage/share"
 install -m 0755 "$binary" "$stage/lib/caper-linux"
+if [ -n "${3:-}" ]; then
+  install -m 0755 "$3" "$stage/lib/caper-web-player"
+fi
 install -m 0755 "$work/ffmpeg/ffmpeg" "$stage/lib/ffmpeg"
 install -m 0755 "$ort" "$stage/lib/libonnxruntime.so.1.23.2"
 install -m 0644 "$root/apps/native/desktop/resources/caper.svg" "$stage/share/chat.caper.linux.svg"

@@ -823,20 +823,50 @@ export async function startFixture({
       });
     }, 600);
   };
-  const fixtureEmbed = (url) => ({
-    version: 1,
-    url,
-    site: { name: "Fixture Site", domain: new URL(url).hostname },
-    blocks: [
-      { type: "title", text: `TEST FIXTURE card for ${new URL(url).pathname}`, url },
-      { type: "text", text: "A local link preview. Nothing was fetched from the web." },
-      {
-        type: "images",
-        thumbnail: true,
-        items: [{ url: `${advertised(port)}/__fixture/embed.svg`, width: 160, height: 160 }],
-      },
-    ],
-  });
+  // A YouTube link unfurls to a player card whose `play` page is Caper's
+  // embed host; debug native builds with CAPER_DEV_PLAY_ORIGIN set to this
+  // fixture load the stand-in page served at /play/ below.
+  const fixturePlayer = (url) => {
+    const parsed = new URL(url);
+    const id = /(^|\.)youtube\.com$/.test(parsed.hostname)
+      ? parsed.searchParams.get("v")
+      : parsed.hostname === "youtu.be"
+        ? parsed.pathname.slice(1)
+        : null;
+    if (!id || !/^[A-Za-z0-9_-]{6,20}$/.test(id)) return null;
+    return {
+      version: 1,
+      url,
+      site: { name: "YouTube", domain: parsed.hostname },
+      blocks: [
+        { type: "title", text: `TEST FIXTURE video ${id}`, url },
+        {
+          type: "player",
+          provider: "youtube",
+          id,
+          play: `https://embed.caper.chat/play/youtube/${id}`,
+          poster: `${advertised(port)}/__fixture/embed.svg`,
+          width: 480,
+          height: 270,
+        },
+      ],
+    };
+  };
+  const fixtureEmbed = (url) =>
+    fixturePlayer(url) ?? {
+      version: 1,
+      url,
+      site: { name: "Fixture Site", domain: new URL(url).hostname },
+      blocks: [
+        { type: "title", text: `TEST FIXTURE card for ${new URL(url).pathname}`, url },
+        { type: "text", text: "A local link preview. Nothing was fetched from the web." },
+        {
+          type: "images",
+          thumbnail: true,
+          items: [{ url: `${advertised(port)}/__fixture/embed.svg`, width: 160, height: 160 }],
+        },
+      ],
+    };
   const created = (message) => {
     const event = { type: "message.created", channelId: message.channelId, seq: message.seq, message: clone(message) };
     state.createdEvents.set(message.channelId, [...(state.createdEvents.get(message.channelId) ?? []), event]);
@@ -1914,6 +1944,12 @@ export async function startFixture({
           }
         }
         return json(response, 204);
+      }
+      if (path.startsWith("/play/") && method === "GET") {
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        return response.end(
+          '<!doctype html><title>TEST FIXTURE player</title><body style="margin:0;background:#0C0D0F;color:#F3F4F5;font:20px sans-serif;display:grid;place-items:center;height:100vh">TEST FIXTURE player — nothing loads from the web</body>',
+        );
       }
       if (path === "/__fixture/embed.svg" && method === "GET") {
         response.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "max-age=3600" });

@@ -14,6 +14,10 @@ workspace = "../desktop"
 async-channel = "2.5"
 # The UI-free client core: API, gateway, model and credentials (../client).
 caper-client = { path = "../client" }
+# Link preview players: the play-page allowlist and the helper's line
+# protocol, without a web engine (src/web_player.rs).
+caper-web-player = { path = "../desktop/web-player" }
+url = "2.5"
 # The attachment editor's still and its marks, the version caper-client already uses.
 image = { version = "0.25.10", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

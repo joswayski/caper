@@ -598,22 +598,38 @@ fn card(images: &Images, embed: &Embed, handler: &Handler) -> gtk::Box {
                 poster.as_deref(),
                 fit(*width, *height, CARD_MEDIA),
                 &format!("Play {heading}"),
-                url,
+                Action::OpenUrl(url.clone()),
                 handler,
             )),
             EmbedBlock::Player {
+                provider,
+                play,
                 poster,
                 width,
                 height,
                 ..
-            } => media.push(poster_view(
-                images,
-                poster.as_deref(),
-                fit(*width, *height, CARD_MEDIA),
-                &format!("Play {heading}"),
-                &embed.url,
-                handler,
-            )),
+            } => {
+                let size = fit(*width, *height, CARD_MEDIA);
+                let action = match play {
+                    Some(play) if caper_web_player::play_page(play).is_some() => {
+                        Action::PlayEmbed {
+                            play: play.clone(),
+                            provider: provider.clone(),
+                            size,
+                            fallback: embed.url.clone(),
+                        }
+                    }
+                    _ => Action::OpenUrl(embed.url.clone()),
+                };
+                media.push(poster_view(
+                    images,
+                    poster.as_deref(),
+                    size,
+                    &format!("Play {heading}"),
+                    action,
+                    handler,
+                ))
+            }
             EmbedBlock::Footer { text, timestamp } => {
                 let line = caper_client::embeds::footer_line(text.as_deref(), timestamp.as_deref());
                 if !line.is_empty() {
@@ -688,13 +704,14 @@ fn images_view(
     fixed.upcast()
 }
 
-/// A video or player's poster with a play button that opens `url`.
+/// A video or player's poster with a play button that asks for `action`
+/// (each click a fresh copy).
 fn poster_view(
     images: &Images,
     poster: Option<&str>,
     size: (i32, i32),
     name: &str,
-    url: &str,
+    action: Action,
     handler: &Handler,
 ) -> gtk::Widget {
     let tile = button(name, &["tile", "single"]);
@@ -713,8 +730,24 @@ fn poster_view(
     centered(&play);
     overlay.add_overlay(&play);
     tile.set_child(Some(&overlay));
-    let (handler, url) = (handler.clone(), url.to_owned());
-    tile.connect_clicked(move |_| handler(Action::OpenUrl(url.clone())));
+    let handler = handler.clone();
+    tile.connect_clicked(move |_| {
+        handler(match &action {
+            Action::PlayEmbed {
+                play,
+                provider,
+                size,
+                fallback,
+            } => Action::PlayEmbed {
+                play: play.clone(),
+                provider: provider.clone(),
+                size: *size,
+                fallback: fallback.clone(),
+            },
+            Action::OpenUrl(url) => Action::OpenUrl(url.clone()),
+            _ => return,
+        })
+    });
     tile.upcast()
 }
 

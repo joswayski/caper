@@ -19,7 +19,8 @@ belong in an app.
 the shared `client/` core: sign-in and sign-out, spaces, channels (joining),
 DMs, members with presence, unread badges, typing, the message list with
 avatars, reactions, replies, edit/delete/pin and a thread pane, the
-composer, and `caper://` invite links. It is not released; run it with `cargo run -p caper-linux` from
+composer, `caper://` invite links, and link preview players (in the
+`caper-web-player` helper's own window). It is not released; run it with `cargo run -p caper-linux` from
 `desktop/` (`CAPER_API_URL` or `--api-url` picks the server). The nightly Linux
 GTK job packages a tester tarball with `linux/package.sh` (artifact
 `caper-linux-x64-<sha>`, kept 14 days): unpack it and run `install.sh` to

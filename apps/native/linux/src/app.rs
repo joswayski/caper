@@ -606,6 +606,9 @@ pub struct App {
     /// `caper://` invites handed off by later launches, and the one waiting
     /// for sign-in and a finished profile.
     invite_links: RefCell<Option<std::sync::mpsc::Receiver<String>>>,
+    /// The link preview player that is playing, and the conversation (space,
+    /// channel, DM) it started in: leaving it closes the player.
+    web_player: RefCell<Option<(crate::web_player::Player, ConversationKey)>>,
     pending_invite: RefCell<Option<String>>,
     inbox_window: RefCell<Option<inbox::InboxWindow>>,
     feedback_page: RefCell<Option<feedback::Page>>,
@@ -665,6 +668,8 @@ pub fn link_handoff() -> std::path::PathBuf {
         .unwrap_or_else(|| glib::home_dir().join(".local/share"))
         .join("caper/link-handoff")
 }
+
+type ConversationKey = (Option<String>, Option<String>, Option<String>);
 
 pub fn start(
     application: &gtk::Application,
@@ -782,6 +787,7 @@ pub fn start(
             })
         }),
         pending_invite: RefCell::new(launch_invite),
+        web_player: RefCell::default(),
         members_shown: RefCell::default(),
         activity: Cell::new(Instant::now()),
         ticking: Cell::new(false),
@@ -3229,6 +3235,12 @@ impl App {
             Action::Open(attachment) => self.images.media.open(&attachment),
             Action::ImageMenu { attachment, anchor } => self.image_menu(attachment, &anchor),
             Action::OpenUrl(url) => crate::media::open_uri(&url),
+            Action::PlayEmbed {
+                play,
+                provider,
+                size,
+                fallback,
+            } => self.play_embed(play, &provider, size, fallback),
             Action::ToggleBlocked(key) => {
                 {
                     let mut state = self.state.borrow_mut();
@@ -3530,6 +3542,68 @@ impl App {
         }
     }
 
+    fn conversation_key(&self) -> ConversationKey {
+        let state = self.state.borrow();
+        (
+            state.space.clone(),
+            state.channel.clone(),
+            state.direct.clone(),
+        )
+    }
+
+    /// Play on a link preview's player: raises the one already playing it,
+    /// or replaces whatever plays with it. Without the web player the
+    /// card's link opens in the browser.
+    fn play_embed(&self, play: String, provider: &str, size: (i32, i32), fallback: String) {
+        let mut playing = self.web_player.borrow_mut();
+        if let Some((player, _)) = playing.as_mut().filter(|(player, _)| player.play == play) {
+            player.raise();
+            return;
+        }
+        *playing = None;
+        let Some(page) = caper_web_player::play_page(&play) else {
+            return crate::media::open_uri(&fallback);
+        };
+        let wakes = self.wakes.0.clone();
+        let wake = move || {
+            let _ = wakes.try_send(Signal::Wake);
+        };
+        match crate::web_player::Player::start(&page, provider, size, fallback.clone(), wake) {
+            Some(mut player) => {
+                player.play = play;
+                *playing = Some((player, self.conversation_key()));
+            }
+            None => crate::media::open_uri(&fallback),
+        }
+    }
+
+    /// The player's reports; it closes when its conversation is left.
+    fn poll_web_player(&self) {
+        let key = self.conversation_key();
+        let mut playing = self.web_player.borrow_mut();
+        let Some((player, started)) = playing.as_mut() else {
+            return;
+        };
+        if *started != key {
+            *playing = None;
+            return;
+        }
+        for notice in player.poll() {
+            match notice {
+                crate::web_player::Notice::Open(url) => crate::media::open_uri(&url),
+                crate::web_player::Notice::Gone => {
+                    *playing = None;
+                    return;
+                }
+                crate::web_player::Notice::Failed => {
+                    crate::media::open_uri(&player.fallback);
+                    *playing = None;
+                    return;
+                }
+            }
+        }
+    }
+
     /// Drains the worker's events, then updates what they changed.
     fn receive(self: &Rc<Self>) {
         let mut typing = false;
@@ -3646,6 +3720,7 @@ impl App {
         self.render_updates();
         self.poll_whats_new();
         self.poll_invite_links();
+        self.poll_web_player();
         self.render_settings();
         self.render_start_direct();
         self.start_membership_refresh();

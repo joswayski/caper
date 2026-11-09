@@ -25,6 +25,7 @@ mod ui;
 mod uploads;
 mod video;
 mod viewer;
+mod web_player;
 mod zoom;
 
 use gtk::{gio, glib, prelude::*};

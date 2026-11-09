@@ -868,6 +868,14 @@ pub enum Action {
     },
     /// Open an http(s) link.
     OpenUrl(String),
+    /// A link preview's player: Caper's `play` page in the web player, or
+    /// `fallback` in the browser when it cannot play here.
+    PlayEmbed {
+        play: String,
+        provider: String,
+        size: (i32, i32),
+        fallback: String,
+    },
     /// Show or hide a run of blocked messages.
     ToggleBlocked(String),
     /// Open the forwarded conversation behind this forward.

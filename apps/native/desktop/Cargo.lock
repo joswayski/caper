@@ -937,12 +937,14 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "caper-client",
+ "caper-web-player",
  "chrono",
  "gtk4",
  "image",
  "resvg",
  "serde",
  "serde_json",
+ "url",
  "uuid",
 ]
 

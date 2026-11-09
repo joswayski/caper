@@ -4,7 +4,9 @@
 # "Caper (GTK preview)" launcher. PREFIX picks another prefix.
 #   ./install.sh              install or update
 #   ./install.sh --uninstall  remove it again
-# It needs GTK 4.8 or later (libgtk-4-1) and PulseAudio or PipeWire's Pulse.
+# It needs GTK 4.8 or later (libgtk-4-1) and PulseAudio or PipeWire's Pulse;
+# link preview players also need WebKitGTK (libwebkit2gtk-4.1-0), else they
+# open in the browser.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 prefix=${PREFIX:-$HOME/.local}
@@ -29,6 +31,12 @@ fi
 mkdir -p "$lib" "$(dirname "$bin")" "$(dirname "$desktop")" "$(dirname "$icon")"
 # FFmpeg and ONNX Runtime stay beside the binary, where it looks for them.
 install -m 0755 "$here/lib/caper-linux" "$here/lib/ffmpeg" "$here/lib/libonnxruntime.so.1.23.2" "$lib/"
+# The link preview player helper, when the build has it.
+if [ -f "$here/lib/caper-web-player" ]; then
+  install -m 0755 "$here/lib/caper-web-player" "$lib/"
+else
+  rm -f "$lib/caper-web-player"
+fi
 ln -sf "$lib/caper-linux" "$bin"
 # Desktop entries unescape strings before parsing the quoted command. Keep
 # prefixes with spaces and reserved characters as one literal executable.
