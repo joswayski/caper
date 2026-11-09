@@ -1493,11 +1493,12 @@ async fn persist_reaction(
                 ));
             }
             sqlx::query(
-                "INSERT INTO public.message_reactions(message_id,emoji,user_id) VALUES($1,$2,$3)",
+                "INSERT INTO public.message_reactions(message_id,emoji,user_id,seq) VALUES($1,$2,$3,$4)",
             )
             .bind(message_id)
             .bind(emoji)
             .bind(user_id)
+            .bind(head + 1)
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;

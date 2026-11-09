@@ -4068,6 +4068,48 @@ async fn notification_inbox_reconciles_badges_reads_reactions_and_access(pool: P
         .1["unreadCount"],
         0
     );
+    // A reaction the reader's channel position already covers was seen there.
+    let mut reaction_seqs = Vec::new();
+    for emoji in ["👀", "🔥"] {
+        let (status, event) = call(
+            &h.app,
+            "PUT",
+            &format!("/api/chat/channels/{general}/messages/{root}/reactions"),
+            None,
+            Some(&alice.chat),
+            json!({"emoji": emoji, "active": true}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{event}");
+        reaction_seqs.push(event["seq"].as_str().unwrap().to_owned());
+    }
+    let unread_count = || async {
+        call(
+            &h.app,
+            "GET",
+            &inbox("?unread=true"),
+            Some(&bob.token),
+            None,
+            Value::Null,
+        )
+        .await
+        .1["unreadCount"]
+            .clone()
+    };
+    assert_eq!(unread_count().await, 2);
+    for (seq, expected) in reaction_seqs.iter().zip([1, 0]) {
+        let (status, _) = call(
+            &h.app,
+            "POST",
+            &format!("/api/spaces/{space_external}/channels/{general}/read"),
+            Some(&bob.token),
+            None,
+            json!({ "seq": seq }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(unread_count().await, expected, "read through {seq}");
+    }
     // Read history still must disappear immediately after membership is revoked.
     sqlx::query(
         "UPDATE public.space_members SET deleted_at=now() WHERE space_id=$1 AND user_id=$2",

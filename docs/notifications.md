@@ -297,8 +297,11 @@ on activity signals and every 15 s, revalidating through the oldest loaded row.
   to your messages and pending invitations/requests. Levels, OS permission and
   provider setup never hide activity; mute/block/access rules apply. Deleted
   sources, removed reactions and revoked access disappear, including from history.
-- Reactions stay unread until acknowledged here; reading the conversation does
-  not acknowledge them. Message acknowledgements also clear matching
+- A reaction takes the channel sequence it was added at
+  (`message_reactions.seq`), and is read once the conversation's read position
+  passes it (clients advance it for reaction events while the conversation is
+  shown), or when acknowledged here. Reactions recorded without a sequence stay
+  unread until acknowledged. Message acknowledgements also clear matching
   channel/thread unread and suppress delayed live/phone alerts.
 - Acknowledgements are kept in `notification_inbox_reads` (runtime role has
   SELECT/INSERT, never DELETE).
@@ -309,8 +312,8 @@ on activity signals and every 15 s, revalidating through the oldest loaded row.
 accounts in accessible joined channels and accepted DMs, direct mentions in
 unjoined channels, and replies in participated threads, each message counted
 once. Thread read markers clear replies; reading the channel alone does not.
-Pending message requests, unexpired invitations and unacknowledged active
-reactions to your messages each add one. Own/deleted messages, blocked authors,
+Pending message requests, unexpired invitations and unread active reactions to
+your messages each add one. Own/deleted messages, blocked authors,
 revoked access, personal notes and edits don't count. Muted conversations add
 only direct mentions; alert level, DND and OS permission don't matter. The badge
 equals the inbox's unread total. Team-only feedback visits use the separate

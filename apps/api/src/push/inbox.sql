@@ -44,7 +44,9 @@ WITH visible AS (
             OR (m.thread_root_id IS NOT NULL AND participation.mine))
 ), reaction_activity AS (
     SELECT 'r:' || r.id AS id, 'reaction'::text AS kind, r.created_at, r.user_id AS actor_id,
-        m.id AS message_id, v.id AS channel_id, v.space_id, r.emoji, true AS unread
+        m.id AS message_id, v.id AS channel_id, v.space_id, r.emoji,
+        -- Seen once the conversation's read position passes it, as for messages.
+        r.seq IS NULL OR r.seq>v.read_seq AS unread
     FROM visible v
     JOIN public.messages m ON m.channel_id=v.id AND m.deleted_at IS NULL
     JOIN public.chat_sessions author ON author.id=m.session_id AND author.user_id=$1
