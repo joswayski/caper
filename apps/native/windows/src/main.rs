@@ -1532,6 +1532,21 @@ impl App {
         let y = ((lp.0 >> 16) & 0xffff) as i16 as f32 / self.scale;
         let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
         let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+        if matches!(
+            msg,
+            WM_KEYDOWN
+                | WM_SYSKEYDOWN
+                | WM_CHAR
+                | WM_MOUSEMOVE
+                | WM_LBUTTONDOWN
+                | WM_RBUTTONDOWN
+                | WM_MBUTTONDOWN
+                | WM_MOUSEWHEEL
+                | WM_MOUSEHWHEEL
+        ) && let Some(live) = &mut self.live
+        {
+            live.active();
+        }
         if self.attachment_editor.is_some() && msg == WM_DROPFILES {
             unsafe {
                 windows::Win32::UI::Shell::DragFinish(windows::Win32::UI::Shell::HDROP(wp.0 as _));

@@ -285,6 +285,9 @@ impl Ids {
 
 pub struct Live {
     worker: Worker<WinHost>,
+    /// When input last reported activity, so the server's phone push hold
+    /// sees this session as active (GTK's `active`).
+    activity: std::time::Instant,
     /// Attachment images (the shared cache, as in egui), and whether one of
     /// its fetches finished since it was last polled.
     pub media: caper_client::media::Media<crate::files::D2d>,
@@ -585,6 +588,7 @@ impl Live {
     ) -> Self {
         Live {
             worker,
+            activity: std::time::Instant::now(),
             media,
             media_ready,
             host,
@@ -709,6 +713,14 @@ impl Live {
         voice.leave();
         voice.error = None;
         Live::fresh(worker, media, media_ready, host, generation, voice, effects)
+    }
+
+    /// Keyboard or pointer input: tell the gateway, at most every 5 seconds.
+    pub fn active(&mut self) {
+        if self.activity.elapsed() > std::time::Duration::from_secs(5) {
+            self.activity = std::time::Instant::now();
+            self.worker.send(Command::Activity);
+        }
     }
 
     pub fn account(&self, operation: AccountOperation) {
