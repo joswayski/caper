@@ -1742,7 +1742,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
             }
             // Its own scope: a keystroke recomposes the composer, not the thread's timeline.
-            if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) { OwnRecomposeScope {
+            if (state.canParticipate) Column(Modifier.composerLip().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) { OwnRecomposeScope {
                 state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
                 DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
@@ -2038,7 +2038,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (joined && request != null) RequestBar(request, viewModel) { if (narrow) openNavigation() }
             else if (joined && direct?.blocked == true) BlockedDirectNotice(direct, viewModel)
             // Keep the composer inset from the timeline and the panel edge.
-            else if (joined) Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 16.dp)) { OwnRecomposeScope {
+            else if (joined) Column(Modifier.composerLip().padding(start = 18.dp, end = 18.dp, top = 4.dp, bottom = 16.dp)) { OwnRecomposeScope {
                 TypingLine(state.typingAuthors)
                 if (direct?.outgoing == true) OutgoingRequestNotice(direct)
                 state.replyTargets["channel"]?.let { ReplyDraft(it, state) { viewModel.cancelReply() } }
@@ -3474,10 +3474,23 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
     }
 }
 
+/** Web's 3% white over the conversation surface, opaque. */
+private val ReplyDraftFill = Color(0xFF20282A)
+
+/** A soft shadow above the composer's top edge, over the timeline's end (web's .chat-typing::before). Draws only; no layout or touch. */
+private fun Modifier.composerLip() = drawBehind {
+    val height = 12.dp.toPx()
+    drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.28f)), startY = -height, endY = 0f),
+        topLeft = Offset(0f, -height), size = Size(size.width, height))
+}
+
 @Composable private fun ReplyDraft(reference: MessageReply, state: AppUiState, onCancel: () -> Unit) {
     val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
-    Row(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }.drawBehind {
-        drawLine(Terracotta, Offset(1.dp.toPx(), 0f), Offset(1.dp.toPx(), size.height), strokeWidth = 2.dp.toPx())
+    // A bordered card (web's .chat-reply-draft) so a reply in progress stands apart from the timeline;
+    // the clipped shape bends the terracotta accent along the rounded left edge.
+    val shape = RoundedCornerShape(8.dp)
+    Row(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }.clip(shape).background(ReplyDraftFill).border(1.dp, Border, shape).drawBehind {
+        drawRect(Terracotta, size = Size(2.dp.toPx(), size.height))
     }.padding(start = 10.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.Top) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text("Replying to ${if (hidden) "blocked message" else reference.author.name}", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -3861,7 +3874,7 @@ internal fun openExternalLink(uriHandler: UriHandler, href: String) {
     LaunchedEffect(label) { if (label.isNotEmpty()) shown = label else { kotlinx.coroutines.delay(180); shown = "" } }
     val alpha by androidx.compose.animation.core.animateFloatAsState(if (label.isNotEmpty()) 1f else 0f, androidx.compose.animation.core.tween(180), label = "typing")
     // Web's role="status": screen readers hear who starts typing.
-    Row(Modifier.fillMaxWidth().height(20.dp).graphicsLayer { this.alpha = alpha }.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+    Row(Modifier.fillMaxWidth().height(16.dp).graphicsLayer { this.alpha = alpha }.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
         if (shown.isNotEmpty()) {
             TypingDots()

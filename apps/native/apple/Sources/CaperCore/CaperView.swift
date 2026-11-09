@@ -20,6 +20,8 @@ public enum CaperTheme {
     public static let sidebarRaised = Color(red: 35/255, green: 42/255, blue: 44/255)
     public static let conversation = Color(red: 25/255, green: 33/255, blue: 35/255)
     public static let composer = Color(red: 40/255, green: 49/255, blue: 51/255)
+    /// 3% white over the conversation: the reply draft card above the composer.
+    public static let replyDraft = Color(red: 32/255, green: 40/255, blue: 42/255)
     public static let border = Color(red: 52/255, green: 56/255, blue: 59/255)
     public static let text = Color(red: 243/255, green: 244/255, blue: 245/255)
     public static let muted = Color(red: 185/255, green: 188/255, blue: 190/255)
@@ -4539,7 +4541,8 @@ private struct ChatView: View {
                     Text(typingLabel).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                 }
                 Spacer()
-            }.frame(height: 20)
+            // A short row that pulls the next item closer keeps the gap above the field small.
+            }.frame(height: 16).padding(.bottom, -4)
             if let reference = chat.replyTargets["channel"] { NativeReplyDraft(reference: reference, chat: chat, root: "channel") }
             if let notice = chat.attachmentNotice {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
@@ -4591,9 +4594,10 @@ private struct ChatView: View {
             #endif
             }
             }
-            }.padding(.horizontal, 18).padding(.top, 12)
+            }.padding(.horizontal, 18).padding(.top, 4)
             // Keep breathing room above the keyboard/home-indicator safe area.
             .padding(.bottom, CaperTheme.workspaceBottomInset)
+            .overlay(alignment: .top) { ComposerLip() }
             if chat.draft.unicodeScalars.count >= 3000 {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).monospacedDigit().foregroundStyle(counterTone).padding(.bottom, 6)
             }
@@ -5204,6 +5208,7 @@ private struct NativeThreadView: View {
             }.padding(.horizontal, 12)
             .padding(.top, 12)
             .padding(.bottom, 16)
+            .overlay(alignment: .top) { ComposerLip() }
             }
         }.background { CaperTheme.conversation.ignoresSafeArea() }
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
@@ -8197,6 +8202,19 @@ private struct ReplyExpandButton: ButtonStyle {
     }
 }
 
+/// A soft shadow just above a composer's top edge, over the end of the
+/// timeline (web's .chat-typing::before), marking where the chat ends.
+/// Drawn as an overlay, so it neither takes hits nor changes layout.
+struct ComposerLip: View {
+    var body: some View {
+        LinearGradient(colors: [.black.opacity(0.28), .clear], startPoint: .bottom, endPoint: .top)
+            .frame(height: 12)
+            .offset(y: -12)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
 struct NativeReplyDraft: View {
     let reference: MessageReply
     @Bindable var chat: ChatModel
@@ -8215,7 +8233,17 @@ struct NativeReplyDraft: View {
             }.frame(maxWidth: .infinity, alignment: .leading)
             CardIconButton(icon: "x", label: "Cancel reply") { chat.replyTargets[root] = nil }
         }.padding(.leading, 10).padding(.vertical, 8)
-            .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.terracotta).frame(width: 2) }
+            // A bordered card (web's .chat-reply-draft), so the draft reads as part
+            // of the composer rather than the timeline; the accent follows its rounded edge.
+            // Only the card is clipped, so the Cancel button's focus ring isn't;
+            // the accent covers the border's left edge, as web's border-left.
+            .background {
+                ZStack(alignment: .leading) {
+                    CaperTheme.replyDraft
+                    RoundedRectangle(cornerRadius: 8).strokeBorder(CaperTheme.border, lineWidth: 1)
+                    Rectangle().fill(CaperTheme.terracotta).frame(width: 2)
+                }.clipShape(RoundedRectangle(cornerRadius: 8))
+            }
             .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
     }
 }

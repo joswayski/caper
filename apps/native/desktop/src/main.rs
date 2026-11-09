@@ -5,6 +5,7 @@ mod app_link;
 mod attach_drawer;
 mod attachment_editor;
 mod attachments;
+mod autoscroll;
 mod daily_icon;
 mod default_slider;
 mod edits;
@@ -86,6 +87,8 @@ const COMPOSER: Color32 = Color32::from_rgb(40, 49, 51);
 /// where `RAISED` is too close to the sidebar and conversation backgrounds.
 const SURFACE_HOVER: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 const BORDER: Color32 = Color32::from_rgb(52, 56, 59);
+/// The reply-draft card: 3% white over the conversation surface.
+const REPLY_CARD: Color32 = Color32::from_rgb(32, 40, 42);
 const TEXT: Color32 = Color32::from_rgb(243, 244, 245);
 const MUTED: Color32 = Color32::from_rgb(185, 188, 190);
 const TERRACOTTA: Color32 = Color32::from_rgb(182, 77, 50);
@@ -1138,6 +1141,8 @@ struct CaperApp {
     history_list: virtual_list::VirtualList,
     /// The history scroll area, to read its offset before the next pass.
     history_area: Option<egui::Id>,
+    /// Middle-click autoscroll over the channel and thread history.
+    autoscroll: autoscroll::Autoscroll,
     history_dates: DisplayDates,
     has_more: bool,
     history_request: u64,
@@ -1563,6 +1568,7 @@ impl CaperApp {
             composer_shift: 0.0,
             history_list: virtual_list::VirtualList::default(),
             history_area: None,
+            autoscroll: autoscroll::Autoscroll::default(),
             history_dates: DisplayDates::default(),
             has_more: false,
             history_request: 0,
@@ -9980,6 +9986,7 @@ impl eframe::App for CaperApp {
 
     fn raw_input_hook(&mut self, context: &egui::Context, raw_input: &mut egui::RawInput) {
         pointer_follows_touch_release(&mut raw_input.events);
+        self.autoscroll.input(raw_input);
         if self.bench.active() {
             self.bench_input(context, raw_input);
         }
@@ -10100,6 +10107,7 @@ impl eframe::App for CaperApp {
         self.update_notice(context);
         self.poll_whats_new(context);
         self.page(ui);
+        self.autoscroll.show(context, SURFACE, BORDER, TEXT);
         self.inline_videos.retain(|_, (player, seen, _)| {
             let keep = *seen == context.cumulative_frame_nr() && self.viewer.is_none();
             if !keep {
@@ -16924,6 +16932,8 @@ impl CaperApp {
                     >= thread_history.content_size.y - 1.0,
             )
         });
+        composer_lip(ui, thread_history.inner_rect);
+        self.autoscroll.area(thread_history.inner_rect);
         self.file_drop_overlay(ui.ctx(), drop_area, Some(&root));
     }
 
@@ -17070,7 +17080,7 @@ impl CaperApp {
                 .frame(
                     egui::Frame::new()
                         .fill(CONVERSATION)
-                        .inner_margin(egui::Margin { left: 18, right: 18, top: 12, bottom: 16 }),
+                        .inner_margin(egui::Margin { left: 18, right: 18, top: 4, bottom: 16 }),
                 )
                 .show(ui, |ui| {
                     if self.opening || self.navigation_error.is_some() {
@@ -17151,8 +17161,8 @@ impl CaperApp {
                         .filter(|typer| typer.typing)
                         .map(|typer| typer.author.name.as_str())
                         .collect();
-                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.set_min_height(20.0);
+                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 16.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_height(16.0);
                         if names.is_empty() { return; }
                         ui.spacing_mut().item_spacing.x = 7.0;
                         typing_dots(ui);
@@ -17174,7 +17184,6 @@ impl CaperApp {
                             .truncate(),
                         );
                     });
-                    ui.add_space(4.0);
                     // The first link's card, before sending (signed-in accounts),
                     // drawn compact inside the input frame under the draft.
                     let preview = self.link_preview.update(ui.ctx(), &self.draft, self.token.as_deref(), self.media.api()).cloned();
@@ -17670,6 +17679,8 @@ impl CaperApp {
                 ui.ctx().request_repaint();
             }
             self.history_area = Some(history.id);
+            composer_lip(ui, history.inner_rect);
+            self.autoscroll.area(history.inner_rect);
             self.file_drop_overlay(ui.ctx(), conversation, None);
             self.after_history(ui, &history, heading.response.rect);
         });
@@ -18049,6 +18060,9 @@ impl CaperApp {
     fn reply_draft(&mut self, ui: &mut egui::Ui, key: &str) {
         if let Some(reference) = self.reply_targets.get(key).cloned() {
             let hidden = self.is_blocked(&reference.author.id);
+            // A bordered card with a terracotta leading edge, as on web, so the
+            // message being replied to reads as part of the composer.
+            let card = ui.painter().add(egui::Shape::Noop);
             let shown = egui::Frame::new()
                 .inner_margin(egui::Margin {
                     left: 10,
@@ -18113,10 +18127,36 @@ impl CaperApp {
                         }
                     });
                 });
-            ui.painter().vline(
-                shown.response.rect.left() + 1.0,
-                shown.response.rect.y_range(),
-                Stroke::new(2.0_f32, TERRACOTTA),
+            let rect = shown.response.rect;
+            let border = rect.with_min_x(rect.left() + 2.0);
+            ui.painter().set(
+                card,
+                egui::Shape::Vec(vec![
+                    egui::Shape::rect_filled(rect, 8.0, TERRACOTTA),
+                    egui::Shape::rect_filled(
+                        border,
+                        CornerRadius {
+                            nw: 6,
+                            sw: 6,
+                            ne: 8,
+                            se: 8,
+                        },
+                        BORDER,
+                    ),
+                    egui::Shape::rect_filled(
+                        egui::Rect::from_min_max(
+                            border.min + egui::vec2(0.0, 1.0),
+                            border.max - egui::vec2(1.0, 1.0),
+                        ),
+                        CornerRadius {
+                            nw: 6,
+                            sw: 6,
+                            ne: 7,
+                            se: 7,
+                        },
+                        REPLY_CARD,
+                    ),
+                ]),
             );
             ui.add_space(6.0);
         }
@@ -33074,6 +33114,24 @@ fn grouped(count: usize) -> String {
         out.push(digit);
     }
     out
+}
+
+/// A soft shadow over the bottom of a conversation's history, where the
+/// composer begins (web's `.chat-typing::before`).
+fn composer_lip(ui: &egui::Ui, history: egui::Rect) {
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(history.left(), history.bottom() - 12.0),
+        history.right_bottom(),
+    );
+    let mut mesh = egui::Mesh::default();
+    let shadow = Color32::from_black_alpha(71);
+    mesh.colored_vertex(rect.left_top(), Color32::TRANSPARENT);
+    mesh.colored_vertex(rect.right_top(), Color32::TRANSPARENT);
+    mesh.colored_vertex(rect.left_bottom(), shadow);
+    mesh.colored_vertex(rect.right_bottom(), shadow);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 2, 3);
+    ui.painter().add(mesh);
 }
 
 /// Web's three typing dots: 4 px, 3 px apart, bouncing 3 px every 1.2 s.

@@ -657,11 +657,15 @@ button.chat-reply-source {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
+/* A bordered card so the message being replied to reads as part of the composer. */
 .chat-reply-draft {
   align-items: flex-start;
   padding: 8px;
   margin-bottom: 6px;
+  border: 1px solid var(--border);
   border-left: 2px solid var(--terracotta);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 3%);
 }
 .chat-reply-draft > svg {
   margin-top: 2px;
@@ -2056,8 +2060,23 @@ button.chat-mention-card-avatar {
 .chat-composer {
   position: relative;
   /* Keep the input inset from both the scrolling timeline and the panel edge. */
-  padding: 12px 18px var(--workspace-bottom-inset);
+  padding: 4px 18px var(--workspace-bottom-inset);
   background: var(--surface-conversation);
+}
+.chat-thread-composer {
+  padding-top: 12px;
+}
+/* A soft shadow above the composer's top edge marks where the timeline ends. */
+.chat-typing::before,
+.chat-thread-composer::before {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  height: 12px;
+  background: linear-gradient(to top, rgb(0 0 0 / 28%), transparent);
+  pointer-events: none;
 }
 .chat-emoji-suggestions {
   position: absolute;
@@ -2154,10 +2173,12 @@ button.chat-mention-card-avatar {
   font-weight: 700;
 }
 .chat-typing {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-shrink: 0;
-  height: 20px;
-  padding: 0 18px 4px;
+  height: 16px;
+  padding: 0 18px;
   margin: 0;
   color: var(--text-muted);
   font-size: 0.7rem;
