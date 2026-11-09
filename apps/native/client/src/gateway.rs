@@ -13,6 +13,9 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// How long a connection waits for its first member presence snapshot.
+const PRESENCE_DEADLINE: Duration = Duration::from_secs(10);
+
 #[derive(Clone, Debug)]
 pub struct MediaChannel {
     pub id: String,
@@ -408,6 +411,15 @@ fn connect_once(
             }
         }
         *live |= active.subscribed.contains(&subscription);
+        // The gateway sends the first presence snapshot before `subscribed`; a
+        // stream still without one is stalled, so reconnect instead of staying blank.
+        if presence_subscription
+            .as_ref()
+            .is_some_and(|id| !active.subscribed.contains(id))
+            && active.connection.opened.elapsed() >= PRESENCE_DEADLINE
+        {
+            return Err(Failure::Retry("Member presence did not arrive.".into()));
+        }
         if candidate.as_ref().is_some_and(|stream| {
             stream.ready
                 && stream.cursor == *cursor
@@ -886,6 +898,20 @@ fn receive_frame(
                     .is_some_and(|status| matches!(status, 401 | 403 | 404)),
             });
         }
+        // The gateway ended member presence (a sustained outage): reconnect and
+        // subscribe again rather than keep showing the last statuses as live.
+        Some("error")
+            if presence_subscription
+                .as_ref()
+                .is_some_and(|id| value["id"] == *id) =>
+        {
+            return Err(Failure::Retry(
+                value["error"]
+                    .as_str()
+                    .unwrap_or("Member presence failed.")
+                    .into(),
+            ));
+        }
         Some("error") if value["id"] == subscription => {
             if value["status"]
                 .as_u64()
@@ -1280,6 +1306,74 @@ mod tests {
         assert_eq!(cards[0].embeds.len(), 1, "malformed cards are skipped");
         control.stop();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn ended_presence_reconnects_and_subscribes_again() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut kinds = vec![];
+            for attempt in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut socket = tungstenite::accept(stream).unwrap();
+                socket
+                    .send(WsMessage::Text(json!({"type":"hello"}).to_string().into()))
+                    .unwrap();
+                let mut presence = String::new();
+                for _ in 0..2 {
+                    let frame: Value =
+                        serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                    kinds.push((attempt, frame["kind"].as_str().unwrap().to_owned()));
+                    if frame["kind"] == "presence" {
+                        presence = frame["id"].as_str().unwrap().to_owned();
+                    }
+                }
+                if attempt == 0 {
+                    socket
+                        .send(WsMessage::Text(
+                            json!({"type":"error","id":presence,"status":503,"error":"chat unavailable"})
+                                .to_string()
+                                .into(),
+                        ))
+                        .unwrap();
+                }
+            }
+            kinds
+        });
+        let (events, incoming) = mpsc::channel();
+        let control = spawn(
+            &url::Url::parse(&format!("http://{address}")).unwrap(),
+            Some("account-secret".into()),
+            4,
+            "text".into(),
+            "37".into(),
+            Some(("space".into(), Vec::new())),
+            MediaWatch::default(),
+            events,
+        );
+        let mut kinds = server.join().unwrap();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            [
+                (0, "chat".to_owned()),
+                (0, "presence".to_owned()),
+                (1, "chat".to_owned()),
+                (1, "presence".to_owned())
+            ]
+        );
+        assert!(
+            incoming.try_iter().any(|event| matches!(
+                event,
+                GatewayEvent::Status { online: false, ref detail, .. } if detail == "chat unavailable"
+            )),
+            "the ended presence is reported, not ignored"
+        );
+        control.stop();
     }
 
     #[test]

@@ -91,39 +91,65 @@ export default function MemberPresence({
     setPresence({ spaceId, accountId, statuses: snapshots.get(spaceId) });
     if (demo) return;
     let active = true;
-    let received = false;
+    let attempt = 0;
+    let retries = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stop = () => {};
     const unavailable = () => {
       if (!active) return;
       snapshots.delete(spaceId);
       setLive(false);
       setPresence({ spaceId, accountId, statuses: {} });
     };
-    // A stalled first subscription must eventually leave the loading state.
-    const timeout = setTimeout(() => {
-      if (!snapshots.has(spaceId)) unavailable();
-    }, 10_000);
-    const stop = watchPresence(
-      spaceId,
-      "all",
-      (values) => {
-        if (!active) return;
-        clearTimeout(timeout);
-        const statuses = Object.fromEntries(values.map((value) => [value.userId, value.status]));
-        snapshots.set(spaceId, statuses);
-        received = true;
-        setLive(true);
-        setPresence({ spaceId, accountId, statuses });
-      },
-      (connected) => {
-        if (!active) return;
-        if (!connected) received = false;
-        setLive(connected && received);
-      },
-      unavailable,
-    );
+    // A stalled first snapshot or a feed the gateway ended subscribes again
+    // with backoff, so a short outage never leaves the list blank until reload.
+    const backoff = () => Math.min(5_000 * 2 ** Math.min(retries, 4), 60_000);
+    const restart = (delay: number, current: number) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!active || attempt !== current) return;
+        if (!snapshots.has(spaceId)) unavailable();
+        stop();
+        retries += 1;
+        start();
+      }, delay);
+    };
+    const start = () => {
+      const current = ++attempt;
+      const fresh = () => active && attempt === current;
+      let received = false;
+      restart(retries === 0 ? 10_000 : backoff(), current);
+      stop = watchPresence(
+        spaceId,
+        "all",
+        (values) => {
+          if (!fresh()) return;
+          clearTimeout(timer);
+          retries = 0;
+          const statuses = Object.fromEntries(values.map((value) => [value.userId, value.status]));
+          snapshots.set(spaceId, statuses);
+          received = true;
+          setLive(true);
+          setPresence({ spaceId, accountId, statuses });
+        },
+        (connected) => {
+          if (!fresh()) return;
+          if (!connected) received = false;
+          setLive(connected && received);
+        },
+        (error) => {
+          if (!fresh()) return;
+          unavailable();
+          // A removed member stays out; an outage subscribes again.
+          if ([401, 403, 404].includes(error.status)) clearTimeout(timer);
+          else restart(backoff(), current);
+        },
+      );
+    };
+    start();
     return () => {
       active = false;
-      clearTimeout(timeout);
+      clearTimeout(timer);
       stop();
     };
   }, [spaceId, demo, accountId, snapshots]);

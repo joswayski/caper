@@ -168,6 +168,11 @@ fn unavailable() -> ApiError {
     ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "presence unavailable")
 }
 
+/// The broker's reason, which callers only see as "presence unavailable".
+fn failed(operation: &'static str, error: &redis::RedisError) {
+    tracing::warn!(event_name = "presence_broker_failed", operation, %error, "presence broker call failed");
+}
+
 fn milliseconds(duration: Duration) -> u64 {
     duration.as_millis().min(i64::MAX as u128) as u64
 }
@@ -268,7 +273,8 @@ impl Presence {
             .await
         {
             Ok(renewed) => renewed,
-            Err(_) => {
+            Err(error) => {
+                failed("renew", &error);
                 self.repair().await;
                 return Err(unavailable());
             }
@@ -301,7 +307,8 @@ impl Presence {
         let mut broker = self.connection().await;
         let statuses: Vec<String> = match pipeline.query_async(&mut broker).await {
             Ok(statuses) => statuses,
-            Err(_) => {
+            Err(error) => {
+                failed("statuses", &error);
                 self.repair().await;
                 return Err(unavailable());
             }
@@ -355,7 +362,8 @@ impl Presence {
                         .collect()
                 })
                 .collect()),
-            Err(_) => {
+            Err(error) => {
+                failed("active_sessions", &error);
                 self.repair().await;
                 Err(unavailable())
             }

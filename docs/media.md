@@ -325,8 +325,15 @@ handlers and permissions as HTTP.
   the space total. Initial member metadata comes from the space detail endpoint.
   Membership changes are repaired within the ten-second authorization interval;
   removed requesters fail closed. Gateways batch expiration checks once per
-  watched user per pod every two seconds and push only changed snapshots. During
-  an outage the UI shows unknown/updating rather than inventing offline status.
+  watched user per pod every two seconds and push only changed snapshots. Failed
+  Valkey or Postgres checks keep the last known statuses and retry every two
+  seconds; only after 30 seconds of failures does the gateway end the
+  subscription with a 503 (logged as `presence_check_failed`,
+  `presence_subscription_retrying`/`_failed` and `presence_broker_failed` with
+  the broker's reason). Denials (401/403/404) end it immediately. Every client
+  subscribes again with backoff (5 s doubling to 60 s) after a non-denial error
+  or when no first snapshot arrives within 10 seconds. During an outage the UI
+  shows unknown/updating rather than inventing offline status.
 - Chat/typing and room invalidations use channel-specific broker topics. Each pod
   subscribes only where it has local interest. Committed chat cursors repair
   missed messages; versioned room snapshots repair mute/deafen/roster state.

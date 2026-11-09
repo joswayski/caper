@@ -150,6 +150,55 @@ describe("memberGroups", () => {
     }
   });
 
+  it("subscribes again after an outage ends the feed, but not after a denial", async () => {
+    vi.useFakeTimers();
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    const rows = (label: string) =>
+      [...host.querySelectorAll(`section[aria-label="${label}"] strong`)].map((el) => el.textContent);
+    const fail = (status: number) =>
+      act(async () => vi.mocked(watchPresence).mock.calls.at(-1)![4]!(Object.assign(new Error("Failed"), { status })));
+    try {
+      await act(async () =>
+        root.render(
+          createElement(MemberPresence, {
+            spaceId: "outage",
+            snapshots: new Map(),
+            members,
+            onMessagePerson: async () => {},
+            onBlockAuthor: () => {},
+            profileSpaces: () => [],
+            onClose: () => {},
+          }),
+        ),
+      );
+      const first = vi.mocked(watchPresence).mock.calls.at(-1)!;
+      await act(async () => first[2](members.map((m) => ({ userId: m.id, status: "online" }))));
+      const calls = vi.mocked(watchPresence).mock.calls.length;
+      await fail(503);
+      expect(rows("Status unavailable")).toHaveLength(4);
+      await act(async () => vi.advanceTimersByTime(4_999));
+      expect(vi.mocked(watchPresence).mock.calls.length).toBe(calls);
+      await act(async () => vi.advanceTimersByTime(1));
+      expect(vi.mocked(watchPresence).mock.calls.length).toBe(calls + 1);
+      await act(async () => first[2]([{ userId: "ana", status: "offline" }]));
+      expect(rows("Offline"), "the ended subscription is fenced").toEqual([]);
+      await act(async () =>
+        vi
+          .mocked(watchPresence)
+          .mock.calls.at(-1)![2](members.map((m) => ({ userId: m.id, status: "online" }))),
+      );
+      expect(rows("Online")).toHaveLength(4);
+      await fail(403);
+      await act(async () => vi.advanceTimersByTime(120_000));
+      expect(vi.mocked(watchPresence).mock.calls.length).toBe(calls + 1);
+      expect(rows("Status unavailable")).toHaveLength(4);
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+
   it("filters the whole roster by name or username and clears back to the same live groups", async () => {
     const roster = Array.from({ length: 151 }, (_, index) => member(`person_${index}`));
     roster[150] = { ...roster[150], displayName: "Beyond the old page" };

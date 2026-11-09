@@ -3124,7 +3124,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         presenceTimeout?.cancel()
         presenceTimeout = viewModelScope.launch {
             delay(10_000)
-            if (generation == request) mutable.value = mutable.value.copy(presenceLoading = false)
+            if (generation != request) return@launch
+            mutable.value = mutable.value.copy(presenceLoading = false)
+            // No first snapshot yet: subscribe again with backoff rather than stay blank.
+            // A snapshot cancels this job; an ended feed reconnects the stream.
+            if (presenceSpace == null) return@launch
+            var retries = 0
+            while (generation == request) {
+                watchVisiblePresence(force = true)
+                retries++
+                delay(minOf(5_000L shl minOf(retries, 4), 60_000L))
+            }
         }
         val connection = GatewayClient(
             baseUrl = api.baseUrl, token = accountToken, channelId = channel, initialCursor = cursor,
@@ -3190,10 +3200,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (participating && (detail != null || mutable.value.visit != null)) connection.watchMedia(mediaChannels(detail), detail?.space?.demo == true)
     }
 
-    private fun watchVisiblePresence() {
+    private fun watchVisiblePresence(force: Boolean = false) {
         val detail = mutable.value.selectedSpace ?: return
         if (detail.space.demo || accountToken == null || detail.members.isEmpty()) return
-        gateway?.watchPresence(detail.space.id, allMembers = true)
+        gateway?.watchPresence(detail.space.id, allMembers = true, force = force)
     }
 
     private fun receiveTyping(author: ChatAuthor, active: Boolean, revision: String) {

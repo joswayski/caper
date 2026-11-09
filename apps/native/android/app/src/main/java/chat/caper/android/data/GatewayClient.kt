@@ -98,9 +98,10 @@ class GatewayClient(
         else -> "online"
     }
 
-    @Synchronized fun watchPresence(spaceId: String, userIds: List<String> = emptyList(), allMembers: Boolean = false) {
+    /** [force] subscribes again even when nothing changed, for a first snapshot that never came. */
+    @Synchronized fun watchPresence(spaceId: String, userIds: List<String> = emptyList(), allMembers: Boolean = false, force: Boolean = false) {
         require(allMembers || userIds.size in 1..100) { "Presence supports 1 to 100 members." }
-        if (presenceSpaceId == spaceId && presenceUserIds == userIds.distinct() && presenceAllMembers == allMembers) return
+        if (!force && presenceSpaceId == spaceId && presenceUserIds == userIds.distinct() && presenceAllMembers == allMembers) return
         presenceAllMembers = allMembers
         val old = presenceSubscriptionId
         presenceSpaceId = spaceId; presenceUserIds = userIds.distinct(); presenceSubscriptionId = UUID.randomUUID().toString()

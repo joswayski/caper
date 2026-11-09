@@ -15,6 +15,9 @@ use uuid::Uuid;
 
 const MAX_SUBSCRIPTIONS: usize = 32;
 const COMMAND_WINDOW_MS: i64 = 120_000;
+/// How long presence rides out failing broker or database checks with the last
+/// known statuses before telling subscribers it is unavailable.
+const PRESENCE_GRACE: Duration = Duration::from_secs(30);
 
 #[cfg(test)]
 mod tests;
@@ -215,6 +218,8 @@ impl Application {
     pub(super) fn start(self: &Arc<Self>, chat: Chat) {
         let app = self.clone();
         tokio::spawn(async move {
+            let mut presence_failing: Option<tokio::time::Instant> = None;
+            let mut presence_warned = false;
             loop {
                 let connection = app.broker.lock().unwrap().clone();
                 if let Some(mut connection) = connection
@@ -268,11 +273,21 @@ impl Application {
                     feeds.retain(|_, feed| Arc::strong_count(feed) > 1);
                     feeds.keys().cloned().collect()
                 };
+                // A failed check keeps the last known statuses: viewers see a
+                // short broker blip as nothing, and only a sustained outage
+                // clears them (which ends the subscriptions watching them).
                 if let Some(presence) = &app.presence {
+                    let mut failed = false;
                     for chunk in people.chunks(100) {
                         match presence.statuses(chunk).await {
                             Ok(values) => app.update_people(values),
                             Err(_) => {
+                                failed = true;
+                                let since =
+                                    *presence_failing.get_or_insert_with(tokio::time::Instant::now);
+                                if since.elapsed() < PRESENCE_GRACE {
+                                    continue;
+                                }
                                 let feeds = app.people.lock().unwrap();
                                 for id in chunk {
                                     if let Some(feed) = feeds.get(id) {
@@ -281,6 +296,27 @@ impl Application {
                                 }
                             }
                         }
+                    }
+                    match (failed, presence_failing) {
+                        (true, Some(since)) if !presence_warned => {
+                            presence_warned = true;
+                            tracing::warn!(
+                                event_name = "presence_check_failed",
+                                watched = people.len(),
+                                elapsed_ms = since.elapsed().as_millis() as u64,
+                                "presence status check failed; holding last known statuses"
+                            );
+                        }
+                        (false, Some(since)) => {
+                            tracing::info!(
+                                event_name = "presence_check_recovered",
+                                elapsed_ms = since.elapsed().as_millis() as u64,
+                                "presence status checks recovered"
+                            );
+                            presence_failing = None;
+                            presence_warned = false;
+                        }
+                        _ => {}
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
@@ -513,8 +549,10 @@ async fn serve(socket: WebSocket, state: Gateway, identity: Identity) {
             _ = timer.tick() => {
                 budget = 60;
                 if last_heartbeat.elapsed() > Duration::from_secs(30) || identity.check(&state).await.is_err() { break; }
+                // A failed renewal is retried next tick inside the 40-second
+                // lease; only a refused session (too many) ends the socket.
                 if let (Some(user), Some(presence)) = (&identity.external_id, &state.application.presence)
-                    && presence.renew(user, &connection, activity_at.elapsed().as_millis().min(u64::MAX as u128) as u64).await.is_err() { break; }
+                    && refused(presence.renew(user, &connection, activity_at.elapsed().as_millis().min(u64::MAX as u128) as u64).await) { break; }
                 if send(&out, json!({"type":"heartbeat"})).await.is_err() { break; }
             }
             _ = commands.join_next(), if !commands.is_empty() => {}
@@ -530,7 +568,7 @@ async fn serve(socket: WebSocket, state: Gateway, identity: Identity) {
                         let age = activity_age_ms.min(86_400_000);
                         activity_at = tokio::time::Instant::now() - Duration::from_millis(age);
                         if let (Some(user), Some(presence)) = (&identity.external_id, &state.application.presence)
-                            && presence.renew(user, &connection, age).await.is_err() { break; }
+                            && refused(presence.renew(user, &connection, age).await) { break; }
                     }
                     Frame::Unsubscribe { id } => { if let Some(task) = subscriptions.remove(&id) { task.abort(); } }
                     Frame::Subscribe(subscription) => {
@@ -582,6 +620,11 @@ async fn serve(socket: WebSocket, state: Gateway, identity: Identity) {
     commands.detach_all();
     writer.abort();
     // Do not delete shared presence here: a short lease bridges reconnect/handoff.
+}
+
+/// Whether presence turned this session away, rather than failing to answer.
+fn refused(renewal: Result<(), ApiError>) -> bool {
+    renewal.is_err_and(|error| error.status == StatusCode::TOO_MANY_REQUESTS)
 }
 
 async fn event(out: &mpsc::Sender<Value>, id: &str, value: Value) -> Result<(), ApiError> {
@@ -962,71 +1005,101 @@ async fn presence_subscription(
     let mut changes = futures_util::stream::select_all(Vec::new());
     let mut last = Value::Null;
     let mut timer = tokio::time::interval(Duration::from_secs(10));
+    // Transient (503) failures retry every two seconds for `PRESENCE_GRACE`,
+    // keeping the last snapshot on screen; denials end the subscription now.
+    let mut failing: Option<tokio::time::Instant> = None;
     loop {
-        identity.check(state).await?;
-        // Anchor authorization on the space, not the returned members: an empty
-        // roster must never let a removed requester keep a subscription alive.
-        let permitted: Option<Vec<String>> = sqlx::query_scalar("SELECT ARRAY(SELECT u.external_id FROM public.space_members m JOIN public.users u ON u.id=m.user_id WHERE m.space_id=s.id AND m.deleted_at IS NULL AND u.deleted_at IS NULL AND ($4 OR u.external_id=ANY($2)) ORDER BY u.external_id) FROM public.spaces s WHERE s.external_id=$1 AND s.deleted_at IS NULL AND EXISTS(SELECT 1 FROM public.space_members own WHERE own.space_id=s.id AND own.user_id=$3 AND own.deleted_at IS NULL)")
-            .bind(space).bind(&sub.user_ids).bind(user).bind(sub.all_members).fetch_optional(&state.chat.pool).await.map_err(|_| chat::unavailable())?;
-        let permitted = permitted
-            .ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "presence subscription denied"))?;
-        // Fail closed on removed memberships, including subscriptions established
-        // before a privacy change. Never return global population snapshots.
-        let unique: std::collections::HashSet<_> = sub.user_ids.iter().collect();
-        if !sub.all_members && permitted.len() != unique.len() {
-            return Err(ApiError::new(
-                StatusCode::FORBIDDEN,
-                "presence subscription denied",
-            ));
-        }
-        let next_ids = if sub.all_members {
-            permitted
-        } else {
-            sub.user_ids.clone()
-        };
-        if last.is_null() || ids != next_ids {
-            ids = next_ids;
-            feeds = ids.iter().map(|id| state.application.person(id)).collect();
-            // Rebuild watches with the roster so newly added members are tracked
-            // and removed feeds can be reclaimed by the existing repair loop.
-            changes = futures_util::stream::select_all(
-                feeds
-                    .iter()
-                    .map(|feed| {
-                        futures_util::stream::unfold(
-                            feed.value.subscribe(),
-                            |mut receiver| async move {
-                                receiver.changed().await.ok()?;
-                                receiver.borrow_and_update();
-                                Some(((), receiver))
-                            },
-                        )
-                        .boxed()
-                    })
-                    .collect::<Vec<_>>(),
-            );
-            for chunk in ids.chunks(100) {
-                state
-                    .application
-                    .update_people(presence.statuses(chunk).await?);
+        let step = async {
+            identity.check(state).await?;
+            // Anchor authorization on the space, not the returned members: an empty
+            // roster must never let a removed requester keep a subscription alive.
+            let permitted: Option<Vec<String>> = sqlx::query_scalar("SELECT ARRAY(SELECT u.external_id FROM public.space_members m JOIN public.users u ON u.id=m.user_id WHERE m.space_id=s.id AND m.deleted_at IS NULL AND u.deleted_at IS NULL AND ($4 OR u.external_id=ANY($2)) ORDER BY u.external_id) FROM public.spaces s WHERE s.external_id=$1 AND s.deleted_at IS NULL AND EXISTS(SELECT 1 FROM public.space_members own WHERE own.space_id=s.id AND own.user_id=$3 AND own.deleted_at IS NULL)")
+                .bind(space).bind(&sub.user_ids).bind(user).bind(sub.all_members).fetch_optional(&state.chat.pool).await
+                .map_err(|error| {
+                    tracing::warn!(event_name = "presence_roster_failed", %error, "presence roster check failed");
+                    chat::unavailable()
+                })?;
+            let permitted = permitted
+                .ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "presence subscription denied"))?;
+            // Fail closed on removed memberships, including subscriptions established
+            // before a privacy change. Never return global population snapshots.
+            let unique: std::collections::HashSet<_> = sub.user_ids.iter().collect();
+            if !sub.all_members && permitted.len() != unique.len() {
+                return Err(ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "presence subscription denied",
+                ));
             }
-        }
-        let values: Vec<Value> = feeds
-            .iter()
-            .map(|feed| feed.value.borrow().clone())
-            .collect();
-        if values.iter().any(Value::is_null) {
-            return Err(chat::unavailable());
-        }
-        let members = json!(values);
-        if members != last {
-            event(out, &sub.id, json!({"type":"snapshot","members":members})).await?;
-            if last.is_null() {
-                subscribed(out, &sub.id).await?;
+            let next_ids = if sub.all_members {
+                permitted
+            } else {
+                sub.user_ids.clone()
+            };
+            if last.is_null() || ids != next_ids {
+                ids = next_ids;
+                feeds = ids.iter().map(|id| state.application.person(id)).collect();
+                // Rebuild watches with the roster so newly added members are tracked
+                // and removed feeds can be reclaimed by the existing repair loop.
+                changes = futures_util::stream::select_all(
+                    feeds
+                        .iter()
+                        .map(|feed| {
+                            futures_util::stream::unfold(
+                                feed.value.subscribe(),
+                                |mut receiver| async move {
+                                    receiver.changed().await.ok()?;
+                                    receiver.borrow_and_update();
+                                    Some(((), receiver))
+                                },
+                            )
+                            .boxed()
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                for chunk in ids.chunks(100) {
+                    state
+                        .application
+                        .update_people(presence.statuses(chunk).await?);
+                }
             }
-            last = members;
+            let values: Vec<Value> = feeds
+                .iter()
+                .map(|feed| feed.value.borrow().clone())
+                .collect();
+            if values.iter().any(Value::is_null) {
+                return Err(chat::unavailable());
+            }
+            let members = json!(values);
+            if members != last {
+                event(out, &sub.id, json!({"type":"snapshot","members":members})).await?;
+                if last.is_null() {
+                    subscribed(out, &sub.id).await?;
+                }
+                last = members;
+            }
+            Ok(())
         }
-        tokio::select! { _ = changes.next(), if !changes.is_empty() => {}, _ = timer.tick() => {} }
+        .await;
+        match step {
+            Ok(()) => failing = None,
+            Err(error) if error.status == StatusCode::SERVICE_UNAVAILABLE && !out.is_closed() => {
+                let first = failing.is_none();
+                let since = *failing.get_or_insert_with(tokio::time::Instant::now);
+                if since.elapsed() >= PRESENCE_GRACE {
+                    tracing::warn!(event_name = "presence_subscription_failed", error = %error.message, elapsed_ms = since.elapsed().as_millis() as u64, live = !last.is_null(), "presence subscription ended after retrying");
+                    return Err(error);
+                }
+                if first {
+                    tracing::warn!(event_name = "presence_subscription_retrying", error = %error.message, live = !last.is_null(), "presence subscription retrying");
+                }
+            }
+            Err(error) => return Err(error),
+        }
+        tokio::select! {
+            _ = changes.next(), if !changes.is_empty() && failing.is_none() => {},
+            _ = timer.tick(), if failing.is_none() => {},
+            _ = tokio::time::sleep(Duration::from_secs(2)), if failing.is_some() => {},
+        }
     }
 }
 

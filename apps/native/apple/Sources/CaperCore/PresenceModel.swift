@@ -9,7 +9,10 @@ public final class PresenceModel {
     public private(set) var statuses: [String: PresenceStatus] = [:]
     public private(set) var loading = false
     private var snapshots: [String: [String: PresenceStatus]] = [:]
-    @ObservationIgnored private var loadingTimeout: Task<Void, Never>?
+    /// Subscribes again when no snapshot arrives in time or the gateway ended
+    /// the feed, so a blip never leaves the roster blank until relaunch.
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
+    @ObservationIgnored private var retries = 0
 
     private let api: APIClient
     @ObservationIgnored private lazy var gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, message in
@@ -48,14 +51,27 @@ public final class PresenceModel {
         self.spaceID = spaceID
         statuses = snapshots[spaceID] ?? [:]; online = false; error = nil
         loading = snapshots[spaceID] == nil
-        loadingTimeout?.cancel()
-        loadingTimeout = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(10)) } catch { return }
-            guard let self, self.generation == attempt else { return }
-            self.loading = false
-        }
+        retries = 0
+        scheduleRetry(generation: attempt, after: .seconds(10))
         if let previous { await gateway.unsubscribe(previous) }
         await subscribe(generation: attempt)
+    }
+
+    private func scheduleRetry(generation attempt: Int, after delay: Duration) {
+        retryTask?.cancel()
+        retryTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard let self, self.generation == attempt else { return }
+            self.loading = false
+            let previous = self.subscriptionID
+            self.subscriptionID = nil
+            if let previous { await self.gateway.unsubscribe(previous) }
+            self.retries += 1
+            await self.subscribe(generation: attempt)
+            // A snapshot during the resubscribe cancelled this task: done.
+            guard !Task.isCancelled, self.generation == attempt else { return }
+            self.scheduleRetry(generation: attempt, after: .seconds(min(5 << min(self.retries, 4), 60)))
+        }
     }
 
     public func stop() async {
@@ -63,7 +79,7 @@ public final class PresenceModel {
         let previous = subscriptionID
         subscriptionID = nil; spaceID = nil; members = []; statuses = [:]
         snapshots = [:]; loading = false
-        loadingTimeout?.cancel(); loadingTimeout = nil
+        retryTask?.cancel(); retryTask = nil
         query = ""; online = false; error = nil
         if let previous { await gateway.unsubscribe(previous) }
     }
@@ -84,9 +100,12 @@ public final class PresenceModel {
         guard generation == attempt else { return }
         if event["type"] as? String == "subscription.error" {
             if let spaceID { snapshots[spaceID] = nil }
-            loadingTimeout?.cancel(); loading = false
+            loading = false
             statuses = [:]; online = false
             error = event["error"] as? String ?? "Member presence is unavailable."
+            // A removed member stays out; an outage subscribes again.
+            if [401, 403, 404].contains(event["status"] as? Int ?? 0) { retryTask?.cancel() }
+            else { scheduleRetry(generation: attempt, after: .seconds(min(5 << min(retries, 4), 60))) }
             return
         }
         guard event["type"] as? String == "snapshot", let rawMembers = event["members"] as? [[String: Any]] else { return }
@@ -100,7 +119,7 @@ public final class PresenceModel {
             }
             next[id] = status
         }
-        loadingTimeout?.cancel(); loading = false
+        retryTask?.cancel(); retries = 0; loading = false
         if let spaceID { snapshots[spaceID] = next }
         statuses = next; online = true; error = nil
     }
