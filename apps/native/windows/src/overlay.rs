@@ -1227,6 +1227,7 @@ impl Dialog {
             );
         }
         let i = g.layout(&gfx::wide(&face.initials), &g.formats.direct_initials, 1e6)?;
+        crate::emoji::apply(&i, &face.initials, 8.5, 1.0)?;
         crate::text::draw(
             dc,
             &i,

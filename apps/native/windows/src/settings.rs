@@ -750,6 +750,7 @@ impl Settings {
                     unsafe { dc.FillEllipse(&e, &g.solid(color)) };
                     let i =
                         g.layout(&gfx::wide(&item.initials), &g.formats.direct_initials, 1e6)?;
+                    crate::emoji::apply(&i, &item.initials, 8.5, 1.0)?;
                     let m = gfx::metrics(&i);
                     text::draw(
                         dc,
@@ -1588,6 +1589,7 @@ impl App {
         };
         unsafe { dc.FillEllipse(&e, &g.solid(p.color)) };
         let i = g.layout(&gfx::wide(&p.initials), &g.formats.direct_initials, 1e6)?;
+        crate::emoji::apply(&i, &p.initials, 8.5, 1.0)?;
         let m = gfx::metrics(&i);
         text::draw(
             dc,

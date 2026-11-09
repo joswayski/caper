@@ -52,6 +52,86 @@ const BASE: f64 = 0.2;
 const NOTICE: Duration = Duration::from_secs(4);
 /// Videos decode at most at 1080p however large the window.
 const MAX_VIDEO: [f32; 2] = [1920.0, 1080.0];
+/// One-finger drags past these, while not zoomed, change file or close
+/// (egui's and web's `viewer.ts`); shorter ones ease back.
+const SWIPE_DISTANCE: f32 = 60.0;
+const CLOSE_DISTANCE: f32 = 100.0;
+/// How far a finger moves before it swipes rather than taps.
+const SWIPE_SLOP: f32 = 10.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SwipeAction {
+    Next,
+    Previous,
+    Close,
+}
+
+/// What a finished one-finger drag means, as egui's `swipe_action`: left
+/// shows the next file, like paging; down closes.
+fn swipe_action(dx: f32, dy: f32) -> Option<SwipeAction> {
+    if dx.abs() > dy.abs() {
+        if dx <= -SWIPE_DISTANCE {
+            Some(SwipeAction::Next)
+        } else if dx >= SWIPE_DISTANCE {
+            Some(SwipeAction::Previous)
+        } else {
+            None
+        }
+    } else if dy >= CLOSE_DISTANCE {
+        Some(SwipeAction::Close)
+    } else {
+        None
+    }
+}
+
+/// A finger on the media. Past the slop it locks to one axis and the media
+/// follows it there (downwards only, to close), as in egui.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Swipe {
+    start: (f32, f32),
+    /// Horizontal (true) or vertical, once past the slop.
+    horizontal: Option<bool>,
+    offset: (f32, f32),
+}
+
+impl Swipe {
+    fn new(start: (f32, f32)) -> Self {
+        Self {
+            start,
+            horizontal: None,
+            offset: (0.0, 0.0),
+        }
+    }
+
+    fn follow(&mut self, x: f32, y: f32) {
+        let (dx, dy) = (x - self.start.0, y - self.start.1);
+        if self.horizontal.is_none() && dx.hypot(dy) > SWIPE_SLOP {
+            self.horizontal = Some(dx.abs() > dy.abs());
+        }
+        self.offset = match self.horizontal {
+            Some(true) => (dx, 0.0),
+            Some(false) => (0.0, dy.max(0.0)),
+            None => (0.0, 0.0),
+        };
+    }
+
+    fn action(&self, x: f32, y: f32) -> Option<SwipeAction> {
+        let (dx, dy) = (x - self.start.0, y - self.start.1);
+        match self.horizontal? {
+            true => swipe_action(dx, 0.0),
+            false => swipe_action(0.0, dy),
+        }
+    }
+}
+
+/// Whether the mouse message being handled came from a finger (Windows
+/// promotes touch to mouse messages and marks them, `MI_WP_SIGNATURE`).
+fn from_touch() -> bool {
+    const SIGNATURE: usize = 0xFF51_5700;
+    const TOUCH: usize = 0x80;
+    let info = unsafe { GetMessageExtraInfo() }.0 as usize & 0xFFFF_FFFF;
+    info & 0xFFFF_FF00 == SIGNATURE && info & TOUCH != 0
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Part {
@@ -199,6 +279,8 @@ pub struct Viewer {
     panning: Option<((f32, f32), (f32, f32))>,
     /// The seek bar while dragged, 0–1.
     scrub: Option<f32>,
+    /// A finger swiping the media while not zoomed.
+    swipe: Option<Swipe>,
     controls: Vec<(Part, D2D_RECT_F)>,
     stage: D2D_RECT_F,
     /// Where the picture is drawn (client DIPs), for clicks and zoom.
@@ -230,6 +312,7 @@ impl Viewer {
             backdrop: false,
             panning: None,
             scrub: None,
+            swipe: None,
             controls: Vec::new(),
             stage: rect(0.0, 0.0, 1.0, 1.0),
             picture: rect(0.0, 0.0, 0.0, 0.0),
@@ -262,6 +345,7 @@ impl Viewer {
         self.zoom = Zoom::default();
         self.scrub = None;
         self.panning = None;
+        self.swipe = None;
         if !self.enabled(self.focus) {
             self.focus = Part::Close;
         }
@@ -1323,6 +1407,28 @@ impl App {
         self.viewer_tick();
     }
 
+    /// An unfinished swipe lets go: the media eases back to its place
+    /// (at once under reduced motion).
+    fn viewer_swipe_back(&mut self, offset: (f32, f32)) {
+        let Some(v) = &self.viewer else {
+            return;
+        };
+        let (at, s) = (v.placed.unwrap_or_default(), self.scale);
+        let _ = (|| -> Result<()> {
+            if crate::files::motion() && offset != (0.0, 0.0) {
+                let g = &self.g;
+                unsafe {
+                    let visual = &self.viewer_p.visual;
+                    visual.SetOffsetX(&animation(g, at.0 + offset.0 * s, at.0, BASE)?)?;
+                    visual.SetOffsetY(&animation(g, at.1 + offset.1 * s, at.1, BASE)?)?;
+                }
+            } else {
+                self.viewer_p.offset(at.0, at.1)?;
+            }
+            unsafe { self.g.dcomp.Commit() }
+        })();
+    }
+
     /// Zooms the picture to `scale` × fit about client point `pointer`.
     fn viewer_zoom(&mut self, scale: impl FnOnce(f32) -> f32, pointer: (f32, f32)) {
         let decoded = self.viewer_decoded();
@@ -1367,7 +1473,11 @@ impl App {
                 self.pointer = Some((x, y));
                 v.keyboard = false;
                 v.backdrop = false;
-                match v.hit(x, y) {
+                let hit = v.hit(x, y);
+                if from_touch() && !v.zoom.zoomed() && inside_rect(v.stage, x, y) {
+                    v.swipe = Some(Swipe::new((x, y)));
+                }
+                match hit {
                     Some(Part::Stage) if !v.is_video() => {
                         if v.zoom.zoomed() {
                             v.panning = Some(((x, y), v.zoom.pan));
@@ -1403,6 +1513,19 @@ impl App {
             }
             WM_MOUSEMOVE => {
                 self.pointer = Some((x, y));
+                if let Some(swipe) = &mut v.swipe {
+                    swipe.follow(x, y);
+                    let offset = swipe.offset;
+                    // The media panel follows the finger; nothing redraws.
+                    let (at, s) = (v.placed.unwrap_or_default(), self.scale);
+                    let _ = self
+                        .viewer_p
+                        .offset(at.0 + offset.0 * s, at.1 + offset.1 * s);
+                    unsafe {
+                        let _ = self.g.dcomp.Commit();
+                    }
+                    return done;
+                }
                 if let Some((start, pan)) = v.panning {
                     v.zoom.pan = (pan.0 + x - start.0, pan.1 + y - start.1);
                     v.media = true;
@@ -1425,6 +1548,27 @@ impl App {
                     let _ = ReleaseCapture();
                 }
                 let v = self.viewer.as_mut()?;
+                if let Some(swipe) = v.swipe.take()
+                    && swipe.horizontal.is_some()
+                {
+                    // The finger owned the gesture: nothing under it clicks.
+                    v.pressed = None;
+                    v.backdrop = false;
+                    v.panning = None;
+                    let action = swipe.action(x, y);
+                    let turn = match action {
+                        Some(SwipeAction::Next) => Some(Part::Next),
+                        Some(SwipeAction::Previous) => Some(Part::Previous),
+                        _ => None,
+                    }
+                    .filter(|p| v.enabled(*p));
+                    match (action, turn) {
+                        (Some(SwipeAction::Close), _) => self.close_viewer(),
+                        (_, Some(p)) => self.viewer_activate(p),
+                        _ => self.viewer_swipe_back(swipe.offset),
+                    }
+                    return done;
+                }
                 let pressed = v.pressed.take();
                 let panned = v
                     .panning
@@ -1447,6 +1591,11 @@ impl App {
                 }
             }
             WM_CAPTURECHANGED => {
+                if let Some(swipe) = v.swipe.take() {
+                    self.viewer_swipe_back(swipe.offset);
+                    return None;
+                }
+                let v = self.viewer.as_mut()?;
                 v.panning = None;
                 v.backdrop = false;
                 if v.pressed.take() == Some(Part::Seek) {
@@ -1825,6 +1974,10 @@ fn save_path(window: isize, name: &str, content_type: &str) -> Option<std::path:
     }
 }
 
+fn inside_rect(r: D2D_RECT_F, x: f32, y: f32) -> bool {
+    x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
 /// Wakes the window's live drain from a worker thread.
 fn wake(window: isize) {
     unsafe {
@@ -2031,6 +2184,31 @@ mod tests {
         assert_eq!(copied.dib[124..128], [30, 20, 10, 128]);
         let png = image::load_from_memory(&copied.png).unwrap().to_rgba8();
         assert_eq!(png, image);
+    }
+
+    #[test]
+    fn swipes_turn_pages_or_close_only_past_their_distance_on_one_axis() {
+        assert_eq!(swipe_action(-60.0, 0.0), Some(SwipeAction::Next));
+        assert_eq!(swipe_action(60.0, 10.0), Some(SwipeAction::Previous));
+        assert_eq!(swipe_action(-59.0, 0.0), None);
+        assert_eq!(swipe_action(0.0, 99.0), None);
+        assert_eq!(swipe_action(0.0, 100.0), Some(SwipeAction::Close));
+        assert_eq!(swipe_action(0.0, -200.0), None, "up never closes");
+        // Within the slop it is still a tap: no axis, nothing moves.
+        let mut s = Swipe::new((100.0, 100.0));
+        s.follow(106.0, 106.0);
+        assert_eq!((s.horizontal, s.offset), (None, (0.0, 0.0)));
+        assert_eq!(s.action(106.0, 106.0), None);
+        // Locked sideways, a later drift down does not close.
+        s.follow(30.0, 104.0);
+        assert_eq!((s.horizontal, s.offset), (Some(true), (-70.0, 0.0)));
+        assert_eq!(s.action(30.0, 300.0), Some(SwipeAction::Next));
+        // Locked down, the media only follows downwards.
+        let mut d = Swipe::new((100.0, 100.0));
+        d.follow(102.0, 120.0);
+        d.follow(102.0, 80.0);
+        assert_eq!((d.horizontal, d.offset), (Some(false), (0.0, 0.0)));
+        assert_eq!(d.action(140.0, 230.0), Some(SwipeAction::Close));
     }
 
     #[test]

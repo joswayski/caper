@@ -391,6 +391,7 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
         emoji::apply(&name, &author.name, 15.0, 1.0)?;
         let time = g.layout(&gfx::wide(&m.time), &g.formats.time, 10_000.0)?;
         let initials = g.layout(&gfx::wide(&author.initials), &g.formats.initials, AVATAR)?;
+        emoji::apply(&initials, &author.initials, 13.0, 1.0)?;
         unsafe { initials.SetMaxHeight(AVATAR)? };
         Some(Header {
             name_w: gfx::metrics(&name).widthIncludingTrailingWhitespace,
@@ -426,6 +427,7 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
                 &g.formats.quote_initials,
                 QUOTE_AVATAR,
             )?;
+            emoji::apply(&initials, &r.author.initials, 7.0, 1.0)?;
             unsafe { initials.SetMaxHeight(QUOTE_AVATAR)? };
             // A deleted original cannot be opened.
             let view = g.layout(

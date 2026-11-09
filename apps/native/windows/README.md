@@ -18,7 +18,8 @@ Files attach from the composer's Attach files button (the system "Upload a
 file" dialog), by dropping them on the window or by pasting copied files or
 a picture; each uploads at once and the message waits for them. Clicking an
 image or video opens the in-app media viewer with the rest of the message's
-media (arrows or Left/Right; wheel or double-click zoom, drag to pan; Open
+media (arrows, Left/Right or a touch swipe, with a swipe down to close;
+wheel or double-click zoom, drag to pan; Open
 in browser, Save, Copy image and Copy media link; videos play with
 play/pause, seek and mute through the bundled FFmpeg). A link preview's
 images and direct videos open there too. Its YouTube, Vimeo and Twitch
@@ -45,7 +46,8 @@ fixture's stand-in.
   layouts (`SetMaxWidth`) instead of rebuilding them.
 - Text goes through a custom `IDWriteTextRenderer`. Emoji in the Twemoji
   catalog (`shared/emoji`) are inline objects drawing their sheet cell,
-  matched per grapheme like the egui client; any other colour-font glyph is
+  matched per grapheme like the egui client, in messages, the composer and
+  its placeholder, names, titles and avatar initials; any other colour-font glyph is
   rasterized once per face, glyph, size and scale and blitted from a cache.
 - Frames are paced to the compositor clock and only produced when something
   changed.

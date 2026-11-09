@@ -2923,13 +2923,10 @@ impl App {
                             &g.brushes.terracotta,
                         );
                     }
-                    let initial: String = space
-                        .name
-                        .chars()
-                        .next()
-                        .map(String::from)
-                        .unwrap_or_default();
+                    // egui's initial: a whole grapheme, an emoji as Twemoji.
+                    let initial = caper_client::space_initial(&space.name);
                     let l = g.layout(&gfx::wide(&initial), &g.formats.rail, w)?;
+                    emoji::apply(&l, &initial, 13.0, 1.0)?;
                     l.SetMaxHeight(h)?;
                     // egui dims a muted space's tile and badges its corner
                     // with the bell-slash.
@@ -3055,11 +3052,9 @@ impl App {
                 // egui halves a muted row's colours.
                 let dim_text = dc.CreateSolidColorBrush(&gfx::color(TEXT, 0.5), None)?;
                 let dim_muted = dc.CreateSolidColorBrush(&gfx::color(TEXT_MUTED, 0.5), None)?;
-                let t = g.layout(
-                    &gfx::wide(c.spaces.get(c.space).map_or("Caper", |s| s.name.as_str())),
-                    &g.formats.space,
-                    10_000.0,
-                )?;
+                let title = c.spaces.get(c.space).map_or("Caper", |s| s.name.as_str());
+                let t = g.layout(&gfx::wide(title), &g.formats.space, 10_000.0)?;
+                emoji::apply(&t, title, 17.0, 1.0)?;
                 text::draw(dc, &t, 20.0, 16.0, &g.brushes.text);
                 dc.FillRectangle(
                     &rect(0.0, HEADER_H - 1.0, SIDEBAR_W, HEADER_H),
@@ -3214,6 +3209,7 @@ impl App {
                     text::draw(dc, &hash, 24.0, 16.0, &g.brushes.muted);
                 }
                 let l = g.layout(&gfx::wide(&name), &g.formats.header, 10_000.0)?;
+                emoji::apply(&l, &name, 16.0, 1.0)?;
                 text::draw(
                     dc,
                     &l,

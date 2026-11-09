@@ -399,6 +399,7 @@ pub fn draw(
         };
         unsafe { dc.FillEllipse(&e, &g.solid(row.color)) };
         let i = g.layout(&gfx::wide(&row.initials), &g.formats.direct_initials, 1e6)?;
+        crate::emoji::apply(&i, &row.initials, 8.5, 1.0)?;
         let m = gfx::metrics(&i);
         text::draw(
             dc,

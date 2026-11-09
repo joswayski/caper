@@ -980,7 +980,9 @@ impl Composer {
             );
             let (ox, oy) = (PAD + left, PAD + top - self.scroll());
             let hint = if self.text.is_empty() && self.comp.is_empty() {
-                Some(g.layout(&gfx::wide(placeholder), &g.formats.composer, self.width)?)
+                let l = g.layout(&gfx::wide(placeholder), &g.formats.composer, self.width)?;
+                crate::emoji::apply(&l, placeholder, 15.0, 1.2)?;
+                Some(l)
             } else {
                 None
             };
