@@ -574,16 +574,16 @@ final class CaperParityUITests: XCTestCase {
         // The fixture's seeded message from Alex mentions @fixture_owner (you).
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m04"], timeout: 30,
                               "Missing the seeded message that mentions you")
+        let link = row.links.matching(NSPredicate(format: "label CONTAINS %@", "fixture_owner")).firstMatch
         #if os(macOS)
-        // macOS 15 exposes a message as one static text without its link runs.
-        let linksExposed = ProcessInfo.processInfo.isOperatingSystemAtLeast(
-            OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0))
+        // macOS may expose a message as one static text without its link runs
+        // (macOS 15 always, macOS 26 on some machines); click its characters then.
+        let linksExposed = link.waitForExistence(timeout: 5)
         #else
         let linksExposed = true
         #endif
         if linksExposed {
-            let pill = try require(row.links.matching(NSPredicate(format: "label CONTAINS %@", "fixture_owner")).firstMatch,
-                                   timeout: 5, "The @fixture_owner pill must be a link")
+            let pill = try require(link, timeout: 5, "The @fixture_owner pill must be a link")
             pill.tap()
         } else {
             #if os(macOS)
