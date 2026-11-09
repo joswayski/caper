@@ -282,7 +282,6 @@ class HighlightsTests(unittest.TestCase):
             {
                 "apps/native/apple/Sources/CaperAppKit/Timeline.swift": "APPKIT-ONLY",
                 "apps/native/apple/Sources/CaperUIKit/Timeline.swift": "UIKIT-ONLY",
-                "apps/native/windows/src/timeline.rs": "WIN32-ONLY",
                 "apps/native/linux/src/timeline.rs": "GTK-ONLY",
             },
         )
@@ -311,12 +310,12 @@ class HighlightsTests(unittest.TestCase):
         self.github.seed(snapshot("android", first, 2, snapshot("android", self.base)["releases"]))
         shared = self.commit("Improve shared voice indicators", {"shared/design.css": "voice {}"})
         ios = self.commit("Improve iPhone controls", {"apps/native/apple/Sources/CaperIOS/Controls.swift": "iphone()"})
-        newest = self.commit("Improve desktop controls", {"apps/native/desktop/src/voice.rs": "desktop();"})
+        newest = self.commit("Improve desktop controls", {"apps/native/windows/src/voice.rs": "desktop();"})
         self.response = {
             "highlights": [
                 highlight([shared], PLATFORMS[1:]),
                 highlight([ios], ["ios"], "iPhone controls", "Clearer controls on iPhone."),
-                highlight([newest], ["windows", "linux"], "Desktop controls", "Clearer controls on desktop."),
+                highlight([newest], ["windows"], "Desktop controls", "Clearer controls on desktop."),
             ]
         }
         result = self.generate(newest, "native")

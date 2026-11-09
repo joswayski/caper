@@ -7,11 +7,16 @@ local HTTP server, Tauri, or Electron; the website remains available.
 | --- | --- | --- |
 | macOS | Swift / SwiftUI with AppKit / URLSession | [Apple](apple/README.md) |
 | iPhone | Swift / SwiftUI with UIKit / URLSession | [Apple](apple/README.md) |
-| Windows, Linux | Rust / egui + wgpu / native HTTP and WebSocket | [Desktop](desktop/README.md) |
+| Windows | Rust / Win32, DirectComposition, Direct2D, DirectWrite, UI Automation / native HTTP and WebSocket | [Windows](windows/README.md) |
+| Linux | Rust / egui + wgpu / native HTTP and WebSocket | [Desktop](desktop/README.md) |
 | Android | Kotlin / Android Compose / native HTTP and WebSocket | [Android](android/README.md) |
 
-egui/wgpu is a compiled, shared renderer for Windows/Linux, not a WebView or
-system widgets. Apple and Android have separate native UI implementations. All
+egui/wgpu is a compiled renderer that draws its own widgets, not a WebView; it
+still builds on Windows for development, but Windows packages carry the Win32
+client (`windows/`, package `caper-windows`). `desktop/build.ps1` ships it as
+`Caper.exe` in the egui client's install layout, so existing installs, saved
+sessions, launch at login, `caper://` links and self-updates carry over.
+Apple and Android have separate native UI implementations. All
 clients talk directly to the same Caper API. No server or Cloudflare credentials
 belong in an app.
 

@@ -79,7 +79,7 @@ impl App {
             Card::Call(_) => CARD_H,
             Card::Error(_) => ERROR_H,
         };
-        let foot = if self.foot_shown() { FOOT_H } else { 0.0 };
+        let foot = (if self.foot_shown() { FOOT_H } else { 0.0 }) + self.update_dock_h();
         Some((RAIL_W + 8.0, self.h - foot - 8.0 - h, SIDEBAR_W - 16.0, h))
     }
 

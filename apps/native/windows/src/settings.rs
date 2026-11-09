@@ -1107,7 +1107,7 @@ pub struct AccountMenu {
 /// server, as egui keeps fixture runs off the OS registration (it is shared
 /// with the installed Caper).
 fn launch_allowed() -> bool {
-    std::env::var("CAPER_API_URL").is_ok_and(|u| u.trim_end_matches('/') == "https://caper.chat")
+    crate::live::production()
 }
 
 impl App {
@@ -1574,6 +1574,7 @@ impl App {
         let Some(live) = &self.live else {
             return Ok(());
         };
+        self.draw_update_dock(g, dc)?;
         let top = h - FOOT_H;
         unsafe {
             dc.FillRectangle(&rect(0.0, top, SIDEBAR_W, h), &g.solid(SURFACE_SIDEBAR));

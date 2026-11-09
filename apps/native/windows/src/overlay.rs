@@ -261,6 +261,8 @@ pub enum Kind {
     CreateChannel,
     /// "Invite people to {space}": its invite link and invitations.
     InvitePeople,
+    /// The update review (`updates`): what's new and Restart to update.
+    Update,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -473,6 +475,11 @@ pub struct Dialog {
     pub space_name: String,
     /// Invite people's space, links and invitations.
     pub inviting: Option<Box<crate::invite_people::InvitePeople>>,
+    /// The update reviewed, whether restarting would end a call, and the
+    /// body's lines as laid out (cut to the window).
+    pub update: Option<Box<caper_client::updates::Available>>,
+    pub in_call: bool,
+    pub update_shown: Vec<(crate::updates::Line, String)>,
     pub(crate) parts: Vec<(Part, Rect)>,
     pub(crate) card: Rect,
 }
@@ -548,6 +555,9 @@ impl Dialog {
             private: false,
             space_name: String::new(),
             inviting: None,
+            update: None,
+            in_call: false,
+            update_shown: Vec::new(),
             parts: Vec::new(),
             card: (0.0, 0.0, 0.0, 0.0),
         }
@@ -574,6 +584,7 @@ impl Dialog {
             Kind::CreateSpace => "Create a space".into(),
             Kind::CreateChannel => "Create a channel".into(),
             Kind::InvitePeople => self.invite_people_title(),
+            Kind::Update => Self::update_title().into(),
             Kind::LeaveSpace | Kind::LeaveChannel => {
                 let name = self.leave.as_ref().map_or("", |l| l.name.as_str());
                 if self.kind == Kind::LeaveChannel {
@@ -606,6 +617,7 @@ impl Dialog {
             Kind::JoinInvite | Kind::Invitation => self.invite_note(),
             Kind::CreateSpace | Kind::CreateChannel => String::new(),
             Kind::InvitePeople => self.invite_people_note(),
+            Kind::Update => self.update_note(),
             Kind::LeaveSpace => "You will lose access to its channels and conversations. An owner can add you again later.".into(),
             Kind::LeaveChannel if self.leave.as_ref().is_some_and(|l| l.private) => {
                 "You\u{2019}ll lose access and need another invitation to return. You\u{2019}ll disconnect from this channel\u{2019}s voice call.".into()
@@ -743,6 +755,7 @@ impl Dialog {
             (Kind::CreateChannel, false) => "Create channel",
             (Kind::CreateSpace | Kind::CreateChannel, true) => "Creating\u{2026}",
             (Kind::InvitePeople, _) => self.invite_people_primary(),
+            (Kind::Update, _) => self.update_primary(),
         }
     }
 
@@ -771,6 +784,7 @@ impl Dialog {
                         Kind::Invitation => true,
                         Kind::CreateSpace | Kind::CreateChannel => !self.create_name().is_empty(),
                         Kind::InvitePeople => self.invite_enabled(part),
+                        Kind::Update => true,
                     }
             }
             Part::Copy
@@ -956,6 +970,47 @@ impl Dialog {
         if matches!(self.kind, Kind::CreateSpace | Kind::CreateChannel) {
             y = self.relayout_create(g, inner, y, &mut parts)?;
         }
+        if self.kind == Kind::Update {
+            // The notes give up room so the actions stay on screen, as
+            // egui's scrolling notes do; the footer line always shows.
+            let footer = self.update_footer();
+            let reserve = 20.0 + BUTTON_H + if footer.is_some() { 32.0 } else { 0.0 };
+            let budget = (h - 48.0 - 2.0 * CARD_PAD - reserve).max(y + 64.0);
+            self.update_shown.clear();
+            let lines = self.update_lines();
+            let total = lines.len();
+            for (k, (line, s)) in lines.into_iter().enumerate() {
+                let gap = match line {
+                    crate::updates::Line::Failed | crate::updates::Line::Heading => 14.0,
+                    crate::updates::Line::Title if k > 0 => 12.0,
+                    _ => 4.0,
+                };
+                let l = layout(g, &s, crate::updates::line_format(g, line), inner)?;
+                if y + gap + height(&l) > budget && k + 1 < total {
+                    let more = "More changes are in this update.".to_owned();
+                    let l = layout(g, &more, &g.formats.dialog_note, inner)?;
+                    y += 10.0;
+                    let n = self.update_shown.len() as u8;
+                    parts.push((Part::Line(n), (0.0, y, inner, height(&l))));
+                    self.update_shown.push((crate::updates::Line::Body, more));
+                    y += height(&l);
+                    break;
+                }
+                y += gap;
+                let n = self.update_shown.len() as u8;
+                parts.push((Part::Line(n), (0.0, y, inner, height(&l))));
+                self.update_shown.push((line, s));
+                y += height(&l);
+            }
+            if let Some(s) = footer {
+                let l = layout(g, &s, &g.formats.dialog_note, inner)?;
+                y += 16.0;
+                let n = self.update_shown.len() as u8;
+                parts.push((Part::Line(n), (0.0, y, inner, height(&l))));
+                self.update_shown.push((crate::updates::Line::Body, s));
+                y += height(&l);
+            }
+        }
         if self.kind == Kind::Edit {
             y += 12.0;
             self.field
@@ -987,7 +1042,8 @@ impl Dialog {
                 y += height(&l);
             }
         }
-        if let Some(e) = &self.error {
+        // The review lists its error among its lines.
+        if let Some(e) = self.error.as_ref().filter(|_| self.kind != Kind::Update) {
             y += 8.0;
             let l = layout(g, e, &g.formats.error, inner)?;
             parts.push((Part::Error, (0.0, y, inner, height(&l))));
@@ -1113,6 +1169,12 @@ impl Dialog {
                         self.draw_create_part(g, dc, *part, (x, y, pw, ph))?
                     }
                     Part::Preview => self.draw_preview(g, dc, (x, y, pw, ph))?,
+                    Part::Line(k) if self.kind == Kind::Update => {
+                        if let Some((line, s)) = self.update_shown.get(*k as usize) {
+                            let l = layout(g, s, crate::updates::line_format(g, *line), pw)?;
+                            crate::text::draw(dc, &l, x, y, crate::updates::line_brush(g, *line));
+                        }
+                    }
                     Part::Error => {
                         let l = layout(
                             g,
@@ -1453,7 +1515,11 @@ impl App {
     }
 
     pub fn close_dialog(&mut self) {
-        if self.dialog.take().is_some() {
+        if let Some(d) = self.dialog.take() {
+            // Closing the review is Later; the dock stays.
+            if d.kind == Kind::Update {
+                self.updates.dismiss();
+            }
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), crate::TIMER_CARET);
             }
@@ -1509,6 +1575,9 @@ impl App {
         let Some(d) = &mut self.dialog else { return };
         if !d.enabled(part) {
             return;
+        }
+        if d.kind == Kind::Update {
+            return self.update_activate(part);
         }
         if d.kind == Kind::InvitePeople
             && !matches!(

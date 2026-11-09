@@ -141,10 +141,25 @@ fn preferences_path() -> Option<std::path::PathBuf> {
     )
 }
 
-/// The saved devices and volumes, as egui restores them.
+/// The saved devices and volumes, as egui restores them. Until this client
+/// has saved its own, the egui client's (the Caper this one replaced) carry
+/// over from its storage, `%APPDATA%\Caper\data\app.ron`.
 pub fn restore_preferences() -> Option<Preferences> {
-    let json = std::fs::read_to_string(preferences_path()?).ok()?;
+    let path = preferences_path()?;
+    let json = match std::fs::read_to_string(&path) {
+        Ok(json) => json,
+        Err(_) => {
+            let egui = path.parent()?.parent()?.join("data").join("app.ron");
+            egui_preferences(&std::fs::read_to_string(egui).ok()?)?
+        }
+    };
     Some(Preferences::restore(&json))
+}
+
+/// "audio-preferences-v1" from eframe's storage file (a RON map of strings).
+fn egui_preferences(ron: &str) -> Option<String> {
+    let mut map: std::collections::HashMap<String, String> = ron::from_str(ron).ok()?;
+    map.remove("audio-preferences-v1")
 }
 
 fn save_preferences(preferences: &Preferences) {
@@ -699,5 +714,24 @@ impl App {
             save_preferences(&live.voice.preferences);
         }
         self.settings_changed();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn egui_s_saved_audio_choices_carry_over_from_its_storage() {
+        // eframe's app.ron, as egui writes it: string values, JSON escaped.
+        let ron = r#"{
+    "window": "(inner_size: Some((1440.0, 900.0)))",
+    "audio-preferences-v1": "{\"input\":\"Studio \\\"Mic\\\"\",\"output_volume\":0.5}",
+    "sidebar-width-v1": "280",
+}"#;
+        assert_eq!(
+            super::egui_preferences(ron).as_deref(),
+            Some(r#"{"input":"Studio \"Mic\"","output_volume":0.5}"#)
+        );
+        assert_eq!(super::egui_preferences("{\"window\": \"x\"}"), None);
+        assert_eq!(super::egui_preferences("not ron"), None);
     }
 }

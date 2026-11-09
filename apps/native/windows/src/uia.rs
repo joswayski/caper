@@ -58,6 +58,8 @@ pub enum Id {
     DmItem(usize),
     /// The account footer's gear, its menu and the menu's items.
     Gear,
+    /// "Update available" above the footer (`updates`).
+    UpdateDock,
     AccountMenu,
     AccountItem(usize),
     History,
@@ -269,6 +271,9 @@ fn children(a: &App, id: Id) -> Vec<Id> {
                 out.push(Id::Members);
             }
             out.extend(a.voice_parts().into_iter().map(Id::Voice));
+            if a.update_dock_rect().is_some() {
+                out.push(Id::UpdateDock);
+            }
             if a.foot_shown() {
                 out.push(Id::Gear);
             }
@@ -426,6 +431,7 @@ fn exists(a: &App, id: Id) -> bool {
         Id::Waiting => a.note.is_some(),
         Id::Settings(p) => a.settings.as_ref().is_some_and(|s| s.parts().contains(&p)),
         Id::Gear => a.foot_shown(),
+        Id::UpdateDock => a.update_dock_rect().is_some(),
         Id::AccountMenu => a.account_menu.is_some(),
         Id::DirectOptions(k) => a
             .direct_rows()
@@ -534,6 +540,7 @@ fn name(a: &App, id: Id) -> String {
         Id::Waiting => a.note.as_ref().map_or_else(String::new, |(t, _)| t.clone()),
         Id::Settings(p) => a.settings.as_ref().map_or_else(String::new, |s| s.name(p)),
         Id::Gear | Id::AccountMenu => "User Settings".into(),
+        Id::UpdateDock => "Update available".into(),
         Id::DirectOptions(k) => a.direct_rows().get(k).map_or_else(String::new, |r| {
             format!("Conversation options for {}", r.name)
         }),
@@ -638,6 +645,7 @@ fn name(a: &App, id: Id) -> String {
                 DPart::Field if d.kind == Kind::Browse => "Search channels".into(),
                 DPart::Field if d.kind == Kind::JoinInvite => "Invite link".into(),
                 DPart::Field if d.kind == Kind::InvitePeople => "Exact username".into(),
+                DPart::Line(k) if d.kind == Kind::Update => d.update_line(k),
                 DPart::Heading(k) => d.invite_heading(k),
                 DPart::Line(k) => d.invite_line(k),
                 DPart::Link => d.invite_link_name(),
@@ -806,7 +814,7 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Settings(crate::settings::SPart::Delete) => UIA_HyperlinkControlTypeId,
         Id::Settings(p) if p.is_radio() => UIA_RadioButtonControlTypeId,
         Id::Settings(p) if p.is_toggle() => UIA_CheckBoxControlTypeId,
-        Id::Settings(_) | Id::Gear => UIA_ButtonControlTypeId,
+        Id::Settings(_) | Id::Gear | Id::UpdateDock => UIA_ButtonControlTypeId,
         Id::AccountMenu | Id::DmMenu => UIA_MenuControlTypeId,
         Id::DmItem(_) => UIA_MenuItemControlTypeId,
         Id::DirectOptions(_) | Id::SpaceOptions | Id::ChannelOptions(_) => UIA_ButtonControlTypeId,
@@ -869,6 +877,7 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Rec(p) => (49, p.index()),
         Id::Settings(p) => (38, p.index()),
         Id::Gear => (39, 0),
+        Id::UpdateDock => (39, 1),
         Id::AccountMenu => (40, 0),
         Id::DirectOptions(k) => (43, k),
         Id::DmMenu => (44, 0),
@@ -1004,6 +1013,7 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .and_then(|s| s.part_rect(p))
             .unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::Gear => a.gear_rect(),
+        Id::UpdateDock => a.update_dock_rect().unwrap_or_default(),
         Id::AccountMenu => a.account_menu_rect(),
         Id::DirectOptions(k) => a.direct_options_rect(k),
         Id::SpaceOptions => a.space_options_rect(),
@@ -1192,6 +1202,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
             Id::Settings(_)
             | Id::Voice(_)
             | Id::Gear
+            | Id::UpdateDock
             | Id::AccountItem(_)
             | Id::DirectOptions(_)
             | Id::SpaceOptions
@@ -1336,6 +1347,8 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                             .and_then(|l| l.reactor_summary(&m.id, &m.reactions.get(k)?.emoji))
                             .map_or_else(VARIANT::default, |s| VARIANT::from(BSTR::from(s)))
                     }
+                    // egui's tooltip on its dock.
+                    Id::UpdateDock => VARIANT::from(BSTR::from(a.update_dock_help())),
                     _ => VARIANT::default(),
                 },
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
@@ -1381,6 +1394,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                         | Id::NewDirect
                         | Id::Invite(_)
                         | Id::Gear
+                        | Id::UpdateDock
                         | Id::AccountItem(_)
                         | Id::DirectOptions(_)
                         | Id::SpaceOptions
@@ -1613,6 +1627,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Settings(p) => a.settings_activate(p),
                 Id::Voice(p) => a.voice_activate(p),
                 Id::Gear => a.toggle_account_menu(),
+                Id::UpdateDock => a.open_update_review(),
                 Id::AccountItem(k) => a.account_activate(k),
                 Id::DirectOptions(k) => a.toggle_dm_menu(k),
                 Id::SpaceOptions => {

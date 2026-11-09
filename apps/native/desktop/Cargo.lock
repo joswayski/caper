@@ -968,6 +968,7 @@ dependencies = [
  "chrono",
  "image",
  "raw-window-handle",
+ "ron",
  "serde",
  "serde_json",
  "url",
@@ -975,6 +976,7 @@ dependencies = [
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-numerics 0.3.1",
+ "winresource",
 ]
 
 [[package]]

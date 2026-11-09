@@ -127,6 +127,7 @@ impl Dialog {
         match (self.kind, self.busy && self.declining) {
             (Kind::Invitation, true) => "Declining\u{2026}",
             (Kind::Invitation, false) => "Decline",
+            (Kind::Update, _) => "Later",
             _ => "Cancel",
         }
     }
