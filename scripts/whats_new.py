@@ -102,8 +102,9 @@ paths, diffs, or prior highlights. Summarize only implemented client-visible
 changes supported by the supplied evidence. Long diffs may be cut short to fit
 (diffTruncated); subjects and bodies are context, not proof of unseen behavior.
 Describe only behavior reachable in the released client for the named platform.
-The AppKit, UIKit, Win32 and GTK replacement hosts are unreleased parity work,
-not the existing SwiftUI, Compose and Rust desktop clients. Never announce the
+The AppKit, UIKit and Win32 replacement hosts are unreleased parity work, not
+the existing SwiftUI, Compose and egui (Windows) clients; the GTK client is the
+released Linux app. Never announce the
 migration, parity progress, scaffolding or a replacement-host feature as live.
 A native change is not a web change. Shared models, assets and runtime paths
 are candidate evidence, not proof that a released client exposes a capability.
@@ -267,8 +268,12 @@ def path_platforms(path):
         return {"ios", "macos"}
     if path.startswith("apps/native/updater/"):
         return {"macos", "windows", "linux"}
-    if path.startswith(("apps/native/client/", "apps/native/desktop/")):
+    if path.startswith("apps/native/client/"):
         return {"windows", "linux"}
+    if path.startswith("apps/native/desktop/"):
+        return {"windows"}
+    if path.startswith("apps/native/linux/src/"):
+        return {"linux"}
     return set()  # Server-only changes may provide context, never platform eligibility.
 
 

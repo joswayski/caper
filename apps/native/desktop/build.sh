@@ -45,25 +45,28 @@ chmod 0755 "$ffmpeg_dir/ffmpeg"
 "$ffmpeg_dir/ffmpeg" -hide_banner -version | sed -n 1p
 
 python3 "$root/scripts/native_fonts.py"
-cargo fmt --manifest-path "$native/Cargo.toml" --package caper-desktop --package caper-client --package caper-web-player -- --check
-cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop --package caper-client
+# Linux ships the GTK 4 client (apps/native/linux, package caper-linux) under
+# the egui client's name and layout (caper-desktop), so installs, the
+# updater, launchers and launch at login carry over. Windows still builds
+# the egui client (build.ps1).
+cargo fmt --manifest-path "$native/Cargo.toml" --package caper-linux --package caper-client --package caper-web-player -- --check
+cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-linux --package caper-client
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine
-CAPER_FFMPEG="$ffmpeg_dir/ffmpeg" cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop avif_originals_decode_for_inline_and_spoiler_display -- --ignored
 CAPER_FFMPEG="$ffmpeg_dir/ffmpeg" cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-client iphone_heic_photos_convert_upright_for_upload -- --ignored
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-client native_inference_is_finite_and_owns_fresh_state -- --ignored
-cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-desktop --package caper-client --all-targets --no-deps -- -D warnings
+cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-linux --package caper-client --all-targets --no-deps -- -D warnings
 cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine --all-targets --no-deps -- -D warnings
 # rav1e's assembly halves AVIF photo encode time when NASM is available.
 release_features=()
 if command -v nasm >/dev/null 2>&1; then
   release_features=(--features avif-asm)
 fi
-cargo build --manifest-path "$native/Cargo.toml" --locked --release --package caper-desktop "${release_features[@]}"
-# Link preview players run WebKitGTK in this separate helper, so caper-desktop
-# itself never links GTK/WebKitGTK and starts without them.
+cargo build --manifest-path "$native/Cargo.toml" --locked --release --package caper-linux "${release_features[@]}"
+# Link preview players run WebKitGTK in this separate helper, so Caper itself
+# never links WebKitGTK and starts without it.
 cargo build --manifest-path "$native/Cargo.toml" --locked --release --package caper-web-player --features engine
-if ldd "$CARGO_TARGET_DIR/release/caper-desktop" | grep -E 'lib(gtk-3|webkit2gtk|javascriptcoregtk|soup-3)'; then
-  echo "caper-desktop must not link GTK or WebKitGTK; only caper-web-player does." >&2
+if ldd "$CARGO_TARGET_DIR/release/caper-linux" | grep -E 'lib(gtk-3|webkit2gtk|javascriptcoregtk|soup-3)'; then
+  echo "caper-linux must not link GTK 3 or WebKitGTK; only caper-web-player does." >&2
   exit 1
 fi
 # The self-updater ships beside the app. Release builds set CAPER_BUILD_NUMBER
@@ -74,7 +77,7 @@ version="0.1.${CAPER_BUILD_NUMBER:-0}"
 package_dir="$native/target/package"
 rm -rf "$native/dist" "$package_dir"
 mkdir -p "$native/dist" "$package_dir/Caper-linux-x64"
-install -m 0755 "$CARGO_TARGET_DIR/release/caper-desktop" "$package_dir/Caper-linux-x64/caper-desktop"
+install -m 0755 "$CARGO_TARGET_DIR/release/caper-linux" "$package_dir/Caper-linux-x64/caper-desktop"
 install -m 0755 "$CARGO_TARGET_DIR/release/caper-updater" "$package_dir/Caper-linux-x64/caper-updater"
 install -m 0755 "$CARGO_TARGET_DIR/release/caper-web-player" "$package_dir/Caper-linux-x64/caper-web-player"
 install -m 0644 "$root/LICENSE" "$native/README.md" "$native/THIRD-PARTY-NOTICES.md" "$package_dir/Caper-linux-x64/"
@@ -94,7 +97,7 @@ tar -C "$package_dir" -czf "$native/dist/Caper-linux-x64.tar.gz" Caper-linux-x64
 
 deb="$package_dir/deb"
 mkdir -p "$deb/DEBIAN" "$deb/usr/bin" "$deb/usr/lib/caper-desktop" "$deb/usr/share/applications" "$deb/usr/share/icons/hicolor/scalable/apps" "$deb/usr/share/doc/caper-desktop"
-install -m 0755 "$CARGO_TARGET_DIR/release/caper-desktop" "$deb/usr/bin/caper-desktop"
+install -m 0755 "$CARGO_TARGET_DIR/release/caper-linux" "$deb/usr/bin/caper-desktop"
 install -m 0755 "$CAPER_ONNXRUNTIME_LIBRARY" "$deb/usr/lib/caper-desktop/"
 # Only checks for updates here: /usr needs root, so the app links to the download.
 install -m 0755 "$CARGO_TARGET_DIR/release/caper-updater" "$deb/usr/lib/caper-desktop/caper-updater"
@@ -122,7 +125,7 @@ Priority: optional
 Architecture: amd64
 Installed-Size: $size
 Maintainer: Caper <noreply@caper.chat>
-Depends: libc6 (>= 2.39), libgcc-s1, libstdc++6, libdbus-1-3, libwayland-client0, libx11-6, libxkbcommon0, libxkbcommon-x11-0, libpulse0, libasound2, libvulkan1 | libgl1, libwebkit2gtk-4.1-0
+Depends: libc6 (>= 2.39), libgcc-s1, libstdc++6, libdbus-1-3, libgtk-4-1 (>= 4.8), libpulse0, libasound2t64 | libasound2, libwebkit2gtk-4.1-0
 Recommends: gnome-keyring, xdg-desktop-portal, gstreamer1.0-libav, gstreamer1.0-plugins-bad
 Description: Native Caper conversation client
  A browser-free client for Caper spaces, text, and experimental voice.

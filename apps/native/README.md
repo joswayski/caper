@@ -7,27 +7,27 @@ local HTTP server, Tauri, or Electron; the website remains available.
 | --- | --- | --- |
 | macOS | Swift / SwiftUI with AppKit / URLSession | [Apple](apple/README.md) |
 | iPhone | Swift / SwiftUI with UIKit / URLSession | [Apple](apple/README.md) |
-| Windows, Linux | Rust / egui + wgpu / native HTTP and WebSocket | [Desktop](desktop/README.md) |
+| Windows | Rust / egui + wgpu / native HTTP and WebSocket | [Desktop](desktop/README.md) |
+| Linux | Rust / GTK 4 / native HTTP and WebSocket | `linux/` (below) |
 | Android | Kotlin / Android Compose / native HTTP and WebSocket | [Android](android/README.md) |
 
-egui/wgpu is a compiled, shared renderer for Windows/Linux, not a WebView or
-system widgets. Apple and Android have separate native UI implementations. All
+egui/wgpu is a compiled renderer that draws its own widgets, not a WebView;
+it still builds on Linux for development, but Linux packages carry GTK. Apple and Android have separate native UI implementations. All
 clients talk directly to the same Caper API. No server or Cloudflare credentials
 belong in an app.
 
-`linux/` (package `caper-linux`) is a GTK 4 Linux client in development, built on
-the shared `client/` core: sign-in and sign-out, spaces, channels (joining),
-DMs, members with presence, unread badges, typing, the message list with
-avatars, reactions, replies, edit/delete/pin and a thread pane, the
-composer, `caper://` invite links, and link preview players (in the
-`caper-web-player` helper's own window). It is not released; run it with `cargo run -p caper-linux` from
-`desktop/` (`CAPER_API_URL` or `--api-url` picks the server). The nightly Linux
-GTK job packages a tester tarball with `linux/package.sh` (artifact
-`caper-linux-x64-<sha>`, kept 14 days): unpack it and run `install.sh` to
-install it for your user in `~/.local` (`--uninstall` removes it). It needs GTK
-4.8 or later. The job installs that tarball and runs `linux/smoke.py`, which
-drives the app through AT-SPI under Xvfb against the parity fixture
-(`scripts/native-parity-fixture.mjs`).
+`linux/` (package `caper-linux`) is the Linux client, in GTK 4 on the shared
+`client/` core. `desktop/build.sh` builds it into the Linux release packages
+under the egui client's name and layout (`caper-desktop` beside
+`caper-updater`, FFmpeg, ONNX Runtime and `caper-web-player`), so existing
+installs, saved sessions, launch at login, `caper://` links and self-updates
+carry over. Run it with `cargo run -p caper-linux` from `desktop/`
+(`CAPER_API_URL` or `--api-url` picks the server). It needs GTK 4.8 or later.
+The nightly Linux GTK job also packages a tester tarball with
+`linux/package.sh` (artifact `caper-linux-x64-<sha>`, kept 14 days; `install.sh`
+installs it for your user in `~/.local`, `--uninstall` removes it), installs it
+and runs `linux/smoke.py`, which drives the app through AT-SPI under Xvfb
+against the parity fixture (`scripts/native-parity-fixture.mjs`).
 
 ## Shared behavior
 

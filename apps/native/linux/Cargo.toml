@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
-description = "Caper's native Linux client (GTK 4), in development and not shipped"
+description = "Caper's native Linux client (GTK 4)"
 publish = false
 # A member of the desktop workspace (../desktop/Cargo.toml), like ../client.
 workspace = "../desktop"
@@ -30,6 +30,11 @@ gtk = { package = "gtk4", version = "0.11.5", features = ["v4_8"] }
 uuid = { version = "1.18", features = ["v4"] }
 # Saved preferences (src/prefs.rs).
 serde_json = "1.0"
+
+[features]
+# rav1e's x86-64 assembly for AVIF photo encoding (needs NASM at build time);
+# release builds enable it, as for egui.
+avif-asm = ["caper-client/avif-asm"]
 
 [lints.rust]
 unsafe_code = "forbid"

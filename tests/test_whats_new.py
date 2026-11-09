@@ -316,7 +316,7 @@ class HighlightsTests(unittest.TestCase):
             "highlights": [
                 highlight([shared], PLATFORMS[1:]),
                 highlight([ios], ["ios"], "iPhone controls", "Clearer controls on iPhone."),
-                highlight([newest], ["windows", "linux"], "Desktop controls", "Clearer controls on desktop."),
+                highlight([newest], ["windows"], "Desktop controls", "Clearer controls on desktop."),
             ]
         }
         result = self.generate(newest, "native")

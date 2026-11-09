@@ -7,4 +7,5 @@ Icon=caper
 Terminal=false
 Categories=Network;Chat;
 StartupNotify=true
+StartupWMClass=chat.caper.linux
 MimeType=x-scheme-handler/caper;

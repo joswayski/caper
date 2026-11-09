@@ -1,5 +1,5 @@
-//! Caper's native Linux client, in GTK 4. In development: it is not part of
-//! any release or package yet.
+//! Caper's native Linux client, in GTK 4. `apps/native/desktop/build.sh`
+//! ships it in the Linux release packages as `caper-desktop`.
 
 mod app;
 mod composing;
