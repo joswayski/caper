@@ -34502,10 +34502,10 @@ mod tests {
                 })
                 .expect("composer outline");
             // egui expands paint clipping by a few points for antialiasing. The
-            // 12-point gap also holds the reserved 20-point typing row and its
-            // 4-point spacing, so typing never moves the history.
+            // gap is the reserved 16-point typing row and the composer's 4-point
+            // top padding, so typing never moves the history.
             assert!(
-                (input_top - timeline_bottom - 36.0).abs() < 4.0,
+                (input_top - timeline_bottom - 20.0).abs() < 4.0,
                 "keep a gap between history and the input: {input_top} vs {timeline_bottom}"
             );
             text_position(output, newest)
