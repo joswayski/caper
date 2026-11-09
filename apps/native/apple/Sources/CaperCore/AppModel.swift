@@ -610,7 +610,7 @@ public final class AppModel {
 
     /// Input anywhere in the app: this device was used just now (see `InputActivity`).
     private func reportInput() {
-        let gateway = gateway, profileGateway = profileGateway
+        let gateway = self.gateway, profileGateway = self.profileGateway
         Task { await gateway.reportActivity(); await profileGateway.reportActivity() }
         #if os(macOS)
         desktopNotifications.reportActivity()
