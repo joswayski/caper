@@ -13,6 +13,16 @@ pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
     label
 }
 
+/// The composer's lip: a non-interactive shade over the bottom of a message
+/// history, where it meets the composer. It takes no layout space.
+fn composer_lip() -> gtk::Box {
+    let lip = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    lip.add_css_class("composer-lip");
+    lip.set_valign(gtk::Align::End);
+    lip.set_can_target(false);
+    lip
+}
+
 /// A message field: a `GtkTextView` with a placeholder. As desktop and web on
 /// a keyboard, Enter sends; the channel's composer has no Send button. A
 /// thread's composer, as desktop's, puts "Also send to" on its own row and
@@ -984,6 +994,7 @@ impl Ui {
         let list_overlay = gtk::Overlay::new();
         list_overlay.set_child(Some(&list.scroller));
         list_overlay.add_overlay(&empty);
+        list_overlay.add_overlay(&composer_lip());
         conversation.append(&list_overlay);
         let newer_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         newer_bar.add_css_class("newer-bar");
@@ -1147,7 +1158,10 @@ impl Ui {
         thread_header.append(&thread_close);
         thread_panel.append(&thread_header);
         let thread_list = List::new("Thread", images, thread_rows, 0);
-        thread_panel.append(&thread_list.scroller);
+        let thread_overlay = gtk::Overlay::new();
+        thread_overlay.set_child(Some(&thread_list.scroller));
+        thread_overlay.add_overlay(&composer_lip());
+        thread_panel.append(&thread_overlay);
         let thread_error = label("", &["error", "composer-error"]);
         thread_error.set_wrap(true);
         thread_panel.append(&thread_error);

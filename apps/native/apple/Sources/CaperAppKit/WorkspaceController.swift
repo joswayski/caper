@@ -77,6 +77,7 @@ import CaperCore
     }
     private lazy var stage = AppKitFileDropView(model: model, inThread: inThread)
     private let timeline = MessageTimeline(frame: .zero)
+    private let lip = AppKitComposerLip()
     private let header = NativeStyle.label("", size: 16, bold: true)
     private let status = NativeStyle.label("", size: 12)
     private let composer = ComposerTextView()
@@ -165,7 +166,7 @@ import CaperCore
         if inThread { view.addSubview(stage) }
         else { [navigation, stage, members, threadDivider, membersResize, sidebarResize].forEach { view.addSubview($0) } }
         if inThread { view.setAccessibilityIdentifier("thread-pane") }
-        [timeline, header, browse, pinsButton, membersToggle, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
+        [timeline, lip, header, browse, pinsButton, membersToggle, back, broadcast, newer, latest, status, retry, editRejected, attachmentScroll, attach, composerScroll, emoji, gif, voiceComposer.button, voiceComposer.bar, send, counter, join, directBar, suggestions].forEach { stage.addSubview($0) }
         browse.setAccessibilityIdentifier("open-navigation")
         pinsButton.setAccessibilityIdentifier("channel-pins")
         pinsButton.isHidden = inThread
@@ -557,13 +558,18 @@ import CaperCore
         let quoteBottom = attachmentScroll.frame.minY - (trayHeight > 0 ? 8 : 0)
         replyDraft?.frame = NSRect(x: 20, y: quoteBottom - quoteHeight, width: center - 40, height: quoteHeight)
         let recoveryHeight: CGFloat = editRejected.isHidden ? 0 : 34
-        let statusY = directBar.isHidden ? quoteBottom - quoteHeight - recoveryHeight - 30 : height - max(138, directBar.preferredHeight(width: center - 40) + 32) + 6
+        // A channel's typing row is 16pt with 4pt under it, as web; a thread, or a row
+        // holding Retry, keeps the 24pt row.
+        let roomyStatus = inThread || !retry.isHidden
+        let statusHeight: CGFloat = roomyStatus ? 24 : 16
+        let statusY = directBar.isHidden ? quoteBottom - quoteHeight - recoveryHeight - (roomyStatus ? 30 : 20) : height - max(138, directBar.preferredHeight(width: center - 40) + 32) + 6
         let top: CGFloat = newer.isHidden && latest.isHidden ? 48 : 88
         timeline.frame = NSRect(x: 0, y: top, width: center, height: max(0, statusY - 6 - top))
+        lip.frame = NSRect(x: 0, y: max(top, timeline.frame.maxY - 12), width: center, height: min(12, timeline.frame.height))
         let historyWidth = max(0, (center - 48) / 2)
         newer.frame = NSRect(x: 20, y: 52, width: min(150, historyWidth), height: 28)
         latest.frame = NSRect(x: center - 20 - min(110, historyWidth), y: 52, width: min(110, historyWidth), height: 28)
-        status.frame = NSRect(x: 20, y: statusY, width: center - (retry.isHidden ? 40 : 116), height: 24)
+        status.frame = NSRect(x: 20, y: statusY, width: center - (retry.isHidden ? 40 : 116), height: statusHeight)
         directBar.frame = NSRect(x: 20, y: status.frame.maxY, width: center - 40, height: max(0, height - status.frame.maxY - 8))
         attach.frame = NSRect(x: 16, y: base - (stackedActions ? 114 : 72), width: 38, height: 42)
         send.frame = NSRect(x: center - 56, y: base - 70, width: 36, height: 38)
@@ -970,4 +976,21 @@ import CaperCore
             await model.chat.send(inThread: inThread)
         }
     }
+}
+
+/// The composer's lip, as SwiftUI's ComposerLip: a 12pt shade over the bottom
+/// of the timeline, black at 28% along the bottom edge fading out upward. It
+/// takes no clicks.
+private final class AppKitComposerLip: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        let gradient = CAGradientLayer()
+        // Unflipped: the gradient runs from the bottom edge up.
+        gradient.colors = [NSColor.black.withAlphaComponent(0.28).cgColor, NSColor.black.withAlphaComponent(0).cgColor]
+        layer = gradient
+        wantsLayer = true
+        setAccessibilityElement(false)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

@@ -481,8 +481,18 @@ impl ReplyBar {
     fn draw(&self, g: &Gfx, dc: &ID2D1DeviceContext, w: f32) {
         unsafe {
             dc.Clear(Some(&D2D1_COLOR_F::default()));
-            dc.FillRectangle(&rect(0.0, 0.0, 2.0, self.height), &g.brushes.terracotta);
         }
+        // A card: 1px border, 8px corners, 3% white over the conversation,
+        // and a 2px terracotta accent along its rounded left edge.
+        let h = self.height;
+        fill_round(dc, rect(0.0, 0.0, w, h), 8.0, &g.brushes.terracotta);
+        fill_round(dc, rect(2.0, 0.0, w, h), 8.0, &g.brushes.border);
+        fill_round(
+            dc,
+            rect(3.0, 1.0, w - 1.0, h - 1.0),
+            7.0,
+            &g.solid(0x20282A),
+        );
         crate::text::draw(dc, &self.name, 10.0, 8.0, &g.brushes.muted);
         if let Some(t) = &self.text {
             let y = 8.0 + gfx::metrics(&self.name).height + 3.0;

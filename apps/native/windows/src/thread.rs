@@ -302,6 +302,10 @@ impl Pane {
         }
         let result = self.draw_history(g, dc, vh);
         unsafe { dc.PopAxisAlignedClip() };
+        // The composer's lip over the history's bottom, inside the leading separator.
+        if vh > LIP_H {
+            crate::draw_lip(dc, 1.0, HEADER_H + vh - LIP_H, w - 1.0);
+        }
         result?;
         // "Also send to #channel" in its own row above the box.
         let check_y = h - 16.0 - self.box_h - 8.0 - CHECK_H;

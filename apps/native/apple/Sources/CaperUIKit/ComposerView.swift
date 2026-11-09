@@ -528,6 +528,35 @@ final class HostedView: UIView {
     }
 }
 
+/// The composer's lip, as SwiftUI's ComposerLip: a 12pt shade over the bottom
+/// of a timeline, black at 28% along the bottom edge fading out upward. It
+/// takes no layout space and no touches.
+final class ComposerLipView: UIView {
+    override class var layerClass: AnyClass { CAGradientLayer.self }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let gradient = layer as! CAGradientLayer
+        gradient.colors = [UIColor.black.withAlphaComponent(0).cgColor, UIColor.black.withAlphaComponent(0.28).cgColor]
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Lays a lip over the bottom of `timeline`, inside `container`.
+    static func attach(to timeline: UIView, in container: UIView) {
+        let lip = ComposerLipView()
+        container.addSubview(lip)
+        NSLayoutConstraint.activate([
+            lip.leadingAnchor.constraint(equalTo: timeline.leadingAnchor),
+            lip.trailingAnchor.constraint(equalTo: timeline.trailingAnchor),
+            lip.bottomAnchor.constraint(equalTo: timeline.bottomAnchor),
+            lip.heightAnchor.constraint(equalToConstant: 12),
+        ])
+    }
+}
+
 /// "Maya is typing…" above the composer, after three bouncing dots like web's
 /// keyframes: up and back over the first 60% of a 1.2 s cycle, each dot 0.15 s
 /// behind the last. Core Animation runs it off the main thread; Reduce Motion
@@ -557,10 +586,10 @@ final class TypingIndicatorView: UIView {
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 20),
+            heightAnchor.constraint(equalToConstant: 16),
             row.leadingAnchor.constraint(equalTo: leadingAnchor),
             row.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
-            row.centerYAnchor.constraint(equalTo: topAnchor, constant: 10),
+            row.centerYAnchor.constraint(equalTo: topAnchor, constant: 8),
         ])
         accessibilityIdentifier = "typing-indicator"
         isHidden = true

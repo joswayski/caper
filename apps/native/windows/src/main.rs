@@ -328,6 +328,8 @@ pub struct App {
     /// text and height.
     pub note: Option<(String, f32)>,
     note_p: Panel,
+    /// The composer's lip: a shade over the bottom of the history.
+    lip_p: Panel,
     tool_hover: Option<usize>,
     bar_drawn: Option<actions::BarKey>,
     /// The history's head needs drawing; the pointer is on its button;
@@ -393,6 +395,7 @@ impl App {
             let empty_p = Panel::new(&g)?;
             let reply_p = Panel::new(&g)?;
             let note_p = Panel::new(&g)?;
+            let lip_p = Panel::new(&g)?;
             let thread_p = Panel::new(&g)?;
             let thread_box_p = Panel::new(&g)?;
             let card_p = Panel::new(&g)?;
@@ -409,6 +412,7 @@ impl App {
             content.SetContent(&vs)?;
             history_clip.AddVisual(&content, false, None)?;
             history_clip.AddVisual(&toolbar.visual, true, &content)?;
+            history_clip.AddVisual(&lip_p.visual, true, &content)?;
             root.AddVisual(&background, false, None)?;
             let mut prev: IDCompositionVisual = background.cast()?;
             for v in [
@@ -524,6 +528,7 @@ impl App {
                 reply_p,
                 note: None,
                 note_p,
+                lip_p,
                 tool_hover: None,
                 bar_drawn: None,
                 redraw_head: false,
@@ -929,7 +934,8 @@ impl App {
 
     /// Height of the visible history.
     pub fn vh(&self) -> f32 {
-        (self.box_rect().1 - 10.0 - HEADER_H - self.reply_h() - self.note_h()).max(0.0)
+        // 4px above the composer (and its reply), as web's channel composer.
+        (self.box_rect().1 - 4.0 - HEADER_H - self.reply_h() - self.note_h()).max(0.0)
     }
 
     pub fn visible_rows(&self) -> Range<usize> {
@@ -2497,6 +2503,14 @@ impl App {
             self.history_clip
                 .SetClip2(&rect(0.0, 0.0, (lw * s).round(), (vh * s).round()))?;
         }
+        if self.lip_p.ensure(&self.g, px(lw), px(LIP_H))? {
+            self.lip_p.draw(s, |dc| {
+                unsafe { dc.Clear(Some(&gfx::color(0x000000, 0.0))) };
+                draw_lip(dc, 0.0, 0.0, lw);
+                Ok(())
+            })?;
+        }
+        self.lip_p.offset(0.0, ((vh - LIP_H) * s).round())?;
         let body = Rows::body_width(lw);
         if (body - self.rows.width).abs() > 0.01 {
             // Text rewraps: keep the top visible row in place unless at the live end.
@@ -3365,6 +3379,25 @@ impl App {
         }
         self.bench.log_frame(started.elapsed());
         Ok(())
+    }
+}
+
+/// The composer's lip, `LIP_H` tall from `y` and `w` wide: black at 28%
+/// along its bottom edge (the composer's top), fading to transparent upward.
+pub fn draw_lip(dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32) {
+    const STEPS: usize = 24;
+    let step = LIP_H / STEPS as f32;
+    unsafe {
+        let Ok(brush) = dc.CreateSolidColorBrush(&gfx::color(0x000000, 1.0), None) else {
+            return;
+        };
+        for i in 0..STEPS {
+            // Strip i runs from the top; its opacity is taken at its middle.
+            let opacity = 0.28 * (i as f32 + 0.5) / STEPS as f32;
+            brush.SetOpacity(opacity);
+            let top = y + i as f32 * step;
+            dc.FillRectangle(&rect(x, top, x + w, top + step), &brush);
+        }
     }
 }
 

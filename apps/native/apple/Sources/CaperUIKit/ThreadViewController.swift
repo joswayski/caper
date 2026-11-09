@@ -232,6 +232,7 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
             broadcast.trailingAnchor.constraint(equalTo: broadcastRow.trailingAnchor, constant: -18),
             broadcast.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
+        ComposerLipView.attach(to: collection, in: view)
         // As SwiftUI's ThreadBackSwipe: a swipe right from anywhere follows
         // the finger back to the channel.
         let swipeBack = DirectionalSwipe(direction: 1)

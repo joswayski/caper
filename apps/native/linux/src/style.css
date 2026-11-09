@@ -684,16 +684,24 @@ popover.emoji-picker image.mine {
   color: @caper_text_muted;
   font-size: 12px;
   padding: 0 22px;
-  min-height: 18px;
+  min-height: 16px;
 }
 
+/* "Replying to …" as a card: 3% white over the conversation, with a
+   terracotta accent along its rounded left edge. */
 .compose-bar {
   margin: 0 20px;
   padding: 4px 4px 4px 12px;
   border: 1px solid @caper_border;
-  border-bottom: none;
-  border-radius: 8px 8px 0 0;
-  background: @caper_surface;
+  border-left: 2px solid @caper_terracotta;
+  border-radius: 8px;
+  background: #20282a;
+}
+
+/* The composer's lip: a 12px shade over the bottom of the history. */
+.composer-lip {
+  min-height: 12px;
+  background: linear-gradient(to top, alpha(black, 0.28), transparent);
 }
 
 .join-bar {

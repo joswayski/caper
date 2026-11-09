@@ -366,6 +366,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             typing.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -18),
             typing.topAnchor.constraint(equalTo: notices.view.bottomAnchor),
         ])
+        ComposerLipView.attach(to: collection, in: view)
     }
 
     private func buildComposer() {

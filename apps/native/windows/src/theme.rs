@@ -31,6 +31,8 @@ pub const RAIL_W: f32 = 60.0;
 pub const SIDEBAR_W: f32 = 280.0;
 pub const MEMBERS_W: f32 = 220.0;
 pub const HEADER_H: f32 = 54.0;
+/// The composer's lip over the bottom of a message history.
+pub const LIP_H: f32 = 12.0;
 pub const SECTION_TOP: f32 = 66.0;
 pub const CHANNEL_TOP: f32 = 96.0;
 pub const CHANNEL_H: f32 = 32.0;
