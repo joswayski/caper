@@ -731,6 +731,21 @@ impl Rows {
             .collect()
     }
 
+    /// Row `i`'s link preview picture `p` of card `c`, relative to the
+    /// row's top-left.
+    pub fn embed_picture(
+        &self,
+        i: usize,
+        grouped: bool,
+        c: usize,
+        p: usize,
+    ) -> Option<Common::D2D_RECT_F> {
+        let row = self.row(i)?;
+        let r = crate::embeds::picture_rect(&row.embeds, c, p)?;
+        let (dx, dy) = (BODY_X, content_top(grouped) + row.embeds_y);
+        Some(rect(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy))
+    }
+
     /// Row `i`'s attachment `k` relative to the row's top-left.
     pub fn file_rect(&self, i: usize, grouped: bool, k: usize) -> Option<Common::D2D_RECT_F> {
         let row = self.row(i)?;
@@ -1096,7 +1111,7 @@ pub fn draw_row(
             )?;
         }
         if !row.embeds.cards.is_empty() {
-            crate::embeds::draw(g, dc, &row.embeds, files, BODY_X, top + row.embeds_y)?;
+            crate::embeds::draw(g, dc, &row.embeds, files, i, BODY_X, top + row.embeds_y)?;
         }
         if let Some((l, _, _)) = &row.error {
             crate::text::draw(dc, l, BODY_X, top + row.error_y + 3.0, &g.brushes.error);

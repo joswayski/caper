@@ -964,10 +964,13 @@ name = "caper-windows"
 version = "0.1.0"
 dependencies = [
  "caper-client",
+ "caper-web-player",
  "chrono",
  "image",
+ "raw-window-handle",
  "serde",
  "serde_json",
+ "url",
  "uuid",
  "windows 0.62.2",
  "windows-core 0.62.2",

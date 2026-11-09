@@ -324,6 +324,8 @@ pub struct Ctx<'a> {
     pub animated: Vec<usize>,
     /// The voice message loaded, as its card shows it.
     pub voice: Option<crate::playback::View>,
+    /// The link preview player that is playing: its row, card and picture.
+    pub web_player: Option<(usize, usize, usize)>,
 }
 
 impl<'a> Ctx<'a> {
@@ -339,6 +341,7 @@ impl<'a> Ctx<'a> {
             next: None,
             animated: Vec::new(),
             voice: None,
+            web_player: None,
         }
     }
 }

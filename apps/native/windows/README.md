@@ -19,9 +19,17 @@ file" dialog), by dropping them on the window or by pasting copied files or
 a picture; each uploads at once and the message waits for them. Clicking an
 image or video opens the in-app media viewer with the rest of the message's
 media (arrows or Left/Right; wheel or double-click zoom, drag to pan; Open
-in browser and Copy image; videos play with play/pause, seek and mute
-through the bundled FFmpeg). A link preview's images open there too; its
-videos and players open in the browser.
+in browser, Save, Copy image and Copy media link; videos play with
+play/pause, seek and mute through the bundled FFmpeg). A link preview's
+images and direct videos open there too. Its YouTube, Vimeo and Twitch
+players play Caper's `play` page in WebView2 over the card, as the egui
+client does (`src/web_player.rs`): one at a time, hidden with the poster
+marked "Playing" while a menu, dialog or the viewer covers it or it is
+scrolled partly out of view, and closed by another Play, a conversation
+change or its card staying out of view. Without the WebView2 runtime, Play
+opens the card's link in the browser. Debug builds load the `play` page from
+`CAPER_DEV_PLAY_ORIGIN` (`http://127.0.0.1:PORT`), such as the parity
+fixture's stand-in.
 
 ## How it draws
 

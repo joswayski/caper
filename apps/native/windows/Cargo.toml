@@ -13,6 +13,10 @@ workspace = "../desktop"
 
 [dependencies]
 caper-client = { path = "../client" }
+# Link preview players: egui's WebView2 configuration and play-page rules.
+caper-web-player = { path = "../desktop/web-player", features = ["engine"] }
+raw-window-handle = "0.6"
+url = "2.5"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Pasted pictures: a clipboard DIB becomes the PNG that is uploaded.
 image = { version = "0.25.10", default-features = false, features = ["png", "bmp"] }

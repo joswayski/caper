@@ -2646,7 +2646,10 @@ in the system browser. Without WebKitGTK or the WebView2 runtime the card says
 what to install and offers the browser. The GTK Linux client in development
 starts the same helper in its own-window mode on X11 and Wayland alike: Play
 again raises it, and another Play, a conversation change or quit closes it;
-without the helper or WebKitGTK, Play opens the link in the browser. Desktop GIF-style videos play on click
+without the helper or WebKitGTK, Play opens the link in the browser. The Win32
+Windows client in development places WebView2 over the card the same way (hidden
+under its menus, dialogs and viewer); without the WebView2 runtime, Play opens the
+link in the browser. Desktop GIF-style videos play on click
 rather than looping inline. Linux YouTube playback needs
 `gstreamer1.0-libav`/`-plugins-bad`.
 

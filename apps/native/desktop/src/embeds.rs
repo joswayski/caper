@@ -22,11 +22,11 @@ use std::time::Instant;
 
 pub use caper_client::embeds::PREVIEW_DEBOUNCE;
 pub use caper_client::embeds::footer_line;
-use caper_client::embeds::{heading, image_files, key};
+use caper_client::embeds::{heading, image_files, key, video_file};
 use eframe::egui::{self, Color32, CornerRadius, Stroke};
 
 use crate::attachments::{ImageState, Media};
-use crate::model::{Attachment, AttachmentKind, AttachmentStatus, Embed, EmbedBlock, EmbedImage};
+use crate::model::{Attachment, Embed, EmbedBlock, EmbedImage};
 use crate::web_player::{self, WebPlayer};
 use crate::{
     ACTION, ACTION_HOVER, BORDER, MUTED, NavIcon, ON_ACTION, RAISED, SURFACE, TEXT, motion,
@@ -65,47 +65,6 @@ pub fn play_target(embed: &Embed, play: Option<&str>) -> String {
 /// A link that may open externally: http(s) only, as message links.
 fn openable(url: &str) -> bool {
     caper_web_player::openable(url)
-}
-
-/// A direct video as a viewer file; its poster shares the inline tile's
-/// texture (both use the video's id).
-fn video_file(block: &EmbedBlock, name: &str) -> Option<Attachment> {
-    let EmbedBlock::Video {
-        url,
-        poster,
-        width,
-        height,
-        duration_ms,
-        gif,
-    } = block
-    else {
-        return None;
-    };
-    Some(Attachment {
-        id: key(url),
-        spoiler: false,
-        voice: false,
-        waveform: None,
-        transcript: None,
-        kind: AttachmentKind::Video,
-        content_type: if url.to_ascii_lowercase().contains(".webm") {
-            "video/webm"
-        } else {
-            "video/mp4"
-        }
-        .into(),
-        name: name.into(),
-        size: 0,
-        width: *width,
-        height: *height,
-        duration_ms: *duration_ms,
-        preview: poster.is_some(),
-        url: Some(url.clone()),
-        preview_url: poster.clone(),
-        unavailable: false,
-        status: AttachmentStatus::Ready,
-        animated: *gif,
-    })
 }
 
 /// The card's name for players, viewers and screen readers: its title, else

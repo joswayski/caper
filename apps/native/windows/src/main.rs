@@ -56,6 +56,7 @@ mod uia;
 mod uploads;
 mod versions;
 mod viewer;
+mod web_player;
 
 use bench::{Action, Bench};
 use composer::Composer;
@@ -307,6 +308,8 @@ pub struct App {
     pub attachment_editor: Option<attachment_editor::Editor>,
     /// The media viewer over the conversation, and its media's panel.
     pub viewer: Option<viewer::Viewer>,
+    /// The link preview player that is playing (`web_player`).
+    pub web_player: Option<web_player::Player>,
     viewer_p: Panel,
     /// Files handed to another app must outlive the editor and its draft.
     opened_attachments: Vec<std::sync::Arc<caper_client::uploads::Scratch>>,
@@ -370,7 +373,8 @@ pub struct App {
 impl App {
     fn new(hwnd: HWND, g: Gfx, c: Conversation, bench: Bench) -> Result<Self> {
         unsafe {
-            let target = g.dcomp.CreateTargetForHwnd(hwnd, true)?;
+            // Below child windows: the link preview player shows above it.
+            let target = g.dcomp.CreateTargetForHwnd(hwnd, false)?;
             let root = g.visual()?;
             root.SetBorderMode(DCOMPOSITION_BORDER_MODE_HARD)?;
             target.SetRoot(&root)?;
@@ -520,6 +524,7 @@ impl App {
                 dialog: None,
                 attachment_editor: None,
                 viewer: None,
+                web_player: None,
                 viewer_p,
                 opened_attachments: Vec::new(),
                 menu_p,
@@ -640,6 +645,7 @@ impl App {
             match u {
                 live::Update::SignedOut(warning) => {
                     self.close_viewer();
+                    self.stop_web_player();
                     if let Some(s) = &mut self.signin {
                         s.restoring = false;
                         s.error = warning;
@@ -1569,6 +1575,12 @@ impl App {
         {
             live.active();
         }
+        // A click Caper saw was outside the player: keys come back here.
+        if matches!(msg, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN)
+            && let Some(player) = &self.web_player
+        {
+            player.blur();
+        }
         if (self.attachment_editor.is_some() || self.viewer.is_some()) && msg == WM_DROPFILES {
             unsafe {
                 windows::Win32::UI::Shell::DragFinish(windows::Win32::UI::Shell::HDROP(wp.0 as _));
@@ -1668,6 +1680,7 @@ impl App {
                 TIMER_MEDIA => self.next_gif_frame(),
                 viewer::TIMER_VIEWER => self.viewer_tick(),
                 TIMER_MUTE => self.mutes_changed(),
+                web_player::TIMER_WEB_PLAYER => self.need = true,
                 // The call's running time.
                 call::TIMER_CALL => {
                     self.dirty.sidebar = true;
@@ -2631,10 +2644,12 @@ impl App {
             .and_then(|id| self.ids.rows.get(id).copied());
         let kb = self.kb_control();
         let voice = self.voice_message_view();
+        let web_player = self.web_player_spot();
         let (g, c, rows) = (&self.g, &self.c, &mut self.rows);
         let mut tex = files::D2d(g.dc.clone());
         let mut media = self.live.as_mut().map(|l| files::Ctx {
             voice,
+            web_player,
             ..files::Ctx::new(&mut l.media, &mut tex)
         });
         let result = gfx::draw_local(&self.vs, r, s, |dc| unsafe {
@@ -3390,6 +3405,7 @@ impl App {
         self.draw_card()?;
         self.draw_panels()?;
         unsafe { self.g.dcomp.Commit()? };
+        self.place_web_player();
         if let Some(live) = &mut self.live {
             // Renews the worker's lease on the open conversation while focused.
             live.showing(unsafe { GetForegroundWindow() } == self.hwnd);
@@ -3492,6 +3508,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 return DefWindowProcW(hwnd, msg, wp, lp);
             }
             WM_DESTROY => {
+                // The player's child window goes with ours.
+                with_app(|a| a.web_player = None);
                 let _ = UiaReturnRawElementProvider(hwnd, WPARAM(0), LPARAM(0), None);
                 PostQuitMessage(0);
                 return LRESULT(0);
@@ -3664,11 +3682,18 @@ fn main() -> Result<()> {
                     a.quit,
                     a.pending_resize.take(),
                     std::mem::take(&mut a.events),
+                    a.web_player_to_start(),
                 )
             });
-            let Some((rendered, quit, resize, events)) = state else {
+            let Some((rendered, quit, resize, events, player)) = state else {
                 continue;
             };
+            if let Some(page) = player {
+                // WebView2 pumps window messages while it starts, so the app
+                // is not borrowed meanwhile.
+                let view = web_player::create(hwnd, &page);
+                with_app(|a| a.web_player_started(&page, view));
+            }
             if let Some((w, h)) = resize {
                 resize_window(hwnd, w, h);
             }

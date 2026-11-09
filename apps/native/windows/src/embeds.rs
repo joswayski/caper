@@ -7,13 +7,17 @@
 //! Every string is plain text. Images and posters are unsigned and load
 //! through the shared media cache under `caper_client::embeds::key`. A
 //! card's images open in the media viewer (`viewer`) with the rest of their
-//! block; there is no web player or in-app embed video yet, so videos and
-//! players open in the browser (a player opens the card's link).
+//! block, and a direct video plays there. A player (YouTube, Vimeo, Twitch)
+//! plays Caper's `play` page in WebView2 over its box (`web_player`); its
+//! poster stays underneath, marked "Playing". Without a Caper `play` page or
+//! the WebView2 runtime, Play opens the card's link in the browser.
 use crate::files::{Ctx, alpha, cover};
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::icons::{self, Icon};
 use crate::theme::*;
-use caper_client::embeds::{fit, fit_within, footer_line, gallery, heading, image_files, key};
+use caper_client::embeds::{
+    fit, fit_within, footer_line, gallery, heading, image_files, key, video_file,
+};
 use caper_client::media::ImageState;
 use caper_client::model::{Embed, EmbedBlock};
 use windows::Win32::Graphics::Direct2D::Common::*;
@@ -67,6 +71,8 @@ pub struct Picture {
     pub round: bool,
     pub target: Option<String>,
     pub label: String,
+    /// The video or player block it shows, by index in the card's blocks.
+    pub block: Option<usize>,
 }
 
 /// One card's parts, relative to the cards' top-left once placed.
@@ -135,7 +141,7 @@ fn card(g: &Gfx, e: &Embed) -> Result<Card> {
     line(&mut lines, &site, Style::Meta, Some(&e.url))?;
     order.push(Slot::Site);
     let name = heading(e).to_owned();
-    for block in &e.blocks {
+    for (b, block) in e.blocks.iter().enumerate() {
         match block {
             EmbedBlock::Author {
                 name,
@@ -152,6 +158,7 @@ fn card(g: &Gfx, e: &Embed) -> Result<Card> {
                         round: true,
                         target: None,
                         label: String::new(),
+                        block: None,
                     });
                     pictures.len() - 1
                 });
@@ -186,6 +193,7 @@ fn card(g: &Gfx, e: &Embed) -> Result<Card> {
                         round: false,
                         target: openable(&e.url),
                         label: format!("Open {}", image.alt.clone().unwrap_or(name.clone())),
+                        block: None,
                     });
                     order.push(Slot::Thumb(pictures.len() - 1));
                 }
@@ -202,6 +210,7 @@ fn card(g: &Gfx, e: &Embed) -> Result<Card> {
                         round: false,
                         target: openable(&image.url),
                         label: format!("View {}", alt.unwrap_or("image")),
+                        block: None,
                     });
                 }
                 order.push(Slot::Images(first, pictures.len() - first));
@@ -221,6 +230,7 @@ fn card(g: &Gfx, e: &Embed) -> Result<Card> {
                     } else {
                         format!("Play {name}")
                     },
+                    block: Some(b),
                 });
                 order.push(Slot::Media(pictures.len() - 1));
             }
@@ -233,6 +243,7 @@ fn card(g: &Gfx, e: &Embed) -> Result<Card> {
                     round: false,
                     target: openable(&e.url),
                     label: format!("Play {name}"),
+                    block: Some(b),
                 });
                 order.push(Slot::Media(pictures.len() - 1));
             }
@@ -424,6 +435,35 @@ pub fn targets(embeds: &Embeds) -> Vec<(D2D_RECT_F, String, String)> {
     out
 }
 
+/// The picture (card, index) behind clickable part `k` of [`targets`].
+pub fn picture_of(embeds: &Embeds, k: usize) -> Option<(usize, usize)> {
+    let mut parts = embeds.cards.iter().enumerate().flat_map(|(c, card)| {
+        let lines = card
+            .lines
+            .iter()
+            .filter(|l| l.target.is_some())
+            .map(|_| None);
+        let pictures = card
+            .pictures
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.target.is_some())
+            .map(move |(p, _)| Some((c, p)));
+        lines.chain(pictures)
+    });
+    parts.nth(k)?
+}
+
+/// Picture `p` of card `c`, relative to the cards' top-left.
+pub fn picture_rect(embeds: &Embeds, c: usize, p: usize) -> Option<D2D_RECT_F> {
+    let card = embeds.cards.get(c)?;
+    Some(shift(
+        card.pictures.get(p)?.rect,
+        card.rect.left,
+        card.rect.top,
+    ))
+}
+
 fn badge(g: &Gfx, dc: &ID2D1DeviceContext, r: D2D_RECT_F, b: Badge) -> Result<()> {
     let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
     let circle = |radius: f32, brush: &ID2D1Brush| unsafe {
@@ -481,6 +521,7 @@ fn picture(
     p: &Picture,
     ctx: Option<&mut Ctx>,
     r: D2D_RECT_F,
+    playing: bool,
 ) -> Result<()> {
     let radius = if p.round {
         (r.right - r.left) / 2.0
@@ -494,7 +535,23 @@ fn picture(
     {
         cover(dc, bmp, r, radius)?;
     }
-    if let Some(b) = p.badge {
+    if playing {
+        // Seen while the player hides under a menu or at the history's edge.
+        fill_round(dc, r, radius, &alpha(dc, 0, 150.0 / 255.0)?);
+        let l = g.layout(&gfx::wide("Playing"), &g.formats.file_name, 200.0)?;
+        let m = gfx::metrics(&l);
+        let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+        let w = m.widthIncludingTrailingWhitespace + 24.0;
+        let pill = rect(cx - w / 2.0, cy - 14.0, cx + w / 2.0, cy + 14.0);
+        fill_round(dc, pill, RADIUS, &alpha(dc, 0, 200.0 / 255.0)?);
+        crate::text::draw(
+            dc,
+            &l,
+            cx - m.widthIncludingTrailingWhitespace / 2.0,
+            cy - m.height / 2.0,
+            &g.brushes.text,
+        );
+    } else if let Some(b) = p.badge {
         badge(g, dc, r, b)?;
     }
     if !p.round {
@@ -503,16 +560,18 @@ fn picture(
     Ok(())
 }
 
-/// Draws the cards with their top-left at (x, y).
+/// Draws history row `row`'s cards with their top-left at (x, y).
 pub fn draw(
     g: &Gfx,
     dc: &ID2D1DeviceContext,
     embeds: &Embeds,
     mut ctx: Option<&mut Ctx>,
+    row: usize,
     x: f32,
     y: f32,
 ) -> Result<()> {
-    for c in &embeds.cards {
+    let player = ctx.as_ref().and_then(|c| c.web_player);
+    for (ci, c) in embeds.cards.iter().enumerate() {
         let r = shift(c.rect, x, y);
         fill_round(dc, r, RADIUS, &g.brushes.surface);
         stroke_round(dc, r, RADIUS, &g.brushes.border);
@@ -523,8 +582,10 @@ pub fn draw(
             };
             crate::text::draw(dc, &l.layout, r.left + l.x, r.top + l.y, brush);
         }
-        for p in &c.pictures {
-            picture(g, dc, p, ctx.as_deref_mut(), shift(p.rect, r.left, r.top))?;
+        for (pi, p) in c.pictures.iter().enumerate() {
+            let playing = player == Some((row, ci, pi));
+            let at = shift(p.rect, r.left, r.top);
+            picture(g, dc, p, ctx.as_deref_mut(), at, playing)?;
         }
     }
     Ok(())
@@ -580,13 +641,39 @@ impl crate::App {
             .unwrap_or_default()
     }
 
-    /// A click (or UIA Invoke) on a link preview part: an image opens in
-    /// the viewer with the rest of its block, as in egui; anything else
-    /// opens its link.
+    /// A click (or UIA Invoke) on a link preview part, as in egui: an image
+    /// opens in the viewer with the rest of its block, a direct video plays
+    /// there, a player plays over its box; anything else opens its link.
     pub fn embed_activate(&mut self, i: usize, k: usize) {
         let Some((_, target, label)) = self.embed_parts(i).into_iter().nth(k) else {
             return;
         };
+        let picture = self.rows.row(i).and_then(|row| {
+            let (c, p) = picture_of(&row.embeds, k)?;
+            Some((c, p, row.embeds.cards[c].pictures[p].block?))
+        });
+        if let Some((c, p, b)) = picture
+            && let Some(m) = self.c.messages.get(i)
+            && let Some(e) = m.embeds.get(c)
+        {
+            match e.blocks.get(b) {
+                Some(block @ EmbedBlock::Video { .. }) => {
+                    if let Some(file) = video_file(block, heading(e)) {
+                        return self.open_viewer(vec![file], 0);
+                    }
+                }
+                Some(EmbedBlock::Player { play, .. }) => {
+                    let key = crate::web_player::Key {
+                        message: m.id.clone(),
+                        card: c,
+                        picture: p,
+                    };
+                    let (play, fallback) = (play.clone(), e.url.clone());
+                    return self.play_embed(key, play.as_deref(), fallback);
+                }
+                _ => {}
+            }
+        }
         let images = label.starts_with("View ").then(|| {
             self.c.messages.get(i)?.embeds.iter().find_map(|e| {
                 e.blocks.iter().find_map(|b| match b {

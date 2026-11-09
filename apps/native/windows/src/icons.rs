@@ -34,6 +34,7 @@ icons! {
     ChevronRight => "chevron-right.svg",
     Close => "x.svg",
     Copy => "copy.svg",
+    Download => "download.svg",
     Eye => "eye.svg",
     ExternalLink => "external-link.svg",
     EyeOff => "eye-off.svg",

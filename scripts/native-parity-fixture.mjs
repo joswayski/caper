@@ -33,6 +33,32 @@ const ids = fixtureIDs;
 const embedLinks = (text) => [
   ...new Set([...text.matchAll(/(<)?(https?:\/\/[^\s<>]+)(>)?/giu)].filter((m) => !(m[1] && m[3])).map((m) => m[2])),
 ];
+// One `bytes=a-b` range, as storage serves it: native players seek media by
+// reading ranges through their loopback proxy.
+const sendRange = (request, response, data, contentType) => {
+  const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? "");
+  let [start, end] = [0, data.length - 1];
+  if (range && range[1] !== "") {
+    start = Number(range[1]);
+    if (range[2] !== "") end = Math.min(Number(range[2]), end);
+  } else if (range && range[2] !== "") {
+    // `bytes=-n`: the last n bytes.
+    start = Math.max(0, data.length - Number(range[2]));
+  }
+  if (range && ((range[1] === "" && range[2] === "") || start > end)) {
+    response.writeHead(416, { "content-range": `bytes */${data.length}` });
+    return response.end();
+  }
+  response.writeHead(range ? 206 : 200, {
+    "content-type": contentType,
+    "content-length": end - start + 1,
+    "accept-ranges": "bytes",
+    ...(range ? { "content-range": `bytes ${start}-${end}/${data.length}` } : {}),
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  return response.end(data.subarray(start, end + 1));
+};
 const limits = { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 };
 // The API's inline image allowlist; never serve arbitrary image/* (notably SVG).
 const imageTypes = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"];
@@ -852,8 +878,32 @@ export async function startFixture({
       ],
     };
   };
+  // A link ending in .mp4 unfurls to a direct video card. Its clip comes from
+  // CAPER_FIXTURE_EMBED_VIDEO (the fixture never encodes video itself) and is
+  // served at /__fixture/embed.mp4.
+  const fixtureVideo = (url) =>
+    /\.mp4$/i.test(new URL(url).pathname)
+      ? {
+          version: 1,
+          url,
+          site: { name: "Fixture Site", domain: new URL(url).hostname },
+          blocks: [
+            { type: "title", text: `TEST FIXTURE clip ${new URL(url).pathname}`, url },
+            {
+              type: "video",
+              url: `${advertised(port)}/__fixture/embed.mp4`,
+              poster: `${advertised(port)}/__fixture/embed.svg`,
+              width: 640,
+              height: 480,
+              durationMs: 4200,
+              gif: false,
+            },
+          ],
+        }
+      : null;
   const fixtureEmbed = (url) =>
-    fixturePlayer(url) ?? {
+    fixturePlayer(url) ??
+    fixtureVideo(url) ?? {
       version: 1,
       url,
       site: { name: "Fixture Site", domain: new URL(url).hostname },
@@ -1810,30 +1860,7 @@ export async function startFixture({
         // Served as recorded: the fixture labels voice notes audio/mp4 like the
         // API's transcode, but never transcodes them. Images/videos likewise retain
         // the client's prepared bytes; no privacy cleaning or decoding here.
-        // One `bytes=a-b` range, as storage serves it: native players seek
-        // media by reading ranges through their loopback proxy.
-        const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? "");
-        let [start, end] = [0, data.length - 1];
-        if (range && range[1] !== "") {
-          start = Number(range[1]);
-          if (range[2] !== "") end = Math.min(Number(range[2]), end);
-        } else if (range && range[2] !== "") {
-          // `bytes=-n`: the last n bytes.
-          start = Math.max(0, data.length - Number(range[2]));
-        }
-        if (range && ((range[1] === "" && range[2] === "") || start > end)) {
-          response.writeHead(416, { "content-range": `bytes */${data.length}` });
-          return response.end();
-        }
-        response.writeHead(range ? 206 : 200, {
-          "content-type": preview ? asset.preview.contentType : asset.contentType,
-          "content-length": end - start + 1,
-          "accept-ranges": "bytes",
-          ...(range ? { "content-range": `bytes ${start}-${end}/${data.length}` } : {}),
-          "cache-control": "no-store",
-          "x-content-type-options": "nosniff",
-        });
-        return response.end(data.subarray(start, end + 1));
+        return sendRange(request, response, data, preview ? asset.preview.contentType : asset.contentType);
       }
       const assetComplete = /^\/api\/assets\/([^/]+)\/complete$/.exec(path);
       if (assetComplete && method === "POST") {
@@ -1950,6 +1977,11 @@ export async function startFixture({
         return response.end(
           '<!doctype html><title>TEST FIXTURE player</title><body style="margin:0;background:#0C0D0F;color:#F3F4F5;font:20px sans-serif;display:grid;place-items:center;height:100vh">TEST FIXTURE player — nothing loads from the web</body>',
         );
+      }
+      if (path === "/__fixture/embed.mp4" && method === "GET") {
+        const clip = process.env.CAPER_FIXTURE_EMBED_VIDEO;
+        if (!clip) return reject(response, 404, "No embed clip configured.");
+        return sendRange(request, response, readFileSync(clip), "video/mp4");
       }
       if (path === "/__fixture/embed.svg" && method === "GET") {
         response.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "max-age=3600" });

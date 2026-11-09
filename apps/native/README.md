@@ -236,6 +236,10 @@ code `ABC234`; the owner account opens **Fixture Studio** with labelled sample
 conversations. It supports profile edits, space/channel/member management,
 private grants, history/pagination, idempotent sends, gateway replay, typing
 and deterministic presence. Authentication and authorization are simplified.
+Sent links unfurl into local cards: a YouTube link into a player card whose `play`
+page the fixture serves for debug clients' `CAPER_DEV_PLAY_ORIGIN`, and a link
+ending in `.mp4` into a direct video card playing the clip named by
+`CAPER_FIXTURE_EMBED_VIDEO` (the fixture never encodes video itself).
 
 For screenshot and performance gates, `CAPER_BENCH_MESSAGES=3000 node scripts/native-parity-fixture.mjs`
 adds 45 members to Fixture Studio and replaces `#general` with 3,000 generated messages (fixed seed, so

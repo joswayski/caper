@@ -1342,7 +1342,9 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     id,
                     Id::Composer
                         | Id::Viewer(
-                            MPart::Copy
+                            MPart::Link
+                                | MPart::Copy
+                                | MPart::Save
                                 | MPart::Open
                                 | MPart::Close
                                 | MPart::Previous

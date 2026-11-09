@@ -82,6 +82,47 @@ pub fn image_files(items: &[EmbedImage], name: &str) -> Vec<Attachment> {
         .collect()
 }
 
+/// A direct video as a viewer file; its poster shares the inline tile's
+/// texture (both use the video's id).
+pub fn video_file(block: &EmbedBlock, name: &str) -> Option<Attachment> {
+    let EmbedBlock::Video {
+        url,
+        poster,
+        width,
+        height,
+        duration_ms,
+        gif,
+    } = block
+    else {
+        return None;
+    };
+    Some(Attachment {
+        id: key(url),
+        spoiler: false,
+        voice: false,
+        waveform: None,
+        transcript: None,
+        kind: AttachmentKind::Video,
+        content_type: if url.to_ascii_lowercase().contains(".webm") {
+            "video/webm"
+        } else {
+            "video/mp4"
+        }
+        .into(),
+        name: name.into(),
+        size: 0,
+        width: *width,
+        height: *height,
+        duration_ms: *duration_ms,
+        preview: poster.is_some(),
+        url: Some(url.clone()),
+        preview_url: poster.clone(),
+        unavailable: false,
+        status: AttachmentStatus::Ready,
+        animated: *gif,
+    })
+}
+
 /// Media in a card, as web's `fit()`.
 pub const MAX_WIDTH: f32 = 400.0;
 pub const MAX_HEIGHT: f32 = 300.0;

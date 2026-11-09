@@ -60,7 +60,10 @@ pub enum Part {
     Title,
     Notice,
     Stage,
+    /// Copy media link.
+    Link,
     Copy,
+    Save,
     Open,
     Close,
     Previous,
@@ -202,6 +205,9 @@ pub struct Viewer {
     picture: D2D_RECT_F,
     video: Option<Video>,
     copying: Option<Receiver<std::result::Result<Copied, String>>>,
+    /// A Save: the dialog, then the download, on a worker; its notice
+    /// (none when the dialog was cancelled).
+    saving: Option<Receiver<Option<String>>>,
     notice: Option<(String, Instant)>,
     enter: Option<Enter>,
     /// The media panel's last static offset (pixels), set again only when
@@ -229,6 +235,7 @@ impl Viewer {
             picture: rect(0.0, 0.0, 0.0, 0.0),
             video: None,
             copying: None,
+            saving: None,
             notice: None,
             enter: Some(Enter::Open),
             placed: None,
@@ -296,6 +303,7 @@ impl Viewer {
             Part::Previous => self.index > 0,
             Part::Next => self.index + 1 < self.items.len(),
             Part::Copy => self.copying.is_none(),
+            Part::Save => self.saving.is_none(),
             Part::Play | Part::Seek | Part::Mute => matches!(
                 self.video.as_ref().map(|v| &v.state),
                 Some(VideoState::Ready(_))
@@ -350,6 +358,13 @@ impl Viewer {
                 "Copying\u{2026}"
             } else {
                 "Copy image"
+            }
+            .into(),
+            Part::Link => "Copy media link".into(),
+            Part::Save => if self.saving.is_some() {
+                "Saving\u{2026}"
+            } else {
+                "Save"
             }
             .into(),
             Part::Open => "Open in browser".into(),
@@ -425,9 +440,11 @@ impl Viewer {
         };
         controls.push(button(Part::Close, 36.0, 36.0));
         controls.push(button(Part::Open, 148.0, 32.0));
+        controls.push(button(Part::Save, 100.0, 32.0));
         if !video {
             controls.push(button(Part::Copy, 124.0, 32.0));
         }
+        controls.push(button(Part::Link, 156.0, 32.0));
         let title_right = x.max(20.0 + 40.0);
         if self.notice.is_some() {
             controls.push((
@@ -542,7 +559,7 @@ impl Viewer {
                     no_wrap(&l)?;
                     crate::text::draw(dc, &l, r.left, r.top, &g.brushes.muted);
                 }
-                Part::Copy | Part::Open => {
+                Part::Link | Part::Copy | Part::Save | Part::Open => {
                     // Open in browser is the primary action: eggshell, blackout label.
                     let primary = *p == Part::Open;
                     let (fill, label_brush) = if primary {
@@ -562,10 +579,11 @@ impl Viewer {
                     if !primary {
                         stroke_round(dc, *r, RADIUS, &g.brushes.border);
                     }
-                    let icon = if primary {
-                        Icon::ExternalLink
-                    } else {
-                        Icon::Copy
+                    let icon = match p {
+                        Part::Open => Icon::ExternalLink,
+                        Part::Save => Icon::Download,
+                        Part::Link => Icon::Link,
+                        _ => Icon::Copy,
                     };
                     let color = if primary { BLACKOUT } else { TEXT };
                     let cy = (r.top + r.bottom) / 2.0;
@@ -991,6 +1009,26 @@ impl App {
             v.notice = Some((text, Instant::now()));
             changed = true;
         }
+        if let Some(rx) = &v.saving {
+            match rx.try_recv() {
+                Ok(result) => {
+                    v.saving = None;
+                    if let Some(text) = result {
+                        v.notice = Some((text, Instant::now()));
+                    }
+                    changed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    v.saving = None;
+                    v.notice = Some((
+                        "Couldn\u{2019}t save the file. Please try again.".into(),
+                        Instant::now(),
+                    ));
+                    changed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         let stage = (v.stage.right - v.stage.left, v.stage.bottom - v.stage.top);
         let animated = v.current().animated;
         let duration = v.current().duration_ms;
@@ -1177,6 +1215,51 @@ impl App {
                             clipboard_image(&image)
                                 .ok_or_else(|| "Couldn\u{2019}t copy the image.".to_owned())
                         });
+                    let _ = tx.send(result);
+                    wake(window);
+                });
+            }
+            Part::Link => {
+                let url = self
+                    .live
+                    .as_ref()
+                    .and_then(|live| live.media.resolve(v.current()).url.clone());
+                let text = match url {
+                    Some(url) => {
+                        crate::set_clipboard(self.hwnd, &url.encode_utf16().collect::<Vec<_>>());
+                        "Media link copied."
+                    }
+                    None => "Couldn\u{2019}t copy: media is unavailable.",
+                };
+                v.notice = Some((text.into(), Instant::now()));
+            }
+            Part::Save => {
+                let Some(live) = &self.live else {
+                    return;
+                };
+                let a = live.media.resolve(v.current());
+                let (Some(api), Some(url)) = (live.media.api().cloned(), a.url.clone()) else {
+                    return;
+                };
+                let (tx, rx) = channel();
+                v.saving = Some(rx);
+                let window = self.hwnd.0 as isize;
+                let (name, content_type) = (a.name.clone(), a.content_type.clone());
+                // The system dialog blocks its own thread, never the UI.
+                std::thread::spawn(move || {
+                    let result = save_path(window, &name, &content_type).map(|path| {
+                        api.download_media(&url, &path).map_or_else(
+                            // A refused, broken or stalled download ends
+                            // here, never leaving Save stuck.
+                            |_| "Couldn\u{2019}t save the file. Please try again.".to_owned(),
+                            |()| {
+                                let file = path.file_name().map_or(name.clone(), |file| {
+                                    file.to_string_lossy().into_owned()
+                                });
+                                format!("Saved {file}")
+                            },
+                        )
+                    });
                     let _ = tx.send(result);
                     wake(window);
                 });
@@ -1418,7 +1501,13 @@ impl App {
                         if v.is_video()
                             && !matches!(
                                 v.focus,
-                                Part::Copy | Part::Open | Part::Close | Part::Previous | Part::Next
+                                Part::Link
+                                    | Part::Copy
+                                    | Part::Save
+                                    | Part::Open
+                                    | Part::Close
+                                    | Part::Previous
+                                    | Part::Next
                             ) =>
                     {
                         self.viewer_activate(Part::Play)
@@ -1683,6 +1772,59 @@ impl App {
     }
 }
 
+/// What "Save" suggests: `name` without characters Windows refuses in file
+/// names, and the extension to keep (from the name, else a video's type).
+fn save_name(name: &str, content_type: &str) -> (String, Option<String>) {
+    let name: String = name
+        .chars()
+        .map(|c| match c {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let extension = std::path::Path::new(&name)
+        .extension()
+        .map(|e| e.to_string_lossy().into_owned())
+        .or_else(|| match content_type {
+            "video/mp4" => Some("mp4".into()),
+            "video/webm" => Some("webm".into()),
+            _ => None,
+        });
+    (name, extension)
+}
+
+/// "Save": the system save dialog owned by `window`, suggesting `name`.
+/// None when cancelled.
+fn save_path(window: isize, name: &str, content_type: &str) -> Option<std::path::PathBuf> {
+    use windows::Win32::System::Com::*;
+    use windows::Win32::UI::Shell::*;
+    let (name, extension) = save_name(name, content_type);
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().ok()?;
+        let path = (|| {
+            let d: IFileSaveDialog =
+                CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+            d.SetOptions(d.GetOptions().ok()? | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT)
+                .ok()?;
+            d.SetFileName(&windows::core::HSTRING::from(name.as_str()))
+                .ok()?;
+            // Kept when the person types a name without one.
+            if let Some(extension) = &extension {
+                d.SetDefaultExtension(&windows::core::HSTRING::from(extension.as_str()))
+                    .ok()?;
+            }
+            d.Show(Some(HWND(window as _))).ok()?;
+            let shown = d.GetResult().ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+            let path = std::path::PathBuf::from(shown.to_string().ok()?);
+            CoTaskMemFree(Some(shown.0 as _));
+            Some(path)
+        })();
+        CoUninitialize();
+        path
+    }
+}
+
 /// Wakes the window's live drain from a worker thread.
 fn wake(window: isize) {
     unsafe {
@@ -1801,7 +1943,9 @@ mod tests {
         for p in [
             Part::Close,
             Part::Open,
+            Part::Save,
             Part::Copy,
+            Part::Link,
             Part::Previous,
             Part::Next,
         ] {
@@ -1813,6 +1957,7 @@ mod tests {
         v.layout(1200.0, 800.0);
         let parts: Vec<_> = v.parts().collect();
         assert!(!parts.contains(&Part::Copy));
+        assert!(parts.contains(&Part::Save) && parts.contains(&Part::Link));
         assert!(parts.contains(&Part::Play) && parts.contains(&Part::Seek));
         assert!(!v.enabled(Part::Play), "not until the video is ready");
         // One file alone has no arrows or position.
@@ -1886,5 +2031,23 @@ mod tests {
         assert_eq!(copied.dib[124..128], [30, 20, 10, 128]);
         let png = image::load_from_memory(&copied.png).unwrap().to_rgba8();
         assert_eq!(png, image);
+    }
+
+    #[test]
+    fn save_suggests_a_name_windows_accepts_and_keeps_its_extension() {
+        assert_eq!(
+            save_name("photo.final.PNG", "image/png"),
+            ("photo.final.PNG".into(), Some("PNG".into()))
+        );
+        // A link preview's video is named after its card, maybe with a path.
+        assert_eq!(
+            save_name("Clip: a/b?", "video/mp4"),
+            ("Clip_ a_b_".into(), Some("mp4".into()))
+        );
+        assert_eq!(
+            save_name("notes/v2.webm", "video/mp4"),
+            ("notes_v2.webm".into(), Some("webm".into()))
+        );
+        assert_eq!(save_name("scan", "image/jpeg"), ("scan".into(), None));
     }
 }
