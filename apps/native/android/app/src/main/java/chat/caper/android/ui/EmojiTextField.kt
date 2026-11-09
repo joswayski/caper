@@ -168,10 +168,12 @@ import kotlin.math.roundToInt
             val container = @Composable {
                 OutlinedTextFieldDefaults.Container(enabled, false, interaction, colors = colors, shape = MaterialTheme.shapes.small)
             }
-            Box {
+            // Box and Column measure children from zero width, so pass the field's width on explicitly;
+            // otherwise the frame shrinks to the placeholder until the text is long.
+            Box(Modifier.fillMaxWidth()) {
                 if (below != null) Box(Modifier.matchParentSize()) { container() }
-                Column {
-                    OutlinedTextFieldDefaults.DecorationBox(
+                Column(Modifier.fillMaxWidth()) {
+                    Box(Modifier.fillMaxWidth(), propagateMinConstraints = true) { OutlinedTextFieldDefaults.DecorationBox(
                         value = value.text, innerTextField = {
                             Box(Modifier.heightIn(max = textHeight).verticalScroll(scroll)) {
                                 Box(Modifier.pointerInput(ranges, enabled, transformed.text) {
@@ -242,7 +244,7 @@ import kotlin.math.roundToInt
                         interactionSource = interaction, placeholder = placeholder, leadingIcon = leadingIcon, trailingIcon = trailingIcon,
                         contentPadding = OutlinedTextFieldDefaults.contentPadding(start = if (leadingIcon != null) 12.dp else 16.dp),
                         colors = colors, container = { if (below == null) container() },
-                    )
+                    ) }
                     below?.invoke()
                 }
             }
