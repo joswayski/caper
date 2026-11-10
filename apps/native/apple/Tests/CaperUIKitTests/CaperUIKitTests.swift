@@ -932,26 +932,42 @@ final class CaperUIKitTests: XCTestCase {
         // The keyboard shrinks the dialog: the field being edited scrolls fully into view by itself.
         XCTAssertLessThanOrEqual(maxUses.frame.maxY, dialog.maxY + 1, "The focused field is not clipped by the dialog's edge")
         XCTAssertGreaterThanOrEqual(maxUses.frame.minY, dialog.minY - 1)
-        // Each control can be scrolled clear of the keyboard and used.
+        // Each control can be scrolled clear of the keyboard and used. A short
+        // drag that settles before lifting scrolls about as far as a finger
+        // does; a swipe can fling past the 265pt an iPhone SE leaves visible.
         let create = app.buttons["invite-link-create"]
         let username = app.textFields["Exact username"]
-        for element in [app.textFields["invite-link-expiry-number"], maxUses, create, username] {
-            for _ in 0..<6 where !(element.isHittable && element.frame.maxY <= keyboard.frame.minY) { scroll.swipeUp() }
-            XCTAssertTrue(element.isHittable && element.frame.maxY <= keyboard.frame.minY, "\(element) is reachable above the keyboard")
-            XCTAssertGreaterThanOrEqual(element.frame.minY, dialog.minY - 1, "\(element) is inside the dialog")
-            if element !== create { for _ in 0..<6 where element.frame.minY < dialog.minY { scroll.swipeDown() } }
+        func visible(_ element: XCUIElement) -> Bool {
+            element.isHittable && element.frame.minY >= dialog.minY - 1 && element.frame.maxY <= keyboard.frame.minY
         }
-        // iPad simulators may collapse the keyboard to its shortcut bar; typing proves the focus.
-        username.tap()
-        username.typeText("sa")
-        XCTAssertEqual(username.value as? String, "sa", "The username field takes typing")
+        func reveal(_ element: XCUIElement) {
+            for _ in 0..<20 where !visible(element) {
+                let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                let step: CGFloat = element.frame.minY < dialog.minY ? 100 : -100
+                start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: step)),
+                            withVelocity: .slow, thenHoldForDuration: 0.3)
+            }
+            XCTAssertTrue(visible(element), "\(element) is reachable between the dialog's header and the keyboard")
+        }
+        for element in [app.textFields["invite-link-expiry-number"], maxUses, create, username] { reveal(element) }
+        // Create works while Max uses still has the number pad up: scroll to it and tap it.
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            XCTAssertTrue(keyboard.keys["0"].exists && !keyboard.keys["a"].exists, "The number pad is still open")
+        }
+        reveal(create)
+        XCTAssertTrue(keyboard.exists, "The keyboard is still open")
+        screenshot("uikit-invite-create-keyboard")
         let copies = app.buttons.matching(NSPredicate(format: "label == %@", "Copy invite link"))
         let before = copies.count
-        for _ in 0..<6 where !create.isHittable { scroll.swipeUp() }
         create.tap()
         let made = NSPredicate { _, _ in copies.count > before }
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: made, object: nil)], timeout: 10), .completed,
                        "Create link made a link")
+        // iPad simulators may collapse the keyboard to its shortcut bar; typing proves the focus.
+        reveal(username)
+        username.tap()
+        username.typeText("sa")
+        XCTAssertEqual(username.value as? String, "sa", "The username field takes typing")
     }
 
     /// iPad: Browse beside the conversation, as SwiftUI above 760 points, in
