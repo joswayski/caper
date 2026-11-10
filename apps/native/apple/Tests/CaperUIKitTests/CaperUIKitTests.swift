@@ -122,6 +122,28 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(app.textFields["login-email"].waitForExistence(timeout: 10), "Log out returns to sign-in")
     }
 
+    /// Finish setup saves the profile and opens the workspace at the space's channel.
+    func testFinishSetupOpensWorkspace() {
+        let app = launch(fixture: "profile-validation")
+        let username = app.textFields["Username"]
+        XCTAssertTrue(username.waitForExistence(timeout: 20))
+        username.tap()
+        username.typeText("fixture_new\n")
+        app.textFields["Display name"].typeText("Fixture New")
+        let submit = app.buttons["profile-continue"]
+        XCTAssertTrue(submit.isEnabled)
+        if !submit.isHittable { app.staticTexts["Choose how you show up."].swipeUp() }
+        screenshot("uikit-finish-setup")
+        submit.tap()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30), "The workspace opens at the latest message")
+        XCTAssertFalse(app.buttons["profile-continue"].exists)
+        app.buttons["back-to-browse"].firstMatch.tap()
+        let profile = app.buttons["account-profile"]
+        XCTAssertTrue(profile.waitForExistence(timeout: 10))
+        XCTAssertEqual(profile.label, "Edit profile for Fixture New", "The account bar shows the saved profile")
+        screenshot("uikit-finish-setup-done")
+    }
+
     func testConversationOpensAtLatestAndSends() {
         let app = launch()
         let latest = row(Self.latest)
@@ -880,6 +902,104 @@ final class CaperUIKitTests: XCTestCase {
         app.buttons["open-privacy"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Privacy"].firstMatch.waitForExistence(timeout: 10))
         screenshot("uikit-privacy")
+    }
+
+    /// Every field of Invite people's custom link form and its Create link stay
+    /// reachable while the keyboard is up.
+    func testInviteFormReachableWithKeyboard() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        if app.buttons["back-to-browse"].isHittable { app.buttons["back-to-browse"].tap() }
+        let space = app.buttons["selected-space-name"]
+        XCTAssertTrue(space.waitForExistence(timeout: 10))
+        space.tap()
+        app.buttons["Invite people…"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["default-invite-link-copy"].waitForExistence(timeout: 10))
+        app.buttons["default-invite-link-options"].firstMatch.tap()
+        app.buttons["Custom links"].firstMatch.tap()
+        let maxUses = app.textFields["invite-link-max-uses"]
+        XCTAssertTrue(maxUses.waitForExistence(timeout: 5))
+        let scroll = app.scrollViews["space-settings-scroll"]
+        for _ in 0..<4 where !maxUses.isHittable { scroll.swipeUp() }
+        maxUses.tap()
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 10))
+        maxUses.typeText("5")
+        sleep(1)
+        screenshot("uikit-invite-keyboard")
+        let dialog = scroll.frame
+        XCTAssertLessThanOrEqual(dialog.maxY, keyboard.frame.minY + 1, "The dialog ends above the keyboard")
+        // The keyboard shrinks the dialog: the field being edited scrolls fully into view by itself.
+        XCTAssertLessThanOrEqual(maxUses.frame.maxY, dialog.maxY + 1, "The focused field is not clipped by the dialog's edge")
+        XCTAssertGreaterThanOrEqual(maxUses.frame.minY, dialog.minY - 1)
+        // Each control can be scrolled clear of the keyboard and used.
+        let create = app.buttons["invite-link-create"]
+        let username = app.textFields["Exact username"]
+        for element in [app.textFields["invite-link-expiry-number"], maxUses, create, username] {
+            for _ in 0..<6 where !(element.isHittable && element.frame.maxY <= keyboard.frame.minY) { scroll.swipeUp() }
+            XCTAssertTrue(element.isHittable && element.frame.maxY <= keyboard.frame.minY, "\(element) is reachable above the keyboard")
+            XCTAssertGreaterThanOrEqual(element.frame.minY, dialog.minY - 1, "\(element) is inside the dialog")
+            if element !== create { for _ in 0..<6 where element.frame.minY < dialog.minY { scroll.swipeDown() } }
+        }
+        // iPad simulators may collapse the keyboard to its shortcut bar; typing proves the focus.
+        username.tap()
+        username.typeText("sa")
+        XCTAssertEqual(username.value as? String, "sa", "The username field takes typing")
+        let copies = app.buttons.matching(NSPredicate(format: "label == %@", "Copy invite link"))
+        let before = copies.count
+        for _ in 0..<6 where !create.isHittable { scroll.swipeUp() }
+        create.tap()
+        let made = NSPredicate { _, _ in copies.count > before }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: made, object: nil)], timeout: 10), .completed,
+                       "Create link made a link")
+    }
+
+    /// iPad: Browse beside the conversation, as SwiftUI above 760 points, in
+    /// portrait and landscape. The member list tiles once there is room.
+    func testWideLayoutFollowsRotation() throws {
+        let device = XCUIDevice.shared
+        device.orientation = .portrait
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        guard app.windows.firstMatch.frame.width > 760 else {
+            throw XCTSkip("Run on an iPad simulator (CAPER_IOS_SIMULATOR_DESTINATION) for the wide layout.")
+        }
+        defer { device.orientation = .portrait }
+        let channels = app.collectionViews["channel-list"]
+        let timeline = app.collectionViews["message-timeline"]
+        let members = app.collectionViews["member-list"]
+        func assertWide(_ name: String, tiled: Bool) {
+            sleep(1)
+            XCTAssertTrue(channels.isHittable, "\(name): Browse shows")
+            XCTAssertTrue(timeline.isHittable, "\(name): the conversation shows")
+            XCTAssertFalse(app.buttons["back-to-browse"].isHittable, "\(name): no Back to Browse")
+            XCTAssertLessThan(channels.frame.maxX, timeline.frame.minX + 1, "\(name): side by side")
+            XCTAssertTrue(app.descendants(matching: .any)["channel-sidebar-resize"].exists)
+            XCTAssertEqual(members.exists, tiled, "\(name): the member list tiles only when it fits")
+            if tiled { XCTAssertLessThan(timeline.frame.maxX, members.frame.minX + 1, "\(name): members beside the timeline") }
+        }
+        assertWide("portrait", tiled: app.windows.firstMatch.frame.width - 340 >= 540)
+        screenshot("uikit-ipad-portrait")
+        device.orientation = .landscapeLeft
+        assertWide("landscape", tiled: true)
+        screenshot("uikit-ipad-landscape")
+        // Rows rewrapped to the new width keep one-line headers beside their avatars.
+        for header in timeline.otherElements.matching(NSPredicate(format: "label CONTAINS %@", ", 10:")).allElementsBoundByIndex {
+            XCTAssertLessThan(header.frame.height, 30, "\(header.label): the header stays one line after rotating")
+        }
+        // Members toggles from the header, and a chosen channel opens beside Browse.
+        app.buttons["Hide member list"].firstMatch.tap()
+        XCTAssertFalse(members.waitForExistence(timeout: 2))
+        app.buttons["Show member list"].firstMatch.tap()
+        XCTAssertTrue(members.waitForExistence(timeout: 5))
+        app.buttons["channel-chan00000002"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["selected-channel-name"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(channels.isHittable, "Opening a channel keeps Browse")
+        // As SwiftUI: a list the reader chose to show stays shown, over the conversation if it no longer fits.
+        device.orientation = .portrait
+        sleep(1)
+        XCTAssertTrue(channels.isHittable && timeline.isHittable, "portrait again: still side by side")
+        XCTAssertTrue(members.exists, "portrait again: the shown member list stays")
     }
 
     /// People in a channel's voice: Browse grows its row into a live card, and

@@ -14,6 +14,15 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     var cached: StartupSnapshot? { didSet { if isViewLoaded { render() } } }
     /// A channel was chosen: show the conversation.
     var opened: (() -> Void)?
+    /// SwiftUI's wide layout: a full-height rail and sidebar column, square,
+    /// with the account bar inside the sidebar and no Close navigation.
+    var wide = false { didSet { if wide != oldValue, isViewLoaded { applyWide() } } }
+    private var phoneConstraints: [NSLayoutConstraint] = []
+    private var wideConstraints: [NSLayoutConstraint] = []
+    /// The sidebar's colour under the wide account bar, with its trailing rule.
+    private let sidebarColumn = UIView()
+    private let railRule = UIView()
+    private let sidebarRule = UIView()
 
     private let rail = UIStackView()
     private let railScroll = UIScrollView()
@@ -132,7 +141,16 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         buildRail()
         buildCard()
         buildAccountBar()
+        applyWide()
         observer.start { [weak self] in self?.render() }
+    }
+
+    private func applyWide() {
+        NSLayoutConstraint.deactivate(wide ? phoneConstraints : wideConstraints)
+        NSLayoutConstraint.activate(wide ? wideConstraints : phoneConstraints)
+        card.layer.cornerRadius = wide ? 0 : 16
+        [sidebarColumn, railRule, sidebarRule].forEach { $0.isHidden = !wide }
+        if isViewLoaded { render() }
     }
 
     private func buildRail() {
@@ -253,11 +271,39 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         [spaceName, spaceChevron, spaceMenu, closeNavigation, headerRule, channels, divider, directs].forEach(card.addSubview)
         closeWidth = closeNavigation.widthAnchor.constraint(equalToConstant: 44)
         channelsHeight = channels.heightAnchor.constraint(equalToConstant: 200)
-        NSLayoutConstraint.activate([
+        phoneConstraints += [
             card.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            card.leadingAnchor.constraint(equalTo: railScroll.trailingAnchor),
             card.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
             railScroll.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+        ]
+        [sidebarColumn, railRule, sidebarRule].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            $0.isHidden = true
+            view.insertSubview($0, belowSubview: card)
+        }
+        sidebarColumn.backgroundColor = UIKitStyle.sidebar
+        railRule.backgroundColor = UIKitStyle.border
+        sidebarRule.backgroundColor = UIKitStyle.border
+        view.bringSubviewToFront(sidebarRule)
+        wideConstraints += [
+            card.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            card.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            railScroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            sidebarColumn.topAnchor.constraint(equalTo: view.topAnchor),
+            sidebarColumn.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            sidebarColumn.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            sidebarColumn.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            railRule.topAnchor.constraint(equalTo: view.topAnchor),
+            railRule.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            railRule.trailingAnchor.constraint(equalTo: card.leadingAnchor),
+            railRule.widthAnchor.constraint(equalToConstant: 1),
+            sidebarRule.topAnchor.constraint(equalTo: view.topAnchor),
+            sidebarRule.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            sidebarRule.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            sidebarRule.widthAnchor.constraint(equalToConstant: 1),
+        ]
+        NSLayoutConstraint.activate([
+            card.leadingAnchor.constraint(equalTo: railScroll.trailingAnchor),
             // SwiftUI's 50pt header: name and chevron (the space menu), then X, over a rule.
             spaceName.centerYAnchor.constraint(equalTo: card.topAnchor, constant: 25),
             spaceName.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
@@ -378,6 +424,15 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
     /// the account menu.
     private func buildAccountBar() {
         let box = UIStackView()
+        // Phones: full width beneath the rail and card. Wide: inside the sidebar.
+        phoneConstraints += [
+            box.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            box.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+        ]
+        wideConstraints += [
+            box.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            box.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+        ]
         box.axis = .vertical
         box.backgroundColor = UIKitStyle.raised
         box.layer.cornerRadius = 6
@@ -425,8 +480,6 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         [voiceError, row].forEach(box.addArrangedSubview)
         NSLayoutConstraint.activate([
             box.topAnchor.constraint(equalTo: card.bottomAnchor, constant: 12),
-            box.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
-            box.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
             box.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
             row.heightAnchor.constraint(equalToConstant: 52),
             presenceDot.widthAnchor.constraint(equalToConstant: 11),
@@ -467,7 +520,7 @@ final class BrowseViewController: UIViewController, UICollectionViewDelegate {
         spaceMenu.isEnabled = menuable
         spaceChevron.isHidden = !menuable
         // The X goes back to a conversation, so it shows only when one is open.
-        let canClose = live && (model.selectedChannelID != nil || model.selectedDirectMessageID != nil || model.visit != nil)
+        let canClose = !wide && live && (model.selectedChannelID != nil || model.selectedDirectMessageID != nil || model.visit != nil)
         closeNavigation.isHidden = !canClose
         closeWidth.constant = canClose ? 44 : 0
         let joined = live ? UIKitBrowse.listedChannels(model, expanded: channelsExpanded) : detail?.channels.filter(\.joined) ?? []

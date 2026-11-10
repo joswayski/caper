@@ -1,14 +1,42 @@
 import CaperCore
 import UIKit
 
-/// The phone workspace: Browse underneath, the conversation sliding fully over
-/// it. Opening Browse slides the conversation off to the right; a pan from
-/// the conversation's leading edge does the same, as on the SwiftUI app.
+/// The workspace, as SwiftUI's WorkspaceView. Phones: Browse underneath, the
+/// conversation sliding fully over it; opening Browse slides the conversation
+/// off to the right, and a swipe right does the same. Wider than 760 points
+/// (iPad, a large phone in landscape, a wide split view): Browse beside the
+/// conversation, its sidebar resizable, and the member list tiled when it fits.
 final class WorkspaceViewController: UIViewController {
     private let model: AppModel
     let browse: BrowseViewController
     let conversation: ConversationViewController
     private var browsing = false
+    /// The current geometry; nil until the first layout.
+    private var layout: WideLayout?
+    private var narrow: Bool { layout?.narrow ?? true }
+    private var sidebarWidth = WideLayout.stored(WideLayout.sidebarKey, default: WideLayout.defaultSidebar)
+    private var sidebarDrag: (start: CGFloat, width: CGFloat)?
+    private var liveSidebarWidth: CGFloat { sidebarDrag?.width ?? sidebarWidth }
+    private lazy var sidebarHandle: ResizeHandle = {
+        let handle = ResizeHandle(label: "Channel sidebar width", identifier: "channel-sidebar-resize")
+        handle.dragged = { [weak self] travel in
+            guard let self, let layout = self.layout else { return }
+            guard let travel else {
+                if let drag = self.sidebarDrag { self.saveSidebar(drag.width) }
+                self.sidebarDrag = nil
+                return
+            }
+            let start = self.sidebarDrag?.start ?? min(self.sidebarWidth, layout.sidebarMaximum)
+            self.sidebarDrag = (start, Self.clamp(start + travel, layout))
+            self.view.setNeedsLayout()
+        }
+        handle.reset = { [weak self] in self?.saveSidebar(WideLayout.defaultSidebar) }
+        handle.step = { [weak self] direction in
+            guard let self, let layout = self.layout else { return }
+            self.saveSidebar(min(self.sidebarWidth, layout.sidebarMaximum) + 10 * direction)
+        }
+        return handle
+    }()
     private var rosterShown = false
     private let observer = ModelObserver()
     /// SwiftUI's banner for a channel or DM that failed to open, above both
@@ -50,16 +78,15 @@ final class WorkspaceViewController: UIViewController {
             DispatchQueue.main.async { self?.loadBrowse() }
         }, selector: #selector(FirstFrame.tick)).add(to: .main, forMode: .common)
         conversation.view.layer.shadowColor = UIColor.black.cgColor
-        conversation.view.layer.shadowOpacity = 0.45
         conversation.view.layer.shadowRadius = 16
         conversation.view.layer.shadowOffset = CGSize(width: -12, height: 0)
-        browse.opened = { [weak self] in self?.slide(browsing: false) }
-        conversation.browse = { [weak self] in self?.slide(browsing: true) }
+        browse.opened = { [weak self] in if self?.narrow == true { self?.slide(browsing: false) } }
+        conversation.browse = { [weak self] in if self?.narrow == true { self?.slide(browsing: true) } }
         // As SwiftUI's DrawerSwipe: a swipe right from anywhere on the
         // conversation brings Browse in under the finger; a swipe left on
         // Browse returns to the conversation.
         let toBrowse = DirectionalSwipe(direction: 1)
-        toBrowse.allowed = { [weak self] in self.map { !$0.browsing && $0.conversation.allowsBrowseSwipe } ?? false }
+        toBrowse.allowed = { [weak self] in self.map { $0.narrow && !$0.browsing && $0.conversation.allowsBrowseSwipe } ?? false }
         toBrowse.moved = { [weak self] distance in
             guard let self else { return }
             self.loadBrowse()
@@ -71,7 +98,8 @@ final class WorkspaceViewController: UIViewController {
         // No channel to show yet: start in Browse.
         // As SwiftUI's phone layout: Browse covers the conversation while the
         // model's navigationOpen says so. Opening a channel or DM (a row, a voice
-        // card, a request, New message, a notification) clears it.
+        // card, a request, New message, a notification) clears it. Wide layouts
+        // show both and leave navigationOpen alone. Phone until the first layout.
         model.narrowLayout = true
         observer.start { [weak self] in
             guard let self else { return }
@@ -82,11 +110,83 @@ final class WorkspaceViewController: UIViewController {
                 DispatchQueue.main.async { CaperRuntime.showVoiceRosterPreview(model) }
             }
             let hasChannel = self.hasConversation
+            guard self.narrow else { return }
             if !hasChannel && !self.browsing { self.slide(browsing: true, animated: false, record: false) }
             else if hasChannel && self.model.navigationOpen != self.browsing { self.slide(browsing: self.model.navigationOpen) }
         }
         update(progress: browsing ? 1 : 0)
         buildBanner()
+        sidebarHandle.isHidden = true
+        view.addSubview(sidebarHandle)
+    }
+
+    private static func clamp(_ width: CGFloat, _ layout: WideLayout) -> CGFloat {
+        min(layout.sidebarMaximum, max(220, width.rounded()))
+    }
+
+    private func saveSidebar(_ width: CGFloat) {
+        guard let layout else { return }
+        sidebarWidth = Self.clamp(width, layout)
+        UserDefaults.standard.set(Double(sidebarWidth), forKey: WideLayout.sidebarKey)
+        view.setNeedsLayout()
+    }
+
+    /// Rotation, split view and Stage Manager resizes all arrive here.
+    private func applyLayout() {
+        let insets = view.safeAreaInsets
+        let next = WideLayout(width: view.bounds.width - insets.left - insets.right, sidebar: liveSidebarWidth)
+        let changed = layout?.narrow != next.narrow
+        layout = next
+        if changed {
+            model.narrowLayout = next.narrow
+            browse.wide = !next.narrow
+            conversation.view.layer.shadowOpacity = next.narrow ? 0.45 : 0
+            conversation.view.autoresizingMask = next.narrow ? [.flexibleWidth, .flexibleHeight] : []
+            if next.narrow {
+                // As SwiftUI's drawer rest: Browse shows if navigation is open or
+                // nothing else can; a drag from the other layout never carries over.
+                let shows = model.navigationOpen || !hasConversation
+                if shows { loadBrowse() }
+                browsing = shows
+                // Browse may still wait for the first frame; loadBrowse sets it up then.
+                if browse.isViewLoaded { browse.view.accessibilityElementsHidden = !shows }
+                conversation.view.accessibilityElementsHidden = shows
+            } else {
+                loadBrowse()
+                browsing = false
+                browse.view.accessibilityElementsHidden = false
+                conversation.view.accessibilityElementsHidden = false
+            }
+        }
+        sidebarHandle.isHidden = next.narrow
+        let sidebar = min(liveSidebarWidth, next.sidebarMaximum)
+        sidebarHandle.accessibilityValue = "\(Int(sidebar)) points"
+        if next.narrow {
+            if browse.isViewLoaded {
+                browse.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                browse.view.frame = view.bounds
+            }
+            // Coming from the wide layout; otherwise autoresizing keeps it full size.
+            if changed { conversation.view.transform = .identity; conversation.view.frame = view.bounds }
+            conversation.setLayout(narrow: true, membersTiled: false, membersMaximum: 0)
+            update(progress: browsing ? 1 : 0)
+        } else {
+            let split = insets.left + next.navigationWidth
+            conversation.view.transform = .identity
+            browse.view.autoresizingMask = []
+            browse.view.frame = CGRect(x: 0, y: 0, width: split, height: view.bounds.height)
+            conversation.view.frame = CGRect(x: split, y: 0, width: view.bounds.width - split, height: view.bounds.height)
+            conversation.setLayout(narrow: false, membersTiled: next.tilesMembers, membersMaximum: next.membersMaximum)
+            sidebarHandle.frame = CGRect(x: split - 4, y: 0, width: 8, height: view.bounds.height)
+            view.bringSubviewToFront(sidebarHandle)
+            browse.view.isUserInteractionEnabled = true
+        }
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: any UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        // A swipe in progress must not leave the conversation partly translated.
+        conversation.view.endEditing(false)
     }
 
     private var hasConversation: Bool {
@@ -134,7 +234,7 @@ final class WorkspaceViewController: UIViewController {
         for child in [browse, conversation] where child.additionalSafeAreaInsets.top != inset {
             child.additionalSafeAreaInsets.top = inset
         }
-        update(progress: browsing ? 1 : 0)
+        applyLayout()
     }
 
     private func embed(_ child: UIViewController, below: UIView? = nil) {
@@ -151,7 +251,7 @@ final class WorkspaceViewController: UIViewController {
         let back = DirectionalSwipe(direction: -1)
         back.allowed = { [weak self] in
             guard let self else { return false }
-            return self.browsing && self.hasConversation && self.browse.presentedViewController == nil
+            return self.narrow && self.browsing && self.hasConversation && self.browse.presentedViewController == nil
         }
         back.moved = { [weak self] distance in
             guard let self else { return }
@@ -159,13 +259,15 @@ final class WorkspaceViewController: UIViewController {
         }
         back.ended = { [weak self] complete, _ in self?.slide(browsing: !complete) }
         browse.view.addGestureRecognizer(back)
-        browse.view.isUserInteractionEnabled = browsing
-        browse.view.accessibilityElementsHidden = !browsing
+        browse.view.isUserInteractionEnabled = browsing || !narrow
+        browse.view.accessibilityElementsHidden = !browsing && narrow
+        view.setNeedsLayout()
     }
 
     /// `record: false` shows Browse only because there is nothing else to
     /// show yet, so the first channel to open (a new space's) slides away.
     func slide(browsing: Bool, animated: Bool = true, record: Bool = true) {
+        guard narrow else { return }
         loadBrowse()
         self.browsing = browsing
         if record && model.navigationOpen != browsing { model.navigationOpen = browsing }
@@ -183,6 +285,7 @@ final class WorkspaceViewController: UIViewController {
     }
 
     private func update(progress: CGFloat) {
+        guard narrow else { return }
         let travel = view.bounds.width + 40
         conversation.view.transform = CGAffineTransform(translationX: travel * progress, y: 0)
         if browse.isViewLoaded { browse.view.isUserInteractionEnabled = progress > 0.5 }
@@ -190,7 +293,7 @@ final class WorkspaceViewController: UIViewController {
 
 
     override func accessibilityPerformEscape() -> Bool {
-        guard !browsing else { return false }
+        guard narrow, !browsing else { return false }
         slide(browsing: true)
         return true
     }

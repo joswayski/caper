@@ -165,7 +165,7 @@ import UniformTypeIdentifiers
     public static func workspaceDialog(model: AppModel, _ item: WorkspaceSheet) -> UIViewController {
         let state = UIKitWorkspaceDialogState(item: item)
         let box = WeakController()
-        let host = UIHostingController(rootView: UIKitWorkspaceDialog(model: model, state: state) {
+        let host = FocusRevealingHostingController(rootView: UIKitWorkspaceDialog(model: model, state: state) {
             box.value?.dismiss(animated: false)
         })
         box.value = host
@@ -263,6 +263,35 @@ struct UIKitWorkspaceDialog: View {
     private func tappedOutside() {
         if state.item.id == "profile" { state.profileDismissAction?.action() }
         else if !state.dismissDisabled { dismiss() }
+    }
+}
+
+/// A workspace dialog shrinks above the keyboard, which can leave the field
+/// being edited under its bottom edge; its scroll view never sees the
+/// keyboard itself. Once the keyboard settles, scroll that field into view.
+private final class FocusRevealingHostingController<Content: View>: UIHostingController<Content> {
+    override init(rootView: Content) {
+        super.init(rootView: rootView)
+        for name in [UIResponder.keyboardDidShowNotification, UIResponder.keyboardDidChangeFrameNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(revealFocus), name: name, object: nil)
+        }
+    }
+    @MainActor required dynamic init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func revealFocus() {
+        guard let field = Self.firstResponder(in: view) else { return }
+        var scroll = field.superview
+        while let candidate = scroll, !(candidate is UIScrollView) { scroll = candidate.superview }
+        guard let scroll = scroll as? UIScrollView else { return }
+        view.layoutIfNeeded()
+        scroll.scrollRectToVisible(field.convert(field.bounds, to: scroll).insetBy(dx: 0, dy: -12),
+                                   animated: !UIAccessibility.isReduceMotionEnabled)
+    }
+
+    private static func firstResponder(in view: UIView) -> UIView? {
+        if view.isFirstResponder { return view }
+        for subview in view.subviews { if let found = firstResponder(in: subview) { return found } }
+        return nil
     }
 }
 

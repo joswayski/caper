@@ -51,6 +51,22 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     private let typing = TypingIndicatorView()
     private let composer = ComposerView()
     private lazy var members = MembersPanel(model: model)
+    /// SwiftUI's phone layout, or the wide one beside Browse.
+    private var narrow = true
+    /// The wide layout has room to tile the member list beside the conversation.
+    private var membersTiled = false
+    private var membersMaximum: CGFloat = 220
+    /// Shown or hidden by the reader; until then a tiled list shows and others don't.
+    private var membersPreference: Bool?
+    private var membersWidth = WideLayout.stored(WideLayout.membersKey, default: WideLayout.defaultMembers)
+    private var membersDrag: (start: CGFloat, width: CGFloat)?
+    /// Content stops here: the safe area, or the tiled member list's edge.
+    private let content = UILayoutGuide()
+    private var contentTrailing: NSLayoutConstraint!
+    private var membersTop: NSLayoutConstraint!
+    private var membersUnderHeader: NSLayoutConstraint!
+    private var timelineUnderStrip: NSLayoutConstraint!
+    private var timelineUnderHeader: NSLayoutConstraint!
     private lazy var fileDrop = UIKitFileDrop(model: model)
     private var lastFocusRevision = 0
     private var capabilitiesKey: String?
@@ -84,24 +100,59 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = UIKitStyle.conversation
+        view.addLayoutGuide(content)
+        // The tiled member list's width comes off the safe area's trailing edge.
+        contentTrailing = content.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            content.topAnchor.constraint(equalTo: view.topAnchor),
+            content.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            contentTrailing,
+        ])
         buildHeader()
         buildTimeline()
         buildComposer()
         view.addSubview(members)
+        membersUnderHeader = members.topAnchor.constraint(equalTo: header.bottomAnchor)
+        membersTop = members.topAnchor.constraint(equalTo: header.topAnchor)
+        membersLeading = members.leadingAnchor.constraint(equalTo: view.leadingAnchor)
+        membersTrailing = members.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        membersSideTrailing = members.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor)
+        membersSideWidth = members.widthAnchor.constraint(equalToConstant: WideLayout.defaultMembers)
+        // The reader's own Close, tap outside or swipe; not a layout change.
+        members.closed = { [weak self] in self?.membersPreference = false; self?.applyMembers() }
+        members.handle.dragged = { [weak self] travel in
+            guard let self else { return }
+            guard let travel else {
+                if let drag = self.membersDrag { self.saveMembers(drag.width) }
+                self.membersDrag = nil
+                return
+            }
+            let start = self.membersDrag?.start ?? self.shownMembersWidth
+            // The handle is on the list's leading edge: dragging left widens it.
+            self.membersDrag = (start, min(self.membersMaximum, max(220, (start - travel).rounded())))
+            self.applyMembers()
+        }
+        members.handle.reset = { [weak self] in self?.saveMembers(WideLayout.defaultMembers) }
+        members.handle.step = { [weak self] direction in
+            guard let self else { return }
+            self.saveMembers(self.shownMembersWidth + 10 * direction)
+        }
         NSLayoutConstraint.activate([
-            members.topAnchor.constraint(equalTo: header.bottomAnchor),
-            members.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            members.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            membersUnderHeader, membersLeading, membersTrailing,
             members.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         // A swipe left on the timeline brings Members in under the finger, as SwiftUI's MembersSwipe.
         let membersSwipe = DirectionalSwipe(direction: -1)
         membersSwipe.allowed = { [weak self] in
             guard let self else { return false }
-            return self.membersAvailable && !self.members.isOpen && !self.presentations.presenting
+            return self.narrow && self.membersAvailable && !self.members.isOpen && !self.presentations.presenting
         }
         membersSwipe.moved = { [weak self] in self?.view.endEditing(true); self?.members.follow($0) }
-        membersSwipe.ended = { [weak self] complete, _ in self?.members.release(opening: complete) }
+        membersSwipe.ended = { [weak self] complete, _ in
+            self?.members.release(opening: complete)
+            if complete { self?.membersPreference = true }
+        }
         collection.addGestureRecognizer(membersSwipe)
         // Files dragged onto the conversation stage for its composer.
         view.addInteraction(fileDrop.interaction)
@@ -109,9 +160,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         timelineObserver.start { [weak self] in self?.render() }
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _) in
             // Message text is sized from the reader's text size; re-render every row.
-            var snapshot = self.dataSource.snapshot()
-            snapshot.reconfigureItems(snapshot.itemIdentifiers)
-            self.dataSource.apply(snapshot, animatingDifferences: false)
+            self.remeasureRows()
         }
         composerObserver.start { [weak self] in self?.renderComposer() }
         UIKitHosting.warmAttachGallery()
@@ -175,24 +224,51 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         let rule = UIView()
         rule.backgroundColor = UIKitStyle.border
         rule.translatesAutoresizingMaskIntoConstraints = false
-        [back, peerAvatar, titleMenu, connection, rule].forEach(header.addSubview)
+        // Wide layouts: Pins, Members, a DM's options and a visit's Close, as SwiftUI's header.
+        headerActions.spacing = 4
+        headerActions.alignment = .center
+        headerActions.translatesAutoresizingMaskIntoConstraints = false
+        headerActions.setContentHuggingPriority(.required, for: .horizontal)
+        headerActions.setContentCompressionResistancePriority(.required, for: .horizontal)
+        headerPins.accessibilityIdentifier = "channel-pins"
+        headerOptions.setImage(UIKitStyle.icon("ellipsis")?.resized(to: 20), for: .normal)
+        headerOptions.accessibilityLabel = "Conversation options"
+        headerOptions.accessibilityIdentifier = "dm-options"
+        headerOptions.showsMenuAsPrimaryAction = true
+        headerOptions.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] completion in
+            completion(self?.peerMenuItems() ?? [])
+        }])
+        headerOptions.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([headerOptions.widthAnchor.constraint(equalToConstant: 44), headerOptions.heightAnchor.constraint(equalToConstant: 44)])
+        headerClose.accessibilityIdentifier = "feedback-visit-close"
+        [headerPins, headerMembers, headerOptions, headerClose].forEach {
+            $0.tintColor = UIKitStyle.muted
+            headerActions.addArrangedSubview($0)
+        }
+        headerActions.isHidden = true
+        headerActions.arrangedSubviews.forEach { $0.isHidden = true }
+        [back, peerAvatar, titleMenu, connection, headerActions, rule].forEach(header.addSubview)
         peerAvatar.isHidden = true
         peerAvatar.accessibilityElementsHidden = true
+        avatarNarrow = peerAvatar.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 5)
         titleAfterBack = titleMenu.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 5)
         titleAfterAvatar = titleMenu.leadingAnchor.constraint(equalTo: peerAvatar.trailingAnchor, constant: 1)
         // The conversation's name for VoiceOver's heading rotor, beside its menu, as on web.
         heading.accessibilityTraits = .header
         heading.accessibilityIdentifier = "selected-channel-name"
+        // Phones until the first wide layout (layoutHeader); the wide actions stay out.
         header.accessibilityElements = [back, heading, titleMenu, connection]
+        titleWide = titleMenu.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12)
+        avatarWide = peerAvatar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18)
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             header.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             header.heightAnchor.constraint(equalToConstant: 50),
-            back.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 13),
+            back.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 13),
             back.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             titleAfterBack,
-            peerAvatar.leadingAnchor.constraint(equalTo: back.trailingAnchor, constant: 5),
+            avatarNarrow,
             peerAvatar.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             titleMenu.topAnchor.constraint(equalTo: header.topAnchor, constant: 3),
             titleMenu.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -3),
@@ -200,7 +276,11 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             titles.trailingAnchor.constraint(lessThanOrEqualTo: titleMenu.trailingAnchor, constant: -6),
             titles.centerYAnchor.constraint(equalTo: titleMenu.centerYAnchor),
             connection.leadingAnchor.constraint(equalTo: titleMenu.trailingAnchor, constant: 5),
-            connection.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -10),
+            connection.trailingAnchor.constraint(equalTo: headerActions.leadingAnchor, constant: -5),
+            headerActions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -10),
+            // A stack with every item hidden has no size of its own; it must not take the title's room.
+            headerActions.widthAnchor.constraint(equalToConstant: 0).withPriority(.defaultHigh),
+            headerActions.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             connection.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             rule.leadingAnchor.constraint(equalTo: header.leadingAnchor),
             rule.trailingAnchor.constraint(equalTo: header.trailingAnchor),
@@ -209,6 +289,17 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         ])
     }
     private let titleMenu = UIButton(type: .custom)
+    private let headerActions = UIStackView()
+    private lazy var headerPins = IconButton(icon: "pin", label: "Pins") { [weak self] in self?.showPins() }
+    private lazy var headerMembers = IconButton(icon: "users", label: "Show member list") { [weak self] in self?.toggleMembers() }
+    private let headerOptions = UIButton(type: .system)
+    private lazy var headerClose = IconButton(icon: "x", label: "Close conversation") { [weak self] in
+        guard let model = self?.model else { return }
+        Task { await model.closeVisit() }
+    }
+    private var avatarNarrow: NSLayoutConstraint!
+    private var avatarWide: NSLayoutConstraint!
+    private var titleWide: NSLayoutConstraint!
     private let chevron = UIImageView(image: UIKitStyle.icon("chevron-down")?.resized(to: 14))
     private let connection = UIKitStyle.label(size: 11, weight: .bold, color: UIKitStyle.muted)
     private lazy var heading = UIAccessibilityElement(accessibilityContainer: header)
@@ -258,7 +349,102 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
     }
 
     private func toggleMembers() {
-        if members.isOpen { members.close() } else { view.endEditing(true); members.open() }
+        membersPreference = !members.isOpen
+        if members.isOpen { members.close(report: false) } else {
+            if narrow { view.endEditing(true) }
+            members.open()
+        }
+        applyMembers()
+    }
+
+    // MARK: Wide layout
+
+    private var membersLeading: NSLayoutConstraint!
+    private var membersTrailing: NSLayoutConstraint!
+    private var membersSideTrailing: NSLayoutConstraint!
+    private var membersSideWidth: NSLayoutConstraint!
+    private var shownMembersWidth: CGFloat { min(membersMaximum, max(220, membersDrag?.width ?? membersWidth)) }
+
+    /// The workspace's geometry changed: a rotation, a split view or a resize.
+    func setLayout(narrow: Bool, membersTiled: Bool, membersMaximum: CGFloat) {
+        let switched = narrow != self.narrow
+        let changed = switched || membersTiled != self.membersTiled
+        self.narrow = narrow
+        self.membersTiled = membersTiled
+        self.membersMaximum = max(220, membersMaximum)
+        guard isViewLoaded else { return }
+        if changed { layoutHeader() }
+        if switched {
+            // A list from the other layout never carries over half-shown.
+            if members.isOpen || !members.isHidden { members.close(report: false) }
+            if narrow, membersPreference == true, membersAvailable { members.open() }
+        }
+        applyMembers()
+    }
+
+    private func saveMembers(_ width: CGFloat) {
+        membersWidth = min(membersMaximum, max(220, width.rounded()))
+        UserDefaults.standard.set(Double(membersWidth), forKey: WideLayout.membersKey)
+        applyMembers()
+    }
+
+    /// SwiftUI's member list beside or over the conversation. Phones leave
+    /// the panel to the reader; wide layouts show it while it is wanted:
+    /// tiled by default when it fits, otherwise only once asked for.
+    private func applyMembers() {
+        guard isViewLoaded else { return }
+        let wide = !narrow
+        members.side = wide
+        let tiled = wide && membersTiled
+        // Deactivate before activating, and only on a change: render calls this often.
+        let wanted: [(NSLayoutConstraint, Bool)] = [(membersLeading, !wide), (membersTrailing, !wide), (membersSideTrailing, wide),
+                                                    (membersSideWidth, wide), (membersUnderHeader, !tiled), (membersTop, tiled)]
+        for (constraint, on) in wanted where !on && constraint.isActive { constraint.isActive = false }
+        for (constraint, on) in wanted where on && !constraint.isActive { constraint.isActive = true }
+        let width = shownMembersWidth
+        if membersSideWidth.constant != width { membersSideWidth.constant = width }
+        members.handle.accessibilityValue = "\(Int(width)) points"
+        var visible = members.isOpen
+        if wide {
+            visible = (membersPreference ?? membersTiled) && membersAvailable
+            if visible && !members.isOpen { members.open() } else if !visible && members.isOpen { members.close(report: false) }
+        }
+        let inset = tiled && visible ? -width : 0
+        if contentTrailing.constant != inset { contentTrailing.constant = inset }
+        let label = visible ? "Hide member list" : "Show member list"
+        headerMembers.accessibilityLabel = label
+        statusMembers.accessibilityLabel = label
+    }
+
+    /// Phones: Back, the name as the conversation's menu, and the voice strip.
+    /// Wide layouts: the plain name with Pins, Members, a DM's options and a
+    /// visit's Close beside it, as SwiftUI's header.
+    private func layoutHeader() {
+        let peer = !peerAvatar.isHidden
+        [titleAfterBack, titleAfterAvatar, titleWide, avatarNarrow, avatarWide].forEach { $0.isActive = false }
+        (narrow ? avatarNarrow : avatarWide).isActive = true
+        (peer ? titleAfterAvatar : narrow ? titleAfterBack : titleWide).isActive = true
+        back.isHidden = !narrow
+        chevron.isHidden = !narrow
+        titleMenu.isUserInteractionEnabled = narrow
+        header.accessibilityElements = narrow ? [back, heading, titleMenu, connection]
+            : [heading, connection, headerPins, headerMembers, headerOptions, headerClose]
+        voiceStrip.view.isHidden = !narrow
+        timelineUnderStrip.isActive = false; timelineUnderHeader.isActive = false
+        (narrow ? timelineUnderStrip : timelineUnderHeader).isActive = true
+        renderHeaderActions()
+    }
+
+    private func renderHeaderActions() {
+        let insets = view.safeAreaInsets
+        // A Duo's status column holds these instead (layoutStatusColumn).
+        let hidden = narrow || insets.right > insets.left || !isLive
+        headerActions.isHidden = hidden
+        // Hidden items too, so the hidden stack takes no width from the phone title.
+        headerPins.isHidden = hidden
+        headerMembers.isHidden = hidden || !membersAvailable
+        headerOptions.isHidden = hidden || peerConversation == nil
+        headerClose.isHidden = hidden || model.visit == nil
     }
 
     private func showPins() {
@@ -344,6 +530,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         skeleton.isHidden = true
         view.addSubview(skeleton)
         view.addSubview(typing)
+        timelineUnderStrip = collection.topAnchor.constraint(equalTo: voiceStrip.view.bottomAnchor)
+        timelineUnderHeader = collection.topAnchor.constraint(equalTo: header.bottomAnchor)
         NSLayoutConstraint.activate([
             // At the timeline's top, as SwiftUI's MessageSkeleton.
             skeleton.topAnchor.constraint(equalTo: collection.topAnchor),
@@ -351,19 +539,19 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             skeleton.trailingAnchor.constraint(equalTo: collection.trailingAnchor),
             voiceStrip.view.topAnchor.constraint(equalTo: header.bottomAnchor),
             voiceStrip.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            voiceStrip.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            collection.topAnchor.constraint(equalTo: voiceStrip.view.bottomAnchor),
+            voiceStrip.view.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            timelineUnderStrip,
             notices.view.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-            notices.view.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            notices.view.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             notices.view.topAnchor.constraint(equalTo: collection.bottomAnchor),
             collection.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-            collection.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            statusStack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            collection.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            statusStack.centerXAnchor.constraint(equalTo: collection.centerXAnchor),
             // As SwiftUI: 80pt under the 44pt "Beginning of conversation" row.
             statusStack.topAnchor.constraint(equalTo: collection.topAnchor, constant: 124),
-            statusStack.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -36),
+            statusStack.widthAnchor.constraint(lessThanOrEqualTo: collection.widthAnchor, constant: -36),
             typing.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 18),
-            typing.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -18),
+            typing.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -18),
             typing.topAnchor.constraint(equalTo: notices.view.bottomAnchor),
         ])
         ComposerLipView.attach(to: collection, in: view)
@@ -390,7 +578,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         NSLayoutConstraint.activate([
             composer.topAnchor.constraint(equalTo: typing.bottomAnchor),
             composer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-            composer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            composer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
         ])
         // An incoming request or a blocked peer replaces the composer.
@@ -398,7 +586,7 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         directBar.isHidden = true
         NSLayoutConstraint.activate([
             directBar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-            directBar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            directBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             directBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
         ])
     }
@@ -488,13 +676,15 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         if let peer { peerAvatar.show(name: peer.displayName, avatarID: peer.avatarId, picture: peer.avatarPicture) }
         if peerAvatar.isHidden != (peer == nil) {
             peerAvatar.isHidden = peer == nil
-            titleAfterBack.isActive = false; titleAfterAvatar.isActive = false
-            (peer == nil ? titleAfterBack : titleAfterAvatar).isActive = true
+            layoutHeader()
         }
+        renderHeaderActions()
+        applyMembers()
         let inVoice = live ? UIKitVoiceStrip.inVoice(model) : 0
         let parts = [visit == nil ? memberSummary(live: live, channelID: channelID) : nil, inVoice > 0 ? "\(inVoice) in voice" : nil]
         subtitle.text = parts.compactMap { $0 }.isEmpty ? nil : parts.compactMap { $0 }.joined(separator: " · ")
-        subtitle.isHidden = subtitle.text == nil
+        // Wide headers show the name alone, as SwiftUI's.
+        subtitle.isHidden = subtitle.text == nil || !narrow
         heading.accessibilityLabel = visit != nil ? "Visiting \(title)" : direct ? "Direct message with \(channelName)" : title
         titleMenu.accessibilityLabel = visit != nil ? "\(title) options"
             : direct ? "\(channelName) options" : "#\(channelName.lowercased()) options"
@@ -673,8 +863,24 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         if abs(collection.contentOffset.y - target) > 0.5 { collection.contentOffset.y = target }
     }
 
+    /// Every row measures again, as after a text size change.
+    private func remeasureRows() {
+        var snapshot = dataSource.snapshot()
+        snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+    private var timelineWidth: CGFloat = 0
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // A rotation, split view or member list changes the width rows wrap to.
+        let width = collection.bounds.width
+        if timelineWidth > 0, abs(width - timelineWidth) > 0.5 {
+            // Rows keep the height measured at the old width unless the layout asks again.
+            remeasureRows()
+            collection.collectionViewLayout.invalidateLayout()
+        }
+        timelineWidth = width
         // The heading has no view of its own; VoiceOver skips a zero-size element.
         heading.accessibilityFrameInContainerSpace = titleMenu.frame
         pinTailIfFollowing()

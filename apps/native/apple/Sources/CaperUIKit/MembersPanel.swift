@@ -30,6 +30,31 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
     var openProfile: ((Member) -> Void)?
     var closed: (() -> Void)?
     private(set) var isOpen = false
+    /// Wide layouts' leading-edge resize handle.
+    let handle = ResizeHandle(label: "Member list width", identifier: "members-panel-resize")
+    private var floating: [NSLayoutConstraint] = []
+    private var docked: [NSLayoutConstraint] = []
+    /// Wide layouts: SwiftUI's MemberPresenceView beside the conversation, a
+    /// plain column with a leading rule, no dimming and a resize handle.
+    /// Phones: the rounded panel over a dimmed conversation.
+    var side = false {
+        didSet {
+            guard side != oldValue else { return }
+            NSLayoutConstraint.deactivate(side ? floating : docked)
+            NSLayoutConstraint.activate(side ? docked : floating)
+            dimming.isHidden = side
+            panel.layer.cornerRadius = side ? 0 : 16
+            panel.layer.shadowOpacity = side ? 0 : 0.45
+            panel.layer.borderWidth = side ? 0 : 1
+            sideRule.isHidden = !side
+            handle.isHidden = !side
+            panelSwipe.isEnabled = !side
+            panel.accessibilityViewIsModal = !side
+            accessibilityViewIsModal = !side
+        }
+    }
+    private let sideRule = UIView()
+    private var panelSwipe: UIPanGestureRecognizer!
 
     init(model: AppModel) {
         self.model = model
@@ -59,6 +84,14 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         addSubview(panel)
         let swipe = UIPanGestureRecognizer(target: self, action: #selector(swiped(_:)))
         panel.addGestureRecognizer(swipe)
+        panelSwipe = swipe
+        sideRule.backgroundColor = UIKitStyle.border
+        sideRule.isHidden = true
+        sideRule.translatesAutoresizingMaskIntoConstraints = false
+        panel.addSubview(sideRule)
+        handle.isHidden = true
+        handle.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(handle)
 
         let title = UIKitStyle.label("Members", size: 12, weight: .bold, color: UIKitStyle.muted)
         title.accessibilityTraits = .header
@@ -141,11 +174,14 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
             dimming.leadingAnchor.constraint(equalTo: leadingAnchor),
             dimming.trailingAnchor.constraint(equalTo: trailingAnchor),
             dimming.bottomAnchor.constraint(equalTo: bottomAnchor),
-            panel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            panel.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            panel.widthAnchor.constraint(equalToConstant: 280).withPriority(.defaultHigh),
-            panel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -64),
-            panel.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            sideRule.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
+            sideRule.topAnchor.constraint(equalTo: panel.topAnchor),
+            sideRule.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
+            sideRule.widthAnchor.constraint(equalToConstant: 1),
+            handle.leadingAnchor.constraint(equalTo: leadingAnchor, constant: -4),
+            handle.topAnchor.constraint(equalTo: topAnchor),
+            handle.bottomAnchor.constraint(equalTo: bottomAnchor),
+            handle.widthAnchor.constraint(equalToConstant: 8),
             bar.topAnchor.constraint(equalTo: panel.topAnchor),
             bar.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 12),
             bar.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -4),
@@ -160,6 +196,25 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
             column.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -6),
             search.heightAnchor.constraint(equalToConstant: 36),
         ])
+        floating = [
+            panel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            panel.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            panel.widthAnchor.constraint(equalToConstant: 280).withPriority(.defaultHigh),
+            panel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -64),
+            panel.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -8),
+        ]
+        docked = [
+            panel.topAnchor.constraint(equalTo: topAnchor),
+            panel.bottomAnchor.constraint(equalTo: bottomAnchor),
+            panel.leadingAnchor.constraint(equalTo: leadingAnchor),
+            panel.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ]
+        NSLayoutConstraint.activate(floating)
+    }
+
+    /// The handle hangs 4 points outside the column's leading edge.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        super.point(inside: point, with: event) || (!handle.isHidden && handle.frame.contains(point))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -224,14 +279,15 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         UIAccessibility.post(notification: .screenChanged, argument: panel)
     }
 
-    /// Closing is instant, as everywhere in Caper.
-    func close() {
-        guard isOpen else { return }
+    /// Closing is instant, as everywhere in Caper. `report: false` is the
+    /// conversation's own change (a toggle or a layout), not the reader closing it here.
+    func close(report: Bool = true) {
+        guard isOpen || !isHidden else { return }
         isOpen = false
         isHidden = true
         observer.stop()
         endSearch()
-        closed?()
+        if report { closed?() }
     }
 
     @objc private func dismissTap() { close() }
