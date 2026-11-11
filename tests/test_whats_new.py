@@ -281,7 +281,7 @@ class HighlightsTests(unittest.TestCase):
             "Smoother scrolling in native conversations",
             {
                 "apps/native/apple/Sources/CaperMacOS/Timeline.swift": "SWIFTUI-MAC-ONLY",
-                "apps/native/apple/Sources/CaperUIKit/Timeline.swift": "UIKIT-ONLY",
+                "apps/native/apple/Sources/CaperIOS/Timeline.swift": "SWIFTUI-IOS-ONLY",
                 "apps/native/desktop/src/timeline.rs": "EGUI-ONLY",
             },
         )
@@ -309,7 +309,9 @@ class HighlightsTests(unittest.TestCase):
         first = self.commit("Improve mobile voice controls", {"apps/native/android/app/src/main/Voice.kt": "mobile();"})
         self.github.seed(snapshot("android", first, 2, snapshot("android", self.base)["releases"]))
         shared = self.commit("Improve shared voice indicators", {"shared/design.css": "voice {}"})
-        ios = self.commit("Improve iPhone controls", {"apps/native/apple/Sources/CaperIOS/Controls.swift": "iphone()"})
+        ios = self.commit(
+            "Improve iPhone controls", {"apps/native/apple/Sources/CaperUIKit/Controls.swift": "iphone()"}
+        )
         newest = self.commit("Improve desktop controls", {"apps/native/windows/src/voice.rs": "desktop();"})
         self.response = {
             "highlights": [
@@ -334,7 +336,7 @@ class HighlightsTests(unittest.TestCase):
         old = self.commit("Improve shared controls", {"shared/design.css": "controls {}"})
         self.github.seed(snapshot("android", old, 2, snapshot("android", self.base)["releases"]))
         newest = self.commit(
-            "Improve iPhone controls", {"apps/native/apple/Sources/CaperIOS/Controls.swift": "iphone()"}
+            "Improve iPhone controls", {"apps/native/apple/Sources/CaperUIKit/Controls.swift": "iphone()"}
         )
         self.response = {"highlights": [highlight([old], ["android", "ios"])]}
         before = copy.deepcopy(self.github.feeds)
@@ -345,7 +347,9 @@ class HighlightsTests(unittest.TestCase):
 
     def test_platform_specific_runtime_cannot_announce_other_clients(self):
         self.seed(platforms=PLATFORMS[1:])
-        ios = self.commit("Improve iPhone controls", {"apps/native/apple/Sources/CaperIOS/Controls.swift": "iphone()"})
+        ios = self.commit(
+            "Improve iPhone controls", {"apps/native/apple/Sources/CaperUIKit/Controls.swift": "iphone()"}
+        )
         mac = self.commit("Improve Mac updater", {"apps/native/apple/Sources/CaperMacOS/AppUpdater.swift": "update()"})
         updater = self.commit("Improve signed update feedback", {"apps/native/updater/src/main.rs": "check();"})
         newest = self.commit("Improve server persistence", {"apps/api/src/persist.rs": "persist();"})

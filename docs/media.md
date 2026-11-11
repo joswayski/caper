@@ -4596,9 +4596,9 @@ empty list is valid. Only repository evidence is sent, never user data. One requ
 sends at most 400,000 characters; over that, server-only diffs drop and client diffs
 shorten (`diffTruncated`), keeping every commit's subject, body and paths.
 Highlights describe behavior reachable in the released client, not native migration
-progress. The UIKit parity host and the retired SwiftUI Mac app
-(`CaperMacOS`) are excluded from product paths; `CaperAppKit` is the released
-macOS client (the Win32 and GTK hosts are outside the eligible roots, as the
+progress. The retired SwiftUI apps (`CaperIOS`, `CaperMacOS`) are excluded from
+product paths; `CaperUIKit` and `CaperAppKit` are the released iOS and macOS
+clients (the Win32 and GTK hosts are outside the eligible roots, as the
 released clients). `apps/native/windows/src/` is the released Windows client and
 `apps/native/linux/src/` the released Linux client; the egui client in
 `apps/native/desktop/src/` is no longer released, while the rest of

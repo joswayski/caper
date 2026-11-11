@@ -1,6 +1,6 @@
 # Caper for Apple platforms
 
-The shipping macOS app is the AppKit client (`CaperMacAppKit`, below); the shipping iPhone app uses SwiftUI backed by UIKit. They contain no Electron, Tauri, WebView, or browser content (apart from the isolated KLIPY ad view on iPhone). The earlier SwiftUI Mac app (`CaperMacOS`) still builds but is no longer released.
+The shipping macOS app is the AppKit client (`CaperMacAppKit`, below); the shipping iPhone app is the UIKit client (`CaperIOSUIKit`, built from `Sources/CaperUIKit` with the `chat.caper.ios` identity, entitlements and notification extension; `release.yml` sets `CAPER_IOS_SCHEME=CaperIOSUIKit`). They contain no Electron, Tauri, WebView, or browser content (apart from the isolated KLIPY ad view on iPhone). The earlier SwiftUI apps (`CaperIOS`, `CaperMacOS`) still build but are no longer released.
 
 ## Features
 
