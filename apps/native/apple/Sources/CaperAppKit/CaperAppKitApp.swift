@@ -23,6 +23,11 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
             && URL(string: environment["CAPER_API_BASE_URL"] ?? "").map {
                 ["localhost", "127.0.0.1", "::1"].contains($0.host ?? "")
             } == true
+        // The sandboxed UI-test runner cannot clear this app's real defaults
+        // domain, so a fixture launch may name keys for the app to clear itself.
+        if fixture, let keys = environment["CAPER_TEST_CLEAR_DEFAULTS"] {
+            keys.split(separator: ",").forEach { UserDefaults.standard.removeObject(forKey: String($0)) }
+        }
         // Never read, overwrite, or revoke the shipping app's session.
         let model = fixture ? CaperRuntime.makeModel() : AppModel(api: APIClient(
             tokenStore: KeychainTokenStore(service: "chat.caper.appkit-development.session|https://caper.chat")))

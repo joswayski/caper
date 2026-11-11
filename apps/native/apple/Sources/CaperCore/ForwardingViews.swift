@@ -36,7 +36,8 @@ struct SharedOriginalView: View {
                     HStack(spacing: 4) {
                         EmojiArtworkView(emoji: reaction.emoji, size: 18)
                         Text("\(reaction.authorIds.count)").font(CaperTheme.font(12))
-                    }.accessibilityLabel("\(reaction.emoji), \(reaction.authorIds.count) reactions")
+                    }.accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(reaction.emoji), \(reaction.authorIds.count) reactions")
                 }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -61,6 +62,9 @@ struct ForwardCardView: View {
                 } else { Text("Original conversation unavailable.").foregroundStyle(CaperTheme.muted) }
             }.padding(12).background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
                 .overlay { RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border) }
+                // A container: otherwise the card's identifier replaces its
+                // children's, hiding "View conversation" from VoiceOver and tests.
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("forward-card-\(message.id)")
         }
     }

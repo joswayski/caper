@@ -7707,6 +7707,8 @@ struct PinnedMessagesView: View {
             if let error = chat.jumpError { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error).padding(12) }
             if chat.displayedPins.isEmpty {
                 ContentUnavailableView("No pinned messages", systemImage: "pin", description: Text("Pinned messages in this channel will appear here."))
+                    // Fill the popover so its background reaches the bottom edge.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 12) {

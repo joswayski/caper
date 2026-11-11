@@ -2,9 +2,11 @@ import AppKit
 import XCTest
 
 @MainActor final class CaperAppKitTests: XCTestCase {
-    private func launch(signedIn: Bool = true, fixture: String? = nil, preservePanelWidths: Bool = false) -> XCUIApplication {
+    private func launch(signedIn: Bool = true, fixture: String? = nil, preservePanelWidths: Bool = false,
+                        clearingDefaults: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
+        if !clearingDefaults.isEmpty { app.launchEnvironment["CAPER_TEST_CLEAR_DEFAULTS"] = clearingDefaults.joined(separator: ",") }
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
         app.launchEnvironment["CAPER_UI_FIXTURE"] = fixture
         if signedIn {
@@ -17,6 +19,24 @@ import XCTest
         if !preservePanelWidths { app.launchArguments += ["-caper.membersWidth", "220", "-caper.channelSidebarWidth", "280", "-caper.threadPanelWidth", "340"] }
         app.launch()
         return app
+    }
+
+    /// The pointer's path to a control may cross a pinned-by line, which opens
+    /// the pinner's card by design (shortly after). Rest on the target until no
+    /// card covers it, so the click itself needs no further pointer travel.
+    private func clearHoverProfile(over target: XCUIElement, app: XCUIApplication) {
+        let close = app.buttons["mention-card-close"]
+        for _ in 0..<3 {
+            target.hover()
+            guard close.waitForExistence(timeout: 1.5) else { break }
+            close.click(); XCTAssertTrue(close.waitForNonExistence(timeout: 5))
+        }
+        XCTAssertTrue(target.isHittable)
+    }
+
+    /// SwiftUI text hosted in AppKit popovers exposes its string as either label or value.
+    private func shownText(_ element: XCUIElement) -> String {
+        [element.label, element.value as? String ?? "", element.title].first { !$0.isEmpty } ?? ""
     }
 
     private func capture(_ name: String, app: XCUIApplication) {
@@ -105,6 +125,9 @@ import XCTest
         return snapshot
     }
 
+    /// A checkbox's value is "0"/"1" on some XCUITest versions and a number on others.
+    private func switchValue(_ element: XCUIElement) -> String? { element.value.map { "\($0)" } }
+
     private func messageMenuItem(_ title: String, app: XCUIApplication, body: XCUIElement) -> XCUIElement {
         let item = app.menuItems[title]
         return item.exists ? item : body.menuItems[title]
@@ -113,7 +136,7 @@ import XCTest
     private func inspectSettings(_ app: XCUIApplication, captureName: String) -> XCUIElement {
         let settings = app.windows["caper-appkit-settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
-        XCTAssertEqual(settings.label, "Caper Settings — AppKit development")
+        XCTAssertEqual(settings.title, "Caper Settings — AppKit development")
         XCTAssertEqual(app.windows.matching(identifier: "caper-appkit-settings").count, 1)
         XCTAssertEqual(app.windows.matching(identifier: "Caper Settings — AppKit development").count, 1)
         XCTAssertTrue(settings.descendants(matching: .any)["desktop-settings"].firstMatch.exists)
@@ -175,14 +198,15 @@ import XCTest
         let account = app.buttons["account-settings-menu"]
         // AppKit supplies the application menu's title from the development
         // bundle, rather than the shipping app's exact "Caper" display name.
-        let caperMenu = app.menuBars.menuBarItems.matching(NSPredicate(format: "label BEGINSWITH %@", "Caper")).firstMatch
+        let caperMenu = app.menuBars.menuBarItems.matching(NSPredicate(format: "title BEGINSWITH %@ OR label BEGINSWITH %@", "Caper", "Caper")).firstMatch
         for width in [CGFloat(1280), CGFloat(900)] {
             resize(app, width: width)
             XCTAssertEqual(account.label, "Account settings")
             account.hover(); app.buttons["account-profile"].hover(); account.click()
-            let item = app.menuItems["Settings…"]
+            // The menu bar keeps its Settings… item in the tree once opened.
+            let item = account.menuItems["Settings…"]
             XCTAssertTrue(item.waitForExistence(timeout: 5)); XCTAssertTrue(item.isEnabled)
-            item.hover(); app.menuItems["What’s new"].hover(); item.click()
+            item.hover(); account.menuItems["What’s new"].hover(); item.click()
             let settings = inspectSettings(app, captureName: "account Settings main \(Int(width))")
             app.typeKey(",", modifierFlags: .command)
             XCTAssertEqual(app.windows.matching(identifier: "caper-appkit-settings").count, 1)
@@ -227,7 +251,7 @@ import XCTest
         let app = launch(fixture: "whats-new")
         defer { app.terminate() }
         let main = app.windows["Caper — AppKit development (not feature complete)"]
-        let caperMenu = app.menuBars.menuBarItems.matching(NSPredicate(format: "label BEGINSWITH %@", "Caper")).firstMatch
+        let caperMenu = app.menuBars.menuBarItems.matching(NSPredicate(format: "title BEGINSWITH %@ OR label BEGINSWITH %@", "Caper", "Caper")).firstMatch
         let close = app.buttons["Close What’s new"]
         let done = app.buttons["Done"]
         let preview = app.staticTexts["TEST FIXTURE — Message editing"]
@@ -247,7 +271,7 @@ import XCTest
         XCTAssertTrue(close.waitForNonExistence(timeout: 5)); XCTAssertFalse(preview.exists)
         let composer = app.textViews["message-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
-        let draft = "TEST FIXTURE — keep channel draft while reading What's new"
+        let draft = "TEST FIXTURE — keep channel draft while reading What’s new" // Typographic: the composer follows the system's smart-quote setting.
         composer.click(); composer.typeText(draft)
         // native-project.yml does not stamp CaperSourceRevision, and project.yml
         // deliberately clears CAPER_SOURCE_REVISION for Debug. The one-shot
@@ -258,9 +282,9 @@ import XCTest
             resize(app, width: width)
             let account = app.buttons["account-settings-menu"]
             account.hover(); app.buttons["account-profile"].hover(); account.click()
-            let item = app.menuItems["What’s new"]
+            let item = account.menuItems["What’s new"]
             XCTAssertTrue(item.waitForExistence(timeout: 5)); XCTAssertTrue(item.isEnabled)
-            item.hover(); app.menuItems["Settings…"].hover(); item.click()
+            item.hover(); account.menuItems["Settings…"].hover(); item.click()
             XCTAssertTrue(close.waitForExistence(timeout: 5))
             XCTAssertTrue(main.buttons["Close What’s new"].exists)
             XCTAssertTrue(app.staticTexts[unavailable].waitForExistence(timeout: 5))
@@ -273,7 +297,7 @@ import XCTest
             XCTAssertTrue(close.waitForNonExistence(timeout: 5))
             XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, draft)
 
-            account.click(); app.menuItems["Settings…"].click()
+            account.click(); account.menuItems["Settings…"].click()
             let settings = app.windows["caper-appkit-settings"]
             XCTAssertTrue(settings.waitForExistence(timeout: 5))
             XCTAssertEqual(app.windows.matching(identifier: "caper-appkit-settings").count, 1)
@@ -833,7 +857,10 @@ import XCTest
         XCTAssertTrue(pinned.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, sourceDraft)
         let pinBody = pinned.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", originalText, originalText)).firstMatch
         XCTAssertTrue(pinBody.waitForExistence(timeout: 5))
-        pinBody.hover(); pins.buttons["go-to-message-\(sourceID)"].hover(); pinBody.rightClick()
+        pinBody.hover(); pins.buttons["go-to-message-\(sourceID)"].hover()
+        // Selectable body text answers a right-click with the text menu; the
+        // card's message menu belongs to the row, so open it from its gutter.
+        pinBody.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5)).withOffset(CGVector(dx: -12, dy: 0)).rightClick()
         let pinForward = app.menuItems["Forward message"]
         XCTAssertTrue(pinForward.waitForExistence(timeout: 5)); XCTAssertTrue(pinForward.isEnabled); pinForward.click()
         let note = app.textViews["forward-note"]
@@ -842,7 +869,7 @@ import XCTest
         XCTAssertFalse(composer.exists); XCTAssertFalse(app.buttons["channel-pins"].exists)
         let destination = app.buttons["forward-destination-\(destinationChannel)"]
         XCTAssertTrue(destination.waitForExistence(timeout: 10)); destination.click()
-        let wrapperNote = "TEST FIXTURE — first forwarder's note, not the original"
+        let wrapperNote = "TEST FIXTURE — first forwarder’s note, not the original"
         note.click(); note.typeText(wrapperNote)
         capture("pins to workspace forwarding handoff wide", app: app)
         app.buttons["Forward (1)"].click()
@@ -864,13 +891,19 @@ import XCTest
         let card = timeline.descendants(matching: .any)["forward-card-\(wrapperID)"]
         let open = card.buttons["open-forward-\(wrapperID)"]
         XCTAssertTrue(card.waitForExistence(timeout: 5)); XCTAssertTrue(open.waitForExistence(timeout: 5))
-        XCTAssertTrue(card.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", originalText, originalText)).firstMatch.exists)
+        // Selectable SwiftUI text may surface as static text or a text view.
+        XCTAssertTrue(card.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR value == %@", originalText, originalText))
+            .firstMatch.waitForExistence(timeout: 5), card.debugDescription)
         XCTAssertFalse(card.staticTexts[wrapperNote].exists, "The wrapper note is rendered outside the original card")
         capture("delivered forward original and separate note wide", app: app)
 
         let editedText = "TEST FIXTURE — the original changed live\nThe forwarder's note must stay untouched."
         try await Self.control(["incomingEdit": ["channelId": sourceChannel, "messageId": sourceID, "text": editedText]])
-        let edited = card.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", editedText, editedText)).firstMatch
+        // Rendered paragraphs may not keep the raw newline; match each line.
+        let lines = editedText.components(separatedBy: "\n")
+        let edited = card.descendants(matching: .any).matching(NSPredicate(
+            format: "(label CONTAINS %@ AND label CONTAINS %@) OR (value CONTAINS %@ AND value CONTAINS %@)",
+            lines[0], lines[1], lines[0], lines[1])).firstMatch
         XCTAssertTrue(edited.waitForExistence(timeout: 10)); XCTAssertEqual(wrapperBody.value as? String, wrapperNote)
         try await Self.control(["incomingReaction": ["channelId": sourceChannel, "messageId": sourceID, "emoji": "👍", "userId": "member000002"]])
         XCTAssertTrue(card.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "👍, 1 reactions")).firstMatch.waitForExistence(timeout: 10))
@@ -970,7 +1003,7 @@ import XCTest
         app.launch()
         XCTAssertTrue(composer.waitForExistence(timeout: 15)); resize(app, width: 900)
         XCTAssertFalse(app.buttons["channel-\(sourceChannel)"].exists, "The shared original does not grant membership in its private channel")
-        let readerDraft = "TEST FIXTURE — retain the reader's destination draft"
+        let readerDraft = "TEST FIXTURE — retain the reader’s destination draft"
         composer.click(); composer.typeText(readerDraft)
         let readerOpen = timeline.buttons["open-forward-\(nextID)"]
         XCTAssertTrue(readerOpen.waitForExistence(timeout: 10)); readerOpen.hover(); readerOpen.click()
@@ -1125,7 +1158,7 @@ import XCTest
         XCTAssertTrue(peerBadge.waitForExistence(timeout: 10)); XCTAssertEqual(peerBadge.label, "Open profile for Maya")
         timeline.buttons["profile-author-\(peerPinID)"].hover(); peerBadge.hover(); peerBadge.click()
         let username = app.staticTexts["mention-card-username"]
-        XCTAssertTrue(username.waitForExistence(timeout: 5)); XCTAssertEqual(username.label, "@maya")
+        XCTAssertTrue(username.waitForExistence(timeout: 5)); XCTAssertEqual(shownText(username), "@maya")
         XCTAssertFalse(app.descendants(matching: .any)["mention-card-you"].exists)
         XCTAssertTrue(app.textViews["mention-card-composer"].exists)
         capture("Maya pin author on own message", app: app)
@@ -1188,7 +1221,7 @@ import XCTest
         XCTAssertTrue(composer.exists); XCTAssertEqual(composer.value as? String, draft)
         capture("old pin outside latest history page wide", app: app)
         let original = pins.buttons["go-to-message-\(oldID)"]
-        original.hover(); app.buttons["close-pins"].hover(); original.click()
+        app.buttons["close-pins"].hover(); clearHoverProfile(over: original, app: app); original.click()
         XCTAssertTrue(pins.waitForNonExistence(timeout: 10))
         XCTAssertTrue(oldBody.waitForExistence(timeout: 10)); XCTAssertEqual(oldBody.value as? String, oldText)
         XCTAssertTrue(oldBody.isHittable); XCTAssertTrue(channel.frame.intersects(oldBody.frame))
@@ -1203,13 +1236,15 @@ import XCTest
         let pinned = try XCTUnwrap((persisted["pinnedMessages"] as? [[String: Any]])?.first)
         XCTAssertEqual(pinned["id"] as? String, replyID); XCTAssertEqual(pinned["threadRootId"] as? String, rootID)
         XCTAssertEqual(pinned["broadcast"] as? Bool, false)
-        resize(app, width: 900)
+        // Below the 760pt breakpoint: the thread replaces the channel instead of splitting.
+        resize(app, width: 700)
         app.buttons["channel-pins"].click()
         XCTAssertTrue(pins.descendants(matching: .any)["pinned-message-\(replyID)"].waitForExistence(timeout: 10))
         XCTAssertFalse(pins.descendants(matching: .any)["pinned-message-\(oldID)"].exists)
         XCTAssertFalse(channel.textViews["message-\(replyID)"].exists, "A private reply appears in pins, never in channel history")
         XCTAssertTrue(composer.exists); XCTAssertEqual(composer.value as? String, draft)
         capture("private thread reply in channel pins narrow", app: app)
+        clearHoverProfile(over: pins.buttons["go-to-message-\(replyID)"], app: app)
         pins.buttons["go-to-message-\(replyID)"].click()
         XCTAssertTrue(pins.waitForNonExistence(timeout: 10))
         let threadTimeline = app.scrollViews["thread-timeline"]
@@ -1266,11 +1301,11 @@ import XCTest
         let maya = sheet.descendants(matching: .any)["reactor-row-member000001"]
         let alex = sheet.descendants(matching: .any)["reactor-row-member000002"]
         let own = sheet.descendants(matching: .any)["reactor-row-owner0000001"]
-        XCTAssertTrue(maya.waitForExistence(timeout: 10)); XCTAssertTrue(maya.label.contains("Maya"))
+        XCTAssertTrue(maya.waitForExistence(timeout: 10)); XCTAssertTrue(shownText(maya).contains("Maya"), maya.debugDescription)
         XCTAssertFalse(alex.exists); XCTAssertFalse(own.exists, "Opening details must not add the current account's reaction")
         capture("who reacted names wide", app: app)
         sheet.buttons["reactors-tab-❤️"].click()
-        XCTAssertTrue(alex.waitForExistence(timeout: 5)); XCTAssertTrue(alex.label.contains("Alex"))
+        XCTAssertTrue(alex.waitForExistence(timeout: 5)); XCTAssertTrue(shownText(alex).contains("Alex"), alex.debugDescription)
         XCTAssertFalse(maya.exists)
         resize(app, width: 900)
         capture("who reacted second emoji narrow", app: app)
@@ -1410,14 +1445,14 @@ import XCTest
         quick.hover(); badge.hover()
         let profileDraft = app.textViews["mention-card-composer"]
         XCTAssertTrue(profileDraft.waitForExistence(timeout: 5))
-        XCTAssertEqual(app.staticTexts["mention-card-username"].label, "@maya", "Hover must open the pinner, not the message's owner")
-        let privateDraft = "TEST FIXTURE — retain the pinner's profile draft"
+        XCTAssertEqual(shownText(app.staticTexts["mention-card-username"]), "@maya", "Hover must open the pinner, not the message's owner")
+        let privateDraft = "TEST FIXTURE — retain the pinner’s profile draft"
         profileDraft.click(); profileDraft.typeText(privateDraft)
         capture("pinner hover opens profile with independent draft wide", app: app)
         timeline.buttons["add-reaction-\(id)"].hover(); timeline.buttons["message-options-\(id)"].hover()
         app.buttons["profile-author-chan00000001m04"].hover()
         try await Task.sleep(for: .milliseconds(500))
-        XCTAssertEqual(app.staticTexts["mention-card-username"].label, "@maya", "Neighbor controls and ordinary authors must not replace the open pinner profile")
+        XCTAssertEqual(shownText(app.staticTexts["mention-card-username"]), "@maya", "Neighbor controls and ordinary authors must not replace the open pinner profile")
         XCTAssertEqual(profileDraft.value as? String, privateDraft)
         badge.hover(); badge.click()
         XCTAssertEqual(profileDraft.value as? String, privateDraft, "Leaving/reentering and clicking the same pinner must not recreate its presenter draft")
@@ -1555,6 +1590,8 @@ import XCTest
 
     func testThreadDraftsNarrowBackSendIsolationRetryAndRootNavigation() async throws {
         continueAfterFailure = false
+        // About five minutes of real UI on a laptop display; the hosted harness is faster.
+        executionTimeAllowance = 600
         try await Self.resetFixture()
         let path = "/api/chat/channels/chan00000001/messages"
         let rootID = "chan00000001m02", otherRootID = "chan00000001m01"
@@ -1735,7 +1772,7 @@ import XCTest
         XCTAssertLessThanOrEqual(channel.frame.maxX, timeline.frame.minX)
         XCTAssertEqual(editor.value as? String, "")
         XCTAssertFalse(pane.buttons["Cancel reply"].exists, "Reply in thread opens the root without quoting it")
-        XCTAssertFalse(send.isEnabled); XCTAssertEqual(broadcast.value as? String, "0")
+        XCTAssertFalse(send.isEnabled); XCTAssertEqual(switchValue(broadcast), "0")
         editor.click(); editor.typeText(threadDraft)
         seedBody.rightClick()
         let quoteAction = messageMenuItem("Reply", app: app, body: seedBody)
@@ -1903,7 +1940,7 @@ import XCTest
         XCTAssertEqual((privateChannel["messages"] as? [[String: Any]])?.count, initialChannelCount)
         XCTAssertFalse(try XCTUnwrap(privateChannel["messages"] as? [[String: Any]]).contains { $0["id"] as? String == privateID })
         XCTAssertEqual(editor.value as? String, ""); XCTAssertFalse(pane.buttons["Cancel reply"].exists)
-        XCTAssertEqual(broadcast.value as? String, "0")
+        XCTAssertEqual(switchValue(broadcast), "0")
 
         let sharedText = "TEST FIXTURE — one reply shared with the channel"
         editor.click(); editor.typeText(sharedText)
@@ -1911,7 +1948,7 @@ import XCTest
         XCTAssertTrue(seedBody.waitForExistence(timeout: 5)); seedBody.rightClick()
         let quoteAgain = messageMenuItem("Reply", app: app, body: seedBody)
         XCTAssertTrue(quoteAgain.waitForExistence(timeout: 5)); quoteAgain.click()
-        broadcast.click(); XCTAssertEqual(broadcast.value as? String, "1")
+        broadcast.click(); XCTAssertEqual(switchValue(broadcast), "1")
         send.click()
         timeline.scroll(byDeltaX: 0, deltaY: -10000)
         let sharedBody = timeline.textViews.matching(NSPredicate(format: "value == %@", sharedText)).firstMatch
@@ -1929,7 +1966,7 @@ import XCTest
         XCTAssertEqual(channelRows.count, initialChannelCount + 1, "Broadcast must not create a separate channel copy")
         XCTAssertEqual(channelRows.filter { $0["id"] as? String == sharedID }.count, 1, "Broadcast is the same server message, not a second send")
         XCTAssertFalse(channelRows.contains { $0["id"] as? String == privateID })
-        XCTAssertEqual(broadcast.value as? String, "0", "Broadcast applies to one send only")
+        XCTAssertEqual(switchValue(broadcast), "0", "Broadcast applies to one send only")
         resize(app, width: 1280)
         XCTAssertTrue(composer.waitForExistence(timeout: 5)); XCTAssertEqual(composer.value as? String, channelDraft)
         XCTAssertEqual(timeline.frame.width, 370, accuracy: 1, "Reopening roots at narrow widths retains the saved split width")
@@ -2000,7 +2037,7 @@ import XCTest
         XCTAssertTrue(viewThread.waitForExistence(timeout: 5))
         XCTAssertFalse(messageMenuItem("Reply", app: app, body: ownRoot).exists)
         viewThread.click()
-        XCTAssertTrue(timeline.textViews.matching(NSPredicate(format: "value == %@", "Second root reply")).firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(timeline.textViews.matching(NSPredicate(format: "value == %@", "TEST FIXTURE — Second root reply")).firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(editor.value as? String, otherDraft)
         capture("surviving replies beneath a deleted root", app: app)
         back.click(); survivingThread.click()
@@ -2714,11 +2751,12 @@ import XCTest
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["dm-dm0000000003"].exists)
         XCTAssertFalse(requests.exists)
-        app.buttons["dm-options-dm0000000003"].click(); app.menuItems["Block @jordan…"].click()
+        // Row options take clicks only while the row is hovered, as in the shipping sidebar.
+        app.buttons["dm-dm0000000003"].hover(); app.buttons["dm-options-dm0000000003"].click(); app.menuItems["Block @jordan…"].click()
         let confirmation = app.sheets.containing(.staticText, identifier: "Block Jordan?").firstMatch
         XCTAssertTrue(confirmation.buttons["Cancel"].waitForExistence(timeout: 5)); confirmation.buttons["Cancel"].click()
         XCTAssertTrue(composer.exists)
-        app.buttons["dm-options-dm0000000003"].click(); app.menuItems["Block @jordan…"].click()
+        app.buttons["dm-dm0000000003"].hover(); app.buttons["dm-options-dm0000000003"].click(); app.menuItems["Block @jordan…"].click()
         confirmation.buttons["Block"].click()
         let unblock = app.buttons["dm-blocked-unblock"]
         XCTAssertTrue(unblock.waitForExistence(timeout: 10))
@@ -2803,7 +2841,7 @@ import XCTest
             directs.buttons["new-message"].hover(); retry.hover()
             capture("DM list failure belongs to direct section \(Int(width))", app: app)
         }
-        let repeatedFailure = "TEST FIXTURE — Retry still unavailable; keep the current channel open."
+        let repeatedFailure = "TEST FIXTURE — Retry still unavailable. Keep the current channel open."
         try await Self.control(["clearFailures": true, "failure": ["path": "/api/dms", "method": "GET",
             "status": 503, "persistent": true, "error": repeatedFailure]])
         retry.click()
@@ -2930,7 +2968,8 @@ import XCTest
         capture("heading plus exact lookup and retryable refusal preserve channel draft", app: app)
         submit.hover(); submit.click()
         XCTAssertTrue(username.waitForNonExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["TEST FIXTURE Alex"].waitForExistence(timeout: 10))
+        // The peer is a space member, so the header follows the member's live name.
+        XCTAssertTrue(app.staticTexts["Alex"].waitForExistence(timeout: 10))
         XCTAssertEqual(composer.value as? String, "")
         XCTAssertTrue(directs.buttons["dm-dm0000000001"].exists)
         let opened = try await Self.fixtureGET("/api/dms")
@@ -3582,15 +3621,10 @@ import XCTest
         continueAfterFailure = false
         try await Self.resetFixture()
         addTeardownBlock { try await Self.resetFixture() }
-        // Clear only the development host's real shipping-key preference.
-        // An argument-domain value would conceal both missing writes and a
-        // broken relaunch read. Never touch the shipping app's defaults domain.
-        let preferences = try XCTUnwrap(UserDefaults(suiteName: "chat.caper.appkit-development"))
-        let shareKey = "caper.channelSidebarChannelsShare"
-        preferences.removeObject(forKey: shareKey)
-        XCTAssertTrue(preferences.synchronize())
-        XCTAssertNil(preferences.object(forKey: shareKey))
-        defer { preferences.removeObject(forKey: shareKey); _ = preferences.synchronize() }
+        // The first launch clears the development host's real shipping-key
+        // preference itself: the sandboxed runner only reaches its own
+        // container. An argument-domain value would conceal both missing
+        // writes and a broken relaunch read.
 
         // The existing fixture permits channel creation and exactly two
         // accepted non-self DM peers. The 96pt direct pane below forces those
@@ -3613,7 +3647,7 @@ import XCTest
         XCTAssertEqual((detail["channels"] as? [[String: Any]])?.count, 15)
         let historyPath = "/api/chat/channels/chan00000001/messages"
         let historyBefore = try await Self.fixtureGET(historyPath)
-        let app = launch(fixture: "voice-crowd")
+        let app = launch(fixture: "voice-crowd", clearingDefaults: ["caper.channelSidebarChannelsShare"])
         defer { app.terminate() }
         let composer = app.textViews["message-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
@@ -3671,14 +3705,6 @@ import XCTest
             XCTAssertEqual(search.value as? String, "sidebar-fixture-lima")
             XCTAssertTrue(browseResult.exists)
             XCTAssertTrue(space.isHittable); XCTAssertTrue(account.isHittable)
-        }
-        func assertSavedShare(_ expected: Double, accuracy: Double = 0.0001) {
-            let persisted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                _ = preferences.synchronize()
-                return preferences.object(forKey: shareKey) != nil && abs(preferences.double(forKey: shareKey) - expected) < accuracy
-            }, object: nil)
-            XCTAssertEqual(XCTWaiter.wait(for: [persisted], timeout: 5), .completed,
-                "The development host must persist its real sidebar share, not merely change its AX value")
         }
         for width in [CGFloat(1280), CGFloat(900)] {
             resize(app, width: width)
@@ -3751,7 +3777,6 @@ import XCTest
             start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: delta)))
             assertGeometry(available / 2 + delta)
             let draggedHeight = channels.frame.height
-            assertSavedShare(Double(draggedHeight / available), accuracy: 0.005)
             divider.click(); divider.typeKey(.upArrow, modifierFlags: [])
             assertGeometry(draggedHeight - 10)
             divider.typeKey(.downArrow, modifierFlags: [])
@@ -3819,7 +3844,14 @@ import XCTest
         XCTAssertEqual(restored.value as? String, "50 percent channels")
         XCTAssertEqual(relaunched.scrollViews["sidebar-channels-scroll"].frame.height,
             relaunched.scrollViews["sidebar-direct-scroll"].frame.height, accuracy: 1)
-        assertSavedShare(0.5)
+        // The sandboxed runner cannot read the host's defaults, so a third
+        // process proves the reset was saved, not merely shown.
+        relaunched.terminate()
+        let reset = launch(fixture: "voice-crowd", preservePanelWidths: true)
+        defer { reset.terminate() }
+        let resetDivider = reset.sliders["sidebar-sections-resize"]
+        XCTAssertTrue(resetDivider.waitForExistence(timeout: 15))
+        XCTAssertEqual(resetDivider.value as? String, "50 percent channels")
     }
 
     func testSidebarWidthDragKeyboardAndRelaunchKeepChannelsAndComposerUsable() async throws {
@@ -4021,11 +4053,12 @@ import XCTest
         for control in [app.staticTexts["Welcome to Caper"], email, app.buttons["Send code"]] {
             XCTAssertTrue(control.exists)
             XCTAssertTrue(window.frame.contains(control.frame))
-            XCTAssertGreaterThanOrEqual(control.frame.minX, window.frame.minX + 24)
-            XCTAssertLessThanOrEqual(control.frame.maxX, window.frame.maxX - 24)
+            // 24pt margins; some macOS versions add a text field's 1pt bezel to its accessibility frame.
+            XCTAssertGreaterThanOrEqual(control.frame.minX, window.frame.minX + 23)
+            XCTAssertLessThanOrEqual(control.frame.maxX, window.frame.maxX - 23)
         }
-        XCTAssertEqual(email.frame.width, 342, accuracy: 1)
-        XCTAssertEqual(app.buttons["Send code"].frame.width, email.frame.width, accuracy: 1)
+        XCTAssertEqual(email.frame.width, 342, accuracy: 2)
+        XCTAssertEqual(app.buttons["Send code"].frame.width, email.frame.width, accuracy: 2)
         XCTAssertLessThanOrEqual(email.frame.maxY, app.buttons["Send code"].frame.minY)
         XCTAssertFalse(app.buttons["Send code"].isEnabled)
         email.hover(); app.buttons["Send code"].hover()
@@ -4044,10 +4077,11 @@ import XCTest
         for control in [app.staticTexts["Check your email"], code, app.buttons["Sign in"], app.buttons["Use a different email"]] {
             XCTAssertTrue(control.exists)
             XCTAssertTrue(window.frame.contains(control.frame))
-            XCTAssertGreaterThanOrEqual(control.frame.minX, window.frame.minX + 24)
-            XCTAssertLessThanOrEqual(control.frame.maxX, window.frame.maxX - 24)
+            // 24pt margins; some macOS versions add a text field's 1pt bezel to its accessibility frame.
+            XCTAssertGreaterThanOrEqual(control.frame.minX, window.frame.minX + 23)
+            XCTAssertLessThanOrEqual(control.frame.maxX, window.frame.maxX - 23)
         }
-        XCTAssertEqual(code.frame.width, 342, accuracy: 1)
+        XCTAssertEqual(code.frame.width, 342, accuracy: 2)
         XCTAssertLessThanOrEqual(code.frame.maxY, app.buttons["Sign in"].frame.minY)
         XCTAssertLessThanOrEqual(app.buttons["Sign in"].frame.maxY, app.buttons["Use a different email"].frame.minY)
         XCTAssertFalse(app.buttons["Sign in"].isEnabled)

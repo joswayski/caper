@@ -367,6 +367,7 @@ private struct AppKitWorkspaceDialog: View {
     private var personID: String?
     private var draft: ProfileMessageDraft?
     private var dismissAction: ProfileDismissAction?
+    private weak var anchor: NSView?
 
     public init(model: AppModel) { self.model = model }
 
@@ -418,10 +419,17 @@ private struct AppKitWorkspaceDialog: View {
             .tint(CaperTheme.terracottaBright))
         host.sizingOptions = [.preferredContentSize]
         popover.contentViewController = host
+        anchor = view
         popover.show(relativeTo: rect, of: view, preferredEdge: .maxY)
     }
 
     public func popoverShouldClose(_ popover: NSPopover) -> Bool {
+        // A hover-opened card stays open when its own anchor is then clicked;
+        // that click would otherwise close it as an outside click.
+        // The close request can arrive with the press or its release.
+        if let anchor, let window = anchor.window,
+           [.leftMouseDown, .leftMouseUp].contains(NSApp.currentEvent?.type),
+           anchor.bounds.contains(anchor.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)) { return false }
         if let dismissAction { dismissAction.action(); return false }
         guard draft?.preventsImplicitDismissal != true else { return false }
         popover.animates = false

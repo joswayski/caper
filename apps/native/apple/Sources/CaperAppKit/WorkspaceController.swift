@@ -587,7 +587,9 @@ import CaperCore
         composer.frame.size.width = composerScroll.contentSize.width
         composer.minSize = NSSize(width: 0, height: 70)
         counter.frame = NSRect(x: 20, y: base - 24, width: center - 40, height: 16)
-        broadcast.frame = NSRect(x: 20, y: height - 26, width: center - 40, height: 22)
+        // A checkbox toggles only on its box and title, so its frame (and the
+        // accessibility frame pointer clients aim at) must not run past them.
+        broadcast.frame = NSRect(x: 20, y: height - 26, width: min(center - 40, broadcast.fittingSize.width), height: 22)
         join.frame = NSRect(x: 20, y: height - 80, width: min(140, center - 40), height: 38)
         layoutSuggestions()
         retry.frame = NSRect(x: center - 84, y: statusY, width: 64, height: 24)
@@ -655,7 +657,8 @@ import CaperCore
         join.isEnabled = joiningChannelID == nil
         join.title = joiningChannelID == model.selectedChannelID ? "Joining…" : "Join channel"
         broadcast.isHidden = !inThread || hidden
-        broadcast.title = "Also send to \(model.selectedDirectMessage?.peer.displayName ?? "#\(chat.channelName)")"
+        let broadcastTitle = "Also send to \(model.selectedDirectMessage?.peer.displayName ?? "#\(chat.channelName)")"
+        if broadcast.title != broadcastTitle { broadcast.title = broadcastTitle; view.needsLayout = true }
         broadcast.setAccessibilityLabel(broadcast.title)
         broadcast.state = chat.threadBroadcast ? .on : .off
         broadcast.isEnabled = !recording && ready && chat.canInteract && chat.pendingMessage == nil

@@ -218,14 +218,21 @@ import CaperCore
         heading.setAccessibilityLabel("Channels, \(joined.count)")
         heading.setAccessibilityValue(expanded ? "Expanded" : "Collapsed")
         channelHeading.setExpanded(expanded)
-        create.isHidden = !model.isOwner; options.isHidden = !model.isOwner
+        if create.isHidden == model.isOwner {
+            // The heading lays out only visible actions; ownership often arrives after the first render.
+            create.isHidden = !model.isOwner; options.isHidden = !model.isOwner
+            channelHeading.needsLayout = true
+        }
         create.isEnabled = model.canCreateChannel
         create.toolTip = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
         channels.beginUpdates(); directs.beginUpdates()
         updateExternalVoice(joined: joined)
         channels.append(channelHeading, height: 44)
         channelCards = channelCards.filter { id, _ in joined.contains { $0.id == id } }
-        LiveNow.listed(joined, expanded: expanded) { VoicePresentation.isLive(model, $0) }.forEach { addChannel($0) }
+        // Read every row's liveness even while expanded: collapsing renders
+        // outside observation, so the tracked render must already depend on it.
+        let live = Set(joined.filter { VoicePresentation.isLive(model, $0) }.map(\.id))
+        LiveNow.listed(joined, expanded: expanded) { live.contains($0.id) }.forEach { addChannel($0) }
         if browsing {
             channels.append(search, height: 30)
             let query = String(search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).drop(while: { $0 == "#" }))
