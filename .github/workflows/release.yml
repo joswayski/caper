@@ -230,6 +230,11 @@ jobs:
         with:
           platform: apple
       - name: Build and test
+        # Ship the AppKit client as Caper.app. It keeps SwiftUI's bundle ID,
+        # Keychain session, login item and update channel, so installs move
+        # over in place on their next update.
+        env:
+          CAPER_MACOS_SCHEME: CaperMacAppKit
         run: bash apps/native/apple/build.sh macos
       - name: Sign with Developer ID, notarize and staple
         run: uv run --project "$RUNNER_TEMP/python-tooling" --locked --only-group dmg bash apps/native/apple/sign-and-notarize.sh "${{ matrix.label }}"
