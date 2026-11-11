@@ -19,7 +19,17 @@ if [[ "$MODE" != build && "$MODE" != test ]]; then
   exit 2
 fi
 shift
-destination="${CAPER_IOS_SIMULATOR_DESTINATION:-platform=iOS Simulator,name=iPhone 16,OS=latest}"
+# CI creates an iPhone 16 (native.yml). Elsewhere, when this Xcode has none,
+# use the first available iPhone instead of failing to find a destination.
+if [[ -n "${CAPER_IOS_SIMULATOR_DESTINATION:-}" ]]; then
+  destination="$CAPER_IOS_SIMULATOR_DESTINATION"
+elif xcrun simctl list devices available | grep -q '^ *iPhone 16 ('; then
+  destination="platform=iOS Simulator,name=iPhone 16,OS=latest"
+else
+  udid="$(xcrun simctl list devices available | sed -n 's/^ *iPhone[^(]* (\([0-9A-F-]*\)).*/\1/p' | head -1)"
+  [[ -n "$udid" ]] || { echo "No iPhone simulator is available; set CAPER_IOS_SIMULATOR_DESTINATION." >&2; exit 2; }
+  destination="platform=iOS Simulator,id=$udid"
+fi
 
 "$ROOT/prepare.sh"
 xcodegen=("$ROOT"/.build/xcodegen-*)

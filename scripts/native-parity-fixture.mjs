@@ -1,9 +1,9 @@
 /** Disposable UI fixture, on loopback unless CAPER_FIXTURE_HOST names a private-LAN address. Never proxies to Caper or an SFU. */
 /* oxlint-disable no-control-regex -- Mirror the API's rejection of control characters in message text. */
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const fixtureIDs = {
   owner: "owner0000001",
@@ -3566,7 +3566,9 @@ export async function startFixture({
   };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Real paths on both sides: run from a symlinked directory (macOS /tmp is
+// /private/tmp), argv[1] and import.meta.url name the same file differently.
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const fixture = await startFixture({
     port: Number(process.env.CAPER_FIXTURE_PORT ?? 3001),
     gatewayPort: Number(process.env.CAPER_FIXTURE_GATEWAY_PORT ?? 3002),
