@@ -55,7 +55,7 @@ if tool == "xcodebuild":
     if "-resultBundlePath" in args and os.environ.get("TEST_SKIP_RESULT_BUNDLE") != "1":
         Path(args[args.index("-resultBundlePath") + 1]).mkdir()
     scheme = args[args.index("-scheme") + 1]
-    sys.exit(0 if scheme == "CaperMacOS" else int(os.environ["TEST_XCODEBUILD_STATUS"]))
+    sys.exit(0 if scheme == "CaperMacAppKit" else int(os.environ["TEST_XCODEBUILD_STATUS"]))
 if tool == "xcrun":
     assert args[:3] == ["xcresulttool", "export", "attachments"]
     assert Path(args[args.index("--path") + 1]).is_dir()
@@ -105,9 +105,9 @@ if tool == "xcrun":
                 self.assertEqual(result.returncode, 23, result.stderr)
                 self.assertEqual(len(commands), 2)
                 mac, ios = commands
-                self.assertEqual(mac[mac.index("-scheme") + 1], "CaperMacOS")
+                self.assertEqual(mac[mac.index("-scheme") + 1], "CaperMacAppKit")
                 self.assertEqual(mac[mac.index("-destination") + 1], "platform=macOS,arch=arm64")
-                self.assertEqual(ios[ios.index("-scheme") + 1], "CaperIOS")
+                self.assertEqual(ios[ios.index("-scheme") + 1], "CaperIOSUIKit")
                 self.assertEqual(ios[ios.index("-destination") + 1], destination or DEFAULT_DESTINATION)
                 self.assertNotIn("simulator only", result.stdout)
 
