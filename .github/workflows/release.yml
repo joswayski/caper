@@ -329,6 +329,9 @@ jobs:
         env:
           # Unique and increasing across runs and re-runs, e.g. 12.1 then 12.2.
           BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
+          # Ship the UIKit client as Caper.app: CaperIOS's bundle ID, entitlements
+          # and notification extension, so installs update in place signed in.
+          CAPER_IOS_SCHEME: CaperIOSUIKit
         run: bash apps/native/apple/upload-testflight.sh
       - uses: actions/download-artifact@v4
         with:
