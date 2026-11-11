@@ -25,7 +25,10 @@ import SwiftUI
 /// unsaved-edit guards. Only the open dialog has a SwiftUI hosting controller.
 @MainActor public final class AppKitWorkspacePresenter {
     private let model: AppModel
-    private var host: NSHostingController<AppKitWorkspaceDialog>?
+    /// The open dialog: native, or SwiftUI for items not yet rebuilt in AppKit.
+    private var host: NSViewController?
+    private var state: AppKitWorkspaceDialogState?
+    private let observation = AppKitObservation()
     private weak var previousResponder: NSResponder?
     private var previousContext: String?
     private var focusContext: String { [model.chat.editingContext, model.chat.threadRootID ?? "channel"].joined(separator: ":") }
@@ -118,7 +121,7 @@ import SwiftUI
             show(AppKitWorkspaceDialogState(item: .forward(message)), in: parent)
         } else if let message = model.chat.forwardConversationTarget {
             show(AppKitWorkspaceDialogState(item: .forwardConversation(message)), in: parent)
-        } else if let item = host?.rootView.state.item {
+        } else if let item = state?.item {
             switch item {
             case .forward, .forwardConversation: close()
             default: break
@@ -128,11 +131,26 @@ import SwiftUI
 
     private func show(_ state: AppKitWorkspaceDialogState, in parent: NSViewController) {
         guard host == nil, let container = parent.view as? AppKitWorkspaceContainer, container.dialogView == nil else { return }
-        let host = NSHostingController(rootView: AppKitWorkspaceDialog(model: model, state: state) { [weak self] in
-            guard let self, self.host?.rootView.state === state else { return }
+        let dismiss: () -> Void = { [weak self] in
+            guard let self, self.state === state else { return }
             self.close()
-        })
+        }
+        let host: NSViewController
+        if let content = nativeContent(state.item, close: dismiss) {
+            host = NSViewController()
+            host.view = AppKitDialogFrame(content: content, width: state.item.width, requestClose: dismiss)
+            // As the SwiftUI dialog: message dialogs end with their conversation,
+            // and every dialog ends with the account.
+            let messageScoped = state.item.messageID != nil
+            let context = model.chat.editingContext, account = model.account?.id
+            observation.start(reading: { [model] in (model.chat.editingContext, model.account?.id) }) { now in
+                if now.1 != account || (messageScoped && now.0 != context) { dismiss() }
+            }
+        } else {
+            host = NSHostingController(rootView: AppKitWorkspaceDialog(model: model, state: state, dismiss: dismiss))
+        }
         self.host = host
+        self.state = state
         previousResponder = parent.view.window?.firstResponder
         previousContext = focusContext
         if case .activity = state.item { model.activityShown = true }
@@ -147,12 +165,37 @@ import SwiftUI
         model.whatsNew.workspaceModalOpen = true
     }
 
+    /// Dialogs rebuilt in AppKit; the rest still use the SwiftUI dialog.
+    private func nativeContent(_ item: AppKitWorkspaceDialogItem, close: @escaping () -> Void) -> AppKitDialogContent? {
+        switch item {
+        case .leaveChannel(let channel):
+            return AppKitConfirmationDialog(title: "Leave #\(channel.name)?",
+                detail: channel.private && !model.isOwner
+                    ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call."
+                    : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.",
+                action: "Leave channel", pendingLabel: "Leaving…", close: close) { [model] in try await model.leaveChannel(channel) }
+        case .delete(let message):
+            return AppKitConfirmationDialog(title: MessageDeletion.confirmTitle, detail: MessageDeletion.confirmMessage,
+                action: "Delete", pendingLabel: "Deleting…", close: close) { [model] in await model.chat.deleteMessage(message) }
+        case .history(let message):
+            return AppKitMessageHistory(chat: model.chat, message: message, close: close)
+        case .workspace(.leaveSpace):
+            return AppKitConfirmationDialog(title: "Leave \(model.detail?.space.name ?? "space")?",
+                detail: "You will lose access to its channels and conversations. An owner can add you again later.",
+                action: "Leave space", pendingLabel: "Leaving…", close: close) { [model] in try await model.leaveCurrentSpace() }
+        default:
+            return nil
+        }
+    }
+
     private func close() {
-        guard let host else { return }
-        let item = host.rootView.state.item
+        guard let host, let state else { return }
+        let item = state.item
         let window = host.view.window
         let parent = host.parent
-        host.rootView.state.closed = true
+        state.closed = true
+        observation.stop()
+        self.state = nil
         (host.parent?.view as? AppKitWorkspaceContainer)?.dialogView = nil
         host.view.removeFromSuperview()
         host.removeFromParent()
@@ -501,26 +544,24 @@ private struct AppKitWorkspaceDialog: View {
 
     private func show(messageID: String, emoji: String, anchor: NSView, container: NSView) {
         let overlay = AppKitPointerPassthroughView()
-        let surface = AppKitAttachmentSurface {
-            AppKitReactionTooltipContent(model: model, messageID: messageID, emoji: emoji) { [weak self] in self?.close() }
-                .modifier(Entrance.anchored)
-        }
+        let bubble = AppKitReactionTooltip(model: model, messageID: messageID, emoji: emoji) { [weak self] in self?.close() }
+        // Already gone (the reaction was removed while the delay ran).
+        guard self.anchor === anchor else { return }
         self.overlay = overlay
-        overlay.addSubview(surface)
+        overlay.addSubview(bubble)
         container.addSubview(overlay)
-        position = { [weak self, weak anchor, weak container, weak overlay, weak surface] in
-            guard let self, let anchor, let container, let overlay, let surface else { return }
+        position = { [weak self, weak anchor, weak container, weak overlay, weak bubble] in
+            guard let self, let anchor, let container, let overlay, let bubble else { return }
             guard anchor.window != nil, !anchor.visibleRect.isEmpty, !anchor.isHiddenOrHasHiddenAncestor else { self.close(); return }
             let chip = anchor.convert(anchor.bounds, to: container)
-            let width = min(280, max(1, container.bounds.width - 16))
-            let height = surface.height(for: width)
-            let x = min(max(8, chip.minX), max(8, container.bounds.width - width - 8))
-            let top = chip.minY - height - 6
-            let y = min(max(8, top >= 0 ? top : chip.maxY + 6), max(8, container.bounds.height - height - 8))
-            overlay.frame = NSRect(x: x, y: y, width: width, height: height)
-            surface.frame = overlay.bounds
+            let size = bubble.size(maxWidth: min(280, max(1, container.bounds.width - 16)))
+            let x = min(max(8, chip.minX), max(8, container.bounds.width - size.width - 8))
+            let top = chip.minY - size.height - 6
+            let y = min(max(8, top >= 0 ? top : chip.maxY + 6), max(8, container.bounds.height - size.height - 8))
+            overlay.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+            bubble.frame = overlay.bounds
         }
-        surface.heightChanged = { [weak self] in self?.position?() }
+        bubble.changed = { [weak self] in self?.position?() }
         position?()
     }
 }
@@ -530,29 +571,82 @@ private final class AppKitPointerPassthroughView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-private struct AppKitReactionTooltipContent: View {
-    let model: AppModel
-    let messageID: String
-    let emoji: String
-    let close: () -> Void
-    private var chat: ChatModel { model.chat }
-    private var message: ChatMessage? { chat.displayedMessages.first { $0.id == messageID && !$0.isDeleted } }
-    private var available: Bool { message?.reactions?.contains { $0.emoji == emoji } == true }
+/// "You, Maya and Alex reacted with :tada:" beside the emoji's artwork. It
+/// closes when the reaction goes away, the conversation changes, a dialog
+/// opens or the window resigns key, and asks for names as reactions change.
+@MainActor private final class AppKitReactionTooltip: NSView {
+    private let model: AppModel
+    private let messageID: String
+    private let emoji: String
+    private let close: () -> Void
+    private let text = AppKitKit.label("", size: 12, weight: .medium)
+    private let observation = AppKitObservation()
+    private var requested: String?
+    private var resign: NSObjectProtocol?
+    var changed: (() -> Void)?
 
-    var body: some View {
-        Group {
-            if let message, available {
-                ReactionTooltipBubble(emoji: emoji, text: NativePresentation.reactionSummary(message, emoji: emoji, chat: chat, viewerID: chat.viewerID))
+    init(model: AppModel, messageID: String, emoji: String, close: @escaping () -> Void) {
+        self.model = model; self.messageID = messageID; self.emoji = emoji; self.close = close
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(CaperTheme.blackout).cgColor
+        layer?.cornerRadius = 8; layer?.borderWidth = 1; layer?.borderColor = AppKitKit.border.cgColor
+        layer?.shadowColor = NSColor.black.cgColor; layer?.shadowOpacity = 0.35; layer?.shadowRadius = 8; layer?.shadowOffset = CGSize(width: 0, height: -3)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityIdentifier("reaction-tooltip")
+        let art: NSView
+        if let entry = EmojiArtwork.entry(for: emoji), let image = EmojiArtwork.image(for: entry) {
+            let view = NSImageView(image: NSImage(cgImage: image, size: NSSize(width: 38, height: 38)))
+            view.imageScaling = .scaleProportionallyUpOrDown
+            view.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([view.widthAnchor.constraint(equalToConstant: 38), view.heightAnchor.constraint(equalToConstant: 38)])
+            art = view
+        } else {
+            let glyph = NSTextField(labelWithString: emoji); glyph.font = .systemFont(ofSize: 32)
+            art = glyph
+        }
+        let row = NSStackView(views: [art, text]); row.orientation = .horizontal; row.spacing = 10; row.alignment = .centerY
+        row.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: leadingAnchor), row.trailingAnchor.constraint(equalTo: trailingAnchor),
+            row.topAnchor.constraint(equalTo: topAnchor), row.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        let context = model.chat.editingContext
+        observation.start(reading: { [model, messageID, emoji] () -> (String?, String, Bool) in
+            let chat = model.chat
+            let message = chat.displayedMessages.first { $0.id == messageID && !$0.isDeleted }
+            let summary = message.flatMap { message in
+                message.reactions?.contains { $0.emoji == emoji } == true
+                    ? NativePresentation.reactionSummary(message, emoji: emoji, chat: chat, viewerID: chat.viewerID) : nil
+            }
+            return (summary, "\(chat.editingContext):\(message?.reactionSeq ?? "0")", model.whatsNew.workspaceModalOpen)
+        }) { [weak self] summary, key, modal in
+            guard let self else { return }
+            guard let summary, !modal, key.hasPrefix(context + ":") else { self.close(); return }
+            if self.requested != key { self.requested = key; _ = self.model.chat.requestReactors(messageID: self.messageID) }
+            if self.text.stringValue != summary {
+                self.text.stringValue = summary
+                self.setAccessibilityLabel(summary)
+                self.changed?()
             }
         }
-        .task(id: "\(chat.editingContext):\(message?.reactionSeq ?? "0")") {
-            guard available else { close(); return }
-            _ = chat.requestReactors(messageID: messageID)
+        resign = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.close() }
         }
-        .onChange(of: available) { _, value in if !value { close() } }
-        .onChange(of: chat.editingContext) { _, _ in close() }
-        .onChange(of: model.whatsNew.workspaceModalOpen) { _, open in if open { close() } }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in close() }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    isolated deinit { resign.map(NotificationCenter.default.removeObserver) }
+
+    override var isFlipped: Bool { true }
+
+    /// The bubble hugs its text up to `maxWidth`.
+    func size(maxWidth: CGFloat) -> NSSize {
+        text.preferredMaxLayoutWidth = max(1, maxWidth - 68)
+        let fitting = fittingSize
+        return NSSize(width: min(maxWidth, ceil(fitting.width)), height: ceil(fitting.height))
     }
 }
 

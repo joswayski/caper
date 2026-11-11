@@ -4,15 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 MODE="${1:-}"
 MAC_BUNDLE_ID="${CAPER_MACOS_BUNDLE_ID:-chat.caper.macos}"
-# The shipped Mac client: CaperMacOS (SwiftUI) or CaperMacAppKit. Both build
-# Caper.app under the same bundle ID, so either replaces the other in place.
-MAC_SCHEME="${CAPER_MACOS_SCHEME:-CaperMacOS}"
-case "$MAC_SCHEME" in CaperMacOS|CaperMacAppKit) ;; *) echo "CAPER_MACOS_SCHEME must be CaperMacOS or CaperMacAppKit." >&2; exit 2 ;; esac
+# The shipped Mac client, Caper.app under the bundle ID the SwiftUI app used.
+MAC_SCHEME=CaperMacAppKit
 IOS_BUNDLE_ID="${CAPER_IOS_BUNDLE_ID:-chat.caper.ios}"
-# The shipped iPhone client: CaperIOS (SwiftUI) or CaperIOSUIKit, both Caper.app
-# under the same bundle ID and entitlements.
-IOS_SCHEME="${CAPER_IOS_SCHEME:-CaperIOS}"
-case "$IOS_SCHEME" in CaperIOS|CaperIOSUIKit) ;; *) echo "CAPER_IOS_SCHEME must be CaperIOS or CaperIOSUIKit." >&2; exit 2 ;; esac
+# The shipped iPhone client, Caper.app under the SwiftUI app's bundle ID and entitlements.
+IOS_SCHEME=CaperIOSUIKit
 if [[ "$MODE" != macos && "$MODE" != ios ]]; then
   echo "Usage: $0 macos|ios" >&2
   exit 2

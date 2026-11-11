@@ -380,7 +380,7 @@ targets:
   # entitlements (push, communication notifications, associated domains),
   # notification service extension and Info.plist keys, so it can replace the
   # SwiftUI app in TestFlight and an installed copy keeps its Keychain session.
-  # build.sh and upload-testflight.sh pick it with CAPER_IOS_SCHEME=CaperIOSUIKit.
+  # build.sh and upload-testflight.sh always build it.
   CaperIOSUIKit:
     type: application
     platform: iOS

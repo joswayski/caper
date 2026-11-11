@@ -1,6 +1,6 @@
 # Caper for Apple platforms
 
-The shipping macOS app is the AppKit client (`CaperMacAppKit`, below); the shipping iPhone app is the UIKit client (`CaperIOSUIKit`, built from `Sources/CaperUIKit` with the `chat.caper.ios` identity, entitlements and notification extension; `release.yml` sets `CAPER_IOS_SCHEME=CaperIOSUIKit`). They contain no Electron, Tauri, WebView, or browser content (apart from the isolated KLIPY ad view on iPhone). The earlier SwiftUI apps (`CaperIOS`, `CaperMacOS`) still build but are no longer released.
+The shipping macOS app is the AppKit client (`CaperMacAppKit`, below); the shipping iPhone app is the UIKit client (`CaperIOSUIKit`, built from `Sources/CaperUIKit` with the `chat.caper.ios` identity, entitlements and notification extension; `build.sh` and `upload-testflight.sh` always build it). They contain no Electron, Tauri, WebView, or browser content (apart from the isolated KLIPY ad view on iPhone). The earlier SwiftUI apps (`CaperIOS`, `CaperMacOS`) still build but are no longer released.
 
 ## Features
 
@@ -80,7 +80,7 @@ macOS AppIcon PNGs (16–1024px, transparent) are generated from `apps/web/publi
 
 It covers sign-in and onboarding, space/channel/DM navigation and requests, history, sending/retry, editing and deletion, replies, threads, pins, forwarding, reactions, attachments, GIFs, voice notes and voice channels, the member list, every space/channel/account management dialog, notifications, the activity inbox, Settings and What's New. It also handles `caper://` links and includes the shared self-updater. `NativePresentation` and `NativeTimelineLayout` support both macOS and iOS; controls and observation remain host-specific.
 
-Release builds use the `CaperMacAppKit` target, which keeps the SwiftUI app's identity: bundle ID `chat.caper.macos`, product name Caper, its Keychain session, login item, `caper://` URL type and update channel, so existing installs move over on their next self-update and stay signed in. `release.yml` sets `CAPER_MACOS_SCHEME=CaperMacAppKit` for `build.sh` (whose default is still `CaperMacOS`). The `CaperAppKit` development scheme keeps the bundle ID `chat.caper.appkit-development` and a separate Keychain service. Build and run the development host from the repository root on a Mac:
+Release builds use the `CaperMacAppKit` target, which keeps the SwiftUI app's identity: bundle ID `chat.caper.macos`, product name Caper, its Keychain session, login item, `caper://` URL type and update channel, so existing installs move over on their next self-update and stay signed in. `build.sh` always builds it. The `CaperAppKit` development scheme keeps the bundle ID `chat.caper.appkit-development` and a separate Keychain service. Build and run the development host from the repository root on a Mac:
 
 ```sh
 ./apps/native/apple/prepare.sh

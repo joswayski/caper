@@ -1,6 +1,5 @@
 import AppKit
 import CaperCore
-import SwiftUI
 
 @main @MainActor
 final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidation {
@@ -159,7 +158,7 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
         (view as? RootView)?.modal = nil
         guard let update, let updater else { return }
         let model = model
-        let host = NSHostingView(rootView: DesktopUpdateReview(update: update,
+        let host = AppKitUpdateReview(update: update,
             inCall: model.voice.phase != .idle && model.voice.phase != .failed,
             close: { updater.dismissReview() },
             restart: {
@@ -170,7 +169,7 @@ final class CaperAppKitApp: NSObject, NSApplicationDelegate, NSMenuItemValidatio
             report: model.canSendUpdateReport ? { [installed = updater.installedVersion] error in
                 await model.sendUpdateReport(error: error, installed: String(installed.dropFirst("Installed: ".count)),
                                              target: update.version)
-            } : nil))
+            } : nil)
         host.frame = view.bounds
         host.autoresizingMask = [.width, .height]
         view.addSubview(host)

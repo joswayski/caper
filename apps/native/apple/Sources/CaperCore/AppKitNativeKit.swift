@@ -134,7 +134,11 @@ import SwiftUI
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override var title: String { didSet { refresh() } }
+    override var title: String {
+        // A custom accessibility label (e.g. "Close What’s new") stays; one that
+        // mirrors the title follows it, e.g. "Leave channel" → "Leaving…".
+        didSet { if accessibilityLabel() == oldValue { setAccessibilityLabel(title) }; refresh() }
+    }
     override var isEnabled: Bool { didSet { refresh() } }
 
     @objc private func fire() { handler() }
@@ -208,10 +212,56 @@ import SwiftUI
     }
 }
 
+/// NSSwitch has no tint, and SwiftUI's settings switches were terracotta, so
+/// this draws the same 38×22 switch and reports itself as one to accessibility.
+@MainActor final class AppKitKitSwitch: NSButton {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setButtonType(.switch)
+        title = ""; isBordered = false; imagePosition = .noImage
+        focusRingType = .none
+        setAccessibilitySubrole(.switch)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    var isOn: Bool {
+        get { state == .on }
+        set { state = newValue ? .on : .off; needsDisplay = true }
+    }
+    override var state: NSControl.StateValue { didSet { needsDisplay = true } }
+    override var isEnabled: Bool { didSet { needsDisplay = true } }
+    override var intrinsicContentSize: NSSize { NSSize(width: 38, height: 22) }
+    private var focused: Bool { window?.firstResponder === self && window?.isKeyWindow == true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let track = bounds.insetBy(dx: 2, dy: 2)
+        let radius = track.height / 2
+        // The row dims itself when disabled.
+        (isOn ? AppKitKit.terracotta : AppKitKit.raised.blended(withFraction: 0.12, of: .white) ?? AppKitKit.raised).setFill()
+        NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
+        if !isOn {
+            AppKitKit.border.setStroke()
+            let outline = NSBezierPath(roundedRect: track.insetBy(dx: 0.5, dy: 0.5), xRadius: radius - 0.5, yRadius: radius - 0.5)
+            outline.lineWidth = 1; outline.stroke()
+        }
+        let side = track.height - 4
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: NSRect(x: isOn ? track.maxX - side - 2 : track.minX + 2, y: track.minY + 2, width: side, height: side)).fill()
+        if focused && isEnabled {
+            AppKitKit.terracottaBright.setStroke()
+            let ring = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: bounds.height / 2 - 1, yRadius: bounds.height / 2 - 1)
+            ring.lineWidth = 2; ring.stroke()
+        }
+    }
+    override func resetCursorRects() { if isEnabled { addCursorRect(bounds, cursor: .pointingHand) } }
+    override func becomeFirstResponder() -> Bool { needsDisplay = true; return super.becomeFirstResponder() }
+    override func resignFirstResponder() -> Bool { needsDisplay = true; return super.resignFirstResponder() }
+}
+
 /// A titled switch with a muted description, like the SwiftUI settings rows.
 /// The switch carries the accessibility identifier and the row's label.
 @MainActor final class AppKitKitSwitchRow: NSView {
-    let toggle = NSSwitch()
+    let toggle = AppKitKitSwitch()
     private let changed: (Bool) -> Void
 
     init(title: String, detail: String, identifier: String, changed: @escaping (Bool) -> Void) {
@@ -235,14 +285,14 @@ import SwiftUI
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     var isOn: Bool {
-        get { toggle.state == .on }
-        set { toggle.state = newValue ? .on : .off }
+        get { toggle.isOn }
+        set { toggle.isOn = newValue }
     }
     var isEnabled: Bool {
         get { toggle.isEnabled }
         set { toggle.isEnabled = newValue; alphaValue = newValue ? 1 : 0.6 }
     }
-    @objc private func toggled() { changed(toggle.state == .on) }
+    @objc private func toggled() { changed(toggle.isOn) }
 }
 
 /// A flipped document view, so scroll content starts at the top.

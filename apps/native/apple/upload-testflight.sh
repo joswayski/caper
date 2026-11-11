@@ -12,9 +12,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 IOS_BUNDLE_ID="${CAPER_IOS_BUNDLE_ID:-chat.caper.ios}"
-# CaperIOS (SwiftUI) or CaperIOSUIKit: the same Caper.app identity, extension and entitlements.
-IOS_SCHEME="${CAPER_IOS_SCHEME:-CaperIOS}"
-case "$IOS_SCHEME" in CaperIOS|CaperIOSUIKit) ;; *) echo "CAPER_IOS_SCHEME must be CaperIOS or CaperIOSUIKit." >&2; exit 2 ;; esac
+# The UIKit client keeps the SwiftUI app's Caper.app identity, extension and entitlements.
+IOS_SCHEME=CaperIOSUIKit
 : "${APPLE_TEAM_ID:?}" "${NOTARY_KEY_PATH:?}" "${NOTARY_KEY_ID:?}" "${NOTARY_ISSUER:?}" "${BUILD_NUMBER:?}"
 
 auth=(
