@@ -2,12 +2,20 @@ import CaperCore
 import Darwin
 import os
 import UIKit
-import UserNotifications
 
 final class CaperUIKitAppDelegate: UIResponder, UIApplicationDelegate {
+    /// APNs and notification taps, shared with the SwiftUI app. It becomes the
+    /// notification center's delegate before launch finishes, so a tap that
+    /// launched the app is held until the scene attaches the model.
+    static let push = PushNotifications()
+
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Satoshi is registered by UIAppFonts before launch; nothing to load here.
-        true
+        Self.push.application(application, didFinishLaunchingWithOptions: launchOptions)
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Self.push.application(application, didRegisterForRemoteNotificationsWithDeviceToken: deviceToken)
     }
 
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
@@ -86,15 +94,21 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.window = window
         self.root = root
         measureFirstFrame(cached: cached != nil)
-        notifications.model = model
-        UNUserNotificationCenter.current().delegate = notifications
+        let push = CaperUIKitAppDelegate.push
+        push.model = model
+        // A new account (sign-in, switch) re-reads the server's push configuration.
+        var accountID = model.account?.id
+        accountObserver.start { [weak model] in
+            guard let model else { return }
+            let current = model.account?.id
+            guard current != accountID else { return }
+            accountID = current
+            Task { await push.refreshConfiguration() }
+        }
         // A link that launched the app; the model holds it until the workspace is ready.
         for context in connectionOptions.urlContexts { model.openInviteLink(context.url) }
         if let url = connectionOptions.userActivities.first(where: { $0.activityType == NSUserActivityTypeBrowsingWeb })?.webpageURL {
             model.openInviteLink(url)
-        }
-        if let route = connectionOptions.notificationResponse.flatMap({ NotificationRoute(userInfo: $0.notification.request.content.userInfo) }) {
-            Task { await model.open(route) }
         }
         // Parity launches stand in for a link opened from another app.
         if CaperUIKitLaunch.parityFixture, let raw = ProcessInfo.processInfo.environment["CAPER_TEST_OPEN_URL"], let url = URL(string: raw) {
@@ -104,11 +118,11 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
         if model.phase == .loading { Task { await model.start() } }
     }
 
-    private let notifications = NotificationTaps()
+    private let accountObserver = ModelObserver()
 
     /// Invite links (`caper://invite/<code>`, https://caper.chat/invite/<code>),
-    /// as CaperIOSApp's onOpenURL and onContinueUserActivity route them. This
-    /// development app registers neither, so the shipping app keeps both.
+    /// as CaperIOSApp's onOpenURL and onContinueUserActivity route them. Only
+    /// the CaperIOSUIKit identity registers them; the development app has neither.
     func scene(_ scene: UIScene, openURLContexts contexts: Set<UIOpenURLContext>) {
         for context in contexts { root?.model.openInviteLink(context.url) }
     }
@@ -132,23 +146,6 @@ final class CaperUIKitSceneDelegate: UIResponder, UIWindowSceneDelegate {
     func sceneDidBecomeActive(_ scene: UIScene) { root?.model.applicationActivityChanged(active: true) }
     func sceneWillResignActive(_ scene: UIScene) { root?.model.applicationActivityChanged(active: false) }
     func sceneDidEnterBackground(_ scene: UIScene) { root?.saveNow() }
-}
-
-/// A tapped notification opens its channel, DM or feedback visit, as the
-/// shipping app's PushNotifications does; the open conversation shows no banner.
-@MainActor private final class NotificationTaps: NSObject, UNUserNotificationCenterDelegate {
-    weak var model: AppModel?
-
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        guard let model, let route = NotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
-        await model.open(route)
-    }
-
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        guard let model, model.account != nil else { return [] }
-        if let route = NotificationRoute(userInfo: notification.request.content.userInfo), model.isShowing(route) { return [] }
-        return [.banner, .list, .sound]
-    }
 }
 
 /// Runs once, on a display link's first tick: after a frame is on screen.

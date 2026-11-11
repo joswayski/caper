@@ -9,6 +9,10 @@ MAC_BUNDLE_ID="${CAPER_MACOS_BUNDLE_ID:-chat.caper.macos}"
 MAC_SCHEME="${CAPER_MACOS_SCHEME:-CaperMacOS}"
 case "$MAC_SCHEME" in CaperMacOS|CaperMacAppKit) ;; *) echo "CAPER_MACOS_SCHEME must be CaperMacOS or CaperMacAppKit." >&2; exit 2 ;; esac
 IOS_BUNDLE_ID="${CAPER_IOS_BUNDLE_ID:-chat.caper.ios}"
+# The shipped iPhone client: CaperIOS (SwiftUI) or CaperIOSUIKit, both Caper.app
+# under the same bundle ID and entitlements.
+IOS_SCHEME="${CAPER_IOS_SCHEME:-CaperIOS}"
+case "$IOS_SCHEME" in CaperIOS|CaperIOSUIKit) ;; *) echo "CAPER_IOS_SCHEME must be CaperIOS or CaperIOSUIKit." >&2; exit 2 ;; esac
 if [[ "$MODE" != macos && "$MODE" != ios ]]; then
   echo "Usage: $0 macos|ios" >&2
   exit 2
@@ -66,12 +70,12 @@ case "$MODE" in
     echo "$ROOT/dist/Caper-macos-$artifact_arch.zip"
     ;;
   ios)
-    xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration Debug \
+    xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$IOS_SCHEME" -configuration Debug \
       -destination "${CAPER_IOS_SIMULATOR_DESTINATION:-platform=iOS Simulator,name=iPhone 16,OS=latest}" -derivedDataPath "$ROOT/DerivedData-iOS-Tests" \
       CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" \
       -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 test
     rm -rf "$ROOT/DerivedData" "$ROOT/dist/Caper.app"
-    xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration Release \
+    xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$IOS_SCHEME" -configuration Release \
       -destination 'generic/platform=iOS Simulator' -derivedDataPath "$ROOT/DerivedData" \
       CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" CAPER_SOURCE_REVISION="$source_revision" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO build
     product="$ROOT/DerivedData/Build/Products/Release-iphonesimulator"

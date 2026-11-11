@@ -1,10 +1,13 @@
-import CaperCore
+#if os(iOS)
 import UIKit
 import UserNotifications
 
+/// APNs registration, notification taps and in-app presentation for the iPhone
+/// apps (SwiftUI's CaperIOS and UIKit's CaperIOSUIKit). Builds without the
+/// `CaperAPNsEnvironment` key (simulators, development and bench apps) never register.
 @MainActor
-final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    weak var model: AppModel? { didSet { bindModel() } }
+public final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    public weak var model: AppModel? { didSet { bindModel() } }
     private var token: String?
     private var platform: String?
     private var accountID: String?
@@ -14,7 +17,9 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
     /// The bundle ID, which the server uses as the APNs topic for this device.
     private var appID: String? { Bundle.main.bundleIdentifier }
 
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+    public override init() { super.init() }
+
+    public func application(_ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         return true
     }
@@ -38,7 +43,7 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
         Task { await refreshConfiguration() }
     }
 
-    func refreshConfiguration() async {
+    public func refreshConfiguration() async {
         guard let model, let account = model.account else {
             accountID = nil; platform = nil
             return
@@ -123,7 +128,7 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
         }
     }
 
-    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+    public func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let value = deviceToken.map { String(format: "%02x", $0) }.joined()
         token = value
         guard let model, model.pushEnabled, let platform, let accountID, model.account?.id == accountID else { return }
@@ -136,7 +141,7 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
 
     /// A tap opens the push's channel (`spaceId` + `channelId`) or DM (`conversationId`);
     /// kind `feedback` opens a feedback visit at `messageId`, in its thread.
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+    public func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         guard let route = NotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
         guard let model else { pendingRoute = route; return }
         await model.open(route)
@@ -145,7 +150,7 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
     /// The server's alert, except for the conversation that is already open.
     /// A deleted message's retraction removes its original and shows nothing
     /// (no banner, sound or list entry) while the app is open.
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+    public func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         guard let model, model.account != nil, model.pushEnabled else { return [] }
         model.scheduleUnreadRefresh()
         if let deleted = NotificationRetraction.deletedMessageID(notification.request.content.userInfo) {
@@ -157,3 +162,4 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
         return [.banner, .list, .sound]
     }
 }
+#endif

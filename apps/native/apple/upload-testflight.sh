@@ -12,6 +12,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 IOS_BUNDLE_ID="${CAPER_IOS_BUNDLE_ID:-chat.caper.ios}"
+# CaperIOS (SwiftUI) or CaperIOSUIKit: the same Caper.app identity, extension and entitlements.
+IOS_SCHEME="${CAPER_IOS_SCHEME:-CaperIOS}"
+case "$IOS_SCHEME" in CaperIOS|CaperIOSUIKit) ;; *) echo "CAPER_IOS_SCHEME must be CaperIOS or CaperIOSUIKit." >&2; exit 2 ;; esac
 : "${APPLE_TEAM_ID:?}" "${NOTARY_KEY_PATH:?}" "${NOTARY_KEY_ID:?}" "${NOTARY_ISSUER:?}" "${BUILD_NUMBER:?}"
 
 auth=(
@@ -29,14 +32,14 @@ source_revision="$(sed -n 's/^CAPER_SOURCE_REVISION = //p' "$ROOT/.build/SourceR
 # libwebp's submodule) sometimes fails on the network, and archive gives up
 # after one retry of its own.
 for attempt in 1 2 3; do
-  xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS \
+  xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$IOS_SCHEME" \
     -derivedDataPath "$ROOT/DerivedData-TestFlight" -resolvePackageDependencies && break
   (( attempt < 3 )) || exit 1
   echo "::warning::Swift package resolution failed (attempt $attempt/3); retrying."
   rm -rf "$ROOT/DerivedData-TestFlight/SourcePackages"
   sleep $(( attempt * 15 ))
 done
-xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration Release \
+xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$IOS_SCHEME" -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$work/Caper.xcarchive" \
   -derivedDataPath "$ROOT/DerivedData-TestFlight" \
   DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" \
