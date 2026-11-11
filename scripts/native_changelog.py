@@ -45,9 +45,9 @@ def git(*args):
 def is_product_path(path):
     return (
         path.startswith(PRODUCT_ROOTS)
-        # Separate parity hosts are not the SwiftUI apps built by release.yml.
-        # Update this boundary when those hosts become the released clients.
-        and not path.startswith(("apps/native/apple/Sources/CaperAppKit/", "apps/native/apple/Sources/CaperUIKit/"))
+        # Hosts release.yml does not build: the UIKit parity host and the retired
+        # SwiftUI Mac app. Update this boundary when UIKit becomes the iOS app.
+        and not path.startswith(("apps/native/apple/Sources/CaperMacOS/", "apps/native/apple/Sources/CaperUIKit/"))
         and not path.endswith((".md", ".py"))
         and not TEST_DIRECTORIES.intersection(part.lower() for part in path.split("/"))
         and not TEST_FILE.search(path)

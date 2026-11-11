@@ -102,10 +102,10 @@ paths, diffs, or prior highlights. Summarize only implemented client-visible
 changes supported by the supplied evidence. Long diffs may be cut short to fit
 (diffTruncated); subjects and bodies are context, not proof of unseen behavior.
 Describe only behavior reachable in the released client for the named platform.
-The AppKit and UIKit replacement hosts are unreleased parity work, not the
-existing SwiftUI clients; the Win32 and GTK clients are the released Windows
-and Linux apps, and the egui desktop client is no longer released. Never
-announce the
+The UIKit replacement host is unreleased parity work, not the existing SwiftUI
+iOS client; the AppKit, Win32 and GTK clients are the released macOS, Windows
+and Linux apps, and the SwiftUI Mac and egui desktop clients are no longer
+released. Never announce the
 migration, parity progress, scaffolding or a replacement-host feature as live.
 A native change is not a web change. Shared models, assets and runtime paths
 are candidate evidence, not proof that a released client exposes a capability.
@@ -264,7 +264,7 @@ def path_platforms(path):
     if path.startswith("apps/native/apple/"):
         if "/CaperIOS/" in path or re.search(r"(?:IOS|iOS|icon-ios)", Path(path).name):
             return {"ios"}
-        if "/CaperMacOS/" in path or re.search(r"(?:Mac|macOS)", Path(path).name):
+        if "/CaperAppKit/" in path or re.search(r"(?:Mac|macOS)", Path(path).name):
             return {"macos"}
         return {"ios", "macos"}
     if path.startswith("apps/native/updater/"):

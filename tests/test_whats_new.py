@@ -280,7 +280,7 @@ class HighlightsTests(unittest.TestCase):
         migration = self.commit(
             "Smoother scrolling in native conversations",
             {
-                "apps/native/apple/Sources/CaperAppKit/Timeline.swift": "APPKIT-ONLY",
+                "apps/native/apple/Sources/CaperMacOS/Timeline.swift": "SWIFTUI-MAC-ONLY",
                 "apps/native/apple/Sources/CaperUIKit/Timeline.swift": "UIKIT-ONLY",
                 "apps/native/desktop/src/timeline.rs": "EGUI-ONLY",
             },
@@ -293,16 +293,16 @@ class HighlightsTests(unittest.TestCase):
         shipped = self.commit(
             "Improve conversation scrolling",
             {
-                "apps/native/apple/Sources/CaperMacOS/Timeline.swift": "SHIPPED-SWIFTUI",
-                "apps/native/apple/Sources/CaperAppKit/Timeline.swift": "UNRELEASED-APPKIT",
+                "apps/native/apple/Sources/CaperAppKit/Timeline.swift": "SHIPPED-APPKIT",
+                "apps/native/apple/Sources/CaperMacOS/Timeline.swift": "RETIRED-SWIFTUI",
             },
         )
         self.response = {"highlights": [highlight([shipped], ["macos"])]}
         result = self.generate(shipped, "native")
         self.assertEqual(len(result["macos"]["releases"][-1]["highlights"]), 1)
         evidence = self.requests[-1]["messages"][0]["content"]
-        self.assertIn("SHIPPED-SWIFTUI", evidence)
-        self.assertNotIn("UNRELEASED-APPKIT", evidence)
+        self.assertIn("SHIPPED-APPKIT", evidence)
+        self.assertNotIn("RETIRED-SWIFTUI", evidence)
 
     def test_grouped_platform_highlights_use_each_platform_baseline(self):
         self.seed(platforms=PLATFORMS[1:])
