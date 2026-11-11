@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 MODE="${1:-}"
 MAC_BUNDLE_ID="${CAPER_MACOS_BUNDLE_ID:-chat.caper.macos}"
+# The shipped Mac client: CaperMacOS (SwiftUI) or CaperMacAppKit. Both build
+# Caper.app under the same bundle ID, so either replaces the other in place.
+MAC_SCHEME="${CAPER_MACOS_SCHEME:-CaperMacOS}"
+case "$MAC_SCHEME" in CaperMacOS|CaperMacAppKit) ;; *) echo "CAPER_MACOS_SCHEME must be CaperMacOS or CaperMacAppKit." >&2; exit 2 ;; esac
 IOS_BUNDLE_ID="${CAPER_IOS_BUNDLE_ID:-chat.caper.ios}"
 if [[ "$MODE" != macos && "$MODE" != ios ]]; then
   echo "Usage: $0 macos|ios" >&2
@@ -22,7 +26,7 @@ fi
 export CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID"
 "$ROOT/prepare.sh"
 source_revision="$(sed -n 's/^CAPER_SOURCE_REVISION = //p' "$ROOT/.build/SourceRevision.xcconfig")"
-xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperMacOS -configuration Debug \
+xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$MAC_SCHEME" -configuration Debug \
   -destination "platform=macOS,arch=$mac_arch" -derivedDataPath "$ROOT/DerivedData-Tests" \
   CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" \
   -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 test
@@ -36,7 +40,7 @@ case "$MODE" in
       [[ "$CAPER_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "CAPER_BUILD_NUMBER must be a positive integer." >&2; exit 2; }
       versions=(CURRENT_PROJECT_VERSION="$CAPER_BUILD_NUMBER" MARKETING_VERSION="0.1.$CAPER_BUILD_NUMBER")
     fi
-    xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperMacOS -configuration Release \
+    xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$MAC_SCHEME" -configuration Release \
       -destination "platform=macOS,arch=$mac_arch" -derivedDataPath "$ROOT/DerivedData" \
       CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_SOURCE_REVISION="$source_revision" ARCHS="$mac_arch" ONLY_ACTIVE_ARCH=YES ${versions[@]+"${versions[@]}"} build
     cp -R "$ROOT/DerivedData/Build/Products/Release/Caper.app" "$ROOT/dist/Caper.app"

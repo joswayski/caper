@@ -3,16 +3,24 @@ import AppKit
 import SwiftUI
 
 /// One Settings window shares the shipping preferences and release history.
-/// The development host never registers a login item or installs an update.
+/// The development host passes no login item or updater, so it never registers
+/// one or installs an update.
 @MainActor public final class AppKitSettingsPresenter: NSObject, NSWindowDelegate {
     private let model: AppModel
+    private let loginItem: CaperLoginItem?
+    private let updater: AppUpdater?
+    private let title: String
     private var window: NSWindow?
     private weak var previousWindow: NSWindow?
     private weak var previousResponder: NSResponder?
     private var previousContext: String?
     private var focusContext: String { "\(model.chat.editingContext):\(model.chat.threadRootID ?? "channel")" }
 
-    public init(model: AppModel) { self.model = model; super.init() }
+    public init(model: AppModel, loginItem: CaperLoginItem? = nil, updater: AppUpdater? = nil,
+                title: String = "Caper Settings — AppKit development") {
+        self.model = model; self.loginItem = loginItem; self.updater = updater; self.title = title
+        super.init()
+    }
 
     public var canOpenWhatsNew: Bool { !model.whatsNew.workspaceModalOpen || model.whatsNew.settingsOpen }
 
@@ -30,13 +38,13 @@ import SwiftUI
         if window == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 380),
                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            window.title = "Caper Settings — AppKit development"
+            window.title = title
             window.identifier = NSUserInterfaceItemIdentifier("caper-appkit-settings")
             window.isReleasedWhenClosed = false
             window.delegate = self
-            let loginItem = CaperLoginItem(available: false, status: { .notRegistered }, register: {}, unregister: {})
-            window.contentViewController = NSHostingController(rootView: CaperSettingsView(
-                whatsNew: model.whatsNew, loginItem: loginItem, managesPresentation: false))
+            let loginItem = loginItem ?? CaperLoginItem(available: false, status: { .notRegistered }, register: {}, unregister: {})
+            window.contentViewController = NSHostingController(rootView: AppKitSettingsRoot(
+                whatsNew: model.whatsNew, loginItem: loginItem, updater: updater))
             window.center()
             self.window = window
         }
@@ -100,6 +108,18 @@ import SwiftUI
             .task(id: model.phase == .ready) {
                 if model.phase == .ready { CaperRuntime.showWhatsNewPreview(model) }
             }
+    }
+}
+
+/// Reads the updater's controls in its body so Settings follows each check.
+private struct AppKitSettingsRoot: View {
+    let whatsNew: WhatsNewModel
+    let loginItem: CaperLoginItem
+    let updater: AppUpdater?
+
+    var body: some View {
+        CaperSettingsView(whatsNew: whatsNew, loginItem: loginItem, managesPresentation: false)
+            .environment(\.desktopUpdates, updater?.controls ?? DesktopUpdateControls())
     }
 }
 #endif

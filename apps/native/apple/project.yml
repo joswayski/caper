@@ -271,6 +271,48 @@ targets:
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+  # The AppKit client under the shipping identity: same bundle ID, Info.plist
+  # keys, caper:// handler and product name as CaperMacOS, so an existing
+  # install keeps its Keychain session, login item and update channel.
+  CaperMacAppKit:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/CaperAppKit
+      - path: Resources
+        buildPhase: resources
+    dependencies:
+      - target: CaperCoreMacOS
+      - target: CaperRTCBridge
+        embed: true
+      - framework: .build/onnxruntime-osx-universal2-1.23.2/lib/libonnxruntime.1.23.2.dylib
+        link: false
+        embed: true
+        codeSign: true
+      - package: WebRTC
+        product: WebRTC
+        link: true
+    info:
+      path: Configuration/macOS-AppKit-Info.plist
+      properties:
+        CFBundleDisplayName: Caper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CaperSourceRevision: $(CAPER_SOURCE_REVISION)
+        NSPrincipalClass: NSApplication
+        NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel or record a voice message.
+        ATSApplicationFontsPath: .
+        CFBundleURLTypes:
+          - CFBundleURLName: chat.caper.invite
+            CFBundleURLSchemes: [caper]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(CAPER_MACOS_BUNDLE_ID)
+        PRODUCT_NAME: Caper
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
   CaperIOS:
     type: application
     platform: iOS
@@ -362,7 +404,6 @@ targets:
     platform: macOS
     sources:
       - Tests/CaperCoreTests
-      - Sources/CaperMacOS/AppUpdater.swift
     dependencies:
       - target: CaperCoreMacOS
       - target: CaperRTCBridge
@@ -441,6 +482,13 @@ schemes:
     build:
       targets:
         CaperMacOS: all
+        CaperCoreTests: [test]
+    test:
+      targets: [CaperCoreTests]
+  CaperMacAppKit:
+    build:
+      targets:
+        CaperMacAppKit: all
         CaperCoreTests: [test]
     test:
       targets: [CaperCoreTests]

@@ -1,5 +1,5 @@
 import AppKit
-import CaperCore
+@testable import CaperCore
 import XCTest
 
 final class AppUpdaterTests: XCTestCase {

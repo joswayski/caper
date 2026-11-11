@@ -46,6 +46,14 @@ import SwiftUI
     /// Notification routes can arrive while another modal is open. Consume the
     /// destination only after it can be presented, including an inbox handoff.
     public func presentInvitations(in parent: NSViewController) {
+        // A link opened from another app replaces any open dialog, as in CaperView.
+        if model.deliverableInviteLink != nil {
+            if host != nil { close() }
+            if (parent.view as? AppKitWorkspaceContainer)?.dialogView == nil, let link = model.takeInviteLink() {
+                show(.joinInvite(link), in: parent)
+            }
+            return
+        }
         guard model.account != nil, host == nil,
               (parent.view as? AppKitWorkspaceContainer)?.dialogView == nil else { return }
         if let invitation = model.notificationInvitation {

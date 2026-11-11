@@ -92,13 +92,26 @@ import CaperCore
         guard let self else { return }; self.voicePanels.audio(input: false, from: self.outputOptions)
     }
     private lazy var settings = NativeButton.icon("Account settings", symbol: "gearshape") { [weak self] in self?.openAccountMenu() }
+    /// The shipping app's updater, as SwiftUI's account bar shows it: "Update
+    /// available" above the account row and "Check for updates" in its menu.
+    /// The development host leaves it nil.
+    var updates: DesktopUpdateControls? {
+        didSet {
+            let hidden = updates?.review == nil
+            if updateButton.isHidden != hidden { updateButton.isHidden = hidden; needsLayout = true }
+        }
+    }
+    private lazy var updateButton = NativeButton("Update available") { [weak self] in self?.updates?.review?() }
 
     init(model: AppModel) {
         self.model = model
         super.init()
         [railScroll, sidebar].forEach { addSubview($0) }
         railScroll.documentView = rail; railScroll.drawsBackground = false
-        [space, close, channels, sectionsDivider, directs, accountAvatar, accountName, account, mute, inputOptions, deafen, outputOptions, settings].forEach { sidebar.addSubview($0) }
+        [space, close, channels, sectionsDivider, directs, updateButton, accountAvatar, accountName, account, mute, inputOptions, deafen, outputOptions, settings].forEach { sidebar.addSubview($0) }
+        updateButton.isHidden = true
+        updateButton.setAccessibilityIdentifier("desktop-update-action")
+        updateButton.toolTip = "Review the update before restarting Caper."
         sidebar.layer?.addSublayer(accountPresence)
         accountPresence.cornerRadius = 5; accountPresence.borderWidth = 2
         accountPresence.borderColor = NativeStyle.sidebar.cgColor
@@ -153,7 +166,9 @@ import CaperCore
         close.isHidden = !narrow
         close.frame = NSRect(x: width - 44, y: 8, width: 28, height: 34)
         space.frame = NSRect(x: 16, y: 8, width: width - (narrow ? 64 : 32), height: 34)
-        let footer = max(50, bounds.height - 62)
+        // The update button sits between the lists and the account row.
+        let reserved: CGFloat = updateButton.isHidden ? 0 : 52
+        let footer = max(50, bounds.height - 62 - reserved)
         let available = max(0, footer - 50 - 12)
         sectionsDivider.update(available: available, share: draggedChannelsShare ?? preferredChannelsShare)
         // Whole points: a fractional split makes NSScrollView snap its clip view
@@ -163,18 +178,20 @@ import CaperCore
         sectionsDivider.frame = NSRect(x: 0, y: channels.frame.maxY, width: width, height: 12)
         directs.frame = NSRect(x: 0, y: sectionsDivider.frame.maxY, width: width, height: max(0, available - channelHeight))
         channels.layoutRows(); directs.layoutRows()
-        account.frame = NSRect(x: 16, y: footer + 8, width: width - 156, height: 36)
-        accountAvatar.frame = NSRect(x: 16, y: footer + 11, width: 30, height: 30)
+        updateButton.frame = NSRect(x: 8, y: footer + 8, width: width - 16, height: 36)
+        let row = footer + reserved
+        account.frame = NSRect(x: 16, y: row + 8, width: width - 156, height: 36)
+        accountAvatar.frame = NSRect(x: 16, y: row + 11, width: 30, height: 30)
         CATransaction.begin(); CATransaction.setDisableActions(true)
         accountPresence.frame = NSRect(x: accountAvatar.frame.maxX - 8, y: accountAvatar.frame.maxY - 8, width: 10, height: 10)
         CATransaction.commit()
-        accountName.frame = NSRect(x: 53, y: footer + 17, width: max(0, width - 197), height: 20)
+        accountName.frame = NSRect(x: 53, y: row + 17, width: max(0, width - 197), height: 20)
         accountName.isHidden = account.frame.width < 76
-        mute.frame = NSRect(x: width - 138, y: footer + 10, width: 28, height: 32)
-        inputOptions.frame = NSRect(x: width - 110, y: footer + 10, width: 16, height: 32)
-        deafen.frame = NSRect(x: width - 92, y: footer + 10, width: 28, height: 32)
-        outputOptions.frame = NSRect(x: width - 64, y: footer + 10, width: 16, height: 32)
-        settings.frame = NSRect(x: width - 46, y: footer + 10, width: 28, height: 32)
+        mute.frame = NSRect(x: width - 138, y: row + 10, width: 28, height: 32)
+        inputOptions.frame = NSRect(x: width - 110, y: row + 10, width: 16, height: 32)
+        deafen.frame = NSRect(x: width - 92, y: row + 10, width: 28, height: 32)
+        outputOptions.frame = NSRect(x: width - 64, y: row + 10, width: 16, height: 32)
+        settings.frame = NSRect(x: width - 46, y: row + 10, width: 28, height: 32)
     }
 
     private func render() {
@@ -451,8 +468,12 @@ import CaperCore
         if model.account?.debugEnabled == true { items.append(NavigationMenuItem("Audio diagnostics") { [weak self] in self?.show?(.diagnostics) }) }
         items += [.separator(), NavigationMenuItem("Notifications") { [weak self] in self?.show?(.notifications) },
             NavigationMenuItem("Privacy and blocked accounts") { [weak self] in self?.show?(.privacy) }, .separator(),
-            NavigationMenuItem("Settings…") { [weak self] in self?.showSettings?() },
-            NavigationMenuItem("What’s new") { [weak self] in self?.showWhatsNew?() }, .separator(),
+            NavigationMenuItem("Settings…") { [weak self] in self?.showSettings?() }]
+        if let updates {
+            items.append(NavigationMenuItem(updates.isChecking ? "Checking…" : "Check for updates",
+                                            enabled: updates.check != nil && !updates.isChecking) { updates.check?() })
+        }
+        items += [NavigationMenuItem("What’s new") { [weak self] in self?.showWhatsNew?() }, .separator(),
             NavigationMenuItem("Log out") { [weak self] in guard let self else { return }; Task { await self.model.logout() } }]
         popup(items, at: settings)
     }

@@ -30,6 +30,9 @@ import CaperCore
     private let attachmentObservation = NativeObservation()
     private let forwardingObservation = NativeObservation()
     private let invitationObservation = NativeObservation()
+    private let updateObservation = NativeObservation()
+    /// The shipping app's updater; nil in the development host and thread panes.
+    var updater: AppUpdater?
     private lazy var navigation = NavigationSidebar(model: model)
     private var preferredSidebarWidth = CGFloat(UserDefaults.standard.object(forKey: "caper.channelSidebarWidth") as? Double ?? 280)
     private var sidebarDragWidth: CGFloat?
@@ -373,8 +376,12 @@ import CaperCore
             self.view.needsLayout = true
         })
         if !inThread {
+            if let updater {
+                updateObservation.start(reading: { updater.controls }) { [weak self] in self?.navigation.updates = $0 }
+            }
             invitationObservation.start(reading: { [weak self] in
-                (self?.model.notificationInvitation?.id, self?.model.notificationChannelInvitation?.id)
+                (self?.model.notificationInvitation?.id, self?.model.notificationChannelInvitation?.id,
+                 self?.model.deliverableInviteLink?.id)
             }, update: { [weak self] _ in
                 guard let self else { return }; self.dialogs.presentInvitations(in: self)
             })

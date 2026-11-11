@@ -4041,6 +4041,36 @@ import XCTest
         XCTAssertTrue(app.groups["member-owner0000001"].waitForExistence(timeout: 5), "Closing the panel clears its filter")
     }
 
+    /// The shipping updater's review, through the local fixture that offers an
+    /// update and installs nothing: SwiftUI's account-bar button and overlay.
+    func testUpdateButtonOpensReviewInTheAccountWindow() {
+        let app = launch(fixture: "update")
+        defer { app.terminate() }
+        let update = app.buttons["desktop-update-action"]
+        XCTAssertTrue(update.waitForExistence(timeout: 15))
+        XCTAssertTrue(update.isHittable)
+        for id in ["account-profile", "microphone-toggle", "deafen-toggle", "account-settings-menu"] {
+            let control = app.descendants(matching: .any)[id]
+            XCTAssertTrue(control.isHittable, id)
+            XCTAssertGreaterThanOrEqual(control.frame.minY, update.frame.maxY, "\(id) stays below the update button")
+        }
+        capture("update available", app: app)
+        let install = app.buttons["desktop-update-install"]
+        update.click()
+        XCTAssertTrue(install.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.windows.count, 1, "The review reuses the account window")
+        XCTAssertFalse(app.textViews["message-composer"].isHittable, "The review covers the workspace")
+        capture("update review", app: app)
+        app.buttons["Later"].click()
+        XCTAssertTrue(install.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(update.isHittable)
+        update.click()
+        XCTAssertTrue(install.waitForExistence(timeout: 5))
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(install.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["account-profile"].isHittable)
+    }
+
     func testSignInErrorAndSixCharacterCodeRecovery() async throws {
         try await Self.resetFixture()
         let app = launch(signedIn: false)

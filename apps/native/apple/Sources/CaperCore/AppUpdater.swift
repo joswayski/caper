@@ -1,5 +1,5 @@
+#if os(macOS)
 import AppKit
-import CaperCore
 import Foundation
 import Observation
 
@@ -9,20 +9,20 @@ import Observation
 /// for Caper to quit, swaps in the new notarized app and reopens it.
 ///
 /// Update reviews live in the main window; operational failures remain alerts.
-@MainActor @Observable final class AppUpdater {
-    typealias Update = DesktopUpdate
-    typealias ChangelogEntry = DesktopUpdate.ChangelogEntry
+@MainActor @Observable public final class AppUpdater {
+    public typealias Update = DesktopUpdate
+    public typealias ChangelogEntry = DesktopUpdate.ChangelogEntry
 
     private let updater: URL?
     private let build: Int
     private let version: String?
     private let sourceRevision: String?
     private var timer: Timer?
-    private(set) var checking = false
+    public private(set) var checking = false
     private var availableUpdate: Update?
-    private(set) var offeredUpdate: Update?
-    private(set) var reviewRequest = 0
-    private(set) var lastSuccessfulCheck: Date?
+    public private(set) var offeredUpdate: Update?
+    public private(set) var reviewRequest = 0
+    public private(set) var lastSuccessfulCheck: Date?
     private var manualCheck = false
 
     static let firstCheckDelay: TimeInterval = 20
@@ -30,12 +30,12 @@ import Observation
 
     // Match the running app's architecture, including Intel builds under Rosetta.
     #if arch(arm64)
-    static let downloadURL = URL(string: "https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.dmg")!
+    public static let downloadURL = URL(string: "https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.dmg")!
     #else
-    static let downloadURL = URL(string: "https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.dmg")!
+    public static let downloadURL = URL(string: "https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.dmg")!
     #endif
 
-    init(bundle: Bundle = .main, environment: [String: String] = ProcessInfo.processInfo.environment) {
+    public init(bundle: Bundle = .main, environment: [String: String] = ProcessInfo.processInfo.environment) {
         let updater = bundle.bundleURL.appendingPathComponent("Contents/MacOS/caper-updater")
         let build = Int(bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
         let revision = bundle.object(forInfoDictionaryKey: "CaperSourceRevision") as? String
@@ -56,15 +56,15 @@ import Observation
         }
     }
 
-    var isAvailable: Bool { updater != nil }
+    public var isAvailable: Bool { updater != nil }
 
     /// Identify this app even when there is no newer published release.
-    var installedVersion: String {
+    public var installedVersion: String {
         let label = version.map { "Caper \($0) (build \(build))" } ?? "Development build"
         return "Installed: \(label)"
     }
 
-    var controls: DesktopUpdateControls {
+    public var controls: DesktopUpdateControls {
         // Built step by step: optional closures in ternaries defeat the type checker.
         var checkNow: (@MainActor () -> Void)?
         if isAvailable { checkNow = { self.check(manual: true) } }
@@ -82,14 +82,14 @@ import Observation
         offer(update)
     }
 
-    func dismissReview() { offeredUpdate = nil }
+    public func dismissReview() { offeredUpdate = nil }
 
-    func download() {
+    public func download() {
         dismissReview()
         NSWorkspace.shared.open(Self.downloadURL)
     }
 
-    func applyReviewedUpdate() {
+    public func applyReviewedUpdate() {
         guard offeredUpdate?.canApply == true else { return }
         dismissReview()
         restart()
@@ -98,7 +98,7 @@ import Observation
     /// Signed downloads must be installed before opening the account UI. Finder
     /// owns the move and Gatekeeper handling; never strip quarantine or guess
     /// the original path of an app running from a translocated read-only copy.
-    func prepareInstallation() -> Bool {
+    public func prepareInstallation() -> Bool {
         guard isAvailable else { return true } // Development and UI fixtures.
         let manager = FileManager.default
         let bundle = Bundle.main.bundleURL
@@ -142,7 +142,7 @@ import Observation
         return true
     }
 
-    nonisolated static func needsInstallation(_ bundle: URL, home: URL, parentWritable: Bool) -> Bool {
+    public nonisolated static func needsInstallation(_ bundle: URL, home: URL, parentWritable: Bool) -> Bool {
         let path = bundle.standardizedFileURL.resolvingSymlinksInPath().pathComponents
         let locations = [URL(fileURLWithPath: "/Applications", isDirectory: true),
                          home.appendingPathComponent("Applications", isDirectory: true)]
@@ -153,7 +153,7 @@ import Observation
         return !installed || !parentWritable
     }
 
-    func start() {
+    public func start() {
         guard isAvailable, timer == nil else { return }
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(Self.firstCheckDelay))
@@ -164,7 +164,7 @@ import Observation
         }
     }
 
-    func check(manual: Bool) {
+    public func check(manual: Bool) {
         guard let updater else { return }
         // A manual request can share a running automatic check, but must still
         // report its result and offer a version previously declined with Later.
@@ -300,3 +300,4 @@ import Observation
 private struct UpdateCheckError: LocalizedError {
     var errorDescription: String? { "Caper could not check for updates. Try again later." }
 }
+#endif
