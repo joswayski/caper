@@ -15,7 +15,7 @@ struct WhatsNewDisplay: Identifiable {
 
 @MainActor @Observable public final class WhatsNewModel {
     private let api: APIClient
-    fileprivate let revision: String
+    let revision: String
     private let platform: String
     private let history: WhatsNewHistory
     private(set) var loading = false
