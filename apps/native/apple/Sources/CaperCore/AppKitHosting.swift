@@ -179,6 +179,23 @@ import SwiftUI
                 action: "Delete", pendingLabel: "Deleting…", close: close) { [model] in await model.chat.deleteMessage(message) }
         case .history(let message):
             return AppKitMessageHistory(chat: model.chat, message: message, close: close)
+        case .reactions(let message, let emoji):
+            return AppKitReactors(chat: model.chat, messageID: message.id, emoji: emoji, viewerID: model.chat.viewerID, close: close)
+        case .workspace(.invitation(let space)):
+            var lines = [AppKitKit.label("Join \(space.name)?", size: 20, weight: .bold)]
+            if let inviter = space.inviter {
+                lines.append(AppKitKit.label("\(inviter.displayName) (@\(inviter.username)) invited you.", size: 13, color: AppKitKit.muted))
+            }
+            return AppKitInvitationDialog(title: "You’re invited!", detail: nil, lines: lines, pendingLabels: true, close: close,
+                decline: { [model] in try await model.declineInvitation(space) },
+                accept: { [model] in try await model.acceptInvitation(space) })
+        case .workspace(.channelInvitation(let invitation)):
+            let line = AppKitKit.label("\(invitation.inviter.displayName) (@\(invitation.inviter.username)) invited you to private channel #\(invitation.channel.name).",
+                                       size: 12, color: AppKitKit.muted)
+            return AppKitInvitationDialog(title: "Private channel invitation", detail: "#\(invitation.channel.name)", lines: [line],
+                pendingLabels: false, close: close,
+                decline: { [model] in try await model.declineChannelInvitation(invitation) },
+                accept: { [model] in try await model.acceptChannelInvitation(invitation) })
         case .workspace(.leaveSpace):
             return AppKitConfirmationDialog(title: "Leave \(model.detail?.space.name ?? "space")?",
                 detail: "You will lose access to its channels and conversations. An owner can add you again later.",

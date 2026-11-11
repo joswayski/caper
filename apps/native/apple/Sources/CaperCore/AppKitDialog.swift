@@ -168,4 +168,61 @@ import AppKit
         }
     }
 }
+/// Answers an invitation: Decline or Accept, each showing its own progress.
+/// Nothing closes the dialog while an answer is being sent.
+@MainActor final class AppKitInvitationDialog: NSView, AppKitDialogContent {
+    private let close: () -> Void
+    private let header: AppKitDialogHeader
+    private let error = AppKitKit.label("", size: 12, color: AppKitKit.error)
+    private var decline: AppKitKitButton!
+    private var accept: AppKitKitButton!
+    private let labels: (decline: String, accept: String, declining: String, accepting: String)
+    private(set) var dismissDisabled = false
+
+    init(title: String, detail: String?, lines: [NSTextField], pendingLabels: Bool,
+         close: @escaping () -> Void, decline: @escaping () async throws -> Void, accept: @escaping () async throws -> Void) {
+        self.close = close
+        labels = ("Decline", "Accept", pendingLabels ? "Declining…" : "Decline", pendingLabels ? "Accepting…" : "Accept")
+        var dismiss: () -> Void = {}
+        header = AppKitDialogHeader(title: title, detail: detail) { dismiss() }
+        super.init(frame: .zero)
+        dismiss = { [weak self] in if self?.dismissDisabled == false { close() } }
+        self.decline = AppKitKitButton("Decline") { [weak self] in self?.run(declining: true, decline) }
+        self.accept = AppKitKitButton("Accept", kind: .primary) { [weak self] in self?.run(declining: false, accept) }
+        self.accept.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        self.decline.minimumHeight = 42
+        error.isHidden = true
+        let spacer = NSView(); spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let buttons = NSStackView(views: [spacer, self.decline, self.accept]); buttons.orientation = .horizontal; buttons.spacing = 8
+        let rows: [NSView] = lines + [error, buttons]
+        let body = AppKitKit.stack(rows, spacing: 14)
+        for row in rows { AppKitKit.fillWidth(row, of: body) }
+        addSubview(header); addSubview(body)
+        NSLayoutConstraint.activate([
+            header.leadingAnchor.constraint(equalTo: leadingAnchor), header.trailingAnchor.constraint(equalTo: trailingAnchor),
+            header.topAnchor.constraint(equalTo: topAnchor),
+            body.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 22),
+            body.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -22),
+            body.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 18),
+            body.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -22),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func run(declining: Bool, _ action: @escaping () async throws -> Void) {
+        guard !dismissDisabled else { return }
+        dismissDisabled = true; error.isHidden = true
+        decline.isEnabled = false; accept.isEnabled = false; header.close.isEnabled = false
+        (declining ? decline : accept)?.title = declining ? labels.declining : labels.accepting
+        Task { [weak self, close] in
+            do { try await action(); close() } catch {
+                self?.error.stringValue = FriendlyError.message(for: error); self?.error.isHidden = false
+            }
+            guard let self else { return }
+            self.dismissDisabled = false
+            self.decline.title = self.labels.decline; self.accept.title = self.labels.accept
+            self.decline.isEnabled = true; self.accept.isEnabled = true; self.header.close.isEnabled = true
+        }
+    }
+}
 #endif
