@@ -161,9 +161,14 @@ private struct UpdateButtonSweep: View, Animatable {
     /// Sends the error to the Caper team; returns a failure message or nil.
     public let report: ((String) async -> String?)?
     @FocusState private var focused: Bool
+    /// The review itself takes focus so keys stay out of the workspace, and
+    /// a button's environment focus is that of its nearest focusable
+    /// ancestor; each button binds its own so only a Tab-focused one rings.
+    @FocusState private var buttonFocus: ReviewButton?
     @State private var reportState: ReportState?
 
     enum ReportState: Equatable { case sending, sent, failed(String) }
+    enum ReviewButton: Hashable { case later, install, report }
 
     public init(update: DesktopUpdate, inCall: Bool, close: @escaping () -> Void,
                 restart: @escaping () -> Void, download: @escaping () -> Void,
@@ -231,7 +236,7 @@ private struct UpdateButtonSweep: View, Animatable {
                                             Text("Sent. The Caper team will reply in your notes.")
                                                 .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                                         case .sending?:
-                                            Button("Sending to the Caper team…") {}.buttonStyle(CaperSecondaryButton()).disabled(true)
+                                            Button("Sending to the Caper team…") {}.buttonStyle(CaperSecondaryButton(isFocused: false)).disabled(true)
                                         case .failed(let message)?:
                                             Text(message).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                                             reportButton(report, error: error)
@@ -273,13 +278,16 @@ private struct UpdateButtonSweep: View, Animatable {
                         Text(size).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     }
                     HStack(spacing: 10) {
-                        Button("Later", action: close).buttonStyle(CaperSecondaryButton())
+                        Button("Later", action: close).buttonStyle(CaperSecondaryButton(isFocused: buttonFocus == .later))
+                            .focused($buttonFocus, equals: .later)
                             // Escape must work even if AppKit restores focus to
                             // a child button when the review is reopened.
                             .keyboardShortcut(.cancelAction)
                         Spacer()
                         Button(update.canApply ? (inCall ? "Restart and leave call" : "Restart to update") : "Download",
-                               action: update.canApply ? restart : download).buttonStyle(CaperPrimaryButton())
+                               action: update.canApply ? restart : download)
+                            .buttonStyle(CaperPrimaryButton(isFocused: buttonFocus == .install))
+                            .focused($buttonFocus, equals: .install)
                             .accessibilityIdentifier("desktop-update-install")
                     }
                 }
@@ -324,7 +332,8 @@ extension DesktopUpdateReview {
             Task { @MainActor in
                 reportState = await report(error).map { .failed($0) } ?? .sent
             }
-        }.buttonStyle(CaperSecondaryButton()).accessibilityIdentifier("desktop-update-report")
+        }.buttonStyle(CaperSecondaryButton(isFocused: buttonFocus == .report))
+            .focused($buttonFocus, equals: .report).accessibilityIdentifier("desktop-update-report")
     }
 }
 

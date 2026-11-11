@@ -10722,7 +10722,9 @@ private struct CaperTextFieldStyle: TextFieldStyle {
 }
 
 struct CaperPrimaryButton: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).frame(maxWidth: .infinity).frame(height: 42).modifier(PrimaryActionFill(pressed: configuration.isPressed)) }
+    /// The button's own focus, where a focusable ancestor would otherwise ring it (see ControlHover).
+    var isFocused: Bool? = nil
+    func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).frame(maxWidth: .infinity).frame(height: 42).modifier(PrimaryActionFill(pressed: configuration.isPressed, isFocused: isFocused)) }
 }
 
 /// Web's primary action: an eggshell fill with a blackout label that brightens on hover and
@@ -10730,9 +10732,11 @@ struct CaperPrimaryButton: ButtonStyle {
 /// Disabled, it steps back to neutral chrome rather than a faded fill.
 struct PrimaryActionFill: ViewModifier {
     let pressed: Bool
+    var isFocused: Bool? = nil
     @Environment(\.isEnabled) private var enabled
-    @Environment(\.isFocused) private var focused
+    @Environment(\.isFocused) private var environmentFocused
     @State private var hovered = false
+    private var focused: Bool { isFocused ?? environmentFocused }
     func body(content: Content) -> some View {
         content.foregroundStyle(enabled ? CaperTheme.onAction : CaperTheme.muted)
             .background(
@@ -10865,6 +10869,8 @@ private struct PointerRegion: NSViewRepresentable {
 struct CaperSecondaryButton: ButtonStyle {
     /// Beside a primary button or a field (42pt), match their height.
     var minHeight: CGFloat? = nil
+    /// The button's own focus, where a focusable ancestor would otherwise ring it (see ControlHover).
+    var isFocused: Bool? = nil
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(CaperTheme.font(12, weight: .medium))
@@ -10874,7 +10880,7 @@ struct CaperSecondaryButton: ButtonStyle {
             .background(configuration.isPressed ? CaperTheme.composer : CaperTheme.raised)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-            .opacity(enabled ? 1 : 0.45).modifier(ControlHover())
+            .opacity(enabled ? 1 : 0.45).modifier(ControlHover(isFocused: isFocused))
     }
 }
 
