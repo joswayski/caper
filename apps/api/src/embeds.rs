@@ -106,7 +106,17 @@ impl Embeds {
             }
         }
         let mut body: Value = serde_json::from_slice(&body).ok()?;
-        let embed = body.get_mut("embed")?.take();
+        let mut embed = body.get_mut("embed")?.take();
+        // The Worker answers for the link as a URL parser writes it
+        // (`https://example.com/`, lowercase host, no fragment); the card is
+        // stored for the link as posted.
+        let normalised = reqwest::Url::parse(url).ok().map(|mut parsed| {
+            parsed.set_fragment(None);
+            parsed
+        });
+        if normalised.is_some_and(|parsed| embed["url"] == parsed.as_str()) {
+            embed["url"] = url.into();
+        }
         valid(&embed, url).then_some(embed)
     }
 

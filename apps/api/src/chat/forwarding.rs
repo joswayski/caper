@@ -202,7 +202,7 @@ async fn persist_forward(
         .await
         .map_err(database_error)?;
     if destination.space_id.is_none() {
-        sqlx::query("INSERT INTO public.direct_reads(channel_id,user_id,seq) VALUES($1,$2,$3) ON CONFLICT(channel_id,user_id) DO UPDATE SET seq=GREATEST(direct_reads.seq,EXCLUDED.seq)")
+        sqlx::query("INSERT INTO public.direct_reads(channel_id,user_id,seq) SELECT d.channel_id,$2,$3 FROM public.direct_conversations d WHERE d.channel_id=$1 AND $2 IN (d.low_user_id,d.high_user_id) ON CONFLICT(channel_id,user_id) DO UPDATE SET seq=GREATEST(direct_reads.seq,EXCLUDED.seq)")
             .bind(destination.id).bind(user).bind(seq).execute(&mut *tx).await.map_err(database_error)?;
     }
     tx.commit().await.map_err(database_error)?;

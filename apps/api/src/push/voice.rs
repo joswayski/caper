@@ -53,8 +53,10 @@ pub(crate) async fn joined(state: &AppState, participant: Uuid) -> Result<(), Ap
     .fetch_all(&mut *tx)
     .await
     .map_err(super::database_error)?;
+    // Occupancy only decides anything once the cooldown has passed; skip a
+    // media-store read per channel, under the space's row lock, otherwise.
     let mut occupied = false;
-    for channel in channels {
+    for channel in channels.into_iter().filter(|_| cooled) {
         let mut room = state.clone();
         room.media_channel = Some(channel);
         if room

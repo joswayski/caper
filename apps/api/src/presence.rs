@@ -196,6 +196,7 @@ pub(crate) struct Presence {
 struct Shared {
     client: redis::Client,
     connection: Mutex<MultiplexedConnection>,
+    repairing: Mutex<()>,
 }
 
 impl Presence {
@@ -208,6 +209,7 @@ impl Presence {
             shared: Arc::new(Shared {
                 client: broker.clone(),
                 connection: Mutex::new(connection),
+                repairing: Mutex::new(()),
             }),
             idle_timeout_ms: milliseconds(idle_timeout),
         })
@@ -233,11 +235,16 @@ impl Presence {
     }
 
     async fn repair(&self) {
-        // Serialize repairs, then check whether another failed caller already
-        // replaced the shared handle. Never replay the operation whose result
-        // became unknown: only prepare a connection for the next call.
-        let mut shared = self.shared.connection.lock().await;
-        let mut current = shared.clone();
+        // One repair at a time, and no network I/O under the connection lock:
+        // against a broker that stopped answering, each PING and reconnect
+        // waits out its timeout, and callers queued on that lock would park
+        // every gateway socket behind it. A caller that finds a repair already
+        // running leaves it to that one. Never replay the operation whose
+        // result became unknown: only prepare a connection for the next call.
+        let Ok(_repairing) = self.shared.repairing.try_lock() else {
+            return;
+        };
+        let mut current = self.connection().await;
         if redis::cmd("PING")
             .query_async::<()>(&mut current)
             .await
@@ -246,7 +253,7 @@ impl Presence {
             return;
         }
         if let Ok(connection) = Self::connect(&self.shared.client).await {
-            *shared = connection;
+            *self.shared.connection.lock().await = connection;
         }
     }
 

@@ -1374,10 +1374,13 @@ async fn auth_email_verify(
         }
     };
     if matches!(input.token_transport, TokenTransport::Cookie) {
+        // The session row decides when sign-in lapses (30 days unused, renewed
+        // by use); the cookie only has to outlive it, so it asks for the 400
+        // days browsers allow instead of ending an active session on day 30.
         response.headers_mut().insert(
             "set-cookie",
             format!(
-                "caper_session={}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax",
+                "caper_session={}; Path=/; Max-Age=34560000; HttpOnly; Secure; SameSite=Lax",
                 session.token
             )
             .parse()

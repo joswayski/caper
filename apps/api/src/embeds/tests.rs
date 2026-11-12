@@ -164,6 +164,7 @@ async fn unfurl_sends_the_secret_and_drops_invalid_answers() {
         Json(match url {
             "https://good.example/" => json!({"embed": card(url)}),
             "https://other.example/" => json!({"embed": card("https://somewhere-else.example/")}),
+            "https://Bare.example#top" => json!({"embed": card("https://bare.example/")}),
             _ => json!({"embed": null}),
         })
     }
@@ -182,6 +183,10 @@ async fn unfurl_sends_the_secret_and_drops_invalid_answers() {
         Some(card("https://good.example/"))
     );
     assert_eq!(embeds.unfurl("https://other.example/").await, None);
+    assert_eq!(
+        embeds.unfurl("https://Bare.example#top").await,
+        Some(card("https://Bare.example#top"))
+    );
     assert_eq!(embeds.unfurl("https://none.example/").await, None);
     let unreachable = Embeds::new("http://127.0.0.1:9/v1/unfurl".into(), "k".repeat(32));
     assert_eq!(unreachable.unfurl("https://good.example/").await, None);

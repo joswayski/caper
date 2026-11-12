@@ -1351,7 +1351,8 @@ pub(crate) async fn send_message_with_gif(
     if let Some(user) = user_id
         && space_id.is_none()
     {
-        sqlx::query("INSERT INTO public.direct_reads (channel_id,user_id,seq) VALUES ($1,$2,$3) ON CONFLICT (channel_id,user_id) DO UPDATE SET seq=GREATEST(direct_reads.seq,EXCLUDED.seq)")
+        // Only for the two participants: a feedback-team visitor keeps no read marker.
+        sqlx::query("INSERT INTO public.direct_reads (channel_id,user_id,seq) SELECT d.channel_id,$2,$3 FROM public.direct_conversations d WHERE d.channel_id=$1 AND $2 IN (d.low_user_id,d.high_user_id) ON CONFLICT (channel_id,user_id) DO UPDATE SET seq=GREATEST(direct_reads.seq,EXCLUDED.seq)")
                 .bind(channel_id).bind(user).bind(seq).execute(&mut *tx).await.map_err(database_error)?;
     }
     sqlx::query("INSERT INTO public.channel_events (channel_id, seq, payload) VALUES ($1,$2,$3)")

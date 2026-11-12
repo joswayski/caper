@@ -3555,7 +3555,9 @@ In-call media operations also require the issued `x-caper-media-token` capabilit
 header. Tokens stay in memory, never in URLs, cookies or persistent storage. The
 gateway invokes the same channel media handlers for `media.*` commands.
 
-Web verification defaults to an `HttpOnly`, `Secure`, `SameSite=Lax` cookie. Native
+Web verification defaults to an `HttpOnly`, `Secure`, `SameSite=Lax` cookie. It
+asks for the 400 days browsers allow, so the session row, not the cookie, decides
+when sign-in lapses. Native
 clients request `tokenTransport: "bearer"` and store the opaque token in the OS
 credential vault (Keychain/Keystore), never plain preferences. Protected routes
 accept either transport; logout revokes the same database session. Third-party
