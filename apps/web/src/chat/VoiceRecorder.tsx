@@ -204,8 +204,11 @@ export function useVoiceRecorder({
           const next = now - started.startedAt;
           setElapsed((shown) => (Math.floor(shown / 1000) === Math.floor(next / 1000) ? shown : next));
         },
-        onLimit: () => {
-          if (session.current === id) void finish(false, intentRef.current);
+        onLimit: (lost) => {
+          if (session.current !== id) return;
+          void finish(false, intentRef.current);
+          // What was captured is kept; say why it ended early.
+          if (lost) setError("The microphone disconnected, so the recording stopped.");
         },
       });
       // Discarded or unmounted while the microphone was starting (for example

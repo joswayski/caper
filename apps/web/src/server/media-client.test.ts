@@ -3042,10 +3042,11 @@ test("a replacement microphone that ends during the swap is not published", asyn
 });
 
 test("a selected microphone missing from the device list falls back to the system default", async (t) => {
-  const { client, install, track } = setup(t);
+  const { client, install, track, states } = setup(t);
   const deviceIds: Array<ConstrainDOMString | undefined> = [];
   const replacement = new Track();
   await client.join("Guest", "usb");
+  assert.equal(states.at(-1)?.microphoneDeviceId, "usb");
   install("navigator", {
     mediaDevices: {
       getUserMedia: async (constraints: MediaStreamConstraints) => {
@@ -3063,6 +3064,7 @@ test("a selected microphone missing from the device list falls back to the syste
   assert.deepEqual(deviceIds, [undefined]);
   assert.equal(Peer.latest.senders[0].track, replacement);
   assert.equal(track.readyState, "ended");
+  assert.equal(states.at(-1)?.microphoneDeviceId, "", "the picker follows the client to the default");
   client.microphoneDevicesChanged(["", "desk"]);
   for (let i = 0; i < 5; i++) await tick();
   assert.deepEqual(deviceIds, [undefined], "the system default needs no listed ID");

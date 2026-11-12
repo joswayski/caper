@@ -300,6 +300,7 @@ export class PublicCallClient {
       audioSetup: this.audioSetup,
       voiceProcessingStrength: this.voiceProcessingStrength,
       noiseSuppressionStatus: capture?.status ?? this.microphoneStatus,
+      microphoneDeviceId: this.microphoneDeviceId ?? "",
       error,
     });
   }

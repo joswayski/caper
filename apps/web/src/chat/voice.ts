@@ -493,8 +493,8 @@ export async function startVoiceRecording({
 }: {
   /** RMS level of each ~20 ms sample of the processed audio. */
   onLevel?: (rms: number) => void;
-  /** Ten minutes passed or the microphone went away; the caller stops and sends. */
-  onLimit?: () => void;
+  /** Ten minutes passed or the microphone went away (`lost`); the caller stops and sends. */
+  onLimit?: (lost: boolean) => void;
   now?: () => number;
 } = {}): Promise<VoiceRecorder> {
   if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia)
@@ -554,7 +554,7 @@ export async function startVoiceRecording({
     }
     levels.push(rms);
     onLevel?.(rms);
-    if (lost || now() - startedAt >= MAX_VOICE_MS) onLimit?.();
+    if (lost || now() - startedAt >= MAX_VOICE_MS) onLimit?.(lost);
   };
   const timer = setInterval(sample, LEVEL_INTERVAL_MS);
   const cleanup = () => {

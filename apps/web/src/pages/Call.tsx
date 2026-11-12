@@ -570,6 +570,10 @@ export default function Call({
   useEffect(() => (account ? hostProfileEditor(() => setProfileOpen(true)) : undefined), [!!account]);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState("");
+  // In a call the client decides: it falls back to the system default when its input is lost.
+  useEffect(() => {
+    if (state.phase === "connected") setDeviceId(state.microphoneDeviceId ?? "");
+  }, [state.phase, state.microphoneDeviceId]);
   const [output, setOutput] = useState("");
   const [outputVolume, setOutputVolume] = useState(100);
   // Browser capability, so it is read after hydration to match server markup.

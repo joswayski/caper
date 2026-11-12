@@ -1604,6 +1604,8 @@ export default function Chat({
     if (root !== "channel") document.getElementById("chat-thread-reply")?.focus();
     else composerRef.current?.focus();
   };
+  const threadRoot = state.thread && state.messages.find((message) => message.id === state.thread?.rootId);
+  const shownThreadRoot = threadRoot?.deletedAt ? undefined : threadRoot;
   const renderMessage = (
     index: number,
     message: (typeof messages)[number],
@@ -1616,12 +1618,16 @@ export default function Chat({
     const files = "content" in message ? attachmentsOf(message).length : (message.attachments?.length ?? 0);
     // A pending thread reply shows its status beside the thread composer.
     const channelPending = pending && !inThread;
+    // A thread dates its own rows: the root, then each reply against the row above it.
+    const above = !inThread
+      ? messages[index - 1]
+      : (previousInThread ?? ("id" in message && message.id === state.thread?.rootId ? undefined : shownThreadRoot));
     return (
       <MessageRow
         key={message.clientMessageId}
         message={message}
         inThread={inThread}
-        divider={hydrated && !inThread ? dateDivider(message.createdAt, messages[index - 1]?.createdAt) : undefined}
+        divider={hydrated ? dateDivider(message.createdAt, above?.createdAt) : undefined}
         runFirst={run?.first}
         runCount={run?.count}
         runShown={!!run && revealedRuns.has(run.first)}
@@ -2422,7 +2428,8 @@ export default function Chat({
         mentionPeople={mentionPeople}
         specialMentions={!direct}
         replyTo={state.thread ? replyTargets[state.thread.rootId] : undefined}
-        onSend={(text, broadcast) => sendDraft(text, state.thread?.rootId, broadcast)}
+        onSend={(text, broadcast, preview) => sendDraft(text, state.thread?.rootId, broadcast, preview)}
+        linkPreviews={signedIn}
         onSendGif={
           signedIn && !readOnly
             ? (gif, query, broadcast) => sendGif(gif, query, state.thread?.rootId, broadcast)

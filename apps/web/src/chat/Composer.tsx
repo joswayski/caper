@@ -84,7 +84,7 @@ interface ComposerProps {
  */
 /** The first link's card while composing. Removing it means the message is
  * sent without previews; the choice lasts while that link stays in the draft. */
-function useLinkPreview(draft: string) {
+export function useLinkPreview(draft: string) {
   const link = previewLink(draft);
   const [shown, setShown] = useState<{ url: string; embed: ChatEmbed | null }>();
   const [removed, setRemoved] = useState<string>();

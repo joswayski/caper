@@ -5836,17 +5836,22 @@ a.chat-draft-preview {
   background: var(--surface-composer);
   transition: border-color var(--motion-fast) var(--ease-out);
 }
-.chat-composer form:has(> .chat-composer-preview) :is(.chat-mention-input, textarea) {
+.chat-composer form:has(> .chat-composer-preview) :is(.chat-mention-input, .chat-rich-input) {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }
 /* Padding replaces the bottom border, keeping the text row's height. */
-.chat-composer form:has(> .chat-composer-preview) textarea {
+.chat-composer form:has(> .chat-composer-preview) .chat-rich-input {
   border-bottom-width: 0;
   padding-bottom: 11px;
 }
-.chat-composer form:has(textarea:focus) > .chat-composer-preview {
+.chat-composer form:has(.chat-rich-input:focus) > .chat-composer-preview {
   border-color: var(--terracotta);
+}
+/* A thread's form starts with its "Also send to" row and has a wider gap. */
+.chat-thread-composer .chat-composer-preview {
+  grid-row: 3;
+  margin-top: -8px;
 }
 .chat-draft-embed {
   position: relative;

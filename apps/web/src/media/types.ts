@@ -114,4 +114,6 @@ export interface CallViewState {
   audioSetup?: AudioSetup;
   voiceProcessingStrength?: number;
   noiseSuppressionStatus?: string;
+  /** The input the client asks for by exact ID; empty for the system default. */
+  microphoneDeviceId?: string;
 }

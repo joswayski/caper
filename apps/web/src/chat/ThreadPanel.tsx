@@ -4,7 +4,7 @@ import AttachmentPicker from "./AttachmentPicker.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState, PendingChatMessage } from "./client.ts";
 import { DraftAttachments } from "./Attachments.tsx";
-import { UploadWaitNotice, type ComposerAttachments } from "./Composer.tsx";
+import { UploadWaitNotice, useLinkPreview, type ComposerAttachments } from "./Composer.tsx";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
@@ -12,6 +12,8 @@ import { COUNTER_START, counterTone } from "./counter.ts";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.ts";
 import type { Arrivals } from "./arrivals.ts";
+import { DraftEmbed } from "./Embeds.tsx";
+import type { ChatEmbed } from "./embeds.ts";
 import EmojiButton from "./EmojiButton.tsx";
 import type { ChatGif } from "./klipy.ts";
 import MentionTextarea, { type ComposerInput } from "./MentionTextarea.tsx";
@@ -41,6 +43,7 @@ export default function ThreadPanel({
   replyTo,
   attachments,
   onSend,
+  linkPreviews = false,
   onSendGif,
   onReplyChange,
   blockedIds,
@@ -59,7 +62,13 @@ export default function ThreadPanel({
   specialMentions: boolean;
   replyTo?: ChatReplyReference;
   attachments?: ComposerAttachments;
-  onSend: (text: string, broadcast: boolean) => Promise<unknown>;
+  onSend: (
+    text: string,
+    broadcast: boolean,
+    preview: { suppressEmbeds?: boolean; embeds?: ChatEmbed[] },
+  ) => Promise<unknown>;
+  /** Shows the first link's preview card under the draft, as the channel composer does. */
+  linkPreviews?: boolean;
   /** Sends a KLIPY GIF as its own reply; the draft stays. */
   onSendGif?: (gif: ChatGif, query: string, broadcast: boolean) => Promise<unknown>;
   onReplyChange: (reference?: ChatReplyReference) => void;
@@ -195,6 +204,13 @@ export default function ThreadPanel({
     return (previousReplies.current = next);
   }, [state.messages, rootId, windowStart, windowEnd]);
   const draft = rootId ? (drafts[rootId] ?? { text: "", broadcast: false }) : { text: "", broadcast: false };
+  const preview = useLinkPreview(linkPreviews && !readOnly ? draft.text : "");
+  const hasPreview = !!preview.embed;
+  // The card grows the composer; a reader at the latest reply stays there.
+  useLayoutEffect(() => {
+    if (follow.current && scroll.current && !state.thread?.hasNewer)
+      scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [hasPreview]);
   // Start at one line like the channel composer, growing for typed or wrapped text.
   const sizedFor = useRef<string>(undefined);
   useLayoutEffect(() => {
@@ -447,7 +463,11 @@ export default function ThreadPanel({
         follow.current = true;
         scroll.current.scrollTop = scroll.current.scrollHeight;
       }
-      await onSend(pending?.text ?? draft.text, pending?.broadcast ?? draft.broadcast);
+      const submitted = pending?.text ?? draft.text;
+      await onSend(submitted, pending?.broadcast ?? draft.broadcast, {
+        suppressEmbeds: preview.removed(submitted),
+        embeds: preview.embed && submitted === draft.text ? [preview.embed] : undefined,
+      });
     } catch (error) {
       setValidation(error instanceof Error ? error.message : "Reply could not be sent.");
     }
@@ -868,6 +888,11 @@ export default function ThreadPanel({
                 <small className="chat-counter" data-tone={counterTone(count)}>
                   {count.toLocaleString()} / 4,000
                 </small>
+              )}
+              {preview.embed && (
+                <div className="chat-composer-preview">
+                  <DraftEmbed embed={preview.embed} onRemove={preview.remove} />
+                </div>
               )}
             </form>
           </>
