@@ -149,9 +149,8 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
             return self.narrow && self.membersAvailable && !self.members.isOpen && !self.presentations.presenting
         }
         membersSwipe.moved = { [weak self] in self?.view.endEditing(true); self?.members.follow($0) }
-        membersSwipe.ended = { [weak self] complete, _ in
-            self?.members.release(opening: complete)
-            if complete { self?.membersPreference = true }
+        membersSwipe.ended = { [weak self] lift in
+            if self?.members.release(lift) == true { self?.membersPreference = true }
         }
         collection.addGestureRecognizer(membersSwipe)
         // Files dragged onto the conversation stage for its composer.

@@ -86,11 +86,19 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         // list's vertical scrolling alone.
         let swipe = DirectionalSwipe(direction: 1)
         swipe.allowed = { [weak self] in self?.isOpen ?? false }
-        swipe.moved = { [weak self] distance in self?.panel.transform = CGAffineTransform(translationX: distance, y: 0) }
-        swipe.ended = { [weak self] complete, _ in
+        swipe.moved = { [weak self] distance in
             guard let self else { return }
-            if complete { self.panel.transform = .identity; self.close() }
-            else { UIView.animate(withDuration: UIKitStyle.reduceMotion ? 0 : UIKitStyle.motionFast) { self.panel.transform = .identity } }
+            self.panel.transform = CGAffineTransform(translationX: min(self.travel, max(0, distance)), y: 0)
+        }
+        swipe.ended = { [weak self] lift in
+            guard let self, self.isOpen else { return }
+            // As SwiftUI's MembersSwipe: halfway, or a fling, closes it.
+            let release = lift.map {
+                DrawerRelease(open: true, position: 1 - self.panel.transform.tx / self.travel, velocity: -$0.velocity,
+                              distance: -$0.reach, travel: self.travel, shadow: Self.shadowRoom)
+            }
+            if release?.commit == true { self.panel.transform = .identity; self.close(); return }
+            self.settle(release) { self.panel.transform = .identity }
         }
         panel.addGestureRecognizer(swipe)
         panelSwipe = swipe
@@ -248,7 +256,7 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         } else {
             // Arrives from past the trailing edge, so its shadow travels with it.
             dimming.alpha = 0
-            panel.transform = CGAffineTransform(translationX: panel.bounds.width + 24, y: 0)
+            panel.transform = CGAffineTransform(translationX: travel, y: 0)
             let animator = UIViewPropertyAnimator(duration: 0.24, timingParameters: UIKitStyle.easeOut)
             animator.addAnimations { self.dimming.alpha = 1; self.panel.transform = .identity }
             animator.startAnimation()
@@ -256,7 +264,12 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         UIAccessibility.post(notification: .screenChanged, argument: panel)
     }
 
-    /// A swipe left on the timeline: the panel follows the finger in.
+    /// The panel's shadow travels with it, past the trailing edge.
+    private static let shadowRoom: CGFloat = 24
+    private var travel: CGFloat { max(1, panel.bounds.width + Self.shadowRoom) }
+
+    /// A swipe left on the timeline: the panel follows the finger in, and
+    /// back out when the finger goes back.
     func follow(_ distance: CGFloat) {
         guard !isOpen else { return }
         if isHidden {
@@ -264,28 +277,36 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
             observer.start { [weak self] in self?.render() }
             layoutIfNeeded()
         }
-        let travel = panel.bounds.width + 24
-        let shown = min(travel, distance)
+        let shown = min(travel, max(0, distance))
         panel.transform = CGAffineTransform(translationX: travel - shown, y: 0)
-        dimming.alpha = shown / max(1, travel)
+        dimming.alpha = shown / travel
     }
 
-    /// The swipe lifted: it settles open, or (closing being instant) hides.
-    func release(opening: Bool) {
-        guard !isOpen, !isHidden else { return }
-        guard opening else {
+    /// The swipe lifted (or, nil, the system took it). As SwiftUI's
+    /// MembersSwipe, halfway or a fling opens it, and it reports that;
+    /// otherwise (closing being instant) it hides.
+    func release(_ lift: DirectionalSwipe.Lift?) -> Bool {
+        guard !isOpen, !isHidden else { return false }
+        let release = lift.map {
+            DrawerRelease(open: false, position: 1 - panel.transform.tx / travel, velocity: $0.velocity,
+                          distance: $0.reach, travel: travel, shadow: Self.shadowRoom)
+        }
+        guard let release, release.commit else {
             isHidden = true
             observer.stop()
-            return
+            return false
         }
         isOpen = true
-        let settle = { self.dimming.alpha = 1; self.panel.transform = .identity }
-        if UIKitStyle.reduceMotion { settle() } else {
-            let animator = UIViewPropertyAnimator(duration: 0.2, timingParameters: UIKitStyle.easeOut)
-            animator.addAnimations(settle)
-            animator.startAnimation()
-        }
+        settle(release) { self.dimming.alpha = 1; self.panel.transform = .identity }
         UIAccessibility.post(notification: .screenChanged, argument: panel)
+        return true
+    }
+
+    private func settle(_ release: DrawerRelease?, _ changes: @escaping () -> Void) {
+        guard !UIKitStyle.reduceMotion else { return changes() }
+        let animator = UIViewPropertyAnimator.drawer(release)
+        animator.addAnimations(changes)
+        animator.startAnimation()
     }
 
     /// Closing is instant, as everywhere in Caper. `report: false` is the

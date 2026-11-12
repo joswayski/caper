@@ -565,6 +565,217 @@ final class CaperUIKitTests: XCTestCase {
         XCTAssertTrue(composer.isHittable, "A slow drag left on a channel row returns to the conversation")
     }
 
+    /// A finger's path: where it goes down, then timed moves and rests.
+    /// XCUICoordinate's drag is one straight line and returns after the lift,
+    /// so it shows neither a thumb's arc nor where a panel is mid-drag.
+    private struct Finger {
+        var points: [(CGPoint, TimeInterval)]
+        init(at start: CGPoint) { points = [(start, 0), (start, 0.05)] }
+        /// Moves in the small steps a touch screen reports.
+        mutating func move(dx: CGFloat, dy: CGFloat = 0, over duration: TimeInterval) {
+            let (from, start) = points[points.count - 1]
+            let steps = max(1, Int(duration / 0.025))
+            for step in 1...steps {
+                let part = CGFloat(step) / CGFloat(steps)
+                points.append((CGPoint(x: from.x + dx * part, y: from.y + dy * part), start + duration * Double(part)))
+            }
+        }
+        mutating func rest(_ duration: TimeInterval) {
+            let (point, time) = points[points.count - 1]
+            points.append((point, time + duration))
+        }
+    }
+
+    /// Puts the finger down and returns at once, so the test can look while it
+    /// is still down; the expectation is fulfilled when it has lifted. XCTest's
+    /// own event synthesizer plays the path (the public drag is built on it).
+    private func play(_ finger: Finger) -> XCTestExpectation {
+        typealias Touch = @convention(c) (AnyObject, Selector, CGPoint, Double) -> AnyObject?
+        typealias Move = @convention(c) (AnyObject, Selector, CGPoint, Double) -> Void
+        typealias Lift = @convention(c) (AnyObject, Selector, Double) -> Void
+        typealias Record = @convention(c) (AnyObject, Selector, NSString, Int) -> AnyObject?
+        func method<T>(_ owner: AnyClass, _ name: String, as type: T.Type) -> (T, Selector) {
+            let selector = NSSelectorFromString(name)
+            return (unsafeBitCast(class_getMethodImplementation(owner, selector), to: T.self), selector)
+        }
+        let lifted = expectation(description: "The finger lifts")
+        guard let pathClass = NSClassFromString("XCPointerEventPath"), let recordClass = NSClassFromString("XCSynthesizedEventRecord"),
+              let synthesizer = XCUIDevice.shared.perform(NSSelectorFromString("eventSynthesizer"))?.takeUnretainedValue() else {
+            XCTFail("This Xcode's XCTest has no event synthesizer to play a finger's path")
+            lifted.fulfill()
+            return lifted
+        }
+        let alloc = NSSelectorFromString("alloc")
+        let unstarted = (pathClass as AnyObject).perform(alloc)!.takeUnretainedValue()
+        let (touch, touchSelector) = method(pathClass, "initForTouchAtPoint:offset:", as: Touch.self)
+        let path = touch(unstarted, touchSelector, finger.points[0].0, 0)!
+        let (move, moveSelector) = method(pathClass, "moveToPoint:atOffset:", as: Move.self)
+        for (point, time) in finger.points.dropFirst() { move(path, moveSelector, point, time) }
+        let (lift, liftSelector) = method(pathClass, "liftUpAtOffset:", as: Lift.self)
+        lift(path, liftSelector, finger.points[finger.points.count - 1].1)
+        let unnamed = (recordClass as AnyObject).perform(alloc)!.takeUnretainedValue()
+        let (record, recordSelector) = method(recordClass, "initWithName:interfaceOrientation:", as: Record.self)
+        let events = record(unnamed, recordSelector, "finger", UIInterfaceOrientation.portrait.rawValue)!
+        _ = events.perform(NSSelectorFromString("addPointerEventPath:"), with: path)
+        let completion: @convention(block) (Bool, NSError?) -> Void = { _, error in
+            XCTAssertNil(error)
+            lifted.fulfill()
+        }
+        _ = synthesizer.perform(NSSelectorFromString("synthesizeEvent:completion:"), with: events, with: completion)
+        return lifted
+    }
+
+    /// A swipe as a thumb makes it: 30 degrees off the horizontal at first,
+    /// `out` points across, a rest, back to `back` points from where it went
+    /// down, a rest, and the lift. Returns `position` read during each rest:
+    /// where the panel is drawn while the finger is still down.
+    private func swipe(from start: CGPoint, out: CGFloat, back: CGFloat, position: () -> CGFloat) -> (out: CGFloat, back: CGFloat) {
+        let direction: CGFloat = out < 0 ? -1 : 1
+        var finger = Finger(at: start)
+        finger.move(dx: 26 * direction, dy: 15, over: 0.15)
+        finger.move(dx: out - 26 * direction, over: 0.3)
+        finger.rest(2.5)
+        finger.move(dx: back - out, over: 0.3)
+        finger.rest(2.5)
+        let began = Date()
+        let lifted = play(finger)
+        Thread.sleep(until: began.addingTimeInterval(1))
+        let atOut = position()
+        XCTAssertLessThan(Date().timeIntervalSince(began), 2.9, "Read while the finger rested")
+        Thread.sleep(until: began.addingTimeInterval(3.8))
+        let atBack = position()
+        XCTAssertLessThan(Date().timeIntervalSince(began), 5.7, "Read while the finger rested")
+        wait(for: [lifted], timeout: 20)
+        return (atOut, atBack)
+    }
+
+    /// How far behind the finger a panel is drawn: the swipe takes hold once
+    /// the finger is 10 points across, and follows from there.
+    private static let pickup: CGFloat = 13
+
+    /// Browse follows a finger that starts on message text or an image, stays
+    /// part-way while it rests, and closes again when it goes back; the lift
+    /// opens nothing under it. The swipe back from Browse does the same.
+    func testBrowseFollowsAFinger() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let text = app.textViews["message-text-\(Self.latest)"]
+        let composer = app.textViews["message-composer"]
+        let account = app.buttons["account-profile"]
+        let home = text.frame
+        let onText = CGPoint(x: home.minX + 40, y: home.midY)
+
+        var drawn = swipe(from: onText, out: 160, back: 60) { text.frame.minX - home.minX }
+        XCTAssertEqual(drawn.out, 160 - Self.pickup, accuracy: 6, "The conversation rests where the finger holds it")
+        XCTAssertEqual(drawn.back, 60 - Self.pickup, accuracy: 6, "It goes back with the finger")
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        sleep(1)
+        XCTAssertTrue(composer.isHittable, "Dragged out and back, the conversation stays")
+        XCTAssertEqual(text.frame, home, "The timeline did not scroll under the swipe")
+
+        // Past a quarter of the screen it opens Browse, from an image too, and
+        // lifting there does not open the image.
+        let image = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Image unavailable")).firstMatch
+        let onImage = image.exists ? CGPoint(x: image.frame.midX - 60, y: image.frame.midY) : onText
+        drawn = swipe(from: onImage, out: 180, back: 150) { text.frame.minX - home.minX }
+        XCTAssertEqual(drawn.out, 180 - Self.pickup, accuracy: 6)
+        XCTAssertEqual(drawn.back, 150 - Self.pickup, accuracy: 6)
+        XCTAssertTrue(account.waitForExistence(timeout: 5))
+        sleep(1)
+        XCTAssertTrue(account.isHittable, "Lifted past a quarter of the screen, Browse opens")
+
+        // Back from a channel row: out and back stays in Browse, and the lift
+        // does not open the channel under the finger.
+        let channel = app.collectionViews["channel-list"].cells.element(boundBy: 1).frame
+        let onChannel = CGPoint(x: channel.maxX - 60, y: channel.midY)
+        _ = swipe(from: onChannel, out: -160, back: -40) { 0 }
+        sleep(1)
+        XCTAssertTrue(account.isHittable, "Dragged out and back, Browse stays")
+        _ = swipe(from: onChannel, out: -200, back: -180) { 0 }
+        XCTAssertTrue(text.waitForExistence(timeout: 5))
+        sleep(1)
+        XCTAssertTrue(composer.isHittable, "A swipe left on a channel row returns to the conversation")
+        XCTAssertEqual(text.frame, home, "It returns to the same channel, where it was")
+    }
+
+    /// Members follows a finger in from message text and out from a member,
+    /// and stays part-way while the finger rests.
+    func testMembersFollowsAFinger() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let text = app.textViews["message-text-\(Self.latest)"]
+        let members = app.descendants(matching: .any)["members-panel"]
+        let home = text.frame
+        let screen = app.windows.firstMatch.frame
+        let onText = CGPoint(x: home.maxX - 40, y: home.midY)
+        // The panel rests 8 points inside the screen's edge, and its shadow
+        // (24 points) comes in ahead of it.
+        let edge = screen.maxX - 8 + 24
+
+        var drawn = swipe(from: onText, out: -150, back: -50) { members.exists ? members.frame.minX : .infinity }
+        XCTAssertEqual(drawn.out, edge - (150 - Self.pickup), accuracy: 6, "Members rests where the finger holds it")
+        XCTAssertEqual(drawn.back, edge - (50 - Self.pickup), accuracy: 6, "It goes back with the finger")
+        XCTAssertTrue(members.waitForNonExistence(timeout: 5), "Dragged out and back, Members stays closed")
+        XCTAssertEqual(text.frame, home, "The timeline did not scroll under the swipe")
+
+        drawn = swipe(from: onText, out: -240, back: -220) { members.exists ? members.frame.minX : .infinity }
+        XCTAssertEqual(drawn.back, edge - (220 - Self.pickup), accuracy: 6)
+        sleep(1)
+        XCTAssertTrue(members.exists, "Lifted past half of it, Members opens")
+        let open = members.frame.minX
+
+        let member = members.cells.firstMatch.frame
+        let onMember = CGPoint(x: member.minX + 40, y: member.midY)
+        drawn = swipe(from: onMember, out: 150, back: 50) { members.exists ? members.frame.minX - open : .infinity }
+        XCTAssertEqual(drawn.out, 150 - Self.pickup, accuracy: 6, "Members follows the finger out")
+        XCTAssertEqual(drawn.back, 50 - Self.pickup, accuracy: 6)
+        sleep(1)
+        XCTAssertTrue(members.exists, "Dragged out and back, Members stays open")
+        XCTAssertEqual(members.frame.minX, open, accuracy: 1)
+        _ = swipe(from: onMember, out: 240, back: 220) { 0 }
+        XCTAssertTrue(members.waitForNonExistence(timeout: 5), "A swipe right on a member closes Members")
+    }
+
+    /// A thread follows a finger back toward its channel from message text.
+    func testThreadFollowsAFingerBack() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        app.textViews["message-text-\(Self.latest)"].press(forDuration: 0.8)
+        XCTAssertTrue(app.descendants(matching: .any)["message-actions-sheet"].waitForExistence(timeout: 10))
+        app.buttons["Reply in thread"].tap()
+        let thread = app.descendants(matching: .any)["thread-view"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 10))
+        sleep(1)
+        let root = thread.textViews.firstMatch.frame
+        let onText = CGPoint(x: root.minX + 40, y: root.midY)
+
+        let drawn = swipe(from: onText, out: 160, back: 40) { thread.exists ? thread.frame.minX : .infinity }
+        XCTAssertEqual(drawn.out, 160 - Self.pickup, accuracy: 6, "The thread rests where the finger holds it")
+        XCTAssertEqual(drawn.back, 40 - Self.pickup, accuracy: 6, "It goes back with the finger")
+        sleep(1)
+        XCTAssertTrue(thread.exists, "Dragged out and back, the thread stays")
+        XCTAssertEqual(thread.frame.minX, 0, accuracy: 1)
+        _ = swipe(from: onText, out: 200, back: 180) { 0 }
+        XCTAssertTrue(thread.waitForNonExistence(timeout: 10), "A swipe right on the thread returns to the channel")
+    }
+
+    /// Holding still on message text opens its actions with the finger still
+    /// down, not when it lifts.
+    func testHoldOpensActionsUnderAStillFinger() {
+        let app = launch()
+        XCTAssertTrue(row(Self.latest).waitForExistence(timeout: 30))
+        let text = app.textViews["message-text-\(Self.latest)"].frame
+        var finger = Finger(at: CGPoint(x: text.minX + 40, y: text.midY))
+        finger.rest(5)
+        let began = Date()
+        let lifted = play(finger)
+        Thread.sleep(until: began.addingTimeInterval(1.5))
+        let open = app.descendants(matching: .any)["message-actions-sheet"].exists
+        XCTAssertLessThan(Date().timeIntervalSince(began), 4.8, "Read while the finger rested")
+        XCTAssertTrue(open, "A hold opens message actions before the finger lifts")
+        wait(for: [lifted], timeout: 20)
+    }
+
     /// Reply in thread opens the thread; a reply there shows under the root
     /// as "1 reply · View thread", which reopens it.
     func testReplyInThreadAndViewThread() {

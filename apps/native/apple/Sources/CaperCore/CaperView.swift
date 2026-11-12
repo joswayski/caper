@@ -385,14 +385,14 @@ let drawerShadowRoom: CGFloat = 48
 /// past its distance threshold (across what is seen), or flung 40 points
 /// toward the other view, it switches; a held drag gets the full finish, and a
 /// fling carries its bounded speed into a curve that cannot overshoot.
-struct DrawerRelease: Equatable {
+public struct DrawerRelease: Equatable {
     /// Switches to the other view.
-    let commit: Bool
+    public let commit: Bool
     /// How far open it ends, 0 or 1.
-    let target: CGFloat
-    let duration: Double
+    public let target: CGFloat
+    public let duration: Double
     /// The curve's initial slope: the release speed over the average speed, up to 3.
-    let slope: Double
+    public let slope: Double
 
     /// - Parameters:
     ///   - open: The swipe started on the open drawer.
@@ -402,7 +402,7 @@ struct DrawerRelease: Equatable {
     ///   - travel: The drawer's travel, in points.
     ///   - shadow: The part of `travel` beyond what is seen (`drawerShadowRoom`).
     ///   - threshold: The fraction of the visible travel needed without a fling.
-    init(open: Bool, position: CGFloat, velocity: CGFloat, distance: CGFloat, travel: CGFloat, shadow: CGFloat = 0, threshold: CGFloat = 0.5) {
+    public init(open: Bool, position: CGFloat, velocity: CGFloat, distance: CGFloat, travel: CGFloat, shadow: CGFloat = 0, threshold: CGFloat = 0.5) {
         // Toward the other view, in points per second.
         let toward = open ? -velocity : velocity
         // The view follows from the finger's first reported move, a pickup
@@ -597,13 +597,13 @@ private struct BrowseLayer: ViewModifier {
 /// that lands while a swipe moves or just after it lifts, as the web suppresses
 /// a drag's release click. It is only a time window, renewed by every move, so
 /// nothing a lost gesture leaves behind can keep controls off.
-@MainActor enum SwipeTapGuard {
+@MainActor public enum SwipeTapGuard {
     private static var quietUntil = Date.distantPast
     /// A swipe moved with the finger. A held finger still reports small moves.
-    static func follow() { quiet(for: 0.35) }
+    public static func follow() { quiet(for: 0.35) }
     /// The finger lifted, or the system took the touch. The lift's own tap
     /// arrives with it, in the same touch event.
-    static func release() { quiet(for: 0.12) }
+    public static func release() { quiet(for: 0.12) }
     private static func quiet(for seconds: Double) {
         quietUntil = max(quietUntil, Date().addingTimeInterval(seconds))
     }

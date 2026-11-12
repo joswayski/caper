@@ -239,11 +239,13 @@ final class ThreadViewController: UIViewController, UICollectionViewDelegate {
         swipeBack.allowed = { [weak self] in self.map { !$0.closing && $0.presentedViewController == nil } ?? false }
         swipeBack.moved = { [weak self] distance in
             self?.view.endEditing(true)
-            self?.view.transform = CGAffineTransform(translationX: distance, y: 0)
+            self?.view.transform = CGAffineTransform(translationX: max(0, distance), y: 0)
         }
-        swipeBack.ended = { [weak self] complete, _ in
+        swipeBack.ended = { [weak self] lift in
             guard let self else { return }
-            guard complete else {
+            // As SwiftUI's ThreadBackSwipe: where the finger lifts decides, so
+            // a drag out and back stays.
+            guard let lift, lift.reach >= 72 else {
                 UIView.animate(withDuration: UIKitStyle.reduceMotion ? 0 : UIKitStyle.motionFast) { self.view.transform = .identity }
                 return
             }

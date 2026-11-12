@@ -14,7 +14,10 @@ final class WorkspaceViewController: UIViewController {
     /// The running slide, so a swipe can catch it where it is drawn.
     private var slideAnimator: UIViewPropertyAnimator?
     /// Where a following swipe found the drawer, as progress toward Browse.
+    /// While it is set the drawer is the finger's: layout leaves it alone.
     private var grab: CGFloat?
+    private let toBrowse = DirectionalSwipe(direction: 1)
+    private let back = DirectionalSwipe(direction: -1)
     /// The current geometry; nil until the first layout.
     private var layout: WideLayout?
     private var narrow: Bool { layout?.narrow ?? true }
@@ -89,14 +92,13 @@ final class WorkspaceViewController: UIViewController {
         // As SwiftUI's DrawerSwipe: a swipe right from anywhere on the
         // conversation brings Browse in under the finger; a swipe left on
         // Browse returns to the conversation.
-        let toBrowse = DirectionalSwipe(direction: 1)
         toBrowse.allowed = { [weak self] in self.map { $0.narrow && !$0.browsing && $0.conversation.allowsBrowseSwipe } ?? false }
         toBrowse.moved = { [weak self] distance in
             guard let self else { return }
             let grab = self.grabSlide()
-            self.update(progress: min(1, grab + distance / self.travel))
+            self.update(progress: min(1, max(0, grab + distance / self.travel)))
         }
-        toBrowse.ended = { [weak self] complete, _ in self?.grab = nil; self?.slide(browsing: complete) }
+        toBrowse.ended = { [weak self] lift in self?.release(lift, opening: 1) }
         conversation.view.addGestureRecognizer(toBrowse)
         // No channel to show yet: start in Browse.
         // As SwiftUI's phone layout: Browse covers the conversation while the
@@ -172,7 +174,8 @@ final class WorkspaceViewController: UIViewController {
             // Coming from the wide layout; otherwise autoresizing keeps it full size.
             if changed { conversation.view.transform = .identity; conversation.view.frame = view.bounds }
             conversation.setLayout(narrow: true, membersTiled: false, membersMaximum: 0)
-            update(progress: browsing ? 1 : 0)
+            // A layout pass must not take the drawer from under a finger.
+            if grab == nil { update(progress: browsing ? 1 : 0) }
         } else {
             let split = insets.left + next.navigationWidth
             conversation.view.transform = .identity
@@ -189,6 +192,7 @@ final class WorkspaceViewController: UIViewController {
     override func viewWillTransition(to size: CGSize, with coordinator: any UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
         // A swipe in progress must not leave the conversation partly translated.
+        [toBrowse, back].forEach { $0.cancel() }
         conversation.view.endEditing(false)
     }
 
@@ -251,7 +255,6 @@ final class WorkspaceViewController: UIViewController {
     private func loadBrowse() {
         guard browse.parent == nil else { return }
         embed(browse, below: conversation.view)
-        let back = DirectionalSwipe(direction: -1)
         back.allowed = { [weak self] in
             guard let self else { return false }
             return self.narrow && self.browsing && self.hasConversation && self.browse.presentedViewController == nil
@@ -259,9 +262,9 @@ final class WorkspaceViewController: UIViewController {
         back.moved = { [weak self] distance in
             guard let self else { return }
             let grab = self.grabSlide()
-            self.update(progress: max(0, grab - distance / self.travel))
+            self.update(progress: min(1, max(0, grab - distance / self.travel)))
         }
-        back.ended = { [weak self] complete, _ in self?.grab = nil; self?.slide(browsing: !complete) }
+        back.ended = { [weak self] lift in self?.release(lift, opening: -1) }
         browse.view.addGestureRecognizer(back)
         browse.view.isUserInteractionEnabled = browsing || !narrow
         browse.view.accessibilityElementsHidden = !browsing && narrow
@@ -270,8 +273,13 @@ final class WorkspaceViewController: UIViewController {
 
     /// `record: false` shows Browse only because there is nothing else to
     /// show yet, so the first channel to open (a new space's) slides away.
-    func slide(browsing: Bool, animated: Bool = true, record: Bool = true) {
+    func slide(browsing: Bool, animated: Bool = true, record: Bool = true, release: DrawerRelease? = nil) {
         guard narrow else { return }
+        // Navigation while a finger holds the drawer takes it from the finger.
+        if grab != nil {
+            grab = nil
+            [toBrowse, back].forEach { $0.cancel() }
+        }
         loadBrowse()
         self.browsing = browsing
         if record && model.navigationOpen != browsing { model.navigationOpen = browsing }
@@ -280,7 +288,7 @@ final class WorkspaceViewController: UIViewController {
         let apply = { self.update(progress: browsing ? 1 : 0) }
         // Arrivals ease out; the system's reduce-motion setting makes it instant.
         if animated && !UIKitStyle.reduceMotion {
-            let animator = UIViewPropertyAnimator(duration: 0.28, timingParameters: UIKitStyle.easeOut)
+            let animator = release.map(UIViewPropertyAnimator.drawer) ?? UIViewPropertyAnimator(duration: 0.28, timingParameters: UIKitStyle.easeOut)
             animator.addAnimations(apply)
             animator.startAnimation()
             slideAnimator = animator
@@ -288,6 +296,20 @@ final class WorkspaceViewController: UIViewController {
         browse.view.accessibilityElementsHidden = !browsing
         conversation.view.accessibilityElementsHidden = browsing
         UIAccessibility.post(notification: .screenChanged, argument: nil)
+    }
+
+    /// The swipe lifted (or, nil, the system took it): the drawer goes where
+    /// SwiftUI's DrawerRelease sends it, so a drag out and back stays put.
+    /// `opening` is the swipe's direction toward Browse, +1 or -1.
+    private func release(_ lift: DirectionalSwipe.Lift?, opening: CGFloat) {
+        guard grab != nil else { return }
+        grab = nil
+        let position = catchSlide()
+        let release = lift.map {
+            DrawerRelease(open: browsing, position: position, velocity: opening * $0.velocity, distance: opening * $0.reach,
+                          travel: travel, shadow: travel - view.bounds.width, threshold: 0.25)
+        }
+        slide(browsing: release.map { $0.commit != browsing } ?? browsing, release: release)
     }
 
     /// How far the conversation slides to uncover Browse: a swipe moves it

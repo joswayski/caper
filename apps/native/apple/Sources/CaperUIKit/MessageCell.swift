@@ -1,6 +1,7 @@
 import CaperCore
 import SwiftUI
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 
 /// One timeline row's display state. Built per snapshot from the model; cells
 /// read it only when they are realized.
@@ -184,6 +185,8 @@ final class MessageTextView: UITextView, NSTextLayoutManagerDelegate, UITextView
         isEditable = false
         isSelectable = true
         isScrollEnabled = false
+        // Its drag would hold the row's hold back until the finger next moves or lifts.
+        textDragInteraction?.isEnabled = false
         showsVerticalScrollIndicator = false
         showsHorizontalScrollIndicator = false
         backgroundColor = .clear
@@ -280,8 +283,6 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     private let tint = UIView()
     /// SwiftUI's press highlight: a faint wash while a finger is down on the row.
     private let press = UIView()
-    private let pressRecognizer = UILongPressGestureRecognizer()
-    private var pressStart = CGPoint.zero
     private let pinBadge = UIKitStyle.label(size: 10, weight: .medium, color: UIKitStyle.muted)
     private let replyContext = HostedView()
     private let above = UIStackView()
@@ -337,18 +338,16 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         errors.isHidden = true
         [header, body, extras, chips, errors, threadLink, note].forEach(column.addArrangedSubview)
         // Holding a row opens its actions, as on SwiftUI's iPhone layout.
-        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+        let hold = HoldRecognizer(target: self, action: #selector(held(_:)))
         hold.minimumPressDuration = 0.5
         hold.delegate = self
+        // The wash is the hold's own: it shows only while the hold can still fire.
+        hold.waiting = { [weak self, weak hold] waiting in
+            guard let self, let hold else { return }
+            self.press.isHidden = !(waiting && self.state.map { !$0.pending && !$0.messageID.isEmpty } == true
+                && self.gestureRecognizerShouldBegin(hold))
+        }
         addGestureRecognizer(hold)
-        pressRecognizer.addTarget(self, action: #selector(pressed(_:)))
-        // A finger that starts a scroll within 0.15s never shows the wash.
-        pressRecognizer.minimumPressDuration = 0.15
-        pressRecognizer.allowableMovement = 10
-        pressRecognizer.cancelsTouchesInView = false
-        pressRecognizer.delaysTouchesEnded = false
-        pressRecognizer.delegate = self
-        addGestureRecognizer(pressRecognizer)
         // "(edited)" opens the history; "Pinned by" the pinner's card.
         for (view, action) in [(edited, #selector(openHistory)), (pinBadge, #selector(openPinner))] as [(UIView, Selector)] {
             view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: action))
@@ -568,7 +567,7 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     /// still selects words, and the sheet offers Copy text.
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
-        gestureRecognizer !== pressRecognizer && other is UILongPressGestureRecognizer && other.view?.isDescendant(of: body) == true
+        other is UILongPressGestureRecognizer && other.view?.isDescendant(of: body) == true
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -576,24 +575,6 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         // Chips have their own hold (who reacted).
         let point = gestureRecognizer.location(in: chips)
         return chips.isHidden || !chips.bounds.contains(point)
-    }
-
-    /// Shows the wash while a finger rests on the row; a move (a scroll or a
-    /// swipe) or lifting clears it.
-    @objc private func pressed(_ gesture: UILongPressGestureRecognizer) {
-        switch gesture.state {
-        case .began:
-            if let state, !state.pending, !state.messageID.isEmpty { press.isHidden = false; pressStart = gesture.location(in: self) }
-        case .changed:
-            let point = gesture.location(in: self)
-            if hypot(point.x - pressStart.x, point.y - pressStart.y) > 10 { press.isHidden = true }
-        default: press.isHidden = true
-        }
-    }
-
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        gestureRecognizer === pressRecognizer
     }
 
     @objc private func openHistory() {
@@ -632,7 +613,9 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
     }
 
     @objc private func held(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began, let state, !state.pending, !state.messageID.isEmpty else { return }
+        guard gesture.state == .began else { return }
+        press.isHidden = true
+        guard let state, !state.pending, !state.messageID.isEmpty else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         host?.actions(state.messageID, false)
     }
@@ -884,6 +867,56 @@ final class TimelineEdgeCell: UICollectionViewCell {
 
 /// `firstLoad`: a thread's replies before any arrive, as SwiftUI's two-row skeleton.
 enum TimelineEdge: Hashable { case beginning, loading, failed, firstLoad }
+
+/// A row's hold, which also says when to show the press wash: from 0.15s after
+/// the finger lands (a finger that starts a scroll at once never shows it)
+/// for as long as the hold can still fire. A scroll or a swipe taking the
+/// touch, a move past the hold's own allowance, the hold firing and the lift
+/// all end it at that moment.
+private final class HoldRecognizer: UILongPressGestureRecognizer {
+    var waiting: (Bool) -> Void = { _ in }
+    private var delay: Timer?
+    private var shown = false
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesBegan(touches, with: event)
+        guard state == .possible, delay == nil, !shown else { return }
+        delay = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.delay = nil
+                if self.state == .possible { self.shown = true; self.waiting(true) }
+            }
+        }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesMoved(touches, with: event)
+        if state != .possible { stop() }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesEnded(touches, with: event)
+        stop()
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesCancelled(touches, with: event)
+        stop()
+    }
+
+    /// Also when it fired, or another gesture (a scroll, a swipe) took the touch.
+    override func reset() {
+        super.reset()
+        stop()
+    }
+
+    private func stop() {
+        delay?.invalidate()
+        delay = nil
+        if shown { shown = false; waiting(false) }
+    }
+}
 
 /// SwiftUI's MessageSkeleton: placeholder rows (an avatar and two bars) while
 /// a conversation's first page loads. One VoiceOver element with its label.
