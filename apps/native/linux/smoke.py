@@ -104,7 +104,8 @@ def hover(node):
 
 def toolbar(row):
     """The names of `row`'s buttons, once its toolbar is built."""
-    buttons = [node.get_name() or "" for node in nodes(row) if node.get_role_name() == "push button"]
+    # Newer AT-SPI (GTK 4.18 on Debian 13) names the role "button".
+    buttons = [node.get_name() or "" for node in nodes(row) if node.get_role_name() in ("push button", "button")]
     return buttons if any(name.startswith("Reply to ") for name in buttons) else None
 
 
