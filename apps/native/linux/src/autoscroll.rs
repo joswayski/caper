@@ -79,12 +79,10 @@ pub fn attach(scroller: &gtk::ScrolledWindow, overlay: &gtk::Overlay) {
         }
     });
     overlay.add_overlay(&marker);
-    // While a plain middle click's autoscroll runs, a cover over the
-    // history shows the scrolling cursor: otherwise the text under the
-    // pointer shows its own.
-    let cover = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    cover.set_visible(false);
-    overlay.add_overlay(&cover);
+    // While a plain middle click's autoscroll runs, the history's rows stop
+    // taking the pointer, so the scroller's cursor shows the direction
+    // instead of the text cursor of whatever row is under it.
+    let cover = scroller.clone();
 
     let stop = {
         let (state, cover, marker) = (state.clone(), cover.downgrade(), marker.downgrade());
@@ -103,14 +101,17 @@ pub fn attach(scroller: &gtk::ScrolledWindow, overlay: &gtk::Overlay) {
                 marker.set_visible(false);
             }
             if let Some(cover) = cover.upgrade() {
-                cover.set_visible(false);
+                if let Some(rows) = cover.child() {
+                    rows.set_can_target(true);
+                }
+                cover.set_cursor(None);
             }
         })
     };
     // The cursor shows which way it scrolls.
     let point = {
         let state = state.clone();
-        move |cover: &gtk::Box| {
+        move |cover: &gtk::ScrolledWindow| {
             let state = state.borrow();
             let Some((_, anchor)) = state.anchor else {
                 return;
@@ -183,7 +184,9 @@ pub fn attach(scroller: &gtk::ScrolledWindow, overlay: &gtk::Overlay) {
                     let (state, point) = (state.clone(), point.clone());
                     glib::idle_add_local_once(move || {
                         if state.borrow().anchor.is_some() {
-                            cover.set_visible(true);
+                            if let Some(rows) = cover.child() {
+                                rows.set_can_target(false);
+                            }
                             point(&cover);
                         }
                     });
