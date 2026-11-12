@@ -3959,9 +3959,15 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the back touch target accessible")
         // Phones: the name opens the conversation's menu, as in Slack; Pins and Members move there.
         // iPhone Duo also stacks them in its status column, beside the conversation.
+        let sendEdge = app.buttons["send-message-button"].frame.maxX
+        let windowEdge = app.windows.firstMatch.frame.maxX
         for (control, name) in [("channel-pins", "Pins"), ("Show member list", "Members")] where app.buttons[control].exists {
-            XCTAssertGreaterThanOrEqual(app.buttons[control].frame.minX, app.buttons["send-message-button"].frame.maxX,
+            let frame = app.buttons[control].frame
+            XCTAssertGreaterThanOrEqual(frame.minX, sendEdge,
                                         "\(name) lives in the phone title menu, or iPhone Duo's status column")
+            // Centered in the column, not pushed to the capsule's leading edge beside the conversation.
+            XCTAssertGreaterThan(frame.midX, (sendEdge + windowEdge) / 2, "\(name) sits in the middle of the status column")
+            XCTAssertLessThanOrEqual(frame.maxX, windowEdge, "\(name) stays on screen")
         }
         XCTAssertFalse(app.descendants(matching: .any)["channel-more-menu"].exists, "There is no separate More button")
         let title = app.descendants(matching: .any)["channel-title-menu"]

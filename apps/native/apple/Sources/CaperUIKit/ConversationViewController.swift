@@ -909,6 +909,9 @@ final class ConversationViewController: UIViewController, UICollectionViewDelega
         stack.spacing = 4
         stack.alignment = .center
         stack.isLayoutMarginsRelativeArrangement = true
+        // The capsule sits inside the safe-area column; insetting its margins by
+        // that area would push the buttons out to its leading edge.
+        stack.insetsLayoutMarginsFromSafeArea = false
         stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
         stack.backgroundColor = UIKitStyle.composer
         stack.layer.borderWidth = 1
