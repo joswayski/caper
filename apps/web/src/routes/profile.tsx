@@ -7,7 +7,7 @@ import NotificationSettings from "../account/NotificationSettings";
 import PrivacySettings from "../account/PrivacySettings";
 import StatusPage from "../components/StatusPage";
 import Wordmark from "../components/Wordmark";
-import { inviteFromSearch } from "../spaces/client";
+import { carryPending, signedInPath } from "../spaces/client";
 
 export const Route = createFileRoute("/profile")({
   head: () => ({ meta: [{ title: "Profile - Caper" }] }),
@@ -16,8 +16,7 @@ export const Route = createFileRoute("/profile")({
   loader: async ({ location }) => {
     const account = (typeof window === "undefined" ? undefined : getRememberedAccount()) ?? (await getInitialAccount());
     if (account === null) {
-      const invite = inviteFromSearch(location.searchStr);
-      throw redirect({ href: invite ? `/login?invite=${invite}` : "/login", replace: true });
+      throw redirect({ href: carryPending("/login", location.searchStr), replace: true });
     }
     return { initialAccount: account };
   },
@@ -38,10 +37,7 @@ function Profile() {
     if (account || failed) return;
     void getAccount()
       .then((result) => {
-        if (!result) {
-          const invite = inviteFromSearch(window.location.search);
-          return void navigate({ href: invite ? `/login?invite=${invite}` : "/login", replace: true });
-        }
+        if (!result) return void navigate({ href: carryPending("/login", window.location.search), replace: true });
         setAccount(result);
       })
       .catch(() => setFailed(true));
@@ -85,10 +81,7 @@ function Profile() {
           ref={profileForm}
           account={account}
           onCancel={account.username ? () => void navigate({ to: "/spaces" }) : undefined}
-          onSaved={() => {
-            const invite = inviteFromSearch(window.location.search);
-            return invite ? navigate({ to: "/invite/$code", params: { code: invite } }) : navigate({ to: "/spaces" });
-          }}
+          onSaved={() => navigate({ href: signedInPath({ username: "saved" }, window.location.search) })}
         />
         {account.username && <NotificationSettings />}
         {account.username && <PrivacySettings />}
@@ -106,12 +99,13 @@ function Profile() {
               profileForm.current?.requestClose(() => {
                 setLoggingOut(true);
                 setLogoutError(undefined);
-                logout().then(
+                return logout().then(
                   () => window.location.assign("/"),
-                  () => {
+                  (reason) => {
                     // Stay signed in and say so, instead of a click that silently did nothing.
                     setLoggingOut(false);
                     setLogoutError("Couldn’t log out. Check your connection and try again.");
+                    throw reason;
                   },
                 );
               })

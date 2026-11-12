@@ -14,7 +14,8 @@ import { PictureError, uploadPicture } from "./picture-upload";
 import { Dialog } from "../spaces/Dialog";
 
 export interface ProfileFormHandle {
-  requestClose: (close: () => void) => void;
+  /** Runs `close` once unsaved edits are discarded; a rejected promise from it means the page stayed. */
+  requestClose: (close: () => void | Promise<unknown>) => void;
 }
 
 export default function ProfileForm({
@@ -40,7 +41,7 @@ export default function ProfileForm({
   const [pictureBusy, setPictureBusy] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  const [closeAction, setCloseAction] = useState<() => void>();
+  const [closeAction, setCloseAction] = useState<() => void | Promise<unknown>>();
   const saving = useRef(false);
   const saved = useRef(false);
   const pictureChanged =
@@ -57,10 +58,10 @@ export default function ProfileForm({
     enableBeforeUnload: () => !saved.current && (saving.current || dirty),
     withResolver: true,
   });
-  const requestClose = (close: () => void) => {
+  const requestClose = (close: () => void | Promise<unknown>) => {
     if (saving.current || pictureBusy) return;
     if (dirty) setCloseAction(() => close);
-    else close();
+    else void Promise.resolve(close()).catch(() => undefined);
   };
   useImperativeHandle(ref, () => ({ requestClose }));
   const keepEditing = () => {
@@ -239,7 +240,13 @@ export default function ProfileForm({
               onClick={() => {
                 saved.current = true;
                 if (blocker.status === "blocked") blocker.proceed();
-                closeAction?.();
+                // Close this dialog now: an action that fails (log out while
+                // offline) reports beside its button, and the edits it would
+                // have discarded are guarded again.
+                setCloseAction(undefined);
+                void Promise.resolve(closeAction?.()).catch(() => {
+                  saved.current = false;
+                });
               }}
             >
               Discard

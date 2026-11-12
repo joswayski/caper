@@ -4,7 +4,7 @@ import AttachmentPicker from "./AttachmentPicker.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState, PendingChatMessage } from "./client.ts";
 import { DraftAttachments } from "./Attachments.tsx";
-import type { ComposerAttachments } from "./Composer.tsx";
+import { UploadWaitNotice, type ComposerAttachments } from "./Composer.tsx";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
@@ -746,6 +746,7 @@ export default function ThreadPanel({
               <p className="chat-inline-error">Confirm or dismiss the pending message before sending a reply.</p>
             )}
             {voice.notice}
+            {attachments?.sendWaiting && <UploadWaitNotice />}
             {attachments && (
               <DraftAttachments
                 drafts={attachments.drafts}
@@ -856,6 +857,7 @@ export default function ThreadPanel({
                   state.sendRejected ||
                   state.phase !== "ready" ||
                   state.thread.loading ||
+                  attachments?.sendWaiting ||
                   (!pending && !draft.text.trim() && !attachments?.drafts.length)
                 }
                 aria-label="Send reply"

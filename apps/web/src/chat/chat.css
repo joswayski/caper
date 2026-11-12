@@ -2045,6 +2045,10 @@ button.chat-mention-card-avatar {
 .chat-send-error {
   color: var(--error-text);
 }
+/* Above a composer's staged files, where its errors sit. */
+.chat-upload-wait {
+  margin: 0 0 8px;
+}
 .chat-send-status button {
   padding: 3px 7px;
   border: 1px solid var(--border);

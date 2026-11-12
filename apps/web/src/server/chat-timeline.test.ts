@@ -683,6 +683,55 @@ test("thread summaries survive stale history, unloaded parents and duplicate bro
   assert.equal(timeline.cursor, "10", "thread GET/HTTP ACK never advances channel replay");
 });
 
+test("deleting replies lowers the parent's summary, and the last one removes it", () => {
+  const timeline = new ChatTimeline();
+  const author = message("1").author;
+  const two = { replyCount: 2, participants: [author], seq: "3" };
+  const one = { replyCount: 1, participants: [author], seq: "4" };
+  const replies = [
+    { ...message("2", "a"), threadRootId: "parent", thread: { ...two, replyCount: 1, seq: "2" } },
+    { ...message("3", "b"), threadRootId: "parent", thread: two },
+  ];
+  timeline.reset([{ ...message("1", "parent"), thread: two }], "3");
+  const deleted = (reply: ChatMessage, seq: string, thread?: typeof one) => {
+    const { thread: _, ...rest } = reply;
+    const tombstone: ChatMessage = {
+      ...rest,
+      ...(thread ? { thread } : {}),
+      content: { version: 1, type: "text", text: "" },
+      revision: 2,
+      editedAt: "2026-09-21T12:05:00Z",
+      editSeq: seq,
+      deletedAt: "2026-09-21T12:05:00Z",
+    };
+    return {
+      type: "message.edited" as const,
+      schemaVersion: 1 as const,
+      channelId: "general",
+      seq,
+      message: tombstone,
+    };
+  };
+  assert.equal(timeline.applyEvent(deleted(replies[0], "4", one)), "applied");
+  assert.deepEqual(timeline.messages[0].thread, one);
+  assert.equal(timeline.messages.length, 1, "a deletion never inserts the reply into the channel");
+  assert.equal(timeline.applyEvent(deleted(replies[1], "5")), "applied");
+  assert.equal(timeline.messages[0].thread, undefined);
+  // Older copies of the replies and the parent cannot bring it back.
+  timeline.prepend([
+    { ...replies[1], broadcast: true },
+    { ...message("1", "parent"), thread: two },
+  ]);
+  assert.equal(timeline.messages[0].thread, undefined);
+  // A reply sent afterwards starts the count again.
+  const next = { replyCount: 1, participants: [author], seq: "6" };
+  timeline.mergeSent({ ...message("6", "c"), threadRootId: "parent", thread: next });
+  assert.deepEqual(timeline.messages[0].thread, next);
+  // A tombstone from before that reply leaves the newer summary alone.
+  timeline.prepend([deleted(replies[1], "5").message]);
+  assert.deepEqual(timeline.messages[0].thread, next);
+});
+
 test("thread metadata validators reject invalid roots, broadcasts and summary revisions", () => {
   const root = message("1");
   assert.ok(isChatMessage({ ...root, threadRootId: "root", broadcast: false }));

@@ -62,9 +62,20 @@ export default function ReactorsPanel({
     whileElementsMounted: autoUpdate,
   });
   const { getFloatingProps } = useInteractions([useDismiss(context), useRole(context)]);
+  // The anchor is a reaction chip, which goes when its last reaction is removed
+  // or its row leaves the rendered window. Keep its last position instead of
+  // anchoring at (0, 0), as the message actions do.
+  const anchorRect = useRef<DOMRect | undefined>(undefined);
   useEffect(() => {
     refs.setReference(target.anchor);
-  }, [target.anchor, refs.setReference]);
+    refs.setPositionReference({
+      contextElement: target.anchor,
+      getBoundingClientRect: () => {
+        if (target.anchor.isConnected) anchorRect.current = target.anchor.getBoundingClientRect();
+        return anchorRect.current ?? target.anchor.getBoundingClientRect();
+      },
+    });
+  }, [target.anchor, refs.setReference, refs.setPositionReference]);
 
   // Follow the live snapshot: a removed emoji moves the selection; none closes.
   const current = reactions.some((reaction) => reaction.emoji === selected) ? selected : reactions[0]?.emoji;

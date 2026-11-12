@@ -656,6 +656,9 @@ export default function Chat({
   const [attachErrors, setAttachErrors] = useState<Record<string, string | undefined>>({});
   const channelDrafts = drafts.filter((draft) => !draft.threadRootId);
   const threadDrafts = drafts.filter((draft) => draft.threadRootId === state.thread?.rootId && !!draft.threadRootId);
+  /** Composers ("channel" or a thread root) whose send waits for its files to upload. */
+  const uploadWaits = useRef(new Set<string>());
+  const [uploadWaiting, setUploadWaiting] = useState<Record<string, boolean | undefined>>({});
   const setAttachError = (error: string | undefined, root?: string) =>
     setAttachErrors((current) => ({ ...current, [root ?? "channel"]: error }));
   const uploads = useRef(new Map<string, AttachmentUpload>());
@@ -1300,6 +1303,16 @@ export default function Chat({
     scrollTarget && scrollTarget !== "latest"
       ? messages.findIndex((message) => "id" in message && message.id === scrollTarget)
       : "LAST";
+  // A jump's target can be deleted by the time its context loads. Deleted rows
+  // are not shown, so there is nothing to scroll to; holding the target would
+  // keep the conversation from following new messages for good.
+  const scrollTargetGone = scrollIndex === -1 && !jumping;
+  useEffect(() => {
+    if (!scrollTargetGone) return;
+    setScrollTarget(undefined);
+    setJumpMessage(undefined);
+    setActionStatus("That message was deleted.");
+  }, [scrollTargetGone]);
   useEffect(() => {
     if (!scrollTarget || !listReady) return;
     if (scrollTarget === "latest" && state.hasNewer) return;
@@ -1364,18 +1377,32 @@ export default function Chat({
     preview: { suppressEmbeds?: boolean; embeds?: ChatEmbed[] } = {},
   ) => {
     const client = clientRef.current;
+    const target = threadRootId ?? "channel";
+    // One send per composer waits for its files, as in the native apps: a
+    // second Enter meanwhile would send the message twice.
+    if (uploadWaits.current.has(target)) return;
     const files = drafts.filter((draft) => draft.threadRootId === threadRootId);
     const sources = !state.pendingSend ? files.map((draft) => uploads.current.get(draft.key)!) : [];
     setAttachError(undefined, threadRootId);
     let attachments: ChatAttachment[];
+    const waits = sources.some((upload) => !upload.state.attachment || upload.stale);
+    if (waits) {
+      uploadWaits.current.add(target);
+      setUploadWaiting((current) => ({ ...current, [target]: true }));
+    }
     try {
       attachments = (await Promise.all(sources.map((upload) => upload.ensure()))).map((attachment, index) => ({
         ...attachment,
         spoiler: latestDrafts.current.find((draft) => draft.key === files[index].key)?.spoiler,
       }));
     } catch {
-      return;
-    } // The file chip owns the upload error and its Retry action.
+      return; // The file chip owns the upload error and its Retry action.
+    } finally {
+      if (waits) {
+        uploadWaits.current.delete(target);
+        setUploadWaiting((current) => ({ ...current, [target]: false }));
+      }
+    }
     if (client !== clientRef.current || sources.some((upload) => ![...uploads.current.values()].includes(upload)))
       return;
     // Retain local previews after Send; the viewer still uses the server's final files.
@@ -2365,6 +2392,7 @@ export default function Chat({
                           : "Checking file uploads…",
                       drafts: channelDrafts,
                       error: attachErrors.channel,
+                      sendWaiting: !!uploadWaiting.channel,
                       onAdd: addFiles,
                       onRemove: removeDraft,
                       onRetry: retryUpload,
@@ -2405,6 +2433,7 @@ export default function Chat({
                     : "Checking file uploads…",
                 drafts: threadDrafts,
                 error: state.thread ? attachErrors[state.thread.rootId] : undefined,
+                sendWaiting: !!state.thread && !!uploadWaiting[state.thread.rootId],
                 onAdd: (files) => addFiles(files, state.thread?.rootId),
                 onRemove: removeDraft,
                 onRetry: retryUpload,

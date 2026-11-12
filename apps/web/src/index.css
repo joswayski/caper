@@ -445,7 +445,7 @@
 .made-by a {
   color: var(--link);
   text-underline-offset: 4px;
-  transition: color 0.2s ease;
+  transition: color var(--motion-fast) ease;
 }
 @media (hover: hover) {
   .made-by a:hover,

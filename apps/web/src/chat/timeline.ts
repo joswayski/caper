@@ -35,6 +35,9 @@ export class ChatTimeline {
   private pinSnapshotCursor = 0n;
   private pinnedById = new Map<string, ChatMessage>();
   private readonly threadSummaries = new Map<string, ChatThreadSummary>();
+  /** Parents whose last reply was deleted, by that deletion's sequence, so an
+   * older copy of a reply cannot bring its summary back. */
+  private readonly emptiedThreads = new Map<string, bigint>();
   private sortedMessages?: ChatMessage[];
 
   get cursor() {
@@ -71,6 +74,7 @@ export class ChatTimeline {
     this.unseenAttachments.clear();
     this.unseenEmbeds.clear();
     this.threadSummaries.clear();
+    this.emptiedThreads.clear();
     if (this.cursorValue === 0n) this.forwardUpdates.clear();
     this.sortedMessages = undefined;
     this.pinSnapshotCursor = 0n;
@@ -257,6 +261,35 @@ export class ChatTimeline {
       }
     }
     if (message.deletedAt) this.mergeForwardMessage(message);
+    if (message.deletedAt && message.threadRootId) this.mergeDeletedReply(message.threadRootId, message);
+  }
+
+  private mergeThreadSummary(rootId: string, summary: ChatThreadSummary) {
+    const previous = this.threadSummaries.get(rootId);
+    const emptied = this.emptiedThreads.get(rootId);
+    const seq = sequence(summary.seq);
+    if ((emptied !== undefined && seq <= emptied) || (previous && seq <= sequence(previous.seq))) return;
+    this.threadSummaries.set(rootId, summary);
+    const root = this.byId.get(rootId);
+    if (root) this.byId.set(rootId, { ...root, thread: summary });
+    this.sortedMessages = undefined;
+  }
+
+  // A deleted reply carries its thread's summary without it. The last one
+  // carries none, and takes the summary off the parent.
+  private mergeDeletedReply(rootId: string, reply: ChatMessage) {
+    if (reply.thread) return this.mergeThreadSummary(rootId, reply.thread);
+    const seq = sequence(reply.editSeq ?? "0");
+    const previous = this.threadSummaries.get(rootId);
+    if (seq <= (this.emptiedThreads.get(rootId) ?? 0n) || (previous && seq <= sequence(previous.seq))) return;
+    this.emptiedThreads.set(rootId, seq);
+    this.threadSummaries.delete(rootId);
+    const root = this.byId.get(rootId);
+    if (root?.thread) {
+      const { thread: _, ...rest } = root;
+      this.byId.set(rootId, rest);
+      this.sortedMessages = undefined;
+    }
   }
 
   private withEdit(message: ChatMessage) {
@@ -341,15 +374,14 @@ export class ChatTimeline {
     this.mergeEdit(message);
     message = this.withReactions(this.withEdit(message));
     const rootId = message.threadRootId ?? message.id;
-    const previous = this.threadSummaries.get(rootId);
-    if (message.thread && (!previous || sequence(message.thread.seq) > sequence(previous.seq))) {
-      this.threadSummaries.set(rootId, message.thread);
-      const root = this.byId.get(rootId);
-      if (root) this.byId.set(rootId, { ...root, thread: message.thread });
-      this.sortedMessages = undefined;
-    }
+    if (message.thread) this.mergeThreadSummary(rootId, message.thread);
     const summary = this.threadSummaries.get(rootId);
     if (summary) message = { ...message, thread: summary };
+    else if (message.thread) {
+      // Only a summary older than the deletion that emptied the thread.
+      const { thread: _, ...rest } = message;
+      message = rest;
+    }
     const existing = this.byId.get(message.id);
     if (!existing) {
       this.byId.set(message.id, message);

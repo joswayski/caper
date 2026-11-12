@@ -34,6 +34,10 @@ const FETCH_TIMEOUT_MS = 25_000;
 const SNAPSHOT_TIMEOUT_MS = 5_000;
 const CONTROL_RECOVERY_MS = 30_000;
 const DISCONNECT_GRACE_MS = 10_000;
+// An input reopened after a loss that ends again this soon is not reopened again.
+const MICROPHONE_RECOVERY_WINDOW_MS = 10_000;
+const MICROPHONE_DISCONNECTED =
+  "Your microphone disconnected. Connect a microphone or choose another input and try again.";
 /**
  * Re-checks for a listed source that cannot be pulled yet. A newcomer's track is
  * listed at publication but pullable only once its transport sends media, which
@@ -194,6 +198,10 @@ export class PublicCallClient {
   private latestRevision?: number;
   private events?: EventConnection;
   private microphoneDeviceId?: string;
+  /** The capture died and no input could replace it; the call stays muted. */
+  private microphoneLost = false;
+  private microphoneRecovery?: Promise<void>;
+  private microphoneRecovered?: { track: MediaStreamTrack; at: number };
   private statsTimer?: number;
   private diagnostics?: ConnectionDiagnostics;
   // Stats keep sampling (rates need the previous sample) but re-render the
@@ -851,17 +859,6 @@ export class PublicCallClient {
       await pc.setRemoteDescription(withOpusDtx(response.sessionDescription));
       if (generation !== this.generation) throw new Error("Call session changed.");
       this.localMedia = new MediaStream([track]);
-      track.addEventListener(
-        "ended",
-        () => {
-          if (generation === this.generation && this.senders.get(kind)?.track === track) {
-            void this.unpublish(kind).catch((error) => {
-              if (generation === this.generation) this.scheduleReconnect(reconnectReason("microphone ended", error));
-            });
-          }
-        },
-        { once: true },
-      );
       if (this.muted || this.monitoring) track.enabled = this.readyToTalk && this.monitoring;
     }, generation).catch((error) => {
       track.stop();
@@ -876,6 +873,12 @@ export class PublicCallClient {
   async setMuted(muted: boolean) {
     if (this.monitoring) return;
     const generation = this.generation;
+    // Unmuting a lost microphone means opening one again first.
+    if (!muted && this.microphoneLost && this.phase === "connected") {
+      await this.changeMicrophone("").catch((error) => {
+        if (generation === this.generation) throw error;
+      });
+    }
     if (!muted) {
       this.deafened = false;
       this.mutedBeforeDeafen = undefined;
@@ -925,7 +928,7 @@ export class PublicCallClient {
       throw new Error("Join voice before testing your microphone.");
     if (monitoring) {
       const microphone = this.senders.get("microphone");
-      if (!microphone) throw new Error("No microphone is available for testing.");
+      if (!microphone || this.microphoneLost) throw new Error("No microphone is available for testing.");
       this.stateBeforeMonitoring = { muted: this.muted, deafened: this.deafened };
       this.monitoring = true;
       this.muted = true;
@@ -1010,14 +1013,17 @@ export class PublicCallClient {
   private async openMicrophone(deviceId?: string, signal = this.captureController.signal) {
     this.captureAttempt = "opening";
     this.captureError = undefined;
-    let microphone: Microphone;
+    let microphone: Microphone | undefined;
     try {
       microphone = await captureMicrophone(
         deviceId,
         this.noiseSuppression,
         signal,
         () => {
+          // Startup can report before the capture has been returned.
+          if (!microphone) return;
           this.microphoneStatus = microphone.status;
+          if (microphone.lost && this.senders.get("microphone")?.track === microphone.track) this.recoverMicrophone();
           this.emit();
         },
         this.audioSetup,
@@ -1087,6 +1093,66 @@ export class PublicCallClient {
       media: this.mediaDetail,
       lastReconnect: this.lastReconnect,
     };
+  }
+
+  /** Lets the page report unplugged inputs: an exact ID that is gone can never reopen. */
+  microphoneDevicesChanged(deviceIds: string[]) {
+    if (this.microphoneDeviceId && !deviceIds.includes(this.microphoneDeviceId)) this.recoverMicrophone();
+  }
+
+  /**
+   * The published capture ended or its device vanished. Reopen the system
+   * default once; failing that, mute rather than claim a live microphone.
+   */
+  private recoverMicrophone() {
+    this.microphoneDeviceId = undefined;
+    const lost = this.senders.get("microphone")?.track;
+    if (this.phase !== "connected" || this.microphoneRecovery || !lost) return;
+    const generation = this.generation;
+    // Let a change already in flight finish: it may have replaced the track.
+    const recovery = this.serializeMedia(async () => undefined, generation)
+      .then(async () => {
+        if (this.senders.get("microphone")?.track !== lost) return;
+        // A reopened input that ends at once would otherwise reopen forever.
+        const recovered = this.microphoneRecovered;
+        if (recovered?.track === lost && performance.now() - recovered.at < MICROPHONE_RECOVERY_WINDOW_MS)
+          throw new Error(MICROPHONE_DISCONNECTED);
+        await this.changeMicrophone("");
+        const track = this.senders.get("microphone")?.track;
+        if (track) this.microphoneRecovered = { track, at: performance.now() };
+      })
+      .catch((error) => (generation === this.generation ? this.muteLostMicrophone(message(error)) : undefined))
+      .finally(() => {
+        if (this.microphoneRecovery === recovery) this.microphoneRecovery = undefined;
+      });
+    this.microphoneRecovery = recovery;
+  }
+
+  /** Keeps the publication, so a later input only has to replace the track. */
+  private async muteLostMicrophone(reason: string) {
+    const generation = this.generation;
+    const publication = this.senders.get("microphone");
+    if (!publication) return;
+    this.microphoneLost = true;
+    this.microphoneStatus = "Microphone disconnected";
+    this.stopMicrophone(publication.track);
+    this.localMedia = undefined;
+    this.muted = true;
+    // Undeafening or ending a microphone test must not unmute a dead input.
+    if (this.deafened) this.mutedBeforeDeafen = true;
+    if (this.stateBeforeMonitoring) this.stateBeforeMonitoring.muted = true;
+    this.emit(reason);
+    try {
+      await this.serializeMedia(() => publication.sender.replaceTrack(null), generation);
+    } catch (error) {
+      if (generation === this.generation) this.scheduleReconnect(reconnectReason("microphone ended", error));
+      return;
+    }
+    if (this.token) {
+      void this.setState().catch((error) => {
+        if (generation === this.generation) this.emit(message(error));
+      });
+    }
   }
 
   private stopMicrophone(track: MediaStreamTrack) {
@@ -1199,7 +1265,8 @@ export class PublicCallClient {
     const generation = this.generation;
     await this.serializeMedia(async () => {
       const microphone = this.senders.get("microphone");
-      if (!microphone) return;
+      // Without a publication the choice would not be in use; do not accept it.
+      if (!microphone) throw new Error("Voice is still connecting. Choose your microphone once it has connected.");
       const old = microphone.track;
       const oldCapture = this.captures.get(old);
       let track: MediaStreamTrack | undefined;
@@ -1216,12 +1283,15 @@ export class PublicCallClient {
         await microphone.sender.replaceTrack(this.muted || this.monitoring ? null : track);
         senderReplaced = true;
         if (generation !== this.generation) throw new Error("Call session changed.");
+        // It can end while the sender swaps, before it counts as published.
+        if (track.readyState !== "live") throw new Error(MICROPHONE_DISCONNECTED);
         track.enabled = this.monitoring || !this.muted;
         if (this.monitoring) this.monitorStream = new MediaStream([this.captures.get(track)?.naturalTrack ?? track]);
         if (generation !== this.generation) throw new Error("Call session changed.");
         microphone.track = track;
         this.localMedia = new MediaStream([track]);
         this.microphoneDeviceId = deviceId || undefined;
+        this.microphoneLost = false;
         this.stopMicrophone(old);
         this.emit();
       } catch (error) {
@@ -1245,7 +1315,8 @@ export class PublicCallClient {
         }
         if (track) this.stopMicrophone(track);
         if (rollbackFailed && generation === this.generation) this.scheduleReconnect("microphone change failed");
-        throw error;
+        // Callers show this text; a raw DOMException message is not for people.
+        throw new Error(message(error));
       }
     }, generation);
   }
@@ -1428,23 +1499,6 @@ export class PublicCallClient {
       });
       if (failure) throw failure;
     }, generation);
-  }
-
-  private async unpublish(kind: MediaKind) {
-    const generation = this.generation;
-    await this.serialize(async () => {
-      const publication = this.senders.get(kind);
-      if (!publication) return;
-      const token = this.token;
-      publication.track.stop();
-      await publication.sender.replaceTrack(null);
-      await this.closeMid(publication.mid, token);
-      if (generation !== this.generation || this.senders.get(kind) !== publication) return;
-      publication.track.stop();
-      this.senders.delete(kind);
-      if (kind === "microphone") this.localMedia = undefined;
-    }, generation);
-    this.emit();
   }
 
   private async closeMid(mid: string, token = this.token, subscription = false) {
@@ -1820,6 +1874,9 @@ export class PublicCallClient {
     this.mediaDetail = undefined;
     this.joinTiming = undefined;
     this.microphoneStatus = undefined;
+    this.microphoneLost = false;
+    this.microphoneRecovery = undefined;
+    this.microphoneRecovered = undefined;
     this.monitorStream = undefined;
     this.localTestTrack = undefined;
     this.pc?.getReceivers().forEach((receiver) => receiver.track.stop());

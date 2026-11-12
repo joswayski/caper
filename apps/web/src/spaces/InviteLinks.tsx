@@ -1,4 +1,3 @@
-import { useNavigate } from "@tanstack/react-router";
 import { type KeyboardEvent, useEffect, useId, useState } from "react";
 import {
   autoUpdate,
@@ -29,9 +28,11 @@ import {
   inviteCode,
   inviteLinkSummary,
   inviteUrl,
+  joinInvite,
   listInviteLinks,
   regenerateInviteLink,
   revokeInviteLink,
+  type Space,
   SpacesApiError,
 } from "./client";
 import { friendlyError } from "./errors";
@@ -483,20 +484,46 @@ export function InviteLinkManager({
   );
 }
 
-/** "Have an invite link?" beneath Create a space, like Discord's Join a Server. */
-export function JoinInviteLinkForm({ disabled = false }: { disabled?: boolean }) {
-  const navigate = useNavigate();
+/**
+ * "Have an invite link?" beneath Create a space, like Discord's Join a Server.
+ * It joins in place: loading the invite page would unmount the room and end a
+ * call in progress.
+ */
+export function JoinInviteLinkForm({
+  disabled = false,
+  onJoined,
+}: {
+  disabled?: boolean;
+  onJoined: (space: Space, channelId: string | null) => void;
+}) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
   const id = useId();
+  const join = async () => {
+    if (pending) return;
+    const code = inviteCode(value);
+    if (!code) return setError("Enter an invite link like https://caper.chat/invite/AbCdE12345.");
+    setPending(true);
+    setError(undefined);
+    try {
+      const joined = await joinInvite(code);
+      onJoined(joined.space, joined.channelId);
+    } catch (reason) {
+      setError(
+        reason instanceof SpacesApiError && reason.status === 404
+          ? "This invite link is invalid or has expired."
+          : friendlyError(reason),
+      );
+      setPending(false);
+    }
+  };
   return (
     <form
       className="join-invite-link"
       onSubmit={(event) => {
         event.preventDefault();
-        const code = inviteCode(value);
-        if (!code) return setError("Enter an invite link like https://caper.chat/invite/AbCdE12345.");
-        void navigate({ to: "/invite/$code", params: { code } });
+        void join();
       }}
     >
       <p className="invite-link-example" id={`${id}-example`}>
@@ -515,7 +542,7 @@ export function JoinInviteLinkForm({ disabled = false }: { disabled?: boolean })
             autoCapitalize="none"
             autoCorrect="off"
             spellCheck={false}
-            disabled={disabled}
+            disabled={disabled || pending}
             onChange={(event) => {
               setValue(event.target.value);
               setError(undefined);
@@ -529,8 +556,8 @@ export function JoinInviteLinkForm({ disabled = false }: { disabled?: boolean })
             </span>
           )}
         </div>
-        <button type="submit" disabled={disabled || !value.trim()}>
-          Join
+        <button type="submit" disabled={disabled || pending || !value.trim()}>
+          {pending ? "Joining…" : "Join"}
         </button>
       </div>
       {error && (

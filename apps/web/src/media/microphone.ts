@@ -24,6 +24,8 @@ export interface Microphone {
   track: MediaStreamTrack;
   naturalTrack: MediaStreamTrack;
   status: string;
+  /** The input device went away (unplugged or revoked), not a local stop. */
+  lost: boolean;
   /** Startup split: hardware open vs. audio processing ready (ms). */
   startup: { deviceMs: number; processingMs: number; interim: boolean };
   diagnostics(): object;
@@ -158,6 +160,7 @@ export async function captureMicrophone(
     track: raw,
     naturalTrack: raw,
     status: "Noise suppression off",
+    lost: false,
     startup: { deviceMs, processingMs: 0, interim: false },
     diagnostics() {
       const { sampleRate, channelCount, echoCancellation, noiseSuppression, autoGainControl } = raw.getSettings();
@@ -227,6 +230,19 @@ export async function captureMicrophone(
     signal.throwIfAborted();
     throw new Error("No microphone track was available.");
   }
+  // A processed capture publishes the Web Audio destination, which keeps
+  // running on silence when the device goes away: only the raw track ends.
+  raw.addEventListener(
+    "ended",
+    () => {
+      if (stopped) return;
+      microphone.lost = true;
+      microphone.status = "Microphone disconnected";
+      microphone.stop();
+      changed();
+    },
+    { once: true },
+  );
   const ready = () => {
     microphone.startup.processingMs = performance.now() - started - deviceMs;
   };
@@ -509,6 +525,10 @@ export async function captureMicrophone(
       };
       if (prepared) void prepared.ready.then(() => finish(), finish);
       signal.addEventListener("abort", abort, { once: true });
+      // A device lost during startup closed the worklet's port: do not wait for it.
+      const ended = () => finish(new Error("Microphone disconnected"));
+      raw.addEventListener("ended", ended, { once: true });
+      if (stopped) ended();
       node!.onprocessorerror = () => finish(new Error("Noise suppression failed"));
       node!.port.onmessage = ({ data }) => {
         if (data !== "ready") finish(new Error("Noise suppression failed"));

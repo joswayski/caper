@@ -5,7 +5,7 @@ import { NoiseAssets } from "../media/noise-assets.ts";
 import { mixWithOtherAudio, resetCapturesForTests } from "../audio/session.ts";
 import { DpdfnetPreparation } from "../media/dpdfnet-preparation.ts";
 
-class Track {
+class Track extends EventTarget {
   enabled = true;
   readyState = "live";
   settings: MediaTrackSettings = { noiseSuppression: false };
@@ -1359,3 +1359,56 @@ test("a model that fails while loading hands over to the fallback chain on the s
   microphone.stop();
   await preparing;
 });
+
+test("an unplugged device ends a processed capture, which a local stop does not report", async (t) => {
+  const { raw } = setup(t);
+  let changes = 0;
+  const capturing = captureMicrophone(undefined, "rnnoise", new AbortController().signal, () => {
+    changes++;
+  });
+  await tick();
+  WorkletNode.latest!.port.emit("ready");
+  const microphone = await capturing;
+  // The published track is the Web Audio destination, which never ends by itself.
+  assert.equal(microphone.track, Context.latest!.processed);
+  assert.equal(microphone.lost, false);
+  raw.dispatchEvent(new Event("ended"));
+  assert.equal(microphone.lost, true);
+  assert.equal(microphone.status, "Microphone disconnected");
+  assert.equal(Context.latest!.processed.readyState, "ended", "the published track must not keep sending silence");
+  assert.equal(Context.latest!.closeCalls, 1);
+  assert.equal(changes, 1);
+
+  const second = setup(t);
+  const stopped = await captureMicrophone(undefined, "off", new AbortController().signal, () => {
+    changes++;
+  });
+  stopped.stop();
+  second.raw.dispatchEvent(new Event("ended"));
+  assert.equal(stopped.lost, false);
+  assert.equal(changes, 1, "a capture stopped on purpose is not a lost device");
+});
+
+for (const moment of ["loading", "starting"] as const)
+  test(`a device lost while the noise worklet is ${moment} fails the capture instead of waiting on a closed worklet`, async (t) => {
+    let lose = () => {};
+    const { raw } = setup(t, {
+      context: class extends Context {
+        audioWorklet = {
+          addModule: async (_url: string) => {
+            if (moment === "loading") lose();
+            return undefined;
+          },
+        };
+      },
+    });
+    lose = () => raw.dispatchEvent(new Event("ended"));
+    const failing = assert.rejects(
+      captureMicrophone(undefined, "rnnoise", new AbortController().signal, () => undefined),
+      /RNNoise could not start/,
+    );
+    await tick();
+    if (moment === "starting") lose();
+    await failing;
+    assert.equal(Context.latest!.processed.readyState, "ended");
+  });

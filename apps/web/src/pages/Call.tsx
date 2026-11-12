@@ -1061,6 +1061,8 @@ export default function Call({
           const inputs = audioDeviceOptions(next, true);
           const outputs = audioDeviceOptions(next, false);
           setDeviceId((current) => (inputs.some(({ id }) => id === current) ? current : ""));
+          // The client must stop asking for an unplugged input by its exact ID.
+          clientRef.current?.microphoneDevicesChanged(inputs.map(({ id }) => id));
           setOutput((current) => (outputs.some(({ id }) => id === current) ? current : ""));
         })
         .catch(() => setActionError("Device list unavailable. Use system settings."));

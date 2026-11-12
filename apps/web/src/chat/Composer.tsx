@@ -23,6 +23,8 @@ export interface ComposerAttachments {
   drafts: DraftAttachment[];
   /** A problem adding files, such as too many. */
   error?: string;
+  /** Send was pressed and the message goes once these files have uploaded. */
+  sendWaiting?: boolean;
   onAdd: (files: File[]) => void;
   onRemove: (key: string) => void;
   onRetry: (key: string) => void;
@@ -106,6 +108,15 @@ function useLinkPreview(draft: string) {
     remove: () => setRemoved(link),
     removed: (text: string) => !!removed && previewLink(text) === removed,
   };
+}
+
+/** Shown from Send until the staged files have uploaded and the message goes. */
+export function UploadWaitNotice() {
+  return (
+    <p className="chat-send-status chat-upload-wait" role="status">
+      Uploading… Your message sends when every file is ready.
+    </p>
+  );
 }
 
 export default function Composer({
@@ -251,6 +262,7 @@ export default function Composer({
         </p>
       )}
       {voice.notice}
+      {attachments?.sendWaiting && <UploadWaitNotice />}
       {attachments && (
         <DraftAttachments
           drafts={attachments.drafts}
@@ -351,6 +363,7 @@ export default function Composer({
               !identityReady ||
               sending ||
               sendRejected ||
+              attachments?.sendWaiting ||
               (!draft.trim() && !attachments?.drafts.length && !(pendingSend && !pendingSend.threadRootId))
             }
             // Keep the keyboard open: tapping send must not blur the textarea.

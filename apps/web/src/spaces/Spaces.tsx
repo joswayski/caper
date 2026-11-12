@@ -95,6 +95,7 @@ import {
 } from "./navigation";
 import { transitionBrowse } from "./browseTransition";
 import {
+  beforeSpaces,
   acceptChannelInvitation,
   acceptDirectRequest,
   acceptSpaceInvitation,
@@ -480,10 +481,13 @@ function SubmitRow({
 function CreateSpaceForm({
   onCancel,
   onCreated,
+  onJoined,
   disabled = false,
 }: {
   onCancel?: () => void;
   onCreated: (space: Space) => void;
+  /** With a dialog: an invite link joined instead. */
+  onJoined?: (space: Space, channelId: string | null) => void;
   disabled?: boolean;
 }) {
   const [name, setName] = useState("");
@@ -533,15 +537,23 @@ function CreateSpaceForm({
   return onCancel ? (
     <Dialog title="Create a space" dismissOnBackdrop={!pending} onClose={onCancel}>
       {form}
-      <JoinInviteLinkForm disabled={pending} />
+      {onJoined && <JoinInviteLinkForm disabled={pending} onJoined={onJoined} />}
     </Dialog>
   ) : (
     form
   );
 }
 
-function CreateSpaceDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (space: Space) => void }) {
-  return <CreateSpaceForm onCancel={onClose} onCreated={onCreated} />;
+function CreateSpaceDialog({
+  onClose,
+  onCreated,
+  onJoined,
+}: {
+  onClose: () => void;
+  onCreated: (space: Space) => void;
+  onJoined: (space: Space, channelId: string | null) => void;
+}) {
+  return <CreateSpaceForm onCancel={onClose} onCreated={onCreated} onJoined={onJoined} />;
 }
 
 function CreateChannelDialog({
@@ -1832,18 +1844,26 @@ export default function Spaces({
       clearTimeout(readRefresh);
       readRefresh = setTimeout(refresh, 100);
     };
+    // Returning to the tab fires both events: one snapshot serves them, and
+    // hiding it needs none.
+    let woke = 0;
+    const wake = () => {
+      if (document.hidden || performance.now() - woke < 1000) return;
+      woke = performance.now();
+      refresh();
+    };
     refresh();
     const timer = setInterval(refresh, 15_000);
-    window.addEventListener("focus", refresh);
+    window.addEventListener("focus", wake);
     window.addEventListener(UNREAD_CHANGED, onRead);
-    document.addEventListener("visibilitychange", refresh);
+    document.addEventListener("visibilitychange", wake);
     return () => {
       unreadRevision.current++;
       clearInterval(timer);
       clearTimeout(readRefresh);
-      window.removeEventListener("focus", refresh);
+      window.removeEventListener("focus", wake);
       window.removeEventListener(UNREAD_CHANGED, onRead);
-      document.removeEventListener("visibilitychange", refresh);
+      document.removeEventListener("visibilitychange", wake);
     };
   }, [refreshUnread]);
   // From the rail an invitation opens over the room instead of navigating away,
@@ -1962,8 +1982,10 @@ export default function Spaces({
   // tracks only the space id. Not `detail`: applying the saved account and live
   // profiles reorders picture fields, so it never equals a fresh response.
   const shownDetail = useRef(detailSnapshot);
+  const shownChannel = useRef(view?.channelId);
   useEffect(() => {
     shownDetail.current = detailSnapshot;
+    shownChannel.current = view?.channelId;
   });
   const [selected, setSelected] = useState<Selection>(() =>
     embedded ? {} : { ...selectedFromUrl(), ...initialSelection },
@@ -2440,8 +2462,8 @@ export default function Spaces({
       .then(async (nextAccount) => {
         if (!current) return;
         if (nextAccount && (!nextAccount.username || !nextAccount.displayName))
-          return void window.location.assign("/profile");
-        if (!nextAccount) return void window.location.replace("/login");
+          return void window.location.assign(beforeSpaces("/profile", window.location.search));
+        if (!nextAccount) return void window.location.replace(beforeSpaces("/login", window.location.search));
         const result = initialSpaceList ?? (await listSpaces());
         if (!current) return;
         setAccount(nextAccount);
@@ -2631,7 +2653,7 @@ export default function Spaces({
         }
         if (invitation && !(result.invitations ?? []).some((item) => item.id === invitation.id))
           choose(result.spaces[0]?.id, undefined, true, selected.dmId, latestSelected.current.visit);
-        if (!selected.dmId && detail?.space.id && available.has(detail.space.id) && !membershipSubmitting.current) {
+        if (detail?.space.id && available.has(detail.space.id) && !membershipSubmitting.current) {
           const next = await getSpace(detail.space.id);
           // Replacing forgets every visited channel's saved history in the
           // space, so an unchanged poll result must not cost a refetch later.
@@ -2640,8 +2662,18 @@ export default function Spaces({
             revision === membershipRevision.current &&
             activeSpace.current === next.space.id &&
             canonicalJson(next) !== canonicalJson(shownDetail.current)
-          )
+          ) {
+            const shown = shownChannel.current;
             replaceDetail(next);
+            // Behind an open DM the sidebar just updates: nothing on screen changed.
+            if (shown && !selected.dmId && !next.channels.some((item) => item.id === shown)) {
+              // The open channel was deleted or closed to this account: say
+              // so, and stop the address naming a channel that is gone.
+              setNotice("This channel is no longer available.");
+              setManageChannel((managed) => (managed?.id === shown ? undefined : managed));
+              choose(next.space.id, undefined, true, undefined, latestSelected.current.visit);
+            }
+          }
         }
       } catch {
         /* An outage is not revocation; keep known navigation. */
@@ -3627,7 +3659,7 @@ export default function Spaces({
                     <summary
                       className="channel-manage"
                       aria-label={`Manage ${item.name}`}
-                      title={`Channel actions for ${item.name}`}
+                      title={`Manage ${item.name}`}
                     >
                       <MoreHorizontal aria-hidden="true" />
                     </summary>
@@ -3983,6 +4015,13 @@ export default function Spaces({
             setSpaces((current) => [...current, space]);
             setDialog(undefined);
             choose(space.id);
+          }}
+          onJoined={(space, channelId) => {
+            setInvitations((items) => items.filter((item) => item.id !== space.id));
+            setSpaces((items) => [...items.filter((item) => item.id !== space.id), space]);
+            navigation.current.forget(space.id);
+            setDialog(undefined);
+            choose(space.id, channelId ?? undefined);
           }}
         />
       )}

@@ -1,7 +1,7 @@
 import { createFileRoute, redirect, useLocation } from "@tanstack/react-router";
 import { getAccount } from "../account/client";
 import Spaces from "../spaces/Spaces";
-import { listDirectConversations, listSpaces, type DirectConversation } from "../spaces/client";
+import { beforeSpaces, listDirectConversations, listSpaces, type DirectConversation } from "../spaces/client";
 import { prepareSpaceLanding } from "../spaces/navigation";
 import SpacesLoading from "../spaces/SpacesLoading";
 
@@ -30,8 +30,10 @@ export const Route = createFileRoute("/spaces")({
         () => undefined,
       );
       const account = await getAccount();
-      if (!account) throw redirect({ to: "/login", replace: true });
-      if (!account.username || !account.displayName) throw redirect({ to: "/profile", replace: true });
+      // Sign-in and the profile step return to the conversation this link names.
+      if (!account) throw redirect({ href: beforeSpaces("/login", location.searchStr), replace: true });
+      if (!account.username || !account.displayName)
+        throw redirect({ href: beforeSpaces("/profile", location.searchStr), replace: true });
       const initialSpaceList = await spaces;
       const landing = initialSpaceList
         ? await prepareSpaceLanding(account.id, initialSpaceList.spaces, new URLSearchParams(location.searchStr))

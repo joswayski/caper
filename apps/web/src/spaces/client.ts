@@ -767,9 +767,33 @@ export function inviteFromSearch(search: string) {
   return code && INVITE_CODE.test(code) ? code : undefined;
 }
 
-/** Where to go once signed in: back to a pending invite, after the profile if it is unfinished. */
-export function signedInPath(account: { username: string | null }, search: string) {
+/**
+ * A signed-out visit to a conversation link keeps its destination through
+ * sign-in as `next`: the /spaces query, rebuilt from its pairs so it can never
+ * name another site or page.
+ */
+export function nextFromSearch(search: string) {
+  const next = new URLSearchParams(search).get("next");
+  return (next && new URLSearchParams(next).toString()) || undefined;
+}
+
+/** `path` for someone who must sign in or finish their profile before the conversation at `/spaces` + `search`. */
+export function beforeSpaces(path: "/login" | "/profile", search: string) {
+  const query = new URLSearchParams(search).toString();
+  return query ? `${path}?next=${encodeURIComponent(query)}` : path;
+}
+
+/** `path` carrying this page's pending invite or conversation on to the next step of signing in. */
+export function carryPending(path: "/login" | "/profile", search: string) {
   const invite = inviteFromSearch(search);
-  if (!account.username) return invite ? `/profile?invite=${invite}` : "/profile";
-  return invite ? `/invite/${invite}` : "/spaces";
+  return invite ? `${path}?invite=${invite}` : beforeSpaces(path, nextFromSearch(search) ?? "");
+}
+
+/** Where to go once signed in: back to a pending invite or conversation, after the profile if it is unfinished. */
+export function signedInPath(account: { username: string | null }, search: string) {
+  if (!account.username) return carryPending("/profile", search);
+  const invite = inviteFromSearch(search);
+  if (invite) return `/invite/${invite}`;
+  const next = nextFromSearch(search);
+  return next ? `/spaces?${next}` : "/spaces";
 }

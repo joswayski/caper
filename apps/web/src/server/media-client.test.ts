@@ -2794,30 +2794,320 @@ test("a pending old microphone request cannot block controls in a replacement ca
   assert.equal(states.at(-1)?.phase, "connected");
 });
 
-test("a late ended-track cleanup failure cannot reconnect a replacement call", async (t) => {
+test("a lost microphone's late reopen failure cannot disturb a replacement call", async (t) => {
   const { client, install, states, track } = setup(t);
   await client.join();
-  const original = fetch;
-  let failClose!: () => void;
-  install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/join"))
-      return Promise.resolve(Response.json({ token: "replacement-capability", id: "new-self", iceServers: [] }));
-    if (url.endsWith("/close"))
-      return new Promise<Response>((_resolve, reject) => {
-        failClose = () => reject(new TypeError("late close failure"));
-      });
-    return original(url, init);
+  let failReopen!: () => void;
+  let captures = 0;
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: () =>
+        ++captures === 1
+          ? new Promise<Stream>((_resolve, reject) => {
+              failReopen = () => reject(new DOMException("Browser error", "NotFoundError"));
+            })
+          : Promise.resolve(new Stream([new Track()])),
+    },
   });
   track.dispatchEvent(new Event("ended"));
   await tick();
+  assert.equal(captures, 1, "the loss reopens a microphone");
   await client.leave();
   await client.join();
   const peer = Peer.latest;
-  failClose();
+  const before = states.length;
+  failReopen();
   await tick();
   assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.muted, false);
   assert.equal(Peer.latest, peer);
   assert.equal(peer.senders[0].track?.enabled, true);
+  assert.equal(
+    states.slice(before).some((state) => state.error),
+    false,
+  );
+  assert.equal(captures, 2);
+});
+
+/** Just enough Web Audio for a processed capture, whose published track is the graph's output. */
+function installProcessing(install: (key: string, value: unknown) => void) {
+  const outputs: Track[] = [];
+  const parameter = () => ({ value: 0, cancelScheduledValues() {}, setTargetAtTime() {}, setValueAtTime() {} });
+  const node = () => ({
+    context: { currentTime: 0 },
+    gain: parameter(),
+    frequency: parameter(),
+    Q: parameter(),
+    threshold: parameter(),
+    knee: parameter(),
+    ratio: parameter(),
+    attack: parameter(),
+    release: parameter(),
+    connect: (target: unknown) => target,
+    disconnect() {},
+  });
+  install(
+    "AudioContext",
+    class {
+      sampleRate = 48_000;
+      state = "running";
+      currentTime = 0;
+      audioWorklet = { addModule: async () => undefined };
+      createMediaStreamSource = node;
+      createGain = node;
+      createBiquadFilter = node;
+      createDynamicsCompressor = node;
+      createMediaStreamDestination() {
+        const output = new Track();
+        outputs.push(output);
+        return { ...node(), stream: new Stream([output]) };
+      }
+      async resume() {}
+      async suspend() {
+        this.state = "suspended";
+      }
+      async close() {
+        this.state = "closed";
+      }
+    },
+  );
+  install(
+    "AudioWorkletNode",
+    class {
+      port = {
+        onmessage: undefined as ((event: { data: unknown }) => void) | undefined,
+        postMessage() {},
+        close() {},
+      };
+      constructor() {
+        queueMicrotask(() => this.port.onmessage?.({ data: "ready" }));
+      }
+      connect(target: unknown) {
+        return target;
+      }
+      disconnect() {}
+    },
+  );
+  vi.spyOn(NoiseAssets.prototype, "load").mockImplementation(async () => ({ module: {} as WebAssembly.Module }));
+  return outputs;
+}
+
+test("an unplugged microphone behind noise suppression is replaced by the system default", async (t) => {
+  const { client, install, states, calls } = setup(t);
+  const outputs = installProcessing(install);
+  const raws: Track[] = [];
+  const deviceIds: Array<ConstrainDOMString | undefined> = [];
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: async (constraints: MediaStreamConstraints) => {
+        deviceIds.push((constraints.audio as MediaTrackConstraints).deviceId);
+        const raw = new Track();
+        raws.push(raw);
+        return new Stream([raw]);
+      },
+    },
+  });
+  await client.setNoiseSuppression("rnnoise");
+  await client.join("Guest", "usb");
+  assert.equal(states.at(-1)?.phase, "connected");
+  // Each capture has two outputs: the published one, then the unprocessed-voice one.
+  assert.equal(Peer.latest.senders[0].track, outputs[0], "the graph's output is published, not the device's track");
+  const before = states.length;
+  raws[0].dispatchEvent(new Event("ended"));
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(deviceIds, [{ exact: "usb" }, undefined], "one reopen, of the system default");
+  assert.equal(outputs[0].readyState, "ended");
+  assert.equal(Peer.latest.senders[0].track, outputs[2]);
+  assert.equal(outputs[2].enabled, true);
+  assert.equal(states.at(-1)?.localMedia?.getAudioTracks()[0], outputs[2]);
+  assert.equal(states.at(-1)?.muted, false);
+  assert.equal(states.at(-1)?.noiseSuppressionStatus, "RNNoise active · on-device");
+  assert.equal(
+    states.slice(before).some((state) => state.error),
+    false,
+  );
+  assert.equal(Peer.all.length, 1, "recovery keeps the call");
+  assert.equal(calls.filter((operation) => operation === "join").length, 1);
+});
+
+test("a lost microphone that cannot be reopened mutes with a plain message until one can be", async (t) => {
+  const { client, install, states, stateUpdates, track } = setup(t);
+  await client.join("Guest", "usb");
+  let attempts = 0;
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: async () => {
+        attempts++;
+        throw new DOMException("Requested device not found", "NotFoundError");
+      },
+    },
+  });
+  const before = states.length;
+  track.dispatchEvent(new Event("ended"));
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(attempts, 1, "one reopen, not a retry loop");
+  assert.deepEqual(
+    states
+      .slice(before)
+      .map((state) => state.error)
+      .filter(Boolean),
+    ["No microphone is available. Connect a microphone or choose another input and try again."],
+  );
+  assert.equal(states.at(-1)?.phase, "connected", "hearing the room does not need a microphone");
+  assert.equal(states.at(-1)?.muted, true);
+  assert.equal(states.at(-1)?.localMedia, undefined);
+  assert.equal(states.at(-1)?.noiseSuppressionStatus, "Microphone disconnected");
+  assert.equal(Peer.latest.senders[0].track, null);
+  assert.equal(stateUpdates.at(-1)?.muted, true, "the room sees the mute");
+  await assert.rejects(client.setMuted(false), /Connect a microphone/);
+  assert.equal(states.at(-1)?.muted, true, "unmute cannot claim a microphone that is not there");
+
+  const replacement = new Track();
+  const deviceIds: Array<ConstrainDOMString | undefined> = [];
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: async (constraints: MediaStreamConstraints) => {
+        deviceIds.push((constraints.audio as MediaTrackConstraints).deviceId);
+        return new Stream([replacement]);
+      },
+    },
+  });
+  // A settings change reopens the selected input, which is no longer the vanished one.
+  await client.setAudioSetup("speakers");
+  assert.deepEqual(deviceIds, [undefined], "the vanished device's exact ID is forgotten");
+  assert.equal(states.at(-1)?.muted, true, "a reopened microphone stays muted until the user unmutes");
+  assert.equal(Peer.latest.senders[0].track, null);
+  await client.setMuted(false);
+  assert.deepEqual(deviceIds, [undefined]);
+  assert.equal(states.at(-1)?.muted, false);
+  assert.equal(states.at(-1)?.localMedia?.getAudioTracks()[0], replacement);
+  assert.equal(Peer.latest.senders[0].track, replacement);
+  assert.equal(replacement.enabled, true);
+  assert.equal(Peer.all.length, 1);
+});
+
+test("a reopened microphone that ends at once is not reopened again", async (t) => {
+  const { client, install, states, track } = setup(t);
+  await client.join();
+  const reopened: Track[] = [];
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: async () => {
+        reopened.push(new Track());
+        return new Stream([reopened.at(-1)!]);
+      },
+    },
+  });
+  track.dispatchEvent(new Event("ended"));
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(Peer.latest.senders[0].track, reopened[0]);
+  const before = states.length;
+  reopened[0].dispatchEvent(new Event("ended"));
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(reopened.length, 1);
+  assert.equal(states.at(-1)?.muted, true);
+  assert.equal(states.at(-1)?.localMedia, undefined);
+  assert.equal(Peer.latest.senders[0].track, null);
+  assert.equal(
+    states.slice(before).some((state) => /microphone disconnected/i.test(state.error ?? "")),
+    true,
+  );
+});
+
+test("a replacement microphone that ends during the swap is not published", async (t) => {
+  const { client, install, states, track } = setup(t);
+  await client.join();
+  const replacement = new Track();
+  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([replacement]) } });
+  const sender = Peer.latest.senders[0];
+  const replace = sender.replaceTrack;
+  let finishSwap!: () => void;
+  sender.replaceTrack = (next) =>
+    new Promise<void>((resolve) => {
+      finishSwap = () => {
+        sender.replaceTrack = replace;
+        sender.track = next;
+        resolve();
+      };
+    });
+  const changing = assert.rejects(client.changeMicrophone("desk"), /microphone disconnected/i);
+  await tick();
+  replacement.dispatchEvent(new Event("ended"));
+  finishSwap();
+  await changing;
+  assert.equal(sender.track, track, "the working microphone is restored");
+  assert.equal(track.readyState, "live");
+  assert.equal(states.at(-1)?.localMedia?.getAudioTracks()[0], track);
+  assert.equal(states.at(-1)?.muted, false);
+});
+
+test("a selected microphone missing from the device list falls back to the system default", async (t) => {
+  const { client, install, track } = setup(t);
+  const deviceIds: Array<ConstrainDOMString | undefined> = [];
+  const replacement = new Track();
+  await client.join("Guest", "usb");
+  install("navigator", {
+    mediaDevices: {
+      getUserMedia: async (constraints: MediaStreamConstraints) => {
+        deviceIds.push((constraints.audio as MediaTrackConstraints).deviceId);
+        return new Stream([replacement]);
+      },
+    },
+  });
+  client.microphoneDevicesChanged(["", "usb", "desk"]);
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(deviceIds, [], "a selection that is still plugged in is kept");
+  assert.equal(Peer.latest.senders[0].track, track);
+  client.microphoneDevicesChanged(["", "desk"]);
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(deviceIds, [undefined]);
+  assert.equal(Peer.latest.senders[0].track, replacement);
+  assert.equal(track.readyState, "ended");
+  client.microphoneDevicesChanged(["", "desk"]);
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(deviceIds, [undefined], "the system default needs no listed ID");
+});
+
+test("changing the microphone before one is published is refused, not silently accepted", async (t) => {
+  const { client, install } = setup(t);
+  let finish!: (response: Response) => void;
+  install("fetch", (url: string) =>
+    url.endsWith("/join")
+      ? new Promise<Response>((resolve) => {
+          finish = resolve;
+        })
+      : Promise.resolve(new Response(null, { status: 204 })),
+  );
+  const joining = client.join();
+  await tick();
+  await assert.rejects(client.changeMicrophone("desk"), /still connecting/);
+  await client.leave();
+  finish(Response.json({ token: "late", id: "late", iceServers: [] }));
+  await joining;
+});
+
+test("a failed microphone change explains itself and keeps the old microphone", async (t) => {
+  const { client, install, states, track } = setup(t);
+  await client.join();
+  for (const [name, expected] of [
+    ["NotFoundError", /Connect a microphone/],
+    ["OverconstrainedError", /Connect a microphone/],
+    ["NotAllowedError", /permission was denied/],
+    ["NotReadableError", /another app/],
+  ] as const) {
+    install("navigator", {
+      mediaDevices: {
+        getUserMedia: async () => {
+          throw new DOMException("Browser error", name);
+        },
+      },
+    });
+    await assert.rejects(client.changeMicrophone("desk"), expected);
+  }
+  assert.equal(track.readyState, "live");
+  assert.equal(Peer.latest.senders[0].track, track);
+  assert.equal(states.at(-1)?.localMedia?.getAudioTracks()[0], track);
+  assert.equal(states.at(-1)?.muted, false);
 });
 
 for (const failure of [502, 503, 504, "network", "timeout"] as const) {

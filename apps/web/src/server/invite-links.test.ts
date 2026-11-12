@@ -19,6 +19,8 @@ import {
   inviteExpiry,
   inviteLinkSummary,
   invitedSpacePath,
+  beforeSpaces,
+  carryPending,
   inviteFromSearch,
   joinInvite,
   previewInvite,
@@ -103,6 +105,31 @@ test("sign-in returns to a pending invite only for valid codes", () => {
   assert.equal(signedInPath({ username: null }, "?invite=AbCdE12345"), "/profile?invite=AbCdE12345");
   assert.equal(signedInPath({ username: "jose" }, ""), "/spaces");
   assert.equal(signedInPath({ username: null }, "?invite=bad"), "/profile");
+});
+
+test("a signed-out conversation link returns to its conversation after sign-in", () => {
+  const link = "?space=s1&channel=c1&message=m1";
+  const login = beforeSpaces("/login", link);
+  assert.equal(login, "/login?next=space%3Ds1%26channel%3Dc1%26message%3Dm1");
+  const search = login.slice(login.indexOf("?"));
+  assert.equal(signedInPath({ username: "jose" }, search), "/spaces?space=s1&channel=c1&message=m1");
+  // An unfinished profile comes first and carries the conversation on.
+  const profile = signedInPath({ username: null }, search);
+  assert.equal(profile, "/profile?next=space%3Ds1%26channel%3Dc1%26message%3Dm1");
+  assert.equal(
+    signedInPath({ username: "jose" }, profile.slice(profile.indexOf("?"))),
+    "/spaces?space=s1&channel=c1&message=m1",
+  );
+  assert.equal(carryPending("/login", profile.slice(profile.indexOf("?"))), login);
+  assert.equal(beforeSpaces("/login", ""), "/login");
+  // `next` is only ever a /spaces query: it cannot name another page or site.
+  assert.equal(
+    signedInPath({ username: "jose" }, "?next=https%3A%2F%2Fevil.example%2F"),
+    "/spaces?https%3A%2F%2Fevil.example%2F=",
+  );
+  assert.equal(signedInPath({ username: "jose" }, "?next=%2F%2Fevil.example"), "/spaces?%2F%2Fevil.example=");
+  // An invite wins: joining lands in its own channel.
+  assert.equal(signedInPath({ username: "jose" }, "?invite=AbCdE12345&next=space%3Ds1"), "/invite/AbCdE12345");
   assert.equal(invitedSpacePath("space1234567", "chan12345678"), "/spaces?space=space1234567&channel=chan12345678");
   assert.equal(invitedSpacePath("space1234567", null), "/spaces?space=space1234567");
 });

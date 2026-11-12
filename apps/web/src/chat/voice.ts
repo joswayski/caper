@@ -410,7 +410,7 @@ interface VoiceInput {
 /** The default microphone through the call's processing (its denoiser, voice
  * enhancement strength and echo/gain choice), so the recording, its meter and
  * its waveform are what listeners hear. Falls back to the browser's processing. */
-async function openVoiceInput(audio: CallAudio): Promise<VoiceInput> {
+async function openVoiceInput(audio: CallAudio, onLost: () => void): Promise<VoiceInput> {
   const plan = voiceProcessingPlan({
     live: audio.live,
     mode: audio.noiseSuppression,
@@ -433,7 +433,10 @@ async function openVoiceInput(audio: CallAudio): Promise<VoiceInput> {
         undefined,
         audio.noiseSuppression,
         new AbortController().signal,
-        () => undefined,
+        // The processed track is stopped locally, so it never fires "ended".
+        () => {
+          if (microphone?.lost) onLost();
+        },
         audio.audioSetup,
         audio.assets,
         audio.dpdfnet,
@@ -471,6 +474,7 @@ async function openVoiceInput(audio: CallAudio): Promise<VoiceInput> {
   } catch (error) {
     throw microphoneError(error) ?? new VoiceRecordingError("The microphone couldn’t be started.");
   }
+  stream.getAudioTracks()[0]?.addEventListener("ended", onLost, { once: true });
   return {
     stream,
     processing: `Browser processing · ${reason}`,
@@ -489,13 +493,17 @@ export async function startVoiceRecording({
 }: {
   /** RMS level of each ~20 ms sample of the processed audio. */
   onLevel?: (rms: number) => void;
-  /** Ten minutes passed; the caller stops and sends. */
+  /** Ten minutes passed or the microphone went away; the caller stops and sends. */
   onLimit?: () => void;
   now?: () => number;
 } = {}): Promise<VoiceRecorder> {
   if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia)
     throw new VoiceRecordingError("Voice messages can’t be recorded in this browser.");
-  const input = await openVoiceInput(callAudio());
+  // An unplugged microphone would otherwise record silence up to the limit.
+  let lost = false;
+  const input = await openVoiceInput(callAudio(), () => {
+    lost = true;
+  });
   const { stream } = input;
   const mimeType = voiceRecordingType((type) => MediaRecorder.isTypeSupported(type));
   let recorder: MediaRecorder;
@@ -546,7 +554,7 @@ export async function startVoiceRecording({
     }
     levels.push(rms);
     onLevel?.(rms);
-    if (now() - startedAt >= MAX_VOICE_MS) onLimit?.();
+    if (lost || now() - startedAt >= MAX_VOICE_MS) onLimit?.();
   };
   const timer = setInterval(sample, LEVEL_INTERVAL_MS);
   const cleanup = () => {
