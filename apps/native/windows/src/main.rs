@@ -37,6 +37,7 @@ mod profile;
 mod recording;
 mod settings;
 mod space_settings;
+mod suggest;
 // The message grammar every client shares.
 #[allow(dead_code)]
 #[path = "../../../../shared/messages/formatting.rs"]
@@ -153,6 +154,8 @@ struct Dirty {
     dm_menu: bool,
     /// A person's profile card.
     profile: bool,
+    /// A composer's emoji and mention suggestions.
+    suggest: bool,
 }
 
 impl Dirty {
@@ -176,6 +179,7 @@ impl Dirty {
             card: true,
             dm_menu: true,
             profile: true,
+            suggest: true,
         }
     }
 }
@@ -383,6 +387,11 @@ pub struct App {
     profile_p: Panel,
     /// Each person's unsent card message, kept until sent or sign-out.
     profile_drafts: std::collections::HashMap<String, Vec<u16>>,
+    /// The focused composer's `:`/`@` suggestions, the token Escape hid
+    /// (field, text and caret), and the popup's surface.
+    suggest: Option<suggest::Suggest>,
+    suggest_dismissed: Option<(suggest::Field, Vec<u16>, usize)>,
+    suggest_p: Panel,
     /// The history control with keyboard focus (a reaction chip, Add
     /// reaction, Retry or Dismiss), by message id so it survives paging.
     kb: Option<(String, list::Action)>,
@@ -433,6 +442,7 @@ impl App {
             let thread_box_p = Panel::new(&g)?;
             let card_p = Panel::new(&g)?;
             let profile_p = Panel::new(&g)?;
+            let suggest_p = Panel::new(&g)?;
             let settings_p = Panel::new(&g)?;
             let dm_menu_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
@@ -468,7 +478,8 @@ impl App {
             root.AddVisual(&card_p.visual, true, &prev)?;
             root.AddVisual(&menu_p.visual, true, &card_p.visual)?;
             root.AddVisual(&profile_p.visual, true, &menu_p.visual)?;
-            root.AddVisual(&picker_p.visual, true, &profile_p.visual)?;
+            root.AddVisual(&suggest_p.visual, true, &profile_p.visual)?;
+            root.AddVisual(&picker_p.visual, true, &suggest_p.visual)?;
             root.AddVisual(&gifs_p.visual, true, &picker_p.visual)?;
             root.AddVisual(&dm_menu_p.visual, true, &gifs_p.visual)?;
             root.AddVisual(&dialog_p.visual, true, &dm_menu_p.visual)?;
@@ -592,6 +603,9 @@ impl App {
                 profile: None,
                 profile_p,
                 profile_drafts: std::collections::HashMap::new(),
+                suggest: None,
+                suggest_dismissed: None,
+                suggest_p,
                 older_armed: false,
                 thread: None,
                 thread_p,
@@ -1706,6 +1720,9 @@ impl App {
         if self.account_menu.is_some()
             && let Some(r) = self.account_menu_input(msg, wp, x, y)
         {
+            return r;
+        }
+        if let Some(r) = self.suggest_input(msg, wp, x, y, ctrl, shift) {
             return r;
         }
         if self.profile.is_some()
@@ -3532,6 +3549,7 @@ impl App {
         self.track_card();
         self.draw_card()?;
         self.draw_profile()?;
+        self.draw_suggest()?;
         self.draw_panels()?;
         unsafe { self.g.dcomp.Commit()? };
         self.place_web_player();
@@ -3682,7 +3700,25 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             _ => {}
         }
-        if let Some(Some(r)) = with_app(|a| a.handle(msg, wp, lp)) {
+        let handled = with_app(|a| {
+            let r = a.handle(msg, wp, lp);
+            // Anything that can edit a composer, move its caret or its
+            // focus: the `:`/`@` suggestions follow.
+            if matches!(
+                msg,
+                WM_KEYDOWN
+                    | WM_CHAR
+                    | WM_LBUTTONDOWN
+                    | WM_LBUTTONUP
+                    | WM_IME_ENDCOMPOSITION
+                    | WM_SETFOCUS
+                    | WM_KILLFOCUS
+            ) {
+                a.refresh_suggest();
+            }
+            r
+        });
+        if let Some(Some(r)) = handled {
             return r;
         }
         DefWindowProcW(hwnd, msg, wp, lp)

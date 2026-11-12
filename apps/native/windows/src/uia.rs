@@ -118,6 +118,9 @@ pub enum Id {
     /// The open profile card and its parts.
     Profile,
     ProfilePart(crate::profile::PPart),
+    /// A composer's `:`/`@` suggestions and their rows.
+    Suggest,
+    Suggestion(usize),
 }
 
 fn na() -> Error {
@@ -262,10 +265,11 @@ fn children(a: &App, id: Id) -> Vec<Id> {
         Id::Root => {
             // First, so a point on the card finds it before what it covers.
             let mut out: Vec<Id> = a
-                .profile
+                .suggest
                 .as_ref()
-                .map(|_| Id::Profile)
+                .map(|_| Id::Suggest)
                 .into_iter()
+                .chain(a.profile.as_ref().map(|_| Id::Profile))
                 .collect();
             out.extend([Id::Rail, Id::Channels]);
             if !a.direct_rows().is_empty() {
@@ -318,6 +322,9 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .profile_parts()
             .into_iter()
             .map(|(p, _)| Id::ProfilePart(p))
+            .collect(),
+        Id::Suggest => (0..a.suggest.as_ref().map_or(0, |s| s.choices.len()))
+            .map(Id::Suggestion)
             .collect(),
         Id::Menu => a.menu.as_ref().map_or_else(Vec::new, |m| {
             std::iter::once(Id::MenuClose)
@@ -417,6 +424,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Original(i) | Id::Edited(i) | Id::File(i, _) | Id::Embed(i, _) => Id::Row(i),
         Id::MenuItem(_) | Id::MenuClose => Id::Menu,
         Id::ProfilePart(_) => Id::Profile,
+        Id::Suggestion(_) => Id::Suggest,
         Id::Pick(_) => Id::Picker,
         Id::Gif(_) => Id::Gifs,
         Id::Member(_) => Id::Members,
@@ -480,6 +488,8 @@ fn exists(a: &App, id: Id) -> bool {
             .is_some_and(|e| e.part_rect(p).is_some()),
         Id::Menu => a.menu.is_some() && a.dialog.is_none(),
         Id::Profile => a.profile.is_some() && a.dialog.is_none(),
+        Id::Suggest => a.suggest.is_some(),
+        Id::Suggestion(k) => a.suggest.as_ref().is_some_and(|s| k < s.choices.len()),
         Id::ProfilePart(p) => a.dialog.is_none() && a.profile_parts().iter().any(|(q, _)| *q == p),
         Id::MenuItem(k) => a.dialog.is_none() && a.menu.as_ref().is_some_and(|m| k < m.items.len()),
         Id::MenuClose => a.menu.is_some() && a.dialog.is_none(),
@@ -647,6 +657,15 @@ fn name(a: &App, id: Id) -> String {
         Id::ProfilePart(p) => a
             .profile_view()
             .map_or_else(String::new, |v| v.part_name(p)),
+        Id::Suggest => "Suggestions".into(),
+        Id::Suggestion(k) => a
+            .suggest
+            .as_ref()
+            .and_then(|s| s.choices.get(k))
+            .map_or_else(String::new, |c| match c.lines() {
+                (title, Some(detail)) => format!("{title}, {detail}"),
+                (title, None) => title,
+            }),
         Id::MenuClose => "Close message actions".into(),
         Id::Tool(_, t) => t.label(),
         Id::Picker => a
@@ -831,6 +850,8 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::ProfilePart(CPart::Field) => UIA_EditControlTypeId,
         Id::ProfilePart(CPart::Invite | CPart::Block) => UIA_MenuItemControlTypeId,
         Id::ProfilePart(_) => UIA_ButtonControlTypeId,
+        Id::Suggest => UIA_ListControlTypeId,
+        Id::Suggestion(_) => UIA_ListItemControlTypeId,
         Id::Picker => UIA_PaneControlTypeId,
         Id::Pick(PPart::Category(_)) => UIA_TabItemControlTypeId,
         Id::Pick(PPart::Search) => UIA_EditControlTypeId,
@@ -943,6 +964,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Menu => (12, 0),
         Id::Profile => (60, 0),
         Id::ProfilePart(p) => (61, p.index()),
+        Id::Suggest => (62, 0),
+        Id::Suggestion(k) => (63, k),
         Id::MenuItem(k) => (13, k),
         Id::Dialog(p) => (14, p.index()),
         Id::AttachmentEditor(p) => (51, p.index()),
@@ -1105,6 +1128,11 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .as_ref()
             .map_or((0.0, 0.0, 0.0, 0.0), crate::overlay::Menu::rect),
         Id::Profile => a.profile_rect().unwrap_or_default(),
+        Id::Suggest => a.suggest_rects().map_or((0.0, 0.0, 0.0, 0.0), |(r, _)| r),
+        Id::Suggestion(k) => a
+            .suggest_rects()
+            .and_then(|(_, rows)| rows.get(k).copied())
+            .unwrap_or((0.0, 0.0, 0.0, 0.0)),
         Id::ProfilePart(p) => a
             .profile_parts()
             .into_iter()
@@ -1370,6 +1398,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     || pattern == UIA_TextPattern2Id
             }
             Id::ProfilePart(_) => pattern == UIA_InvokePatternId,
+            Id::Suggestion(_) => pattern == UIA_InvokePatternId,
             Id::ThreadPart(_) => pattern == UIA_InvokePatternId,
             _ => false,
         };
@@ -1723,6 +1752,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::Embed(i, k) => a.embed_activate(i, k),
                 Id::ThreadPart(p) => a.thread_activate(p),
                 Id::ProfilePart(p) => a.profile_activate(p),
+                Id::Suggestion(k) => a.suggest_accept(Some(k)),
                 _ => {}
             }
             Ok(())

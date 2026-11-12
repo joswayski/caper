@@ -16,7 +16,7 @@ use caper_client::voice::{Voice, VoiceOperation};
 use caper_client::worker::{
     AccountOperation, AccountResult, AdminOperation, AdminResult, Command, Event, Worker,
 };
-use caper_client::{Host, api::Api, gateway, grouping, model as core};
+use caper_client::{Host, api::Api, gateway, grouping, mentions, model as core};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1365,7 +1365,6 @@ impl Live {
         entry: &core::Mention,
         author: Option<&core::Author>,
     ) -> Option<caper_client::mentions::Profile> {
-        use caper_client::mentions;
         let me = self.account_id.as_deref();
         let members = self
             .detail
@@ -1456,6 +1455,68 @@ impl Live {
             }),
         });
         true
+    }
+
+    /// Who `@` can suggest, never yourself, and which specials apply, as on
+    /// egui: a space channel offers its members, `everyone` and `here`; a
+    /// DM, or a profile card's message to `peer`, offers `GET /api/people`
+    /// plus the peer.
+    pub fn mention_people(
+        &self,
+        peer: Option<mentions::Person>,
+    ) -> (Vec<mentions::Person>, mentions::Specials) {
+        let me = self.account_id.as_deref();
+        let dm_peer = self
+            .direct
+            .as_ref()
+            .and_then(|id| self.directs.iter().find(|d| &d.id == id))
+            .map(|d| mentions::Person {
+                username: d.peer.username.clone(),
+                display_name: d.peer.display_name.clone(),
+                avatar_id: d.peer.avatar_id,
+                avatar_asset: d.peer.avatar_asset.clone(),
+                avatar_url: d.peer.avatar_url.clone(),
+                invited: false,
+            });
+        if peer.is_some() || self.direct.is_some() {
+            let mut people: Vec<mentions::Person> = self
+                .people
+                .iter()
+                .filter(|p| Some(p.id.as_str()) != me)
+                .map(mentions::Person::from)
+                .collect();
+            if let Some(peer) = peer.or(dm_peer)
+                && !people.iter().any(|p| p.username == peer.username)
+                && self.username.as_deref() != Some(peer.username.as_str())
+            {
+                people.push(peer);
+            }
+            return (
+                people,
+                mentions::Specials {
+                    channel: false,
+                    feedback: true,
+                },
+            );
+        }
+        let people = self
+            .detail
+            .as_ref()
+            .filter(|d| self.space.as_ref() == Some(&d.space.id))
+            .map_or_else(Vec::new, |d| {
+                d.members
+                    .iter()
+                    .filter(|m| Some(m.id.as_str()) != me)
+                    .map(mentions::Person::from)
+                    .collect()
+            });
+        (
+            people,
+            mentions::Specials {
+                channel: true,
+                feedback: true,
+            },
+        )
     }
 
     /// Spaces you own that `id` is not in (the open one only if they

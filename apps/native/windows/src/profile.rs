@@ -355,6 +355,14 @@ impl App {
             .map(|(p, _)| *p)
     }
 
+    /// The composer box, in client DIPs, while the card shows it.
+    pub fn profile_field_rect(&self) -> Option<Rect> {
+        self.profile_parts()
+            .into_iter()
+            .find(|(p, _)| *p == PPart::Field)
+            .map(|(_, r)| r)
+    }
+
     /// The composer's text origin in client DIPs, as drawn.
     pub fn profile_text_origin(&self) -> (f32, f32) {
         let r = self
