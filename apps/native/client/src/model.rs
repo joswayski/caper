@@ -2084,6 +2084,9 @@ pub struct Timeline {
     forward_updates: BTreeMap<String, Message>,
     pinned: BTreeMap<u64, Message>,
     thread_summaries: BTreeMap<String, ThreadSummary>,
+    /// Parents whose last reply was deleted, by that deletion's sequence, so
+    /// an older copy of a reply cannot bring its summary back.
+    emptied_threads: BTreeMap<String, u64>,
     edits: BTreeMap<String, Message>,
 }
 
@@ -2193,6 +2196,7 @@ impl Timeline {
         self.forward_updates.clear();
         self.pinned.clear();
         self.thread_summaries.clear();
+        self.emptied_threads.clear();
         self.edits.clear();
         for message in messages {
             self.merge(message)?;
@@ -2432,6 +2436,7 @@ impl Timeline {
         {
             return Ok(false);
         }
+        self.merge_deleted_reply(&message)?;
         let message = self.remember_edit(message);
         if let Some(snapshot) = self.forward_updates.get_mut(&message.id) {
             snapshot.merge_edit(&message);
@@ -2445,6 +2450,71 @@ impl Timeline {
             loaded.merge_edit(&message);
         }
         Ok(true)
+    }
+
+    /// Adopts `summary` for the thread under `root` unless a newer one, or the
+    /// deletion that emptied the thread, is already known.
+    fn merge_thread_summary(&mut self, root: &str, summary: &ThreadSummary) -> Result<(), String> {
+        let seq = sequence(&summary.seq)?;
+        if seq <= self.thread_sequence(root)? {
+            return Ok(());
+        }
+        self.thread_summaries
+            .insert(root.to_owned(), summary.clone());
+        for loaded in self
+            .messages
+            .values_mut()
+            .filter(|loaded| loaded.id == root)
+        {
+            loaded.thread = Some(summary.clone());
+        }
+        Ok(())
+    }
+
+    /// A deleted reply carries its thread's summary without it. The last one
+    /// carries none, and takes the summary off the parent.
+    fn merge_deleted_reply(&mut self, reply: &Message) -> Result<(), String> {
+        let Some(root) = reply
+            .thread_root_id
+            .as_deref()
+            .filter(|_| reply.is_deleted())
+        else {
+            return Ok(());
+        };
+        if let Some(summary) = &reply.thread {
+            return self.merge_thread_summary(root, summary);
+        }
+        let seq = reply
+            .edit_seq
+            .as_deref()
+            .map(sequence)
+            .transpose()?
+            .unwrap_or(0);
+        if seq <= self.thread_sequence(root)? {
+            return Ok(());
+        }
+        self.emptied_threads.insert(root.to_owned(), seq);
+        self.thread_summaries.remove(root);
+        for loaded in self
+            .messages
+            .values_mut()
+            .filter(|loaded| loaded.id == root)
+        {
+            loaded.thread = None;
+        }
+        Ok(())
+    }
+
+    /// The sequence of the newest thing known about the thread under `root`:
+    /// its summary, or the deletion that emptied it.
+    fn thread_sequence(&self, root: &str) -> Result<u64, String> {
+        let summary = self
+            .thread_summaries
+            .get(root)
+            .map(|summary| sequence(&summary.seq))
+            .transpose()?
+            .unwrap_or(0);
+        Ok(summary.max(self.emptied_threads.get(root).copied().unwrap_or(0)))
     }
 
     fn remember_edit(&mut self, mut message: Message) -> Message {
@@ -2708,6 +2778,7 @@ impl Timeline {
         if let Some(snapshot) = self.forward_updates.get(&message.id) {
             overlay_forward(&mut message, snapshot);
         }
+        self.merge_deleted_reply(&message)?;
         message = self.remember_edit(message);
         if let Some(index) = self
             .unseen_embeds
@@ -2759,26 +2830,11 @@ impl Timeline {
             .unwrap_or(&message.id)
             .clone();
         if let Some(summary) = &message.thread {
-            let previous = self
-                .thread_summaries
-                .get(&root)
-                .map(|old| sequence(&old.seq))
-                .transpose()?
-                .unwrap_or(0);
-            if sequence(&summary.seq)? > previous {
-                self.thread_summaries.insert(root.clone(), summary.clone());
-                for loaded in self
-                    .messages
-                    .values_mut()
-                    .filter(|loaded| loaded.id == root)
-                {
-                    loaded.thread = Some(summary.clone());
-                }
-            }
+            self.merge_thread_summary(&root, summary)?;
         }
-        if let Some(summary) = self.thread_summaries.get(&root) {
-            message.thread = Some(summary.clone());
-        }
+        // Without a known summary, the row's own is older than the deletion
+        // that emptied its thread.
+        message.thread = self.thread_summaries.get(&root).cloned();
         if let Some(update) = self.unseen_reactions.remove(&message.id) {
             if update.channel_id != message.channel_id {
                 return Err("reaction update is for another channel".into());
@@ -5099,6 +5155,64 @@ mod tests {
         attachment.kind = AttachmentKind::Image;
         attachment.animated = true;
         assert_eq!(attachment.reply_preview_source(), None);
+    }
+
+    #[test]
+    fn deleting_replies_lowers_the_parents_summary_and_the_last_one_removes_it() {
+        let summary = |count: u64, seq: u64| {
+            Some(ThreadSummary {
+                reply_count: count,
+                participants: vec![message("root", 1).author],
+                seq: seq.to_string(),
+            })
+        };
+        let mut parent = message("root", 1);
+        parent.thread = summary(2, 5);
+        let mut reply = message("reply", 5);
+        reply.thread_root_id = Some("root".into());
+        reply.thread = summary(2, 5);
+        let deleted = |seq: u64, thread: Option<ThreadSummary>| {
+            let mut update = tombstone(reply.clone(), seq, 2);
+            update.message.thread = thread;
+            update
+        };
+        let count = |timeline: &Timeline| {
+            let root = timeline.messages().find(|message| message.id == "root");
+            root.and_then(|root| root.thread.as_ref().map(|thread| thread.reply_count))
+        };
+        let mut timeline = Timeline::default();
+        timeline
+            .reset(vec![parent.clone(), reply.clone()], "5")
+            .unwrap();
+        // Another reply remains: the tombstone carries the lowered summary to the parent.
+        assert_eq!(
+            timeline.apply_edit(deleted(6, summary(1, 6))),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(count(&timeline), Some(1));
+        // The last reply's tombstone carries none, which clears the parent.
+        assert_eq!(timeline.apply_edit(deleted(7, None)), Ok(Apply::Applied));
+        assert_eq!(count(&timeline), None);
+        // Older copies of the parent and the reply cannot bring it back.
+        timeline
+            .prepend(vec![parent.clone(), reply.clone()])
+            .unwrap();
+        assert_eq!(count(&timeline), None);
+        assert!(timeline.messages().all(|message| message.thread.is_none()));
+        // A later reply starts the count again.
+        let mut next = message("next", 8);
+        next.thread_root_id = Some("root".into());
+        next.thread = summary(1, 8);
+        assert_eq!(timeline.apply(next), Ok(Apply::Applied));
+        assert_eq!(count(&timeline), Some(1));
+        // A page read after the deletion clears it too, whatever order its rows come in.
+        for rows in [
+            vec![deleted(7, None).message, parent.clone()],
+            vec![parent.clone(), deleted(7, None).message],
+        ] {
+            timeline.reset(rows, "7").unwrap();
+            assert_eq!(count(&timeline), None);
+        }
     }
 
     #[test]

@@ -25,6 +25,7 @@ import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -267,6 +268,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** The system WebView's user agent: KLIPY serves ads only to mobile user agents. */
     private val klipyUserAgent: String? by lazy { runCatching { android.webkit.WebSettings.getDefaultUserAgent(getApplication()) }.getOrNull() }
     private val unloadedReactions = mutableMapOf<String, ReactionUpdate>()
+    /** Parents whose last reply was deleted, by that deletion's sequence. */
+    private val emptiedThreads = mutableMapOf<String, java.math.BigInteger>()
     private val unloadedAttachments = mutableMapOf<String, AttachmentsUpdate>()
     /** Link cards for messages not loaded yet, applied when they arrive (`data/Embeds.kt`). */
     private val unloadedEmbeds = linkedMapOf<String, EmbedsUpdate>()
@@ -1832,7 +1835,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation || anchorRequest != historyAnchorRequest) return@launch
                 val newer = authoritativeMessages()
                 mutable.value = mutable.value.copy(
-                    messages = projectMessages(mergeTimelinePins(mergeMessages(newer, history.messages, unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds))), hasMoreMessages = history.hasMore,
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(newer, history.messages, unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds, emptiedThreads = emptiedThreads))), hasMoreMessages = history.hasMore,
                     threadOnlyRows = mutable.value.threadOnlyRows - history.messages.map { it.id }.toSet(),
                     contextStart = if (mutable.value.contextStart != null) history.messages.firstOrNull()?.seq ?: mutable.value.contextStart else null,
                     loadingOlder = false,
@@ -1921,11 +1924,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation || anchor != historyAnchorRequest) return@launch
                 val context = page?.messages ?: requireNotNull(threadPage).messages
                 require(context.any { it.id == targetId }) { "Message context is unavailable." }
+                // Deleted since the quote or pin was drawn: deleted rows aren't shown, so say so and stay put.
+                require(context.none { it.id == targetId && it.deletedAt != null }) { JUMP_DELETED }
                 val loaded = mutable.value.messages.map { it.id }.toSet()
                 val incoming = threadPage?.let { listOf(it.root) + context } ?: context
                 ++threadRequest
                 mutable.value = mutable.value.copy(
-                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), incoming, unloadedReactions, unseenEmbeds = unloadedEmbeds))),
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), incoming, unloadedReactions, unseenEmbeds = unloadedEmbeds, emptiedThreads = emptiedThreads))),
                     thread = threadPage?.let { ThreadUi(requireNotNull(root), loading = false, hasMore = it.hasMore, before = context.firstOrNull()?.seq,
                         hasNewer = it.hasNewer, after = context.lastOrNull()?.seq, windowStart = context.firstOrNull()?.seq, windowEnd = if (it.hasNewer) context.lastOrNull()?.seq else null) },
                     threadOnlyRows = if (root == null) mutable.value.threadOnlyRows - context.map { it.id }.toSet() else mutable.value.threadOnlyRows + incoming.filter { it.id !in loaded && (it.threadRootId == null || it.broadcast) }.map { it.id },
@@ -1959,7 +1964,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val page = api.history(accountToken, channel, after = after)
                 if (request != generation || anchor != historyAnchorRequest) return@launch
                 mutable.value = mutable.value.copy(
-                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), page.messages, unloadedReactions, unseenEmbeds = unloadedEmbeds))),
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), page.messages, unloadedReactions, unseenEmbeds = unloadedEmbeds, emptiedThreads = emptiedThreads))),
                     threadOnlyRows = mutable.value.threadOnlyRows - page.messages.map { it.id }.toSet(),
                     contextEnd = if (page.hasNewer) page.messages.lastOrNull()?.seq ?: after else null,
                     hasNewerMessages = page.hasNewer, loadingNewer = false,
@@ -2318,7 +2323,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     windowEnd = if (older) thread.windowEnd else if (page.hasNewer) page.messages.lastOrNull()?.seq else null)
                 threadPages[thread.rootId] = pageState
                 mutable.value = mutable.value.copy(
-                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), rows, unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds))),
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), rows, unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds, emptiedThreads = emptiedThreads))),
                     threadOnlyRows = mutable.value.threadOnlyRows + rows.filter { it.id !in loaded && (it.threadRootId == null || it.broadcast) }.map { it.id },
                     thread = pageState,
                 )
@@ -2367,9 +2372,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             val thread = threadRequest
             val reply = mutable.value.replyTargets[threadRootId ?: "channel"]?.id
             val keys = files.map { it.key }
-            uploadSend = viewModelScope.launch {
-                files.filter { it.attachment == null && uploadJobs[it.key]?.isActive != true }.forEach { retryDraft(it.key) }
-                keys.mapNotNull { uploadJobs[it] }.forEach { it.join() }
+            // Started once assigned, so the wait's end can tell whether a later send replaced it.
+            lateinit var waiting: Job
+            waiting = viewModelScope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    files.filter { it.attachment == null && uploadJobs[it.key]?.isActive != true }.forEach { retryDraft(it.key) }
+                    keys.mapNotNull { uploadJobs[it] }.forEach { it.join() }
+                } finally {
+                    if (uploadSend === waiting) mutable.value = mutable.value.copy(uploadSendTarget = null)
+                }
                 if (request != generation || account != accountGeneration) return@launch
                 if (chatAuthor == null && createChatSession(account) == null) return@launch
                 val current = mutable.value
@@ -2381,6 +2392,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (ready.map { it.key } != keys || ready.any { it.attachment == null || it.error != null }) return@launch
                 if (sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds = suppressEmbeds, embeds = embeds)) accepted()
             }
+            uploadSend = waiting
+            mutable.value = mutable.value.copy(uploadSendTarget = target)
+            waiting.start()
             return false
         }
         return sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds = suppressEmbeds, embeds = embeds)
@@ -3234,7 +3248,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val isNew = messages.none { it.id == message.id }
         // The send this confirms keeps the card its row already showed until the server's own arrive.
         val shown = pendingSends.matching(message)?.let { withPendingEmbeds(message, it.embeds) } ?: message
-        mutable.value = mutable.value.copy(messages = projectMessages(mergeTimelinePins(mergeMessages(messages, listOf(shown), unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds))))
+        mutable.value = mutable.value.copy(messages = projectMessages(mergeTimelinePins(mergeMessages(messages, listOf(shown), unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds, emptiedThreads = emptiedThreads))))
         if (isNew) {
             // Web chimes for someone else's new message in the open conversation.
             // Never for a blocked author or an incoming request.
@@ -3338,8 +3352,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         pinSnapshots[message.id]?.let { pinSnapshots[message.id] = mergeEdit(it, message) }
         forwardSnapshots[message.id]?.let { forwardSnapshots[message.id] = mergeEdit(it, message) }
         val deleted = message.deletedAt != null
+        val messages = mutable.value.messages.map { mergeEdit(it, message).let { merged -> if (deleted) quoteDeleted(merged, message.id) else merged } }
+        // A deleted reply leaves its thread's count: it carries the new summary, or none once it was the last.
+        val thread = message.threadRootId.takeIf { deleted }
+        val summary = thread?.let { threadSummaries(messages + message, emptiedThreads)[it] }
         mutable.value = mutable.value.copy(
-            messages = mutable.value.messages.map { mergeEdit(it, message).let { merged -> if (deleted) quoteDeleted(merged, message.id) else merged } },
+            messages = if (thread == null) messages else messages.map { if ((it.threadRootId ?: it.id) != thread || it.thread == summary) it else it.copy(thread = summary) },
             pinnedMessages = mutable.value.pinnedMessages.map { mergeEdit(it, message).let { merged -> if (deleted) quoteDeleted(merged, message.id) else merged } },
             // The server refuses quoting a deleted message, so a reply in progress lets it go.
             replyTargets = if (deleted) mutable.value.replyTargets.filterValues { it.id != message.id } else mutable.value.replyTargets,
@@ -3506,6 +3524,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val previousCursor = durableReplayCursor ?: return
         val request = ++generation
         unloadedReactions.clear()
+        emptiedThreads.clear()
         unloadedAttachments.clear()
         unloadedEmbeds.clear()
         val previous = mutable.value.copy(messages = authoritativeMessages())
@@ -4123,6 +4142,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         // A new conversation starts quiet; the old stream's typing expires on its own.
         typingIdle?.cancel(); typingIdle = null; typingActive = false; typingSent = false
         unloadedReactions.clear()
+        emptiedThreads.clear()
         unloadedAttachments.clear()
         unloadedEmbeds.clear()
         if (clearPending) {
@@ -4216,6 +4236,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         const val TYPING_INTERVAL_MS = 500L
     }
 }
+
+/** A jump (a reply quote, Pins) whose message was deleted before its context loaded. */
+internal const val JUMP_DELETED = "That message was deleted."
 
 /** The longest launch keeps the loading screen up while restoring the last conversation. */
 internal const val RESTORE_LIMIT_MS = 5_000L

@@ -4548,6 +4548,7 @@ private struct ChatView: View {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
             }
             VoiceComposerNotice(chat: chat, inThread: false)
+            UploadWaitNotice(chat: chat, inThread: false)
             AttachmentDraftsView(chat: chat)
             HStack(alignment: .bottom, spacing: 8) {
                 VStack(spacing: 6) {
@@ -5149,6 +5150,7 @@ private struct NativeThreadView: View {
                     Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
                 }
                 VoiceComposerNotice(chat: chat, inThread: true)
+                UploadWaitNotice(chat: chat, inThread: true)
                 AttachmentDraftsView(chat: chat, inThread: true)
                 Toggle(isOn: $chat.threadBroadcast) {
                     (Text("Also send to ") + Text(direct ? chat.channelName : "#\(chat.channelName)").font(CaperTheme.font(11, weight: .bold)))

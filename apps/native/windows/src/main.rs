@@ -3495,7 +3495,7 @@ impl App {
                         &drafts,
                         &tiles,
                         top,
-                        notice.as_deref(),
+                        notice.as_deref().map(|n| (n, n == uploads::UPLOAD_WAIT)),
                         live.can_attach(),
                         gif,
                         emoji,

@@ -1740,6 +1740,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (state.canParticipate) Column(Modifier.composerLip().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) { OwnRecomposeScope {
                 state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
+                if (state.uploadSendTarget == target) UploadWaitNotice()
                 DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
                 // A voice reply goes on its own; the draft text stays, "Also send to" applies to it and resets.
                 // Stopping stages the recording with the reply's files; with "send as soon as I stop" it goes on its own.
@@ -2052,6 +2053,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
                 state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
+                if (state.uploadSendTarget == AttachmentDraftTarget(channel.id)) UploadWaitNotice()
                 // Signed in, the draft's first link shows the card it will get inside the field, with × to send it without one.
                 val preview = rememberLinkPreview(if (state.account != null) draft.text else "", channel.id, viewModel::linkPreview)
                 DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)

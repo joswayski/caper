@@ -565,6 +565,12 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
     }
 }
 
+/** Shown from Send until the composer's staged files have uploaded and the message goes. */
+@Composable internal fun UploadWaitNotice() = Text(
+    "Uploading… Your message sends when every file is ready.",
+    Modifier.padding(bottom = 6.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp,
+)
+
 /**
  * Compact composer previews shared by message and profile uploads; never scroll sideways. Each
  * tile has two round corner buttons, diagonal from each other so a mis-tap can't remove: Remove

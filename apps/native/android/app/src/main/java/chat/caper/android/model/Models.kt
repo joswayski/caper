@@ -680,6 +680,8 @@ data class AppUiState(
     /** Files stay with their channel/DM and, for replies, their thread, even while closed. */
     val attachmentDrafts: Map<AttachmentDraftTarget, List<DraftAttachmentUi>> = emptyMap(),
     val attachmentErrors: Map<AttachmentDraftTarget, String> = emptyMap(),
+    /** The composer whose Send is waiting for its files to upload; the message goes once they are ready. */
+    val uploadSendTarget: AttachmentDraftTarget? = null,
     /** Re-signed URLs for long-open conversations, keyed by attachment ID. */
     val freshAttachmentUrls: Map<String, AttachmentUrls> = emptyMap(),
     /** Latest server processing percent (`attachment.progress`), keyed by attachment ID. */

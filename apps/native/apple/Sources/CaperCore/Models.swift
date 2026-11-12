@@ -1264,6 +1264,34 @@ enum EditEvent {
     }
 }
 
+/// The newest summary of each thread, by parent. A deleted reply carries its thread's
+/// summary without it; the last one carries none, which takes the summary off the parent.
+struct ThreadSummaries: Sendable {
+    /// Parents whose last reply was deleted, by that deletion's sequence, so an
+    /// older copy of a reply cannot bring the summary back.
+    private var emptied: [String: String] = [:]
+
+    mutating func reset() { emptied = [:] }
+
+    mutating func newest(among rows: [ChatMessage]) -> [String: ThreadSummary] {
+        var summaries: [String: ThreadSummary] = [:]
+        for row in rows {
+            let root = row.threadRootId ?? row.id
+            if let summary = row.thread {
+                if Self.newer(summary.seq, than: summaries[root]?.seq) { summaries[root] = summary }
+            } else if row.isDeleted, row.threadRootId != nil, let seq = row.editSeq, Self.newer(seq, than: emptied[root]) {
+                emptied[root] = seq
+            }
+        }
+        return summaries.filter { Self.newer($0.value.seq, than: emptied[$0.key]) }
+    }
+
+    private static func newer(_ seq: String, than other: String?) -> Bool {
+        guard let other else { return true }
+        return (try? Sequence.compare(seq, other)) == .orderedDescending
+    }
+}
+
 /// Overlays only content. Never inserts an unloaded message into a timeline.
 struct EditSnapshots: Sendable {
     private var values: [String: ChatMessage] = [:]

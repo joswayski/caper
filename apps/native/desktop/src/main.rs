@@ -9308,6 +9308,17 @@ impl CaperApp {
             self.error = Some("Caper returned invalid message context.".into());
             return;
         }
+        // Deleted since the quote or pin was drawn: deleted rows aren't shown,
+        // so say so and stay where the reader is.
+        if !newer
+            && page
+                .messages
+                .iter()
+                .any(|message| message.id == anchor && message.is_deleted())
+        {
+            self.error = Some("That message was deleted.".into());
+            return;
+        }
         let start = page
             .messages
             .first()
@@ -29864,6 +29875,19 @@ impl CaperApp {
         });
         self.dictation_status(ui, &target);
         let channel = self.selected_channel.clone();
+        // Send was pressed while files upload; the message goes once they are ready.
+        if self
+            .upload_send_intent
+            .as_ref()
+            .is_some_and(|intent| intent.channel == channel && intent.root.as_deref() == root)
+        {
+            ui.label(
+                RichText::new("Uploading… Your message sends when every file is ready.")
+                    .size(12.0)
+                    .color(MUTED),
+            );
+            ui.add_space(6.0);
+        }
         let rows: Vec<_> = self
             .voice_sends
             .iter()
@@ -47866,6 +47890,34 @@ mod tests {
         app.load_thread(false);
         let thread = app.thread_view.as_ref().unwrap();
         assert!(thread.loading && thread.window.is_none() && !thread.has_newer);
+    }
+
+    #[test]
+    fn a_jump_to_a_since_deleted_message_says_so_and_stays_put() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-pins"),
+        );
+        let mut target = app.timeline.messages().next().unwrap().clone();
+        target.thread_root_id = None;
+        let context = |target: &model::Message| {
+            Ok(model::MessageContext {
+                root: None,
+                messages: vec![target.clone()],
+                has_more: false,
+                has_newer: true,
+            })
+        };
+        let mut deleted = target.clone();
+        deleted.deleted_at = Some("2026-10-18T09:00:00Z".into());
+        app.accept_context(None, &target.id, false, context(&deleted));
+        assert_eq!(app.error.as_deref(), Some("That message was deleted."));
+        assert!(app.context_window.is_none() && app.focused_message.is_none());
+        app.error = None;
+        app.accept_context(None, &target.id, false, context(&target));
+        assert!(app.error.is_none() && app.context_window.is_some());
     }
 
     #[test]

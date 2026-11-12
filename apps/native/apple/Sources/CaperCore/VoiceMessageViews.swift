@@ -853,6 +853,21 @@ struct VoiceLiveBars: View {
     }
 }
 
+/// Shown from Send until the composer's staged files have uploaded and the message goes.
+struct UploadWaitNotice: View {
+    let chat: ChatModel
+    let inThread: Bool
+
+    var body: some View {
+        if chat.uploadWaiting(inThread: inThread) {
+            Text("Uploading… Your message sends when every file is ready.")
+                .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier(inThread ? "thread-upload-wait" : "composer-upload-wait")
+        }
+    }
+}
+
 /// The microphone's inline message for one composer (denied permission, a
 /// failed recording), and on touch devices the release hint above a held
 /// recording.

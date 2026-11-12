@@ -22,6 +22,26 @@ class ReactionsTest {
         assertSame(message, merged.first())
     }
 
+    @Test fun `deleting replies lowers the parent's summary and the last one removes it`() {
+        fun summary(count: Int, seq: String) = ThreadSummary(count, listOf(message.author), seq)
+        val parent = message.copy(thread = summary(2, "5"))
+        val reply = message.copy(id = "message00000002", seq = "5", clientMessageId = "client2", threadRootId = message.id, thread = summary(2, "5"))
+        fun deleted(seq: String, thread: ThreadSummary?) = reply.copy(revision = 2, editedAt = "now", editSeq = seq, deletedAt = "now", thread = thread)
+        val emptied = mutableMapOf<String, java.math.BigInteger>()
+        // Another reply remains: the tombstone carries the lowered summary to the parent.
+        val lowered = mergeMessages(listOf(parent, reply), listOf(deleted("6", summary(1, "6"))), mutableMapOf(), emptiedThreads = emptied)
+        assertEquals(listOf(1, 1), lowered.map { it.thread?.replyCount })
+        assertTrue(emptied.isEmpty())
+        // The last reply's tombstone carries none, which clears the parent.
+        val cleared = mergeMessages(lowered, listOf(deleted("7", null)), mutableMapOf(), emptiedThreads = emptied)
+        assertEquals(listOf(null, null), cleared.map { it.thread })
+        assertEquals(null, threadSummaries(lowered + deleted("7", null), emptied)[message.id])
+        // An older copy of the parent cannot bring it back, and a later reply starts the count again.
+        assertNull(mergeMessages(cleared, listOf(parent), mutableMapOf(), emptiedThreads = emptied).first().thread)
+        val next = reply.copy(id = "message00000003", seq = "8", clientMessageId = "client3", thread = summary(1, "8"))
+        assertEquals("8", mergeMessages(cleared, listOf(next), mutableMapOf(), emptiedThreads = emptied).first().thread?.seq)
+    }
+
     @Test fun `pin payloads preserve independent newer reaction revisions`() {
         val original = message.copy(pin = MessagePin(message.author, "now"), pinSeq = "4")
         val reacted = mergeReaction(original, update("12", listOf("alice", "bob")))

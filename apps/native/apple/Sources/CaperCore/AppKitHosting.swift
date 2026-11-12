@@ -882,6 +882,7 @@ private struct AppKitComposerAttachments: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             VoiceComposerNotice(chat: chat, inThread: inThread)
+            UploadWaitNotice(chat: chat, inThread: inThread)
             AttachmentDraftsView(chat: chat, inThread: inThread)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

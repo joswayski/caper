@@ -89,6 +89,34 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(MessageVersions(messageId: "message", versions: [revised], hasMore: false).isValid(messageID: "message", before: 2))
     }
 
+    func testDeletingRepliesLowersTheParentsSummaryAndTheLastOneRemovesIt() {
+        let author = ChatAuthor(id: "author", name: "Author", isGuest: false)
+        func summary(_ count: Int, _ seq: String) -> ThreadSummary { ThreadSummary(replyCount: count, participants: [author], seq: seq) }
+        func message(_ id: String, _ seq: String, root: String? = nil, thread: ThreadSummary?) -> ChatMessage {
+            var message = ChatMessage(id: id, channelId: "channel", seq: seq, author: author,
+                                      content: ChatContent(version: 1, type: "text", text: id),
+                                      createdAt: "2026-10-01T00:00:00Z", clientMessageId: id)
+            message.threadRootId = root; message.thread = thread
+            return message
+        }
+        func deleted(_ seq: String, _ thread: ThreadSummary?) -> ChatMessage {
+            var reply = message("reply", "5", root: "root", thread: thread)
+            reply.revision = 2; reply.editSeq = seq; reply.editedAt = "2026-10-06T00:00:00Z"; reply.deletedAt = "2026-10-06T00:00:00Z"
+            return reply
+        }
+        let parent = message("root", "1", thread: summary(2, "5"))
+        var summaries = ThreadSummaries()
+        // Another reply remains: the tombstone carries the lowered summary to the parent.
+        XCTAssertEqual(summaries.newest(among: [parent, deleted("6", summary(1, "6"))])["root"]?.replyCount, 1)
+        // The last reply's tombstone carries none, which clears the parent.
+        XCTAssertNil(summaries.newest(among: [parent, deleted("7", nil)])["root"])
+        // An older copy of the parent cannot bring it back, and a later reply starts the count again.
+        XCTAssertNil(summaries.newest(among: [parent])["root"])
+        XCTAssertEqual(summaries.newest(among: [parent, message("next", "8", root: "root", thread: summary(1, "8"))])["root"]?.seq, "8")
+        summaries.reset()
+        XCTAssertEqual(summaries.newest(among: [parent])["root"]?.replyCount, 2)
+    }
+
     func testContentEditsPreserveIndependentMetadataAndOverlayStalePages() throws {
         let author = ChatAuthor(id: "author", name: "Author", isGuest: false)
         var original = ChatMessage(id: "message", channelId: "channel", seq: "3", author: author,

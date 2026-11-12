@@ -526,7 +526,11 @@ fn tile(g: &Gfx, dc: &ID2D1DeviceContext, d: &Draft, t: D2D_RECT_F) -> Result<()
     Ok(())
 }
 
-/// Draws the box's files, notice, Attach files, Dictate (`mic`: the box's
+/// The notice while a send waits for its files, as on every client.
+pub const UPLOAD_WAIT: &str = "Uploading… Your message sends when every file is ready.";
+
+/// Draws the box's files, notice (calm ones muted, errors in the error
+/// colour), Attach files, Dictate (`mic`: the box's
 /// width and whether it can record) and, while GIFs are available, Send
 /// a GIF (bright while its picker is open).
 #[allow(clippy::too_many_arguments)]
@@ -536,7 +540,7 @@ pub fn draw(
     drafts: &[&Draft],
     tiles: &[D2D_RECT_F],
     top: f32,
-    notice: Option<&str>,
+    notice: Option<(&str, bool)>,
     can_attach: bool,
     gif: Option<(f32, bool)>,
     emoji: bool,
@@ -576,14 +580,18 @@ pub fn draw(
             None => tile(g, dc, d, *t)?,
         }
     }
-    if let Some(text) = notice {
+    if let Some((text, calm)) = notice {
         let l = line(g, text, &g.formats.file_detail, 1e6)?;
         crate::text::draw(
             dc,
             &l,
             PAD,
             top - NOTICE_H + (NOTICE_H - gfx::metrics(&l).height) / 2.0,
-            &g.brushes.error,
+            if calm {
+                &g.brushes.muted
+            } else {
+                &g.brushes.error
+            },
         );
     }
     let a = attach_rect(top);
@@ -750,7 +758,9 @@ impl App {
         };
         let drafts = live.open_drafts();
         let failed = drafts.iter().filter(|d| d.upload.error.is_some()).count();
-        let notice = drafts::failed_notice(failed).or_else(|| self.attach_error.clone());
+        let notice = drafts::failed_notice(failed)
+            .or_else(|| self.attach_error.clone())
+            .or_else(|| self.send_waiting.is_some().then(|| UPLOAD_WAIT.to_string()));
         let voice: Vec<bool> = drafts.iter().map(|d| d.upload.voice().is_some()).collect();
         let (mut tiles, top) = strip(&voice, bw, notice.is_some());
         for tile in &mut tiles {

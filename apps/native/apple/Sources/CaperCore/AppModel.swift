@@ -3236,6 +3236,9 @@ public final class ChatModel {
     }
     private var composerRevision = 0
     private var uploadSubmission: UUID?
+    private var uploadSubmissionInThread = false
+    /// Send was pressed in this composer and the message goes once its files have uploaded.
+    public func uploadWaiting(inThread: Bool) -> Bool { uploadSubmission != nil && uploadSubmissionInThread == inThread }
     public var loading = false
     public var loadingOlder = false
     public var olderError: String?
@@ -3504,6 +3507,7 @@ public final class ChatModel {
     private var pinSnapshots = PinSnapshots()
     private var forwardSnapshots = ForwardSnapshots()
     private var editSnapshots = EditSnapshots()
+    private var threadSummaries = ThreadSummaries()
     private var deletingMessages: Set<String> = []
     private var failedPinActions: [String: Bool] = [:]
     private struct PendingReaction: Equatable {
@@ -3625,6 +3629,16 @@ public final class ChatModel {
         editSnapshots.apply(message)
         guard !editSnapshots.unseenOverflowed else { return false }
         messages = messages.map { editSnapshots.overlay($0) }
+        if message.isDeleted, let root = message.threadRootId {
+            // A deleted reply leaves its thread's count: it carries the new summary, or none once it was the last.
+            let summary = threadSummaries.newest(among: messages + [message])[root]
+            messages = messages.map { row in
+                guard (row.threadRootId ?? row.id) == root, row.thread != summary else { return row }
+                var updated = row
+                updated.thread = summary
+                return updated
+            }
+        }
         pinnedMessages = pinnedMessages.map { editSnapshots.overlay($0) }
         forwardSnapshots.seed((messages + pinnedMessages).filter { $0.isDeleted })
         return true
@@ -3822,7 +3836,7 @@ public final class ChatModel {
                     // discard snapshots for rows no longer in the fresh window.
                     seedSnapshots(history.messages)
                     messages = history.messages.map { overlaySnapshots($0) }
-                    reactionSnapshots.reset(); attachmentSnapshots.reset()
+                    reactionSnapshots.reset(); attachmentSnapshots.reset(); threadSummaries.reset()
                     seedSnapshots(messages + pinnedMessages)
                 }
                 delivery.reset(cursor: history.cursor, preservingPending: preservingPending)
@@ -3942,6 +3956,8 @@ public final class ChatModel {
         threadRequest += 1; threadRootID = nil; threadLoading = false
     }
 
+    static let jumpDeleted = "That message was deleted."
+
     public func goToMessage(_ message: ChatMessage) async -> Bool {
         await goToMessage(id: message.id, channelID: message.channelId, threadRootID: message.threadRootId)
     }
@@ -3965,10 +3981,13 @@ public final class ChatModel {
                 guard generation == requestGeneration, request == historyAnchorRequest else { return false }
                 if let error = threadError { throw APIError(status: 502, message: error) }
                 guard threadMessages.contains(where: { $0.id == id }) else { return false }
+                if threadMessages.contains(where: { $0.id == id && $0.isDeleted }) { throw APIError(status: 410, message: Self.jumpDeleted) }
             } else {
                 let page = try await api.history(channelID: channelID, around: id)
                 guard generation == requestGeneration, request == historyAnchorRequest else { return false }
                 guard page.messages.contains(where: { $0.id == id }) else { throw APIError(status: 502, message: "Message context is unavailable.") }
+                // Deleted since the quote or pin was drawn: deleted rows aren't shown, so say so and stay put.
+                if page.messages.contains(where: { $0.id == id && $0.isDeleted }) { throw APIError(status: 410, message: Self.jumpDeleted) }
                 windowStart = page.messages.first?.seq; windowEnd = page.hasNewer ? page.messages.last?.seq : nil
                 threadOnlyRows.subtract(page.messages.map(\.id)); merge(page.messages)
                 hasMore = page.hasMore; hasNewer = page.hasNewer; closeThread()
@@ -4080,7 +4099,7 @@ public final class ChatModel {
                 let broadcast = threadBroadcast
                 let reply = replyTargets[rootID ?? "channel"]?.id
                 let ids = files.map(\.id)
-                uploadSubmission = submission
+                uploadSubmission = submission; uploadSubmissionInThread = inThread
                 defer { if uploadSubmission == submission { uploadSubmission = nil } }
                 for file in files where file.error != nil { retryAttachmentDraft(id: file.id) }
                 let tasks = files.compactMap { uploadTasks[$0.id] }
@@ -4796,7 +4815,7 @@ public final class ChatModel {
         forwardSnapshots.reset()
         mutations = MessageMutations()
         canForward = false; forwardTarget = nil; forwardConversationTarget = nil
-        editSnapshots.reset()
+        editSnapshots.reset(); threadSummaries.reset()
         failedPinActions = [:]
         closeThread(); threadPages = [:]; threadOnlyRows = []
         replyTargets = [:]
@@ -4816,12 +4835,7 @@ public final class ChatModel {
         forwardSnapshots.seed(incoming)
         editSnapshots.seed(messages + pinnedMessages + incoming)
         var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-        var summaries: [String: ThreadSummary] = [:]
-        for message in messages + incoming {
-            guard let summary = message.thread else { continue }
-            let root = message.threadRootId ?? message.id
-            if summaries[root] == nil || (try? Sequence.compare(summary.seq, summaries[root]!.seq)) == .orderedDescending { summaries[root] = summary }
-        }
+        let summaries = threadSummaries.newest(among: messages + incoming)
         for message in incoming {
             var next = overlaySnapshots(message)
             // A copy of the same revision without cards (a late send response) keeps the ones shown.
@@ -4833,7 +4847,7 @@ public final class ChatModel {
         }
         byID = byID.mapValues { message in
             var updated = overlaySnapshots(message)
-            updated.thread = summaries[message.threadRootId ?? message.id] ?? message.thread
+            updated.thread = summaries[message.threadRootId ?? message.id]
             return updated
         }
         messages = byID.values.sorted { (try? Sequence.compare($0.seq, $1.seq)) == .orderedAscending }

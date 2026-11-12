@@ -5,6 +5,7 @@ import chat.caper.android.model.ChatMessage
 import chat.caper.android.model.MessageReaction
 import chat.caper.android.model.ReactionSaveUi
 import chat.caper.android.model.ReactionUpdate
+import chat.caper.android.model.ThreadSummary
 import java.math.BigInteger
 
 /** Projects local desired membership without changing the authoritative revision. */
@@ -57,11 +58,30 @@ internal fun mergeReaction(message: ChatMessage, snapshot: ChatMessage): ChatMes
     return mergeReaction(message, ReactionUpdate("message.reactions", 1, snapshot.channelId, seq, snapshot.id, snapshot.reactions))
 }
 
+/**
+ * The newest summary of each thread among [rows], by parent. A deleted reply carries its
+ * thread's summary without it; the last one carries none, which takes the summary off the
+ * parent. [emptied] keeps that deletion's sequence per parent, so an older copy of a reply
+ * cannot bring the summary back.
+ */
+internal fun threadSummaries(rows: List<ChatMessage>, emptied: MutableMap<String, BigInteger>): Map<String, ThreadSummary> {
+    for (row in rows) {
+        val root = row.threadRootId ?: continue
+        if (row.deletedAt == null || row.thread != null) continue
+        val seq = row.editSeq?.toBigIntegerOrNull() ?: continue
+        if (seq > (emptied[root] ?: BigInteger.ZERO)) emptied[root] = seq
+    }
+    return rows.filter { it.thread != null }.groupBy { it.threadRootId ?: it.id }
+        .mapValues { (_, group) -> group.mapNotNull { it.thread }.maxBy { BigInteger(it.seq) } }
+        .filter { (root, summary) -> emptied[root]?.let { BigInteger(summary.seq) > it } ?: true }
+}
+
 /** Monotonically merges messages and consumes cached updates once their message appears. */
 internal fun mergeMessages(
     loaded: List<ChatMessage>, incoming: List<ChatMessage>, unseen: MutableMap<String, ReactionUpdate>,
     unseenAttachments: MutableMap<String, AttachmentsUpdate> = mutableMapOf(),
     unseenEmbeds: MutableMap<String, EmbedsUpdate> = mutableMapOf(),
+    emptiedThreads: MutableMap<String, BigInteger> = mutableMapOf(),
 ): List<ChatMessage> {
     val merged = linkedMapOf<String, ChatMessage>()
     (loaded + incoming).forEach { candidate ->
@@ -78,13 +98,13 @@ internal fun mergeMessages(
             sameRevisionEmbeds(sameRevisionEmbeds(merged, current), candidate)
         }
     }
-    val summaries = (loaded + incoming).filter { it.thread != null }.groupBy { it.threadRootId ?: it.id }
-        .mapValues { (_, rows) -> rows.mapNotNull { it.thread }.maxBy { BigInteger(it.seq) } }
+    val summaries = threadSummaries(loaded + incoming, emptiedThreads)
     return merged.values.map { message ->
         val reacted = unseen.remove(message.id)?.let { mergeReaction(message, it) } ?: message
         val attached = unseenAttachments.remove(message.id)?.let { mergeAttachments(reacted, it) } ?: reacted
         val updated = unseenEmbeds.remove(message.id)?.let { withEmbeds(attached, it) } ?: attached
-        val thread = summaries[message.threadRootId ?: message.id] ?: updated.thread
+        val root = message.threadRootId ?: message.id
+        val thread = summaries[root] ?: updated.thread.takeIf { root !in emptiedThreads }
         // An unchanged message keeps its instance, so its timeline row skips recomposition.
         if (thread == updated.thread) updated else updated.copy(thread = thread)
     }.sortedWith(compareBy { BigInteger(it.seq) })
