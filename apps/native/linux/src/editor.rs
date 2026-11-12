@@ -961,6 +961,7 @@ impl App {
         });
         drop(session);
         crate::ui::hands(&popover);
+        crate::ui::arrive(&popover);
         popover.popup();
         entry.grab_focus();
         editor.area.queue_draw();

@@ -321,6 +321,7 @@ impl App {
             tiles: 0,
         });
         crate::ui::hands(&popover);
+        crate::ui::arrive(&popover);
         popover.popup();
         search.grab_focus();
         self.load_gifs(1);

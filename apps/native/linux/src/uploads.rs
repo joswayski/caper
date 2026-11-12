@@ -127,9 +127,20 @@ pub fn chips(
     files: &[&DraftFile],
     handler: &Rc<dyn Fn(ChipAction)>,
 ) {
+    // Rebuilt on every change: only files new to it arrive.
+    let mut shown = std::collections::HashSet::new();
     while let Some(child) = container.first_child() {
+        shown.insert(child.widget_name());
         container.remove(&child);
     }
+    let place = |chip: &gtk::Widget, key: u64| {
+        let name = format!("file-{key}");
+        if !shown.contains(name.as_str()) {
+            chip.add_css_class("arriving");
+        }
+        chip.set_widget_name(&name);
+        container.append(chip);
+    };
     for file in files {
         // A staged recording: a compact voice chip beside the files.
         if let Some(prepared) = file.voice() {
@@ -145,7 +156,7 @@ pub fn chips(
                 move || retry(ChipAction::Retry(key)),
             );
             chip.set_valign(gtk::Align::Start);
-            container.append(&chip);
+            place(chip.upcast_ref(), key);
             continue;
         }
         let chip = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -268,7 +279,7 @@ pub fn chips(
             file.name,
             format_bytes(file.stored_size.unwrap_or(file.source_size))
         )));
-        container.append(&chip);
+        place(chip.upcast_ref(), file.key);
     }
     container.set_visible(!files.is_empty());
 }

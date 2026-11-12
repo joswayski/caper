@@ -247,6 +247,8 @@ struct State {
     thread: Option<Thread>,
     rows: Vec<Row>,
     thread_rows: Vec<Row>,
+    /// When rows arrived at a live end, for their entrance.
+    arrived: HashMap<String, Instant>,
     markup: rows::Markup,
     /// Unread messages and mentions per space, then channel.
     unread: HashMap<String, HashMap<String, (u64, u64)>>,
@@ -558,6 +560,8 @@ pub struct App {
     zoom_shown: Cell<u64>,
     /// `pin_tail` is moving the list: its scrolling is not the reader's.
     settling: Cell<bool>,
+    /// A render is due once arriving rows land (`rows::mark_arrivals`).
+    landing: Cell<bool>,
     rendered_layout: Cell<u64>,
     rendered_files: Cell<u64>,
     /// The open file dialog: GTK drops a native dialog nothing holds.
@@ -753,6 +757,7 @@ pub fn start(
         zoom: Cell::new(zoom),
         zoom_shown: Cell::new(0),
         settling: Cell::new(false),
+        landing: Cell::new(false),
         rendered_layout: Cell::new(u64::MAX),
         rendered_files: Cell::new(u64::MAX),
         chooser: RefCell::default(),
@@ -857,7 +862,7 @@ pub fn start(
     app.install_admin_actions();
     app.render();
     app.connect_bench(process_start);
-    crate::ui::hand_cursors();
+    crate::ui::watch_toplevels();
     // The window shows before any network request finishes.
     app.ui.window.present();
     app.worker.send(Command::Restore { generation: 0 });
@@ -5506,6 +5511,20 @@ impl App {
                     row.focused = row.id == *focused;
                 }
             }
+            let timeline = &state.timeline;
+            let sent = |id: &str| {
+                timeline
+                    .messages()
+                    .find(|message| message.id == id)
+                    .map(|message| message.client_message_id.clone())
+            };
+            rows::mark_arrivals(
+                &mut state.arrived,
+                &state.rows,
+                &mut main,
+                self.follow.get() && !has_newer,
+                sent,
+            );
             let changed = rows::apply(&self.ui.list.store, &state.rows, &main);
             state.rows = main;
             let thread = match &state.thread {
@@ -5549,6 +5568,13 @@ impl App {
                     .into(),
                 );
             }
+            rows::mark_arrivals(
+                &mut state.arrived,
+                &state.thread_rows,
+                &mut thread,
+                self.thread_follow.get(),
+                sent,
+            );
             let thread_changed =
                 rows::apply(&self.ui.thread_list.store, &state.thread_rows, &thread);
             state.thread_rows = thread;
@@ -5556,6 +5582,17 @@ impl App {
         };
         if changed && self.follow.get() {
             self.pin_tail();
+        }
+        // Arrived rows drop their entrance once it is over, so a row bound
+        // again later (scrolled back into view) never replays it.
+        if !self.state.borrow().arrived.is_empty() && !self.landing.replace(true) {
+            let app = Rc::downgrade(self);
+            glib::timeout_add_local_once(rows::ARRIVAL, move || {
+                if let Some(app) = app.upgrade() {
+                    app.landing.set(false);
+                    app.render_rows();
+                }
+            });
         }
         // A reply to focus scrolls into view once its page is here;
         // otherwise the thread follows its newest reply.
@@ -6070,6 +6107,7 @@ pub fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {
 pub fn popup_at(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget, at: Option<(f64, f64)>) {
     let popover = popover.as_ref();
     crate::ui::hands(popover);
+    crate::ui::arrive(popover);
     popover.set_has_arrow(false);
     // Parented to the chat page, pointing at the anchor: list rows
     // are recycled and rebuilt, and a popover whose parent goes away keeps

@@ -114,6 +114,9 @@ pub struct Row {
     pub blocked: bool,
     /// A forward: its card, with the original when it is still available.
     pub forward: Option<Option<Original>>,
+    /// It just arrived at the live end while you watched: it fades and
+    /// rises into place (`mark_arrivals`).
+    pub arriving: bool,
 }
 
 /// A forwarded original, as its card shows it.
@@ -343,6 +346,7 @@ impl Row {
             blocked_run: Some((key, label, shown)),
             blocked: false,
             forward: None,
+            arriving: false,
         }
     }
 }
@@ -414,6 +418,58 @@ pub fn apply(store: &gtk::gio::ListStore, old: &[Row], new: &[Row]) -> bool {
         store.splice(position as u32, remove as u32, &items);
     }
     !ops.is_empty()
+}
+
+/// How long a row counts as arriving: long enough for its entrance, short
+/// enough that a row bound again later never replays it (desktop's
+/// `motion::ARRIVAL`).
+pub const ARRIVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Marks the rows that arrived at the live end, as desktop: rows after the
+/// old last row that it did not have, while `watching` (the list follows its
+/// end). History pages, a first load and another conversation never move.
+/// `sent` names the pending row a sent message replaces, so it keeps its
+/// entrance instead of starting another.
+pub fn mark_arrivals(
+    arrived: &mut HashMap<String, std::time::Instant>,
+    old: &[Row],
+    new: &mut [Row],
+    watching: bool,
+    sent: impl Fn(&str) -> Option<String>,
+) {
+    let now = std::time::Instant::now();
+    arrived.retain(|_, at| now.duration_since(*at) < ARRIVAL);
+    // The newest old row still here: a sent message replaces its pending
+    // row, which was the old end.
+    let tail = old
+        .iter()
+        .rev()
+        .find_map(|old| new.iter().position(|row| row.id == old.id));
+    if let Some(tail) = tail.filter(|_| watching) {
+        for row in &mut new[tail + 1..] {
+            if row.id.is_empty() || arrived.contains_key(&row.id) {
+                continue;
+            }
+            let pending = sent(&row.id).and_then(|client| {
+                old.iter()
+                    .any(|old| old.id == client)
+                    .then(|| arrived.get(&client).copied())
+            });
+            match pending {
+                Some(Some(at)) => {
+                    arrived.insert(row.id.clone(), at);
+                }
+                Some(None) => {}
+                None if !old.iter().any(|old| old.id == row.id) => {
+                    arrived.insert(row.id.clone(), now);
+                }
+                None => {}
+            }
+        }
+    }
+    for row in new {
+        row.arriving = arrived.contains_key(&row.id);
+    }
 }
 
 /// Message markup by id, rebuilt only when the text or its mentions change.
@@ -742,6 +798,7 @@ pub fn build<'a>(
             },
             blocked_run: None,
             blocked,
+            arriving: false,
             forward: message
                 .forward
                 .as_ref()
@@ -801,6 +858,7 @@ pub fn build<'a>(
             blocked_run: None,
             blocked: false,
             forward: None,
+            arriving: false,
         };
         let separate = std::mem::take(&mut separate_next);
         push(
@@ -1692,6 +1750,11 @@ fn fill(widgets: &Widgets, images: &Rc<Images>, row: &Row, handler: &Handler) {
     if row.blocked {
         classes.push("blocked");
     }
+    // Kept while it arrives: the same entrance continues through re-fills.
+    // Kept while it arrives: the same entrance continues through re-fills.
+    if row.arriving {
+        classes.push("arriving");
+    }
     // The wash: the focused message wins, as desktop.
     if row.blocked_run.is_none() {
         if row.focused {
@@ -1942,6 +2005,7 @@ mod tests {
             blocked_run: None,
             blocked: false,
             forward: None,
+            arriving: false,
         }
     }
 
@@ -2056,5 +2120,41 @@ mod tests {
                 insert: 0..1
             }]
         );
+    }
+
+    #[test]
+    fn only_rows_landing_at_a_watched_live_end_arrive() {
+        let rows = |ids: &[&str]| ids.iter().map(|id| row(id, id)).collect::<Vec<_>>();
+        fn arriving(rows: &[Row]) -> Vec<&str> {
+            rows.iter()
+                .filter(|row| row.arriving)
+                .map(|row| row.id.as_str())
+                .collect()
+        }
+        fn none(_: &str) -> Option<String> {
+            None
+        }
+        let mut arrived = HashMap::new();
+        // A first load and a history page above stay put.
+        let mut first = rows(&["b", "c"]);
+        mark_arrivals(&mut arrived, &[], &mut first, true, none);
+        let mut page = rows(&["a", "b", "c"]);
+        mark_arrivals(&mut arrived, &first, &mut page, true, none);
+        assert!(arriving(&page).is_empty());
+        // Away from the end, a new message arrives unseen.
+        let mut unseen = rows(&["a", "b", "c", "d"]);
+        mark_arrivals(&mut arrived, &page, &mut unseen, false, none);
+        assert!(arriving(&unseen).is_empty());
+        // Watching, your pending send arrives, and the message that replaces
+        // it keeps that entrance's start.
+        let mut pending = rows(&["a", "b", "c", "d", "client-1"]);
+        mark_arrivals(&mut arrived, &unseen, &mut pending, true, none);
+        assert_eq!(arriving(&pending), ["client-1"]);
+        let started = arrived["client-1"];
+        let mut sent = rows(&["a", "b", "c", "d", "m1"]);
+        let client = |id: &str| (id == "m1").then(|| "client-1".to_owned());
+        mark_arrivals(&mut arrived, &pending, &mut sent, true, client);
+        assert_eq!(arriving(&sent), ["m1"]);
+        assert_eq!(arrived["m1"], started);
     }
 }

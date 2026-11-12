@@ -13,21 +13,36 @@ pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
     label
 }
 
-/// Gives every toplevel, now and later (dialogs, the viewer), the hand
-/// cursor over its controls (`hands`).
-pub fn hand_cursors() {
+/// Gives every toplevel, now and later, the hand cursor over its controls
+/// (`hands`); the windows that open later (dialogs, the viewer) also
+/// `arrive` whenever they show.
+pub fn watch_toplevels() {
     let toplevels = gtk::Window::toplevels();
-    let install = |model: &gio::ListModel, from: u32, count: u32| {
-        for position in from..from + count {
+    for window in toplevels.iter::<gtk::Widget>().flatten() {
+        hands(&window);
+    }
+    toplevels.connect_items_changed(move |model, position, _, added| {
+        for position in position..position + added {
             if let Some(window) = model.item(position).and_downcast::<gtk::Widget>() {
                 hands(&window);
+                arrive(&window);
             }
         }
-    };
-    install(&toplevels, 0, toplevels.n_items());
-    toplevels.connect_items_changed(move |model, position, _, added| {
-        install(model, position, added);
     });
+}
+
+/// Plays `widget`'s CSS entrance (style.css's `.arriving` rules) each time
+/// it shows, as desktop's `motion`: things arrive rather than appear.
+/// Hiding stays instant, and GTK skips the animation when animations are
+/// off (reduced motion).
+pub fn arrive(widget: &impl IsA<gtk::Widget>) {
+    let widget = widget.as_ref();
+    if widget.has_css_class("arrives") {
+        return;
+    }
+    widget.add_css_class("arrives");
+    widget.connect_map(|widget| widget.add_css_class("arriving"));
+    widget.connect_unmap(|widget| widget.remove_css_class("arriving"));
 }
 
 /// As desktop, a hand over anything clickable inside `native` (a window or
@@ -1257,6 +1272,7 @@ impl Ui {
         let thread_composer = Composer::new(images, true);
         thread_panel.append(&thread_composer.outer);
         thread_panel.set_visible(false);
+        arrive(&thread_panel);
         // As desktop: the thread opens between the conversation and the
         // member list, on a line of its own (`app::panes`).
         let thread_split: gtk::Paned = crate::app::named("GtkPaned", "Thread width");

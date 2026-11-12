@@ -2485,3 +2485,81 @@ popover.format-bar button:hover {
 .image-menu-status {
   margin: 2px 12px 4px;
 }
+
+/* Entrances, as desktop's motion and web's motion.css: things arrive
+   rather than appear. --motion-fast/base/slow are 140/200/260 ms and
+   --ease-out is cubic-bezier(0.16, 1, 0.3, 1); GTK CSS has no custom
+   properties, so they are written out. `arriving` is added when a widget
+   shows (ui::arrive) or a message lands at the live end
+   (rows::mark_arrivals); closing stays instant, and GTK runs none of these
+   when animations are off (reduced motion). */
+@keyframes caper-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes caper-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes caper-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes caper-zoom-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+@keyframes caper-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+
+@keyframes caper-chip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+
+/* A message sent or received while watching the live end. */
+.message.arriving {
+  animation: caper-message-in 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Menus, cards and suggestions: their contents rise inside the popover. */
+popover.arriving > contents > * {
+  animation: caper-rise-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Dialogs rise into their window; the viewer grows from 98%. */
+window.arriving > :not(decoration) {
+  animation: caper-dialog-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+window.viewer.arriving > :not(decoration) {
+  animation: caper-zoom-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* The thread opens from the trailing edge. */
+.thread.arriving {
+  animation: caper-panel-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Files pop into the composer. */
+.chips > .arriving {
+  animation: caper-chip-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}

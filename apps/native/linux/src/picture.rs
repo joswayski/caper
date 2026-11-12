@@ -525,6 +525,7 @@ impl App {
             glib::idle_add_local_once(move || popover.unparent());
         });
         crate::ui::hands(&popover);
+        crate::ui::arrive(&popover);
         popover.popup();
     }
 

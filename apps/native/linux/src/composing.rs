@@ -472,6 +472,7 @@ impl Rich {
         }
         if !self.bar.is_visible() {
             crate::ui::hands(&self.bar);
+            crate::ui::arrive(&self.bar);
             self.bar.popup();
         }
     }
