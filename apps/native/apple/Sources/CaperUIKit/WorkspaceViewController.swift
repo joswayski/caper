@@ -11,6 +11,10 @@ final class WorkspaceViewController: UIViewController {
     let browse: BrowseViewController
     let conversation: ConversationViewController
     private var browsing = false
+    /// The running slide, so a swipe can catch it where it is drawn.
+    private var slideAnimator: UIViewPropertyAnimator?
+    /// Where a following swipe found the drawer, as progress toward Browse.
+    private var grab: CGFloat?
     /// The current geometry; nil until the first layout.
     private var layout: WideLayout?
     private var narrow: Bool { layout?.narrow ?? true }
@@ -89,11 +93,10 @@ final class WorkspaceViewController: UIViewController {
         toBrowse.allowed = { [weak self] in self.map { $0.narrow && !$0.browsing && $0.conversation.allowsBrowseSwipe } ?? false }
         toBrowse.moved = { [weak self] distance in
             guard let self else { return }
-            self.loadBrowse()
-            self.conversation.view.endEditing(true)
-            self.update(progress: min(1, distance / max(1, self.view.bounds.width)))
+            let grab = self.grabSlide()
+            self.update(progress: min(1, grab + distance / self.travel))
         }
-        toBrowse.ended = { [weak self] complete, _ in self?.slide(browsing: complete) }
+        toBrowse.ended = { [weak self] complete, _ in self?.grab = nil; self?.slide(browsing: complete) }
         conversation.view.addGestureRecognizer(toBrowse)
         // No channel to show yet: start in Browse.
         // As SwiftUI's phone layout: Browse covers the conversation while the
@@ -255,9 +258,10 @@ final class WorkspaceViewController: UIViewController {
         }
         back.moved = { [weak self] distance in
             guard let self else { return }
-            self.update(progress: max(0, 1 - distance / max(1, self.view.bounds.width)))
+            let grab = self.grabSlide()
+            self.update(progress: max(0, grab - distance / self.travel))
         }
-        back.ended = { [weak self] complete, _ in self?.slide(browsing: !complete) }
+        back.ended = { [weak self] complete, _ in self?.grab = nil; self?.slide(browsing: !complete) }
         browse.view.addGestureRecognizer(back)
         browse.view.isUserInteractionEnabled = browsing || !narrow
         browse.view.accessibilityElementsHidden = !browsing && narrow
@@ -272,21 +276,49 @@ final class WorkspaceViewController: UIViewController {
         self.browsing = browsing
         if record && model.navigationOpen != browsing { model.navigationOpen = browsing }
         if browsing { conversation.view.endEditing(true) }
+        _ = catchSlide()
         let apply = { self.update(progress: browsing ? 1 : 0) }
         // Arrivals ease out; the system's reduce-motion setting makes it instant.
         if animated && !UIKitStyle.reduceMotion {
             let animator = UIViewPropertyAnimator(duration: 0.28, timingParameters: UIKitStyle.easeOut)
             animator.addAnimations(apply)
             animator.startAnimation()
+            slideAnimator = animator
         } else { apply() }
         browse.view.accessibilityElementsHidden = !browsing
         conversation.view.accessibilityElementsHidden = browsing
         UIAccessibility.post(notification: .screenChanged, argument: nil)
     }
 
+    /// How far the conversation slides to uncover Browse: a swipe moves it
+    /// exactly as far as the finger.
+    private var travel: CGFloat { max(1, view.bounds.width + 40) }
+
+    /// Stops a slide still running where it is drawn and returns that
+    /// position, as progress toward Browse.
+    private func catchSlide() -> CGFloat {
+        if let animator = slideAnimator, animator.state == .active {
+            let drawn = conversation.view.layer.presentation()?.affineTransform() ?? conversation.view.transform
+            animator.stopAnimation(true)
+            conversation.view.transform = drawn
+        }
+        slideAnimator = nil
+        return min(1, max(0, conversation.view.transform.tx / travel))
+    }
+
+    /// Where the current swipe took hold, so it follows from there rather
+    /// than jumping. Its first move also loads Browse and puts the keyboard away.
+    private func grabSlide() -> CGFloat {
+        if let grab { return grab }
+        loadBrowse()
+        conversation.view.endEditing(true)
+        let position = catchSlide()
+        grab = position
+        return position
+    }
+
     private func update(progress: CGFloat) {
         guard narrow else { return }
-        let travel = view.bounds.width + 40
         conversation.view.transform = CGAffineTransform(translationX: travel * progress, y: 0)
         if browse.isViewLoaded { browse.view.isUserInteractionEnabled = progress > 0.5 }
     }

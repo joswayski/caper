@@ -54,7 +54,7 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         }
     }
     private let sideRule = UIView()
-    private var panelSwipe: UIPanGestureRecognizer!
+    private var panelSwipe: DirectionalSwipe!
 
     init(model: AppModel) {
         self.model = model
@@ -82,7 +82,16 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
         accessibilityViewIsModal = true
         panel.accessibilityIdentifier = "members-panel"
         addSubview(panel)
-        let swipe = UIPanGestureRecognizer(target: self, action: #selector(swiped(_:)))
+        // A swipe right on the panel follows the finger out; it leaves the
+        // list's vertical scrolling alone.
+        let swipe = DirectionalSwipe(direction: 1)
+        swipe.allowed = { [weak self] in self?.isOpen ?? false }
+        swipe.moved = { [weak self] distance in self?.panel.transform = CGAffineTransform(translationX: distance, y: 0) }
+        swipe.ended = { [weak self] complete, _ in
+            guard let self else { return }
+            if complete { self.panel.transform = .identity; self.close() }
+            else { UIView.animate(withDuration: UIKitStyle.reduceMotion ? 0 : UIKitStyle.motionFast) { self.panel.transform = .identity } }
+        }
         panel.addGestureRecognizer(swipe)
         panelSwipe = swipe
         sideRule.backgroundColor = UIKitStyle.border
@@ -291,17 +300,6 @@ final class MembersPanel: UIView, UICollectionViewDelegate, UISearchTextFieldDel
     }
 
     @objc private func dismissTap() { close() }
-
-    @objc private func swiped(_ pan: UIPanGestureRecognizer) {
-        let x = max(0, pan.translation(in: self).x)
-        switch pan.state {
-        case .changed: panel.transform = CGAffineTransform(translationX: x, y: 0)
-        case .ended, .cancelled:
-            if x > 80 || pan.velocity(in: self).x > 600 { panel.transform = .identity; close() }
-            else { UIView.animate(withDuration: UIKitStyle.motionFast) { self.panel.transform = .identity } }
-        default: break
-        }
-    }
 
     // MARK: Search
 

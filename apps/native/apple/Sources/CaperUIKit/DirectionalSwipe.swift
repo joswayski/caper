@@ -1,9 +1,11 @@
 import UIKit
 
 /// SwiftUI's DrawerSwipe and ThreadBackSwipe: a pan that can start anywhere
-/// but claims only a mostly horizontal move in one direction. It leaves
-/// controls, editors, selected text and horizontal scrollers alone, and stops
-/// vertical scrolling only while it follows the finger.
+/// but claims only a mostly horizontal move in one direction. It starts over
+/// buttons, rows and message text as SwiftUI's simultaneous drag did, and
+/// once it follows the finger it cancels their presses and stops vertical
+/// scrolling. It leaves sliders, switches, editors, selected text and
+/// horizontal scrollers alone.
 final class DirectionalSwipe: UIPanGestureRecognizer, UIGestureRecognizerDelegate {
     /// +1 for a swipe right, -1 for a swipe left.
     private let direction: CGFloat
@@ -13,6 +15,8 @@ final class DirectionalSwipe: UIPanGestureRecognizer, UIGestureRecognizerDelegat
     /// Lifted (true when it should complete) or cancelled (false).
     var ended: (_ complete: Bool, _ distance: CGFloat) -> Void = { _, _ in }
     private var paused: [UIScrollView] = []
+    /// Where the finger went down, in the view's coordinates.
+    private var start: CGPoint = .zero
 
     init(direction: CGFloat) {
         self.direction = direction
@@ -28,24 +32,45 @@ final class DirectionalSwipe: UIPanGestureRecognizer, UIGestureRecognizerDelegat
         let dx = (translation.x != 0 ? translation.x : velocity.x) * direction
         let dy = translation.y != 0 ? translation.y : velocity.y
         guard dx > 0, dx >= abs(dy) * 1.5 else { return false }
-        return !reserved(at: location(in: view), in: view)
+        let location = location(in: view)
+        start = CGPoint(x: location.x - translation.x, y: location.y - translation.y)
+        return !reserved(at: start, in: view)
     }
 
-    /// Runs beside the timeline's scrolling, which pauses once this follows.
+    /// Beside everything under the finger: a row's press wash and hold, a
+    /// SwiftUI button's press and the timeline's scrolling must not keep a
+    /// swipe from starting. Once it follows, `claim` cancels them.
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        other.view is UIScrollView && other is UIPanGestureRecognizer
+        true
     }
 
     private func reserved(at point: CGPoint, in view: UIView) -> Bool {
         var current = view.hitTest(point, with: nil)
         while let candidate = current, candidate !== view.superview {
-            if candidate is UIControl { return true }
+            if candidate is UISlider || candidate is UISwitch { return true }
+            if let field = candidate as? UITextField, field.isFirstResponder { return true }
             if let text = candidate as? UITextView, text.isEditable || text.selectedRange.length > 0 { return true }
-            if let scroll = candidate as? UIScrollView, scroll.contentSize.width > scroll.bounds.width + 1 { return true }
+            if let scroll = candidate as? UIScrollView, scroll.isScrollEnabled,
+               scroll.contentSize.width > scroll.bounds.width + 1 { return true }
             current = candidate.superview
         }
         return false
+    }
+
+    /// The swipe owns the touch now: presses, holds, taps and text gestures
+    /// under the finger stop (a lift must not open a row or a menu), and
+    /// buttons see their touch cancelled. Scroll views pause instead.
+    private func claim(in view: UIView) {
+        var current = view.hitTest(start, with: nil)
+        while let candidate = current, candidate !== view.superview {
+            for other in candidate.gestureRecognizers ?? [] where other !== self && other.isEnabled {
+                if other is DirectionalSwipe || (other.view is UIScrollView && other is UIPanGestureRecognizer) { continue }
+                other.isEnabled = false
+                other.isEnabled = true
+            }
+            current = candidate.superview
+        }
     }
 
     @objc private func changed() {
@@ -56,6 +81,7 @@ final class DirectionalSwipe: UIPanGestureRecognizer, UIGestureRecognizerDelegat
             // As SwiftUI's scrollDisabled while a slide follows the finger.
             paused = Self.scrollViews(under: view).filter(\.isScrollEnabled)
             paused.forEach { $0.isScrollEnabled = false }
+            claim(in: view)
             moved(distance)
         case .changed: moved(distance)
         case .ended:
