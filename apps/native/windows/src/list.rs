@@ -85,6 +85,15 @@ pub enum Action {
     Dismiss,
 }
 
+/// What `Rows::who_at` found: a person to open a profile card for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Who {
+    Author,
+    Quote,
+    /// A mention pill's range in the row's plain text (UTF-16).
+    Mention(usize, usize),
+}
+
 /// The egui client's reply panel: the quoted author's avatar and name,
 /// "View original", and at most three lines of the quoted text.
 pub struct Quote {
@@ -785,6 +794,61 @@ impl Rows {
 
     /// Row `i`'s "View original" in its quote, relative to the row's
     /// top-left.
+    /// Who a point on row `i` names, in row-local DIPs (from the row's left
+    /// edge and top): its author's avatar or name, its quoted author's, or
+    /// a mention pill (its text range, joined across style runs).
+    pub fn who_at(&self, i: usize, grouped: bool, x: f32, y: f32) -> Option<Who> {
+        let row = self.row(i)?;
+        let inside = |l: f32, t: f32, w: f32, h: f32| x >= l && x < l + w && y >= t && y < t + h;
+        let top = content_top(grouped);
+        if let Some(h) = &row.header {
+            let hy = top + row.header_y;
+            let name_h = gfx::metrics(&h.name).height;
+            if inside(PAD_X, hy, AVATAR, AVATAR) || inside(BODY_X, hy, h.name_w, name_h) {
+                return Some(Who::Author);
+            }
+        }
+        if let Some(q) = &row.quote {
+            let hy = row.lead + 4.0 + QUOTE_PAD_Y;
+            let ax = BODY_X + QUOTE_PAD_X;
+            let ay = hy + (QUOTE_HEADING - QUOTE_AVATAR) / 2.0;
+            let name = gfx::metrics(&q.name);
+            if inside(ax, ay, QUOTE_AVATAR, QUOTE_AVATAR)
+                || inside(
+                    ax + QUOTE_AVATAR + 6.0,
+                    hy + 2.0,
+                    name.widthIncludingTrailingWhitespace,
+                    name.height,
+                )
+            {
+                return Some(Who::Quote);
+            }
+        }
+        let (tx, ty) = (x - BODY_X, y - (top + row.text_y));
+        if row.mentions.is_empty() || !gfx::on_text(&row.text, tx, ty) {
+            return None;
+        }
+        let p = gfx::hit_point(&row.text, tx, ty);
+        let k = row
+            .mentions
+            .iter()
+            .position(|&(s, l)| p >= s && p < s + l)?;
+        let (mut start, mut end) = (row.mentions[k].0, row.mentions[k].0 + row.mentions[k].1);
+        for &(s, l) in row.mentions[..k].iter().rev() {
+            if s + l != start {
+                break;
+            }
+            start = s;
+        }
+        for &(s, l) in &row.mentions[k + 1..] {
+            if s != end {
+                break;
+            }
+            end = s + l;
+        }
+        Some(Who::Mention(start as usize, end as usize))
+    }
+
     pub fn quote_link(&self, i: usize) -> Option<Common::D2D_RECT_F> {
         let row = self.row(i)?;
         let q = row.quote.as_ref()?;

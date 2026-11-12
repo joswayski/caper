@@ -192,6 +192,9 @@ pub enum Update {
         message: String,
         result: Result<core::MessageVersions, String>,
     },
+    /// The profile card's requests changed; Some(person) when its message
+    /// was sent (or its DM opened) and the card closed, clearing its draft.
+    Profile(Option<String>),
     /// Online account ids in the open space.
     Presence(HashSet<String>),
     /// The gateway's state while not live ("Connecting…"); None once live.
@@ -282,6 +285,22 @@ impl Ids {
         });
         Some((author, grouped, date))
     }
+}
+
+/// The open profile card's requests, as egui's `MentionCard` keeps them:
+/// its send or open in flight and what it says, the invitation in flight,
+/// spaces already answered, and the message id an uncertain failed send
+/// retries with.
+#[derive(Default)]
+pub struct CardState {
+    pub person: String,
+    pub sending: bool,
+    pub status: Option<String>,
+    pub error: Option<String>,
+    pub choosing_space: bool,
+    pub inviting: Option<(u64, String)>,
+    pub invited: HashMap<String, &'static str>,
+    pub retry_id: Option<String>,
 }
 
 pub struct Live {
@@ -391,6 +410,9 @@ pub struct Live {
     pub account_name: String,
     /// Your avatar, as the account last said.
     pub account_avatar: crate::avatars::Avatar,
+    /// The open profile card's requests, and the last invitation's number.
+    pub card: Option<CardState>,
+    card_request: u64,
     username: Option<String>,
     pub direct: Option<String>,
     /// The open DM's name as its history named it, until the list knows it.
@@ -670,6 +692,8 @@ impl Live {
             account_id: None,
             account_name: String::new(),
             account_avatar: crate::avatars::Avatar::default(),
+            card: None,
+            card_request: 0,
             username: None,
             direct: None,
             direct_name: String::new(),
@@ -1062,6 +1086,33 @@ impl Live {
             AccountResult::NotificationsSaved { scope, result } => {
                 self.notifications.finish_save(&scope, result);
             }
+            AccountResult::Invitation {
+                space,
+                user,
+                request,
+                result,
+            } => {
+                if let Some(card) = self.card.as_mut().filter(|c| {
+                    c.person == user && c.inviting.as_ref() == Some(&(request, space.id.clone()))
+                }) {
+                    card.inviting = None;
+                    match result {
+                        Ok(_) => {
+                            card.invited.insert(space.id, "Invited");
+                            card.status = Some(format!("Invitation sent to {}.", space.name));
+                        }
+                        Err(error) => {
+                            if let Some(already) =
+                                caper_client::invites::redundant_invitation(&error)
+                            {
+                                card.invited.insert(space.id, already);
+                            }
+                            card.error = Some(error);
+                        }
+                    }
+                    out.push(Update::Profile(None));
+                }
+            }
             AccountResult::DefaultInviteLink {
                 space,
                 request,
@@ -1311,7 +1362,7 @@ impl Live {
     /// people you share a space with, your DMs), as every client builds it.
     pub fn profile_of(
         &self,
-        id: &str,
+        entry: &core::Mention,
         author: Option<&core::Author>,
     ) -> Option<caper_client::mentions::Profile> {
         use caper_client::mentions;
@@ -1328,17 +1379,7 @@ impl Live {
                 &self.people,
                 &self.directs,
             )),
-            None => mentions::profile(
-                &core::Mention {
-                    kind: "user".into(),
-                    id: Some(id.to_owned()),
-                    username: None,
-                },
-                me,
-                members,
-                &self.people,
-                &self.directs,
-            ),
+            None => mentions::profile(entry, me, members, &self.people, &self.directs),
         }?;
         if profile.me {
             profile.username.clone_from(&self.username);
@@ -1352,20 +1393,111 @@ impl Live {
         self.is_blocked(id) || self.directs.iter().any(|d| d.peer.id == id && d.blocked)
     }
 
-    /// Opens your DM with `id` (`username`), creating it when it is new.
-    pub fn open_conversation_with(&mut self, id: &str, username: String) {
-        let me = self.account_id.as_deref();
-        match self
-            .directs
-            .iter()
-            .find(|d| d.peer.id == id && Some(d.peer.id.as_str()) != me)
-        {
-            Some(d) => {
-                let direct = d.id.clone();
-                self.open_direct(direct);
-            }
-            None => self.create_direct(username),
+    /// Sends the card's `text` to `person` (`open_only`: only opens their
+    /// DM), creating the conversation when it is new, as egui's
+    /// `profile_action`. False when it can't go now.
+    pub fn profile_send(
+        &mut self,
+        person: &str,
+        username: String,
+        text: String,
+        open_only: bool,
+    ) -> bool {
+        let Some(token) = self.token.clone() else {
+            return false;
+        };
+        let (name, settings, epoch) = (
+            self.account_name.clone(),
+            self.uploads.clone(),
+            self.account_epoch,
+        );
+        let Some(card) = self.card.as_mut().filter(|c| c.person == person) else {
+            return false;
+        };
+        if card.sending || card.inviting.is_some() || (!open_only && text.trim().is_empty()) {
+            return false;
         }
+        if text.chars().count() > 4_000 {
+            card.error = Some("Messages can be at most 4,000 characters.".into());
+            return false;
+        }
+        card.sending = true;
+        card.error = None;
+        card.status = Some(
+            if open_only {
+                "Opening\u{2026}"
+            } else {
+                "Sending\u{2026}"
+            }
+            .into(),
+        );
+        let client_id = card
+            .retry_id
+            .clone()
+            .filter(|_| !open_only)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        self.worker.send(Command::SendProfile {
+            epoch,
+            person: person.to_owned(),
+            token,
+            send: Box::new(caper_client::profile_dm::Send {
+                person: person.to_owned(),
+                username,
+                name,
+                client_id,
+                text: if open_only { String::new() } else { text },
+                files: Vec::new(),
+                settings,
+                cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                retrying: false,
+                open_only,
+                voice_only: false,
+                direct: None,
+            }),
+        });
+        true
+    }
+
+    /// Spaces you own that `id` is not in (the open one only if they
+    /// aren't), for the card's Invite to space.
+    pub fn invitable_spaces(&self, id: &str) -> Vec<core::Space> {
+        let me = self.account_id.as_deref();
+        let member_of_open = self
+            .detail
+            .as_ref()
+            .filter(|d| d.members.iter().any(|m| m.id == id))
+            .map(|d| d.space.id.as_str());
+        self.spaces
+            .iter()
+            .flat_map(|s| &s.spaces)
+            .filter(|s| {
+                !s.demo && Some(s.owner_id.as_str()) == me && member_of_open != Some(s.id.as_str())
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Invites the card's person (`username`) to `space`.
+    pub fn profile_invite(&mut self, space: core::Space, username: String, user: String) {
+        self.card_request += 1;
+        let request = self.card_request;
+        let Some(card) = self.card.as_mut().filter(|c| c.person == user) else {
+            return;
+        };
+        card.inviting = Some((request, space.id.clone()));
+        card.error = None;
+        card.status = None;
+        self.account(AccountOperation::InviteToSpace {
+            space,
+            username,
+            user,
+            request,
+        });
+    }
+
+    /// Whether a block or unblock is in flight.
+    pub fn block_busy(&self) -> bool {
+        self.block_busy
     }
 
     /// Server-stamped Caper identities, which can't be blocked (egui's
@@ -4533,6 +4665,48 @@ impl Live {
             } if generation == current => out.push(Update::SignedOut(Some(format!(
                 "Signed out locally; server revocation failed: {e}"
             )))),
+            Event::ProfileStatus {
+                epoch,
+                person,
+                status,
+            } if epoch == self.account_epoch => {
+                if let Some(card) = self.card.as_mut().filter(|c| c.person == person) {
+                    card.status = Some(status);
+                    out.push(Update::Profile(None));
+                }
+            }
+            Event::ProfileSent {
+                epoch,
+                person,
+                send,
+                result,
+            } if epoch == self.account_epoch => {
+                if let Some(direct) = result.as_ref().ok().or(send.direct.as_ref()) {
+                    self.directs.retain(|d| d.id != direct.id);
+                    self.directs.push(direct.clone());
+                    out.push(Update::Badges);
+                }
+                if let Some(card) = self.card.as_mut().filter(|c| c.person == person) {
+                    card.sending = false;
+                    card.status = None;
+                    match result {
+                        Ok(direct) => {
+                            // Sent (or opened): the card closes on its DM.
+                            self.card = None;
+                            let id = direct.id.clone();
+                            out.push(Update::Profile(Some(person)));
+                            self.open_direct(id);
+                        }
+                        Err(error) => {
+                            if !send.open_only {
+                                card.retry_id = error.uncertain.then_some(send.client_id);
+                            }
+                            card.error = Some(error.message);
+                            out.push(Update::Profile(None));
+                        }
+                    }
+                }
+            }
             Event::PeopleLoaded {
                 generation,
                 result: Ok(people),

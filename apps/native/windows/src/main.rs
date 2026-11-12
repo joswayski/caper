@@ -381,6 +381,8 @@ pub struct App {
     /// A person's profile card and its surface.
     profile: Option<profile::ProfileCard>,
     profile_p: Panel,
+    /// Each person's unsent card message, kept until sent or sign-out.
+    profile_drafts: std::collections::HashMap<String, Vec<u16>>,
     /// The history control with keyboard focus (a reaction chip, Add
     /// reaction, Retry or Dismiss), by message id so it survives paging.
     kb: Option<(String, list::Action)>,
@@ -589,6 +591,7 @@ impl App {
                 card_p,
                 profile: None,
                 profile_p,
+                profile_drafts: std::collections::HashMap::new(),
                 older_armed: false,
                 thread: None,
                 thread_p,
@@ -853,6 +856,7 @@ impl App {
                 } => self.edited(request, reloaded, result),
                 live::Update::Deleted(request, error) => self.deleted(request, error),
                 live::Update::Media => self.media_changed(),
+                live::Update::Profile(person) => self.profile_finished(person),
                 live::Update::Drafts => self.drafts_changed(),
                 live::Update::AttachmentEdited(key, error) => {
                     self.attachment_edit_finished(key, error)
@@ -1270,6 +1274,11 @@ impl App {
         if let Some(s) = &self.signin {
             return s.field().focused.then(|| (s.field(), s.field_origin));
         }
+        if let Some(c) = &self.profile
+            && c.field.focused
+        {
+            return Some((&c.field, self.profile_text_origin()));
+        }
         if let Some(p) = &self.picker {
             return p.search.focused.then(|| (&p.search, p.text_origin()));
         }
@@ -1313,6 +1322,11 @@ impl App {
         if let Some(s) = &mut self.signin {
             return Some(s.field_mut()).filter(|f| f.focused);
         }
+        if let Some(c) = &mut self.profile
+            && c.field.focused
+        {
+            return Some(&mut c.field);
+        }
         if let Some(p) = &mut self.picker {
             return Some(&mut p.search).filter(|f| f.focused);
         }
@@ -1337,6 +1351,8 @@ impl App {
             self.dialog_changed();
         } else if self.signin.is_some() {
             self.signin_changed(text);
+        } else if self.profile.as_ref().is_some_and(|c| c.field.focused) {
+            self.profile_changed();
         } else if self.picker.is_some() {
             self.picker_changed(text);
         } else if self.gifs.as_ref().is_some_and(|p| p.search.focused) {
@@ -1693,7 +1709,7 @@ impl App {
             return r;
         }
         if self.profile.is_some()
-            && let Some(r) = self.profile_input(msg, wp, x, y)
+            && let Some(r) = self.profile_input(msg, wp, x, y, ctrl, shift)
         {
             return r;
         }
@@ -1723,6 +1739,7 @@ impl App {
                     self.h = ph / self.scale;
                     self.dirty.layout = true;
                     self.dirty.signin = true;
+                    self.dirty.profile = true;
                     self.close_menu();
                     self.dialog_changed();
                     if self.attachment_editor.is_some() {
@@ -1750,6 +1767,8 @@ impl App {
                         self.dirty.overlay = true;
                     } else if self.signin.is_some() {
                         self.dirty.signin = true;
+                    } else if self.profile.as_ref().is_some_and(|c| c.field.focused) {
+                        self.dirty.profile = true;
                     } else if self.gifs.as_ref().is_some_and(|p| p.search.focused) {
                         self.dirty.gifs = true;
                     } else if self.thread.as_ref().is_some_and(|t| t.composer.focused) {
@@ -1892,8 +1911,8 @@ impl App {
                         self.embed_activate(i, k);
                     } else if let Some((i, action)) = self.action_at(x, y) {
                         self.row_action(i, action);
-                    } else if let Some(i) = self.author_at(x, y) {
-                        self.open_author_profile(i, x, y);
+                    } else if let Some((id, entry, author)) = self.person_at(x, y) {
+                        self.open_profile(id, entry, author, x, y);
                     } else if self.in_history(x, y) {
                         if let Some(h) = self.msg_hit(x, y) {
                             let anchor = if shift {
@@ -2014,7 +2033,7 @@ impl App {
                             || self.edited_at(x, y).is_some()
                             || self.file_at(x, y).is_some()
                             || self.embed_at(x, y).is_some()
-                            || self.author_at(x, y).is_some()
+                            || self.person_at(x, y).is_some()
                             || self.reply_cancel_rect().is_some_and(|(l, t, w, h)| {
                                 x >= l && x < l + w && y >= t && y < t + h
                             })

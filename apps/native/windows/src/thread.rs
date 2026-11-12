@@ -629,6 +629,27 @@ impl App {
             .find(|p| self.thread_part_rect(*p).is_some_and(|r| contains(r, x, y)))
     }
 
+    /// The person a point on a thread row names (its author, quoted
+    /// author or a mention pill), as `person_at` in the history.
+    pub fn thread_person_at(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<(
+        String,
+        caper_client::model::Mention,
+        Option<caper_client::model::Author>,
+    )> {
+        let t = self.thread.as_ref()?;
+        let Some(Part::Row(i)) = self.thread_hit(x, y) else {
+            return None;
+        };
+        let top = t.row_y(i)? + HEADER_H - t.scroll;
+        let grouped = t.c.messages.get(i)?.grouped;
+        let who = t.rows.who_at(i, grouped, x - self.thread_x(), y - top)?;
+        self.person_of(&t.c.messages[i].id, t.rows.row(i)?, who)
+    }
+
     pub fn thread_name(&self) -> String {
         self.thread
             .as_ref()
@@ -1008,6 +1029,12 @@ impl App {
             }
             WM_LBUTTONDOWN if self.in_thread(x, y) => {
                 match self.thread_hit(x, y) {
+                    Some(Part::Row(_))
+                        if let Some((id, entry, author)) = self.thread_person_at(x, y) =>
+                    {
+                        self.set_thread_focus(false);
+                        self.open_profile(id, entry, author, x, y);
+                    }
                     Some(Part::Field) => {
                         self.set_thread_focus(true);
                         let (tx, ty) = self.thread_text_origin();
@@ -1062,6 +1089,7 @@ impl App {
                 let (px, py) = self.pointer?;
                 let cursor = match self.thread_hit(px, py) {
                     Some(Part::Field) => IDC_IBEAM,
+                    Some(Part::Row(_)) if self.thread_person_at(px, py).is_some() => IDC_HAND,
                     Some(Part::Row(_)) | None => IDC_ARROW,
                     Some(_) => IDC_HAND,
                 };

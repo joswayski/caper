@@ -13,6 +13,7 @@ use crate::attachment_editor::Part as EPart;
 use crate::gifs::GPart;
 use crate::list::Action;
 use crate::overlay::{Kind, Part as DPart};
+use crate::profile::PPart as CPart;
 use crate::signin::Part;
 use crate::thread::Part as TPart;
 use crate::viewer::{Part as MPart, Viewer};
@@ -114,6 +115,9 @@ pub enum Id {
     /// An invited space's rail tile, Join with invite link, or a
     /// private channel invitation in the sidebar.
     Invite(crate::invites::Spot),
+    /// The open profile card and its parts.
+    Profile,
+    ProfilePart(crate::profile::PPart),
 }
 
 fn na() -> Error {
@@ -138,6 +142,9 @@ fn field(a: &App, id: Id) -> &Composer {
     if let (Id::ThreadPart(TPart::Field), Some(t)) = (id, &a.thread) {
         return &t.composer;
     }
+    if let (Id::ProfilePart(CPart::Field), Some(c)) = (id, &a.profile) {
+        return &c.field;
+    }
     match (id, &a.signin, &a.dialog) {
         (Id::Dialog(p), _, Some(d)) => d.field_for(p),
         (Id::Sign(_), Some(s), _) => s.field(),
@@ -161,6 +168,9 @@ fn field_mut(a: &mut App, id: Id) -> &mut Composer {
     if let (Id::ThreadPart(TPart::Field), Some(t)) = (id, &mut a.thread) {
         return &mut t.composer;
     }
+    if let (Id::ProfilePart(CPart::Field), Some(c)) = (id, &mut a.profile) {
+        return &mut c.field;
+    }
     match (id, &mut a.signin) {
         (Id::Sign(_), Some(s)) => s.field_mut(),
         _ => &mut a.composer,
@@ -180,6 +190,8 @@ fn field_changed(a: &mut App, id: Id, text: bool) {
         a.signin_changed(text);
     } else if matches!(id, Id::ThreadPart(_)) {
         a.thread_composer_changed();
+    } else if matches!(id, Id::ProfilePart(_)) {
+        a.profile_changed();
     } else {
         a.composer_changed();
     }
@@ -207,6 +219,9 @@ fn focused(a: &App) -> Option<Id> {
     }
     if a.thread.as_ref().is_some_and(|t| t.composer.focused) {
         return Some(Id::ThreadPart(TPart::Field));
+    }
+    if a.profile.as_ref().is_some_and(|c| c.field.focused) {
+        return Some(Id::ProfilePart(CPart::Field));
     }
     if a.signin.is_none()
         && let Some((i, action)) = a.kb_control()
@@ -245,7 +260,14 @@ fn children(a: &App, id: Id) -> Vec<Id> {
     }
     match id {
         Id::Root => {
-            let mut out = vec![Id::Rail, Id::Channels];
+            // First, so a point on the card finds it before what it covers.
+            let mut out: Vec<Id> = a
+                .profile
+                .as_ref()
+                .map(|_| Id::Profile)
+                .into_iter()
+                .collect();
+            out.extend([Id::Rail, Id::Channels]);
             if !a.direct_rows().is_empty() {
                 out.push(Id::Directs);
             }
@@ -292,6 +314,11 @@ fn children(a: &App, id: Id) -> Vec<Id> {
             .map(Id::AccountItem)
             .collect(),
         Id::DmMenu => (0..a.dm_menu_items().1.len()).map(Id::DmItem).collect(),
+        Id::Profile => a
+            .profile_parts()
+            .into_iter()
+            .map(|(p, _)| Id::ProfilePart(p))
+            .collect(),
         Id::Menu => a.menu.as_ref().map_or_else(Vec::new, |m| {
             std::iter::once(Id::MenuClose)
                 .chain((0..m.items.len()).map(Id::MenuItem))
@@ -389,6 +416,7 @@ fn parent(id: Id) -> Option<Id> {
         Id::Older | Id::Newer(_) => Id::History,
         Id::Original(i) | Id::Edited(i) | Id::File(i, _) | Id::Embed(i, _) => Id::Row(i),
         Id::MenuItem(_) | Id::MenuClose => Id::Menu,
+        Id::ProfilePart(_) => Id::Profile,
         Id::Pick(_) => Id::Picker,
         Id::Gif(_) => Id::Gifs,
         Id::Member(_) => Id::Members,
@@ -451,6 +479,8 @@ fn exists(a: &App, id: Id) -> bool {
             .as_ref()
             .is_some_and(|e| e.part_rect(p).is_some()),
         Id::Menu => a.menu.is_some() && a.dialog.is_none(),
+        Id::Profile => a.profile.is_some() && a.dialog.is_none(),
+        Id::ProfilePart(p) => a.dialog.is_none() && a.profile_parts().iter().any(|(q, _)| *q == p),
         Id::MenuItem(k) => a.dialog.is_none() && a.menu.as_ref().is_some_and(|m| k < m.items.len()),
         Id::MenuClose => a.menu.is_some() && a.dialog.is_none(),
         Id::Tool(i, t) => {
@@ -604,6 +634,19 @@ fn name(a: &App, id: Id) -> String {
         ),
         Id::Composer => format!("Message {}", c.place()),
         Id::Menu => "Message actions".into(),
+        Id::Profile => {
+            a.profile_view()
+                .map_or_else(String::new, |v| match (v.profile.me, v.username()) {
+                    (true, _) => format!("Your profile, {}", v.profile.title()),
+                    (false, Some(u)) if v.profile.display_name.is_some() => {
+                        format!("Profile of {} @{u}", v.profile.title())
+                    }
+                    _ => format!("Profile of {}", v.profile.title()),
+                })
+        }
+        Id::ProfilePart(p) => a
+            .profile_view()
+            .map_or_else(String::new, |v| v.part_name(p)),
         Id::MenuClose => "Close message actions".into(),
         Id::Tool(_, t) => t.label(),
         Id::Picker => a
@@ -784,6 +827,10 @@ fn control_type(id: Id) -> UIA_CONTROLTYPE_ID {
         Id::Composer | Id::Sign(Part::Field) => UIA_EditControlTypeId,
         Id::Sign(Part::Title | Part::Message) => UIA_TextControlTypeId,
         Id::Menu => UIA_MenuControlTypeId,
+        Id::Profile => UIA_GroupControlTypeId,
+        Id::ProfilePart(CPart::Field) => UIA_EditControlTypeId,
+        Id::ProfilePart(CPart::Invite | CPart::Block) => UIA_MenuItemControlTypeId,
+        Id::ProfilePart(_) => UIA_ButtonControlTypeId,
         Id::Picker => UIA_PaneControlTypeId,
         Id::Pick(PPart::Category(_)) => UIA_TabItemControlTypeId,
         Id::Pick(PPart::Search) => UIA_EditControlTypeId,
@@ -894,6 +941,8 @@ fn runtime_id(id: Id) -> [i32; 3] {
         Id::Composer => (9, 0),
         Id::Sign(p) => (10, p as usize),
         Id::Menu => (12, 0),
+        Id::Profile => (60, 0),
+        Id::ProfilePart(p) => (61, p.index()),
         Id::MenuItem(k) => (13, k),
         Id::Dialog(p) => (14, p.index()),
         Id::AttachmentEditor(p) => (51, p.index()),
@@ -1055,6 +1104,12 @@ fn node_rect(a: &App, id: Id) -> (f32, f32, f32, f32) {
             .menu
             .as_ref()
             .map_or((0.0, 0.0, 0.0, 0.0), crate::overlay::Menu::rect),
+        Id::Profile => a.profile_rect().unwrap_or_default(),
+        Id::ProfilePart(p) => a
+            .profile_parts()
+            .into_iter()
+            .find(|(q, _)| *q == p)
+            .map_or((0.0, 0.0, 0.0, 0.0), |(_, r)| r),
         Id::MenuItem(k) => a
             .menu
             .as_ref()
@@ -1309,6 +1364,12 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     || pattern == UIA_TextPattern2Id
             }
             Id::ThreadPart(TPart::Broadcast) => pattern == UIA_TogglePatternId,
+            Id::ProfilePart(CPart::Field) => {
+                pattern == UIA_ValuePatternId
+                    || pattern == UIA_TextPatternId
+                    || pattern == UIA_TextPattern2Id
+            }
+            Id::ProfilePart(_) => pattern == UIA_InvokePatternId,
             Id::ThreadPart(_) => pattern == UIA_InvokePatternId,
             _ => false,
         };
@@ -1354,6 +1415,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                 UIA_IsKeyboardFocusablePropertyId => VARIANT::from(matches!(
                     id,
                     Id::Composer
+                        | Id::ProfilePart(_)
                         | Id::Viewer(
                             MPart::Link
                                 | MPart::Copy
@@ -1431,6 +1493,7 @@ impl IRawElementProviderSimple_Impl for Node_Impl {
                     (Id::Sign(Part::Field), Some(s)) => s.editable(),
                     (Id::Sign(Part::Title | Part::Message), _) => true,
                     (Id::Dialog(p), _) => a.dialog.as_ref().is_some_and(|d| d.enabled(p)),
+                    (Id::ProfilePart(p), _) => a.profile_part_enabled(p),
                     (Id::AttachmentEditor(p), _) => {
                         a.attachment_editor.as_ref().is_some_and(|e| e.enabled(p))
                     }
@@ -1565,6 +1628,7 @@ impl IRawElementProviderFragment_Impl for Node_Impl {
                 Id::Pick(PPart::Search) => a.picker_activate(PPart::Search),
                 Id::Gif(GPart::Search) => a.gifs_activate(GPart::Search),
                 Id::ThreadPart(TPart::Field) => a.set_thread_focus(true),
+                Id::ProfilePart(CPart::Field) => a.set_profile_focus(true),
                 Id::Control(i, action) => a.set_kb(Some((i, action))),
                 _ => {}
             }
@@ -1658,6 +1722,7 @@ impl IInvokeProvider_Impl for Node_Impl {
                 Id::BoxPart(p) => a.box_activate(p),
                 Id::Embed(i, k) => a.embed_activate(i, k),
                 Id::ThreadPart(p) => a.thread_activate(p),
+                Id::ProfilePart(p) => a.profile_activate(p),
                 _ => {}
             }
             Ok(())
@@ -1903,6 +1968,7 @@ impl Doc {
             }
             (Self::Field(Id::Gif(_)), _) => a.gifs.as_ref().map_or((0.0, 0.0), |p| p.text_origin()),
             (Self::Field(Id::ThreadPart(_)), _) => a.thread_text_origin(),
+            (Self::Field(Id::ProfilePart(_)), _) => a.profile_text_origin(),
             (Self::Field(_), _) => a.composer_text_origin(),
             (Self::Row(i), _) => a.row_text_origin(i),
             (Self::ThreadRow(i), _) => a.thread_row_text_origin(i),

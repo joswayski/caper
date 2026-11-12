@@ -1540,6 +1540,8 @@ impl App {
         self.close_dialog();
         self.close_menu();
         self.close_profile();
+        self.profile = None;
+        self.profile_drafts.clear();
         self.close_dm_menu();
         self.close_gifs(false);
         self.cancel_reply();
