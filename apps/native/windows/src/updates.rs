@@ -10,9 +10,20 @@ use crate::theme::*;
 use crate::{App, EV_SCREEN, text};
 use caper_client::state::Phase;
 use caper_client::updates::{Available, DOWNLOAD_URL};
-use windows::Win32::Graphics::Direct2D::{ID2D1DeviceContext, ID2D1SolidColorBrush};
+use windows::Win32::Graphics::Direct2D::Common::*;
+use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
-use windows::core::Result;
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, IsIconic, KillTimer, SetTimer};
+use windows::core::{Interface, Result};
+use windows_numerics::{Matrix3x2, Vector2};
+
+/// The shine's timer, and its rhythm: one sweep of `--motion-slow` × 6
+/// every eight seconds.
+pub const TIMER_SHINE: usize = 40;
+const SHINE_EVERY: f32 = 8.0;
+const SHINE_SWEEP: f32 = 0.26 * 6.0;
+/// The prismatic edge, left to right (UpdateButtonShine's colours).
+const SHINE_COLORS: [u32; 5] = [0xA780F2, 0x68AFEC, 0x63D2C1, 0xD7CD82, 0xE58BB7];
 
 /// egui's dock: a 36-DIP secondary button with 8 DIPs under it.
 pub const DOCK_H: f32 = 36.0;
@@ -201,6 +212,7 @@ impl App {
             fill_round(dc, r, RADIUS, &g.brushes.hover);
         }
         stroke_round(dc, r, RADIUS, &g.brushes.border);
+        self.draw_update_shine(dc, r)?;
         let l = crate::overlay::layout(g, "Update available", &g.formats.button, 1e6)?;
         let m = crate::gfx::metrics(&l);
         text::draw(
@@ -211,6 +223,173 @@ impl App {
             &g.brushes.text,
         );
         Ok(())
+    }
+
+    /// Whether the shine's sweep may move: Windows animates (reduced
+    /// motion is off) and Caper is the window in front, as egui and macOS.
+    fn shine_running(&self) -> bool {
+        crate::files::motion()
+            && unsafe { GetForegroundWindow() } == self.hwnd
+            && !unsafe { IsIconic(self.hwnd) }.as_bool()
+    }
+
+    /// The sweep's eased progress now, while one is passing.
+    fn shine_progress(&self) -> Option<f32> {
+        let start = self.update_shine?;
+        let phase = start.elapsed().as_secs_f32() % SHINE_EVERY;
+        (phase < SHINE_SWEEP && self.shine_running()).then(|| {
+            let t = phase / SHINE_SWEEP;
+            if t >= 1.0 {
+                1.0
+            } else {
+                1.0 - 2f32.powf(-10.0 * t)
+            }
+        })
+    }
+
+    /// egui's and macOS's UpdateButtonShine: a still prismatic edge (a soft
+    /// 4-DIP glow under a 1-DIP line, drawn inside the button) and one
+    /// short light sweep every eight seconds, clipped to the corners. The
+    /// label and hit target never move.
+    fn draw_update_shine(&self, dc: &ID2D1DeviceContext, r: D2D_RECT_F) -> Result<()> {
+        unsafe {
+            let stops: Vec<D2D1_GRADIENT_STOP> = SHINE_COLORS
+                .iter()
+                .enumerate()
+                .map(|(k, c)| D2D1_GRADIENT_STOP {
+                    position: k as f32 / (SHINE_COLORS.len() - 1) as f32,
+                    color: crate::gfx::color(*c, 1.0),
+                })
+                .collect();
+            let collection = ID2D1RenderTarget::CreateGradientStopCollection(
+                dc,
+                &stops,
+                D2D1_GAMMA_2_2,
+                D2D1_EXTEND_MODE_CLAMP,
+            )?;
+            let edge = dc.CreateLinearGradientBrush(
+                &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                    startPoint: Vector2 { X: r.left, Y: 0.0 },
+                    endPoint: Vector2 { X: r.right, Y: 0.0 },
+                },
+                None,
+                &collection,
+            )?;
+            for (width, alpha) in [(4.0_f32, 0.12), (1.0, 0.75)] {
+                edge.SetOpacity(alpha);
+                let i = width / 2.0;
+                dc.DrawRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: rect(r.left + i, r.top + i, r.right - i, r.bottom - i),
+                        radiusX: RADIUS - i,
+                        radiusY: RADIUS - i,
+                    },
+                    &edge,
+                    width,
+                    None,
+                );
+            }
+            let Some(progress) = self.shine_progress() else {
+                return Ok(());
+            };
+            let mask = dc
+                .GetFactory()?
+                .CreateRoundedRectangleGeometry(&D2D1_ROUNDED_RECT {
+                    rect: r,
+                    radiusX: RADIUS,
+                    radiusY: RADIUS,
+                })?;
+            dc.PushLayer(
+                &D2D1_LAYER_PARAMETERS1 {
+                    contentBounds: r,
+                    geometricMask: std::mem::ManuallyDrop::new(Some(mask.cast()?)),
+                    maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                    maskTransform: Matrix3x2::identity(),
+                    opacity: 1.0,
+                    opacityBrush: std::mem::ManuallyDrop::new(None),
+                    layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+                },
+                None,
+            );
+            // A 56-DIP band of white (16% at its middle), tilted 18°,
+            // crossing from 80 DIPs before the button to 80 after it.
+            let h = r.bottom - r.top;
+            let x = r.left - 80.0 + (r.right - r.left + 160.0) * progress;
+            let band = [
+                D2D1_GRADIENT_STOP {
+                    position: 0.0,
+                    color: crate::gfx::color(0xFFFFFF, 0.0),
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 0.5,
+                    color: crate::gfx::color(0xFFFFFF, 0.16),
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 1.0,
+                    color: crate::gfx::color(0xFFFFFF, 0.0),
+                },
+            ];
+            let collection = ID2D1RenderTarget::CreateGradientStopCollection(
+                dc,
+                &band,
+                D2D1_GAMMA_2_2,
+                D2D1_EXTEND_MODE_CLAMP,
+            )?;
+            let light = dc.CreateLinearGradientBrush(
+                &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
+                    startPoint: Vector2 { X: 0.0, Y: 0.0 },
+                    endPoint: Vector2 { X: 56.0, Y: 0.0 },
+                },
+                None,
+                &collection,
+            )?;
+            let mut base = Matrix3x2::default();
+            dc.GetTransform(&mut base);
+            let tilt = Matrix3x2::rotation(18.0) * Matrix3x2::translation(x, r.top - h) * base;
+            dc.SetTransform(&tilt);
+            dc.FillRectangle(&rect(0.0, 0.0, 56.0, h * 3.0), &light);
+            dc.SetTransform(&base);
+            dc.PopLayer();
+        }
+        Ok(())
+    }
+
+    /// Paces the shine: frames while a sweep passes, then a timer for the
+    /// next one; while it can't move, a slow check for when it can again.
+    pub(crate) fn shine_tick(&mut self) {
+        let Some(start) = self
+            .update_shine
+            .filter(|_| self.update_dock_rect().is_some())
+        else {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_SHINE);
+            }
+            return;
+        };
+        let running = self.shine_running();
+        let phase = start.elapsed().as_secs_f32() % SHINE_EVERY;
+        let sweeping = running && phase < SHINE_SWEEP;
+        if sweeping || self.shine_drawn {
+            // Each frame of the sweep, and once after it to clear it.
+            self.dirty.sidebar = true;
+            self.need = true;
+        }
+        self.shine_drawn = sweeping;
+        let next = if !running {
+            1.0
+        } else if sweeping {
+            0.033
+        } else {
+            SHINE_EVERY - phase
+        };
+        unsafe {
+            SetTimer(
+                Some(self.hwnd),
+                TIMER_SHINE,
+                (next * 1000.0).max(1.0) as u32,
+                None,
+            );
+        }
     }
 
     /// The dock was clicked: the review opens.
@@ -224,7 +403,9 @@ impl App {
     pub(crate) fn poll_updates(&mut self) {
         let known = self.updates.known_available().map(|u| u.version);
         if known != self.update_dock {
+            self.update_shine = known.as_ref().map(|_| std::time::Instant::now());
             self.update_dock = known;
+            self.shine_tick();
             self.dirty.sidebar = true;
             self.events |= EV_SCREEN;
             self.need = true;

@@ -284,6 +284,10 @@ pub struct App {
     pub updates: caper_client::updates::Updates,
     pub update_dock: Option<String>,
     pub update_dock_hover: bool,
+    /// When the shine's sweeps started, and whether the last sidebar frame
+    /// drew one (so the frame after it clears it).
+    pub update_shine: Option<Instant>,
+    pub shine_drawn: bool,
     /// `caper://` invite codes from later launches, and the one waiting
     /// for sign-in (`app_link`).
     pub app_links: Option<std::sync::mpsc::Receiver<String>>,
@@ -520,6 +524,8 @@ impl App {
                 updates: caper_client::updates::Updates::start(|| {}, false),
                 update_dock: None,
                 update_dock_hover: false,
+                update_shine: None,
+                shine_drawn: false,
                 app_links: None,
                 pending_invite: None,
                 settings_p,
@@ -1758,6 +1764,7 @@ impl App {
                 TIMER_MEDIA => self.next_gif_frame(),
                 viewer::TIMER_VIEWER => self.viewer_tick(),
                 TIMER_MUTE => self.mutes_changed(),
+                updates::TIMER_SHINE => self.shine_tick(),
                 web_player::TIMER_WEB_PLAYER => self.need = true,
                 // The call's running time.
                 call::TIMER_CALL => {
