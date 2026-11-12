@@ -35,6 +35,9 @@ use gtk::{gio, glib, prelude::*};
 
 fn main() -> glib::ExitCode {
     let process_start = std::time::Instant::now();
+    // System Monitor and top show the process name, which is otherwise the
+    // installed binary's (caper-desktop).
+    let _ = std::fs::write("/proc/self/comm", "Caper");
     fonts::prepare();
     let args: Vec<String> = std::env::args().collect();
     let base = args
