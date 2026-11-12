@@ -196,6 +196,12 @@ import SwiftUI
                 pendingLabels: false, close: close,
                 decline: { [model] in try await model.declineChannelInvitation(invitation) },
                 accept: { [model] in try await model.acceptChannelInvitation(invitation) })
+        case .workspace(.privacy):
+            return AppKitPrivacyDialog(model: model, close: close)
+        case .workspace(.notifications):
+            return AppKitNotificationsDialog(model: model, close: close)
+        case .workspace(.newDirectMessage):
+            return AppKitNewDirectMessageDialog(model: model, close: close)
         case .workspace(.leaveSpace):
             return AppKitConfirmationDialog(title: "Leave \(model.detail?.space.name ?? "space")?",
                 detail: "You will lose access to its channels and conversations. An owner can add you again later.",
@@ -391,13 +397,23 @@ private struct AppKitWorkspaceDialog: View {
                   window.attachedSheet == nil, !self.model.whatsNew.workspaceModalOpen else { return }
             window.makeFirstResponder(composer)
         }
+        // Keep the whole card inside the window: at narrow widths a popover
+        // centred on the header's pin button would hang past the window edge,
+        // where its Go to message buttons cannot be reached.
+        guard let content = window.contentView else { return }
+        let margin: CGFloat = 12
+        let width = min(470, max(240, content.bounds.width - 2 * margin - 26))
+        let pin = anchor.convert(anchor.bounds, to: content)
+        let half = (width + 26) / 2
+        let x = min(max(pin.midX, half + margin), content.bounds.width - half - margin)
+        let rect = NSRect(x: x - 1, y: pin.minY, width: 2, height: pin.height)
         let popover = NSPopover()
         self.popover = popover
         popover.behavior = .transient
         popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         popover.delegate = self
         let host = NSHostingController(rootView: PinnedMessagesView(chat: model.chat, model: model) { [weak self] in self?.close() }
-            .frame(width: 470, height: 360)
+            .frame(width: width, height: 360)
             .environment(\.mediaViewer, MediaViewerAction { [weak self] request in
                 guard let self else { return }
                 self.close()
@@ -408,7 +424,7 @@ private struct AppKitWorkspaceDialog: View {
             .onExitCommand { [weak self] in self?.close() })
         host.sizingOptions = [.preferredContentSize]
         popover.contentViewController = host
-        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        popover.show(relativeTo: rect, of: content, preferredEdge: content.isFlipped ? .maxY : .minY)
     }
 
     public func close(restoringFocus: Bool = true) {

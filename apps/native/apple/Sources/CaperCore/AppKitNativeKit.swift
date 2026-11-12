@@ -264,16 +264,16 @@ import SwiftUI
     let toggle = AppKitKitSwitch()
     private let changed: (Bool) -> Void
 
-    init(title: String, detail: String, identifier: String, changed: @escaping (Bool) -> Void) {
+    init(title: String, detail: String?, identifier: String, changed: @escaping (Bool) -> Void) {
         self.changed = changed
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        let text = AppKitKit.stack([AppKitKit.label(title, size: 14), AppKitKit.label(detail, size: 12, color: AppKitKit.muted)], spacing: 6)
+        let text = AppKitKit.stack([AppKitKit.label(title, size: 14)] + (detail.map { [AppKitKit.label($0, size: 12, color: AppKitKit.muted)] } ?? []), spacing: 6)
         toggle.target = self; toggle.action = #selector(toggled)
         toggle.translatesAutoresizingMaskIntoConstraints = false
         toggle.setAccessibilityIdentifier(identifier)
         toggle.setAccessibilityLabel(title)
-        toggle.setAccessibilityHelp(detail)
+        if let detail { toggle.setAccessibilityHelp(detail) }
         addSubview(text); addSubview(toggle)
         NSLayoutConstraint.activate([
             text.leadingAnchor.constraint(equalTo: leadingAnchor), text.topAnchor.constraint(equalTo: topAnchor),
@@ -329,16 +329,18 @@ final class AppKitKitFlippedView: NSView {
     private let url: URL
     private var tracking: NSTrackingArea?
     private let size: CGFloat
+    private let color: NSColor?
     private var hovered = false
 
-    init(_ title: String, url: URL, size: CGFloat = 13) {
-        self.url = url; self.size = size
+    /// `color` replaces the muted rest colour, e.g. red for Delete account.
+    init(_ title: String, url: URL, size: CGFloat = 13, color: NSColor? = nil, help: String? = "View this version on GitHub") {
+        self.url = url; self.size = size; self.color = color
         super.init(frame: .zero)
         self.title = title
         isBordered = false; bezelStyle = .regularSquare
         target = self; action = #selector(open)
-        toolTip = "View this version on GitHub"
-        setAccessibilityHelp("View this version on GitHub")
+        toolTip = help
+        if let help { setAccessibilityHelp(help) }
         setAccessibilityLabel(title)
         translatesAutoresizingMaskIntoConstraints = false
         style()
@@ -348,7 +350,7 @@ final class AppKitKitFlippedView: NSView {
     private func style() {
         var attributes: [NSAttributedString.Key: Any] = [
             .font: AppKitKit.font(size),
-            .foregroundColor: hovered ? AppKitKit.actionHover : AppKitKit.muted.withAlphaComponent(0.72),
+            .foregroundColor: color ?? (hovered ? AppKitKit.actionHover : AppKitKit.muted.withAlphaComponent(0.72)),
         ]
         if hovered { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         attributedTitle = NSAttributedString(string: title + " ↗", attributes: attributes)

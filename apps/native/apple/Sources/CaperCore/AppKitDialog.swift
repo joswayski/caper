@@ -38,6 +38,9 @@ import AppKit
         let top = card.topAnchor.constraint(equalTo: topAnchor, constant: 16)
         let cardWidth = card.widthAnchor.constraint(equalToConstant: width)
         let maxHeight = card.heightAnchor.constraint(lessThanOrEqualToConstant: 680)
+        // The card hugs its content: minimum heights (rows, status lines) stay
+        // minimums instead of absorbing spare height.
+        let fit = card.heightAnchor.constraint(equalToConstant: 0); fit.priority = .init(1); fit.isActive = true
         self.top = top; self.cardWidth = cardWidth; self.maxHeight = maxHeight
         NSLayoutConstraint.activate([
             top, cardWidth, maxHeight, card.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -94,7 +97,7 @@ import AppKit
             text.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -22),
             close.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -22),
             close.topAnchor.constraint(equalTo: topAnchor, constant: 22),
-            close.heightAnchor.constraint(equalToConstant: 27),
+            close.heightAnchor.constraint(equalToConstant: 27), close.widthAnchor.constraint(equalToConstant: 27),
             line.leadingAnchor.constraint(equalTo: leadingAnchor), line.trailingAnchor.constraint(equalTo: trailingAnchor),
             line.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])

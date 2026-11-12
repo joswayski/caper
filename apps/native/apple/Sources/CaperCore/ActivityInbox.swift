@@ -134,7 +134,7 @@ struct ActivityInboxView: View {
             if let error = model.activityError {
                 HStack {
                     Text(error).foregroundStyle(CaperTheme.terracotta)
-                    Button("Retry") { Task { await model.loadActivity(reset: true, poll: true) } }
+                    Button("Retry") { model.activityError = nil; Task { await model.loadActivity(reset: true, poll: true) } }
                         .disabled(model.activityLoading)
                 }
             }

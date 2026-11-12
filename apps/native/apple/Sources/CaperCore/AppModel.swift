@@ -51,7 +51,11 @@ public final class AppModel {
     var activityUnread = 0
     var activityCursor: String?
     var activityLoading = false
-    var activityError: String?
+    var activityError: String? { didSet { activityErrorFromLoad = false } }
+    /// Whether `activityError` came from loading the list. A background refresh
+    /// replaces only that one: a failed read, reaction or open stays visible
+    /// until the person acts again, even though the refresh it triggers succeeds.
+    @ObservationIgnored private var activityErrorFromLoad = false
     /// The row being opened; only it is disabled meanwhile.
     var activityOpening: String?
     /// After a filter change the previous rows stay, dimmed and inert, until the
@@ -182,7 +186,8 @@ public final class AppModel {
         let filter = activityFilter; let unread = activityUnreadOnly
         let cursor = reset ? nil : activityCursor
         let oldest = poll ? activityItems.last : nil
-        activityLoading = true; activityError = nil
+        activityLoading = true
+        if !poll || activityErrorFromLoad { activityError = nil }
         if reset && !poll { activityStale = !activityItems.isEmpty }
         defer { if generation == attempt && request == activityRequest { activityLoading = false; activityStale = false } }
         do {
@@ -208,6 +213,7 @@ public final class AppModel {
             // Rows kept from the previous filter must not stand in for this one.
             if reset && !poll { activityItems = []; activityCursor = nil }
             activityError = FriendlyError.message(for: error)
+            activityErrorFromLoad = true
         }
     }
 
