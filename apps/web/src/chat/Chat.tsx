@@ -380,6 +380,7 @@ export default function Chat({
   const blockedIds = useBlockedIds();
   const press = useRef<{
     timer: ReturnType<typeof setTimeout>;
+    wash?: ReturnType<typeof setTimeout>;
     x: number;
     y: number;
     pointerId: number;
@@ -388,6 +389,7 @@ export default function Chat({
   const suppressClick = useRef(false);
   const cancelPress = () => {
     clearTimeout(press.current?.timer);
+    clearTimeout(press.current?.wash);
     press.current?.row?.removeAttribute("data-pressing");
     press.current = undefined;
   };
@@ -1658,9 +1660,11 @@ export default function Chat({
     cancelPress,
     holdPress: (event, onHold, row = false) => {
       const anchor = event.currentTarget;
-      if (row) anchor.dataset.pressing = "true";
       press.current = {
         row: row ? anchor : undefined,
+        // A finger that starts a scroll moves or is cancelled before the wash
+        // shows, so swiping through the list never flashes a row as held.
+        wash: row ? setTimeout(() => (anchor.dataset.pressing = "true"), 150) : undefined,
         x: event.clientX,
         y: event.clientY,
         pointerId: event.pointerId,

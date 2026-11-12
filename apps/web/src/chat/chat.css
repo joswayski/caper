@@ -4527,8 +4527,9 @@ a.chat-draft-preview {
   background: rgb(182 77 50 / 12%);
   box-shadow: inset 3px 0 var(--terracotta);
 }
-/* Immediate touch feedback, layered over mention/thread/reply tints without
-   replacing their meaning. Cancelling or releasing the press clears it. */
+/* Touch feedback after a short rest (so a scroll never flashes it), layered over
+   mention/thread/reply tints without replacing their meaning. Cancelling or
+   releasing the press clears it. */
 .chat-message[data-pressing="true"],
 .chat-message[data-pressing="true"]:hover,
 .chat-message[data-pressing="true"]:focus-within {

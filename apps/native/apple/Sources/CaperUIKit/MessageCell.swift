@@ -342,8 +342,9 @@ final class MessageRowView: UIView, UIGestureRecognizerDelegate {
         hold.delegate = self
         addGestureRecognizer(hold)
         pressRecognizer.addTarget(self, action: #selector(pressed(_:)))
-        pressRecognizer.minimumPressDuration = 0.08
-        pressRecognizer.allowableMovement = .greatestFiniteMagnitude
+        // A finger that starts a scroll within 0.15s never shows the wash.
+        pressRecognizer.minimumPressDuration = 0.15
+        pressRecognizer.allowableMovement = 10
         pressRecognizer.cancelsTouchesInView = false
         pressRecognizer.delaysTouchesEnded = false
         pressRecognizer.delegate = self

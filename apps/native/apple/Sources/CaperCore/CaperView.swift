@@ -5486,6 +5486,7 @@ private struct MessageRow: View {
     @State private var history = false
     @State private var confirmingDelete = false
     @State private var pressing = false
+    @State private var pressWash: Task<Void, Never>?
     #if os(macOS)
     /// Room for the unified hover bar: 24pt controls, 3pt insets and a gap.
     /// Read-only conversations leave out Reply.
@@ -5674,9 +5675,18 @@ private struct MessageRow: View {
             }
         #if os(iOS)
         row.contentShape(Rectangle())
-            .onLongPressGesture(perform: showReactionPicker, onPressingChanged: { pressing = $0 })
+            .onLongPressGesture(perform: showReactionPicker, onPressingChanged: { down in
+                // The wash waits 0.15s, so a finger that starts a scroll never shows it.
+                pressWash?.cancel()
+                pressing = false
+                guard down else { return }
+                pressWash = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(150))
+                    if !Task.isCancelled { pressing = true }
+                }
+            })
             .gesture(TapGesture().onEnded { if !SwipeTapGuard.swiping { openMessage?() } }, including: openMessage == nil ? .subviews : .all)
-            .onDisappear { pressing = false }
+            .onDisappear { pressWash?.cancel(); pressing = false }
             .accessibilityAction(named: Text("Message actions")) { showReactionPicker() }
         #else
         row
