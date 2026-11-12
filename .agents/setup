@@ -13,15 +13,22 @@ step() {
 }
 
 step "checking Linux build dependencies"
-if ! command -v clang-21 >/dev/null 2>&1 || ! command -v ld.lld-21 >/dev/null 2>&1; then
+# Orbs run Debian 12 (bookworm) or 13 (trixie); package choices follow it.
+codename="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:?}")"
+llvm_list=/etc/apt/sources.list.d/caper-llvm.list
+if ! command -v clang-21 >/dev/null 2>&1 || ! command -v ld.lld-21 >/dev/null 2>&1 \
+  || { [[ -f "$llvm_list" ]] && ! grep -Fq "llvm-toolchain-$codename-21" "$llvm_list"; }; then
   # The pinned WebRTC archive's Chromium libc++ headers need Clang 21.
-  # Restrict this signing key to LLVM's versioned Debian 12 repository.
+  # Restrict this signing key to LLVM's versioned repository for this release.
   curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 3 \
     https://apt.llvm.org/llvm-snapshot.gpg.key \
     | sudo tee /usr/share/keyrings/caper-llvm.asc >/dev/null
-  printf '%s\n' 'deb [signed-by=/usr/share/keyrings/caper-llvm.asc] https://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-21 main' \
-    | sudo tee /etc/apt/sources.list.d/caper-llvm.list >/dev/null
+  printf 'deb [signed-by=/usr/share/keyrings/caper-llvm.asc] https://apt.llvm.org/%s/ llvm-toolchain-%s-21 main\n' \
+    "$codename" "$codename" | sudo tee "$llvm_list" >/dev/null
 fi
+# Debian 13 dropped JDK 17. Gradle and the Android plugin run on 21; the app
+# still compiles for Java 17.
+if [[ "$codename" == bookworm ]]; then jdk=openjdk-17-jdk-headless; else jdk=openjdk-21-jdk-headless; fi
 packages=(
   build-essential
   clang-21
@@ -47,7 +54,7 @@ packages=(
   libxkbcommon-x11-0
   libxrandr-dev
   lld-21
-  openjdk-17-jdk-headless
+  "$jdk"
   pkg-config
   postgresql
   openbox
