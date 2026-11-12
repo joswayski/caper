@@ -12,6 +12,10 @@ const MAX_PARTS: i64 = 10_000;
 pub(super) const MAX_SINGLE_BYTES: i64 = 5 * 1024 * 1024 * 1024;
 /// Server-side copies move this much per part.
 const COPY_PART_BYTES: i64 = 1024 * 1024 * 1024;
+/// R2 answers a copy or an assembly only once it has moved the bytes, which
+/// for gigabytes outlasts the client's default timeout. Publishing bounds the
+/// whole job by the file's size; this only stops a stalled request.
+const MOVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// The part size for a file of `bytes`: whole MiB, and few enough parts.
 pub(super) fn part_bytes(bytes: i64) -> i64 {
@@ -124,11 +128,15 @@ impl R2 {
         query: &[(&str, &str)],
         headers: &[(&str, &str)],
         body: Option<String>,
+        moves_bytes: bool,
     ) -> Result<String, ApiError> {
         let (url, headers) =
             self.signer()
                 .authorize(method.as_str(), &self.object(key), query, headers);
         let mut request = self.http.request(method, url);
+        if moves_bytes {
+            request = request.timeout(MOVE_TIMEOUT);
+        }
         for (name, value) in headers {
             request = request.header(name, value);
         }
@@ -158,6 +166,7 @@ impl R2 {
                 &[("uploads", "")],
                 headers,
                 None,
+                false,
             )
             .await?;
         element(&body, "UploadId")
@@ -199,6 +208,7 @@ impl R2 {
                     ],
                     &[],
                     None,
+                    false,
                 )
                 .await?;
             for part in elements(&body, "Part") {
@@ -237,6 +247,7 @@ impl R2 {
             &[("uploadId", upload_id)],
             &[("content-type", "application/xml")],
             Some(completion(parts)),
+            true,
         )
         .await
         .map(drop)
@@ -275,7 +286,7 @@ impl R2 {
             ];
             all.extend_from_slice(headers);
             return self
-                .send(reqwest::Method::PUT, key, &[], &all, None)
+                .send(reqwest::Method::PUT, key, &[], &all, None, true)
                 .await
                 .map(drop);
         }
@@ -315,6 +326,7 @@ impl R2 {
                             ("x-amz-copy-source-range", &range),
                         ],
                         None,
+                        true,
                     )
                     .await?;
                 let etag = element(&body, "ETag").ok_or_else(unavailable)?;

@@ -67,15 +67,15 @@ pub(super) async fn persist_delete(
     let current_name = user.map(|_| name.as_str());
     // Unlike edits, a block never stops people removing their own messages.
     let (channel_id, head, _) = locked_channel(&mut tx, channel, user, true).await?;
-    let row: Option<(i64, Value, Option<i64>, bool, i64)> = sqlx::query_as(
-        "SELECT m.id,m.payload,cs.user_id,m.deleted_at IS NOT NULL,m.channel_seq FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2 FOR UPDATE OF m",
+    let row = sqlx::query_as::<_, (i64, Value, Option<i64>, bool, i64, Option<i64>)>(
+        "SELECT m.id,m.payload,cs.user_id,m.deleted_at IS NOT NULL,m.channel_seq,m.thread_root_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2 FOR UPDATE OF m",
     )
     .bind(channel_id)
     .bind(message)
     .fetch_optional(&mut *tx)
     .await
     .map_err(database_error)?;
-    let (message_id, mut payload, author, deleted, message_seq) =
+    let (message_id, mut payload, author, deleted, message_seq, thread_root) =
         row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
     let Some(owner) = user.filter(|user| Some(*user) == author) else {
         return Err(ApiError::new(
@@ -122,6 +122,48 @@ pub(super) async fn persist_delete(
     if payload.get("forward").is_some() {
         payload["forward"] = json!({"message":null,"seq":"0"});
         payload["forwardSeq"] = json!(seq.to_string());
+    }
+    if let Some(root_id) = thread_root {
+        // A deleted reply leaves its thread's count and avatars. Like every
+        // reply it carries the parent's new summary, so this one event
+        // refreshes the parent too.
+        let participants: Vec<Value> = sqlx::query_scalar(
+            "SELECT author FROM (
+               SELECT DISTINCT ON (payload->'author'->>'id') payload->'author' AS author,
+                      min(channel_seq) OVER (PARTITION BY payload->'author'->>'id') AS first_seq
+               FROM public.messages WHERE thread_root_id=$1 AND deleted_at IS NULL AND id<>$2
+               ORDER BY payload->'author'->>'id',channel_seq DESC) people
+             ORDER BY first_seq LIMIT 5",
+        )
+        .bind(root_id)
+        .bind(message_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        if participants.is_empty() {
+            // Clients reject an empty summary, so the last reply's deletion
+            // removes it instead, from the parent and from the earlier
+            // tombstones whose stale copies would otherwise bring it back.
+            if let Some(reply) = payload.as_object_mut() {
+                reply.remove("thread");
+            }
+            sqlx::query("UPDATE public.messages SET payload=payload-'thread' WHERE (id=$1 OR thread_root_id=$1) AND payload ? 'thread'")
+                .bind(root_id).execute(&mut *tx).await.map_err(database_error)?;
+        } else {
+            let replies: i64 = sqlx::query_scalar("SELECT count(*) FROM public.messages WHERE thread_root_id=$1 AND deleted_at IS NULL AND id<>$2")
+                .bind(root_id).bind(message_id).fetch_one(&mut *tx).await.map_err(database_error)?;
+            let summary =
+                json!({"replyCount":replies,"participants":participants,"seq":seq.to_string()});
+            payload["thread"] = summary.clone();
+            sqlx::query(
+                "UPDATE public.messages SET payload=jsonb_set(payload,'{thread}',$2) WHERE id=$1",
+            )
+            .bind(root_id)
+            .bind(summary)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        }
     }
     sqlx::query("UPDATE public.messages SET payload=$2,deleted_at=$3 WHERE id=$1")
         .bind(message_id)

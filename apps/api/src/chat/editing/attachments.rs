@@ -11,7 +11,7 @@ use serde_json::Value;
 pub(crate) const MAX_MARKS: usize = 500;
 pub(crate) const MAX_POINT_VALUES: usize = 100_000;
 pub(crate) const MAX_TEXT_CHARACTERS: usize = 200;
-/// Ten descriptions this size still fit under axum's 2 MiB JSON body limit.
+/// Ten descriptions this size fit under `chat::MESSAGE_BODY_LIMIT`.
 pub(crate) const MAX_EDIT_BYTES: usize = 128 * 1024;
 /// Editors round fractions to a millionth, so a crop may end slightly past an
 /// edge; this leaves room for that and for floating-point sums.

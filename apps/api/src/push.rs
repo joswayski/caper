@@ -725,32 +725,40 @@ pub(crate) async fn consent(
     space: Option<i64>,
     channel: Option<i64>,
 ) -> Result<(), sqlx::Error> {
-    let notification: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO public.notifications(user_id,kind,space_id,channel_id,actor_id)
-         SELECT $1,$2,$3,$4,$5 WHERE NOT EXISTS(
-           SELECT 1 FROM public.notification_settings WHERE user_id=$1
-           AND (default_level='nothing' OR paused_until>now())) RETURNING id",
+    consent_all(connection, &[recipient], actor, kind, space, channel).await
+}
+
+/// [`consent`] for every recipient in one statement, however many there are.
+/// The caller holds each recipient's lock.
+pub(crate) async fn consent_all(
+    connection: &mut sqlx::PgConnection,
+    recipients: &[i64],
+    actor: i64,
+    kind: &str,
+    space: Option<i64>,
+    channel: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "WITH created AS (
+           INSERT INTO public.notifications(user_id,kind,space_id,channel_id,actor_id)
+           SELECT r.id,$2,$3,$4,$5 FROM unnest($1::bigint[]) AS r(id) WHERE NOT EXISTS(
+             SELECT 1 FROM public.notification_settings s WHERE s.user_id=r.id
+             AND (s.default_level='nothing' OR s.paused_until>now()))
+           ORDER BY r.id RETURNING id,user_id)
+         INSERT INTO public.notification_deliveries(notification_id,device_id)
+         SELECT c.id,d.id FROM created c
+         JOIN public.notification_devices d ON d.user_id=c.user_id
+         JOIN public.account_sessions a ON a.token_hash=d.account_session_hash
+         WHERE d.revoked_at IS NULL AND a.revoked_at IS NULL
+           AND a.expires_at>now() AND a.user_id=d.user_id",
     )
-    .bind(recipient)
+    .bind(recipients)
     .bind(kind)
     .bind(space)
     .bind(channel)
     .bind(actor)
-    .fetch_optional(&mut *connection)
+    .execute(connection)
     .await?;
-    if let Some(notification) = notification {
-        sqlx::query(
-            "INSERT INTO public.notification_deliveries(notification_id,device_id)
-             SELECT $1,d.id FROM public.notification_devices d
-             JOIN public.account_sessions a ON a.token_hash=d.account_session_hash
-             WHERE d.user_id=$2 AND d.revoked_at IS NULL AND a.revoked_at IS NULL
-               AND a.expires_at>now() AND a.user_id=d.user_id",
-        )
-        .bind(notification)
-        .bind(recipient)
-        .execute(connection)
-        .await?;
-    }
     Ok(())
 }
 

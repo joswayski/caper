@@ -73,7 +73,8 @@ WITH visible AS (
     JOIN public.users owner ON owner.id=s.owner_id AND owner.deleted_at IS NULL
     WHERE si.user_id=$1 AND si.status='pending' AND si.updated_at>now()-interval '7 days'
         AND NOT EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$1 AND sm.deleted_at IS NULL)
-        AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=s.owner_id AND b.deleted_at IS NULL)
+        AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
+            AND ((b.blocker_id=$1 AND b.blocked_id=s.owner_id) OR (b.blocker_id=s.owner_id AND b.blocked_id=$1)))
     UNION ALL
     SELECT 'c:' || ci.channel_id || ':' || extract(epoch FROM ci.updated_at)::text,
         'channel.invitation', ci.updated_at, s.owner_id, NULL::bigint, c.id, s.id, NULL::text, true
@@ -84,7 +85,8 @@ WITH visible AS (
     WHERE ci.user_id=$1 AND ci.status='pending' AND ci.updated_at>now()-interval '7 days'
         AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$1 AND sm.deleted_at IS NULL)
         AND NOT EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$1 AND cm.deleted_at IS NULL)
-        AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=s.owner_id AND b.deleted_at IS NULL)
+        AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
+            AND ((b.blocker_id=$1 AND b.blocked_id=s.owner_id) OR (b.blocker_id=s.owner_id AND b.blocked_id=$1)))
 ), sources AS (
     SELECT * FROM message_activity UNION ALL SELECT * FROM reaction_activity UNION ALL SELECT * FROM pending
 ), activity AS (

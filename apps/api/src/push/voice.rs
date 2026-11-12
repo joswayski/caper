@@ -2,6 +2,7 @@
 //! monitors never count. Occupancy stays in the media store; Postgres owns the
 //! cooldown and durable fanout. No notification side effects run in CAS closures.
 use crate::{ApiError, AppState, LEASE};
+use futures_util::StreamExt;
 use uuid::Uuid;
 
 pub(crate) async fn joined(state: &AppState, participant: Uuid) -> Result<(), ApiError> {
@@ -53,27 +54,34 @@ pub(crate) async fn joined(state: &AppState, participant: Uuid) -> Result<(), Ap
     .fetch_all(&mut *tx)
     .await
     .map_err(super::database_error)?;
-    // Occupancy only decides anything once the cooldown has passed; skip a
-    // media-store read per channel, under the space's row lock, otherwise.
+    // Occupancy only decides anything once the cooldown has passed; skip the
+    // media-store read per channel, under the space's row lock, otherwise, and
+    // read a few channels at a time when it does.
+    let mut reads = futures_util::stream::iter(channels.into_iter().filter(|_| cooled))
+        .map(|channel| {
+            let mut room = state.clone();
+            room.media_channel = Some(channel);
+            async move {
+                room.read(|r| {
+                    Ok(r.participants.values().any(|p| {
+                        p.id != participant
+                            && p.monitor.is_none()
+                            && !p.voice_join_pending
+                            && p.lease.elapsed() < LEASE
+                    }))
+                })
+                .await
+            }
+        })
+        .buffer_unordered(8);
     let mut occupied = false;
-    for channel in channels.into_iter().filter(|_| cooled) {
-        let mut room = state.clone();
-        room.media_channel = Some(channel);
-        if room
-            .read(|r| {
-                Ok(r.participants.values().any(|p| {
-                    p.id != participant
-                        && p.monitor.is_none()
-                        && !p.voice_join_pending
-                        && p.lease.elapsed() < LEASE
-                }))
-            })
-            .await?
-        {
+    while let Some(busy) = reads.next().await {
+        if busy? {
             occupied = true;
             break;
         }
     }
+    drop(reads);
     // A successful join becomes visible to the next space-serialized join only
     // here, after provider setup, even when no notification can be sent.
     let activated = state
@@ -99,18 +107,16 @@ pub(crate) async fn joined(state: &AppState, participant: Uuid) -> Result<(), Ap
         .fetch_all(&mut *tx)
         .await
         .map_err(super::database_error)?;
-        for recipient in recipients {
-            super::consent(
-                &mut tx,
-                recipient,
-                actor,
-                "voice.started",
-                Some(space),
-                Some(channel_id),
-            )
-            .await
-            .map_err(super::database_error)?;
-        }
+        super::consent_all(
+            &mut tx,
+            &recipients,
+            actor,
+            "voice.started",
+            Some(space),
+            Some(channel_id),
+        )
+        .await
+        .map_err(super::database_error)?;
         sqlx::query("UPDATE public.voice_notification_state SET notified_at=clock_timestamp() WHERE space_id=$1")
             .bind(space).execute(&mut *tx).await.map_err(super::database_error)?;
     }

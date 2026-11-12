@@ -341,12 +341,23 @@ async fn record(workers: &Workers, claimed: &Claimed, result: Attempt) {
             return;
         }
         Attempt::Sent(Outcome::Delivered) => {
-            let _ = sqlx::query(
-                "UPDATE public.notification_deliveries SET delivered_at=now(), locked_at=NULL, last_error=NULL WHERE id=$1",
-            )
-            .bind(claimed.id)
-            .execute(pool)
-            .await;
+            // The phone already alerted: a lost write here would send it again
+            // once the claim lapses, so ride out a brief database failure.
+            for attempt in 0..3 {
+                let written = sqlx::query(
+                    "UPDATE public.notification_deliveries SET delivered_at=now(), locked_at=NULL, last_error=NULL WHERE id=$1",
+                )
+                .bind(claimed.id)
+                .execute(pool)
+                .await;
+                match written {
+                    Ok(_) => break,
+                    Err(error) if attempt == 2 => {
+                        tracing::warn!(event_name = "push_delivered_unrecorded", %error, "delivered push was not recorded and may repeat");
+                    }
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+                }
+            }
             // Deleted while this was in flight: take it back like the rest.
             let _ = sqlx::query(
                 "INSERT INTO public.notification_retractions(notification_id,device_id)

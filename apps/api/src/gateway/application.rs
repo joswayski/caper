@@ -1008,59 +1008,65 @@ async fn presence_subscription(
     // Transient (503) failures retry every two seconds for `PRESENCE_GRACE`,
     // keeping the last snapshot on screen; denials end the subscription now.
     let mut failing: Option<tokio::time::Instant> = None;
+    // Several members changing status at once wake this loop once each; they
+    // share one authorization and roster read, as media and typing do.
+    let mut checked: Option<tokio::time::Instant> = None;
     loop {
         let step = async {
-            identity.check(state).await?;
-            // Anchor authorization on the space, not the returned members: an empty
-            // roster must never let a removed requester keep a subscription alive.
-            let permitted: Option<Vec<String>> = sqlx::query_scalar("SELECT ARRAY(SELECT u.external_id FROM public.space_members m JOIN public.users u ON u.id=m.user_id WHERE m.space_id=s.id AND m.deleted_at IS NULL AND u.deleted_at IS NULL AND ($4 OR u.external_id=ANY($2)) ORDER BY u.external_id) FROM public.spaces s WHERE s.external_id=$1 AND s.deleted_at IS NULL AND EXISTS(SELECT 1 FROM public.space_members own WHERE own.space_id=s.id AND own.user_id=$3 AND own.deleted_at IS NULL)")
-                .bind(space).bind(&sub.user_ids).bind(user).bind(sub.all_members).fetch_optional(&state.chat.pool).await
-                .map_err(|error| {
-                    tracing::warn!(event_name = "presence_roster_failed", %error, "presence roster check failed");
-                    chat::unavailable()
-                })?;
-            let permitted = permitted
-                .ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "presence subscription denied"))?;
-            // Fail closed on removed memberships, including subscriptions established
-            // before a privacy change. Never return global population snapshots.
-            let unique: std::collections::HashSet<_> = sub.user_ids.iter().collect();
-            if !sub.all_members && permitted.len() != unique.len() {
-                return Err(ApiError::new(
-                    StatusCode::FORBIDDEN,
-                    "presence subscription denied",
-                ));
-            }
-            let next_ids = if sub.all_members {
-                permitted
-            } else {
-                sub.user_ids.clone()
-            };
-            if last.is_null() || ids != next_ids {
-                ids = next_ids;
-                feeds = ids.iter().map(|id| state.application.person(id)).collect();
-                // Rebuild watches with the roster so newly added members are tracked
-                // and removed feeds can be reclaimed by the existing repair loop.
-                changes = futures_util::stream::select_all(
-                    feeds
-                        .iter()
-                        .map(|feed| {
-                            futures_util::stream::unfold(
-                                feed.value.subscribe(),
-                                |mut receiver| async move {
-                                    receiver.changed().await.ok()?;
-                                    receiver.borrow_and_update();
-                                    Some(((), receiver))
-                                },
-                            )
-                            .boxed()
-                        })
-                        .collect::<Vec<_>>(),
-                );
-                for chunk in ids.chunks(100) {
-                    state
-                        .application
-                        .update_people(presence.statuses(chunk).await?);
+            if checked.is_none_or(|at| at.elapsed() >= EPHEMERAL_RECHECK) {
+                identity.check(state).await?;
+                // Anchor authorization on the space, not the returned members: an empty
+                // roster must never let a removed requester keep a subscription alive.
+                let permitted: Option<Vec<String>> = sqlx::query_scalar("SELECT ARRAY(SELECT u.external_id FROM public.space_members m JOIN public.users u ON u.id=m.user_id WHERE m.space_id=s.id AND m.deleted_at IS NULL AND u.deleted_at IS NULL AND ($4 OR u.external_id=ANY($2)) ORDER BY u.external_id) FROM public.spaces s WHERE s.external_id=$1 AND s.deleted_at IS NULL AND EXISTS(SELECT 1 FROM public.space_members own WHERE own.space_id=s.id AND own.user_id=$3 AND own.deleted_at IS NULL)")
+                    .bind(space).bind(&sub.user_ids).bind(user).bind(sub.all_members).fetch_optional(&state.chat.pool).await
+                    .map_err(|error| {
+                        tracing::warn!(event_name = "presence_roster_failed", %error, "presence roster check failed");
+                        chat::unavailable()
+                    })?;
+                let permitted = permitted
+                    .ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "presence subscription denied"))?;
+                // Fail closed on removed memberships, including subscriptions established
+                // before a privacy change. Never return global population snapshots.
+                let unique: std::collections::HashSet<_> = sub.user_ids.iter().collect();
+                if !sub.all_members && permitted.len() != unique.len() {
+                    return Err(ApiError::new(
+                        StatusCode::FORBIDDEN,
+                        "presence subscription denied",
+                    ));
                 }
+                let next_ids = if sub.all_members {
+                    permitted
+                } else {
+                    sub.user_ids.clone()
+                };
+                if last.is_null() || ids != next_ids {
+                    ids = next_ids;
+                    feeds = ids.iter().map(|id| state.application.person(id)).collect();
+                    // Rebuild watches with the roster so newly added members are tracked
+                    // and removed feeds can be reclaimed by the existing repair loop.
+                    changes = futures_util::stream::select_all(
+                        feeds
+                            .iter()
+                            .map(|feed| {
+                                futures_util::stream::unfold(
+                                    feed.value.subscribe(),
+                                    |mut receiver| async move {
+                                        receiver.changed().await.ok()?;
+                                        receiver.borrow_and_update();
+                                        Some(((), receiver))
+                                    },
+                                )
+                                .boxed()
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                    for chunk in ids.chunks(100) {
+                        state
+                            .application
+                            .update_people(presence.statuses(chunk).await?);
+                    }
+                }
+                checked = Some(tokio::time::Instant::now());
             }
             let values: Vec<Value> = feeds
                 .iter()

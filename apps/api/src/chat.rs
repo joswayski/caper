@@ -167,18 +167,28 @@ pub(crate) async fn seed(pool: &PgPool) -> Result<(), sqlx::Error> {
     tx.commit().await
 }
 
+/// An edit may describe how each of a message's ten files was redrawn, which
+/// the app-wide body limit is too small for.
+pub(crate) const MESSAGE_BODY_LIMIT: usize =
+    assets::MAX_PER_MESSAGE * editing::MAX_EDIT_BYTES + 256 * 1024;
+
+/// Reading, editing and deleting one message. Merged after the app-wide body
+/// limit, under `MESSAGE_BODY_LIMIT` instead.
+pub(crate) fn message_routes() -> Router<AppState> {
+    Router::new().route(
+        "/api/chat/channels/{channel}/messages/{message}",
+        get(editing::message)
+            .put(editing::edit)
+            .delete(deletion::delete),
+    )
+}
+
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/chat/session", post(session))
         .route(
             "/api/chat/channels/{channel}/messages",
             get(history).post(send),
-        )
-        .route(
-            "/api/chat/channels/{channel}/messages/{message}",
-            get(editing::message)
-                .put(editing::edit)
-                .delete(deletion::delete),
         )
         .route(
             "/api/chat/channels/{channel}/messages/{message}/versions",

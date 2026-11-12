@@ -1181,6 +1181,15 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         ))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
+        .merge(
+            chat::message_routes()
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    sign_picture_urls,
+                ))
+                .route_layer(DefaultBodyLimit::disable())
+                .route_layer(RequestBodyLimitLayer::new(chat::MESSAGE_BODY_LIMIT)),
+        )
         .merge(dictation::routes(state.clone()))
         .layer(
             TraceLayer::new_for_http()

@@ -3427,3 +3427,41 @@ fn live_media_streams_survive_transient_access_check_failures() {
         assert!(!crate::skips_transient_failure(denied, "heartbeat", 0));
     }
 }
+
+#[tokio::test]
+async fn message_edits_get_their_own_body_limit() {
+    let app = crate::app(AppState::new(
+        Config::test(true),
+        Arc::new(Cloudflare::new()),
+    ));
+    let put = |bytes: usize| {
+        let body = json!({"text": "a".repeat(bytes), "expectedRevision": 1}).to_string();
+        app.clone().oneshot(
+            Request::put("/api/chat/channels/general/messages/one")
+                .header("content-type", "application/json")
+                .header("content-length", body.len())
+                .body(Body::from(body))
+                .unwrap(),
+        )
+    };
+    // Past the app-wide 256 KiB, an edit still reaches its handler, which
+    // has no chat store to write to here.
+    let response = put(300 * 1024).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let response = put(chat::MESSAGE_BODY_LIMIT).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    // Sending a message keeps the small limit.
+    let body = json!({"text": "a".repeat(300 * 1024)}).to_string();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/chat/channels/general/messages")
+                .header("content-type", "application/json")
+                .header("content-length", body.len())
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}

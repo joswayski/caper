@@ -1,6 +1,7 @@
 //! In-place content edits and retained versions. Delivery order, thread summaries,
 //! reactions and pins remain independent of a message's content revision.
 use super::*;
+pub(super) use attachments::MAX_EDIT_BYTES;
 use attachments::{AttachmentChange, Change, CurrentFile, Plan};
 use sqlx::{Postgres, Transaction};
 

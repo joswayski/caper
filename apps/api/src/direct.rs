@@ -53,6 +53,11 @@ fn pool(state: &AppState) -> Result<&PgPool, ApiError> {
 /// `incoming` (a request for you). Declined requests are hidden from the
 /// recipient only; the sender keeps seeing theirs as waiting.
 pub(crate) async fn conversations(pool: &PgPool, user: i64) -> Result<Vec<Value>, ApiError> {
+    listed(pool, user, None).await
+}
+
+/// The account's DM list, or just the conversation `only` names.
+async fn listed(pool: &PgPool, user: i64, only: Option<&str>) -> Result<Vec<Value>, ApiError> {
     sqlx::query_scalar(
         "SELECT jsonb_build_object('id',c.external_id,'peer',jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id,'avatarAsset',u.avatar_asset,'team',u.team_account,'admin',EXISTS(SELECT 1 FROM public.feedback_team f WHERE f.user_id=u.id AND f.deleted_at IS NULL)),'lastSeq',c.last_seq::text,'readSeq',COALESCE(r.seq,0)::text,
                 'unreadCount',(SELECT count(*) FROM public.messages m
@@ -70,8 +75,9 @@ pub(crate) async fn conversations(pool: &PgPool, user: i64) -> Result<Vec<Value>
          LEFT JOIN public.direct_reads r ON r.channel_id=c.id AND r.user_id=$1
          WHERE $1 IN (d.low_user_id,d.high_user_id) AND c.deleted_at IS NULL AND u.deleted_at IS NULL
            AND (d.accepted_at IS NOT NULL OR d.requested_by=$1 OR d.declined_at IS NULL)
+           AND ($2::text IS NULL OR c.external_id=$2)
          ORDER BY COALESCE((SELECT max(m.created_at) FROM public.messages m WHERE m.channel_id=c.id),d.created_at) DESC,c.id DESC",
-    ).bind(user).fetch_all(pool).await.map_err(|_| chat::unavailable())
+    ).bind(user).bind(only).fetch_all(pool).await.map_err(|_| chat::unavailable())
 }
 
 /// People the account already knows: anyone sharing an active space or a DM
@@ -103,10 +109,9 @@ async fn list_people(
 }
 
 async fn conversation(pool: &PgPool, user: i64, id: &str) -> Result<Json<Value>, ApiError> {
-    conversations(pool, user)
+    listed(pool, user, Some(id))
         .await?
-        .into_iter()
-        .find(|c| c["id"] == id)
+        .pop()
         .map(Json)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "conversation not found"))
 }
@@ -205,8 +210,14 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
     }
     if let Some((id, pending_for_you)) = sqlx::query_as::<_, (String, bool)>("SELECT c.external_id,d.accepted_at IS NULL AND d.requested_by<>$3 FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id WHERE d.low_user_id=$1 AND d.high_user_id=$2")
         .bind(low).bind(high).bind(user).fetch_optional(&mut *tx).await.map_err(|_|chat::unavailable())? {
-        // Choosing to message someone who sent you a request accepts it.
+        // Choosing to message someone who sent you a request accepts it,
+        // unless you blocked them: that answers as starting a new one does.
         if pending_for_you {
+            let you_blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.user_blocks WHERE blocker_id=$1 AND blocked_id=$2 AND deleted_at IS NULL)")
+                .bind(user).bind(peer).fetch_one(&mut *tx).await.map_err(|_| chat::unavailable())?;
+            if you_blocked {
+                return Err(blocked_by_you());
+            }
             accept_request(&mut tx, &id, user).await?;
         }
         tx.commit().await.map_err(|_| chat::unavailable())?;

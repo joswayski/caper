@@ -433,8 +433,10 @@ async fn list_spaces(
          JOIN public.spaces s ON s.id=i.space_id JOIN public.users o ON o.id=s.owner_id
          WHERE i.user_id=$1 AND i.status='pending' AND i.updated_at > now()-interval '7 days'
            AND s.deleted_at IS NULL AND NOT s.demo
-           -- Blocking an owner hides their invitations, as it declines their DM requests.
-           AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=s.owner_id AND b.deleted_at IS NULL)
+           -- A block in either direction hides the invitation: blocking an owner
+           -- declines it, and an owner's block withdraws it until they unblock.
+           AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
+             AND ((b.blocker_id=$1 AND b.blocked_id=s.owner_id) OR (b.blocker_id=s.owner_id AND b.blocked_id=$1)))
          ORDER BY i.updated_at DESC,s.id",
     )
     .bind(principal.user.id)
@@ -560,7 +562,8 @@ async fn get_space(
          JOIN public.users u ON u.id=s.owner_id
          WHERE c.space_id=$1 AND i.user_id=$2 AND c.private AND c.deleted_at IS NULL
            AND i.status='pending' AND i.updated_at > now()-interval '7 days'
-           AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$2 AND b.blocked_id=s.owner_id AND b.deleted_at IS NULL)
+           AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
+             AND ((b.blocker_id=$2 AND b.blocked_id=s.owner_id) OR (b.blocker_id=s.owner_id AND b.blocked_id=$2)))
          ORDER BY i.updated_at,c.id"
     ).bind(row.0).bind(principal.user.id).fetch_all(pool).await.map_err(database_error)?
         .into_iter().map(|(id,name,username,display_name)|json!({"channel":Channel{id,space_id:space.clone(),name,private:true,joined:false},"inviter":{"username":username,"displayName":display_name}})).collect();
@@ -2290,8 +2293,22 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(refused.status, StatusCode::NOT_FOUND);
+        // The listings stop offering what can no longer be accepted, and the
+        // private channel invitation is withdrawn with it.
+        assert_eq!(pending_spaces().await, 0);
+        assert_eq!(pending_channels().await, 0);
+        let refused = joining::accept_channel_invitation(
+            State(state.clone()),
+            Extension(invitee.clone()),
+            Path((shared.clone(), channel.clone())),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(refused.status, StatusCode::NOT_FOUND);
         sqlx::query("UPDATE public.user_blocks SET deleted_at=now() WHERE blocker_id=$1 AND blocked_id=$2 AND deleted_at IS NULL")
             .bind(owner.user.id).bind(invitee.user.id).execute(&pool).await.unwrap();
+        assert_eq!(pending_channels().await, 1);
         let _ = accept_invitation(
             State(state.clone()),
             Extension(invitee.clone()),

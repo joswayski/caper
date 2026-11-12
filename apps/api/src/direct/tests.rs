@@ -789,6 +789,28 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
         None,
         "new messages don't resurface it"
     );
+    // Opening it while the sender is blocked is refused, not an acceptance.
+    sqlx::query("INSERT INTO user_blocks (blocker_id,blocked_id) VALUES ($1,$2)")
+        .bind(users["bob"])
+        .bind(users["alice"])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (code, blocked) = open("bob", "alice").await;
+    assert_eq!(
+        (code, blocked["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("dm_blocked"))
+    );
+    assert_eq!(
+        status("alice", request_dm.clone()).await.as_deref(),
+        Some("outgoing")
+    );
+    sqlx::query("DELETE FROM user_blocks WHERE blocker_id=$1 AND blocked_id=$2")
+        .bind(users["bob"])
+        .bind(users["alice"])
+        .execute(&pool)
+        .await
+        .unwrap();
     // Choosing to message the sender accepts it.
     let (code, reopened) = open("bob", "alice").await;
     assert_eq!(code, StatusCode::OK);

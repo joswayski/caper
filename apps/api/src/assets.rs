@@ -1585,6 +1585,12 @@ async fn cancel(
 ) -> Result<StatusCode, ApiError> {
     let assets = enabled(&state)?;
     let mut tx = assets.pool.begin().await.map_err(database_error)?;
+    // A publish holds this row for as long as it cleans the file. Answer
+    // instead of holding a pooled connection behind it for minutes.
+    sqlx::query("SET LOCAL lock_timeout = '2s'")
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
     let (message, purpose, uploaded, upload_id): (Option<i64>, String, bool, Option<String>) = sqlx::query_as(
         "SELECT message_id, purpose, uploaded_at IS NOT NULL, multipart_upload_id FROM public.assets WHERE external_id=$1 AND owner_id=$2 FOR UPDATE",
     )
@@ -1592,7 +1598,16 @@ async fn cancel(
     .bind(principal.user.id)
     .fetch_optional(&mut *tx)
     .await
-    .map_err(database_error)?
+    .map_err(|error| {
+        let locked = error
+            .as_database_error()
+            .is_some_and(|error| error.code().as_deref() == Some("55P03"));
+        if locked {
+            ApiError::new(StatusCode::CONFLICT, "upload processing; try again shortly")
+        } else {
+            database_error(error)
+        }
+    })?
     .ok_or_else(not_found)?;
     if message.is_some() {
         return Err(ApiError::new(StatusCode::CONFLICT, "file already sent"));

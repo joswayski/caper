@@ -233,9 +233,16 @@ pub(super) async fn accept_channel_invitation(
     Path((space, channel)): Path<(String, String)>,
 ) -> Result<Json<Channel>, ApiError> {
     let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
-    let (_, id, name, private, _) =
+    let (space_id, id, name, private, _) =
         member_channel(&mut tx, &space, &channel, principal.user.id).await?;
     if !private {
+        return Err(not_found());
+    }
+    // An owner who blocked this account has withdrawn the invitation, as for
+    // space invitations; answer as for no invitation so the block isn't confirmed.
+    let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.user_blocks b JOIN public.spaces s ON s.owner_id=b.blocker_id WHERE s.id=$1 AND b.blocked_id=$2 AND b.deleted_at IS NULL)")
+        .bind(space_id).bind(principal.user.id).fetch_one(&mut *tx).await.map_err(database_error)?;
+    if blocked {
         return Err(not_found());
     }
     let changed = sqlx::query("UPDATE public.channel_invitations SET status='accepted',updated_at=now() WHERE channel_id=$1 AND user_id=$2 AND status='pending' AND updated_at > now()-interval '7 days'")

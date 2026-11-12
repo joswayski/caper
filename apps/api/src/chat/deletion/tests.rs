@@ -376,6 +376,94 @@ async fn deletion_keeps_the_row_scrubs_content_and_only_lets_the_author_delete()
     assert_eq!(status, StatusCode::OK);
     assert!(thread["root"].is_null());
     assert_eq!(thread["messages"], json!([]));
+
+    // Deleting a reply takes it out of its thread's count and avatars; the
+    // last one takes the summary with it, from the earlier tombstone too.
+    let (_, root) = command(
+        &app,
+        "POST",
+        base,
+        "delete-author",
+        json!({"clientMessageId":Uuid::new_v4(), "text":"thread parent"}),
+    )
+    .await;
+    let root_id = root["id"].as_str().unwrap();
+    let mut replies = Vec::new();
+    for (token, text) in [
+        ("delete-peer", "first"),
+        ("delete-author", "second"),
+        ("delete-peer", "third"),
+    ] {
+        let (status, reply) = command(
+            &app,
+            "POST",
+            base,
+            token,
+            json!({
+                "clientMessageId":Uuid::new_v4(), "text":text, "threadRootId":root_id
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        replies.push(reply);
+    }
+    let thread_path = format!("{base}/{root_id}/thread");
+    let (_, removed) = command(
+        &app,
+        "DELETE",
+        &format!("{base}/{}", replies[1]["id"].as_str().unwrap()),
+        "delete-author",
+        Value::Null,
+    )
+    .await;
+    let summary = &removed["thread"];
+    assert_eq!(summary["replyCount"], 2, "{removed}");
+    assert_eq!(summary["seq"], removed["editSeq"]);
+    assert_eq!(
+        summary["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|person| &person["id"])
+            .collect::<Vec<_>>(),
+        [&replies[0]["author"]["id"]]
+    );
+    let (_, page) = command(&app, "GET", &thread_path, "delete-peer", Value::Null).await;
+    assert_eq!(page["root"]["thread"]["replyCount"], 2, "{page}");
+    assert_eq!(page["root"]["thread"]["seq"], removed["editSeq"]);
+    for reply in [&replies[0], &replies[2]] {
+        let (status, _) = command(
+            &app,
+            "DELETE",
+            &format!("{base}/{}", reply["id"].as_str().unwrap()),
+            "delete-peer",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (_, page) = command(&app, "GET", &thread_path, "delete-peer", Value::Null).await;
+    assert!(page["root"].get("thread").is_none(), "{page}");
+    assert_eq!(page["messages"].as_array().unwrap().len(), 3);
+    assert!(
+        page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|reply| reply["deletedAt"].is_string() && reply.get("thread").is_none()),
+        "{page}"
+    );
+    let (_, again) = command(
+        &app,
+        "POST",
+        base,
+        "delete-author",
+        json!({
+            "clientMessageId":Uuid::new_v4(), "text":"fourth", "threadRootId":root_id
+        }),
+    )
+    .await;
+    assert_eq!(again["thread"]["replyCount"], 1, "{again}");
     drop(pool);
     admin
         .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
