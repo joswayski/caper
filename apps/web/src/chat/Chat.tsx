@@ -747,17 +747,22 @@ export default function Chat({
         readActive &&
         state.phase === "ready" &&
         !state.hasNewer &&
-        document.visibilityState === "visible"
+        // As for thread replies and browser alerts: a window that is showing
+        // but not focused is not being read.
+        document.visibilityState === "visible" &&
+        document.hasFocus()
       )
         readCallback.current?.(readCursor);
     };
     read();
     document.addEventListener("visibilitychange", read);
+    window.addEventListener("focus", read);
     // Retry a failed acknowledgement even if no new message arrives.
     const timer = setInterval(read, 15_000);
     return () => {
       clearInterval(timer);
       document.removeEventListener("visibilitychange", read);
+      window.removeEventListener("focus", read);
     };
   }, [state.phase, state.hasNewer, readCursor, channelId, readActive, visitReady]);
 
