@@ -113,7 +113,9 @@ export function useComposerSuggestions({
   };
   /** Handles suggestion keys; true when the composer must not act on the key. */
   const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.nativeEvent.isComposing || composing) return true;
+    // Safari ends the composition before the Enter that confirmed it, so that
+    // key arrives with isComposing false; 229 still marks it as the IME's.
+    if (event.nativeEvent.isComposing || composing || event.nativeEvent.keyCode === 229) return true;
     if ((emojiOpen || mentionOpen) && event.key === "Escape") {
       event.preventDefault();
       setDismissed(selectionKey);

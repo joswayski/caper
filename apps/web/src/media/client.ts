@@ -924,12 +924,12 @@ export class PublicCallClient {
     if (monitoring && (this.phase !== "connected" || !this.token))
       throw new Error("Join voice before testing your microphone.");
     if (monitoring) {
+      const microphone = this.senders.get("microphone");
+      if (!microphone) throw new Error("No microphone is available for testing.");
       this.stateBeforeMonitoring = { muted: this.muted, deafened: this.deafened };
       this.monitoring = true;
       this.muted = true;
       this.deafened = true;
-      const microphone = this.senders.get("microphone");
-      if (!microphone) throw new Error("No microphone is available for testing.");
       // The test records the locally captured, noise-suppressed audio. It does
       // not need a round trip through the SFU and never publishes this stream.
       this.monitorStream = new MediaStream([this.captures.get(microphone.track)?.naturalTrack ?? microphone.track]);

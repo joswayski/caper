@@ -1600,6 +1600,8 @@ button.chat-reply-source {
 /* Media and forwards are direct children here, not inside the timeline's
    content wrapper. Never let auto-placement squeeze them into the avatar column. */
 .chat-pinned-message > .chat-attachments,
+.chat-pinned-message > .chat-message-gif,
+.chat-pinned-message > .chat-embeds,
 .chat-pinned-message > .chat-forward-card {
   grid-column: 2;
 }
@@ -5775,6 +5777,14 @@ a.chat-draft-preview {
 .chat-embed-player button:hover .chat-embed-play {
   background: var(--action-hover);
   transform: scale(1.05);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-embed-play {
+    transition: none;
+  }
+  .chat-embed-player button:hover .chat-embed-play {
+    transform: none;
+  }
 }
 .chat-embed-thumbnail {
   flex: none;

@@ -1968,6 +1968,39 @@ test("resync retains visible messages through transient failures but clears them
   assert.equal(f.client.snapshotHistory(), undefined);
 });
 
+test("a failed resync retries by itself, since the live connection was stopped for it", async (t) => {
+  const f = await paginationFixture(t);
+  vi.useFakeTimers({ toFake: ["setTimeout", "Date", "clearTimeout"], now: 1_000 });
+  t.onTestFinished(() => void vi.useRealTimers());
+  const answers: ((response: Response) => void)[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    () =>
+      new Promise<Response>((resolve) => {
+        answers.push(resolve);
+      }),
+  );
+  f.sockets[0].frame({ type: "resync_required" });
+  answers[0](Response.json({ error: "Temporary outage" }, { status: 503 }));
+  await tick();
+  assert.equal(f.state.error, "Temporary outage");
+  vi.advanceTimersByTime(1_999);
+  assert.equal(answers.length, 1, "the first retry waits two seconds");
+  vi.advanceTimersByTime(1);
+  assert.equal(answers.length, 2);
+  assert.equal(f.state.error, "Temporary outage", "the notice stays up while retrying");
+  answers[1](Response.json({ error: "Temporary outage" }, { status: 503 }));
+  await tick();
+  vi.advanceTimersByTime(3_999);
+  assert.equal(answers.length, 2, "retries back off");
+  vi.advanceTimersByTime(1);
+  answers[2](Response.json({ ...f.client.snapshotHistory(), messages: [f.message(6)], cursor: f.message(6).seq }));
+  await tick();
+  assert.equal(f.state.error, undefined);
+  assert.deepEqual(f.state.messages.at(-1), f.message(6));
+  vi.advanceTimersByTime(60_000);
+  assert.equal(answers.length, 3, "a recovered conversation stops retrying");
+});
+
 test("older history from another channel is rejected without contaminating the saved timeline", async (t) => {
   const f = await paginationFixture(t);
   const loading = f.client.loadOlder();

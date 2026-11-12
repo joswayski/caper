@@ -778,6 +778,8 @@ async function transcodeVideo(
         : {}),
     });
     if (!conversion.isValid || conversion.discardedTracks.length) return;
+    // An abort while the encoder was loading has already fired; it won't again.
+    if (signal?.aborted) return;
     const cancel = () => void conversion.cancel();
     signal?.addEventListener("abort", cancel, { once: true });
     conversion.onProgress = (fraction) => progress(fraction);
@@ -834,7 +836,13 @@ function mediaElement(file: Blob, tag: "video" | "audio") {
       clearTimeout(timer);
       resolve(value);
     };
-    const timer = setTimeout(() => done(), 8_000);
+    const timer = setTimeout(() => {
+      // Giving up must also let go of the file and stop the element loading it.
+      URL.revokeObjectURL(url);
+      element.removeAttribute("src");
+      element.load();
+      done();
+    }, 8_000);
     element.preload = "metadata";
     element.muted = true;
     element.onloadeddata = () => done(element);

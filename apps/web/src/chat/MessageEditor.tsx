@@ -92,7 +92,12 @@ export default function MessageEditor({
           aria-invalid={count > 4_000 || undefined}
           onValueChange={setDraft}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) {
+            if (
+              event.key === "Enter" &&
+              (event.ctrlKey || event.metaKey) &&
+              !event.nativeEvent.isComposing &&
+              event.nativeEvent.keyCode !== 229
+            ) {
               event.preventDefault();
               void save();
             }

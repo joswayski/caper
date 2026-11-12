@@ -30,6 +30,10 @@ import MessageEditor from "./MessageEditor.tsx";
 import DeleteMessage from "./DeleteMessage.tsx";
 import MessageHistory from "./MessageHistory.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
+import MessageGif from "./MessageGif.tsx";
+import { MessageEmbeds } from "./Embeds.tsx";
+import { embedsOf } from "./embeds.ts";
+import { gifOf } from "./klipy.ts";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { Arrivals } from "./arrivals.ts";
 import { useTimelineMotion } from "./useTimelineMotion.ts";
@@ -684,9 +688,20 @@ export default function Chat({
     ) {
       const attached = attachmentsOf(latestMessage);
       const files = attached.length;
-      setAnnouncement(
-        `${latestMessage.author.name}: ${latestMessage.content.text || (files && attached.every(isVoiceAttachment) ? "sent a voice message" : `sent ${files === 1 ? "a file" : `${files} files`}`)}`,
-      );
+      const gif = gifOf(latestMessage.content);
+      // A GIF or a forward has neither text nor files of its own.
+      const said =
+        latestMessage.content.text ||
+        (files
+          ? attached.every(isVoiceAttachment)
+            ? "sent a voice message"
+            : `sent ${files === 1 ? "a file" : `${files} files`}`
+          : gif
+            ? `sent ${gif.kind === "sticker" ? "a sticker" : "a GIF"}`
+            : latestMessage.forward
+              ? "forwarded a message"
+              : "");
+      if (said) setAnnouncement(`${latestMessage.author.name}: ${said}`);
     }
   }, [latestMessage?.id, state.phase]);
   // Reaction events advance the conversation stream without adding a message.
@@ -1959,6 +1974,7 @@ export default function Chat({
                           <MessageText message={message} mentionNames={mentionNames} actions={rowActions} />
                         </p>
                       )}
+                      <MessageGif content={message.content} />
                       <MessageAttachments
                         attachments={withFreshUrls(attachmentsOf(message), freshUrls)}
                         progress={state.attachmentProgress}
@@ -1966,6 +1982,7 @@ export default function Chat({
                         onExpired={refreshUrls}
                         onView={viewFile(message.id)}
                       />
+                      <MessageEmbeds embeds={embedsOf(message)} />
                       <ForwardCard
                         message={message}
                         onOpen={(anchor) => void openConversation(message, anchor)}

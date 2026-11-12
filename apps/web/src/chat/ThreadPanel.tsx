@@ -312,7 +312,9 @@ export default function ThreadPanel({
     if (rootId && !state.thread?.loading && !touchLayout() && !document.querySelector(".chat-edit-dialog[open]"))
       composer.current?.focus();
   }, [rootId, state.thread?.loading]);
-  useEffect(() => {
+  // Before paint, as the channel composer does, so a sent reply never shows in
+  // both the pending row and the box.
+  useLayoutEffect(() => {
     if (!pending) return;
     setDrafts((current) => {
       const old = current[pending.threadRootId!] ?? { text: "", broadcast: false };

@@ -369,6 +369,8 @@ export class ChatClient {
   private generation = 0;
   private sessionGeneration = 0;
   private loadingHistory = false;
+  private resyncTimer?: ReturnType<typeof setTimeout>;
+  private resyncFailures = 0;
   private name = "Guest";
   private accountId?: string;
   private session?: ChatSession;
@@ -479,6 +481,7 @@ export class ChatClient {
     clearTimeout(this.typingIdleTimer);
     clearTimeout(this.typingExpiryTimer);
     clearTimeout(this.threadUnreadTimer);
+    clearTimeout(this.resyncTimer);
     this.connection?.stop();
   }
 
@@ -1503,8 +1506,9 @@ export class ChatClient {
     return result;
   }
 
-  private async loadInitial(prepared?: GeneralChatHistory) {
+  private async loadInitial(prepared?: GeneralChatHistory, retrying = false) {
     if (this.controller.signal.aborted) return;
+    clearTimeout(this.resyncTimer);
     const generation = ++this.generation;
     ++this.historyAnchorGeneration;
     for (const request of this.threadRequests.values()) request.controller.abort();
@@ -1524,7 +1528,8 @@ export class ChatClient {
       this.update({
         phase: previous ? "ready" : "loading",
         online: false,
-        error: undefined,
+        // An automatic retry keeps the notice up instead of blinking it.
+        error: retrying ? this.state.error : undefined,
         loadingOlder: false,
         olderError: undefined,
       });
@@ -1589,6 +1594,7 @@ export class ChatClient {
         hasNewer: history.hasNewer,
         loadingNewer: false,
         newerError: undefined,
+        error: undefined,
       });
       this.connection = new ChatConnection(history.channel.id, {
         cursor: () => this.timeline.cursor,
@@ -1617,6 +1623,7 @@ export class ChatClient {
       });
       this.connection.start();
       this.loadingHistory = false;
+      this.resyncFailures = 0;
       this.scheduleThreadUnread();
       if (this.state.thread) void this.retryThread();
     } catch (error) {
@@ -1653,8 +1660,21 @@ export class ChatClient {
                 },
               }
             : {}),
-          error: error instanceof Error ? error.message : "Messages are unavailable.",
+          // A request that never got an answer carries the browser's own
+          // wording ("Failed to fetch"), which says nothing to a reader.
+          error:
+            error instanceof Error && !(error instanceof TypeError) && error.name !== "TimeoutError"
+              ? error.message
+              : "Messages are unavailable.",
         });
+        // The live connection was stopped for this refresh, so nothing else
+        // would bring the conversation back: keep trying, backing off.
+        if (previous && !denied) {
+          const delay = Math.min(30_000, 2_000 * 2 ** this.resyncFailures++);
+          this.resyncTimer = setTimeout(() => {
+            if (generation === this.generation) void this.loadInitial(undefined, true);
+          }, delay);
+        }
       }
     } finally {
       if (generation === this.generation) this.loadingHistory = false;
