@@ -45,6 +45,7 @@ targets:
       - Sources/CaperAppKit/MemberPanel.swift
       - Sources/CaperAppKit/NativeAvatar.swift
       - Sources/CaperAppKit/NavigationSidebar.swift
+      - Sources/CaperAppKit/AppKitUpdateShine.swift
       - Sources/CaperAppKit/NavigationMenus.swift
       - Sources/CaperAppKit/NativeVoiceCard.swift
       - Sources/CaperAppKit/NativeVoicePanels.swift

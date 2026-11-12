@@ -102,6 +102,7 @@ import CaperCore
         }
     }
     private lazy var updateButton = NativeButton("Update available") { [weak self] in self?.updates?.review?() }
+    private lazy var updateShine = AppKitUpdateShine(button: updateButton)
 
     init(model: AppModel) {
         self.model = model
@@ -112,6 +113,7 @@ import CaperCore
         updateButton.isHidden = true
         updateButton.setAccessibilityIdentifier("desktop-update-action")
         updateButton.toolTip = "Review the update before restarting Caper."
+        updateButton.focusChanged = { [weak self] focused in self?.updateShine.focusChanged(focused) }
         sidebar.layer?.addSublayer(accountPresence)
         accountPresence.cornerRadius = 5; accountPresence.borderWidth = 2
         accountPresence.borderColor = NativeStyle.sidebar.cgColor
@@ -179,6 +181,7 @@ import CaperCore
         directs.frame = NSRect(x: 0, y: sectionsDivider.frame.maxY, width: width, height: max(0, available - channelHeight))
         channels.layoutRows(); directs.layoutRows()
         updateButton.frame = NSRect(x: 8, y: footer + 8, width: width - 16, height: 36)
+        updateShine.layout()
         let row = footer + reserved
         account.frame = NSRect(x: 16, y: row + 8, width: width - 156, height: 36)
         accountAvatar.frame = NSRect(x: 16, y: row + 11, width: 30, height: 30)
