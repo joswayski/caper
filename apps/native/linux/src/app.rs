@@ -2753,44 +2753,63 @@ impl App {
         false
     }
 
-    /// Files dragged onto the conversation attach to its composer.
+    /// Files dragged onto the conversation attach to its composer, and onto
+    /// the thread to the thread's ("Attach to thread"), each under its own
+    /// overlay (`crate::file_drop`).
     fn connect_drop(self: &Rc<Self>) {
-        let target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
-        let app = self.clone();
-        target.connect_enter(move |_, _, _| {
-            let state = app.state.borrow();
-            if !Self::can_attach(&state) {
-                return gdk::DragAction::empty();
-            }
-            let (title, detail) = caper_client::uploads::drop_text(
-                &state.channel_name,
-                state.direct.is_some(),
-                Self::files_in(&state, None),
-            );
-            app.ui.drop_title.set_label(&title);
-            app.ui.drop_detail.set_label(&detail);
-            app.ui.drop.set_visible(true);
-            gdk::DragAction::COPY
-        });
-        let app = self.clone();
-        target.connect_leave(move |_| app.ui.drop.set_visible(false));
-        let app = self.clone();
-        target.connect_drop(move |_, value, _, _| {
-            app.ui.drop.set_visible(false);
-            let Ok(list) = value.get::<gdk::FileList>() else {
-                return false;
+        for thread in [false, true] {
+            let target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+            let app = self.clone();
+            let overlay = move |app: &Self| {
+                if thread {
+                    app.ui.thread_drop.clone()
+                } else {
+                    app.ui.drop.clone()
+                }
             };
-            let paths: Vec<_> = list
-                .files()
-                .iter()
-                .filter_map(|file| file.path())
-                .map(|path| (path, None))
-                .collect();
-            let any = !paths.is_empty();
-            app.add_files(paths, false);
-            any
-        });
-        self.ui.conversation.add_controller(target);
+            target.connect_enter(move |_, _, _| {
+                let state = app.state.borrow();
+                let root = Self::composer_root(&state, thread);
+                if !Self::can_attach(&state) || (thread && root.is_none()) {
+                    return gdk::DragAction::empty();
+                }
+                let (title, detail) = caper_client::uploads::drop_text(
+                    &state.channel_name,
+                    state.direct.is_some(),
+                    Self::files_in(&state, root.as_deref()),
+                );
+                let title = if thread {
+                    "Attach to thread".to_owned()
+                } else {
+                    title
+                };
+                overlay(&app).show(&title, &detail);
+                gdk::DragAction::COPY
+            });
+            let app = self.clone();
+            target.connect_leave(move |_| overlay(&app).close());
+            let app = self.clone();
+            target.connect_drop(move |_, value, _, _| {
+                overlay(&app).close();
+                let Ok(list) = value.get::<gdk::FileList>() else {
+                    return false;
+                };
+                let paths: Vec<_> = list
+                    .files()
+                    .iter()
+                    .filter_map(|file| file.path())
+                    .map(|path| (path, None))
+                    .collect();
+                let any = !paths.is_empty();
+                app.add_files(paths, thread);
+                any
+            });
+            if thread {
+                self.ui.thread_panel.add_controller(target);
+            } else {
+                self.ui.conversation.add_controller(target);
+            }
+        }
     }
 
     fn render_files(self: &Rc<Self>) {

@@ -38,7 +38,7 @@ pub fn shine(button: &gtk::Button) -> gtk::Overlay {
             .filter(|_| sweeping(layer))
             .map(|start| start.elapsed().as_secs_f64() % SHINE_PERIOD)
             .filter(|phase| *phase < SHINE_SWEEP)
-            .map(|phase| ease_out(phase / SHINE_SWEEP));
+            .map(|phase| crate::ui::ease_out(phase / SHINE_SWEEP));
         draw_shine(
             cr,
             f64::from(width),
@@ -90,15 +90,6 @@ pub fn shine(button: &gtk::Button) -> gtk::Overlay {
 /// One sweep's length (`motion::SLOW` × 6) and how often one starts.
 const SHINE_SWEEP: f64 = 0.26 * 6.0;
 const SHINE_PERIOD: f64 = 8.0;
-
-/// `--ease-out` (desktop's exponential out).
-fn ease_out(t: f64) -> f64 {
-    if t >= 1.0 {
-        1.0
-    } else {
-        1.0 - 2f64.powf(-10.0 * t.clamp(0.0, 1.0))
-    }
-}
 
 /// Sweeps play with animations on and the window in front.
 fn sweeping(layer: &gtk::DrawingArea) -> bool {

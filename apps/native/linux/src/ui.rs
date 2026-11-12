@@ -31,6 +31,15 @@ pub fn watch_toplevels() {
     });
 }
 
+/// `--ease-out`, as desktop's exponential out: quick to start, long to settle.
+pub fn ease_out(t: f64) -> f64 {
+    if t >= 1.0 {
+        1.0
+    } else {
+        1.0 - 2f64.powf(-10.0 * t.clamp(0.0, 1.0))
+    }
+}
+
 /// Plays `widget`'s CSS entrance (style.css's `.arriving` rules) each time
 /// it shows, as desktop's `motion`: things arrive rather than appear.
 /// Hiding stays instant, and GTK skips the animation when animations are
@@ -611,9 +620,8 @@ pub struct Ui {
     /// "in #channel" or "with Name", under "Thread".
     pub thread_place: gtk::Label,
     pub conversation: gtk::Box,
-    pub drop: gtk::Box,
-    pub drop_title: gtk::Label,
-    pub drop_detail: gtk::Label,
+    pub drop: crate::file_drop::Overlay,
+    pub thread_drop: crate::file_drop::Overlay,
     pub thread_close: gtk::Button,
     /// A narrow thread's way back, as desktop: "Back to channel", or "Back
     /// to conversation" in a DM (GTK 4.8 can't rename one button).
@@ -1157,24 +1165,8 @@ impl Ui {
         let stage = gtk::Overlay::new();
         stage.set_hexpand(true);
         stage.set_child(Some(&stage_body));
-        let drop = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        drop.add_css_class("drop");
-        drop.set_can_target(false);
-        drop.set_visible(false);
-        let drop_card = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        drop_card.add_css_class("drop-card");
-        drop_card.set_halign(gtk::Align::Center);
-        drop_card.set_valign(gtk::Align::Center);
-        drop_card.set_vexpand(true);
-        drop_card.append(&images.icon_image(Icon::FileUp, "#f3f4f5", 32));
-        let drop_title = label("", &["title"]);
-        drop_title.set_halign(gtk::Align::Center);
-        let drop_detail = label("", &["muted"]);
-        drop_detail.set_halign(gtk::Align::Center);
-        drop_card.append(&drop_title);
-        drop_card.append(&drop_detail);
-        drop.append(&drop_card);
-        stage.add_overlay(&drop);
+        let drop = crate::file_drop::Overlay::new();
+        stage.add_overlay(&drop.root);
         // Narrow windows: the member list slides over the conversation below
         // its header, over a backdrop that closes it (`app::narrow`).
         let members_backdrop = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1278,7 +1270,16 @@ impl Ui {
         let thread_split: gtk::Paned = crate::app::named("GtkPaned", "Thread width");
         thread_split.add_css_class("caper-split");
         thread_split.set_start_child(Some(&stage));
-        thread_split.set_end_child(Some(&thread_panel));
+        // Files dragged over the thread attach to its composer.
+        let thread_drop = crate::file_drop::Overlay::new();
+        let thread_host = gtk::Overlay::new();
+        thread_host.set_child(Some(&thread_panel));
+        thread_host.add_overlay(&thread_drop.root);
+        thread_panel
+            .bind_property("visible", &thread_host, "visible")
+            .sync_create()
+            .build();
+        thread_split.set_end_child(Some(&thread_host));
         thread_split.set_resize_start_child(true);
         thread_split.set_shrink_start_child(false);
         thread_split.set_resize_end_child(false);
@@ -1422,8 +1423,7 @@ impl Ui {
             thread_place,
             conversation,
             drop,
-            drop_title,
-            drop_detail,
+            thread_drop,
             thread_close,
             thread_back,
             thread_list,

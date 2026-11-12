@@ -1285,16 +1285,30 @@ progressbar.upload-progress progress {
   padding: 4px;
 }
 
-/* Files dragged over a conversation. */
+/* Files dragged over a conversation or thread (`file_drop`): a dimmed
+   pane under a raised card, its dashed terracotta line inset 9.75px. */
 .drop {
   background: alpha(@caper_blackout, 0.82);
-  border: 2px dashed @caper_border;
-  border-radius: 12px;
-  margin: 12px;
 }
 
 .drop-card {
-  padding: 24px 32px;
+  background: @caper_surface;
+  border: 1px solid @caper_border;
+  border-radius: 8px;
+  padding: 20px 24px 26px;
+  box-shadow: 0 18px 48px alpha(black, 0.45);
+  outline: 1.5px dashed @caper_terracotta;
+  outline-offset: -9.75px;
+}
+
+.drop-title {
+  margin-top: 4px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.drop-detail {
+  font-size: 13px;
 }
 
 /* The composer's `:` emoji and `@` mention suggestions. */

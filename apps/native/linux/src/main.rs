@@ -4,6 +4,7 @@
 mod app;
 mod composing;
 mod content;
+mod file_drop;
 mod fonts;
 #[allow(dead_code)]
 #[path = "../../../../shared/messages/formatting.rs"]
