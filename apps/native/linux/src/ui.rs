@@ -1001,7 +1001,7 @@ impl Ui {
         let update_dock = gtk::Button::with_label("Update available");
         update_dock.add_css_class("update-dock");
         update_dock.set_visible(false);
-        sidebar.append(&update_dock);
+        sidebar.append(&crate::update_shine::shine(&update_dock));
         sidebar.append(&dock);
 
         let conversation = gtk::Box::new(gtk::Orientation::Vertical, 0);

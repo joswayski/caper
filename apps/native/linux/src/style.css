@@ -2156,8 +2156,12 @@ button.small-action {
 }
 
 /* Updates and What's new. */
-button.update-dock {
+/* The shine's layer covers the button, so the margin is its host's. */
+.update-dock-host {
   margin: 0 8px 8px;
+}
+
+button.update-dock {
   min-height: 36px;
   font-size: 12px;
   font-weight: 700;

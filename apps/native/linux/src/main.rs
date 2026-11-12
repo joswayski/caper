@@ -22,6 +22,7 @@ mod prefs;
 mod rows;
 mod suggest;
 mod ui;
+mod update_shine;
 mod uploads;
 mod video;
 mod viewer;
