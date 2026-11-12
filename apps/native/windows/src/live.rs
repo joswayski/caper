@@ -4,6 +4,7 @@
 //! through the gateway, and sends messages. Signs in by email code when
 //! no session is stored. The server is `endpoint()`: production in release
 //! builds, as in the egui client.
+use crate::avatars::Face;
 use crate::model::{self, Conversation, Person, Reaction, Span};
 use caper_client::effects::{Effect, Effects};
 use caper_client::notifications::{Change, Scope};
@@ -388,6 +389,8 @@ pub struct Live {
     pub directs: Vec<core::DirectConversation>,
     pub account_id: Option<String>,
     pub account_name: String,
+    /// Your avatar, as the account last said.
+    pub account_avatar: crate::avatars::Avatar,
     username: Option<String>,
     pub direct: Option<String>,
     /// The open DM's name as its history named it, until the list knows it.
@@ -583,6 +586,7 @@ pub fn start(hwnd: HWND) -> Option<Live> {
     if let Some(saved) = crate::settings::audio::restore_preferences() {
         voice.preferences = saved;
     }
+    crate::avatars::connect(api.clone(), hwnd);
     let worker = Worker::new(api, host.clone());
     let generation = 1;
     worker.send(Command::Restore { generation });
@@ -665,6 +669,7 @@ impl Live {
             directs: Vec::new(),
             account_id: None,
             account_name: String::new(),
+            account_avatar: crate::avatars::Avatar::default(),
             username: None,
             direct: None,
             direct_name: String::new(),
@@ -961,12 +966,13 @@ impl Live {
         snap.blocks = self.blocks.as_ref().map(|list| {
             list.iter()
                 .map(|a| {
-                    let p = person(&a.id, &a.display_name);
+                    let p = person(&a.id, &a.display_name, a.avatar());
                     (
                         a.display_name.clone(),
                         a.username.clone(),
                         p.color,
                         p.initials,
+                        p.avatar,
                     )
                 })
                 .collect()
@@ -1183,6 +1189,7 @@ impl Live {
         out: &mut Vec<Update>,
     ) {
         self.account_id = Some(account.id.clone());
+        self.account_avatar = account.avatar();
         self.username.clone_from(&account.username);
         self.name = account
             .display_name
@@ -4772,12 +4779,13 @@ fn color_for(id: &str) -> u32 {
     model::AUTHOR_COLORS[h as usize % model::AUTHOR_COLORS.len()]
 }
 
-pub fn person(id: &str, name: &str) -> Person {
+pub fn person(id: &str, name: &str, avatar: crate::avatars::Avatar) -> Person {
     Person {
         name: name.to_owned(),
         initials: initials(name),
         color: color_for(id),
         online: false,
+        avatar,
     }
 }
 
@@ -4815,7 +4823,7 @@ pub fn conversation(
     };
     let mut members: Vec<Person> = order
         .iter()
-        .map(|m| person(&m.id, &m.display_name))
+        .map(|m| person(&m.id, &m.display_name, m.avatar()))
         .collect();
     let listed = members.len();
     let mut out = Vec::with_capacity(messages.len());
@@ -4826,7 +4834,7 @@ pub fn conversation(
             continue;
         };
         if author == members.len() {
-            members.push(person(&m.author.id, &m.author.name));
+            members.push(person(&m.author.id, &m.author.name, m.author.avatar()));
         }
         // The "New messages" divider ends the group above, as in egui.
         let new = unread == Some(m.id.as_str());
@@ -4881,6 +4889,7 @@ pub fn conversation(
         .iter()
         .map(|s| model::Space {
             name: s.name.clone(),
+            icon: crate::avatars::Avatar::icon(s),
         })
         .collect();
     let mut c = Conversation::live(spaces, space, channels, selected, members, out);
@@ -5006,7 +5015,7 @@ pub fn message(
         reply: m.reply_to.as_ref().map(|r| model::Reply {
             id: r.id.clone(),
             thread_root: r.thread_root_id.clone(),
-            author: person(&r.author.id, &r.author.name),
+            author: person(&r.author.id, &r.author.name, r.author.avatar()),
             text: if r.deleted {
                 String::new()
             } else {

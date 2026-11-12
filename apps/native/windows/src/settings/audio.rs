@@ -260,7 +260,7 @@ impl Builder<'_> {
             rect: (0.0, self.y, self.inner, SLIDER_H),
             text: label.into(),
             style: Style::Label,
-            initials: String::new(),
+            face: None,
         });
         self.y += SLIDER_H;
     }
@@ -272,7 +272,7 @@ impl Builder<'_> {
             rect,
             text: text.into(),
             style,
-            initials: String::new(),
+            face: None,
         });
         self.texts += 1;
     }
@@ -323,7 +323,7 @@ impl Builder<'_> {
             rect: (0.0, button_y, MIC_BUTTON_W, MIC_BUTTON_H),
             text: label.into(),
             style: Style::Label,
-            initials: String::new(),
+            face: None,
         });
         let meter = if recording {
             "Received microphone level"
@@ -336,7 +336,7 @@ impl Builder<'_> {
             rect: (mx, self.y, (self.inner - mx).max(40.0), METER_H),
             text: meter.into(),
             style: Style::Label,
-            initials: String::new(),
+            face: None,
         });
         self.y += METER_H + 8.0;
         if let Some(e) = &s.mic_error {
@@ -401,7 +401,7 @@ impl Builder<'_> {
             rect: (ix, cy, 64.0, 30.0),
             text: format!("{verb} {name} audio sample"),
             style: Style::Label,
-            initials: String::new(),
+            face: None,
         });
         let (sw, sh) = (
             self.width(seconds, Style::Detail)?,

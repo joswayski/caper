@@ -968,6 +968,7 @@ dependencies = [
  "chrono",
  "image",
  "raw-window-handle",
+ "resvg",
  "ron",
  "serde",
  "serde_json",

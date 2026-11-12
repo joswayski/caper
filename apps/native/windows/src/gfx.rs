@@ -469,27 +469,32 @@ impl Gfx {
 
     /// A bitmap from premultiplied BGRA pixels.
     pub fn bitmap(&self, w: u32, h: u32, bgra: &[u8]) -> Result<ID2D1Bitmap1> {
-        let props = D2D1_BITMAP_PROPERTIES1 {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        bitmap_on(&self.dc, w, h, bgra)
+    }
+}
+
+/// A bitmap on `dc`'s device from premultiplied BGRA pixels.
+pub fn bitmap_on(dc: &ID2D1DeviceContext, w: u32, h: u32, bgra: &[u8]) -> Result<ID2D1Bitmap1> {
+    let props = D2D1_BITMAP_PROPERTIES1 {
+        pixelFormat: D2D1_PIXEL_FORMAT {
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        },
+        dpiX: 96.0,
+        dpiY: 96.0,
+        bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+        colorContext: std::mem::ManuallyDrop::new(None),
+    };
+    unsafe {
+        dc.CreateBitmap(
+            D2D_SIZE_U {
+                width: w,
+                height: h,
             },
-            dpiX: 96.0,
-            dpiY: 96.0,
-            bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
-            colorContext: std::mem::ManuallyDrop::new(None),
-        };
-        unsafe {
-            self.dc.CreateBitmap(
-                D2D_SIZE_U {
-                    width: w,
-                    height: h,
-                },
-                Some(bgra.as_ptr().cast()),
-                w * 4,
-                &props,
-            )
-        }
+            Some(bgra.as_ptr().cast()),
+            w * 4,
+            &props,
+        )
     }
 }
 
@@ -624,6 +629,16 @@ pub fn range_rects(
 }
 
 /// UTF-16 position under a point relative to the layout origin.
+/// Whether (`x`, `y`) is on `layout`'s text, not just in its box.
+pub fn on_text(layout: &IDWriteTextLayout, x: f32, y: f32) -> bool {
+    let (mut trailing, mut inside) = (BOOL(0), BOOL(0));
+    let mut m = DWRITE_HIT_TEST_METRICS::default();
+    unsafe {
+        let _ = layout.HitTestPoint(x, y, &mut trailing, &mut inside, &mut m);
+    }
+    inside.as_bool()
+}
+
 pub fn hit_point(layout: &IDWriteTextLayout, x: f32, y: f32) -> u32 {
     let (mut trailing, mut inside) = (BOOL(0), BOOL(0));
     let mut m = DWRITE_HIT_TEST_METRICS::default();

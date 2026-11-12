@@ -5,7 +5,7 @@
 //! settings hold the channel's name and privacy, saved together from the
 //! save bar, and, once it is saved private, who has access to it.
 use crate::custom_links::{NAME, number};
-use crate::gfx::{self, Gfx, rect};
+use crate::gfx::{Gfx, rect};
 use crate::invite_people::{Answer, InvitePeople, NAME_ERROR};
 use crate::overlay::{Dialog, Part, Rect, Tone, height, layout, width};
 use crate::text;
@@ -591,7 +591,7 @@ fn save_name_w(g: &Gfx) -> Result<f32> {
     Ok(width(&layout(g, "Save name", &g.formats.button, 1e6)?) + 24.0)
 }
 
-/// A person's row: their initials' circle, name, and `sub` under it.
+/// A person's row: their avatar, name, and `sub` under it.
 pub(crate) fn draw_person(
     g: &Gfx,
     dc: &ID2D1DeviceContext,
@@ -599,26 +599,16 @@ pub(crate) fn draw_person(
     sub: &str,
     (x, y, w, h): Rect,
 ) -> Result<()> {
-    let face = crate::live::person(&m.id, &m.display_name);
+    let face = crate::live::person(&m.id, &m.display_name, crate::avatars::Face::avatar(m));
     let (cx, cy) = (x + 15.0, y + h / 2.0);
-    unsafe {
-        dc.FillEllipse(
-            &D2D1_ELLIPSE {
-                point: windows_numerics::Vector2 { X: cx, Y: cy },
-                radiusX: 15.0,
-                radiusY: 15.0,
-            },
-            &g.solid(face.color),
-        );
-    }
-    let i = g.layout(&gfx::wide(&face.initials), &g.formats.direct_initials, 1e6)?;
-    text::draw(
+    crate::avatars::circle(
+        g,
         dc,
-        &i,
-        cx - width(&i) / 2.0,
-        cy - height(&i) / 2.0,
-        &g.brushes.text,
-    );
+        &face.avatar,
+        (cx, cy, 15.0),
+        face.color,
+        &face.initials,
+    )?;
     let tx = x + 30.0 + 12.0;
     let tw = (w - (tx - x)).max(1.0);
     let name = layout(g, &m.display_name, &g.formats.direct_name, tw)?;
@@ -723,7 +713,7 @@ mod tests {
 
     fn typed(d: &mut Dialog, text: &str) {
         let ip = d.inviting.as_mut().unwrap();
-        ip.numbers[NAME as usize].text = gfx::wide(text);
+        ip.numbers[NAME as usize].text = crate::gfx::wide(text);
         ip.numbers[NAME as usize].caret = text.encode_utf16().count();
         d.settings_name_changed();
     }
@@ -877,7 +867,7 @@ mod tests {
     }
 
     fn typed_field(d: &mut Dialog, text: &str) {
-        d.field.text = gfx::wide(text);
+        d.field.text = crate::gfx::wide(text);
     }
 
     #[test]

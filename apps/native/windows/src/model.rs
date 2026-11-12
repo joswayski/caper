@@ -10,6 +10,7 @@ pub struct Person {
     pub initials: String,
     pub color: u32,
     pub online: bool,
+    pub avatar: crate::avatars::Avatar,
 }
 
 #[derive(PartialEq)]
@@ -104,6 +105,8 @@ pub struct Channel {
 
 pub struct Space {
     pub name: String,
+    /// Its uploaded icon, drawn instead of its initial.
+    pub icon: crate::avatars::Avatar,
 }
 
 /// The open DM: its peer's name, whether it is your own (notes to
@@ -442,6 +445,11 @@ impl Conversation {
                     initials: format!("{}{}", &first[..1], &last[..1]),
                     color: AUTHOR_COLORS[i % 6],
                     online: i % 3 != 0,
+                    // The mock shows mascots, as most accounts do.
+                    avatar: crate::avatars::Avatar {
+                        mascot: Some((i * 37 % 800) as u16),
+                        picture: None,
+                    },
                 }
             })
             .collect();
@@ -481,7 +489,10 @@ impl Conversation {
             "Photos",
         ]
         .iter()
-        .map(|n| Space { name: (*n).into() })
+        .map(|n| Space {
+            name: (*n).into(),
+            icon: crate::avatars::Avatar::default(),
+        })
         .collect();
         let mut demo = Demo {
             rng: 0x9E37_79B9_7F4A_7C15,

@@ -15,6 +15,7 @@
 mod actions;
 mod app_link;
 mod attachment_editor;
+mod avatars;
 mod bench;
 mod browse;
 mod call;
@@ -619,6 +620,9 @@ impl App {
         self.gifs_poll();
         self.poll_updates();
         self.poll_app_links();
+        if avatars::poll() {
+            self.avatars_changed();
+        }
         let Some(live) = self.live.as_mut() else {
             return Ok(());
         };
@@ -661,6 +665,7 @@ impl App {
         for u in updates {
             match u {
                 live::Update::SignedOut(warning) => {
+                    avatars::clear();
                     self.close_viewer();
                     self.stop_web_player();
                     if let Some(s) = &mut self.signin {
@@ -811,9 +816,11 @@ impl App {
                         continue;
                     };
                     if author >= self.c.members.len() {
-                        self.c
-                            .members
-                            .push(live::person(&m.author.id, &m.author.name));
+                        self.c.members.push(live::person(
+                            &m.author.id,
+                            &m.author.name,
+                            crate::avatars::Face::avatar(&m.author),
+                        ));
                     }
                     let mut new = live::message(&m, author, grouped, me.as_deref());
                     new.reaction_error = error;
@@ -1414,6 +1421,19 @@ impl App {
         Some((i, gfx::hit_point(&row.text, x - ox, y - oy)))
     }
 
+    /// Whether (`x`, `y`) is on a shown message's text.
+    fn over_text(&self, x: f32, y: f32) -> bool {
+        let ay = self.scroll_top + (y - HEADER_H) as f64;
+        let Some(i) = self.rows.row_at(ay) else {
+            return false;
+        };
+        let Some(row) = self.rows.row(i) else {
+            return false;
+        };
+        let (ox, oy) = self.row_text_origin(i);
+        gfx::on_text(&row.text, x - ox, y - oy)
+    }
+
     fn selected_text(&self) -> Vec<u16> {
         let mut out = Vec::new();
         let Some(((ra, _), (rb, _))) = self.sel else {
@@ -1580,8 +1600,26 @@ impl App {
     // ---- input ----
 
     fn handle(&mut self, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
-        let x = (lp.0 & 0xffff) as i16 as f32 / self.scale;
-        let y = ((lp.0 >> 16) & 0xffff) as i16 as f32 / self.scale;
+        let (x, y) = if msg == WM_SETCURSOR {
+            // WM_SETCURSOR carries no position and arrives before the
+            // WM_MOUSEMOVE it precedes: read where the pointer is now, so
+            // every handler picks the cursor for this spot, not the last.
+            let mut p = POINT::default();
+            unsafe {
+                let _ = GetCursorPos(&mut p);
+                let _ = ScreenToClient(self.hwnd, &mut p);
+            }
+            let at = (p.x as f32 / self.scale, p.y as f32 / self.scale);
+            if (lp.0 & 0xffff) as u32 == HTCLIENT {
+                self.pointer = Some(at);
+            }
+            at
+        } else {
+            (
+                (lp.0 & 0xffff) as i16 as f32 / self.scale,
+                ((lp.0 >> 16) & 0xffff) as i16 as f32 / self.scale,
+            )
+        };
         let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
         let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
         if matches!(
@@ -1918,18 +1956,17 @@ impl App {
                 if (lp.0 & 0xffff) as u32 != HTCLIENT {
                     return None;
                 }
-                let part = self.pointer.is_some_and(|(x, y)| {
-                    self.box_part_at(x, y).is_some()
-                        || self.bar_at(x, y).is_some()
-                        || self.rec_at(x, y).is_some()
-                });
+                // Hover state follows the pointer read above.
+                self.update_hover();
+                let part = self.box_part_at(x, y).is_some()
+                    || self.bar_at(x, y).is_some()
+                    || self.rec_at(x, y).is_some();
                 let bar = self.dm_bar().is_some() || self.rec().is_some();
-                let beam = !part
-                    && self
-                        .pointer
-                        .is_some_and(|(x, y)| (self.in_box(x, y) && !bar) || self.in_history(x, y));
                 let hand = part
                     || self.voice_hover.is_some()
+                    || self.hover_member.is_some()
+                    || self.on_call(x, y)
+                    || self.voice_message_at(x, y).is_some()
                     || self.hover_channel.is_some()
                     || self.space_options_hover
                     || self
@@ -1954,14 +1991,19 @@ impl App {
                                 x >= l && x < l + w && y >= t && y < t + h
                             })
                     });
+                // Text takes the I-beam: the message box, and message text
+                // (or any spot while a selection is being dragged).
+                let beam = !hand
+                    && ((self.in_box(x, y) && !bar)
+                        || (self.in_history(x, y) && (self.selecting || self.over_text(x, y))));
                 unsafe {
                     SetCursor(
                         LoadCursorW(
                             None,
-                            if beam {
-                                IDC_IBEAM
-                            } else if hand {
+                            if hand {
                                 IDC_HAND
+                            } else if beam {
+                                IDC_IBEAM
                             } else {
                                 IDC_ARROW
                             },
@@ -2950,8 +2992,14 @@ impl App {
                             &g.brushes.terracotta,
                         );
                     }
+                    // An uploaded icon fills the tile in place of the initial.
+                    let icon = avatars::draw(dc, &space.icon, r, 12.0);
                     // egui's initial: a whole grapheme, an emoji as Twemoji.
-                    let initial = caper_client::space_initial(&space.name);
+                    let initial = if icon {
+                        String::new()
+                    } else {
+                        caper_client::space_initial(&space.name)
+                    };
                     let l = g.layout(&gfx::wide(&initial), &g.formats.rail, w)?;
                     emoji::apply(&l, &initial, 13.0, 1.0)?;
                     l.SetMaxHeight(h)?;
@@ -2959,6 +3007,14 @@ impl App {
                     // with the bell-slash.
                     let muted = space_muted.get(i).copied().unwrap_or(false);
                     if muted {
+                        if icon {
+                            fill_round(
+                                dc,
+                                r,
+                                12.0,
+                                &dc.CreateSolidColorBrush(&gfx::color(BLACKOUT, 0.5), None)?,
+                            );
+                        }
                         text::draw(
                             dc,
                             &l,
@@ -3296,7 +3352,9 @@ impl App {
                     }
                     let m = &c.members[i];
                     let av = rect(16.0, top + 5.0, 46.0, top + 35.0);
-                    fill_round(dc, av, 15.0, &g.solid(m.color));
+                    if !avatars::draw(dc, &m.avatar, av, 30.0 * 0.3) {
+                        fill_round(dc, av, 15.0, &g.solid(m.color));
+                    }
                     if m.online {
                         let e = D2D1_ELLIPSE {
                             point: windows_numerics::Vector2 {

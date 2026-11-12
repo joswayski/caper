@@ -1276,27 +1276,16 @@ impl Dialog {
         } else if self.hover == Some(Part::Suggest(k)) {
             fill_round(dc, r, 6.0, &g.brushes.hover);
         }
-        let face = crate::live::person(&p.id, &p.display_name);
+        let face = crate::live::person(&p.id, &p.display_name, crate::avatars::Face::avatar(p));
         let (cx, cy) = (x + 8.0 + 12.0, y + h / 2.0);
-        unsafe {
-            dc.FillEllipse(
-                &D2D1_ELLIPSE {
-                    point: windows_numerics::Vector2 { X: cx, Y: cy },
-                    radiusX: 12.0,
-                    radiusY: 12.0,
-                },
-                &g.solid(face.color),
-            );
-        }
-        let i = g.layout(&gfx::wide(&face.initials), &g.formats.direct_initials, 1e6)?;
-        crate::emoji::apply(&i, &face.initials, 8.5, 1.0)?;
-        crate::text::draw(
+        crate::avatars::circle(
+            g,
             dc,
-            &i,
-            cx - width(&i) / 2.0,
-            cy - height(&i) / 2.0,
-            &g.brushes.text,
-        );
+            &face.avatar,
+            (cx, cy, 12.0),
+            face.color,
+            &face.initials,
+        )?;
         let tx = x + 8.0 + 24.0 + 12.0;
         let tw = (w - (tx - x) - 8.0).max(1.0);
         let name = layout(g, &p.display_name, &g.formats.direct_name, tw)?;

@@ -90,6 +90,7 @@ pub enum Action {
 pub struct Quote {
     pub initials: IDWriteTextLayout,
     pub color: u32,
+    pub avatar: crate::avatars::Avatar,
     pub name: IDWriteTextLayout,
     pub view: IDWriteTextLayout,
     pub view_w: f32,
@@ -438,6 +439,7 @@ fn build(g: &Gfx, c: &Conversation, i: usize, width: f32) -> Result<Row> {
             Some(Quote {
                 initials,
                 color: r.author.color,
+                avatar: r.author.avatar.clone(),
                 name,
                 view_w: gfx::metrics(&view).widthIncludingTrailingWhitespace,
                 view,
@@ -990,8 +992,10 @@ pub fn draw_row(
                 x + QUOTE_AVATAR,
                 hy + (QUOTE_HEADING + QUOTE_AVATAR) / 2.0,
             );
-            fill_round(dc, a, QUOTE_AVATAR * 0.3, &g.solid(q.color));
-            crate::text::draw(dc, &q.initials, a.left, a.top, &g.brushes.text);
+            if !crate::avatars::draw(dc, &q.avatar, a, QUOTE_AVATAR * 0.3) {
+                fill_round(dc, a, QUOTE_AVATAR * 0.3, &g.solid(q.color));
+                crate::text::draw(dc, &q.initials, a.left, a.top, &g.brushes.text);
+            }
             crate::text::draw(dc, &q.name, a.right + 6.0, hy + 2.0, &g.brushes.muted);
             crate::text::draw(
                 dc,
@@ -1024,8 +1028,11 @@ pub fn draw_row(
         let hy = top + row.header_y;
         if let Some(h) = &row.header {
             let a = rect(PAD_X, hy, PAD_X + AVATAR, hy + AVATAR);
-            fill_round(dc, a, AVATAR * 0.3, &g.solid(c.members[m.author].color));
-            crate::text::draw(dc, &h.initials, a.left, a.top, &g.brushes.text);
+            let author = &c.members[m.author];
+            if !crate::avatars::draw(dc, &author.avatar, a, AVATAR * 0.3) {
+                fill_round(dc, a, AVATAR * 0.3, &g.solid(author.color));
+                crate::text::draw(dc, &h.initials, a.left, a.top, &g.brushes.text);
+            }
             crate::text::draw(dc, &h.name, BODY_X, hy, &g.brushes.text);
             crate::text::draw(
                 dc,

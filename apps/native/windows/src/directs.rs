@@ -13,6 +13,7 @@
 //! starts, the level, mute) and each channel (its row's button: the level,
 //! mute). The section's first row opens the notification inbox, with its
 //! unread count.
+use crate::avatars::Face;
 use crate::gfx::{self, Gfx, fill_round, rect, stroke_round};
 use crate::live::Live;
 use crate::overlay::{Rect, Tone};
@@ -196,6 +197,7 @@ pub struct Row {
     pub count: Option<u64>,
     pub color: u32,
     pub initials: String,
+    pub avatar: crate::avatars::Avatar,
     pub active: bool,
     /// The bell-slash label while muted, and why the last notification
     /// change failed.
@@ -245,8 +247,11 @@ impl Live {
             return Vec::new();
         };
         let open = self.direct.as_deref();
-        let row = |d: Option<&DirectConversation>, name: &str, id: &str| {
-            let p = crate::live::person(id, name);
+        let row = |d: Option<&DirectConversation>,
+                   name: &str,
+                   id: &str,
+                   avatar: crate::avatars::Avatar| {
+            let p = crate::live::person(id, name, avatar);
             let unread = d.is_some_and(|d| !d.blocked && d.has_unread());
             Row {
                 kind: RowKind::Direct,
@@ -258,6 +263,7 @@ impl Live {
                 count: d.and_then(|d| d.unread_count).filter(|n| unread && *n > 0),
                 color: p.color,
                 initials: p.initials,
+                avatar: p.avatar,
                 active: d.is_some_and(|d| open == Some(d.id.as_str())),
                 muted: None,
                 error: None,
@@ -275,6 +281,7 @@ impl Live {
             count: (unread > 0).then_some(unread),
             color: 0,
             initials: String::new(),
+            avatar: crate::avatars::Avatar::default(),
             active: self.activity.shown,
             muted: None,
             error: None,
@@ -297,6 +304,7 @@ impl Live {
                 count: Some(requests.len() as u64),
                 color: 0,
                 initials: String::new(),
+                avatar: crate::avatars::Avatar::default(),
                 active: false,
                 muted: None,
                 error: None,
@@ -308,7 +316,7 @@ impl Live {
                     note: Some(format!("@{}", d.peer.username)),
                     unread: false,
                     count: None,
-                    ..row(Some(d), &d.peer.display_name, &d.peer.id)
+                    ..row(Some(d), &d.peer.display_name, &d.peer.id, d.peer.avatar())
                 }));
             }
         }
@@ -318,7 +326,7 @@ impl Live {
             own: true,
             // egui's own row shows only a dot.
             count: None,
-            ..row(own, &self.account_name, me)
+            ..row(own, &self.account_name, me, self.account_avatar.clone())
         });
         out.extend(
             self.directs
@@ -335,7 +343,7 @@ impl Live {
                         count: d.unread_count.filter(|n| unread && *n > 0),
                         muted,
                         error: self.direct_notify_error(&d.id),
-                        ..row(Some(d), &d.peer.display_name, &d.peer.id)
+                        ..row(Some(d), &d.peer.display_name, &d.peer.id, d.peer.avatar())
                     }
                 }),
         );
@@ -392,22 +400,7 @@ pub fn draw(
             draw_inbox(g, dc, row, r, lit)?;
             continue;
         }
-        let e = D2D1_ELLIPSE {
-            point: windows_numerics::Vector2 { X: cx, Y: cy },
-            radiusX: 10.0,
-            radiusY: 10.0,
-        };
-        unsafe { dc.FillEllipse(&e, &g.solid(row.color)) };
-        let i = g.layout(&gfx::wide(&row.initials), &g.formats.direct_initials, 1e6)?;
-        crate::emoji::apply(&i, &row.initials, 8.5, 1.0)?;
-        let m = gfx::metrics(&i);
-        text::draw(
-            dc,
-            &i,
-            cx - m.widthIncludingTrailingWhitespace / 2.0,
-            cy - m.height / 2.0,
-            &g.brushes.text,
-        );
+        crate::avatars::circle(g, dc, &row.avatar, (cx, cy, 10.0), row.color, &row.initials)?;
         // From the right: the options button while revealed, the unread
         // count or dot, the bell-slash, then the name.
         let mut right = r.right - 8.0;
@@ -1495,6 +1488,7 @@ mod tests {
             count: Some(3),
             color: 0,
             initials: "M".into(),
+            avatar: crate::avatars::Avatar::default(),
             active: false,
             muted: None,
             error: None,

@@ -24,6 +24,8 @@ caper-client = { path = "../client" }
 # Link preview players: egui's WebView2 configuration and play-page rules.
 caper-web-player = { path = "../desktop/web-player", features = ["engine"] }
 raw-window-handle = "0.6"
+# Caper's mascot avatars are SVGs (caper_client::avatar_images).
+resvg = { version = "0.45.1", default-features = false }
 url = "2.5"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Pasted pictures: a clipboard DIB becomes the PNG that is uploaded.

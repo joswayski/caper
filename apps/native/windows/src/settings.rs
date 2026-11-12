@@ -175,7 +175,8 @@ enum Style {
     Label,
     Detail,
     Error,
-    /// A blocked account: its avatar's colour and initials before the name.
+    /// A blocked account: its avatar (or initials on this colour) before
+    /// the name.
     Person(u32),
     /// An inbox row's title: who it is from.
     Title,
@@ -187,7 +188,8 @@ struct Item {
     rect: Rect,
     text: String,
     style: Style,
-    initials: String,
+    /// A person's initials and avatar.
+    face: Option<(String, crate::avatars::Avatar)>,
 }
 
 /// What Settings shows, gathered from the app and the account each layout.
@@ -205,8 +207,8 @@ pub struct Snapshot {
     pub notify_error: Option<String>,
     pub privacy: Option<String>,
     pub privacy_error: Option<String>,
-    /// Each blocked account's name, @username, colour and initials.
-    pub blocks: Option<Vec<(String, String, u32, String)>>,
+    /// Each blocked account's name, @username, colour, initials and avatar.
+    pub blocks: Option<Vec<(String, String, u32, String, crate::avatars::Avatar)>>,
     pub blocks_error: Option<String>,
     pub block_busy: bool,
     pub block_error: Option<String>,
@@ -476,7 +478,7 @@ impl Builder<'_> {
             rect: (0.0, b.y, inner, (title + 2.0 + note).max(ROW_H)),
             text: "Launch at login".into(),
             style: Style::Label,
-            initials: String::new(),
+            face: None,
         });
         b.y += (title + 2.0 + note).max(ROW_H);
         if let Some(e) = &snap.startup_error {
@@ -538,8 +540,8 @@ impl Builder<'_> {
                     }
                 }
                 Some(list) => {
-                    for (k, (name, username, color, initials)) in list.iter().enumerate() {
-                        b.person(k, name, username, *color, initials)?;
+                    for (k, (name, username, color, initials, avatar)) in list.iter().enumerate() {
+                        b.person(k, name, username, *color, initials, avatar)?;
                     }
                 }
             }
@@ -558,7 +560,7 @@ impl Builder<'_> {
                 rect: (0.0, b.y, dw, dh),
                 text: "Delete account".into(),
                 style: Style::Error,
-                initials: String::new(),
+                face: None,
             });
             b.y += dh;
         }
@@ -610,7 +612,7 @@ impl Builder<'_> {
                 rect: (0.0, top, self.inner, 0.0),
                 text: title,
                 style: Style::Title,
-                initials: String::new(),
+                face: None,
             });
             let line = (th + 8.0).max(28.0);
             let mark = if row.unread { 32.0 } else { 0.0 };
@@ -621,7 +623,7 @@ impl Builder<'_> {
                 rect: (self.inner - mark - tw, top + (line - tm) / 2.0, tw, tm),
                 text: row.time.clone(),
                 style: Style::Detail,
-                initials: String::new(),
+                face: None,
             });
             self.texts += 1;
             if row.unread {
@@ -659,7 +661,7 @@ impl Builder<'_> {
             rect,
             text: text.into(),
             style: Style::Label,
-            initials: String::new(),
+            face: None,
         });
     }
 }
@@ -738,27 +740,15 @@ impl Settings {
             SPart::Text(_) => {
                 let (format, brush) = style(g, item.style);
                 let mut tx = x;
-                if let Style::Person(color) = item.style {
-                    let e = D2D1_ELLIPSE {
-                        point: windows_numerics::Vector2 {
-                            X: x + 12.0,
-                            Y: y + h / 2.0,
-                        },
-                        radiusX: 12.0,
-                        radiusY: 12.0,
-                    };
-                    unsafe { dc.FillEllipse(&e, &g.solid(color)) };
-                    let i =
-                        g.layout(&gfx::wide(&item.initials), &g.formats.direct_initials, 1e6)?;
-                    crate::emoji::apply(&i, &item.initials, 8.5, 1.0)?;
-                    let m = gfx::metrics(&i);
-                    text::draw(
+                if let (Style::Person(color), Some((initials, avatar))) = (item.style, &item.face) {
+                    crate::avatars::circle(
+                        g,
                         dc,
-                        &i,
-                        x + 12.0 - m.widthIncludingTrailingWhitespace / 2.0,
-                        y + h / 2.0 - m.height / 2.0,
-                        &g.brushes.text,
-                    );
+                        avatar,
+                        (x + 12.0, y + h / 2.0, 12.0),
+                        color,
+                        initials,
+                    )?;
                     tx += 32.0;
                 }
                 let l = g.layout(&gfx::wide(&item.text), format, (w - (tx - x)).max(1.0))?;
@@ -1023,7 +1013,7 @@ impl Builder<'_> {
             rect: (indent, self.y, self.inner - indent, h),
             text: text.into(),
             style: s,
-            initials: String::new(),
+            face: None,
         });
         self.texts += 1;
         self.y += h + 2.0;
@@ -1040,7 +1030,7 @@ impl Builder<'_> {
             rect: (0.0, self.y, self.inner, ROW_H),
             text: label.into(),
             style: Style::Label,
-            initials: String::new(),
+            face: None,
         });
         self.y += ROW_H;
     }
@@ -1052,7 +1042,7 @@ impl Builder<'_> {
             rect: (0.0, self.y, w, BUTTON_H),
             text: label.into(),
             style: Style::Label,
-            initials: String::new(),
+            face: None,
         });
         self.y += BUTTON_H + 4.0;
         Ok(())
@@ -1065,6 +1055,7 @@ impl Builder<'_> {
         username: &str,
         color: u32,
         initials: &str,
+        avatar: &crate::avatars::Avatar,
     ) -> Result<()> {
         let unblock = self.width("Unblock", Style::Label)? + 24.0;
         let label = if username.is_empty() {
@@ -1077,7 +1068,7 @@ impl Builder<'_> {
             rect: (0.0, self.y, self.inner - unblock - 8.0, 32.0),
             text: label,
             style: Style::Person(color),
-            initials: initials.into(),
+            face: Some((initials.into(), avatar.clone())),
         });
         self.texts += 1;
         self.items.push(Item {
@@ -1085,7 +1076,7 @@ impl Builder<'_> {
             rect: (self.inner - unblock, self.y + 1.0, unblock, BUTTON_H),
             text: "Unblock".into(),
             style: Style::Label,
-            initials: String::new(),
+            face: None,
         });
         self.y += 36.0;
         Ok(())
@@ -1581,24 +1572,9 @@ impl App {
             dc.FillRectangle(&rect(0.0, top, SIDEBAR_W, top + 1.0), &g.brushes.border);
         }
         let me = live.account_id.as_deref().unwrap_or_default();
-        let p = crate::live::person(me, &live.account_name);
+        let p = crate::live::person(me, &live.account_name, live.account_avatar.clone());
         let (cx, cy) = (12.0 + 15.0, top + FOOT_H / 2.0);
-        let e = D2D1_ELLIPSE {
-            point: windows_numerics::Vector2 { X: cx, Y: cy },
-            radiusX: 15.0,
-            radiusY: 15.0,
-        };
-        unsafe { dc.FillEllipse(&e, &g.solid(p.color)) };
-        let i = g.layout(&gfx::wide(&p.initials), &g.formats.direct_initials, 1e6)?;
-        crate::emoji::apply(&i, &p.initials, 8.5, 1.0)?;
-        let m = gfx::metrics(&i);
-        text::draw(
-            dc,
-            &i,
-            cx - m.widthIncludingTrailingWhitespace / 2.0,
-            cy - m.height / 2.0,
-            &g.brushes.text,
-        );
+        crate::avatars::circle(g, dc, &p.avatar, (cx, cy, 15.0), p.color, &p.initials)?;
         let name_w = SIDEBAR_W - 12.0 - 28.0 - 8.0 - (cx + 21.0);
         let name = g.layout(
             &gfx::wide(&live.account_name),
