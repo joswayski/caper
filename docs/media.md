@@ -408,7 +408,10 @@ The API does not seed General or expose `/api/chat/general` or unscoped
 authorization rejects every demo-space channel for history, sends, typing and
 subscriptions, even with an explicit membership. Demo data is retained.
 `CHAT_ENABLED` and `MEDIA_ENABLED` control account features. `/spaces` sends
-signed-out visitors to `/login`.
+signed-out visitors to `/login`, carrying the conversation they opened as
+`next=<the /spaces query>`; sign-in and the profile step return to it. `next`
+is rebuilt from its query pairs, so it can only name a `/spaces` address, and
+an invite takes precedence over it.
 
 ### Server roles
 
@@ -689,10 +692,12 @@ Joining checks the membership quota under the same space lock as invitation
 acceptance, consumes one use, joins the landing channel, and fulfils any pending
 username invitation. Existing members get the space back without consuming a
 use. Leaving does not block rejoining by link, but an owner removal or an owner's
-block returns 403 until the owner invites the account by username. A removal is
-recorded in `space_invitations.removed_at` and holds until an invitation is
-accepted: a live re-invitation can be fulfilled through a link, but a cancelled,
-declined or expired one leaves the 403. Expired, revoked and exhausted links
+block returns 403. A removal is recorded in `space_invitations.removed_at` and
+holds until an invitation is accepted: a live re-invitation can be fulfilled
+through a link, but a cancelled, declined or expired one leaves the 403. An
+owner's block holds until the owner unblocks: it also hides the account's
+pending space and private channel invitations and answers accepting them with
+404, and unblocking makes a still-live invitation acceptable again. Expired, revoked and exhausted links
 return 404 to outsiders; existing members can still open them as shortcuts.
 Unknown links and deleted spaces return 404 for everyone. The preview checks
 active membership from the session, does not join or consume a use, and is
@@ -940,7 +945,7 @@ image/video/audio types inline, forces every other type to download as
 `application/octet-stream`, and always sends `nosniff` plus a sandboxing CSP.
 PDFs open in a browser tab (`inline` with their file name and no page CSP); the
 API only completes a PDF whose bytes start with `%PDF-`. Range requests are
-supported. The edge cache is keyed by object, after signature verification. A
+supported; an unsatisfiable range is answered 416. The edge cache is keyed by object, after signature verification. A
 leaked URL works until it expires.
 
 ### Client compression and previews
@@ -1130,6 +1135,7 @@ Files the editor can't open but can show (web's viewer) get Spoiler and Remove i
 their viewer; files with no preview (PDFs, audio) get a menu with Mark as spoiler
 and Remove attachment. Long press or context click offers Edit, the spoiler
 toggle and Remove attachment. Send can be pressed while files still upload; the
+composer says "Uploading… Your message sends when every file is ready." and the
 message goes as soon as they finish. Every client opens editable files in this
 editor rather than the system viewer. The viewing state zooms like the media
 viewer (pinch or Ctrl+scroll; double-tap/click; drag to pan); video doesn't zoom
@@ -1231,7 +1237,9 @@ one entry each.
   file, in the pre-send editor's model. Its rules and limits (quarter turns, a
   crop inside the picture, at most 500 marks and 100,000 point values, one line
   of 1–200 Unicode scalar values, `#RRGGBB`, 128 KiB of JSON, fractions rounded to
-  a millionth) are the `wire` section of `shared/messages/edit-cases.json`.
+  a millionth) are the `wire` section of `shared/messages/edit-cases.json`. The
+  message route accepts bodies up to about 1.5 MiB so ten such descriptions
+  fit; the rest of the API keeps 256 KiB.
 - `{id, replaces}` where `id` is the slot's first-sent file undoes every edit of
   that file: no upload and no `edit`.
 - Without `attachments` the request behaves as a text edit; clients send it only
@@ -2067,7 +2075,10 @@ ascending. Clients scroll to and highlight the target, expose older/newer paging
 and keep a bounded window so latest rows are never spliced across a history gap.
 Context snapshots merge independently of the replay cursor. Pinned non-broadcast
 replies navigate into their thread. Back to latest, and sends from historical
-context, reload the latest page.
+context, reload the latest page. A target deleted before its context loads is
+answered with "That message was deleted." on web, Android, Apple and the egui
+desktop, which hide deleted rows; Linux and Windows land on its "This message
+was deleted." row.
 
 `PUT /api/chat/channels/{channel}/messages/{message}/pin` accepts
 `{active:boolean}` and `X-Caper-Chat-Token`; clients cannot supply a pin author.
@@ -3437,7 +3448,12 @@ initialize, capture rejects without publishing raw audio; if fallback and browse
 suppression both fail at runtime, the status reports bypassed audio.
 
 Device changes replace the outgoing track and release the previous hardware track
-and AudioContext. Cancel/leave stops capture and processed tracks; a late
+and AudioContext. On the web, when the capturing device ends (unplugged, or its
+permission revoked) or leaves the device list, the client reopens the system
+default input once and swaps the track; if that fails, or the reopened input
+ends within ten seconds, the call stays connected but muted with "Microphone
+disconnected", and unmuting opens an input first. A voice message being
+recorded stops as it does at its length limit. Cancel/leave stops capture and processed tracks; a late
 permission grant is released. The RNNoise/DeepFilter adapter adds 10 ms buffering.
 DPDFNet uses a 20 ms analysis window, 10 ms hops and three output hops of startup
 buffering; an eight-hop backlog terminates inference and starts fallback. No
@@ -4069,7 +4085,7 @@ the recipient sees one **Message requests** row with a count at the top of their
 list. A request never adds to unread dots, badges or sounds. Opening one shows its
 history read-only with **Accept**, **Decline** and **Block** in place of the
 composer; opening does not accept it. Messaging the sender (for example with **New
-message**) accepts it. Declining hides the request from the recipient only; the
+message**) accepts it, unless you blocked them: that returns `dm_blocked`. Declining hides the request from the recipient only; the
 sender is not told, and later messages do not bring it back.
 
 Blocking is available from a DM's header, from message actions on another account's
