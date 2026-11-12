@@ -33,6 +33,7 @@ mod manage;
 mod overlay;
 mod playback;
 mod preview;
+mod profile;
 mod recording;
 mod settings;
 mod space_settings;
@@ -150,6 +151,8 @@ struct Dirty {
     card: bool,
     /// A conversation's options menu.
     dm_menu: bool,
+    /// A person's profile card.
+    profile: bool,
 }
 
 impl Dirty {
@@ -172,6 +175,7 @@ impl Dirty {
             thread_box: true,
             card: true,
             dm_menu: true,
+            profile: true,
         }
     }
 }
@@ -370,6 +374,9 @@ pub struct App {
     card: Option<card::Card>,
     card_target: Option<(String, String)>,
     card_p: Panel,
+    /// A person's profile card and its surface.
+    profile: Option<profile::ProfileCard>,
+    profile_p: Panel,
     /// The history control with keyboard focus (a reaction chip, Add
     /// reaction, Retry or Dismiss), by message id so it survives paging.
     kb: Option<(String, list::Action)>,
@@ -419,6 +426,7 @@ impl App {
             let thread_p = Panel::new(&g)?;
             let thread_box_p = Panel::new(&g)?;
             let card_p = Panel::new(&g)?;
+            let profile_p = Panel::new(&g)?;
             let settings_p = Panel::new(&g)?;
             let dm_menu_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
@@ -453,7 +461,8 @@ impl App {
             }
             root.AddVisual(&card_p.visual, true, &prev)?;
             root.AddVisual(&menu_p.visual, true, &card_p.visual)?;
-            root.AddVisual(&picker_p.visual, true, &menu_p.visual)?;
+            root.AddVisual(&profile_p.visual, true, &menu_p.visual)?;
+            root.AddVisual(&picker_p.visual, true, &profile_p.visual)?;
             root.AddVisual(&gifs_p.visual, true, &picker_p.visual)?;
             root.AddVisual(&dm_menu_p.visual, true, &gifs_p.visual)?;
             root.AddVisual(&dialog_p.visual, true, &dm_menu_p.visual)?;
@@ -572,6 +581,8 @@ impl App {
                 card: None,
                 card_target: None,
                 card_p,
+                profile: None,
+                profile_p,
                 older_armed: false,
                 thread: None,
                 thread_p,
@@ -1458,7 +1469,7 @@ impl App {
         self.c.has_conversation() && x >= bx && x < bx + bw && y >= by && y < by + bh
     }
 
-    fn in_history(&self, x: f32, y: f32) -> bool {
+    pub(crate) fn in_history(&self, x: f32, y: f32) -> bool {
         x >= self.list_x()
             && x < self.list_x() + self.list_w()
             && y >= HEADER_H
@@ -1675,6 +1686,11 @@ impl App {
         {
             return r;
         }
+        if self.profile.is_some()
+            && let Some(r) = self.profile_input(msg, wp, x, y)
+        {
+            return r;
+        }
         if let Some(r) = self.overlay_input(msg, wp, x, y, ctrl, shift) {
             return r;
         }
@@ -1869,6 +1885,8 @@ impl App {
                         self.embed_activate(i, k);
                     } else if let Some((i, action)) = self.action_at(x, y) {
                         self.row_action(i, action);
+                    } else if let Some(i) = self.author_at(x, y) {
+                        self.open_author_profile(i, x, y);
                     } else if self.in_history(x, y) {
                         if let Some(h) = self.msg_hit(x, y) {
                             let anchor = if shift {
@@ -1898,6 +1916,8 @@ impl App {
                         self.direct_click(spot);
                     } else if let Some(i) = self.hover_space {
                         self.select_space(i);
+                    } else if let Some(i) = self.hover_member {
+                        self.open_member_profile(i, x, y);
                     }
                 }
             }
@@ -1987,6 +2007,7 @@ impl App {
                             || self.edited_at(x, y).is_some()
                             || self.file_at(x, y).is_some()
                             || self.embed_at(x, y).is_some()
+                            || self.author_at(x, y).is_some()
                             || self.reply_cancel_rect().is_some_and(|(l, t, w, h)| {
                                 x >= l && x < l + w && y >= t && y < t + h
                             })
@@ -3484,6 +3505,7 @@ impl App {
         self.draw_thread()?;
         self.track_card();
         self.draw_card()?;
+        self.draw_profile()?;
         self.draw_panels()?;
         unsafe { self.g.dcomp.Commit()? };
         self.place_web_player();

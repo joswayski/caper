@@ -942,7 +942,7 @@ impl Live {
         }
     }
 
-    fn unblock_account(&mut self, account: core::BlockedAccount) {
+    pub fn unblock_account(&mut self, account: core::BlockedAccount) {
         self.block_busy = true;
         self.block_error = None;
         self.account(AccountOperation::SetBlock {
@@ -1307,9 +1307,70 @@ impl Live {
             .is_some_and(|b| b.iter().any(|a| a.id == account))
     }
 
+    /// `id`'s profile card from what is loaded (the open space's members,
+    /// people you share a space with, your DMs), as every client builds it.
+    pub fn profile_of(
+        &self,
+        id: &str,
+        author: Option<&core::Author>,
+    ) -> Option<caper_client::mentions::Profile> {
+        use caper_client::mentions;
+        let me = self.account_id.as_deref();
+        let members = self
+            .detail
+            .as_ref()
+            .map_or(&[][..], |d| d.members.as_slice());
+        let mut profile = match author {
+            Some(a) => Some(mentions::author_profile(
+                a,
+                me,
+                members,
+                &self.people,
+                &self.directs,
+            )),
+            None => mentions::profile(
+                &core::Mention {
+                    kind: "user".into(),
+                    id: Some(id.to_owned()),
+                    username: None,
+                },
+                me,
+                members,
+                &self.people,
+                &self.directs,
+            ),
+        }?;
+        if profile.me {
+            profile.username.clone_from(&self.username);
+            profile.display_name = Some(self.account_name.clone());
+        }
+        Some(profile)
+    }
+
+    /// You blocked `id`, from Settings' list or their DM.
+    pub fn blocked_person(&self, id: &str) -> bool {
+        self.is_blocked(id) || self.directs.iter().any(|d| d.peer.id == id && d.blocked)
+    }
+
+    /// Opens your DM with `id` (`username`), creating it when it is new.
+    pub fn open_conversation_with(&mut self, id: &str, username: String) {
+        let me = self.account_id.as_deref();
+        match self
+            .directs
+            .iter()
+            .find(|d| d.peer.id == id && Some(d.peer.id.as_str()) != me)
+        {
+            Some(d) => {
+                let direct = d.id.clone();
+                self.open_direct(direct);
+            }
+            None => self.create_direct(username),
+        }
+    }
+
     /// Server-stamped Caper identities, which can't be blocked (egui's
     /// `protected_account`).
-    fn protected(&self, id: &str) -> bool {
+    pub fn protected(&self, id: &str) -> bool {
         self.directs
             .iter()
             .any(|d| d.peer.id == id && (d.peer.admin || d.peer.team))

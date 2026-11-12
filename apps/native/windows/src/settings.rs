@@ -1539,6 +1539,7 @@ impl App {
         self.close_settings();
         self.close_dialog();
         self.close_menu();
+        self.close_profile();
         self.close_dm_menu();
         self.close_gifs(false);
         self.cancel_reply();
