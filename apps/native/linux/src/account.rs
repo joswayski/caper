@@ -261,6 +261,7 @@ impl App {
                 let popover = popover.clone();
                 glib::idle_add_local_once(move || popover.unparent());
             });
+            crate::ui::hands(&popover);
             popover.popup();
         });
         let weak = Rc::downgrade(self);

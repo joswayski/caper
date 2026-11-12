@@ -2602,6 +2602,7 @@ impl App {
                 items.append(&item);
             }
             popover.set_child(Some(&items));
+            crate::ui::hands(&popover);
             options.set_popover(Some(&popover));
             row.append(&options);
             root.append(&row);

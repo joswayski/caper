@@ -845,10 +845,13 @@ pub enum Action {
     LoadReactors(String),
     Reply(String),
     Thread(String),
-    /// Edit, delete and pin, anchored to `anchor`.
+    /// Edit, delete and pin, anchored to `anchor`, or at a right click's
+    /// point in it with the body's selected text.
     Menu {
         id: String,
         anchor: gtk::Widget,
+        at: Option<(f64, f64)>,
+        selected: Option<String>,
     },
     /// Show or re-hide this attachment only at its originating message/presentation.
     Reveal {
@@ -1390,7 +1393,12 @@ fn toolbar(widgets: &Rc<Widgets>, images: &Images, handler: &Handler) {
         (&pick, |id, anchor| Action::Pick { id, anchor }),
         (&reply, |id, _| Action::Reply(id)),
         (&thread, |id, _| Action::Thread(id)),
-        (&more, |id, anchor| Action::Menu { id, anchor }),
+        (&more, |id, anchor| Action::Menu {
+            id,
+            anchor,
+            at: None,
+            selected: None,
+        }),
     ];
     connect_actions(widgets, handler, &actions);
     widgets.tools.append(&tools);
@@ -1407,6 +1415,22 @@ fn toolbar(widgets: &Rc<Widgets>, images: &Images, handler: &Handler) {
 }
 
 type Make = fn(String, gtk::Widget) -> Action;
+
+/// Whether a right click on `widget` belongs to it: a link under the
+/// pointer (GTK shows the hand there) or its own secondary click.
+fn owns_menu(widget: &gtk::Widget) -> bool {
+    if widget.is::<gtk::Label>()
+        && widget.cursor().and_then(|cursor| cursor.name()).as_deref() == Some("pointer")
+    {
+        return true;
+    }
+    widget
+        .observe_controllers()
+        .iter::<glib::Object>()
+        .flatten()
+        .filter_map(|object| object.downcast::<gtk::GestureClick>().ok())
+        .any(|click| click.button() == gtk::gdk::BUTTON_SECONDARY)
+}
 
 /// Each button sends its action for the row it shows now.
 fn connect_actions(widgets: &Rc<Widgets>, handler: &Handler, actions: &[(&gtk::Button, Make)]) {
@@ -1441,6 +1465,53 @@ fn connect(widgets: &Rc<Widgets>, images: &Rc<Images>, handler: &Handler) {
     }
     widgets.root.add_controller(motion);
     widgets.root.add_controller(focus);
+    // A right click opens the More menu at the pointer, as on the desktop,
+    // except on a link or a widget with its own menu (an image tile).
+    // Captured first so the body's own text menu stays closed.
+    let secondary = gtk::GestureClick::new();
+    secondary.set_button(gtk::gdk::BUTTON_SECONDARY);
+    secondary.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let (weak, menu_handler) = (Rc::downgrade(widgets), handler.clone());
+    secondary.connect_pressed(move |gesture, _, x, y| {
+        let Some(widgets) = weak.upgrade() else {
+            return;
+        };
+        let Some(id) = widgets
+            .row
+            .borrow()
+            .as_ref()
+            .filter(|row| row.offers.act)
+            .map(|row| row.id.clone())
+        else {
+            return;
+        };
+        let root = widgets.root.upcast_ref::<gtk::Widget>();
+        if let Some(target) = root.pick(x, y, gtk::PickFlags::DEFAULT)
+            && std::iter::successors(Some(target), gtk::Widget::parent)
+                .take_while(|widget| widget != root)
+                .any(|widget| owns_menu(&widget))
+        {
+            return;
+        }
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        let selected = widgets.body.selection_bounds().map(|(start, end)| {
+            let (start, end) = (start.min(end), start.max(end));
+            widgets
+                .body
+                .text()
+                .chars()
+                .skip(start as usize)
+                .take((end - start) as usize)
+                .collect::<String>()
+        });
+        menu_handler(Action::Menu {
+            id,
+            anchor: root.clone(),
+            at: Some((x, y)),
+            selected: selected.filter(|text| !text.is_empty()),
+        });
+    });
+    widgets.root.add_controller(secondary);
     let actions: [(&gtk::Button, Make); 6] = [
         (&widgets.edited, |id, _| Action::History(id)),
         (&widgets.edited_inline, |id, _| Action::History(id)),

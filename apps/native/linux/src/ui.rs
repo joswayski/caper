@@ -13,6 +13,95 @@ pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
     label
 }
 
+/// Gives every toplevel, now and later (dialogs, the viewer), the hand
+/// cursor over its controls (`hands`).
+pub fn hand_cursors() {
+    let toplevels = gtk::Window::toplevels();
+    let install = |model: &gio::ListModel, from: u32, count: u32| {
+        for position in from..from + count {
+            if let Some(window) = model.item(position).and_downcast::<gtk::Widget>() {
+                hands(&window);
+            }
+        }
+    };
+    install(&toplevels, 0, toplevels.n_items());
+    toplevels.connect_items_changed(move |model, position, _, added| {
+        install(model, position, added);
+    });
+}
+
+/// As desktop, a hand over anything clickable inside `native` (a window or
+/// popover): buttons, switches, check boxes, rail tiles, channel rows and
+/// single-click grid cells. GTK has no CSS cursor, so the control under the
+/// pointer gets one the first time it is hovered. Widgets with their own
+/// cursor (text, links, resize handles) keep it, and a disabled control is
+/// never picked, so it keeps the arrow.
+pub fn hands(native: &impl IsA<gtk::Widget>) {
+    let native = native.as_ref();
+    let named = |controller: glib::Object| {
+        controller
+            .downcast::<gtk::EventController>()
+            .is_ok_and(|controller| controller.name().as_deref() == Some("hands"))
+    };
+    if native
+        .observe_controllers()
+        .iter::<glib::Object>()
+        .flatten()
+        .any(named)
+    {
+        return;
+    }
+    let motion = gtk::EventControllerMotion::new();
+    motion.set_name(Some("hands"));
+    motion.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let point = |motion: &gtk::EventControllerMotion, x: f64, y: f64| {
+        let Some(native) = motion.widget() else {
+            return;
+        };
+        let Some(target) = native.pick(x, y, gtk::PickFlags::DEFAULT) else {
+            return;
+        };
+        if let Some(widget) = std::iter::successors(Some(target), gtk::Widget::parent)
+            .take_while(|widget| widget.cursor().is_none())
+            .find(clickable)
+        {
+            widget.set_cursor_from_name(Some("pointer"));
+        }
+    };
+    motion.connect_enter(point);
+    motion.connect_motion(point);
+    native.add_controller(motion);
+}
+
+fn clickable(widget: &gtk::Widget) -> bool {
+    let single_click = |parent: Option<gtk::Widget>| match parent {
+        Some(parent) => {
+            parent
+                .downcast_ref::<gtk::GridView>()
+                .is_some_and(gtk::GridView::is_single_click_activate)
+                || parent
+                    .downcast_ref::<gtk::ListView>()
+                    .is_some_and(gtk::ListView::is_single_click_activate)
+        }
+        None => false,
+    };
+    widget.is::<gtk::Button>()
+        || widget.is::<gtk::CheckButton>()
+        || widget.is::<gtk::Switch>()
+        || widget
+            .downcast_ref::<gtk::ListBoxRow>()
+            .is_some_and(ListBoxRowExt::is_activatable)
+        || widget
+            .downcast_ref::<gtk::FlowBoxChild>()
+            .is_some_and(|child| {
+                child
+                    .parent()
+                    .and_downcast::<gtk::FlowBox>()
+                    .is_some_and(|flow| flow.activates_on_single_click())
+            })
+        || single_click(widget.parent())
+}
+
 /// The composer's lip: a non-interactive shade over the bottom of a message
 /// history, where it meets the composer. It takes no layout space.
 fn composer_lip() -> gtk::Box {

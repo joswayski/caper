@@ -857,6 +857,7 @@ pub fn start(
     app.install_admin_actions();
     app.render();
     app.connect_bench(process_start);
+    crate::ui::hand_cursors();
     // The window shows before any network request finishes.
     app.ui.window.present();
     app.worker.send(Command::Restore { generation: 0 });
@@ -1254,7 +1255,7 @@ impl App {
     fn install_actions(self: &Rc<Self>) {
         let group = gio::SimpleActionGroup::new();
         type Run = fn(&Rc<App>, String);
-        let actions: [(&str, Run); 13] = [
+        let actions: [(&str, Run); 14] = [
             ("reactions", |app, id| app.open_reactors(id)),
             ("history", |app, id| app.open_history(&id)),
             ("reply", |app, id| app.row_action(Action::Reply(id), false)),
@@ -1262,6 +1263,10 @@ impl App {
                 app.row_action(Action::Thread(id), false)
             }),
             ("copy-id", |app, id| app.ui.window.clipboard().set_text(&id)),
+            // Its target is the text itself.
+            ("copy-selected", |app, text| {
+                app.ui.window.clipboard().set_text(&text)
+            }),
             ("block", |app, id| {
                 let account = app.message_author_account(&id);
                 if let Some(account) = account {
@@ -3192,7 +3197,12 @@ impl App {
                     .unwrap_or(id);
                 self.open_thread(root);
             }
-            Action::Menu { id, anchor } => self.row_menu(&id, &anchor),
+            Action::Menu {
+                id,
+                anchor,
+                at,
+                selected,
+            } => self.row_menu(&id, &anchor, at, selected),
             Action::Reveal {
                 scope,
                 id,
@@ -3265,7 +3275,13 @@ impl App {
         state.blockable_author(&message.author)
     }
 
-    fn row_menu(self: &Rc<Self>, id: &str, anchor: &gtk::Widget) {
+    fn row_menu(
+        self: &Rc<Self>,
+        id: &str,
+        anchor: &gtk::Widget,
+        at: Option<(f64, f64)>,
+        selected: Option<String>,
+    ) {
         let (mine, pinned, forwardable, joined, in_thread, reacted, edited) = {
             let state = self.state.borrow();
             let Some(message) = state.message(id) else {
@@ -3298,6 +3314,13 @@ impl App {
             item.set_action_and_target_value(Some(action), Some(&id.to_variant()));
             item
         };
+        if let Some(text) = selected {
+            let copy = gio::MenuItem::new(Some("Copy selected text"), None);
+            copy.set_action_and_target_value(Some("row.copy-selected"), Some(&text.to_variant()));
+            let section = gio::Menu::new();
+            section.append_item(&copy);
+            menu.append_section(None, &section);
+        }
         let actions = gio::Menu::new();
         // In the desktop's order.
         if joined {
@@ -3341,7 +3364,7 @@ impl App {
             menu.append_section(None, &danger);
         }
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
-        popup(&popover, anchor);
+        popup_at(&popover, anchor, at);
     }
 
     /// Desktop's menu on an image: Copy image (the original, once loaded),
@@ -6040,7 +6063,13 @@ pub fn close_on_escape(window: &gtk::Window) {
 }
 
 pub fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {
+    popup_at(popover, anchor, None);
+}
+
+/// `popup`, pointing at `at` in the anchor (a right click) when given.
+pub fn popup_at(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget, at: Option<(f64, f64)>) {
     let popover = popover.as_ref();
+    crate::ui::hands(popover);
     popover.set_has_arrow(false);
     // Parented to the chat page, pointing at the anchor: list rows
     // are recycled and rebuilt, and a popover whose parent goes away keeps
@@ -6048,9 +6077,15 @@ pub fn popup(popover: &impl IsA<gtk::Popover>, anchor: &gtk::Widget) {
     let stage = std::iter::successors(anchor.parent(), gtk::Widget::parent)
         .find(|widget| widget.has_css_class("popover-host"));
     match stage.as_ref().and_then(|stage| {
-        anchor
-            .compute_bounds(stage)
-            .map(|bounds| (stage.clone(), bounds))
+        anchor.compute_bounds(stage).map(|bounds| {
+            let bounds = match at {
+                Some((x, y)) => {
+                    gtk::graphene::Rect::new(bounds.x() + x as f32, bounds.y() + y as f32, 1.0, 1.0)
+                }
+                None => bounds,
+            };
+            (stage.clone(), bounds)
+        })
     }) {
         Some((stage, bounds)) => {
             popover.set_parent(&stage);

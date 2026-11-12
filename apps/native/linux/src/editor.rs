@@ -960,6 +960,7 @@ impl App {
             entry: entry.clone(),
         });
         drop(session);
+        crate::ui::hands(&popover);
         popover.popup();
         entry.grab_focus();
         editor.area.queue_draw();

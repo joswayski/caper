@@ -242,6 +242,7 @@ impl Popup {
         };
         self.popover
             .set_pointing_to(Some(&gdk::Rectangle::new(left, 0, width + 12, 1)));
+        crate::ui::hands(&self.popover);
         self.popover.popup();
     }
 
