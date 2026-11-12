@@ -165,6 +165,9 @@ export function createDirectNavigation() {
 
 // Scoped to one mounted Spaces page. Speculation only fetches
 // reads: no voice, sockets, identity sessions, or persistent private-data cache.
+/** The error for a requested channel that was deleted or revoked. */
+export const CHANNEL_GONE = "This channel is no longer accessible.";
+
 export function createSpaceNavigation() {
   const entries = new Map<string, { expires: number; result: Promise<PreparedSpace> }>();
   const visited = new Map<string, PreparedSpace>();
@@ -214,7 +217,10 @@ export function createSpaceNavigation() {
       const requestedChannel = channelId ?? previous?.channelId;
       if (requestedChannel !== undefined && !detail.channels.some((channel) => channel.id === requestedChannel)) {
         forget(spaceId);
-        throw new SpacesApiError(404, "This channel is no longer accessible.");
+        // A link to a channel that is gone must not open another conversation
+        // as if it were that one. A remembered channel nobody asked for just
+        // falls through to the space's landing channel.
+        if (channelId !== undefined) throw new SpacesApiError(404, CHANNEL_GONE);
       }
       const channel =
         detail.channels.find(

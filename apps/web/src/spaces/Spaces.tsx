@@ -85,6 +85,7 @@ import {
   useNotificationSettings,
 } from "./notifications";
 import {
+  CHANNEL_GONE,
   createDirectNavigation,
   createSpaceNavigation,
   rememberSpaceLanding,
@@ -382,7 +383,11 @@ function NameField({
             onChange(normalizeChannelName(input.value));
             requestAnimationFrame(() => input.setSelectionRange(caret, caret));
           }}
-          onBlur={() => onChange(channel ? value.replace(/-$/, "") : value.trim())}
+          onBlur={() => {
+            // Tidy the name, but an unchanged one must not clear the form's error.
+            const tidy = channel ? value.replace(/-$/, "") : value.trim();
+            if (tidy !== value) onChange(tidy);
+          }}
         />
       </span>
     </label>
@@ -780,6 +785,7 @@ function MemberManager({
                     refocus.current = true;
                     void onCancel?.(member).catch((reason) => setError(errorMessage(reason)));
                   }}
+                  aria-label={`Cancel invite for ${member.displayName}`}
                 >
                   Cancel invite
                 </button>
@@ -883,7 +889,12 @@ function MemberManager({
                 </small>
               </span>
               {!member.owner && (
-                <button type="button" disabled={pending} onClick={() => setRemoving(member)}>
+                <button
+                  type="button"
+                  disabled={pending}
+                  aria-label={`Remove ${member.displayName}`}
+                  onClick={() => setRemoving(member)}
+                >
                   Remove
                 </button>
               )}
@@ -2533,6 +2544,15 @@ export default function Spaces({
             [401, 403, 404].includes(reason.status)
           ) {
             navigation.current.forget(selected.spaceId!);
+            if (reason instanceof SpacesApiError && reason.message === CHANNEL_GONE) {
+              // Only the channel went, not the space: land on the space's own
+              // channel and say why, instead of a page whose retry asks for
+              // the same missing channel again.
+              setNotice("This channel is no longer available.");
+              choose(selected.spaceId, undefined, true);
+              setPending(false);
+              return;
+            }
             setView((shown) => (shown?.detail.space.id === selected.spaceId ? undefined : shown));
             if (reason instanceof SpacesApiError && reason.status === 404 && reason.message === "resource not found") {
               const remaining = latestSpaces.current.filter((space) => space.id !== selected.spaceId);

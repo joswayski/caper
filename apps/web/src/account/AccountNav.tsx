@@ -10,6 +10,8 @@ export default function AccountNav({
   profileLabel?: string;
 }) {
   const [account, setAccount] = useState(initialAccount);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutFailed, setLogoutFailed] = useState(false);
 
   useEffect(() => {
     if (initialAccount !== undefined) return;
@@ -57,9 +59,30 @@ export default function AccountNav({
       <button
         className="shrink-0 cursor-pointer rounded-[4px] border-0 bg-transparent px-0 py-2.5 text-sm font-bold text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2 max-[560px]:text-[.78rem]"
         type="button"
-        onClick={() => void logout().then(() => window.location.assign("/"))}
+        disabled={loggingOut}
+        onClick={() => {
+          setLoggingOut(true);
+          setLogoutFailed(false);
+          logout().then(
+            () => window.location.assign("/"),
+            () => {
+              // Stay signed in and say so, instead of a click that silently did nothing.
+              setLoggingOut(false);
+              setLogoutFailed(true);
+            },
+          );
+        }}
       >
-        Log out
+        {loggingOut ? (
+          "Logging out…"
+        ) : logoutFailed ? (
+          // Narrow screens show only the action, so the profile link keeps its room.
+          <span role="alert">
+            <span className="max-[560px]:sr-only">Couldn’t log out. </span>Try again
+          </span>
+        ) : (
+          "Log out"
+        )}
       </button>
     </div>
   );
