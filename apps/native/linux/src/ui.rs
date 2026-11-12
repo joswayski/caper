@@ -1105,6 +1105,7 @@ impl Ui {
         empty.append(&empty_action);
         let list_overlay = gtk::Overlay::new();
         list_overlay.set_child(Some(&list.scroller));
+        crate::autoscroll::attach(&list.scroller, &list_overlay);
         list_overlay.add_overlay(&empty);
         list_overlay.add_overlay(&composer_lip());
         conversation.append(&list_overlay);
@@ -1256,6 +1257,7 @@ impl Ui {
         let thread_list = List::new("Thread", images, thread_rows, 0);
         let thread_overlay = gtk::Overlay::new();
         thread_overlay.set_child(Some(&thread_list.scroller));
+        crate::autoscroll::attach(&thread_list.scroller, &thread_overlay);
         thread_overlay.add_overlay(&composer_lip());
         thread_panel.append(&thread_overlay);
         let thread_error = label("", &["error", "composer-error"]);

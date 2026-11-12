@@ -2,6 +2,7 @@
 //! ships it in the Linux release packages as `caper-desktop`.
 
 mod app;
+mod autoscroll;
 mod composing;
 mod content;
 mod file_drop;
