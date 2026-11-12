@@ -2539,3 +2539,102 @@ pub fn raise_screen_changed() {
         }
     }
 }
+
+/// The tooltip for the control under (`x`, `y`), in client DIPs, and that
+/// control's rectangle: icon-only controls show their name as egui's
+/// `on_hover_text` does; a space's rail tile shows only its name, and the
+/// update dock its help. Overlays and the cards come before what they
+/// cover.
+pub fn tip_at(a: &App, x: f32, y: f32) -> Option<(String, (f32, f32, f32, f32))> {
+    let inside = |id: Id| {
+        let (l, t, w, h) = node_rect(a, id);
+        x >= l && x < l + w && y >= t && y < t + h
+    };
+    let mut top = children(a, Id::Root);
+    let cards = top
+        .iter()
+        .take_while(|id| matches!(id, Id::Suggest | Id::Profile))
+        .count();
+    top[cards..].reverse();
+    let mut id = top.into_iter().find(|c| inside(*c))?;
+    while let Some(c) = children(a, id).into_iter().find(|c| inside(*c)) {
+        id = c;
+    }
+    let text = match id {
+        Id::Space(i) => a.c.spaces.get(i)?.name.clone(),
+        Id::UpdateDock => a.update_dock_help(),
+        Id::Invite(
+            crate::invites::Spot::Space(_)
+            | crate::invites::Spot::Create
+            | crate::invites::Spot::Join
+            | crate::invites::Spot::NewChannel,
+        )
+        | Id::NewDirect
+        | Id::DirectOptions(_)
+        | Id::SpaceOptions
+        | Id::ChannelOptions(_)
+        | Id::Gear
+        | Id::ReplyCancel
+        | Id::Tool(..)
+        | Id::Control(_, Action::Add)
+        | Id::Voice(
+            crate::call::VPart::Join(_)
+            | crate::call::VPart::Mute
+            | crate::call::VPart::Deafen
+            | crate::call::VPart::Leave
+            | crate::call::VPart::Dismiss,
+        )
+        | Id::Rec(crate::recording::RPart::Discard)
+        | Id::BoxPart(
+            crate::uploads::Part::Format(_)
+            | crate::uploads::Part::Attach
+            | crate::uploads::Part::Gif
+            | crate::uploads::Part::Emoji
+            | crate::uploads::Part::Mic
+            | crate::uploads::Part::RemovePreview
+            | crate::uploads::Part::Spoiler(_)
+            | crate::uploads::Part::Remove(_)
+            | crate::uploads::Part::Retry(_),
+        )
+        | Id::ThreadPart(
+            TPart::Close
+            | TPart::Add(_)
+            | TPart::Format(_)
+            | TPart::Gif
+            | TPart::Emoji
+            | TPart::Send,
+        )
+        | Id::ProfilePart(CPart::Close | CPart::Open | CPart::More | CPart::Send)
+        | Id::Pick(PPart::Close | PPart::Category(_) | PPart::Emoji(_))
+        | Id::Gif(GPart::Close)
+        | Id::MenuClose
+        | Id::Viewer(
+            MPart::Link
+            | MPart::Copy
+            | MPart::Save
+            | MPart::Open
+            | MPart::Close
+            | MPart::Previous
+            | MPart::Next
+            | MPart::Play
+            | MPart::Mute,
+        )
+        | Id::AttachmentEditor(
+            EPart::View
+            | EPart::Crop
+            | EPart::Rotate
+            | EPart::Draw
+            | EPart::Erase
+            | EPart::Text
+            | EPart::Undo
+            | EPart::Redo
+            | EPart::Reset
+            | EPart::Color(_)
+            | EPart::Smaller
+            | EPart::Larger
+            | EPart::CustomColor,
+        ) => name(a, id),
+        _ => return None,
+    };
+    (!text.is_empty()).then(|| (text, node_rect(a, id)))
+}

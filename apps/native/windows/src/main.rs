@@ -38,6 +38,7 @@ mod recording;
 mod settings;
 mod space_settings;
 mod suggest;
+mod tips;
 // The message grammar every client shares.
 #[allow(dead_code)]
 #[path = "../../../../shared/messages/formatting.rs"]
@@ -115,7 +116,7 @@ pub(crate) const TIMER_GIF_FRAMES: usize = 9;
 /// Redraws the DM rows when the earliest timed mute ends, as egui does.
 const TIMER_MUTE: usize = 10;
 pub(crate) const WHEEL_STEP: f64 = 48.0;
-const WM_MOUSELEAVE: u32 = 0x02A3;
+pub(crate) const WM_MOUSELEAVE: u32 = 0x02A3;
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -156,6 +157,7 @@ struct Dirty {
     profile: bool,
     /// A composer's emoji and mention suggestions.
     suggest: bool,
+    tip: bool,
 }
 
 impl Dirty {
@@ -180,6 +182,7 @@ impl Dirty {
             dm_menu: true,
             profile: true,
             suggest: true,
+            tip: true,
         }
     }
 }
@@ -392,6 +395,9 @@ pub struct App {
     suggest: Option<suggest::Suggest>,
     suggest_dismissed: Option<(suggest::Field, Vec<u16>, usize)>,
     suggest_p: Panel,
+    /// The tooltip under the pointer, and its surface.
+    tip: tips::State,
+    tip_p: Panel,
     /// The history control with keyboard focus (a reaction chip, Add
     /// reaction, Retry or Dismiss), by message id so it survives paging.
     kb: Option<(String, list::Action)>,
@@ -443,6 +449,7 @@ impl App {
             let card_p = Panel::new(&g)?;
             let profile_p = Panel::new(&g)?;
             let suggest_p = Panel::new(&g)?;
+            let tip_p = Panel::new(&g)?;
             let settings_p = Panel::new(&g)?;
             let dm_menu_p = Panel::new(&g)?;
             let history_clip = g.visual()?;
@@ -486,6 +493,7 @@ impl App {
             root.AddVisual(&viewer_p.visual, true, &dialog_p.visual)?;
             root.AddVisual(&settings_p.visual, true, &viewer_p.visual)?;
             root.AddVisual(&signin_p.visual, true, &settings_p.visual)?;
+            root.AddVisual(&tip_p.visual, true, &signin_p.visual)?;
             let (channel_layouts, member_layouts) = side_layouts(&g, &c)?;
             let n = c.messages.len();
             let scale = GetDpiForWindow(hwnd) as f32 / 96.0;
@@ -606,6 +614,8 @@ impl App {
                 suggest: None,
                 suggest_dismissed: None,
                 suggest_p,
+                tip: tips::State::default(),
+                tip_p,
                 older_armed: false,
                 thread: None,
                 thread_p,
@@ -1801,6 +1811,7 @@ impl App {
                 viewer::TIMER_VIEWER => self.viewer_tick(),
                 TIMER_MUTE => self.mutes_changed(),
                 updates::TIMER_SHINE => self.shine_tick(),
+                tips::TIMER_TIP => self.tip_tick(),
                 web_player::TIMER_WEB_PLAYER => self.need = true,
                 // The call's running time.
                 call::TIMER_CALL => {
@@ -3550,6 +3561,7 @@ impl App {
         self.draw_card()?;
         self.draw_profile()?;
         self.draw_suggest()?;
+        self.draw_tip()?;
         self.draw_panels()?;
         unsafe { self.g.dcomp.Commit()? };
         self.place_web_player();
@@ -3702,6 +3714,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }
         let handled = with_app(|a| {
             let r = a.handle(msg, wp, lp);
+            a.tip_input(
+                msg,
+                (lp.0 & 0xffff) as i16 as f32 / a.scale,
+                ((lp.0 >> 16) & 0xffff) as i16 as f32 / a.scale,
+            );
             // Anything that can edit a composer, move its caret or its
             // focus: the `:`/`@` suggestions follow.
             if matches!(
