@@ -42,10 +42,19 @@ function drawStill(image: HTMLImageElement, canvas: HTMLCanvasElement) {
   canvas.getContext("2d")?.drawImage(image, crop.x, crop.y, crop.side, crop.side, 0, 0, edge, edge);
 }
 
+const noSubscribe = () => () => {};
+
 function PictureImage({ asset, source, onFailed }: { asset: string; source: string; onFailed: () => void }) {
-  // `ready` appears at once (already shown on this page); `arrived` fades in.
+  // True while rendering on the server and hydrating that markup, false for a client-side mount.
+  const serverMarkup = useSyncExternalStore(
+    noSubscribe,
+    () => false,
+    () => true,
+  );
+  // `ready` appears at once: already shown on this page, or server-rendered, where the
+  // browser paints it as it downloads instead of waiting for hydration. `arrived` fades in.
   const [state, setState] = useState<"loading" | "ready" | "arrived" | "failed">(() =>
-    pictureShown(asset, source) ? "ready" : "loading",
+    serverMarkup || pictureShown(asset, source) ? "ready" : "loading",
   );
   const still = useSyncExternalStore(subscribeMotion, reducedMotion, () => false);
   // The still replaces the image only once it is drawn: a picture already shown
@@ -81,7 +90,7 @@ function PictureImage({ asset, source, onFailed }: { asset: string; source: stri
         ref={(node) => {
           image.current = node;
           // Server-rendered markup can finish (or fail) loading before hydration attaches the handlers below.
-          if (node?.complete && node.currentSrc && state === "loading") settle(node);
+          if (node?.complete && node.currentSrc && (state === "loading" || serverMarkup)) settle(node);
         }}
         src={source}
         alt=""

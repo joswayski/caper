@@ -190,7 +190,8 @@ test("avatars lay a custom picture over the mascot, which stays for loading and 
   assert.match(
     markup,
     // No shape of its own: it inherits the container's rounded square (--radius-avatar).
-    /<span class="caper-picture" data-state="loading"><img src="https:\/\/cdn\.test\/pic\.gif" alt=""/,
+    // Server markup shows it at once, painting as it downloads rather than after hydration.
+    /<span class="caper-picture" data-state="ready"><img src="https:\/\/cdn\.test\/pic\.gif" alt=""/,
   );
   assert.doesNotMatch(renderToStaticMarkup(createElement(Avatar, { person: { avatarId: 7 }, name: "M" })), /<img/);
   // Not an http(s) URL: the mascot alone.
