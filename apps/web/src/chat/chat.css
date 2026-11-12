@@ -2074,8 +2074,8 @@ button.chat-mention-card-avatar {
   right: 0;
   bottom: 100%;
   left: 0;
-  height: 12px;
-  background: linear-gradient(to top, rgb(0 0 0 / 28%), transparent);
+  height: 8px;
+  background: linear-gradient(to top, rgb(0 0 0 / 14%), transparent);
   pointer-events: none;
 }
 .chat-emoji-suggestions {

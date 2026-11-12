@@ -528,8 +528,8 @@ final class HostedView: UIView {
     }
 }
 
-/// The composer's lip, as SwiftUI's ComposerLip: a 12pt shade over the bottom
-/// of a timeline, black at 28% along the bottom edge fading out upward. It
+/// The composer's lip, as SwiftUI's ComposerLip: an 8pt shade over the bottom
+/// of a timeline, black at 14% along the bottom edge fading out upward. It
 /// takes no layout space and no touches.
 final class ComposerLipView: UIView {
     override class var layerClass: AnyClass { CAGradientLayer.self }
@@ -537,7 +537,7 @@ final class ComposerLipView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         let gradient = layer as! CAGradientLayer
-        gradient.colors = [UIColor.black.withAlphaComponent(0).cgColor, UIColor.black.withAlphaComponent(0.28).cgColor]
+        gradient.colors = [UIColor.black.withAlphaComponent(0).cgColor, UIColor.black.withAlphaComponent(0.14).cgColor]
         isUserInteractionEnabled = false
         isAccessibilityElement = false
         translatesAutoresizingMaskIntoConstraints = false
@@ -552,7 +552,7 @@ final class ComposerLipView: UIView {
             lip.leadingAnchor.constraint(equalTo: timeline.leadingAnchor),
             lip.trailingAnchor.constraint(equalTo: timeline.trailingAnchor),
             lip.bottomAnchor.constraint(equalTo: timeline.bottomAnchor),
-            lip.heightAnchor.constraint(equalToConstant: 12),
+            lip.heightAnchor.constraint(equalToConstant: 8),
         ])
     }
 }

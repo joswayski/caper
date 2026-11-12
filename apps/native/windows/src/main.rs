@@ -969,8 +969,9 @@ impl App {
 
     /// Height of the visible history.
     pub fn vh(&self) -> f32 {
-        // 4px above the composer (and its reply), as web's channel composer.
-        (self.box_rect().1 - 4.0 - HEADER_H - self.reply_h() - self.note_h()).max(0.0)
+        // 16px above the composer (and its reply), matching the 16px below it,
+        // so the composer sits centered in its band.
+        (self.box_rect().1 - 16.0 - HEADER_H - self.reply_h() - self.note_h()).max(0.0)
     }
 
     pub fn visible_rows(&self) -> Range<usize> {
@@ -3437,7 +3438,7 @@ impl App {
     }
 }
 
-/// The composer's lip, `LIP_H` tall from `y` and `w` wide: black at 28%
+/// The composer's lip, `LIP_H` tall from `y` and `w` wide: black at 14%
 /// along its bottom edge (the composer's top), fading to transparent upward.
 pub fn draw_lip(dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32) {
     const STEPS: usize = 24;
@@ -3448,7 +3449,7 @@ pub fn draw_lip(dc: &ID2D1DeviceContext, x: f32, y: f32, w: f32) {
         };
         for i in 0..STEPS {
             // Strip i runs from the top; its opacity is taken at its middle.
-            let opacity = 0.28 * (i as f32 + 0.5) / STEPS as f32;
+            let opacity = 0.14 * (i as f32 + 0.5) / STEPS as f32;
             brush.SetOpacity(opacity);
             let top = y + i as f32 * step;
             dc.FillRectangle(&rect(x, top, x + w, top + step), &brush);

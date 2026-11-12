@@ -8209,9 +8209,9 @@ private struct ReplyExpandButton: ButtonStyle {
 /// Drawn as an overlay, so it neither takes hits nor changes layout.
 struct ComposerLip: View {
     var body: some View {
-        LinearGradient(colors: [.black.opacity(0.28), .clear], startPoint: .bottom, endPoint: .top)
-            .frame(height: 12)
-            .offset(y: -12)
+        LinearGradient(colors: [.black.opacity(0.14), .clear], startPoint: .bottom, endPoint: .top)
+            .frame(height: 8)
+            .offset(y: -8)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
     }

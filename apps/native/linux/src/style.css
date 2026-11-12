@@ -698,10 +698,10 @@ popover.emoji-picker image.mine {
   background: #20282a;
 }
 
-/* The composer's lip: a 12px shade over the bottom of the history. */
+/* The composer's lip: an 8px shade over the bottom of the history. */
 .composer-lip {
-  min-height: 12px;
-  background: linear-gradient(to top, alpha(black, 0.28), transparent);
+  min-height: 8px;
+  background: linear-gradient(to top, alpha(black, 0.14), transparent);
 }
 
 .join-bar {

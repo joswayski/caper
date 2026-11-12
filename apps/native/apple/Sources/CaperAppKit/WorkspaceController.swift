@@ -572,7 +572,7 @@ import CaperCore
         let statusY = directBar.isHidden ? quoteBottom - quoteHeight - recoveryHeight - (roomyStatus ? 30 : 20) : height - max(138, directBar.preferredHeight(width: center - 40) + 32) + 6
         let top: CGFloat = newer.isHidden && latest.isHidden ? 48 : 88
         timeline.frame = NSRect(x: 0, y: top, width: center, height: max(0, statusY - 6 - top))
-        lip.frame = NSRect(x: 0, y: max(top, timeline.frame.maxY - 12), width: center, height: min(12, timeline.frame.height))
+        lip.frame = NSRect(x: 0, y: max(top, timeline.frame.maxY - 8), width: center, height: min(8, timeline.frame.height))
         let historyWidth = max(0, (center - 48) / 2)
         newer.frame = NSRect(x: 20, y: 52, width: min(150, historyWidth), height: 28)
         latest.frame = NSRect(x: center - 20 - min(110, historyWidth), y: 52, width: min(110, historyWidth), height: 28)
@@ -988,15 +988,15 @@ import CaperCore
     }
 }
 
-/// The composer's lip, as SwiftUI's ComposerLip: a 12pt shade over the bottom
-/// of the timeline, black at 28% along the bottom edge fading out upward. It
+/// The composer's lip, as SwiftUI's ComposerLip: an 8pt shade over the bottom
+/// of the timeline, black at 14% along the bottom edge fading out upward. It
 /// takes no clicks.
 private final class AppKitComposerLip: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         let gradient = CAGradientLayer()
         // Unflipped: the gradient runs from the bottom edge up.
-        gradient.colors = [NSColor.black.withAlphaComponent(0.28).cgColor, NSColor.black.withAlphaComponent(0).cgColor]
+        gradient.colors = [NSColor.black.withAlphaComponent(0.14).cgColor, NSColor.black.withAlphaComponent(0).cgColor]
         layer = gradient
         wantsLayer = true
         setAccessibilityElement(false)

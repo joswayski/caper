@@ -3474,8 +3474,8 @@ private val ReplyDraftFill = Color(0xFF20282A)
 
 /** A soft shadow above the composer's top edge, over the timeline's end (web's .chat-typing::before). Draws only; no layout or touch. */
 private fun Modifier.composerLip() = drawBehind {
-    val height = 12.dp.toPx()
-    drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.28f)), startY = -height, endY = 0f),
+    val height = 8.dp.toPx()
+    drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.14f)), startY = -height, endY = 0f),
         topLeft = Offset(0f, -height), size = Size(size.width, height))
 }
 
