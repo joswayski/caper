@@ -128,10 +128,23 @@ export default {
       }
     }
 
-    const object =
-      request.method === "HEAD"
-        ? await env.MEDIA.head(key)
-        : await env.MEDIA.get(key, { range: request.headers, onlyIf: request.headers });
+    let object;
+    try {
+      object =
+        request.method === "HEAD"
+          ? await env.MEDIA.head(key)
+          : await env.MEDIA.get(key, { range: request.headers, onlyIf: request.headers });
+    } catch (error) {
+      // R2 throws for a range past the end, such as resuming a download that
+      // already finished. Say so, or the client retries a 500 forever.
+      if (!ranged || !String(error?.message).includes("(10039)")) throw error;
+      const whole = await env.MEDIA.head(key);
+      if (!whole) return deny(404);
+      return new Response(null, {
+        status: 416,
+        headers: { "cache-control": "no-store", "content-range": `bytes */${whole.size}` },
+      });
+    }
     if (!object) return deny(404);
     const headers = headersFor(object, browserCache(expires, now));
     if (!("body" in object) || object.body == null) {

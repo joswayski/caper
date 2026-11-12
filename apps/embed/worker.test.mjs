@@ -88,12 +88,14 @@ test("head parsing decodes entities and keeps every og:image in order", () => {
   const { meta, title } = parseHead(`<html><head>
     <title> Fish &amp; Chips </title>
     <meta property="og:title" content="It&#39;s &quot;here&quot; &#x1F41F;">
-    <meta content='second' name="description">
+    <meta content='second > first' name="description">
+    <meta property="og:site_name" content="Cats > Dogs">
     <meta property="og:image" content="/one.png"><meta property="og:image" content="https://cdn.example/two.png">
     </head><body><meta property="og:title" content="ignored"></body>`);
   assert.equal(title, "Fish & Chips");
   assert.equal(meta.get("og:title"), 'It\'s "here" 🐟');
-  assert.equal(meta.get("description"), "second");
+  assert.equal(meta.get("description"), "second > first");
+  assert.equal(meta.get("og:site_name"), "Cats > Dogs");
   assert.deepEqual(meta.get("og:image:all"), ["/one.png", "https://cdn.example/two.png"]);
 });
 

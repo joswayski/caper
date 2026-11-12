@@ -28,6 +28,10 @@ function bucket(objects) {
         const length = Math.min(Number(suffix[1]), body.length);
         return { ...metadata(key), range: { suffix: Number(suffix[1]) }, body: body.slice(body.length - length) };
       }
+      const open = header && /^bytes=(\d+)-$/.exec(header);
+      if (open && Number(open[1]) >= body.length) {
+        throw new Error("get: The requested range is not satisfiable (10039)");
+      }
       const match = header && /^bytes=(\d+)-(\d+)$/.exec(header);
       if (match) {
         const offset = Number(match[1]);
@@ -120,6 +124,16 @@ test("ranges return partial content for video seeking", async () => {
   assert.equal(response.status, 206);
   assert.equal(response.headers.get("content-range"), "bytes 2-5/10");
   assert.equal(await response.text(), "2345");
+});
+
+test("a range past the end is refused as unsatisfiable, not as a server error", async () => {
+  const response = await worker.fetch(
+    new Request(await signed("original/abc"), { headers: { range: "bytes=10-" } }),
+    env,
+  );
+  assert.equal(response.status, 416);
+  assert.equal(response.headers.get("content-range"), "bytes */10");
+  assert.equal(response.headers.get("cache-control"), "no-store");
 });
 
 test("browser caching never outlives the signature, and stops at a day", async () => {

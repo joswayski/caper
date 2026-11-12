@@ -34,7 +34,7 @@ export function parseHead(html) {
   const head = html.slice(0, Math.max(html.search(/<\/head\s*>/i), 0) || html.length);
   const meta = new Map();
   const images = [];
-  for (const [tag] of head.matchAll(/<meta\b[^>]*>/gi)) {
+  for (const [tag] of head.matchAll(/<meta\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)) {
     const attrs = attributes(tag.slice(5, -1));
     const key = (attrs.property ?? attrs.name ?? attrs.itemprop ?? "").toLowerCase();
     const value = attrs.content;
@@ -45,7 +45,7 @@ export function parseHead(html) {
   meta.set("og:image:all", [...new Set(images)]);
   const title = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(head)?.[1];
   let oembed = null;
-  for (const [tag] of head.matchAll(/<link\b[^>]*>/gi)) {
+  for (const [tag] of head.matchAll(/<link\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi)) {
     const attrs = attributes(tag.slice(5, -1));
     if (
       attrs.rel?.toLowerCase() === "alternate" &&
