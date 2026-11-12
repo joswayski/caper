@@ -540,21 +540,29 @@ final class CaperUIKitTests: XCTestCase {
         app.buttons["Close"].tap()
         XCTAssertTrue(app.staticTexts["Message history"].waitForNonExistence(timeout: 10))
 
-        let timeline = app.collectionViews["message-timeline"]
-        timeline.swipeLeft()
+        // Slow drags that rest first and start on message text or a row, as a
+        // finger does: what is under the finger must not keep a panel from following.
+        func drag(_ element: XCUIElement, by dx: CGFloat) {
+            let start = element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            start.press(forDuration: 0.25, thenDragTo: start.withOffset(CGVector(dx: dx, dy: 0)),
+                        withVelocity: .slow, thenHoldForDuration: 0)
+        }
+        let text = app.textViews["message-text-\(Self.latest)"]
+        drag(text, by: -200)
         let members = app.descendants(matching: .any)["members-panel"]
-        XCTAssertTrue(members.waitForExistence(timeout: 10), "A swipe left on the timeline opens Members")
-        app.buttons["Close member list"].tap()
-        XCTAssertTrue(members.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(members.waitForExistence(timeout: 10), "A slow drag left on message text opens Members")
+        sleep(1)
+        drag(app.descendants(matching: .any)["members-panel"].cells.firstMatch, by: 200)
+        XCTAssertTrue(members.waitForNonExistence(timeout: 10), "A slow drag right on a member closes Members")
 
-        timeline.swipeRight()
+        drag(text, by: 200)
         let account = app.buttons["account-profile"]
         XCTAssertTrue(account.waitForExistence(timeout: 10))
         sleep(1)
-        XCTAssertTrue(account.isHittable, "A swipe right from mid-timeline opens Browse")
-        app.collectionViews["direct-message-list"].swipeLeft()
+        XCTAssertTrue(account.isHittable, "A slow drag right on message text opens Browse")
+        drag(app.collectionViews["channel-list"].cells.element(boundBy: 1), by: -200)
         sleep(1)
-        XCTAssertTrue(composer.isHittable, "A swipe left on Browse returns to the conversation")
+        XCTAssertTrue(composer.isHittable, "A slow drag left on a channel row returns to the conversation")
     }
 
     /// Reply in thread opens the thread; a reply there shows under the root
