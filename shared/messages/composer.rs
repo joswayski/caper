@@ -379,7 +379,7 @@ pub fn toggle(text: &str, start: usize, end: usize, style: i32) -> Option<(Strin
         let touched: Vec<usize> = (0..lines.len())
             .filter(|line| {
                 let (start, end, _) = lines[*line];
-                start <= to - 1 && end >= from && !chars[start..end].iter().all(|c| space(*c))
+                start < to && end >= from && !chars[start..end].iter().all(|c| space(*c))
             })
             .collect();
         if touched.is_empty() {

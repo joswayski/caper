@@ -806,7 +806,7 @@ enum MessageAction { case reaction(String), reactors(String), addReaction, retry
     }
 
     /// VoiceOver reads "Spoiler" in place of each hidden spoiler.
-    override func accessibilityValue() -> Any? {
+    override func accessibilityValue() -> String? {
         guard let text = textStorage, !NativePresentation.hiddenSpoilers(in: text).isEmpty else { return super.accessibilityValue() }
         return NativePresentation.spokenText(text)
     }
