@@ -113,6 +113,20 @@ def find(
     return None
 
 
+def button(root: ET.Element, label: str) -> ET.Element | None:
+    """The target screen readers hear as the button `label`. Compose names a button
+    that has children through them, and puts its role on a child covering it."""
+    for node in nodes(root):
+        heard = [node, *node]
+        if (
+            node.get("clickable") == "true"
+            and any(label in (part.get("text"), part.get("content-desc")) for part in heard)
+            and any(part.get("class") == "android.widget.Button" for part in heard)
+        ):
+            return node
+    return None
+
+
 def named_field(root: ET.Element, name: str) -> bool:
     """Whether a text field is named `name` for screen readers. Compose puts the
     name on a node covering exactly the EditText, not on the EditText itself."""
@@ -454,21 +468,16 @@ def main() -> None:
     assert find(hierarchy(), text="Members") is None
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
     # Screen readers hear the open space and channel as the selected buttons (web: aria-current).
-    rows = {
-        node.get("text"): node
-        for node in nodes(desktop)
-        if node.get("clickable") == "true" and node.get("text") in ("general", "planning")
-    }
-    assert set(rows) == {"general", "planning"}, f"Channel rows must be single buttons: {sorted(rows)}"
-    assert all(node.get("class") == "android.widget.Button" for node in rows.values()), "Channel rows are buttons"
-    assert rows["general"].get("selected") == "true", "The open channel is selected"
-    assert rows["planning"].get("selected") == "false", "Other channels are not selected"
-    tile = find(desktop, description="Fixture Studio")
-    assert tile is not None and tile.get("class") == "android.widget.Button", "Space tiles are buttons"
-    assert tile.get("selected") == "true", "The open space's tile is selected"
+    # Compose reports "selected", outside tabs, as checked.
+    rows = {name: button(desktop, name) for name in ("general", "planning")}
+    assert all(row is not None for row in rows.values()), f"Channel rows are buttons: {rows}"
+    assert rows["general"].get("checked") == "true", "The open channel is selected"
+    assert rows["planning"].get("checked") == "false", "Other channels are not selected"
+    tile = button(desktop, "Fixture Studio")
+    assert tile is not None, "Space tiles are buttons"
+    assert tile.get("checked") == "true", "The open space's tile is selected"
     for label in ("Create space", "Join with invite link"):
-        rail = find(desktop, description=label)
-        assert rail is not None and rail.get("class") == "android.widget.Button", f"{label} is a button"
+        assert button(desktop, label) is not None, f"{label} is a button"
     general = find(desktop, text="general")
     menu = find(desktop, description="general channel menu")
     assert general is not None and menu is not None, "General must expose its channel menu"
@@ -567,7 +576,8 @@ def main() -> None:
     for label in ("Caper sound effects", "Audio test", "Log out"):
         assert find(settings, text=label) is not None, f"Missing audio settings entry: {label}"
     effects = find(settings, description="Caper sound effects")
-    assert effects is not None and effects.get("class") == "android.widget.Switch", "The sound effects switch is named"
+    # Compose gives a switch a role description, not a class; the tree shows it as checkable.
+    assert effects is not None and effects.get("checkable") == "true", "The sound effects switch is named"
     voice_started = find(settings, description="When voice starts in a space")
     assert voice_started is not None and voice_started.get("class") == "android.widget.CheckBox", "Checkbox is named"
     assert find(settings, text="Connection details") is None, "Connection details are only offered while connected"
@@ -671,12 +681,11 @@ def main() -> None:
         assert find(overview, contains=required) is not None, f"Channel overview is missing {required!r}"
     assert find(overview, text="Invite") is not None
     # The row is one switch stop, not a clickable row beside an unnamed switch.
-    privacy = [
-        n
-        for n in nodes(overview)
-        if n.get("class") == "android.widget.Switch" and "Private channel" in n.get("text", "")
-    ]
-    assert len(privacy) == 1 and privacy[0].get("checked") == "true", "Private channel is one checked switch"
+    switches = [n for n in nodes(overview) if n.get("checkable") == "true"]
+    assert len(switches) == 1 and switches[0].get("checked") == "true", "Private channel is one checked switch"
+    assert switches[0].get("clickable") == "true" and any(
+        part.get("text") == "Private channel" for part in (switches[0], *switches[0])
+    ), "The switch is the named row"
     for removed in ("Private channel access", "Existing username", "Grant"):
         assert find(overview, contains=removed) is None, f"Unexpected member-management copy: {removed}"
     tap(description="Close Channel settings")
