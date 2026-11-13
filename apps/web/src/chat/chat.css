@@ -2455,12 +2455,10 @@ button.chat-mention-card-avatar {
     height: 44px;
   }
 }
+/* As Discord's: a gap, not a rule, between inline styles and Quote/Spoiler. */
 .chat-format-divider {
-  align-self: center;
-  width: 1px;
-  height: 18px;
-  margin: 0 4px;
-  background: var(--border);
+  flex: none;
+  width: 12px;
 }
 /* Quotes: a neutral bar beside each quoted line, in messages and drafts. */
 .chat-quote {

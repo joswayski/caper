@@ -33,7 +33,7 @@ const MAX_LENGTH: usize = 4000;
 const QUOTE_INDENT: i32 = 15;
 
 /// The toolbar, in web's order: each style bit, its name, its Lucide icon's
-/// SVG elements and its shortcut key. A divider comes before Quote.
+/// SVG elements and its shortcut key. A gap comes before Quote.
 const TOOLS: [(i32, &str, &str, Option<char>); 6] = [
     (
         BOLD,

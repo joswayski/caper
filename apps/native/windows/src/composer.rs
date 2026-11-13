@@ -80,7 +80,7 @@ pub enum Style {
 }
 
 impl Style {
-    /// The toolbar's buttons in order, as web's; a divider comes before
+    /// The toolbar's buttons in order, as web's; a gap comes before
     /// Quote.
     pub const ALL: [Style; 6] = [
         Self::Bold,
@@ -126,10 +126,9 @@ impl Style {
     }
 }
 
-/// The toolbar's buttons, and the divider before Quote (web's 1px rule
-/// with 4px on each side).
+/// The toolbar's buttons, and the empty gap before Quote (as Discord's).
 const FORMAT_BUTTON: f32 = 36.0;
-const FORMAT_DIVIDER: f32 = 9.0;
+const FORMAT_DIVIDER: f32 = 12.0;
 
 /// What typing left: the source, the caret the last key left, and the style
 /// web carries to a key typed there next (`composer::edit`'s `pending`).
@@ -1055,7 +1054,7 @@ impl Composer {
                 &g.brushes.composer,
             );
             // The selection's toolbar, as web's: one group of buttons with a
-            // divider before Quote; a pressed button (the selection has
+            // gap before Quote; a pressed button (the selection has
             // its style) is lit.
             if let (Some((x0, y0, _, h)), Some((x1, _, w1, _))) = (
                 self.format_rect(Style::Bold),
@@ -1066,11 +1065,6 @@ impl Composer {
                     rect(x0, y0, x1 + w1, y0 + h),
                     crate::theme::RADIUS,
                     &g.brushes.hover,
-                );
-                let dx = x0 + 4.0 * FORMAT_BUTTON + (FORMAT_DIVIDER - 1.0) / 2.0;
-                dc.FillRectangle(
-                    &rect(dx, y0 + (h - 18.0) / 2.0, dx + 1.0, y0 + (h + 18.0) / 2.0),
-                    &g.brushes.border,
                 );
             }
             for style in Style::ALL {

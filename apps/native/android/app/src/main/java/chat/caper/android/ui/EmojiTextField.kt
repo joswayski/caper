@@ -239,7 +239,7 @@ import kotlin.math.roundToInt
                                                     StyleButton(FormatStyle.ITALIC, "Italic", R.drawable.lucide_italic)
                                                     StyleButton(FormatStyle.UNDERLINE, "Underline", R.drawable.lucide_underline)
                                                     StyleButton(FormatStyle.STRIKETHROUGH, "Strikethrough", R.drawable.lucide_strikethrough)
-                                                    Box(Modifier.padding(horizontal = 4.dp).size(1.dp, 18.dp).background(Border))
+                                                    Spacer(Modifier.width(12.dp)) // As Discord: a gap between inline styles and Quote/Spoiler.
                                                     StyleButton(FormatStyle.QUOTE, "Quote", R.drawable.lucide_text_quote)
                                                     StyleButton(FormatStyle.SPOILER, "Spoiler", R.drawable.lucide_eye_off)
                                                 }

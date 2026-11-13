@@ -21,7 +21,7 @@ struct NativeMessageComposer: View {
                 HStack(spacing: 0) {
                     ForEach(MessageFormattingAction.all, id: \.title) { item in
                         if item.style == .quote {
-                            Rectangle().fill(CaperTheme.border).frame(width: 1, height: 18).padding(.horizontal, 4)
+                            Color.clear.frame(width: 12, height: 1) // A gap before Quote, as Discord
                                 .accessibilityHidden(true)
                         }
                         let pressed = controller.formattingStyles.contains(item.style)

@@ -8,7 +8,7 @@ pub use caper_client::formatting::{
 };
 use caper_client::formatting::{composer, selection_styles};
 
-/// The selection toolbar's styles in web's order; a divider precedes Quote.
+/// The selection toolbar's styles in web's order; a gap precedes Quote.
 const TOOLBAR: [(i32, &str); 6] = [
     (BOLD, "Bold"),
     (ITALIC, "Italic"),
@@ -451,13 +451,8 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
                         ui.horizontal(|ui| {
                             for (index, (style, label)) in TOOLBAR.into_iter().enumerate() {
                                 if style == QUOTE {
-                                    // Web's thin divider between inline and block styles.
-                                    let (_, rect) = ui.allocate_space(egui::vec2(9.0, 36.0));
-                                    ui.painter().vline(
-                                        rect.center().x,
-                                        rect.center().y - 9.0..=rect.center().y + 9.0,
-                                        egui::Stroke::new(1.0, crate::BORDER),
-                                    );
+                                    // A gap between inline and block styles, as Discord's.
+                                    ui.add_space(12.0);
                                 }
                                 let allowed = composer::toggle(text, start, end, style).is_some();
                                 let on = pressed & style != 0;

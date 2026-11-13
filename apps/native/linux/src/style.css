@@ -2465,7 +2465,7 @@ button.history-button {
 }
 
 /* The formatting toolbar over a composer's selection (`composing`), as
-   web's: muted Lucide icons, a divider before Quote, pressed styles on the
+   web's: muted Lucide icons, a gap before Quote, pressed styles on the
    border colour. */
 popover.format-bar > contents {
   background: @caper_surface;
@@ -2498,11 +2498,11 @@ popover.format-bar button:disabled {
   opacity: 0.4;
 }
 
+/* A gap, not a rule, before Quote, as Discord's. */
 popover.format-bar separator.format-divider {
-  min-width: 1px;
-  min-height: 18px;
-  margin: 9px 4px;
-  background: @caper_border;
+  min-width: 12px;
+  margin: 0;
+  background: transparent;
 }
 
 /* A quoted line's bar in the composer: its 15 px indent holds the bar and
