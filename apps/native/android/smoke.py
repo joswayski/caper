@@ -127,6 +127,17 @@ def button(root: ET.Element, label: str) -> ET.Element | None:
     return None
 
 
+def toggle(root: ET.Element, label: str) -> ET.Element | None:
+    """The switch or checkbox screen readers hear as `label`. Compose gives a switch
+    no class; the tree shows it as checkable and names it through a child."""
+    for node in nodes(root):
+        if node.get("checkable") == "true" and any(
+            label in (part.get("text"), part.get("content-desc")) for part in (node, *node)
+        ):
+            return node
+    return None
+
+
 def named_field(root: ET.Element, name: str) -> bool:
     """Whether a text field is named `name` for screen readers. Compose puts the
     name on a node covering exactly the EditText, not on the EditText itself."""
@@ -575,9 +586,8 @@ def main() -> None:
     settings = capture("caper-android-audio-settings", "Audio test")
     for label in ("Caper sound effects", "Audio test", "Log out"):
         assert find(settings, text=label) is not None, f"Missing audio settings entry: {label}"
-    effects = find(settings, description="Caper sound effects")
-    # Compose gives a switch a role description, not a class; the tree shows it as checkable.
-    assert effects is not None and effects.get("checkable") == "true", "The sound effects switch is named"
+    effects = toggle(settings, "Caper sound effects")
+    assert effects is not None and effects.get("clickable") == "true", "The sound effects switch is named"
     voice_started = find(settings, description="When voice starts in a space")
     assert voice_started is not None and voice_started.get("class") == "android.widget.CheckBox", "Checkbox is named"
     assert find(settings, text="Connection details") is None, "Connection details are only offered while connected"
@@ -681,11 +691,14 @@ def main() -> None:
         assert find(overview, contains=required) is not None, f"Channel overview is missing {required!r}"
     assert find(overview, text="Invite") is not None
     # The row is one switch stop, not a clickable row beside an unnamed switch.
-    switches = [n for n in nodes(overview) if n.get("checkable") == "true"]
-    assert len(switches) == 1 and switches[0].get("checked") == "true", "Private channel is one checked switch"
-    assert switches[0].get("clickable") == "true" and any(
-        part.get("text") == "Private channel" for part in (switches[0], *switches[0])
-    ), "The switch is the named row"
+    privacy = toggle(overview, "Private channel")
+    assert privacy is not None and privacy.get("checked") == "true", "Private channel is a checked switch"
+    assert privacy.get("clickable") == "true", "The switch is the named row"
+    assert all(
+        any(part.get("text") or part.get("content-desc") for part in (node, *node))
+        for node in nodes(overview)
+        if node.get("checkable") == "true"
+    ), "No unnamed switch beside the row"
     for removed in ("Private channel access", "Existing username", "Grant"):
         assert find(overview, contains=removed) is None, f"Unexpected member-management copy: {removed}"
     tap(description="Close Channel settings")
