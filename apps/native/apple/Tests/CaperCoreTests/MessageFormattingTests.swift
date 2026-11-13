@@ -314,7 +314,10 @@ final class MessageFormattingTests: XCTestCase {
             if item.style == .bold { XCTAssertNotNil(whole) }
             guard let result = whole else { continue }
             XCTAssertEqual(MessageFormatting.runs(result.text).map(\.text).joined(), text, item.title)
-            XCTAssertEqual(MessageLinks.segments(in: result.text).compactMap(\.href), MessageLinks.segments(in: text).compactMap(\.href), item.title)
+            // Renderers find links in each run's visible text, as web's LinkedText;
+            // `~~` and `||` around a URL hide it from a scan of the raw source.
+            let rendered = MessageFormatting.runs(result.text).flatMap { MessageLinks.segments(in: $0.text).compactMap(\.href) }
+            XCTAssertEqual(rendered, MessageLinks.segments(in: text).compactMap(\.href), item.title)
         }
     }
 
