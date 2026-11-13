@@ -796,6 +796,11 @@ private final class AppKitPointerPassthroughView: NSView {
         AppKitAttachmentSurface { AppKitReplyDraft(chat: model.chat, inThread: inThread) }
     }
 
+    /// The draft's first link as a card above the composer, with × to send without it.
+    public func composerLinkPreview(inThread: Bool = false) -> AppKitAttachmentSurface {
+        AppKitAttachmentSurface { AppKitComposerLinkPreview(chat: model.chat, inThread: inThread) }
+    }
+
     public func pickFiles(inThread: Bool = false) {
         guard let window = parent?.view.window, let target = model.chat.attachmentTarget(inThread: inThread) else { return }
         let chat = model.chat
@@ -868,6 +873,21 @@ private struct AppKitReplyDraft: View {
         if let root, let reference = chat.replyTargets[root] {
             NativeReplyDraft(reference: reference, chat: chat, root: root)
         }
+    }
+}
+
+private struct AppKitComposerLinkPreview: View {
+    let chat: ChatModel
+    let inThread: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: 0)
+            // The card is inset for a composer's box; here it lines up with the tray above the box.
+            ComposerEmbedPreview(chat: chat, inThread: inThread).padding(.horizontal, -8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: chat.draftPreviewLink(inThread: inThread)) { await chat.loadComposerLinkPreview(inThread: inThread) }
     }
 }
 

@@ -2343,6 +2343,46 @@ import XCTest
         XCTAssertEqual(thumb.label, "👍 2", "Dismiss clears the error, not the stored reaction")
     }
 
+    /// A link in the draft gets its card above the composer, with × to send
+    /// without it; the thread's reply composer has its own.
+    func testComposerLinkPreviewInChannelAndThread() async throws {
+        continueAfterFailure = false
+        try await Self.resetFixture()
+        let app = launch()
+        defer { app.terminate() }
+        let composer = app.textViews["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 15))
+        resize(app, width: 1280)
+        let draft = "see https://example.com/fixture "
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(draft, forType: .string)
+        composer.click(); composer.typeKey("v", modifierFlags: .command)
+        let remove = app.buttons["Remove link preview"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 10), "The draft's link gets a card")
+        XCTAssertTrue(remove.isHittable)
+        XCTAssertLessThanOrEqual(remove.frame.maxY, composer.frame.minY + 1, "The card sits above the composer, not over it")
+        capture("channel composer link preview wide", app: app)
+        remove.click()
+        XCTAssertTrue(remove.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, draft, "Removing the card keeps the draft")
+
+        let timeline = app.scrollViews["message-timeline"]
+        let body = timeline.textViews["message-chan00000001m02"]
+        timeline.scroll(byDeltaX: 0, deltaY: 1000)
+        XCTAssertTrue(body.waitForExistence(timeout: 5)); body.rightClick()
+        messageMenuItem("Reply in thread", app: app, body: body).click()
+        let reply = app.textViews["thread-composer"]
+        XCTAssertTrue(reply.waitForExistence(timeout: 5))
+        reply.click(); reply.typeKey("v", modifierFlags: .command)
+        XCTAssertTrue(remove.waitForExistence(timeout: 10), "The thread reply's link gets its own card")
+        XCTAssertTrue(remove.isHittable)
+        XCTAssertLessThanOrEqual(remove.frame.maxY, reply.frame.minY + 1)
+        XCTAssertGreaterThanOrEqual(remove.frame.minX, reply.frame.minX, "The card belongs to the thread pane")
+        capture("thread composer link preview wide", app: app)
+        remove.click()
+        XCTAssertTrue(remove.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(reply.value as? String, draft)
+    }
+
     func testComposerEmojiPickerSelectionUndoCancelAndScalarLimit() async throws {
         continueAfterFailure = false
         try await Self.resetFixture()

@@ -2659,8 +2659,7 @@ EMBED_ORIGIN=https://embed.caper.chat EMBED_API_SECRET=... node live-check.mjs
 Staging uses `--env staging` and `embed.staging.caper.chat`.
 
 **Clients.** Every client draws cards, takes `message.embeds` live, previews the
-composer's first link, can send without previews, and plays players inline. The
-macOS AppKit composers are the exception: they show no card before sending.
+composer's first link, can send without previews, and plays players inline.
 Desktop loads `play` after Play in the operating system's web engine, only for the
 player box (`wry`): WebView2 in process on Windows; on Linux WebKitGTK in the
 separate `caper-web-player` helper, so the app never links GTK and starts without

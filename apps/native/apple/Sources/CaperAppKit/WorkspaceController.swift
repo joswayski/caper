@@ -88,6 +88,7 @@ import CaperCore
     private let attachmentScroll = NSScrollView()
     private var attachmentTray: AppKitAttachmentSurface?
     private var replyDraft: AppKitAttachmentSurface?
+    private var linkPreview: AppKitAttachmentSurface?
     private lazy var back = NativeButton("Back to channel") { [weak self] in self?.closeThread() }
     private lazy var broadcast: NativeButton = NativeButton("") { [weak self] in
         guard let self else { return }; self.model.chat.threadBroadcast = self.broadcast.state == .on
@@ -560,7 +561,10 @@ import CaperCore
         let attachmentHeight = attachmentTray?.height(for: max(1, center - 40)) ?? 0
         let trayHeight = min(attachmentHeight, max(80, height * 0.3))
         let quoteHeight = replyDraft?.height(for: max(1, center - 40)) ?? 0
-        attachmentScroll.frame = NSRect(x: 20, y: composerTop - 8 - trayHeight, width: center - 40, height: trayHeight)
+        // The link card sits on the composer and ends with its own 8pt gap; the tray stacks above it.
+        let linkHeight = linkPreview?.height(for: max(1, center - 40)) ?? 0
+        linkPreview?.frame = NSRect(x: 20, y: composerTop - linkHeight, width: center - 40, height: linkHeight)
+        attachmentScroll.frame = NSRect(x: 20, y: composerTop - linkHeight - 8 - trayHeight, width: center - 40, height: trayHeight)
         attachmentTray?.frame = NSRect(x: 0, y: 0, width: center - 40, height: attachmentHeight)
         let quoteBottom = attachmentScroll.frame.minY - (trayHeight > 0 ? 8 : 0)
         replyDraft?.frame = NSRect(x: 20, y: quoteBottom - quoteHeight, width: center - 40, height: quoteHeight)
@@ -676,6 +680,13 @@ import CaperCore
             stage.addSubview(banner, positioned: .below, relativeTo: suggestions)
             replyDraft = banner
         } else if !hasQuote { replyDraft?.removeFromSuperview(); replyDraft = nil }
+        let hasLink = !composerScroll.isHidden && chat.draftPreviewLink(inThread: inThread) != nil
+        if hasLink, linkPreview == nil {
+            let card = media.composerLinkPreview(inThread: inThread)
+            card.heightChanged = { [weak self] in self?.view.needsLayout = true }
+            stage.addSubview(card, positioned: .below, relativeTo: suggestions)
+            linkPreview = card
+        } else if !hasLink { linkPreview?.removeFromSuperview(); linkPreview = nil }
         newer.isHidden = !(inThread ? chat.threadHasNewer : chat.hasNewer)
         newer.title = inThread ? "Load newer replies" : "Load newer messages"
         newer.setAccessibilityLabel(newer.title)
